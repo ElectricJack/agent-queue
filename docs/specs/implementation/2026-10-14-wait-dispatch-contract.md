@@ -39,8 +39,13 @@ and retain terminal incidents. Using just the wait id, as the historical section
 uses `source_identity=<wait_id>:<generation>` and
 `incident_key=wait:<wait_id>:<generation>`. `wait_escalations.wait_id` and
 `generation` remain the authoritative link, with `prior_escalation_id` preserving
-the chain. No schema or terminal-incident rewrite is needed. This compatibility
-choice was reported to the supervisor in `msg-7ba5090e15db48e2b9c6d272abacb37f`.
+the chain. No schema or terminal-incident rewrite is needed. The project
+supervisor approved this correction in `msg-e01f1f13c3c94afd88b7812f5800b5c6`,
+replying to `msg-7ba5090e15db48e2b9c6d272abacb37f`. Allocation is serialized
+under the current wait/deadline locks; decisions and resolution use the bound
+`wait_escalations.escalation_id` and current expected generation. Concurrent
+same-generation firing creates one incident; an old generation cannot decide
+the new incident after extension.
 
 `escalate_to_human` changes the verified condition to the existing human
 message-thread adapter. The escalation outbox delivers the question; an archived
@@ -93,16 +98,21 @@ external terminal I/O is not crash-atomic with PostgreSQL. Outcome commit alone
 does not release liveness protection. `held_messages` returns the routine-mail
 snapshot after the registration cursor. The inert `acknowledge_in_place` helper
 illustrates one transactional cursor/mail/liveness release and has no public
-handler registration; task .15 owns the actual acknowledgement lifecycle and
+handler registration; combined task .14 owns the actual acknowledgement lifecycle and
 fresh-continuation generation binding. Prime never acknowledges mail.
 
 For an already parked continuation, verified stop/process/claim evidence permits
 one sleeping-to-queued transition and HIBERNATED-to-RESUME_PENDING task change.
-The hibernation owner (.14) owns races before parking; dispatch refuses those
-until its transactional transition callback exists. The resume owner (.15) owns
-launch, fresh-session binding, held mail for the old profile/session and ACK.
+Global direction `msg-0aa6536c439d43e2a99d951a1f6b79b7`, relayed in
+`msg-e01f1f13c3c94afd88b7812f5800b5c6`, folds the former .15/.16/.17 work into
+combined task .14; those former leaves are archived obsolete. Combined .14 owns
+hibernation races before parking, launch, fresh-session binding, held mail for
+the old profile/session, ACK, sleep decisions and eviction. Dispatch refuses
+pre-parking outcomes until that owner's transactional transition callback exists.
 Shared-profile consumer scoping is not implemented by the in-place mail guard.
-There is no reverse dependency on these downstream tasks and no runtime enablement.
+There is no reverse dependency on an archived leaf and no runtime enablement.
+The current chain is 12 → 14 → {18, 19, 20} → 21 → 22. Global owns .22's operator
+migration/config/default activation; .12 introduces no human engineering gate.
 
 ## Claim-8 verification — 2026-10-19
 
@@ -114,6 +124,9 @@ There is no reverse dependency on these downstream tasks and no runtime enableme
 - Final focused checks after the equal-timestamp comment progress fix:
   `test_wait_decisions`, `test_wait_queries` and `test_wait_outcomes`: 135 passed,
   including 27 operational decision/loop tests.
+- After supervisor feedback, the expanded `test_wait_decisions` passed all 28
+  tests, including concurrent same-generation expiry and deciding generation 2
+  after rejecting a stale generation-1 decision.
 - Disposable `e2e-env.sh --reset` and `e2e-smoke.sh`: 20/20 scenarios passed.
   Home `/tmp/aq-e2e-bold-zenith-11-12-claim8`; log
   `/tmp/bold-zenith-11.12-claim8-e2e.log`. The wrapper stopped its disposable daemon.
@@ -125,3 +138,8 @@ dependency/fixture mismatches; these were corrected before the passing reruns.
 The package dependency ratchet and ordinary-mail delivery checks remain intact.
 The daemon refused scoped knowledge enumeration with `record.forbidden`; that
 limitation was reported once and findings were recorded on the task and here.
+The supervisor retained the generation/ownership disposition in canonical
+knowledge record `record:aa118354-9dff-451e-927e-de32526c1b43`; task comments are
+implementation evidence, not worker knowledge-save receipts. Supervisor feedback
+was consumed before close, and the requested same-generation concurrency and
+generation-2 decision regressions were added without a production-code change.

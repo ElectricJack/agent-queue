@@ -1,5 +1,6 @@
 """Operational deadlines never wake workers; only fenced supervisor decisions do."""
 
+import asyncio
 import json
 from unittest.mock import AsyncMock
 
@@ -102,10 +103,36 @@ async def test_extend_preserves_age_receipt_ceiling_and_allows_next_incident(env
     assert len(incidents) == 2
     second = next(row for row in incidents if row["generation"] == 2)
     assert second["original_age_seconds"] == 180
-    assert second["prior_escalation_id"] == incidents[0]["id"]
+    assert second["prior_escalation_id"] == next(row["id"] for row in incidents
+                                                if row["generation"] == 1)
     assert len(await records(env, escalations)) == 2
     assert not (await decide(service, receipt, "wake", expected_generation=1))["success"]
     assert (await records(env))[0]["outcome"] == "pending"
+    assert (await decide(service, receipt, "wake", expected_generation=2))["success"]
+    assert (await records(env))[0]["outcome"] == "cancelled"
+    resolved = {row["id"]: row for row in await records(env, escalations)}
+    assert resolved[first["id"]]["terminal_outcome"] == "extend"
+    assert all(row["state"] == "cancelled" for row in resolved.values())
+
+
+async def test_same_deadline_generation_concurrently_creates_one_incident(env):
+    now = [NOW + 60]
+    service = service_for(env, now)
+    receipt = await waiting(env, escalate_after_seconds=60)
+    assert await service.lease()
+    args = {"wait_id": receipt["wait_id"], "deadline_type": "escalation", "generation": 1}
+    results = await asyncio.gather(*(service.command("wait_deadline_fire", args) for _ in range(2)))
+    assert sum(result["success"] for result in results) == 1, results
+    assert next(result for result in results if not result["success"])["error_code"] == (
+        "wait.deadline_stale"
+    )
+    assert len(await records(env, escalations)) == len(await records(env, wait_escalations)) == 1
+    notices = await records(env, messages)
+    assert len(notices) == 1 and notices[0]["body_kind"] == "wait_escalation"
+    assert not await records(env, escalation_deliveries)
+    wait = (await records(env))[0]
+    assert wait["outcome"] == "pending" and wait["created_at"] == NOW
+    assert wait["decision_inputs"]["registration_receipt"] == receipt
 
 
 async def test_wake_is_cancelled_one_envelope_held_mail_and_exemption_until_ack(env, monkeypatch):
