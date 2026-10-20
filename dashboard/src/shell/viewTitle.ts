@@ -67,6 +67,8 @@ export function routeTitle(pathname: string, search: string, names: TitleNames =
       return id ? `Playbook ${id}` : "Playbooks";
     case "settings":
       return ["Settings", id ? SETTINGS_SECTIONS[id] ?? id : null].filter(Boolean).join(" · ");
+    case "waiting":
+      return "Waiting on";
     case "metrics":
       return "Metrics";
     case "host-shell":

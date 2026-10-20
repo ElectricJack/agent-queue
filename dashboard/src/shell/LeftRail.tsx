@@ -3,6 +3,7 @@ import { useCallback, useRef, useState, type MouseEvent } from "react";
 import {
   Squares2X2Icon,
   ChartBarIcon,
+  ClockIcon,
   CommandLineIcon,
   Cog6ToothIcon,
   ChevronDownIcon,
@@ -158,6 +159,10 @@ export default function LeftRail({ variant = "column", onClose }: { variant?: "c
               />
             )}
           </section>
+          <NavLink to="/waiting" data-listnav="1" data-primary-control className={({ isActive }) => linkClass(isActive)}>
+            <ClockIcon className="h-4 w-4" />
+            <span>Waiting on</span>
+          </NavLink>
           <NavLink to="/metrics" data-listnav="1" data-primary-control className={({ isActive }) => linkClass(isActive)}>
             <ChartBarIcon className="h-4 w-4" />
             <span>Metrics</span>
