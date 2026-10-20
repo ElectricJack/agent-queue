@@ -1260,8 +1260,11 @@ class AuthenticatedGitHubObserver:
                     classification="none" if missing_push else (
                         "pending" if workflow_records or selected else "none"
                     ),
-                    details=({"missing_push_run": True} if missing_push else
-                             {"missing_pr_run": True} if missing_pr else {}),
+                    details={
+                        "missing_required_checks": tuple(missing),
+                        **({"missing_push_run": True} if missing_push else
+                           {"missing_pr_run": True} if missing_pr else {}),
+                    },
                 )
             for record in expected_runs:
                 suite_id = _strict_int(record.get("check_suite_id"))

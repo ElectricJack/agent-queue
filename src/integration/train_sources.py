@@ -745,6 +745,7 @@ class DatabaseBatches:
         if (current is not None and frozen_members
                 and not (current.epic_sync or current.epic_refresh)
                 and target.kind != "promotion"
+                and not snapshot.error and snapshot.target_oid
                 and all([await snapshot.contains_source(m.task_id, m.source_sha, m.base_sha)
                          is True for m in frozen_members])):
             # Historical delivery precedes fresh source admission: a PR may
