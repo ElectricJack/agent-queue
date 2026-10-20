@@ -1,4 +1,4 @@
-"""Verified registration and source races on disposable PostgreSQL."""
+"""Verified registration, source races, and outbox atomicity on disposable PostgreSQL."""
 
 import asyncio
 from dataclasses import replace

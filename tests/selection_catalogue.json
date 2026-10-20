@@ -55,6 +55,7 @@
         "tests/test_wait_queries.py",
         "tests/test_wait_resource_sources.py",
         "tests/test_wait_source_queries.py",
+        "tests/test_wait_surfaces.py",
         "tests/test_waits.py"
       ]
     },
@@ -9017,7 +9018,7 @@
         "integration-ownership"
       ],
       "default_arm": true,
-      "digest": "sha256:557135f7f39c62d3be00818ae9dc28de97a43c96f3a590f17dd691e5f32612ba",
+      "digest": "sha256:a3f67fae450f8e4d3119a84bcbae4ebe12bbdf86ef5a2803d4e986e7ff58f25c",
       "imports": [
         "src.database.tables",
         "src.integration.models",
@@ -9025,7 +9026,8 @@
         "src.models"
       ],
       "markers": [
-        "asyncio"
+        "asyncio",
+        "parametrize"
       ],
       "summary": "Fenced ownership for repository-qualified integration branches."
     },
@@ -10130,7 +10132,7 @@
         "managed-jobs"
       ],
       "default_arm": true,
-      "digest": "sha256:fd4043500239844e062d45cd80b89de9ea9a0995e5a3c28dc973b6d3b724e12d",
+      "digest": "sha256:da5efd3ecfcf6fdb119cdff62377c8afd0cd4ec43b7a18b612dce14d64549984",
       "imports": [
         "src.agent_waits",
         "src.api.codegen",
@@ -10146,10 +10148,14 @@
         "src.commands",
         "src.commands.contracts",
         "src.commands.contracts.job",
+        "src.commands.principal",
+        "src.commands.wait_v2_commands",
         "src.config",
+        "src.database.queries.wait_queries",
         "src.database.tables",
         "src.event_bus",
         "src.handoffs",
+        "src.integration.checks",
         "src.jobs.result",
         "src.jobs.service",
         "src.mcp_registration",
@@ -10157,7 +10163,10 @@
         "src.models",
         "src.prime.sections",
         "src.profiles.parser",
-        "src.sessions.context"
+        "src.sessions.context",
+        "src.waits.conditions",
+        "src.waits.registry",
+        "src.waits.watchers.ci"
       ],
       "markers": [
         "parametrize"
@@ -18844,7 +18853,7 @@
         "agent-waits"
       ],
       "default_arm": true,
-      "digest": "sha256:aa841352a2d1a5caf22a0386941082f39e7ddc954bb4afcd2e5d696eb1ecfd0c",
+      "digest": "sha256:cb573963c10698eace2f4b361b9155ca022bb53e09331eb57b6d7c356f7b3e53",
       "imports": [
         "src.database",
         "src.database.queries.wait_queries",
@@ -18858,7 +18867,7 @@
       "markers": [
         "parametrize"
       ],
-      "summary": "Verified registration and source races on disposable PostgreSQL."
+      "summary": "Verified registration, source races, and outbox atomicity on disposable PostgreSQL."
     },
     "tests/test_wait_resource_sources.py": {
       "areas": [
@@ -18895,6 +18904,26 @@
         "parametrize"
       ],
       "summary": "Source outbox atomicity, commit ordering, watermark and safe retention."
+    },
+    "tests/test_wait_surfaces.py": {
+      "areas": [
+        "agent-waits"
+      ],
+      "default_arm": true,
+      "digest": "sha256:3e6555214a794f70a08aa3377a25b72ad911a5749547b63f5f62f423b2cd4466",
+      "imports": [
+        "src.api.codegen",
+        "src.api.dependencies",
+        "src.api.models.wait",
+        "src.cli.waits",
+        "src.commands.contracts.wait_v2",
+        "src.database.queries.wait_queries",
+        "src.database.tables"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "The persisted wait projection survives HTTP and human CLI rendering."
     },
     "tests/test_waits.py": {
       "areas": [

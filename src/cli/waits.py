@@ -258,6 +258,80 @@ def wait_cancel(ctx, wait_id, claim_epoch, schema_version):
     emit(ctx, _execute(ctx, "wait_cancel", params))
 
 
+def _render_wait(record):
+    lifecycle = record.get("lifecycle") or record.get("outcome", "pending")
+    click.echo(f"Wait {record.get('wait_id', '—')} · {lifecycle}")
+    owner = record.get("owner", {})
+    if owner:
+        click.echo(f"Owner: {owner.get('kind')}:{owner.get('id')}")
+    age_seconds = record.get("age_seconds")
+    age = (
+        "age_unknown"
+        if record.get("age_unknown") or age_seconds is None
+        else f"{age_seconds:.0f}s"
+    )
+    click.echo(f"Age: {age}")
+    click.echo("Verified evidence:")
+    click.echo(json.dumps(record.get("verified", record.get("evidence", {})), indent=2))
+    click.echo("Agent commentary:")
+    click.echo(record.get("claimed") or "None")
+    for label, key in (
+        ("Sleep decision", "sleep"),
+        ("Effective priority", "effective_priority"),
+        ("Deadlines", "deadlines"),
+        ("Blocker chain", "chain"),
+        ("Escalation", "escalation"),
+        ("Reservations", "reservations"),
+        ("Continuation", "continuation"),
+    ):
+        if record.get(key):
+            click.echo(f"{label}: {json.dumps(record[key], sort_keys=True)}")
+    click.echo(f"Policy layer: {record.get('policy_layer', 'default')}")
+    if record.get("chain_truncated"):
+        click.echo("Blocker chain truncated.")
+
+
+def _render_explain(payload):
+    if payload.get("task"):
+        task = payload["task"]
+        click.echo(f"Task {task['id']}: {task['lifecycle']}")
+        click.echo(f"Priority: base {task['base_priority']}, effective {task['effective_priority']}")
+        if task.get("donor_task_id"):
+            click.echo(f"Donor: {task['donor_task_id']} via {json.dumps(task.get('donor_path', []))}")
+    records = [payload["explanation"]] if payload.get("explanation") else payload.get("waits", [])
+    for record in records:
+        _render_wait(record)
+    if not records:
+        click.echo("No active wait records.")
+    if payload.get("truncated"):
+        click.echo(f"Waits truncated: showing {len(records)} of {payload.get('total', 'unknown')}.")
+
+
+def _render_graph(payload):
+    graph = payload.get("graph") or payload
+    for project in graph.get("projects", []):
+        click.echo(f"Project {project['project_id']}: {project.get('total_waits', 0)} pending waits")
+        for record in project.get("waits", []):
+            _render_wait(record)
+        for label, key in (
+            ("Counts by kind and decision", "counts"),
+            ("Longest chains", "longest_chains"),
+            ("Deadlocks", "deadlocks"),
+            ("Escalated waits", "escalated_waits"),
+            ("Branch blockers and reservations", "branch_blockers"),
+            ("Held message backlog", "held_message_backlog"),
+        ):
+            if project.get(key):
+                click.echo(f"{label}: {json.dumps(project[key], sort_keys=True)}")
+        truncated = [key for key, value in project.get("truncated", {}).items() if value]
+        if truncated:
+            click.echo(f"Project results truncated: {', '.join(truncated)}.")
+    if not graph.get("projects"):
+        click.echo("No project waits.")
+    if graph.get("truncated"):
+        click.echo("Project list truncated.")
+
+
 @wait.command("explain")
 @click.argument("wait_id", required=False)
 @click.option("--task", "task_id", default=None)
@@ -272,16 +346,7 @@ def wait_explain(ctx, wait_id, task_id, project_id, history):
     params = {"wait_id": wait_id, "task_id": task_id, "project_id": project_id, "history": history}
     result = _execute(ctx, "wait_explain", {k: v for k, v in params.items() if v is not None})
 
-    def render(payload):
-        for record in (
-            [payload["explanation"]] if payload.get("explanation") else payload.get("waits", [])
-        ):
-            click.echo("Verified evidence:")
-            click.echo(json.dumps(record.get("verified", record.get("evidence", {})), indent=2))
-            click.echo("Agent commentary:")
-            click.echo(record.get("claimed") or "None")
-
-    emit(ctx, result, render=render)
+    emit(ctx, result, render=_render_explain)
 
 
 @wait.command("graph")
@@ -299,7 +364,7 @@ def wait_graph(ctx, project_id, fleet, costs):
         params["costs"] = True
     if project_id:
         params["project_id"] = project_id
-    emit(ctx, _execute(ctx, "wait_graph", params))
+    emit(ctx, _execute(ctx, "wait_graph", params), render=_render_graph)
 
 
 @wait.command("checkpoint")

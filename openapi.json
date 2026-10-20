@@ -82398,6 +82398,98 @@
         ],
         "title": "WaitCancelArgs"
       },
+      "WaitChainEdge": {
+        "properties": {
+          "id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Id"
+          },
+          "wait_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Wait Id"
+          },
+          "from": {
+            "type": "string",
+            "title": "From"
+          },
+          "to": {
+            "type": "string",
+            "title": "To"
+          },
+          "relation": {
+            "type": "string",
+            "title": "Relation"
+          },
+          "source_revision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Revision"
+          },
+          "active": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Active"
+          },
+          "created_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created At"
+          },
+          "cleared_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cleared At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "from",
+          "to",
+          "relation"
+        ],
+        "title": "WaitChainEdge"
+      },
       "WaitCheckpointArgs": {
         "properties": {
           "project_id": {
@@ -82552,6 +82644,57 @@
         ],
         "title": "WaitCounterfactual",
         "description": "Estimated avoided monitoring tokens, never measured token savings."
+      },
+      "WaitDeadline": {
+        "properties": {
+          "type": {
+            "type": "string",
+            "title": "Type"
+          },
+          "due_at": {
+            "type": "number",
+            "title": "Due At"
+          },
+          "generation": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Generation"
+          },
+          "fired_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fired At"
+          },
+          "cancelled_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cancelled At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "type",
+          "due_at"
+        ],
+        "title": "WaitDeadline"
       },
       "WaitDecideArgs": {
         "properties": {
@@ -82732,6 +82875,74 @@
         ],
         "title": "WaitDurationMetrics"
       },
+      "WaitEffectivePriority": {
+        "properties": {
+          "value": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Value"
+          },
+          "base": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Base"
+          },
+          "donor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Donor"
+          },
+          "donor_path": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Donor Path"
+          },
+          "graph_version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Graph Version"
+          },
+          "computed_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Computed At"
+          }
+        },
+        "type": "object",
+        "title": "WaitEffectivePriority"
+      },
       "WaitExplainArgs": {
         "properties": {
           "project_id": {
@@ -82811,6 +83022,191 @@
           "explanation": {
             "anyOf": [
               {
+                "$ref": "#/components/schemas/WaitExplanation"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "waits": {
+            "items": {
+              "$ref": "#/components/schemas/WaitExplanation"
+            },
+            "type": "array",
+            "title": "Waits"
+          },
+          "task": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WaitTaskExplanation"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total",
+            "default": 0
+          },
+          "offset": {
+            "type": "integer",
+            "title": "Offset",
+            "default": 0
+          },
+          "truncated": {
+            "type": "boolean",
+            "title": "Truncated",
+            "default": false
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "WaitExplainResponse"
+      },
+      "WaitExplanation": {
+        "properties": {
+          "wait_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Wait Id"
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id"
+          },
+          "owner": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object",
+            "title": "Owner"
+          },
+          "lifecycle": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lifecycle"
+          },
+          "outcome": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Outcome"
+          },
+          "result_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Result Ref"
+          },
+          "age_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Age Seconds"
+          },
+          "age_unknown": {
+            "type": "boolean",
+            "title": "Age Unknown",
+            "default": false
+          },
+          "verified": {
+            "$ref": "#/components/schemas/WaitVerifiedEvidence"
+          },
+          "claimed": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claimed"
+          },
+          "sleep": {
+            "$ref": "#/components/schemas/WaitSleepExplanation"
+          },
+          "deadlines": {
+            "items": {
+              "$ref": "#/components/schemas/WaitDeadline"
+            },
+            "type": "array",
+            "title": "Deadlines"
+          },
+          "chain": {
+            "items": {
+              "$ref": "#/components/schemas/WaitChainEdge"
+            },
+            "type": "array",
+            "title": "Chain"
+          },
+          "chain_truncated": {
+            "type": "boolean",
+            "title": "Chain Truncated",
+            "default": false
+          },
+          "chain_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Chain At"
+          },
+          "edge_history": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Edge History"
+          },
+          "effective_priority": {
+            "$ref": "#/components/schemas/WaitEffectivePriority"
+          },
+          "escalation": {
+            "anyOf": [
+              {
                 "additionalProperties": true,
                 "type": "object"
               },
@@ -82818,20 +83214,44 @@
                 "type": "null"
               }
             ],
-            "title": "Explanation"
+            "title": "Escalation"
           },
-          "waits": {
+          "escalations": {
             "items": {
               "additionalProperties": true,
               "type": "object"
             },
             "type": "array",
-            "title": "Waits"
+            "title": "Escalations"
+          },
+          "reservations": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Reservations"
+          },
+          "continuation": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Continuation"
+          },
+          "policy_layer": {
+            "type": "string",
+            "title": "Policy Layer",
+            "default": "default"
           }
         },
-        "additionalProperties": false,
         "type": "object",
-        "title": "WaitExplainResponse"
+        "title": "WaitExplanation"
       },
       "WaitFactsDTO": {
         "properties": {
@@ -83013,24 +83433,184 @@
         "type": "object",
         "title": "WaitGraphArgs"
       },
+      "WaitGraphChain": {
+        "properties": {
+          "components": {
+            "items": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "type": "array",
+            "title": "Components"
+          },
+          "length": {
+            "type": "integer",
+            "title": "Length"
+          },
+          "truncated": {
+            "type": "boolean",
+            "title": "Truncated",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "components",
+          "length"
+        ],
+        "title": "WaitGraphChain"
+      },
+      "WaitGraphProject": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "title": "Project Id"
+          },
+          "counts": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Counts"
+          },
+          "waits": {
+            "items": {
+              "$ref": "#/components/schemas/WaitExplanation"
+            },
+            "type": "array",
+            "title": "Waits"
+          },
+          "total_waits": {
+            "type": "integer",
+            "title": "Total Waits",
+            "default": 0
+          },
+          "escalated_waits": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Escalated Waits"
+          },
+          "branch_blockers": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Branch Blockers"
+          },
+          "held_message_backlog": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Held Message Backlog"
+          },
+          "longest_chains": {
+            "items": {
+              "$ref": "#/components/schemas/WaitGraphChain"
+            },
+            "type": "array",
+            "title": "Longest Chains"
+          },
+          "deadlocks": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Deadlocks"
+          },
+          "truncated": {
+            "additionalProperties": {
+              "type": "boolean"
+            },
+            "type": "object",
+            "title": "Truncated"
+          }
+        },
+        "type": "object",
+        "required": [
+          "project_id"
+        ],
+        "title": "WaitGraphProject"
+      },
+      "WaitGraphProjection": {
+        "properties": {
+          "projects": {
+            "items": {
+              "$ref": "#/components/schemas/WaitGraphProject"
+            },
+            "type": "array",
+            "title": "Projects"
+          },
+          "total_projects": {
+            "type": "integer",
+            "title": "Total Projects",
+            "default": 0
+          },
+          "offset": {
+            "type": "integer",
+            "title": "Offset",
+            "default": 0
+          },
+          "truncated": {
+            "type": "boolean",
+            "title": "Truncated",
+            "default": false
+          }
+        },
+        "type": "object",
+        "title": "WaitGraphProjection"
+      },
       "WaitGraphResponse": {
         "properties": {
+          "projects": {
+            "items": {
+              "$ref": "#/components/schemas/WaitGraphProject"
+            },
+            "type": "array",
+            "title": "Projects"
+          },
+          "total_projects": {
+            "type": "integer",
+            "title": "Total Projects",
+            "default": 0
+          },
+          "offset": {
+            "type": "integer",
+            "title": "Offset",
+            "default": 0
+          },
+          "truncated": {
+            "type": "boolean",
+            "title": "Truncated",
+            "default": false
+          },
           "success": {
             "type": "boolean",
             "title": "Success",
             "default": true
           },
           "graph": {
-            "additionalProperties": true,
-            "type": "object",
-            "title": "Graph"
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WaitGraphProjection"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "additionalProperties": false,
         "type": "object",
-        "required": [
-          "graph"
-        ],
         "title": "WaitGraphResponse"
       },
       "WaitLegacyBridgeArgs": {
@@ -84014,6 +84594,39 @@
         "type": "object",
         "title": "WaitResponse"
       },
+      "WaitSleepExplanation": {
+        "properties": {
+          "decision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decision"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "inputs": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Inputs"
+          }
+        },
+        "type": "object",
+        "title": "WaitSleepExplanation"
+      },
       "WaitSlotSeconds": {
         "properties": {
           "condition": {
@@ -84041,6 +84654,171 @@
         },
         "type": "object",
         "title": "WaitSlotSeconds"
+      },
+      "WaitTaskExplanation": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "lifecycle": {
+            "type": "string",
+            "title": "Lifecycle"
+          },
+          "base_priority": {
+            "type": "integer",
+            "title": "Base Priority"
+          },
+          "effective_priority": {
+            "type": "integer",
+            "title": "Effective Priority"
+          },
+          "donor_task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Donor Task Id"
+          },
+          "donor_path": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Donor Path"
+          },
+          "graph_version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Graph Version"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "lifecycle",
+          "base_priority",
+          "effective_priority"
+        ],
+        "title": "WaitTaskExplanation"
+      },
+      "WaitVerifiedEvidence": {
+        "properties": {
+          "kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Kind"
+          },
+          "condition": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Condition"
+          },
+          "state": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "State"
+          },
+          "evidence": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evidence"
+          },
+          "source_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Key"
+          },
+          "source_generation": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Generation"
+          },
+          "source_revision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Revision"
+          },
+          "observed_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Observed At"
+          },
+          "freshness_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Freshness Seconds"
+          },
+          "facts": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Facts"
+          }
+        },
+        "type": "object",
+        "title": "WaitVerifiedEvidence",
+        "description": "AQ observations only; claimed commentary is never a source fact."
       },
       "WaitWakes": {
         "properties": {
