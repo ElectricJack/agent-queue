@@ -52,7 +52,7 @@ class RepositoryAdapter(Adapter):
         facts = snapshot.observation.facts
         if facts.get("repository_id") != cond.parameters["repository_id"]:
             unresolved("watcher did not verify the requested repository")
-        if not facts.get("exists_on_origin"):
+        if not facts.get("exists_on_origin") and snapshot.observation.state != "unavailable":
             unresolved("watcher did not verify the head on origin", retry_after=30)
         return snapshot
 
@@ -119,7 +119,8 @@ class CIAdapter(RepositoryAdapter):
             if (
                 facts.get("head_sha") != cond.parameters["head_sha"]
                 or facts.get(identity) != cond.parameters[identity]
-                or not facts.get("identity_verified")
+                or (not facts.get("identity_verified")
+                    and snapshot.observation.state != "unavailable")
             ):
                 unresolved("watcher did not verify the exact check identity")
             if (
