@@ -778,6 +778,13 @@ _CANONICAL_PAYLOADS["integration.resolution_push_observed"][
 # ``cleanup_requested``) and the cascade's ``route_needed.py``.
 _CANONICAL_PAYLOADS.update(
     {
+        # TrainLaneFactory._checks_changed invalidates exact-head readiness.
+        "integration.readiness_changed": {
+            "project_id": "proj-1",
+            "repository_id": "repo-1",
+            "head_sha": "a" * 40,
+            "reason": "checks_changed",
+        },
         "integration.completed_container_checkpoint_recovered": {
             "id": "recovery-1", "operator_id": "human:local-operator",
             "reason": "repair accepted final source", "task_id": "container-1",
