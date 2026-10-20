@@ -7663,7 +7663,7 @@ async def test_disabled_workspace_keeps_held_claim_but_drains_before_next(handle
     await mktask(db, "kind-task", profile_id="worker")
     sid, _ = await pool_session(db, tmp_path)
     worker = scoped(handler, sid)
-    assert (await worker._cmd_task_claim({"next": True}))["result"] == "claimed"
+    assert (await settled_claim(worker, {"next": True}))["result"] == "claimed"
     await db.update_workspace("ws-agent-1", enabled=False)
     assert (await worker._cmd_task_claim({"next": True}))["result"] == "claimed"
     assert (await db.get_workspace("ws-agent-1")).locked_by_task_id == "kind-task"

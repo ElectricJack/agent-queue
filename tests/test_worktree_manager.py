@@ -1870,7 +1870,10 @@ class TestRestoreSlotAfterTask:
         asyncio.run(mgr.restore_slot_after_task(slot, task_id="tsk-1"))
         assert _git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=d) == "aq/tsk-1"
 
-    def test_a_stale_index_lock_does_not_block_the_restore(self, mgr, base_ws, kind):
+    @pytest.mark.parametrize("owner", ["abandoned", "live", "unknown"])
+    def test_a_stale_index_lock_does_not_block_the_restore(
+        self, mgr, base_ws, kind, tmp_path, monkeypatch, owner,
+    ):
         """F14: a killed agent leaves ``.git/worktrees/<slot>/index.lock``,
         which is *not* under ``<slot>/.git`` — that is a file, not a dir."""
         slot, d, _c = self._dirty_slot(mgr, base_ws, kind)
@@ -1878,10 +1881,38 @@ class TestRestoreSlotAfterTask:
         assert git_dir.is_dir() and git_dir != d / ".git"
         (git_dir / "index.lock").write_text("")
 
+        # Exercise real ownership inspection against explicit process evidence.
+        # Ambient Git processes can legitimately veto cleanup on a shared runner.
+        from src.git import locks
+
+        proc_root = tmp_path / "proc"
+        process = proc_root / "123"
+        process.mkdir(parents=True)
+        name = "editor" if owner == "abandoned" else "git"
+        (process / "comm").write_text(name)
+        (process / "stat").write_text(f"123 ({name}) S 1 2 3")
+        (process / "cmdline").write_bytes(name.encode() + b"\0status\0")
+        (process / "environ").write_bytes(b"")
+        (process / "fd").mkdir()
+        if owner != "unknown":
+            (process / "cwd").symlink_to(d, target_is_directory=True)
+        inspect_owner = locks._live_lock_owner
+
+        def controlled_processes(common, identities):
+            assert common == git_dir.parent.parent.resolve()
+            info = (git_dir / "index.lock").stat()
+            assert (info.st_dev, info.st_ino) in identities
+            return inspect_owner(common, identities, proc_root=proc_root)
+
+        monkeypatch.setattr(locks, "_live_lock_owner", controlled_processes)
         asyncio.run(mgr.restore_slot_after_task(slot, task_id="tsk-1"))
 
-        assert not (git_dir / "index.lock").exists()
-        assert _git(["status", "--porcelain"], cwd=d) == ""
+        if owner == "abandoned":
+            assert not (git_dir / "index.lock").exists()
+            assert _git(["status", "--porcelain"], cwd=d) == ""
+        else:
+            assert (git_dir / "index.lock").exists()
+            assert (d / "README.md").read_text() == "unfinished"
 
     @pytest.mark.parametrize("dirty", [False, True])
     def test_failed_close_preserves_the_published_tip_until_handoff(
