@@ -3799,6 +3799,107 @@ async def test_epic_refresh_conflict_files_ordinary_repair_on_epic(
     git(origin.url, "merge-base", "--is-ancestor", repaired, "aq/epic")
 
 
+async def _refresh_repaired_on_epic(world):
+    """A refresh repair published the resolved merge into the epic itself."""
+    from src.integration.stacked_branches import EpicRefresh
+
+    db, origin = world.db, world.origin
+    _, _prerequisite, target = await cross_epic_world(world)
+    git(origin.clone, "checkout", "-B", "aq/epic", "origin/aq/epic")
+    (origin.clone / "base.txt").write_text("epic edit\n")
+    git(origin.clone, "commit", "-am", "epic edit")
+    git(origin.clone, "push", "origin", "aq/epic")
+    origin.land("prerequisite")
+    (origin.clone / "base.txt").write_text("default edit\n")
+    git(origin.clone, "commit", "-am", "default edit")
+    git(origin.clone, "push", "origin", "main")
+    transport = LocalGit(Path(origin.url))
+    train, _checks, _ = lane(world, transport, target=target)
+    pending = await EpicRefresh(db, train).refresh("epic", dry_run=False)
+    assert pending["state"] == "repair", pending
+    owner = await BranchLock(db).get(BranchKey(repository_id="r", branch=target.target_ref))
+    git(origin.clone, "checkout", "-B", "aq/epic", "origin/aq/epic")
+    await transport.arun_git_result(["merge", "--no-commit", "origin/main"], cwd=origin.clone)
+    (origin.clone / "base.txt").write_text("resolved epic and default edit\n")
+    git(origin.clone, "add", "base.txt")
+    git(origin.clone, "commit", "-m", "resolve default refresh")
+    repaired = git(origin.clone, "rev-parse", "HEAD")
+    locks = BranchLock(db)
+    await locks.fenced_push(owner.grant(), git=transport, checkout_path=str(origin.clone),
+        repository=GitHubRepositoryBinding(123, "test/repo"), tip_oid=repaired,
+        expected_old_oid=pending["target_sha"])
+    await db.update_task(owner.holder, status=TaskStatus.COMPLETED)
+    await locks.release(owner.grant())
+    checking = await EpicRefresh(db, train).refresh("epic", dry_run=False)
+    # The epic now contains the default head, but the train has not promoted
+    # this refresh: its merged tree still owes the candidate checks.
+    assert checking["state"] == "testing" and checking["target_sha"] == repaired
+    assert (await db.get_integration_batch(pending["batch_id"]))["lifecycle"] == "sealed"
+    return train, target, pending["batch_id"], repaired
+
+
+@pytest.mark.parametrize("control", ["abort", "settle"])
+async def test_repaired_epic_refresh_has_one_state_for_supervisor_controls(world, control):
+    """Default-head containment is not a refresh's promotion; both controls resolve it."""
+    db = world.db
+    train, target, batch_id, repaired = await _refresh_repaired_on_epic(world)
+    controls = TrainControls(db, train=train)
+    assert "frontier_epic_refresh_pending" in {
+        item["code"] for item in await db.claim_frontier_exclusions("child")}
+    if control == "abort":
+        preview = await controls.abort_batch(batch_id, dry_run=True, operator_id="operator",
+                                             reason="")
+        assert preview["outcome"] == "preview" and preview["target_sha"] == repaired
+        applied = await controls.abort_batch(batch_id, dry_run=False, operator_id="operator",
+                                             reason="refresh red on its own merge")
+        assert applied["outcome"] == "aborted"
+        assert (await db.get_integration_batch(batch_id))["lifecycle"] == "aborted"
+    else:
+        preview = await controls.settle_batch(batch_id, dry_run=True, expected_target_sha=None,
+                                              operator_id="operator", reason="")
+        assert (preview["outcome"], preview["target_sha"]) == ("preview", repaired)
+        applied = await controls.settle_batch(batch_id, dry_run=False,
+                                              expected_target_sha=repaired,
+                                              operator_id="operator",
+                                              reason="epic already contains the default head")
+        assert applied["outcome"] == "settled"
+        row = await db.get_integration_batch(batch_id)
+        assert (row["lifecycle"], row["final_main_sha"]) == ("promoted", repaired)
+    assert git(world.origin.url, "rev-parse", "aq/epic") == repaired
+    assert await DatabaseBatches(db).current(target) is None
+    assert "frontier_epic_refresh_pending" not in {
+        item["code"] for item in await db.claim_frontier_exclusions("child")}
+
+
+async def test_epic_refresh_controls_keep_the_trains_delivery_rule(world):
+    """Settlement needs the default head in the epic; abort yields to delivery."""
+    from src.integration.train_controls import TrainControlError
+
+    db, origin = world.db, world.origin
+    _epic, _prerequisite, target = await cross_epic_world(world)
+    origin.land("prerequisite")
+    default = git(origin.url, "rev-parse", "main")
+    train, _checks, _ = lane(world, LocalGit(Path(origin.url)), target=target)
+    controls = TrainControls(db, train=train)
+    pending = await controls.refresh_epic("epic", dry_run=False, operator_id="operator")
+    assert pending["state"] == "testing"
+    with pytest.raises(TrainControlError) as refused:
+        await controls.settle_batch(pending["batch_id"], dry_run=True, expected_target_sha=None,
+                                    operator_id="operator", reason="")
+    assert refused.value.outcome == "target_not_settled"
+    # The epic becomes the default head's exact tree: the train delivers this
+    # refresh on its next visit, so abort refuses exactly as it would after.
+    git(origin.clone, "fetch", "-q", "origin")
+    epic_head = git(origin.clone, "rev-parse", "origin/aq/epic")
+    head = git(origin.clone, "commit-tree", f"{default}^{{tree}}", "-p", epic_head,
+               "-p", default, "-m", "refresh elsewhere")
+    git(origin.clone, "push", "-q", "origin", f"{head}:refs/heads/aq/epic")
+    with pytest.raises(ValueError, match="promoted batch cannot be aborted"):
+        await controls.abort_batch(pending["batch_id"], dry_run=True, operator_id="operator",
+                                   reason="")
+    assert (await db.get_integration_batch(pending["batch_id"]))["lifecycle"] == "sealed"
+
+
 async def test_epic_refresh_serializes_with_open_collection(world):
     from src.integration.stacked_branches import EpicRefresh
 

@@ -19,7 +19,7 @@ from src.database.tables import (
     task_dependencies,
     tasks,
 )
-from src.git.manager import RemoteRefState
+from src.git.manager import GitError, RemoteRefState
 from src.integration.batches import Batch, BatchStore, candidate_ref
 from src.integration.delivery_observer import delivery_targets
 from src.integration.delivery_truth import load_delivery_requests
@@ -33,6 +33,27 @@ class TrainControlError(ValueError):
     def __init__(self, outcome, message):
         super().__init__(message)
         self.outcome = outcome
+
+
+async def _refresh_contains(snapshot, members, *, same_tree=False):
+    """Strict ancestry of each frozen default head in the observed epic.
+
+    ``same_tree`` adds the train's refresh delivery rule: the epic is the
+    default head's exact tree. None is an unavailable observation.
+    """
+    observed = snapshot.observation
+    store, target = str(observed.store), observed.target_oid
+    proofs = []
+    for member in members:
+        proof = await observed.git.ais_ancestor(store, member.source_sha, target, strict=True)
+        if proof and same_tree:
+            try:
+                proof = (await observed.git.atree_sha(store, member.source_sha)
+                         == await observed.git.atree_sha(store, target))
+            except GitError:
+                proof = None
+        proofs.append(proof)
+    return proofs
 
 
 class TrainControls:
@@ -429,7 +450,7 @@ class TrainControls:
         batch = await store.get(batch_id)
         if batch is None:
             raise TrainControlError("unknown_batch", "Git-first batch is missing")
-        if batch.epic_sync or batch.epic_refresh:
+        if batch.epic_sync:
             raise ValueError("settlement requires an ordinary Git-first batch")
         target = TrainTarget(batch.project_id, batch.repository_id, batch.target_ref)
         snapshot = await self.snapshot(self.db, target)
@@ -438,10 +459,12 @@ class TrainControls:
         if expected_target_sha and snapshot.target_oid != expected_target_sha:
             raise ValueError("batch target changed; preview again")
         members = await store.members(batch.id)
-        if not members or not all([
-            await snapshot.contains_source(m.task_id, m.source_sha, m.base_sha) is True
-            for m in members
-        ]):
+        # A refresh settles once the epic has its frozen default head as an
+        # ancestor, however that merge reached the epic; it publishes nothing.
+        proofs = (await _refresh_contains(snapshot, members) if batch.epic_refresh else [
+            await snapshot.contains_source(m.task_id, m.source_sha, m.base_sha) for m in members
+        ])
+        if not members or not all(proof is True for proof in proofs):
             raise TrainControlError("target_not_settled",
                                     "target does not prove every frozen source was delivered")
         observed = snapshot.observation
@@ -507,10 +530,14 @@ class TrainControls:
         # later conflict can publish only some members. Candidate ancestry
         # cannot prove that the batch's complete frozen inputs were promoted.
         members = await store.members(batch_id)
-        proofs = [
+        # A refresh member is the frozen default head, which a refresh repair
+        # publishes into the epic itself. Containment is not this batch's
+        # promotion: only the train's own refresh delivery rule refuses abort.
+        proofs = (await _refresh_contains(snapshot, members, same_tree=True)
+                  if batch.epic_refresh else [
             await snapshot.contains_source(member.task_id, member.source_sha, member.base_sha)
             for member in members
-        ]
+        ])
         if any(proof is None for proof in proofs):
             raise ValueError("batch promotion cannot be observed")
         if members and all(proof is True for proof in proofs):
