@@ -29,6 +29,7 @@ from src.integration.regeneration import (
     GeneratedRegenerationFailure,
     MissingRegenerator,
     RegenerationFailure,
+    generated_paths,
     merge_generated_tree,
     regenerated_tree,
 )
@@ -574,16 +575,26 @@ class GitOperations:
             results.append({"member": member.task_id, "source": member.head_sha,
                             "head": head, "regenerated": regenerated, **evidence})
             current = head
-        if regenerations:
-            files = sorted({path for item in regenerations for path in item["files"]})
+        # Source-only changes can invalidate any derived artifact. Rebuild the
+        # whole registered set once, even if no branch committed generated output.
+        files = set()
+        if results and regenerate_generated:
+            files = await generated_paths(self.git, repo.store, current)
+            files.update(path for item in regenerations for path in item["files"])
+        if files:
+            files = sorted(files)
+            current_tree = await self.git.atree_sha(str(repo.store), current)
             try:
                 with commit_identity(self.git.resolve_commit_identity()):
                     tree = await regenerated_tree(
                         self.git, repo.store,
-                        await self.git.atree_sha(str(repo.store), current),
+                        current_tree,
                         command=repo.regenerate,
                         timeout_seconds=repo.regenerate_timeout_seconds,
                     )
+            except MissingRegenerator as exc:
+                return {"outcome": "no_regenerator", "head": base_sha,
+                        "members": [], "reason": exc.reason}
             except RegenerationFailure as exc:
                 if exc.retryable:
                     raise GeneratedRegenerationFailure(
@@ -599,13 +610,16 @@ class GitOperations:
                         "error": str(exc)[:4000]}
             # Fold the combined sweep into the final unpublished merge. Keep its
             # exact parents, source trailers and merge-base evidence intact.
-            parents, message, index = last_merge
-            stamp = f"@{int(created_at)} +0000"
-            current = await self.run(
-                repo, *self.git.resolve_commit_identity().config_args(),
-                "commit-tree", tree, *parents, "-m", message,
-                env={"GIT_AUTHOR_DATE": stamp, "GIT_COMMITTER_DATE": stamp},
+            parents, message, index = last_merge or (
+                ["-p", current], "Rebuild generated artifacts from batch sources", 0,
             )
+            if last_merge is not None or tree != current_tree:
+                stamp = f"@{int(created_at)} +0000"
+                current = await self.run(
+                    repo, *self.git.resolve_commit_identity().config_args(),
+                    "commit-tree", tree, *parents, "-m", message,
+                    env={"GIT_AUTHOR_DATE": stamp, "GIT_COMMITTER_DATE": stamp},
+                )
             key = hashlib.sha256(f"{base_sha}:{current}:regenerated".encode()).hexdigest()
             await self.run(repo, "update-ref", f"refs/aq/batch-objects/{key}", current)
             for item in results[index:]:

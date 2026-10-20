@@ -589,7 +589,8 @@ async def test_generated_conflict_rebuilds_merged_sources_and_rejects_stray_writ
     assert "non-generated" in result.detail["reason"]
 
 
-async def test_unconfigured_regenerator_is_a_blocker_not_a_member_conflict(setup):
+@pytest.mark.parametrize("changed_output", [True, False])
+async def test_unconfigured_regenerator_is_a_blocker_not_a_member_conflict(setup, changed_output):
     """A repository with no regenerate command is a project configuration gap.
 
     The member's content is fine, so the merge must not park it: the batch
@@ -603,8 +604,12 @@ async def test_unconfigured_regenerator_is_a_blocker_not_a_member_conflict(setup
         base=base,
     )
     git(repo.store, "push", "origin", f"{common}:main")
-    a = commit(repo.store, {"generated.txt": "ours\n", "a.txt": "a\n"}, base=common)
-    b = commit(repo.store, {"generated.txt": "theirs\n", "b.txt": "b\n"}, base=common)
+    a = commit(repo.store, {"a.txt": "a\n", **(
+        {"generated.txt": "ours\n"} if changed_output else {}
+    )}, base=common)
+    b = commit(repo.store, {"b.txt": "b\n", **(
+        {"generated.txt": "theirs\n"} if changed_output else {}
+    )}, base=common)
     unconfigured = replace(repo, regenerate=None)
 
     async def resolver(_):
@@ -615,10 +620,10 @@ async def test_unconfigured_regenerator_is_a_blocker_not_a_member_conflict(setup
                                       merge_args(s, common, a, b).members,
                                       created_at=NOW)
     assert merged["outcome"] == "no_regenerator", merged
-    # The first member merged on its own; the second is the one whose generated
-    # overlap cannot be rebuilt, and its own source is named.
-    assert [member["member"] for member in merged["members"]] == ["t0"]
-    assert merged["member"] == "t1"
+    # Even the first member's output must be regenerated from combined sources.
+    assert merged["members"] == []
+    if changed_output:
+        assert merged["member"] == "t0"
     assert is_valid_git_oid(merged["head"])
 
     result = await ops.merge_members(s, merge_args(s, common, a, b))
