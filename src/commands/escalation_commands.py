@@ -211,15 +211,21 @@ class EscalationCommandsMixin:
             from sqlalchemy import select
             from src.database.tables import wait_records
 
-            wait_id, separator, generation = args["source_identity"].rpartition(":")
-            wait = (await conn.execute(select(wait_records).where(
-                wait_records.c.id == wait_id, wait_records.c.project_id == project_id,
-                wait_records.c.outcome == "pending",
-            ))).mappings().first()
-            if (not separator or not generation.isdecimal() or int(generation) < 1
-                    or not wait or args["incident_key"] != f"wait:{wait_id}:{generation}"
-                    or task_id != (wait["owner_id"] if wait["owner_kind"] == "task" else None)):
-                return _error("invalid_binding", "wait incident does not match its generation")
+            if args["source_identity"].startswith("continuation:"):
+                from src.wait_runtime.hibernate import validate_hold_binding
+
+                if not await validate_hold_binding(conn, args):
+                    return _error("invalid_binding", "continuation incident binding changed")
+            else:
+                wait_id, separator, generation = args["source_identity"].rpartition(":")
+                wait = (await conn.execute(select(wait_records).where(
+                    wait_records.c.id == wait_id, wait_records.c.project_id == project_id,
+                    wait_records.c.outcome == "pending",
+                ))).mappings().first()
+                if (not separator or not generation.isdecimal() or int(generation) < 1
+                        or not wait or args["incident_key"] != f"wait:{wait_id}:{generation}"
+                        or task_id != (wait["owner_id"] if wait["owner_kind"] == "task" else None)):
+                    return _error("invalid_binding", "wait incident does not match its generation")
         if args["source_kind"] == "question":
             question = await self.db.get_agent_question(args["source_identity"])
             if question is None or question["project_id"] != project_id:

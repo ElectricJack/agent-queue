@@ -93,7 +93,8 @@ class WaitDecisions:
                                               "project_id": wait["project_id"], **payload}),
         ))
 
-    async def resolve_escalation(self, conn, escalation, event, *, outcome, now):
+    @staticmethod
+    async def resolve_escalation(conn, escalation, event, *, outcome, now):
         """Withdraw an operational incident without inventing a human answer."""
         incident = (await conn.execute(select(escalations).where(
             escalations.c.id == escalation["escalation_id"],

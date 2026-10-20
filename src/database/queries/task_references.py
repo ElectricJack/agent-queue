@@ -69,6 +69,7 @@ TASK_REFERENCE_DISPOSITIONS: dict[tuple[str, str], str] = {
     ("task_tools", "task_id"): "deleted",
     ("task_workspace_requirements", "task_id"): "deleted",
     ("tasks", "parent_task_id"): "subtree",
+    ("wait_priority_projection", "task_id"): "deleted",
     ("workspaces", "locked_by_task_id"): "released",
 }
 

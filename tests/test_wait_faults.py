@@ -445,6 +445,11 @@ async def test_matrix_failed_hibernation_retains_claim_and_replay_cannot_discard
     if failure != "summary":
         assert (await driver.advance(env.wait_id, handler=handler))["held"]
         handler.wait_escalation_create.assert_awaited_once()
+        incidents = await records(env, escalations)
+        assert len(incidents) == 1
+        assert incidents[0]["source_identity"] == f"continuation:c:1:{row['hold_reason']}"
+        assert len([m for m in await records(env, messages)
+                    if m["body_kind"] == "wait_escalation"]) == 1
 
 
 async def test_matrix_ceiling_and_eviction_suspend_once_with_inherited_anchor(env):
@@ -624,7 +629,12 @@ async def test_matrix_two_launch_failures_then_provider_event_releases_without_r
             facts={"resume_attempt_started_at": NOW + 30}))
         await conn.execute(update(tasks).where(tasks.c.id == "owner").values(assigned_agent_id="a"))
     assert (await driver.failed(action, task, "second failure", handler=handler))["held"]
+    assert (await driver.failed(action, task, "replayed failure", handler=handler))["held"]
     assert len(await records(env, escalations)) == 1
+    assert (await records(env, escalations))[0]["source_identity"] == (
+        "continuation:c:1:resume_launch_failed")
+    assert len([m for m in await records(env, messages)
+                if m["body_kind"] == "wait_escalation"]) == 1
     await env.db.create_profile(AgentProfile(id="worker-codex", name="Worker"))
     driver.orch.provider_availability = SimpleNamespace(provider_for_profile=lambda *a, **k: "fake")
     async with env.db._engine.begin() as conn:
@@ -641,7 +651,9 @@ async def test_matrix_two_launch_failures_then_provider_event_releases_without_r
         row = await intent(env)
         assert row["resume_state"] == ("held" if generation == 1 else "queued")
     assert row["launch_attempts"] == 0 and row["hold_reason"] is None
-    assert (await records(env, escalations))[0]["status"] == "cancelled"
+    incident = (await records(env, escalations))[0]
+    assert incident["state"] == "cancelled"
+    assert incident["terminal_outcome"] == "source_satisfied"
     assert (await env.db.get_task("owner")).status is TaskStatus.RESUME_PENDING
 
 

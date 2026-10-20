@@ -406,9 +406,15 @@ async def execute_deletion(db, orchestrator, plan, captured, *, actor, reason=No
     root = captured["root"]
     now = time.time()
     reason = (reason or "").strip()
+    from src.waits.graph import lock_component_tasks, lock_graph
+
     async with db.immediate() as conn:
+        # Fence wait writers first, then preserve termination's session -> task
+        # row order before locking the remaining wait component.
+        await lock_graph(conn)
         await db.lock_hierarchy_project(conn, root["project_id"])
         await _lock_deletion_rows(conn, ids)
+        await lock_component_tasks(conn, {f"task:{task_id}" for task_id in ids})
         captured["sessions"] = await _rows(conn, t.sessions, t.sessions.c.task_id.in_(ids))
         # These holds are internal to the confirmed delete and prevent fresh claims.
         await _update_ids(
@@ -487,8 +493,10 @@ async def execute_deletion(db, orchestrator, plan, captured, *, actor, reason=No
         await _delete_branches(orchestrator, plan, cleanup)
 
     async with db.immediate() as conn:
+        await lock_graph(conn)
         await db.lock_hierarchy_project(conn, root["project_id"])
         await _lock_deletion_rows(conn, ids)
+        await lock_component_tasks(conn, {f"task:{task_id}" for task_id in ids})
         affected = await db._collect_affected(set(ids), conn)
         affected -= set(ids)
         parent_id = root["parent_task_id"]

@@ -2204,6 +2204,9 @@ class TaskQueryMixin:
         """The transactional body of :meth:`delete_task`, on a supplied ``conn``."""
         from src.database.queries.hierarchy_queries import HierarchyError
 
+        await lock_component_tasks(conn, {
+            f"task:{tid}" for tid in await self.subtree_ids(task_id, conn=conn)
+        })
         await self.guard_integration_mutation(
             task_id, "delete", conn=conn, retire_pending=True, branch_policy=branch_policy,
             delivery=delivery,
@@ -2295,6 +2298,9 @@ class TaskQueryMixin:
         — which for a human gate means live Approve/Deny buttons in Discord
         for a task that no longer exists.
         """
+        from src.database.queries.continuation_queries import retire_task_waits
+
+        await lock_component_tasks(conn, {f"task:{task_id}"})
         if operator_delete:
             # FK writers take KEY SHARE on the task. Keep them behind the
             # deletion until every owned row (including layouts) has gone.
@@ -2304,6 +2310,10 @@ class TaskQueryMixin:
         comment_project_id = (await conn.execute(
             select(tasks.c.project_id).where(tasks.c.id == task_id)
         )).scalar_one_or_none()
+        await retire_task_waits(
+            conn, task_id, reason="task_archived" if preserve_completion else "task_deleted",
+            now=time.time(),
+        )
         await conn.execute(delete(task_results).where(task_results.c.task_id == task_id))
         if not preserve_completion:
             await conn.execute(

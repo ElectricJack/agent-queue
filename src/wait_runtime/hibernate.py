@@ -24,6 +24,40 @@ from src.waits.graph import lock_graph
 from src.waits.sources import execute_task_status_mutation
 
 
+async def validate_hold_binding(conn, args):
+    """Bind an internal incident to the current suspension, even after resolution.
+
+    Launch incidents happen after a source result has committed. They must not
+    use the pending-wait deadline contract or accept a superseded generation.
+    The caller owns the graph/task/wait/continuation transaction locks.
+    """
+    subject, separator, reason = args["source_identity"].rpartition(":")
+    identity, generation_separator, generation = subject.rpartition(":")
+    reasons = {"push_failed", "stop_uncertain", "detach_uncertain", "resume_launch_failed",
+               "resume_stop_uncertain", "resume_detach_uncertain", "resume_workspace_failed",
+               "paused"}
+    if (not separator or not generation_separator or not generation.isdecimal()
+            or reason not in reasons or not identity.startswith("continuation:")
+            or args["incident_key"] != args["source_identity"]):
+        return False
+    row = (await conn.execute(select(continuations, wait_records.c.project_id).join(
+        wait_records, wait_records.c.id == continuations.c.wait_id,
+    ).join(tasks, tasks.c.id == continuations.c.task_id).where(
+        continuations.c.id == identity.removeprefix("continuation:"),
+        continuations.c.task_id == args.get("task_id"),
+        continuations.c.suspension_generation == int(generation),
+        continuations.c.resume_state.not_in(("acknowledged", "failed", "cancelled")),
+        wait_records.c.owner_kind == "task",
+        wait_records.c.owner_id == continuations.c.task_id,
+        wait_records.c.project_id == args["project_id"],
+        wait_records.c.sleep_decision == "hibernate",
+        tasks.c.project_id == args["project_id"],
+        tasks.c.branch_name == continuations.c.branch,
+        tasks.c.status.in_(("WAITING", "IN_PROGRESS", "HIBERNATED", "RESUME_PENDING", "PAUSED")),
+    ))).mappings().first()
+    return row is not None
+
+
 async def begin_suspension(conn, wait, task, *, now, budget):
     """Called under graph/task/wait locks, before exposing a checkpoint receipt."""
     existing = (await conn.execute(select(continuations).where(
@@ -93,11 +127,12 @@ class HibernationTransaction:
 
     async def hold(self, conn, task, wait, intent, reason, handler, *, detail=""):
         """One incident per generation/reason; no claim/workspace release."""
+        identity = f"continuation:{intent['id']}:{intent['suspension_generation']}:{reason}"
         result = await handler.wait_escalation_create(conn, {
             "project_id": task["project_id"], "task_id": task["id"],
             "task_title": task["title"], "source_kind": "wait",
-            "source_identity": f"continuation:{intent['id']}:{reason}",
-            "incident_key": f"continuation:{intent['id']}:{reason}",
+            "source_identity": identity,
+            "incident_key": identity,
             "summary": f"Hibernation held: {reason}",
             "investigation": detail or f"Wait {wait['id']}, continuation {intent['id']}",
             "decision_requested": "Repair the infrastructure hold; preserve the task checkout.",

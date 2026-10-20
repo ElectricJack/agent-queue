@@ -5973,7 +5973,8 @@ continuations = Table(
     "continuations",
     metadata,
     Column("id", Text, primary_key=True),
-    Column("task_id", Text, ForeignKey("tasks.id"), nullable=False),
+    # Audit identity survives removal from the active task table.
+    Column("task_id", Text, nullable=False),
     Column("wait_id", Text, ForeignKey("wait_records.id"), nullable=False),
     Column("suspension_generation", Integer, nullable=False),
     Column("summary", Text, nullable=True),
@@ -6014,7 +6015,7 @@ admission_reservations = Table(
     metadata,
     Column("id", Text, primary_key=True),
     Column("project_id", Text, ForeignKey("projects.id"), nullable=False),
-    Column("task_id", Text, ForeignKey("tasks.id"), nullable=True),
+    Column("task_id", Text, nullable=True),  # retained admission audit identity
     Column("continuation_id", Text, ForeignKey("continuations.id"), nullable=True),
     Column("scope", JSONB, nullable=False),
     Column("effective_priority", Integer, nullable=False),

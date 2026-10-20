@@ -458,6 +458,156 @@ async def park(env, **overrides):
         return await env.db.park_task_for_continuation(conn, **values)
 
 
+@pytest.mark.parametrize("removal", ["delete", "archive"])
+@pytest.mark.parametrize("outcome", ["pending", "satisfied"])
+async def test_task_removal_tombstones_waits_and_retains_audit(env, removal, outcome):
+    from src.database.tables import (
+        admission_reservations, escalations, wait_deadlines, wait_edges, wait_priority_projection,
+    )
+    from src.models import TaskStatus
+    from src.wait_runtime.hibernate import HibernationTransaction, locked_suspension
+    from src.wait_runtime.resume import ResumeTransaction
+    from tests.test_wait_decisions import service_for
+    from tests.test_wait_queries import records
+
+    await capture(env)
+    await park(env)
+    await env.db.update_task("owner", priority=20)
+    env.registry = build_registry(clock=lambda: NOW)
+    service = service_for(env, [NOW + 30])
+    if outcome == "satisfied":
+        await env.db.transition_task("source", TaskStatus.COMPLETED)
+        assert await service.tick()
+    before = (await records(env))[0]
+    async with env.db._engine.begin() as conn:
+        task, wait, continuation = await locked_suspension(conn, env.wait_id)
+        assert (await HibernationTransaction(service).hold(
+            conn, task, wait, continuation, "push_failed", service.orch._command_handler,
+        ))["held"]
+    checkpoint = await intent(env)
+    async with env.db._engine.begin() as conn:
+        # Cover the third new task FK holder as well as both reservation subjects.
+        await conn.execute(insert(wait_priority_projection).values(
+            task_id="owner", donor_path=[], graph_version=1, computed_at=NOW))
+        for subject in ({"task_id": "owner"}, {"continuation_id": "c"}):
+            await conn.execute(insert(admission_reservations).values(
+                id=next(iter(subject)), project_id="p", **subject, scope={},
+                effective_priority=20, provenance="resume", deadline_at=NOW + 300,
+                state="granted", created_at=NOW))
+        await conn.execute(insert(admission_reservations).values(
+            id="historical", project_id="p", task_id="owner", scope={},
+            effective_priority=20, provenance="branch_blocker", deadline_at=NOW,
+            state="consumed", created_at=NOW, consumed_by_session_id="s"))
+        await conn.execute(update(tasks).where(tasks.c.id == "owner").values(status="PAUSED"))
+    if removal == "delete":
+        await env.db.delete_task("owner")
+    else:
+        assert await env.db.archive_task("owner", archive_reason="Retire suspended work")
+        assert await env.db.get_archived_task("owner")
+    assert await env.db.get_task("owner") is None
+    row = await intent(env)
+    assert row["task_id"] == "owner" and row["resume_state"] == "cancelled"
+    for key in ("summary", "summary_sha256", "facts", "saved_head", "suspension_generation"):
+        assert row[key] == checkpoint[key]
+    wait = (await records(env))[0]
+    assert wait["outcome"] == ("cancelled" if outcome == "pending" else outcome)
+    if outcome != "pending":
+        for key in ("outcome", "resolved_at", "result_ref"):
+            assert wait[key] == before[key]
+    assert wait["cleared_at"] is not None and not wait["blocking"]
+    incident = (await records(env, escalations))[0]
+    assert incident["id"] == checkpoint["facts"]["hold_escalation_id"]
+    assert incident["state"] == "cancelled" and incident["terminal_outcome"] == "cancelled"
+    assert not any(edge["active"] for edge in await records(env, wait_edges))
+    assert not any(d["fired_at"] is None and d["cancelled_at"] is None
+                   for d in await records(env, wait_deadlines))
+    reservations = await records(env, admission_reservations)
+    assert {r["id"]: r["state"] for r in reservations} == {
+        "task_id": "cancelled", "continuation_id": "cancelled", "historical": "consumed"}
+    assert all(r["task_id"] == "owner" for r in reservations if r["id"] != "continuation_id")
+    assert not [p for p in await records(env, wait_priority_projection) if p["task_id"] == "owner"]
+    async with env.db._engine.connect() as conn:
+        assert await conn.scalar(select(tasks.c.effective_priority).where(
+            tasks.c.id == "source")) == 100
+    with pytest.raises(WaitError):
+        await ResumeTransaction(SimpleNamespace(orch=SimpleNamespace(db=env.db))).reserve("c", 1)
+
+
+async def test_wait_task_audit_migration_drops_old_fks_idempotently(env):
+    import importlib.util
+    from pathlib import Path
+
+    import sqlalchemy as sa
+    from alembic.migration import MigrationContext
+    from alembic.operations import Operations
+
+    path = Path(__file__).resolve().parents[1] / (
+        "migrations/versions/a00000000106_wait_task_audit_identity.py")
+    spec = importlib.util.spec_from_file_location("wait_task_audit_migration", path)
+    migration = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(migration)
+
+    def exercise(conn):
+        for table in ("continuations", "admission_reservations"):
+            conn.execute(sa.text(f'ALTER TABLE {table} ADD CONSTRAINT old_{table}_task '
+                                 'FOREIGN KEY (task_id) REFERENCES tasks(id)'))
+        with Operations.context(MigrationContext.configure(conn)):
+            migration.upgrade()
+            migration.upgrade()
+        for table in ("continuations", "admission_reservations"):
+            assert not [fk for fk in sa.inspect(conn).get_foreign_keys(table)
+                        if fk["referred_table"] == "tasks"]
+
+    async with env.db._engine.begin() as conn:
+        await conn.run_sync(exercise)
+    await park(env)
+    await env.db.delete_task("owner")
+    assert (await intent(env))["resume_state"] == "cancelled"
+
+
+@pytest.mark.parametrize("reason", ["push_failed", "stop_uncertain", "resume_launch_failed"])
+async def test_continuation_incident_rejects_forged_and_stale_bindings(env, reason):
+    from src.database.tables import escalations
+    from src.wait_runtime.hibernate import HibernationTransaction, locked_suspension
+    from tests.test_wait_decisions import service_for
+    from tests.test_wait_queries import records
+
+    await park(env)
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(wait_records).values(outcome="satisfied", resolved_at=NOW + 10))
+    env.registry = build_registry(clock=lambda: NOW)
+    service = service_for(env, [NOW + 30])
+    real_handler = service.orch._command_handler
+    handler = SimpleNamespace(wait_escalation_create=AsyncMock(
+        wraps=real_handler.wait_escalation_create))
+    driver = HibernationTransaction(service, clock=lambda: NOW + 30)
+    async with env.db._engine.begin() as conn:
+        task, wait, continuation = await locked_suspension(conn, env.wait_id)
+        assert (await driver.hold(conn, task, wait, continuation, reason, handler))["held"]
+    args = handler.wait_escalation_create.call_args.args[1]
+    async with env.db._engine.begin() as conn:
+        assert (await real_handler.wait_escalation_create(conn, args))["success"]
+    for override in (
+        {"task_id": "source"},
+        {"source_identity": "continuation:c:2:resume_launch_failed",
+         "incident_key": "continuation:c:2:resume_launch_failed"},
+        {"source_identity": "continuation:missing:1:resume_launch_failed",
+         "incident_key": "continuation:missing:1:resume_launch_failed"},
+        {"source_identity": "continuation:c:1:unrecognised",
+         "incident_key": "continuation:c:1:unrecognised"},
+        {"incident_key": "other"},
+    ):
+        async with env.db._engine.begin() as conn:
+            result = await real_handler.wait_escalation_create(conn, {**args, **override})
+        assert result["error_code"] == "invalid_binding", result
+    assert (await real_handler.execute("escalation_create", args))["error_code"] == "invalid_binding"
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(continuations).values(resume_state="cancelled"))
+        result = await real_handler.wait_escalation_create(conn, args)
+    assert result["error_code"] == "invalid_binding"
+    assert len(await records(env, escalations)) == 1
+
+
 async def test_park_fences_old_writer_without_returning_to_frontier(env):
     assert await park(env) == 2
     task = await env.db.get_task('owner')
