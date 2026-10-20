@@ -16,7 +16,7 @@ from tests.db_fixtures import lease_dsn
 
 from src.config import AppConfig, DatabaseConfig
 from src.event_bus import EventBus
-from src.models import Project, Task
+from src.models import Project, Task, TaskStatus
 
 pytestmark = pytest.mark.asyncio
 
@@ -1066,3 +1066,18 @@ class TestStructuredHandoff:
         )
         assert "stale_claim" in result["error"]
         assert await db.get_task_contexts(task.id) == []
+
+
+async def test_removing_hold_from_completed_task_emits_readiness_invalidation(handler, db, task):
+    from unittest.mock import AsyncMock
+
+    await db.update_task(task.id, status=TaskStatus.COMPLETED)
+    await db.add_task_label(task.id, "hold:operator")
+    changed = AsyncMock()
+    handler.orchestrator._emit_task_event = changed
+    result = await handler.execute("task_set", {"task_id": task.id,
+                                               "labels_remove": ["hold:operator"]})
+    assert "error" not in result
+    changed.assert_awaited_once()
+    args = changed.await_args.args
+    assert args[0] == "task.updated" and args[1].id == task.id
