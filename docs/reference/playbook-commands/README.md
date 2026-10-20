@@ -144,6 +144,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`ask_discussion_reply`](ask_discussion_reply.md) | Ask Discussion Reply | Scoped human request communication and decision evidence. |
 | [`ask_history`](ask_history.md) | Ask History | Scoped human request communication and decision evidence. |
 | [`ask_intake`](ask_intake.md) | Ask Intake | Scoped human request communication and decision evidence. |
+| [`ask_legacy_reset`](ask_legacy_reset.md) | Ask Legacy Reset | Preview or discard legacy asks and start fresh. |
 | [`ask_list`](ask_list.md) | Ask List | Scoped human request communication and decision evidence. |
 | [`ask_prepare_decision`](ask_prepare_decision.md) | Ask Prepare Decision | Scoped human request communication and decision evidence. |
 | [`ask_reconcile`](ask_reconcile.md) | Ask Reconcile | Scoped human request communication and decision evidence. |

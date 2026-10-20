@@ -89,6 +89,7 @@ from .ask_history_response import AskHistoryResponse
 from .ask_history_response_items_item import AskHistoryResponseItemsItem
 from .ask_input_response import AskInputResponse
 from .ask_input_response_receipt import AskInputResponseReceipt
+from .ask_legacy_reset_request import AskLegacyResetRequest
 from .ask_list_request import AskListRequest
 from .ask_list_response import AskListResponse
 from .ask_prepare_decision_request import AskPrepareDecisionRequest
@@ -2128,6 +2129,7 @@ __all__ = (
     "AskHistoryResponseItemsItem",
     "AskInputResponse",
     "AskInputResponseReceipt",
+    "AskLegacyResetRequest",
     "AskListRequest",
     "AskListResponse",
     "AskPrepareDecisionRequest",

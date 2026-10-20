@@ -11690,6 +11690,50 @@
       }
     },
     {
+      "name": "ask_legacy_reset",
+      "description": "Scoped human request communication and decision evidence.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "minLength": 1,
+            "title": "Project Id",
+            "type": "string"
+          },
+          "apply": {
+            "default": false,
+            "title": "Apply",
+            "type": "boolean"
+          },
+          "max_rows": {
+            "default": 10000,
+            "maximum": 100000,
+            "minimum": 1,
+            "title": "Max Rows",
+            "type": "integer"
+          },
+          "evidence_sha256": {
+            "anyOf": [
+              {
+                "pattern": "^[a-f0-9]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Evidence Sha256"
+          }
+        },
+        "required": [
+          "project_id"
+        ],
+        "title": "AskLegacyResetArgs",
+        "type": "object"
+      }
+    },
+    {
       "name": "ask_cutover",
       "description": "Scoped human request communication and decision evidence.",
       "input_schema": {
@@ -18020,6 +18064,7 @@
     "ask_discussion_reply": "review",
     "ask_update_context": "review",
     "ask_reconcile": "review",
+    "ask_legacy_reset": "review",
     "ask_cutover": "review",
     "ask_cutover_status": "review",
     "ask_repair_delivery": "review",
@@ -18041,6 +18086,7 @@
     "ask_cutover_status": "ask",
     "ask_retry_operation": "ask",
     "ask_repair_delivery": "ask",
+    "ask_legacy_reset": "ask",
     "create_task": "task",
     "list_tasks": "task",
     "get_task": "task",

@@ -14613,6 +14613,48 @@
         }
       }
     },
+    "/api/review/ask-legacy-reset": {
+      "post": {
+        "tags": [
+          "review"
+        ],
+        "summary": "Scoped human request communication and decision evidence.",
+        "description": "Scoped human request communication and decision evidence.",
+        "operationId": "ask_legacy_reset",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AskLegacyResetRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AskControlResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AskErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/review/ask-list": {
       "post": {
         "tags": [
@@ -24918,6 +24960,44 @@
           "receipt"
         ],
         "title": "AskInputResponse"
+      },
+      "AskLegacyResetRequest": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "title": "Project Id",
+            "description": ""
+          },
+          "apply": {
+            "type": "boolean",
+            "title": "Apply",
+            "description": "",
+            "default": false
+          },
+          "max_rows": {
+            "type": "integer",
+            "title": "Max Rows",
+            "description": "",
+            "default": 10000
+          },
+          "evidence_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evidence Sha256",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "project_id"
+        ],
+        "title": "AskLegacyResetRequest"
       },
       "AskListRequest": {
         "properties": {

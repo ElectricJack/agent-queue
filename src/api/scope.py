@@ -294,12 +294,16 @@ def check_command_scope(command: str, args: dict, scope: RequestScope) -> str | 
     ``args`` is mutated in place (same object /api/execute forwards to
     ``ch.execute``).
     """
-    from src.commands.contracts.ask import ASK_ARGS, GATEWAY_COMMANDS, OPERATOR_COMMANDS
+    from src.commands.contracts.ask import (
+        ASK_ARGS, GATEWAY_COMMANDS, GLOBAL_CONTROL_COMMANDS, OPERATOR_COMMANDS,
+    )
     if command in GATEWAY_COMMANDS:
         return "out of scope: ask intake requires the authenticated daemon gateway"
     if scope.kind == "local":
         return None
-    if command in OPERATOR_COMMANDS:
+    if command in OPERATOR_COMMANDS and not (
+        command in GLOBAL_CONTROL_COMMANDS and scope.elevated and scope.project_id is None
+    ):
         return "out of scope: ask gateway and operator controls are daemon/local only"
     if command in ASK_ARGS and not scope.elevated:
         return "out of scope: workers have no human ask authority"
