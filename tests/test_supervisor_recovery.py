@@ -1606,7 +1606,7 @@ async def test_internal_recovery_nudge_does_not_request_a_user_reply():
         body="question",
     )
     mixed = _render_nudge([notice, user])
-    assert mixed == "Handle `aq message status internal --json`."
+    assert mixed == "Handle `aq message status internal --json` (running it marks the message read)."
     assert "question" not in mixed
 
 
@@ -2503,7 +2503,7 @@ async def test_user_message_nudge_leaves_the_reply_protocol_to_the_supervisor_pr
     )
     # A nudge is a one-line pointer to the durable body and asks no message
     # for a reply; which messages get an `aq reply` is the profile's to teach.
-    assert _render_nudge([user]) == "Handle `aq message status user-message --json`."
+    assert _render_nudge([user]) == "Handle `aq message status user-message --json` (running it marks the message read)."
     profile = Path(__file__).parents[1] / "src/profiles/defaults/supervisor/profile.md"
     text = " ".join(profile.read_text().split())
     assert 'Answer user messages with `aq reply <msg-id> "…"`' in text

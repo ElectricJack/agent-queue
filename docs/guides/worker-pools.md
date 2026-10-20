@@ -1456,10 +1456,10 @@ and pass the vault artifact SHA with `aq task close --commit <vault-commit-sha>`
 The shipped profiles that read their own mailbox (`worker-claude`,
 `worker-codex`, `planner`, `reviewer`, `final-reviewer`, `spec-ingest`,
 `triage`, `playbook-compiler`) also grant `message_status`. The idle-session
-nudge types ``Handle `aq message status <id> --json`.``, and it marks the
-message delivered, so `aq message inbox` no longer lists it. On a vault copy
-without the grant, a worker that follows the nudge is denied and the message
-goes unhandled. Apply the grants-only repair to each profile that drift names
+nudge types ``Handle `aq message status <id> --json` (running it marks the
+message read).``; the message stays pending, and the nudge repeats, until the
+recipient runs it. On a vault copy without the grant, a worker that follows the
+nudge is denied and the message goes unhandled. Apply the grants-only repair to each profile that drift names
 as missing `message_status`, for example
 `aq agent profile-reseed --profile-id worker-claude --grants-only`.
 
