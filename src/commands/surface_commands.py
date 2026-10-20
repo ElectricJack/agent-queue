@@ -72,6 +72,11 @@ class SurfaceCommandsMixin:
         if "error" in info:
             return info
 
+        # The reviewer projection is complete: expanding ordinary detail here
+        # would disclose unrelated parents, children and provenance.
+        if "batch_member" in info:
+            return info
+
         from src.operator_decisions import OperatorDecisions
 
         info["operator_decisions"] = await OperatorDecisions(self.db).history("task", task_id)

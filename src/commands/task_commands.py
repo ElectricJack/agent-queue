@@ -639,6 +639,12 @@ class TaskCommandsMixin:
             ``depends_on`` and ``blocks`` lists and include a pre-formatted
             ``formatted`` key with the dependency-aware text representation.
         """
+        context = await self._fidelity_read_context("list_tasks", args)
+        if context is not None:
+            if "error" in context:
+                return context
+            return await self._fidelity_list_tasks(args, context)
+
         # Normalize show_all → include_completed so all downstream helpers
         # only need to check include_completed.
         if args.get("show_all") and not args.get("include_completed"):
@@ -3640,9 +3646,14 @@ class TaskCommandsMixin:
         return report
 
     async def _cmd_get_task(self, args: dict) -> dict:
+        context = await self._fidelity_read_context("get_task", args)
+        if context is not None and "error" in context:
+            return context
         task = await self.db.get_task(args["task_id"])
         if not task:
             return {"error": f"Task '{args['task_id']}' not found"}
+        if context is not None:
+            return await self._fidelity_member_detail(task, context)
         if args.get("clear_needs_attention") and args.get("needs_attention") is not None:
             return {"error": "--clear-needs-attention and --needs-attention are mutually exclusive"}
         out_of_scope = self._assert_task_in_scope(task)
@@ -6552,6 +6563,9 @@ class TaskCommandsMixin:
         ``src/database/queries/blocked_state.py``). Returns ``[]`` if the
         task has no dependents.
         """
+        context = await self._fidelity_read_context("get_downstream_tasks", args)
+        if context is not None and "error" in context:
+            return context
         task_id = args.get("task_id")
         if not task_id:
             return {"success": False, "error": "task_id is required"}
@@ -6567,8 +6581,10 @@ class TaskCommandsMixin:
         ids = await self.db.get_transitive_dependents(str(task_id), edge_types)
         out = []
         for tid in ids:
+            if context is not None and tid not in context["task_ids"]:
+                continue
             t = await self.db.get_task(tid)
-            if t is None:
+            if t is None or (context is not None and t.project_id != context["batch"]["project_id"]):
                 continue
             out.append({"id": t.id, "title": t.title, "status": t.status.value})
         return {"success": True, "tasks": out}

@@ -353,6 +353,9 @@ class TaskShowResponse(TaskDetail):
     labels: list[str] = []
     provenance: list[dict[str, Any]] = []
     claimed_by: ClaimedBy | None = None
+    # Present only on the assigned fidelity reviewer's bounded member read.
+    batch_member: dict[str, Any] | None = None
+    fidelity: dict[str, Any] | None = None
 
 
 class TaskSetResponse(TaskShowResponse):
@@ -1034,6 +1037,8 @@ class ApprovedSpecPacketResponse(BaseModel):
     body: str
     packet: dict[str, Any]
     feedback: list[dict[str, Any]]
+    # The batch's frozen approved design lineage, never a caller-selected document.
+    design: dict[str, Any] | None = None
 
 
 class SpecIngestReconcileResponse(BaseModel):

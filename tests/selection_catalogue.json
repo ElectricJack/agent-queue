@@ -15411,7 +15411,7 @@
         "document-reviews"
       ],
       "default_arm": true,
-      "digest": "sha256:213860025f3f103dda992a79a227e2f30a5d980197006c862701ebd99b909702",
+      "digest": "sha256:9784bfad86e74f3a4e35fcbd2b51f6c76912b8d6cd60627d5fedfeafd4e6fda5",
       "imports": [
         "src.api",
         "src.api.auth",
@@ -15422,6 +15422,7 @@
         "src.api.scope",
         "src.commands.handler",
         "src.config",
+        "src.database.tables",
         "src.git.github_contracts",
         "src.git.manager",
         "src.models",

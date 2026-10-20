@@ -24189,6 +24189,18 @@
             },
             "type": "array",
             "title": "Feedback"
+          },
+          "design": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Design"
           }
         },
         "type": "object",
@@ -78535,6 +78547,30 @@
               }
             ]
           },
+          "batch_member": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Batch Member"
+          },
+          "fidelity": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fidelity"
+          },
           "fields_changed": {
             "items": {
               "type": "string"
@@ -79043,6 +79079,30 @@
                 "type": "null"
               }
             ]
+          },
+          "batch_member": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Batch Member"
+          },
+          "fidelity": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fidelity"
           }
         },
         "type": "object",
