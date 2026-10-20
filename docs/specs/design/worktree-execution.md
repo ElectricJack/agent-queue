@@ -244,6 +244,15 @@ remote ref. A detached, clean slot whose sentinel still names a terminal task
 with no retained integration owner or job pin is reclaimed even after that
 task's branch was deleted and the default tip moved; the sentinel is kept until
 reset so salvage still attributes unpublished commits to the predecessor.
+This claim-time reconcile is the authority for every terminal path (complete,
+abandon, repair end, session drain): close-time release is an optimisation, and
+integration closes keep HEAD on the delivery branch until handoff. The retained
+binding check excludes the claimant's own integration owner row, which claim
+preparation attaches to the slot between the preflight and the reset.
+`workspace_clear_sentinel` is the supervisor's explicit form of the same
+reconcile: it frees a sentinel naming a terminal or missing task when the slot
+holds no task lock, claim file, live claiming session, owner or job pin, and its
+clean HEAD is contained in a remote ref, then emits `worktree.sentinel_cleared`.
 Attached branch disagreement still refuses reset.
 Legacy clones retain their existing branch-cleanup behavior.
 

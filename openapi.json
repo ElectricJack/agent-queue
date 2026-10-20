@@ -13143,6 +13143,53 @@
         }
       }
     },
+    "/api/project/workspace-clear-sentinel": {
+      "post": {
+        "tags": [
+          "project"
+        ],
+        "summary": "Return a worktree slot's .aq-worktree.json sentinel to the free form when the task it still names is completed, failed, blocked or gone. Refuses unless the slot holds no task lock, claim file, live claiming session, integration owner or job pin, and its tree is clean with HEAD published under a remote ref. Use when claim preparation reports 'branch disagrees with its source sentinel' after the named task ended.",
+        "description": "Return a worktree slot's .aq-worktree.json sentinel to the free form when the task it still names is completed, failed, blocked or gone. Refuses unless the slot holds no task lock, claim file, live claiming session, integration owner or job pin, and its tree is clean with HEAD published under a remote ref. Use when claim preparation reports 'branch disagrees with its source sentinel' after the named task ended.",
+        "operationId": "workspace_clear_sentinel",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WorkspaceClearSentinelRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkspaceClearSentinelResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/project/workspace-cutover": {
       "post": {
         "tags": [
@@ -82074,6 +82121,88 @@
           "task_id"
         ],
         "title": "WithheldTask"
+      },
+      "WorkspaceClearSentinelRequest": {
+        "properties": {
+          "workspace_id": {
+            "type": "string",
+            "title": "Workspace Id",
+            "description": "Slot workspace id whose sentinel to clear."
+          },
+          "if_task_terminal": {
+            "type": "boolean",
+            "title": "If Task Terminal",
+            "description": "Clear only when the named task is terminal (default true; the only supported mode).",
+            "default": true
+          }
+        },
+        "type": "object",
+        "required": [
+          "workspace_id"
+        ],
+        "title": "WorkspaceClearSentinelRequest"
+      },
+      "WorkspaceClearSentinelResponse": {
+        "properties": {
+          "workspace_id": {
+            "type": "string",
+            "title": "Workspace Id"
+          },
+          "cleared": {
+            "type": "boolean",
+            "title": "Cleared",
+            "default": false
+          },
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detail"
+          },
+          "holder_task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Holder Task Id"
+          },
+          "branch": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Branch"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          }
+        },
+        "type": "object",
+        "required": [
+          "workspace_id"
+        ],
+        "title": "WorkspaceClearSentinelResponse"
       },
       "WorkspaceCutoverRequest": {
         "properties": {

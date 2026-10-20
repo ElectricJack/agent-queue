@@ -60,6 +60,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "workspace_reap": "project",
     "workspace_cutover": "project",
     "workspace_retire_claim": "project",
+    "workspace_clear_sentinel": "project",
     # project onboarding from the dashboard (design 2026-09-03 §5)
     "list_project_roots": "project",
     "browse_project_root": "project",
@@ -2258,6 +2259,35 @@ _ALL_TOOL_DEFINITIONS = [
                 "workspace_id": {
                     "type": "string",
                     "description": "Slot workspace id whose claim file to retire.",
+                },
+            },
+            "required": ["workspace_id"],
+        },
+    },
+    {
+        "name": "workspace_clear_sentinel",
+        "description": (
+            "Return a worktree slot's .aq-worktree.json sentinel to the free form "
+            "when the task it still names is completed, failed, blocked or gone. "
+            "Refuses unless the slot holds no task lock, claim file, live claiming "
+            "session, integration owner or job pin, and its tree is clean with HEAD "
+            "published under a remote ref. Use when claim preparation reports "
+            "'branch disagrees with its source sentinel' after the named task ended."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "workspace_id": {
+                    "type": "string",
+                    "description": "Slot workspace id whose sentinel to clear.",
+                },
+                "if_task_terminal": {
+                    "type": "boolean",
+                    "description": (
+                        "Clear only when the named task is terminal (default true; "
+                        "the only supported mode)."
+                    ),
+                    "default": True,
                 },
             },
             "required": ["workspace_id"],

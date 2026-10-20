@@ -233,6 +233,15 @@ class WorkspaceRetireClaimResponse(BaseModel):
     reason: str | None = None
 
 
+class WorkspaceClearSentinelResponse(BaseModel):
+    workspace_id: str
+    cleared: bool = False
+    detail: str | None = None
+    holder_task_id: str | None = None
+    branch: str | None = None
+    reason: str | None = None
+
+
 class EditWorkspaceResponse(BaseModel):
     updated: str
     fields: list[str] = []
@@ -343,6 +352,7 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "remove_workspace": RemoveWorkspaceResponse,
     "release_workspace": ReleaseWorkspaceResponse,
     "workspace_retire_claim": WorkspaceRetireClaimResponse,
+    "workspace_clear_sentinel": WorkspaceClearSentinelResponse,
     "edit_workspace": EditWorkspaceResponse,
     "workspace_cutover": WorkspaceCutoverResponse,
     "find_merge_conflict_workspaces": FindMergeConflictWorkspacesResponse,

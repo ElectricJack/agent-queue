@@ -2216,6 +2216,34 @@ class TestFinishedTaskSentinel:
             await mgr.ensure_slot_checkout(slot, FakeTask(id="tsk-next"))
         assert mgr.read_sentinel(path).task_id == "tsk-prev"
 
+    @pytest.mark.parametrize("owner", ["tsk-next", "tsk-other"])
+    async def test_only_a_foreign_owner_row_retains_a_finished_slot(
+        self, mgr, base_ws, kind, base_repo, db, monkeypatch, owner
+    ):
+        """Claim preparation attaches the claimant's owner row before the reset.
+
+        The second preflight then saw that row as a retained binding and
+        refused the slot it had reclaimed moments earlier (bold-torrent-46:
+        brisk-quest-34 on AQ slot-4, nimble-rapids-30 on ME slot-1).
+        """
+        from src.models import TaskStatus
+
+        slot, path = await self._finished_slot(mgr, base_ws, kind, base_repo)
+        self._status(db, monkeypatch, TaskStatus.COMPLETED)
+
+        async def retained(workspace_id, *, excluding_owner=None):
+            return workspace_id == slot.id and owner != excluding_owner
+
+        monkeypatch.setattr(mgr, "_slot_has_retained_binding", retained)
+        if owner == "tsk-other":
+            with pytest.raises(GitError, match="disagrees with its source sentinel"):
+                await mgr.ensure_slot_checkout(slot, FakeTask(id="tsk-next"))
+            assert mgr.read_sentinel(path).task_id == "tsk-prev"
+            return
+        await mgr.ensure_slot_checkout(slot, FakeTask(id="tsk-next"))
+        assert await mgr.reset_slot_for_task(slot, FakeTask(id="tsk-next")) == "aq/tsk-next"
+        assert mgr.read_sentinel(path).task_id == "tsk-next"
+
     async def test_completion_releases_a_detached_published_slot(
         self, mgr, base_ws, kind, base_repo
     ):

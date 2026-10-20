@@ -1461,6 +1461,27 @@
       }
     },
     {
+      "name": "workspace_clear_sentinel",
+      "description": "Return a worktree slot's .aq-worktree.json sentinel to the free form when the task it still names is completed, failed, blocked or gone. Refuses unless the slot holds no task lock, claim file, live claiming session, integration owner or job pin, and its tree is clean with HEAD published under a remote ref. Use when claim preparation reports 'branch disagrees with its source sentinel' after the named task ended.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "workspace_id": {
+            "type": "string",
+            "description": "Slot workspace id whose sentinel to clear."
+          },
+          "if_task_terminal": {
+            "type": "boolean",
+            "description": "Clear only when the named task is terminal (default true; the only supported mode).",
+            "default": true
+          }
+        },
+        "required": [
+          "workspace_id"
+        ]
+      }
+    },
+    {
       "name": "workspace_reap",
       "description": "Explicitly reap a retired worktree slot (removes its directory + row). Refuses live slots via /proc liveness check. Pass either 'workspace_id' to reap one slot, or 'all_retired: true' to sweep every retired slot in the project scope. Worktree-execution spec \u00a76.8.",
       "input_schema": {
@@ -18389,6 +18410,7 @@
     "workspace_reap": "project",
     "workspace_cutover": "project",
     "workspace_retire_claim": "project",
+    "workspace_clear_sentinel": "project",
     "list_project_roots": "project",
     "browse_project_root": "project",
     "get_github_auth_status": "project",
