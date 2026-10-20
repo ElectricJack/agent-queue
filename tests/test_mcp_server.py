@@ -702,6 +702,7 @@ class TestDriftDetection:
             "reconcile_collaborations",
             # Daemon-only git-first train dispatch uses a fallback schema.
             "integration_train_tick",
+            "integration_reconcile_git_truth",
             # Phase 2 managed-job substrate (src/commands/job_commands.py).
             # Excluded from MCP, the CLI and HTTP until the phase 3 adapters
             # land, so each carries a codegen-only fallback schema rather

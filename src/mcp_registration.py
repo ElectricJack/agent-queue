@@ -58,6 +58,7 @@ DEFAULT_EXCLUDED_COMMANDS = {
     "reconcile_agent_waits",  # daemon-only bounded durable scan
     "reconcile_collaborations",  # daemon-only expiry and retention
     "integration_train_tick",  # daemon-only git-first train dispatch
+    "integration_reconcile_git_truth",  # daemon-only projection repair
     "job_reconcile",
     "job_submit_integration",
 

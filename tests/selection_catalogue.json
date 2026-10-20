@@ -637,7 +637,8 @@
         "tests/test_integration_subjects.py",
         "tests/test_integration_superseded_completion.py",
         "tests/test_integration_train.py",
-        "tests/test_integration_train_sources.py"
+        "tests/test_integration_train_sources.py",
+        "tests/test_integration_truth_reconciler.py"
       ]
     },
     "intelligence-classes": {
@@ -9798,6 +9799,31 @@
         "parametrize"
       ],
       "summary": "The App-mode trust manifest: shared builder, daemon command and CLI (spec §6.1)."
+    },
+    "tests/test_integration_truth_reconciler.py": {
+      "areas": [
+        "integration-trains"
+      ],
+      "default_arm": true,
+      "digest": "sha256:fb12e3a94b22eb58b69057bf58044728b827a28da6f3693936559343a7a5cae3",
+      "imports": [
+        "src.commands.integration_commands",
+        "src.commands.principal",
+        "src.database",
+        "src.database.tables",
+        "src.git.manager",
+        "src.integration.delivery_observer",
+        "src.integration.delivery_truth",
+        "src.integration.git_truth",
+        "src.integration.truth_reconciler",
+        "src.integration.truth_retention",
+        "src.models",
+        "src.orchestrator.worktree_manager"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Git witnesses survive squashes/GC; projection repair is bounded and fenced."
     },
     "tests/test_integration_workspace_handoff.py": {
       "areas": [
