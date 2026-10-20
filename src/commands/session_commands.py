@@ -1697,7 +1697,9 @@ class SessionCommandsMixin:
                 )
             else:
                 lead = (
-                    "close refused: this workspace holds commits no remote branch has"
+                    "close refused: workspace commit preservation could not be proved"
+                    if (result.get("unmerged") or {}).get("status") == "unknown"
+                    else "close refused: this workspace holds commits no remote branch has"
                     if result.get("unmerged")
                     else "close refused: git verification found issues you can still "
                     "fix from this workspace"

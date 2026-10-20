@@ -2784,7 +2784,8 @@ class TestEndToEndOnFakeProvider:
         increments ``retry_count`` and re-queues.  Sending it straight to
         FAILED made a session-run flake terminal where a legacy one retries.
         """
-        await self._launch_via_execute_task(db, real_orch, monkeypatch, tmp_path)
+        wd = await self._launch_via_execute_task(db, real_orch, monkeypatch, tmp_path)
+        await self._setup_task_publication(db, real_orch, tmp_path, wd)
         session = await db.get_session_for_task("t1")
 
         close = await real_handler.execute(
@@ -2811,7 +2812,8 @@ class TestEndToEndOnFakeProvider:
     async def test_hard_failure_blocks_and_does_not_retry(
         self, db, real_orch, real_handler, provider, tmp_path, monkeypatch
     ):
-        await self._launch_via_execute_task(db, real_orch, monkeypatch, tmp_path)
+        wd = await self._launch_via_execute_task(db, real_orch, monkeypatch, tmp_path)
+        await self._setup_task_publication(db, real_orch, tmp_path, wd)
         session = await db.get_session_for_task("t1")
         close = await real_handler.execute(
             "task_close",
@@ -2830,7 +2832,8 @@ class TestEndToEndOnFakeProvider:
     async def test_transient_failure_blocks_once_retries_are_spent(
         self, db, real_orch, real_handler, provider, tmp_path, monkeypatch
     ):
-        await self._launch_via_execute_task(db, real_orch, monkeypatch, tmp_path)
+        wd = await self._launch_via_execute_task(db, real_orch, monkeypatch, tmp_path)
+        await self._setup_task_publication(db, real_orch, tmp_path, wd)
         session = await db.get_session_for_task("t1")
         task = await db.get_task("t1")
         await db.update_task(task.id, retry_count=task.max_retries - 1)
@@ -2992,7 +2995,8 @@ class TestEndToEndOnFakeProvider:
     async def test_retry_can_reassign_only_after_old_session_is_stopped(
         self, db, real_orch, real_handler, provider, tmp_path, monkeypatch
     ):
-        await self._launch_via_execute_task(db, real_orch, monkeypatch, tmp_path)
+        wd = await self._launch_via_execute_task(db, real_orch, monkeypatch, tmp_path)
+        await self._setup_task_publication(db, real_orch, tmp_path, wd)
         old = await db.get_session_for_task("t1")
         await real_handler.execute("task_close", {
             "task_id": "t1", "session_id": old.id, "outcome": "fail",
@@ -3865,11 +3869,11 @@ class TestEndToEndOnFakeProvider:
             pass
 
         verifier_id, session, head = await self._aggregate_failure_session(db, provider, tmp_path)
+        # Failure-close needs actual preservation proof before testing its
+        # transition/crash behavior. Keep the later ref lookup misleading.
+        await self._setup_task_publication(db, real_orch, tmp_path, str(tmp_path / "wd"))
         # A later local ref lookup cannot replace the original verification subject.
-        real_orch.git = SimpleNamespace(
-            arev_parse=AsyncMock(return_value="b" * 40),
-            avalidate_checkout=AsyncMock(return_value=False),
-        )
+        monkeypatch.setattr(real_orch.git, "arev_parse", AsyncMock(return_value="b" * 40))
         save = db.save_task_completion
 
         async def die(*_args, **_kwargs):

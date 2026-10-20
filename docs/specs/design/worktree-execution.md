@@ -200,6 +200,15 @@ The slot is the session `work_dir` (delivery owned by the session-runtime spec).
 
 **Salvage pushes; it does not merely keep a local branch.** "The branch survives independently of the worktree" was only ever true for a branch the remote also has. On 2026-09-03 a worker committed five commits (~5.8k lines) in a slot, never pushed, and closed `blocked`; the close was accepted, the slot moved on, and three re-runs of the same task each started from `main`, could not find the work or its prerequisites, and closed `blocked` again. So before any reset — `restore_slot_after_task` *and* `reset_slot_for_task` — `WorktreeSlotManager.salvage_unpushed` pushes every commit no remote branch carries to `aq/<task_id>`, or to `aq/<task_id>-wip` when that name already holds commits this HEAD does not descend from (never `--force`, never a discard), and records `unmerged_branch` / `unmerged_commit` on the task. The same rule runs on the close itself: a close whose outcome is not `pass` preserves the commits first and, when the push fails while the closing session is still live, the **close is refused** and the task stays IN_PROGRESS under the same claim so the agent can push by hand. A repository with no remote reports the local branch and SHA rather than an error — there is nowhere to push, and the record is what a human needs.
 
+An unknown preservation result also refuses a live failure-close with an assigned
+workspace, before any task transition, completion record, token revocation, claim
+release or slot reset. Git inspection errors, including unproved process cleanup,
+must retain the exact checkout and current claim with actionable diagnostics; they
+are never evidence of clean or published work. Confirmed absence of a workspace
+does not require Git proof. A failed remote probe is unknown, distinct from a
+confirmed repository with no remote. Repair delegates continue through their
+operation-owned bounded recovery protocol and human gates.
+
 One consequence is deliberate: because a failed attempt is now published, `_retry_reset_ref` keeps it (a published tip the start point does not contain wins over the start point), so a retry lands on its predecessor's work instead of silently below it.
 
 **Slot affinity is the price of the forensic exception.** A slot left on an unpushed `aq/<task_id>` branch means the *next push dispatch* of that same task must land on that slot or it cannot check the branch out at all. Pool sessions acquire slots before they know the task, so preparation detects an idle unclaimed holder and detaches it; a live holder is never disturbed. Clean pushed branches are normally detached at release, avoiding the collision altogether. Push acquisition still **prefers the slot that already holds the task's branch** (`WorkspaceMixin._slot_branch_affinity` → `acquire_for_task(preferred_workspaces=...)` → the existing `prefer_workspace_id` seam).

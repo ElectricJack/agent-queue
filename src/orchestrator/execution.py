@@ -1485,23 +1485,28 @@ class ExecutionMixin:
         # else in this function would ever look at the workspace — which is
         # exactly how five commits left a slot worktree and vanished
         # (``src/orchestrator/stranded_work.py``).  Push first, and refuse
-        # the close when the push fails and the agent is still there to fix
-        # it.  Runs before any transition: a refused close must leave the
-        # task exactly as it found it.
+        # the close when preservation fails or cannot be proved and the
+        # agent is still there to fix it. Runs before any transition: a
+        # refused close leaves the task exactly as it found it.
         stranded = None
         if outcome != "pass" and not repair_delegate:
             stranded = await self._preserve_unpushed_on_failure(
                 task, workspace_path, project_id=task.project_id
             )
-            if stranded.status == "push_failed" and session_live:
+            if session_live and (
+                stranded.status == "push_failed"
+                or stranded.status == "unknown" and workspace_path is not None
+            ):
                 from src.orchestrator.stranded_work import unpushed_close_issues
 
                 issues = unpushed_close_issues(stranded)
                 current = await self.db.get_task(task.id)
                 logger.warning(
-                    "Task %s: close refused, %d commit(s) are on no remote branch",
+                    "Task %s: close refused, preservation status=%s, count=%d: %s",
                     task.id,
+                    stranded.status,
                     stranded.count,
+                    stranded.error,
                 )
                 return {
                     "status": (current or task).status.value,
@@ -2568,13 +2573,13 @@ class ExecutionMixin:
                 event_bus=self.bus,
                 project_id=project_id,
             )
-        except Exception:
+        except Exception as exc:
             logger.warning(
                 "Task %s: unpushed-work check failed", task.id, exc_info=True
             )
             from src.orchestrator.stranded_work import StrandedWork
 
-            return StrandedWork(status="unknown")
+            return StrandedWork(status="unknown", error=f"{type(exc).__name__}: {exc}")
 
         if stranded.branch and stranded.status in ("pushed", "no_remote", "push_failed"):
             try:
