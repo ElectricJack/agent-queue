@@ -323,6 +323,54 @@ async def test_managed_test_job_rejects_missing_pinned_interpreter(db, tmp_path)
         )
 
 
+@pytest.mark.parametrize(
+    "capacity,reserve,weight", [(6, 2, 4), (6, 3, 3), (2, 2, 1), (1, 2, 1), (6, 20, 1)]
+)
+async def test_full_suite_reserves_focused_capacity(
+    db, tmp_path, monkeypatch, capacity, reserve, weight
+):
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nname = "foreign-project"\n[tool.pytest.ini_options]\ntestpaths = ["tests"]\n'
+    )
+    (tmp_path / "tests").mkdir()
+    for name in ("example", "other", "third"):
+        (tmp_path / f"tests/test_{name}.py").write_text("def test_example(): pass\n")
+    monkeypatch.setattr("src.resources.project_tests.has_xdist", lambda _: False)
+    config = AppConfig(data_dir=str(tmp_path / "data"))
+    config.resources.test_slots = capacity
+    config.resources.jobs.enabled = True
+    config.resources.jobs.full_suite_reserved_slots = reserve
+    service = JobService(db, config)
+    args = dict(
+        project_id="p", task_id="t", session_id=None, claim_epoch=1,
+        workspace_id="w", generation=0, preset="test", args=["tests/"],
+        idempotency_key="full-suite",
+    )
+    full = await service.submit(**args)
+    assert full["job_class"] == "shared"
+    assert full["weight"] == weight
+    assert full["contract"]["test_scope"] == "full"
+    assert full["queue_deadline"] - full["submitted_at"] == 5400
+    # Reloads do not change accepted weights or replay identity.
+    config.resources.jobs.full_suite_reserved_slots = 1
+    replay = await service.submit(**args)
+    assert replay["id"] == full["id"] and replay["weight"] == weight
+    focused = await service.submit(**{
+        **args, "args": ["tests/test_example.py"], "idempotency_key": "focused",
+    })
+    assert focused["job_class"] == "shared" and focused["weight"] == 1
+    assert focused["contract"]["test_scope"] == "focused"
+
+
+@pytest.mark.parametrize("reserve", [0, -1, True, 1.5, "2"])
+def test_full_suite_reserve_must_be_a_positive_integer(reserve):
+    config = AppConfig()
+    config.resources.jobs.full_suite_reserved_slots = reserve
+    assert any(
+        error.field == "full_suite_reserved_slots" for error in config.resources.jobs.validate()
+    )
+
+
 async def test_integration_test_job_uses_configured_interpreter_outside_snapshot(
     db, tmp_path, monkeypatch
 ):

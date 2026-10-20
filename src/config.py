@@ -2794,6 +2794,8 @@ class JobsConfig:
     per_task_active: int = 2
     shared_queue_seconds: int = 1800
     exclusive_queue_seconds: int = 5400
+    #: Capacity left for focused work beside a managed full-suite test job.
+    full_suite_reserved_slots: int = 2
     run_seconds: int = 7200
     head_bytes: int = 1024 * 1024
     tail_bytes: int = 63 * 1024 * 1024
@@ -2830,6 +2832,7 @@ class JobsConfig:
             "per_task_active",
             "shared_queue_seconds",
             "exclusive_queue_seconds",
+            "full_suite_reserved_slots",
             "run_seconds",
             "head_bytes",
             "tail_bytes",
