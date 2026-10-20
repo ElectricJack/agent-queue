@@ -54,7 +54,7 @@ try:  # POSIX only — the runtime target is WSL2; see ``_exclude_lock``.
 except ImportError:  # pragma: no cover - Windows dev boxes
     fcntl = None  # type: ignore[assignment]
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from src.config import WorktreesConfig
 from src.git.github_contracts import GitHubAccessError
@@ -653,6 +653,13 @@ class WorktreeSlotManager:
                         await self._ref_exists(str(slot_dir), default_ref)
                         and head == await self.git.arev_parse(str(slot_dir), default_ref)
                     )
+                if actual == "HEAD" and not detached_predecessor:
+                    # A finished predecessor's branch may be gone (delivered
+                    # and deleted) and origin/<default> may have moved on;
+                    # neither proof above can then hold for its clean slot.
+                    detached_predecessor = await self._finished_predecessor(
+                        slot_ws, sentinel, task,
+                    )
                 if actual != sentinel.branch and not detached_predecessor:
                     raise GitError(f"slot {slot_ws.id} branch disagrees with its source sentinel; "
                                    "checkout left unchanged")
@@ -747,6 +754,67 @@ class WorktreeSlotManager:
         if merge_path.exists():
             raise GitError(f"merge abort did not clear {checkout}")
         logger.warning("Archived and aborted abandoned merge in slot %s", slot_ws.id)
+
+    async def _finished_predecessor(
+        self, slot_ws: Workspace, sentinel: WorktreeSentinel, task,
+    ) -> bool:
+        """Whether a detached slot's sentinel names a predecessor that is over.
+
+        The caller has already proved the slot carries no foreign lock or
+        claim file.  The predecessor must be terminal, hold no integration
+        owner or job pin on the slot, and have left a clean tree; its
+        sentinel is kept so the reset still salvages committed work under
+        the predecessor's id.
+        """
+        from src.agent_waits import TERMINAL_TASK_STATUSES
+
+        if not sentinel.task_id or sentinel.task_id == task.id:
+            return False
+        predecessor = await self.db.get_task(sentinel.task_id)
+        status = getattr(predecessor, "status", None)
+        if getattr(status, "value", status) not in TERMINAL_TASK_STATUSES:
+            return False
+        if await self._slot_has_retained_binding(slot_ws.id):
+            return False
+        if await self.git.ahas_uncommitted_changes(slot_ws.workspace_path, strict=True) is not False:
+            return False
+        logger.warning(
+            "Reclaiming slot %s from finished task %s (%s); sentinel branch %s is stale",
+            slot_ws.id, sentinel.task_id, getattr(status, "value", status), sentinel.branch,
+        )
+        return True
+
+    @guard_workspace("slot_ws")
+    async def release_task_sentinel(self, slot_ws: Workspace, task_id: str) -> bool:
+        """Return a finished task's slot sentinel to the free form.
+
+        Only once the task let go of the checkout: HEAD is detached, the tree
+        is clean and every commit is published under a remote ref.  A slot
+        still on its branch keeps its sentinel for the forensic retry path.
+        Returns whether the sentinel was released.
+        """
+        slot_dir = Path(slot_ws.workspace_path)
+        sentinel = self.read_sentinel(slot_dir)
+        if sentinel is None or sentinel.task_id != task_id:
+            return False
+        try:
+            if await self.git.aget_current_branch(str(slot_dir)) != "HEAD":
+                return False
+            if await self.git.ahas_uncommitted_changes(str(slot_dir), strict=True) is not False:
+                return False
+            published = await self.git._arun(
+                ["for-each-ref", "--contains", "HEAD", "--count=1",
+                 "--format=%(refname)", "refs/remotes"],
+                cwd=str(slot_dir),
+            )
+        except GitError:
+            return False
+        if not published.strip():
+            return False
+        self.write_sentinel(slot_dir, replace(
+            sentinel, task_id=None, branch=None, assigned_at=None,
+        ))
+        return True
 
     async def _slot_has_retained_binding(self, workspace_id: str) -> bool:
         if not hasattr(self.db, "_engine"):

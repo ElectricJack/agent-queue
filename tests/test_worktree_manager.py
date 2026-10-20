@@ -1921,6 +1921,126 @@ class TestRestoreSlotAfterTask:
             assert "unfinished" in db.contexts[-1]["content"]
 
 
+class TestFinishedTaskSentinel:
+    """amber-bridge-75: a finished task's sentinel must not refuse the slot.
+
+    A train repair closed, its slot was detached clean at the batch tip and
+    its sentinel kept naming ``aq/batches/...``.  Delivery deleted that
+    branch and ``origin/main`` moved on, so the next task's preparation could
+    prove neither predecessor shape and refused: "branch disagrees with its
+    source sentinel".
+    """
+
+    async def _finished_slot(self, mgr, base_ws, kind, base_repo):
+        """A detached, clean slot whose predecessor's branch is gone."""
+        slot = await mgr.create_slot(base_ws, kind, 0)
+        await mgr.reset_slot_for_task(slot, FakeTask(id="tsk-prev"))
+        path = Path(slot.workspace_path)
+        (path / "work.py").write_text("print(1)\n")
+        _git(["add", "work.py"], cwd=path)
+        _git(["commit", "-m", "repair"], cwd=path)
+        _git(["push", "origin", "aq/tsk-prev"], cwd=path)
+        _git(["switch", "--detach"], cwd=path)
+        _git(["branch", "-D", "aq/tsk-prev"], cwd=path)
+        # Delivery lands the branch on main, then deletes it.
+        _git(["fetch", "origin"], cwd=base_repo)
+        _git(["merge", "--no-ff", "-m", "deliver", "origin/aq/tsk-prev"], cwd=base_repo)
+        _git(["push", "origin", "main", ":aq/tsk-prev"], cwd=base_repo)
+        _git(["fetch", "--prune", "origin"], cwd=path)
+        assert mgr.read_sentinel(path).branch == "aq/tsk-prev"
+        return slot, path
+
+    @staticmethod
+    def _status(db, monkeypatch, status):
+        async def get_task(task_id):
+            return SimpleNamespace(id=task_id, status=status)
+
+        monkeypatch.setattr(db, "get_task", get_task)
+
+    async def test_a_terminal_predecessor_is_reclaimed(
+        self, mgr, base_ws, kind, base_repo, db, monkeypatch
+    ):
+        from src.models import TaskStatus
+
+        slot, path = await self._finished_slot(mgr, base_ws, kind, base_repo)
+        with pytest.raises(GitError, match="disagrees with its source sentinel"):
+            await mgr.ensure_slot_checkout(slot, FakeTask(id="tsk-next"))
+        self._status(db, monkeypatch, TaskStatus.COMPLETED)
+
+        assert await mgr.reset_slot_for_task(slot, FakeTask(id="tsk-next")) == "aq/tsk-next"
+
+        sentinel = mgr.read_sentinel(path)
+        assert (sentinel.task_id, sentinel.branch) == ("tsk-next", "aq/tsk-next")
+
+    @pytest.mark.parametrize("refusal", ["in_progress", "dirty", "retained"])
+    async def test_a_live_or_unproved_predecessor_still_refuses(
+        self, mgr, base_ws, kind, base_repo, db, monkeypatch, refusal
+    ):
+        from src.models import TaskStatus
+
+        slot, path = await self._finished_slot(mgr, base_ws, kind, base_repo)
+        self._status(
+            db, monkeypatch,
+            TaskStatus.IN_PROGRESS if refusal == "in_progress" else TaskStatus.COMPLETED,
+        )
+        if refusal == "dirty":
+            (path / "work.py").write_text("unfinished\n")
+        if refusal == "retained":
+            monkeypatch.setattr(mgr, "_slot_has_retained_binding", AsyncMock(return_value=True))
+
+        with pytest.raises(GitError, match="disagrees with its source sentinel"):
+            await mgr.ensure_slot_checkout(slot, FakeTask(id="tsk-next"))
+        assert mgr.read_sentinel(path).task_id == "tsk-prev"
+
+    async def test_completion_releases_a_detached_published_slot(
+        self, mgr, base_ws, kind, base_repo
+    ):
+        slot = await mgr.create_slot(base_ws, kind, 0)
+        await mgr.reset_slot_for_task(slot, FakeTask(id="tsk-prev"))
+        path = Path(slot.workspace_path)
+        (path / "work.py").write_text("print(1)\n")
+        _git(["add", "work.py"], cwd=path)
+        _git(["commit", "-m", "repair"], cwd=path)
+        _git(["push", "origin", "aq/tsk-prev"], cwd=path)
+        await mgr.restore_slot_after_task(slot, task_id="tsk-prev")
+        assert _git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=path) == "HEAD"
+
+        assert await mgr.release_task_sentinel(slot, "tsk-other") is False
+        assert await mgr.release_task_sentinel(slot, "tsk-prev") is True
+
+        sentinel = mgr.read_sentinel(path)
+        assert (sentinel.task_id, sentinel.branch, sentinel.assigned_at) == (None, None, None)
+        assert (sentinel.workspace_id, sentinel.project_id) == (slot.id, "p1")
+        # The incident: the branch goes away and main moves on.  A released
+        # slot prepares without consulting the predecessor at all.
+        _git(["push", "origin", ":aq/tsk-prev"], cwd=path)
+        _git(["commit", "--allow-empty", "-m", "later"], cwd=base_repo)
+        _git(["push", "origin", "main"], cwd=base_repo)
+        _git(["fetch", "--prune", "origin"], cwd=path)
+        _git(["branch", "-D", "aq/tsk-prev"], cwd=path)
+        assert await mgr.reset_slot_for_task(slot, FakeTask(id="tsk-next")) == "aq/tsk-next"
+
+    @pytest.mark.parametrize("shape", ["attached", "unpublished", "dirty"])
+    async def test_completion_keeps_the_sentinel_on_unreleased_work(
+        self, mgr, base_ws, kind, shape
+    ):
+        slot = await mgr.create_slot(base_ws, kind, 0)
+        await mgr.reset_slot_for_task(slot, FakeTask(id="tsk-prev"))
+        path = Path(slot.workspace_path)
+        (path / "work.py").write_text("print(1)\n")
+        _git(["add", "work.py"], cwd=path)
+        _git(["commit", "-m", "unpushed"], cwd=path)
+        if shape != "attached":
+            if shape == "dirty":
+                _git(["push", "origin", "aq/tsk-prev"], cwd=path)
+            _git(["switch", "--detach"], cwd=path)
+        if shape == "dirty":
+            (path / "work.py").write_text("unfinished\n")
+
+        assert await mgr.release_task_sentinel(slot, "tsk-prev") is False
+        assert mgr.read_sentinel(path).task_id == "tsk-prev"
+
+
 class TestSalvageUnpushedCommits:
     """§3.4: salvage must *push*, not merely leave a local branch behind.
 

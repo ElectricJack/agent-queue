@@ -219,7 +219,13 @@ unlock Git registrations or recreate a missing source. Valid idle predecessor
 branches remain reusable after existing salvage/checkpoint ownership checks.
 Managed slots detached by normal release may retain the predecessor sentinel
 while HEAD equals the cached default tip; an explicit operator handoff may use
-its proved commit instead. Attached branch disagreement still refuses reset.
+its proved commit instead. A pool close whose claim release succeeds returns
+the sentinel to the free form once HEAD is detached, clean and contained in a
+remote ref. A detached, clean slot whose sentinel still names a terminal task
+with no retained integration owner or job pin is reclaimed even after that
+task's branch was deleted and the default tip moved; the sentinel is kept until
+reset so salvage still attributes unpublished commits to the predecessor.
+Attached branch disagreement still refuses reset.
 Legacy clones retain their existing branch-cleanup behavior.
 
 Retirement re-reads and locks the registered workspace instead of trusting the
