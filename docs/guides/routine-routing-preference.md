@@ -103,6 +103,16 @@ A task that names no preference routes exactly as it did before the columns
 existed: both are nullable, `NULL` means no preference, and the recorded
 decision carries `"preference": null`.
 
+When a strict target has no eligible candidate, `prefer_target_unavailable`
+includes the effective kind/origin rule, selected class and lane, and the
+admission checks that excluded its installed profiles. For example, a bugfix
+classified at `deep-high` can exclude the `standard-high-claude` rung by class
+and the `deep-high-claude` rung by its reservation for design lanes. Available
+standard Claude capacity does not bypass either rule. Project
+`preferred_provider`, provider exclusions and workspace requirements are also
+named when they exclude the target. `aq task explain` includes these details
+from the router's failed run.
+
 ## Replay evidence
 
 The frozen historical input is

@@ -14704,6 +14704,11 @@
             "title": "Task Id",
             "type": "string"
           },
+          "adopt_source": {
+            "default": false,
+            "title": "Adopt Source",
+            "type": "boolean"
+          },
           "dry_run": {
             "default": true,
             "title": "Dry Run",
