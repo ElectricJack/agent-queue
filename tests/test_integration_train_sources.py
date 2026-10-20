@@ -5945,6 +5945,127 @@ async def test_preexisting_epic_does_not_sync_default_already_in_candidate(colle
     assert (await BatchStore(case.db).get(testing.batch_id)).repair_attempt_count == 0
 
 
+@pytest.mark.parametrize("default_verdict,advance_default", [
+    ("success", False), ("success", True), ("failure", False), ("pending", False),
+])
+async def test_refresh_baseline_uses_frozen_default_checks_instead_of_red_epic(
+    collected_epic, default_verdict, advance_default,
+):
+    from src.integration.stacked_branches import EpicRefresh
+
+    case = collected_epic
+    epic = await collect_epic(case)
+    await completed(case.world, "default-change")
+    case.origin.land("default-change")
+    default = git(case.origin.url, "rev-parse", "main")
+    case.train.baseline = CandidateBaselineService(case.db)
+    case.github.rerequest_check_suite = AsyncMock()
+    pending = await EpicRefresh(case.db, case.train).refresh("epic", dry_run=False)
+    assert pending["state"] == "testing", pending
+    candidate = pending["candidate_sha"]
+    case.github.runs.update({epic: "failure", candidate: "failure", default: default_verdict})
+    if advance_default:
+        moved = commit(case.origin.clone, {"later.txt": "later default"}, base=default)
+        git(case.origin.clone, "push", "origin", f"{moved}:main")
+        case.github.runs[moved] = "failure"
+    case.github.observed.clear()
+
+    visit = await case.train.request_visit(case.target)
+
+    baseline = visit.detail["baseline"]
+    assert baseline["target_sha"] == default
+    assert baseline["target_ref"] == MAIN.target_ref
+    assert baseline["target_checks"] == {"success": "green", "failure": "red",
+                                          "pending": "pending"}[default_verdict]
+    assert epic not in case.github.observed
+    assert git(case.origin.url, "rev-parse", "aq/epic") == epic
+    assert (await case.db.get_integration_batch(pending["batch_id"]))["lifecycle"] != "promoted"
+    if default_verdict == "success":
+        assert visit.state == "repair" and baseline["repairable_checks"] == ["unit"]
+        assert baseline["pre_existing_checks"] == []
+        assert visit.detail["blocker"] == "epic_refresh_checks_failed"
+        assert "repair" in visit.detail["supervisor_action"].lower()
+        status = await IntegrationStatusService(
+            case.db, git_first="active", train=case.train,
+        ).control_status("p")
+        blocker = next(item for item in status["blockers"]
+                       if item["code"] == "epic_refresh_checks_failed")
+        assert blocker["evidence"]["baseline"] == baseline
+        assert blocker["supervisor_action"] == visit.detail["supervisor_action"]
+        original = await case.train.repair.input(visit.repair["task_id"])
+        assert original["starting_sha"] == candidate
+        case.github.rerequest_check_suite.assert_not_awaited()
+    else:
+        assert visit.state == "preexisting" and visit.repair is None
+        assert baseline["state"] == ("pre_existing" if default_verdict == "failure"
+                                     else "unproven")
+
+
+async def test_red_refresh_exhausts_repairs_with_supervisor_action_and_requires_exact_green(
+    collected_epic,
+):
+    from src.database.tables import messages
+    from src.integration.models import RepairPolicy
+    from src.integration.stacked_branches import EpicRefresh
+
+    case = collected_epic
+    epic = await collect_epic(case)
+    await completed(case.world, "default-change")
+    case.origin.land("default-change")
+    default = git(case.origin.url, "rev-parse", "main")
+    async with case.db.immediate() as conn:
+        policy = await conn.scalar(select(projects.c.hierarchical_integration_policy))
+        policy["parent"]["repair"] = RepairPolicy(
+            primary_attempts=1, debug_attempts=1, debug_intelligence_class="deep-high",
+        ).model_dump()
+        await conn.execute(update(projects).values(hierarchical_integration_policy=policy))
+    case.train.baseline = CandidateBaselineService(case.db)
+    pending = await EpicRefresh(case.db, case.train).refresh("epic", dry_run=False)
+    candidate = pending["candidate_sha"]
+    case.github.runs.update({epic: "failure", candidate: "failure", default: "success"})
+    case.github.records.clear()
+    for attempt in (1, 2):
+        visit = await case.train.visit(case.target)
+        assert visit.state == "repair", visit
+        assert visit.repair["attempt_count"] == attempt
+        await case.db.update_task(visit.repair["task_id"], status=TaskStatus.COMPLETED)
+        await BranchLock(case.db).release(Fence.model_validate(visit.repair["fence"]))
+    for _ in range(2):
+        # Reconstruct stateless services as on daemon restart.
+        case.train.repair = OrdinaryRepairService(case.db)
+        case.train.baseline = CandidateBaselineService(case.db)
+        blocked = await case.train.visit(case.target)
+        assert (blocked.state, blocked.repair["outcome"]) == ("blocked", "human_required")
+        assert blocked.detail["baseline"]["repairable_checks"] == ["unit"]
+        assert git(case.origin.url, "rev-parse", "aq/epic") == epic
+        assert case.github.records == []
+    incident = await case.db.get_escalation(blocked.repair["escalation_id"])
+    assert incident["choices"] == ["repair", "abort-batch"]
+    assert "eject" not in incident["decision_requested"]
+    assert candidate in incident["decision_requested"]
+    async with case.db._engine.connect() as conn:
+        notices = (await conn.execute(select(messages).where(
+            messages.c.body_kind == "integration_repair_exhausted",
+        ))).mappings().all()
+    assert len(notices) == 1 and notices[0]["to_id"] == "supervisor-p"
+    assert "abort-batch" in notices[0]["body"] and candidate in notices[0]["body"]
+    assert (await case.db.get_integration_batch(pending["batch_id"]))["lifecycle"] != "promoted"
+
+    repaired = commit(case.origin.clone, {"refresh-fix.txt": "fix"}, base=candidate)
+    git(case.origin.clone, "push", "origin", f"{repaired}:{candidate_ref(pending['batch_id'])}")
+    waiting = await case.train.visit(case.target)
+    assert waiting.state == "testing" and waiting.candidate_sha == repaired
+    assert git(case.origin.url, "rev-parse", "aq/epic") == epic
+    case.github.runs[repaired] = "success"
+    delivered = await case.train.visit(case.target)
+    assert (delivered.state, delivered.checks, delivered.target_sha) == (
+        "delivered", "green", repaired,
+    )
+    assert git(case.origin.url, "rev-parse", "aq/epic") == repaired
+    assert case.github.records[-1]["head_sha"] == repaired
+    assert (await case.db.get_escalation(incident["id"]))["state"] == "resolved"
+
+
 async def test_spent_default_sync_returns_to_bounded_human_blocker(collected_epic):
     case = collected_epic
     _, testing = await preexisting_epic_with_default_fix(case)

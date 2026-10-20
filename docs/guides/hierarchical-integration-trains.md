@@ -260,6 +260,13 @@ Explain reports `frontier_epic_refresh_pending` for the epic gate and names any
 blocking refresh batch id; default-branch proof retains its separate exclusion.
 Repairs for failed or missing CI start from the tested refresh candidate; conflict
 repairs start from the partial candidate containing the successful merges.
+Refresh failures are compared with the default SHA frozen into the batch. A
+failure already present on the epic is still repairable when that default SHA
+passes the check. Status reports `epic_refresh_checks_failed`, the exact baseline
+and a supervisor action. Exhausted repairs send one incident asking the
+supervisor to repair the refresh candidate or abort the batch with
+`aq integration abort-batch BATCH_ID --apply --reason REASON`. Red candidate
+checks continue to block publication after exhaustion.
 
 GitHub runs no `pull_request` workflows for a PR that conflicts with its base, so
 a conflicting root PR would wait for checks forever. When the PR read reports it

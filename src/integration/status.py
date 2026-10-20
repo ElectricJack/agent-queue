@@ -1026,6 +1026,12 @@ class IntegrationStatusService:
                 detail["blocker"], detail["reason"], ref,
                 candidate_sha=visit.get("candidate_sha"), evidence=detail,
             ))
+        if detail.get("blocker") == "epic_refresh_checks_failed":
+            blockers.append(_blocker(
+                detail["blocker"], detail["reason"], ref,
+                candidate_sha=visit.get("candidate_sha"), evidence=detail,
+                supervisor_action=detail["supervisor_action"],
+            ))
         if visit["state"] == "testing":
             code = "checks_red" if visit.get("checks") == "red" else "checks_pending"
             blockers.append(_blocker(
