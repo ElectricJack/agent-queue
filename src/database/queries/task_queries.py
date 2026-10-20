@@ -36,6 +36,7 @@ from src.database.queries.blocked_state import (
 )
 from src.database.queries.ingest_hold import not_ingest_held
 from src.database.tables import (
+    admission_reservations,
     agents,
     archived_tasks,
     continuations,
@@ -62,6 +63,7 @@ from src.database.tables import (
     task_tools,
     task_workspace_requirements,
     tasks,
+    wait_priority_projection,
     wait_records,
     workspaces,
 )
@@ -2703,6 +2705,18 @@ class TaskQueryMixin:
         comment_project_id = (await conn.execute(
             select(tasks.c.project_id).where(tasks.c.id == task_id)
         )).scalar_one_or_none()
+        # Reservations can reference both the task and its continuation. Keep
+        # the independent wait/outcome audit while removing execution ownership.
+        await conn.execute(delete(admission_reservations).where(
+            (admission_reservations.c.task_id == task_id)
+            | admission_reservations.c.continuation_id.in_(
+                select(continuations.c.id).where(continuations.c.task_id == task_id)
+            )
+        ))
+        await conn.execute(delete(continuations).where(continuations.c.task_id == task_id))
+        await conn.execute(delete(wait_priority_projection).where(
+            wait_priority_projection.c.task_id == task_id
+        ))
         await conn.execute(delete(task_results).where(task_results.c.task_id == task_id))
         if not preserve_completion:
             await conn.execute(

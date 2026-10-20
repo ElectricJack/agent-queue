@@ -253,7 +253,10 @@ async def test_batched_pool_bounds_audit_preserves_every_profile_and_announces_o
 
     profiles = {PoolKey(profile_id=f"worker-{n}"): SimpleNamespace(max_active=n + 1, min_active=n)
                 for n in range(3)}
-    measurement = SimpleNamespace(profiles=profiles, candidates={key: ["p", "q"] for key in profiles})
+    measurement = SimpleNamespace(
+        profiles=profiles,
+        candidates={key: [SimpleNamespace(project_id=p) for p in ("p", "q")] for key in profiles},
+    )
     orch = SimpleNamespace(db=db, bus=SimpleNamespace(emit=emit))
     await Orchestrator._announce_bounds_rescoped(orch, measurement)
     await Orchestrator._announce_bounds_rescoped(orch, measurement)

@@ -143,3 +143,23 @@ knowledge record `record:aa118354-9dff-451e-927e-de32526c1b43`; task comments ar
 implementation evidence, not worker knowledge-save receipts. Supervisor feedback
 was consumed before close, and the requested same-generation concurrency and
 generation-2 decision regressions were added without a production-code change.
+
+
+## Candidate integration repair — 2026-10-20
+
+Infrastructure holds use `source_identity=continuation:<id>:<reason>` and the
+same incident key. Only the internal wait transaction may create them. The
+continuation must still be live and bound to the same task, wait and project;
+allowed reasons cover stop, push, workspace and detach failures during suspension
+or resume, exhausted resume launches, and a pause observed during launch. A resolved wait may still have an active continuation
+whose infrastructure failure needs this incident. Ordinary wait deadline
+incidents retain their generation binding described above.
+
+A queued continuation records its first admission request before capacity is
+available, then grants that reservation only after fresh admission succeeds.
+Metrics distinguish condition wait from the interval between request and grant;
+a pending request does not occupy a slot. Task deletion removes reservations,
+continuations and priority projections while retaining the independent wait
+outcome audit. Bulk hierarchy changes publish every changed dependency source
+in the mutation transaction using a bounded number of database statements.
+All wait feature flags remain disabled by default.

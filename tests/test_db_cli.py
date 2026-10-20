@@ -495,6 +495,12 @@ async def test_restore_older_schema_removes_newer_tables_and_resets_stamp(fixtur
         await conn.execute(text("UPDATE alembic_version SET version_num = :rev"), {"rev": older})
         await conn.execute(text("CREATE TABLE integration_batches (id text PRIMARY KEY)"))
         await conn.execute(text("INSERT INTO integration_batches VALUES ('original')"))
+        # The restored pre-wait schema has the base claim frontier columns;
+        # later wait migrations backfill and index them during the real upgrade.
+        await conn.execute(text("ALTER TABLE tasks ADD COLUMN priority integer NOT NULL DEFAULT 100, "
+                                "ADD COLUMN project_id text, ADD COLUMN status text, "
+                                "ADD COLUMN is_blocked boolean NOT NULL DEFAULT false, "
+                                "ADD COLUMN profile_id text, ADD COLUMN affinity_agent_id text"))
         # Migration a00000000085 adds promotion_flow to this restored table.
         await conn.execute(text("CREATE TABLE projects (id text PRIMARY KEY)"))
         # Human ask revisions require the existing review, escalation, input and outbox

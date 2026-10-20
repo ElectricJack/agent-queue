@@ -187,7 +187,7 @@ async def test_a_pre_launch_refusal_does_not_notify_a_launch_failure(push_orch):
     )
     orch._emit_text_notify = AsyncMock()
     task = await orch.db.get_task("t0")
-    action = MagicMock(task_id="t0", agent_id="a-x", project_id="p-1")
+    action = MagicMock(task_id="t0", agent_id="a-x", project_id="p-1", continuation_id=None)
     await orch._fail_session_launch(action, task, "refused", backoff=30, notify=False)
     orch._emit_text_notify.assert_not_awaited()
     paused = await orch.db.get_task("t0")

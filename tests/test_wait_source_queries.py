@@ -163,3 +163,37 @@ async def test_cancelled_stale_and_escalation_deadlines_emit_no_timer_event(db, 
         await timer(db, generation=2)
     assert await db.fire_wait_due_deadline("w", 1, now=11) is None
     assert await db.wait_source_watermark() == 0
+
+
+async def test_bulk_dependency_sources_preserve_generations_and_rollback(db):
+    from src.database.tables import tasks
+    from src.models import Task, TaskStatus
+    from src.waits.sources import record_dependency_changes
+
+    for task_id, epoch in (("parent", 3), ("child", 7)):
+        await db.create_task(Task(
+            id=task_id, project_id="p", title=task_id, description="",
+            status=TaskStatus.DEFINED,
+        ))
+        async with db._engine.begin() as conn:
+            await conn.execute(update(tasks).where(tasks.c.id == task_id).values(claim_epoch=epoch))
+    changes = [("parent", "child", "parent-child", "added"),
+               ("child", "parent", "blocks", "removed")]
+    async with db._engine.begin() as conn:
+        await record_dependency_changes(conn, changes)
+    async with db._engine.connect() as conn:
+        rows = (await conn.execute(select(wait_source_events).where(
+            wait_source_events.c.source_key.like("dependency:%"),
+        ))).mappings().all()
+    assert {row["source_key"]: row["source_generation"] for row in rows} == {
+        "dependency:parent:child:parent-child": 7,
+        "dependency:child:parent:blocks": 3,
+    }
+    assert {row["payload"]["action"] for row in rows} == {"added", "removed"}
+    assert all(row["payload_hash"] == payload_hash(row["payload"]) for row in rows)
+    before = await db.wait_source_watermark()
+    with pytest.raises(RuntimeError, match="abort"):
+        async with db._engine.begin() as conn:
+            await record_dependency_changes(conn, changes)
+            raise RuntimeError("abort")
+    assert await db.wait_source_watermark() == before

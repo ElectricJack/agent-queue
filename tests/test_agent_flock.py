@@ -294,7 +294,7 @@ async def test_roster_reads_only_active_tasks_and_keeps_current_work(handler, mo
     assert everyone["a"]["current_task_title"] == "Current work"
     assert everyone["b"]["current_task_id"] is None
     assert reads and all(
-        statuses == {TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS, TaskStatus.WAITING_INPUT}
+        statuses == {TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS, TaskStatus.WAITING_INPUT, TaskStatus.WAITING}
         and ids == ["task"]
         for statuses, ids in reads
     )

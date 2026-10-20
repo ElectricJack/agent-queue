@@ -209,17 +209,37 @@ class EscalationCommandsMixin:
             if conn is None or principal.kind is not PrincipalKind.SERVICE:
                 return _error("invalid_binding", "wait incidents require the wait transaction")
             from sqlalchemy import select
-            from src.database.tables import wait_records
+            from src.database.tables import continuations, wait_records
 
-            wait_id, separator, generation = args["source_identity"].rpartition(":")
-            wait = (await conn.execute(select(wait_records).where(
-                wait_records.c.id == wait_id, wait_records.c.project_id == project_id,
-                wait_records.c.outcome == "pending",
-            ))).mappings().first()
-            if (not separator or not generation.isdecimal() or int(generation) < 1
-                    or not wait or args["incident_key"] != f"wait:{wait_id}:{generation}"
-                    or task_id != (wait["owner_id"] if wait["owner_kind"] == "task" else None)):
-                return _error("invalid_binding", "wait incident does not match its generation")
+            identity = args["source_identity"]
+            if identity.startswith("continuation:"):
+                continuation_id, separator, reason = identity[len("continuation:"):].rpartition(":")
+                bound = (await conn.execute(select(continuations.c.id).join(
+                    wait_records, wait_records.c.id == continuations.c.wait_id,
+                ).where(
+                    continuations.c.id == continuation_id,
+                    continuations.c.task_id == task_id,
+                    wait_records.c.project_id == project_id,
+                    wait_records.c.owner_kind == "task",
+                    wait_records.c.owner_id == task_id,
+                    continuations.c.resume_state.notin_(("acknowledged", "failed", "cancelled")),
+                ))).scalar_one_or_none()
+                if (not separator or reason not in {
+                        "stop_uncertain", "push_failed", "detach_uncertain", "resume_launch_failed",
+                        "resume_workspace_failed", "resume_stop_uncertain",
+                        "resume_detach_uncertain", "paused",
+                    } or not bound or args["incident_key"] != identity):
+                    return _error("invalid_binding", "continuation hold does not match its owner")
+            else:
+                wait_id, separator, generation = identity.rpartition(":")
+                wait = (await conn.execute(select(wait_records).where(
+                    wait_records.c.id == wait_id, wait_records.c.project_id == project_id,
+                    wait_records.c.outcome == "pending",
+                ))).mappings().first()
+                if (not separator or not generation.isdecimal() or int(generation) < 1
+                        or not wait or args["incident_key"] != f"wait:{wait_id}:{generation}"
+                        or task_id != (wait["owner_id"] if wait["owner_kind"] == "task" else None)):
+                    return _error("invalid_binding", "wait incident does not match its generation")
         if args["source_kind"] == "question":
             question = await self.db.get_agent_question(args["source_identity"])
             if question is None or question["project_id"] != project_id:

@@ -5239,3 +5239,11 @@ expiry must follow creation.
 | `audience` | JSONB | NOT NULL, authorized audience snapshot |
 | `created_at`, `expires_at` | FLOAT | NOT NULL |
 | `revoked_at` | FLOAT | Nullable revocation time |
+
+### Table: `wait_bridge_progress`
+
+Durable progress for the verified-wait legacy bridge. The composite primary key
+`(project_id, phase, identity)` binds a per-object receipt; identity `*` records
+completion of a guarded phase. `project_id` references projects. `phase` is one of
+project, agent-waits, audit, or sessionless; `state` is pending, complete, or held.
+`evidence` is JSONB and `updated_at` records the last committed pass.

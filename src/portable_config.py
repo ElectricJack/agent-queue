@@ -44,7 +44,7 @@ PORTABLE_CONFIG_SECTIONS = frozenset(
         "memory", "knowledge", "mcp_server", "sessions", "worktrees", "streams", "security",
         "messages", "events", "supervisor_agent", "api_auth", "test_selection", "providers",
         "provider_failover", "routing", "graph_layout", "dashboard_server", "dashboard", "host_shell",
-        "agent_profiles", "memory_extractor", "inbox", "planner", "plugins",
+        "agent_profiles", "memory_extractor", "inbox", "planner", "plugins", "wait_policy",
     }
 )
 

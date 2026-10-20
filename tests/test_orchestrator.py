@@ -790,6 +790,7 @@ async def test_config_reload_does_not_swap_live_github_credential_provider(tmp_p
         data_dir=str(tmp_path / "data"),
     )
     orchestrator = Orchestrator(config, runtimes=MockAdapterFactory())
+    await orchestrator.db.initialize()
     original_access = orchestrator.github_access
     changed = copy.deepcopy(config)
     changed.integration.github_app = GitHubAppConfig(
@@ -813,6 +814,8 @@ async def test_config_reload_does_not_swap_live_github_credential_provider(tmp_p
     assert orchestrator.github_runner is original_access.runner
     assert orchestrator.git.github_access is original_access
     assert original_access.credential_identity.mode is GitHubCredentialMode.EXISTING_LOGIN
+
+    await orchestrator.db.close()
 
 
 async def test_daemon_start_and_cycle_schedule_interrupted_playbook_runs(tmp_path):

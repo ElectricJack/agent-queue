@@ -7823,7 +7823,7 @@
         "claims"
       ],
       "default_arm": true,
-      "digest": "sha256:dd12afc3b0faad40d70c860b436bd81b0bd967759539046cadd9f9b26c6d0e6a",
+      "digest": "sha256:71a3105e737e6257e53ff949b0d0f33a6b298ec1bd542bd9fb521599c47c2716",
       "imports": [
         "src.config",
         "src.database.queries.claim_queries",
@@ -7833,7 +7833,8 @@
         "src.integration.delivery_observer",
         "src.models",
         "src.orchestrator",
-        "src.scheduler"
+        "src.scheduler",
+        "src.waits.admission"
       ],
       "markers": [
         "parametrize"

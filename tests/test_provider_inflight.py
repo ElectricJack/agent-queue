@@ -506,7 +506,7 @@ async def test_a_launch_refused_on_an_unavailable_provider_returns_the_task_to_r
         "codex", DISABLED, by="human:test", reason="rotating", until=time.time() + 600
     )
     orch._emit_text_notify = AsyncMock()
-    action = MagicMock(task_id="t0", agent_id="a-x", project_id="p-1")
+    action = MagicMock(task_id="t0", agent_id="a-x", project_id="p-1", continuation_id=None)
     await orch._fail_session_launch(
         action,
         await orch.db.get_task("t0"),
@@ -1168,7 +1168,7 @@ async def test_a_refusal_while_the_canary_is_in_flight_is_a_short_recovering_pau
     from unittest.mock import MagicMock
 
     await _task(orch, "t0")
-    action = MagicMock(task_id="t0", agent_id="a-x", project_id="p-1")
+    action = MagicMock(task_id="t0", agent_id="a-x", project_id="p-1", continuation_id=None)
     await orch.db.transition_task("t0", TaskStatus.ASSIGNED, context="test")
     await orch._fail_session_launch(
         action,

@@ -48,6 +48,9 @@ from src.database.tables import (
 #:   operator deletion; unaudited system deletion is refused by the removal guard.
 TASK_REFERENCE_DISPOSITIONS: dict[tuple[str, str], str] = {
     ("agents", "current_task_id"): "nulled",
+    ("admission_reservations", "task_id"): "deleted",
+    ("continuations", "task_id"): "deleted",
+    ("wait_priority_projection", "task_id"): "deleted",
     ("integration_candidate_resolutions", "repair_task_id"): "history",
     ("integration_parent_episodes", "parent_task_id"): "history",
     ("integration_parent_verifications", "parent_task_id"): "history",
