@@ -21,6 +21,8 @@ class ReviewDecideResponse:
     Attributes:
         review_id (str):
         state (str):
+        application_state (str | Unset):  Default: 'not_started'.
+        decision_id (None | str | Unset):
         success (bool | Unset):  Default: True.
         unblocked_task_ids (list[str] | Unset):
         playbook (None | ReviewDecideResponsePlaybookType0 | Unset):
@@ -28,6 +30,8 @@ class ReviewDecideResponse:
 
     review_id: str
     state: str
+    application_state: str | Unset = "not_started"
+    decision_id: None | str | Unset = UNSET
     success: bool | Unset = True
     unblocked_task_ids: list[str] | Unset = UNSET
     playbook: None | ReviewDecideResponsePlaybookType0 | Unset = UNSET
@@ -39,6 +43,14 @@ class ReviewDecideResponse:
         review_id = self.review_id
 
         state = self.state
+
+        application_state = self.application_state
+
+        decision_id: None | str | Unset
+        if isinstance(self.decision_id, Unset):
+            decision_id = UNSET
+        else:
+            decision_id = self.decision_id
 
         success = self.success
 
@@ -62,6 +74,10 @@ class ReviewDecideResponse:
                 "state": state,
             }
         )
+        if application_state is not UNSET:
+            field_dict["application_state"] = application_state
+        if decision_id is not UNSET:
+            field_dict["decision_id"] = decision_id
         if success is not UNSET:
             field_dict["success"] = success
         if unblocked_task_ids is not UNSET:
@@ -79,6 +95,17 @@ class ReviewDecideResponse:
         review_id = d.pop("review_id")
 
         state = d.pop("state")
+
+        application_state = d.pop("application_state", UNSET)
+
+        def _parse_decision_id(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        decision_id = _parse_decision_id(d.pop("decision_id", UNSET))
 
         success = d.pop("success", UNSET)
 
@@ -104,6 +131,8 @@ class ReviewDecideResponse:
         review_decide_response = cls(
             review_id=review_id,
             state=state,
+            application_state=application_state,
+            decision_id=decision_id,
             success=success,
             unblocked_task_ids=unblocked_task_ids,
             playbook=playbook,

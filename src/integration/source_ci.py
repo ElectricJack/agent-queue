@@ -177,7 +177,7 @@ async def observe_source_ci(*, row, source, client, handler, pull=None):
             # Bounded by policy: an outage that outlasts the attempts is a
             # named blocker for a human, not another observation loop.
             logger.warning(
-                "source CI infrastructure blocker %s for task %s at %s after %s "
+                "source CI blocker %s for task %s at %s after %s "
                 "consecutive observations",
                 recorded["blocker"], row["id"], source["head"][:12],
                 recorded.get("infra_observations"),
@@ -221,7 +221,7 @@ def repair_description(observation):
     )
     return (
         render_task_template(
-            "source-ci-repair",
+            "source-ci-reopen",
             task_id=observation.task_id,
             source_pr_url=source["pr_url"],
             source_repository_id=source["repository_id"],

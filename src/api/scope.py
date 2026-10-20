@@ -71,9 +71,9 @@ AGENT_COMMAND_SET: frozenset[str] = frozenset(
         "message_inbox",
         "message_reply",
         # The idle-session nudge (``src/messages/delivery.py:_render_nudge``)
-        # names ``aq message status <id>``, and marks the row delivered, so
-        # ``message_inbox`` no longer lists it: this is the only way a worker
-        # reaches the body it was handed.  ``_cmd_message_status`` fences a
+        # names ``aq message status <id>``.  Run by the recipient, it is the
+        # acknowledgment that marks the row read and stops the nudge retries;
+        # a ``message_inbox`` peek does not.  ``_cmd_message_status`` fences a
         # plain session to messages addressed to its own mailboxes.
         "message_status",
         "memory_save",
@@ -157,6 +157,7 @@ AGENT_COMMAND_SET: frozenset[str] = frozenset(
         "review_withdraw",
         "review_reopen",
         "review_comment",
+        "review_feedback_complete",
         "report_get",
         "report_list",
         "morning_report_preview",
@@ -196,20 +197,25 @@ PROJECT_ONBOARDING_COMMANDS: frozenset[str] = frozenset(
 PROJECT_ONBOARDING_SCOPE_ERROR = "out of scope: project onboarding requires global admin"
 OPERATOR_INTEGRATION_CONTROLS = frozenset(
     {
+        "integration_supersede_completion",
         "integration_record_root_noop",
         "integration_abort_batch",
+        "integration_settle_batch",
         "integration_pause_batch",
         "integration_resume_batch",
         "integration_seal_now",
         "integration_eject",
         "integration_refresh_epic",
+        "integration_reverify_epic",
         "integration_retire_origin",
         "integration_reevaluate_repair",
         "integration_release_owner",
         "integration_release_stale_owners",
+        "integration_clear_retained_recovery",
         "integration_redrive_root",
         "integration_authorize_root",
         "integration_redrive_child",
+        "integration_recover_completed_container",
         "integration_reopen_collection",
         "integration_close_delivered_pr",
         "integration_transfer_owner",
@@ -290,12 +296,27 @@ def check_command_scope(command: str, args: dict, scope: RequestScope) -> str | 
     ``args`` is mutated in place (same object /api/execute forwards to
     ``ch.execute``).
     """
+    from src.commands.contracts.ask import (
+        ASK_ARGS, GATEWAY_COMMANDS, GLOBAL_CONTROL_COMMANDS, OPERATOR_COMMANDS,
+    )
+    if command in GATEWAY_COMMANDS:
+        return "out of scope: ask intake requires the authenticated daemon gateway"
     if scope.kind == "local":
         return None
+    if command in OPERATOR_COMMANDS and not (
+        command in GLOBAL_CONTROL_COMMANDS and scope.elevated and scope.project_id is None
+    ):
+        return "out of scope: ask gateway and operator controls are daemon/local only"
+    if command in ASK_ARGS and not scope.elevated:
+        return "out of scope: workers have no human ask authority"
+    if command == "ask_reply":
+        return "out of scope: human discussion requires an authenticated human"
     if command == "supervisor_inbox_post":
         return "out of scope: conversation intake is daemon-internal"
-    if command == "supervisor_inbox_reply" and not (scope.elevated and scope.project_id is None):
-        return "out of scope: conversation replies require local operator or global supervisor"
+    # The command verifies the live launch and exact stored message recipient.
+    # Project supervisors already own conversations selected by the named router.
+    if command == "supervisor_inbox_reply" and not scope.elevated:
+        return "out of scope: conversation replies require local operator or supervisor"
     if command in {"supervisor_inbox_status", "supervisor_inbox_history"} and not (
         scope.elevated and scope.project_id is None
     ):
@@ -331,7 +352,8 @@ def check_command_scope(command: str, args: dict, scope: RequestScope) -> str | 
         scope.elevated and scope.project_id is None
     ):
         return PROJECT_ONBOARDING_SCOPE_ERROR
-    if command == "bind_project_repository" and not (
+    if command in {"bind_project_repository", "repair_repository_checkout",
+                   "repair_workspace_checkout"} and not (
         scope.elevated and scope.project_id is None
     ):
         return "out of scope: repository binding requires global admin"
@@ -341,6 +363,10 @@ def check_command_scope(command: str, args: dict, scope: RequestScope) -> str | 
         command in {"message_send", "message_inbox"}
         and args.get("to_kind") == "session"
         and args.get("to_id") == "supervisor-global"
+        # A report retains the sender's project. The handler verifies the
+        # persisted named supervisor launch and derives its sender identity;
+        # this preliminary gate never admits reading the global mailbox.
+        and not (command == "message_send" and scope.elevated and scope.project_id is not None)
     )
     if system_message and not (scope.elevated and scope.project_id is None):
         return "out of scope: system messages require global admin"
@@ -539,11 +565,11 @@ _PLAYBOOK_COMPILER_COMMANDS = frozenset(
 )
 
 _SPEC_INGEST_COMMANDS = frozenset({
-    "list_tasks", "get_downstream_tasks", "task_batch_propose", "task_batch_commit",
+    "list_tasks", "get_downstream_tasks", "task_batch_propose", "task_batch_commit", "approved_spec_packet",
 })
 
 
-async def spec_ingest_task_for_session(db, scope: RequestScope):
+async def spec_ingest_task_for_session(db, scope: RequestScope, *, legacy_receipt=False):
     """A live, server-assigned ingestion role; client hints grant no authority."""
     if db is None or not scope.session_id or not scope.project_id:
         return None
@@ -554,7 +580,163 @@ async def spec_ingest_task_for_session(db, scope: RequestScope):
     if (task is None or task.profile_id != "spec-ingest" or task.route_source != "role"
             or not (task.dedup_key or "").startswith("spec-ingest:")):
         return None
+    from src.asks.ingestion import approved_packet, task_stamp
+    from src.asks.models import AskError
+    from src.asks.operations import get_operation
+
+    async with db.immediate() as conn:
+        stamp = await task_stamp(conn, task.id)
+        if (not stamp and legacy_receipt
+                and not task.dedup_key.startswith("spec-ingest:decision:")):
+            # Compatibility grants only a previously committed receipt. The caller
+            # must still verify its exact proposal; no path confers new approval.
+            return task
+        if not stamp or task.dedup_key != f"spec-ingest:decision:{stamp.get('decision_id')}":
+            return None
+        try:
+            await approved_packet(db, stamp["decision_id"], stamp["packet_sha256"],
+                                  scope.project_id, conn=conn)
+            receipt = await get_operation(conn, stamp["decision_id"], "ingestion")
+            if (not receipt or receipt["status"] != "succeeded"
+                    or (receipt["receipt"] or {}).get("task_id") != task.id):
+                return None
+        except (AskError, KeyError):
+            return None
     return task
+
+#: A fidelity reviewer's batch capabilities (held batches §5.2).  Each names
+#: a batch (``batch_id``; ``task_batch_update`` calls it ``proposal_id``) and
+#: reaches only the batch the reviewer was dispatched for.
+_BATCH_REVIEW_COMMANDS = frozenset({
+    "task_batch_validate", "task_batch_update", "task_batch_review_record",
+})
+_REVIEWABLE_BATCH_STATES = frozenset({"held", "reviewing", "needs_scope"})
+
+
+async def fidelity_review_task_for_session(db, scope: RequestScope, batch_id=None):
+    """The live reviewer task this session holds for *batch_id*, else ``None``.
+
+    Authority is the batch's own assignment, not a hint: the held role task
+    must carry the batch's dedup key and metadata, and the batch must name it
+    as ``reviewer_task_id``.  The first use under a claim binds the batch's
+    ``reviewer_claim_epoch``/``reviewer_session_id`` to that claim; the epoch
+    only moves forward, so a retried or rerouted claim revokes the previous
+    holder, and ``ensure_fidelity_review`` clears both on reassignment.
+    """
+    if db is None or not scope.session_id or not scope.project_id:
+        return None
+    import json
+
+    from sqlalchemy import or_, select, update
+
+    from src.database.tables import ingest_batches, task_metadata
+    from src.review_keys import FIDELITY_REVIEWER_PROFILE_ID, fidelity_review_dedup_key
+
+    session = await db.get_session(scope.session_id)
+    if session is None or session.profile_id != FIDELITY_REVIEWER_PROFILE_ID:
+        return None
+    task = await held_task_for_session(db, scope)
+    if (task is None or task.profile_id != FIDELITY_REVIEWER_PROFILE_ID
+            or task.route_source != "role"):
+        return None
+    async with db.immediate() as conn:
+        meta = (await conn.execute(select(task_metadata.c.value).where(
+            task_metadata.c.task_id == task.id, task_metadata.c.key == "fidelity_review",
+        ))).scalar_one_or_none()
+        try:
+            metadata = json.loads(meta) if meta else None
+        except (TypeError, ValueError):
+            return None
+        assigned_batch = metadata.get("batch_id") if isinstance(metadata, dict) else None
+        if (not isinstance(assigned_batch, str) or not assigned_batch
+                or batch_id not in (None, assigned_batch)
+                or task.dedup_key != fidelity_review_dedup_key(assigned_batch)):
+            return None
+        batch_id = assigned_batch
+        batch = ingest_batches.c
+        await conn.execute(update(ingest_batches).where(
+            batch.batch_id == batch_id, batch.reviewer_task_id == task.id,
+            batch.project_id == scope.project_id, batch.state.in_(_REVIEWABLE_BATCH_STATES),
+            or_(batch.reviewer_claim_epoch.is_(None),
+                batch.reviewer_claim_epoch < task.claim_epoch),
+        ).values(reviewer_claim_epoch=task.claim_epoch, reviewer_session_id=session.id))
+        row = (await conn.execute(select(
+            batch.project_id, batch.state, batch.reviewer_task_id,
+            batch.reviewer_claim_epoch, batch.reviewer_session_id,
+        ).where(batch.batch_id == batch_id))).mappings().first()
+    if (row is None or row["project_id"] != scope.project_id
+            or row["state"] not in _REVIEWABLE_BATCH_STATES
+            or row["reviewer_task_id"] != task.id
+            or row["reviewer_claim_epoch"] != task.claim_epoch
+            or row["reviewer_session_id"] != session.id):
+        return None
+    return task
+
+_FIDELITY_READ_COMMANDS = frozenset({
+    "approved_spec_packet", "list_tasks", "get_downstream_tasks", "task_show",
+})
+
+
+async def fidelity_review_read_context(db, scope: RequestScope):
+    """Resolve read authority without accepting a caller-selected batch.
+
+    ``None`` means ordinary scope; an empty mapping is a revoked reviewer.
+    Handlers repeat this boundary so passing the HTTP guard never becomes
+    reusable authority for a later claim or a different batch.
+    """
+    if db is None or scope.kind != "session" or scope.elevated:
+        return None
+    session = await db.get_session(scope.session_id) if scope.session_id else None
+    if session is None or session.profile_id != "fidelity-reviewer":
+        return None
+    if scope.session_instance_token != session.instance_token:
+        return {}
+    task = await fidelity_review_task_for_session(db, scope)
+    if task is None:
+        return {}
+    from sqlalchemy import select
+
+    from src.database.queries import ingest_batch_queries as batches
+    from src.database.tables import ingest_batches, ingest_batch_members, tasks
+    from src.review_keys import fidelity_review_dedup_key
+
+    batch_id = task.dedup_key.removeprefix(fidelity_review_dedup_key(""))
+    async with db.immediate() as conn:
+        batch = (await conn.execute(select(ingest_batches).where(
+            ingest_batches.c.batch_id == batch_id,
+            ingest_batches.c.reviewer_task_id == task.id,
+            ingest_batches.c.project_id == scope.project_id,
+            ingest_batches.c.state.in_(_REVIEWABLE_BATCH_STATES),
+            ingest_batches.c.reviewer_session_id == session.id,
+            ingest_batches.c.reviewer_claim_epoch == task.claim_epoch,
+        ))).mappings().one_or_none()
+        if batch is None:
+            return {}
+        member_ids = set((await conn.execute(select(tasks.c.id).join(
+            ingest_batch_members, ingest_batch_members.c.task_id == tasks.c.id,
+        ).where(
+            ingest_batch_members.c.batch_id == batch["batch_id"],
+            ingest_batch_members.c.state == "active",
+            tasks.c.project_id == scope.project_id,
+            tasks.c.held_batch_id == batch["batch_id"],
+        ))).scalars())
+        return {"batch": dict(batch), "task_ids": member_ids,
+                "members": await batches.members(conn, batch["batch_id"], state="active")}
+
+
+def fidelity_read_args_error(command, args, scope, context):
+    if not context:
+        return "out of scope: live assigned fidelity reviewer required"
+    for key, expected in (("project_id", scope.project_id), ("session_id", scope.session_id),
+                          ("batch_id", context["batch"]["batch_id"]),
+                          ("proposal_id", context["batch"]["batch_id"])):
+        if args.get(key) not in (None, expected):
+            return f"out of scope: {key} mismatch"
+    if command in {"task_show", "get_downstream_tasks", "get_task"}:
+        if args.get("task_id") not in context["task_ids"]:
+            return "out of scope: task is not a member of the assigned batch"
+    return None
+
 
 # A reviewer task's whole job is a verdict on *another* task: read it, and
 # either approve (close its own review task) or reject.  Rejection is
@@ -850,8 +1032,33 @@ async def check_request_scope(
     """
     if (error := _canonicalise_reroute_args(command, args, scope)) is not None:
         return error
+    if command == "task_show" and scope.kind == "session" and not scope.elevated:
+        session = await db.get_session(scope.session_id) if db and scope.session_id else None
+        if (session is not None and session.profile_id == "fidelity-reviewer"
+                and args.get("task_id") == session.task_id):
+            return check_command_scope(command, args, scope)
+    if command in _FIDELITY_READ_COMMANDS:
+        context = await fidelity_review_read_context(db, scope)
+        if context is not None:
+            error = fidelity_read_args_error(command, args, scope, context)
+            if error is None:
+                args["project_id"] = scope.project_id
+            return error
+    if scope.kind == "session" and not scope.elevated and command in _BATCH_REVIEW_COMMANDS:
+        batch_id = args.get("batch_id") or args.get("proposal_id")
+        if await fidelity_review_task_for_session(db, scope, batch_id) is not None:
+            if args.get("session_id") not in (None, scope.session_id):
+                return "out of scope: session_id mismatch"
+            if args.get("project_id") not in (None, scope.project_id):
+                return "out of scope: project_id mismatch"
+            args["project_id"] = scope.project_id
+            return None
+        # Not this batch's reviewer: a spec-ingest session or the ordinary
+        # scope may still answer for the command.
     if scope.kind == "session" and not scope.elevated and command in _SPEC_INGEST_COMMANDS:
-        held = await spec_ingest_task_for_session(db, scope)
+        held = await spec_ingest_task_for_session(
+            db, scope, legacy_receipt=command == "task_batch_commit",
+        )
         if held is not None:
             if args.get("session_id") not in (None, scope.session_id):
                 return "out of scope: session_id mismatch"
@@ -866,6 +1073,9 @@ async def check_request_scope(
                     return "out of scope: proposal mismatch"
                 if (proposal["payload"].get("spec_ingest") or {}).get("task_id") != held.id:
                     return "out of scope: proposal does not belong to held ingestion task"
+                if (not held.dedup_key.startswith("spec-ingest:decision:")
+                        and proposal["status"] != "committed"):
+                    return "out of scope: legacy ingestion only permits committed receipts"
             if command == "get_downstream_tasks":
                 task = await db.get_task(args.get("task_id"))
                 if task is None or task.project_id != scope.project_id:

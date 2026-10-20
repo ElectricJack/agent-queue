@@ -29,7 +29,6 @@ from sqlalchemy import insert, select
 from src.database.tables import integration_outbox, integration_subject_journal
 from src.integration.outbox import enqueue_integration_event
 from src.integration.service import IntegrationService
-from tests.test_delivery_consumers import origin_template as origin_template
 from tests.test_integration_train_sources import world  # noqa: F401 - shared real-Git fixture
 
 #: The reduced protocol's own modules. Every guard these run reads git, checks

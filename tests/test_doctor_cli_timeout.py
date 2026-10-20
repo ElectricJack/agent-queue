@@ -17,5 +17,5 @@ def test_train_controls_outlast_the_default_read_timeout():
     for name in ("integration_seal_now", "integration_refresh_epic",
                  "integration_retire_origin", "integration_pause_batch",
                  "integration_resume_batch", "integration_abort_batch",
-                 "integration_eject"):
+                 "integration_eject", "integration_settle_batch"):
         assert _COMMAND_TIMEOUTS.get(name, _DEFAULT_TIMEOUT) > _DEFAULT_TIMEOUT, name

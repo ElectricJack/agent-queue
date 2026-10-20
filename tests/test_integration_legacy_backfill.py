@@ -28,7 +28,6 @@ from src.integration.train_sources import DatabaseBatches
 from src.models import Task, TaskCompletion, TaskStatus
 from tests import test_integration_train_sources as _sources
 from tests.test_delivery_consumers import git
-from tests.test_delivery_consumers import origin_template as origin_template
 from tests.test_integration_train_sources import MAIN, completed, snapshot
 
 pytestmark = pytest.mark.asyncio

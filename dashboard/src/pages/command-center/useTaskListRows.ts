@@ -78,7 +78,7 @@ export function useTaskListRows(): TaskListRows {
       return (activity.data?.items ?? []).map((item) => {
         const task = activityToTask(item);
         const display = current.get(item.task_id);
-        return display ? { ...task, display_state: display.display_state, display_reason: display.display_reason,
+        return display ? { ...task, claim_readiness: display.claim_readiness, display_state: display.display_state, display_reason: display.display_reason,
           child_state_counts: display.child_state_counts, descendant_state_counts: display.descendant_state_counts } : task;
       });
     }

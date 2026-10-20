@@ -555,6 +555,9 @@ async def _launch_on_codex(orch, task_id: str = "t0", *, git_root=None, harness=
             lifecycle="task", enabled=True,
         ))
     await _task(orch, task_id, profile=profile)
+    if git_root is not None:
+        # The mocked preparation must describe the real fixture checkout.
+        await orch.db.update_task(task_id, branch_name=f"aq/{task_id}")
     await _cycle(orch)
     session = await orch.db.get_session_for_task(task_id)
     assert session is not None and session.harness == harness

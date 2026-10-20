@@ -57,10 +57,6 @@ SHIPPED_SOURCES: dict[str, str] = {
     "default-pipeline": "src/prompts/default_playbooks/default-pipeline.md",
     "default-assignment-routing": "src/prompts/default_playbooks/default-assignment-routing.md",
     "ci-main-sentinel": "src/prompts/project_playbooks/agent-queue/ci-main-sentinel.md",
-    "agent-queue-parent-integration": (
-        "src/prompts/project_playbooks/agent-queue/agent-queue-parent-integration.md"
-    ),
-    "agent-queue-root-train": "src/prompts/project_playbooks/agent-queue/agent-queue-root-train.md",
     "blocked-task-escalation": "src/prompts/reviewed_playbooks/blocked-task-escalation/source.md",
     "supervisor-failure-triage": "src/prompts/default_playbooks/supervisor-failure-triage.md",
     "provider-usage-probe": "src/prompts/default_playbooks/provider-usage-probe.md",
@@ -68,13 +64,14 @@ SHIPPED_SOURCES: dict[str, str] = {
     "supervisor-digest": "src/prompts/reviewed_playbooks/supervisor-digest/source.md",
     "provider-failover": "src/prompts/default_playbooks/provider-failover.md",
     "github-issue-triage": "src/prompts/project_playbooks/agent-queue/github-issue-triage.md",
-    "parent-integration": "src/prompts/integration_playbooks/parent-integration.md",
-    "root-train": "src/prompts/integration_playbooks/root-train.md",
     "promotion-request": "src/prompts/integration_playbooks/promotion-request.md",
     "promotion-continuous": "src/prompts/integration_playbooks/promotion-continuous.md",
 }
 
 PLAYBOOK_IDS = tuple(SHIPPED_SOURCES)
+HISTORICAL_TRAIN_IDS = (
+    "agent-queue-parent-integration", "agent-queue-root-train", "parent-integration", "root-train",
+)
 
 #: §3.4, locked.
 REQUIRED_REVIEW_KEYS = frozenset(
@@ -127,7 +124,11 @@ def playbook_id_for(source: Path) -> str:
 
 
 def _fixture(playbook_id: str) -> Path:
-    return FIXTURE_ROOT / playbook_id
+    root = (
+        FIXTURE_ROOT.parent / "historical-v2"
+        if playbook_id in HISTORICAL_TRAIN_IDS else FIXTURE_ROOT
+    )
+    return root / playbook_id
 
 
 def _read_review(playbook_id: str) -> tuple[dict[str, Any], str]:
@@ -174,7 +175,7 @@ def _inputs(step: Any) -> dict[str, Any]:
 
 def _referenced_profile_ids(definition: PlaybookDefinition) -> set[str]:
     """Profile ids the artifact names — as an `llm` step's profile or as a literal
-    `profile_id` argument to a command step.
+    `profile_id` argument to a command step, or its server-owned ingestion role.
 
     Re-derived from the JSON dump rather than from
     :func:`referenced_profile_ids`, so the production helper the compiler and
@@ -183,6 +184,8 @@ def _referenced_profile_ids(definition: PlaybookDefinition) -> set[str]:
     """
     found: set[str] = set()
     for step in definition.steps.values():
+        if getattr(step, "command", None) == "ensure_spec_ingest":
+            found.add("spec-ingest")
         profile_id = getattr(step, "profile_id", None)
         if isinstance(profile_id, str):
             found.add(profile_id)
@@ -344,7 +347,7 @@ def test_the_pipeline_depends_on_its_profile_only_by_delegation() -> None:
     """The shape that made the empty map easy to miss, pinned.
 
     `default-pipeline` has no `llm` or `agent_task` step at all: its one
-    profile dependency is an `ensure_task` argument.  A future refactor that
+    profile dependency is the `ensure_spec_ingest` role. A future refactor that
     dropped the delegated half of the snapshot would pass every other
     assertion in this file, so name the shape here.
     """
@@ -406,7 +409,7 @@ def test_pipeline_refusals_never_reach_a_completed_terminal() -> None:
 
     definition = _artifact("default-pipeline")
     successes = {
-        "ensure_task": {"created", "reused"},
+        "ensure_spec_ingest": {"created", "reused"},
         "gate_create": {"created", "reused", "skipped"},
         "task_batch_commit": {"committed", "already_committed"},
     }
@@ -479,12 +482,15 @@ def test_record_repair_result_refuses_an_unmapped_outcome(playbook_id: str) -> N
     assert any("started" in d.message for d in unmapped), [d.message for d in diagnostics]
 
 
-def test_spec_ingest_is_ensured_with_an_explicit_route() -> None:
-    """`ensure_task` suppresses `task.created`; a profile alone is not a route."""
+def test_spec_ingest_is_ensured_with_immutable_approval_identity() -> None:
+    """Only the domain command may derive the role from an approved receipt."""
     definition = _artifact("default-pipeline")
     ensure = definition.steps["spec-ingest-on-approve--spec_ingest_gate"]
-    assert _inputs(ensure)["profile_id"] == {"type": "literal", "value": "spec-ingest"}
-    assert _inputs(ensure)["intelligence_class"] == {"type": "literal", "value": "deep-high"}
+    assert ensure.command == "ensure_spec_ingest"
+    assert _inputs(ensure) == {
+        name: {"type": "event_ref", "path": name}
+        for name in ("project_id", "decision_id", "packet_sha256")
+    }
 
 
 def test_integration_only_bundle_is_the_reviewed_fixture() -> None:
@@ -549,7 +555,7 @@ def _routing_policy_block(source: str) -> str:
 #: (docs/guides/operator-workers.md), and standard-first bugfix escalation
 #: (docs/specs/design/routing-live-context.md).
 SHIPPED_ROUTING_POLICY_SHA256 = (
-    "sha256:4133b64ec754ff8cd88f1bf0eaa3badff1f34b4d594005705842d4d71edea9bf"
+    "sha256:82e852857e630dfb459b4ddac5f9244ffafb70c2656dbfedd9447c0a8db17412"
 )
 
 ROUTING_BUNDLES = (
@@ -855,3 +861,19 @@ def test_capabilities_granted_unused_by_src() -> None:
         "capabilities_granted is read by production code; a reviewed fixture would "
         "become an authority claim:\n" + "\n".join(offenders)
     )
+
+
+@pytest.mark.parametrize("playbook_id", HISTORICAL_TRAIN_IDS)
+def test_retired_train_policy_is_archived_and_cannot_validate_for_install(playbook_id):
+    """Retain the reviewed bytes without offering a policy for deleted engines."""
+    archived = REPO_ROOT / "docs/history/legacy-train-policies" / playbook_id
+    assert playbook_id not in shipped_reviewed_playbook_ids()
+    for name in ("source.md", "artifact.json", "artifact.sha256", "manifest.md", "diagnostics.json"):
+        assert (archived / name).read_bytes() == (_fixture(playbook_id) / name).read_bytes()
+    raw = (archived / "artifact.json").read_bytes()
+    assert canonical_bytes(_artifact(playbook_id)) == raw
+    assert (archived / "artifact.sha256").read_text().strip() == (
+        "sha256:" + hashlib.sha256(raw).hexdigest()
+    )
+    diagnostics = validate_definition(_artifact(playbook_id), contracts=RegistryContractLookup())
+    assert any(d.code == "unknown_command" and d.severity == "error" for d in diagnostics)

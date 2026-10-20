@@ -20,8 +20,10 @@ import os
 
 __all__ = [
     "CLAIM_FILE",
+    "claim_file_identity",
     "read_claim_file",
     "remove_claim_file",
+    "remove_claim_file_if_identical",
     "remove_claim_file_if_matches",
     "write_claim_file",
 ]
@@ -57,7 +59,9 @@ def read_claim_file(work_dir: str) -> dict | None:
     return claim if isinstance(claim, dict) else None
 
 
-def remove_claim_file_if_matches(work_dir: str, task_id: str, claim_epoch: int | None) -> None:
+def remove_claim_file_if_matches(
+    work_dir: str, task_id: str, claim_epoch: int | None, *, session_id: str | None = None
+) -> None:
     """Remove a claim file only when it still belongs to this claim.
 
     Pool workers can claim again between a terminal close and its delayed
@@ -68,7 +72,37 @@ def remove_claim_file_if_matches(work_dir: str, task_id: str, claim_epoch: int |
         return
     if claim.get("task_id") != task_id or claim.get("claim_epoch") != claim_epoch:
         return
+    if session_id is not None and claim.get("session_id") != session_id:
+        return
     try:
         os.remove(os.path.join(work_dir, CLAIM_FILE))
     except FileNotFoundError:
         pass
+
+
+def claim_file_identity(work_dir: str) -> tuple[int, int, int, int] | None:
+    """The marker's inode identity; ``write_claim_file`` replaces, never rewrites, it."""
+    try:
+        st = os.stat(os.path.join(work_dir, CLAIM_FILE))
+    except OSError:
+        return None
+    return (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns)
+
+
+def remove_claim_file_if_identical(
+    work_dir: str, claim: dict, identity: tuple[int, int, int, int]
+) -> bool:
+    """Unlink only the exact marker inode that was read as ``claim``.
+
+    A replaced marker (a successor's ``os.replace``, or an A-B-A rewrite with
+    equal content) has a different identity and is kept.
+    """
+    if (claim_file_identity(work_dir) != identity
+            or read_claim_file(work_dir) != claim
+            or claim_file_identity(work_dir) != identity):
+        return False
+    try:
+        os.remove(os.path.join(work_dir, CLAIM_FILE))
+    except FileNotFoundError:
+        return False
+    return True

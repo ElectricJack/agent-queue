@@ -30,9 +30,9 @@ Scrubbing is **not** implemented here.  :func:`src.env_scrub.scrub_env` owns
 the policy (trust-and-ops R6); this module supplies the ``explicit`` map it
 merges last and passes the daemon config through so the
 ``security.env_scrub_enabled`` kill switch and ``security.env_allowlist``
-are actually honoured at the launch site.  ``CLAUDECODE`` /
-``CLAUDE_CODE_ENTRYPOINT`` stripping comes free from ``STRIP_ALWAYS`` there
-— this module does not repeat it.
+are actually honoured at the launch site. Inherited ``CLAUDE*`` controls are
+stripped there regardless of the scrub kill switch; deliberate launch
+settings (such as the worker compact window) are supplied explicitly.
 """
 
 from __future__ import annotations

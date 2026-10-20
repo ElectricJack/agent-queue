@@ -210,7 +210,7 @@ The new-agent workspace gate (line 128, `count_available_workspaces`) must count
 
 ### 6.8 `src/commands/agent_commands.py`
 
-- `_cmd_list_workspaces` (line 175): annotate rows with `role`, `slot_index`, `mode`, branch, dirty flag (design §9).
+- `_cmd_list_workspaces` (line 175): annotate rows with `role`, `slot_index`, `mode`, branch, dirty flag (design §9). Since 2026-10-13 the annotations are bounded (`src/workspace_listing.py`, one deadline, four concurrent lock-free `git status` probes, owner facts with claim fence) and an unread checkout reports `branch`/`dirty` as `null`, never clean — see `docs/specs/command-handler.md` `list_workspaces`.
 - New `_cmd_workspace_doctor` and `_cmd_workspace_reap` implementing design §9, registered in `src/tools/definitions.py` and the API response models — surfaced as `aq workspace doctor|reap` by the aq-surface spec.
 
 ### 6.9 Events

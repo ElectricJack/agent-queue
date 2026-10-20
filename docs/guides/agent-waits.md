@@ -53,13 +53,13 @@ aq wait list --json
 aq wait cancel WAIT_ID
 ```
 
-To wait for a reply to a message you send, choose a thread ID and send as your
-session. The returned message ID identifies the message; it is not the thread ID.
+To wait for a reply to a message you send, choose a thread ID. Ordinary authenticated
+sends derive your live session UUID on the server; omit sender flags. The returned
+message ID identifies the message; it is not the thread ID.
 Use the sent message's `created_seq` as the exclusive cursor:
 
 ```bash
 aq message send --to user:dashboard --project "$AQ_PROJECT_ID" \
-  --from-kind session --from-id "$AQ_SESSION_ID" \
   --thread-id "request-$AQ_SESSION_ID" --body "Please reply here." --json
 # Read data.message.thread_id and data.message.created_seq from the response.
 aq wait register --kind message --ref "request-$AQ_SESSION_ID" \
@@ -69,8 +69,21 @@ aq wait register --kind message --ref "request-$AQ_SESSION_ID" \
 The reply must stay on that thread, for example through
 `aq message reply <message-id>` or
 `aq agent message <task-id> BODY --reply-to <message-id>`.
+A project supervisor's guidance is signed by its mailbox
+`session:supervisor-<project>`, so the worker's `aq message reply` to it
+returns there on the same thread and satisfies the supervisor's own message
+wait on that thread. Guidance from callers with no project-supervisor session
+(the operator CLI, automation, the global supervisor) stays
+`system:supervisor`, which `aq message reply` refuses.
 For a collaboration thread, use its `collab-*` ID and the last seen thread
 sequence instead. Omitting `--after-seq` is a usage error for message waits.
+
+Until the sender-default fix is deployed, explicitly add `--from-kind session
+--from-id <held-session-UUID>` to the send, using `.aq/claim.json` or prime as
+identity evidence. Pool sends and waits resolve the claim epoch from that file.
+A CLI environment variable cannot grant sender authority. A pre-existing
+`user:cli` message does not own a worker wait: send a new session-owned report
+on a new thread instead of retrying the authorization refusal or editing history.
 
 Job submission with `--wait` commits the job, workspace pin and blocking wait
 in one transaction. An existing active wait rejects the submission without
@@ -170,8 +183,8 @@ exhausted session; do not keep polling the closed task.
 Task-addressed results route to the session currently holding the task,
 including pool workers whose session names do not contain the task id.
 Plain messages to `task:<id>` or `session:<id>` use the same idle delivery:
-an idle holder has ``Handle `aq message status <id> --json`.`` typed into its
-terminal.
+an idle holder has ``Handle `aq message status <id> --json` (running it marks the
+message read).`` typed into its terminal.
 
 A message wait (`--kind message --ref <thread> --after-seq <n>`) resolves on
 the first later message on that thread addressed to the waiting session or its

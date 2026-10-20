@@ -66,22 +66,26 @@ def sync_detailed(
     body: TaskBatchProposeRequest,
 ) -> Response[TaskBatchProposeResponse | TaskBatchProposeResponse422]:
     """Propose a transactional change set of creates, edits, edge changes and comments as one reviewable
-    graph, without creating anything live. Tasks are identified by caller-chosen ``tempId``s that edges
-    reference; edges may also point at existing task ids. The proposal is rejected up front if the shape
-    is wrong, if it references tasks that do not exist, or if it would introduce a dependency cycle
-    against the project's current graph. Returns a proposal_id for task_batch_update / _commit /
-    _discard. A live spec-ingest role holding the matching approved vault path needs no approval step:
-    that batch is applied live in the same call and returns its task_ids, and a later task_batch_commit
-    is an idempotent replay. Those batches require epics with children and leaf dependency edges.
+    graph. Ordinary proposals stage changes for human approval. Tasks are identified by caller-chosen
+    ``tempId``s that edges reference; edges may also point at existing task ids. The proposal is
+    rejected up front if the shape is wrong, if it references tasks that do not exist, or if it would
+    introduce a dependency cycle against the project's current graph. Returns a proposal_id for
+    task_batch_update / _commit / _discard. A live spec-ingest role holding the matching approved
+    document materializes the implementation graph held for fidelity review and returns batch_id,
+    revision, digest and members. task_batch_commit refuses held batches; authorized release is
+    separate. Design approval creates an already released epic and authoring leaf. Ingest tasks require
+    section_anchor; leaves also require primary_outcome and acceptance.
 
      Propose a transactional change set of creates, edits, edge changes and comments as one reviewable
-    graph, without creating anything live. Tasks are identified by caller-chosen ``tempId``s that edges
-    reference; edges may also point at existing task ids. The proposal is rejected up front if the shape
-    is wrong, if it references tasks that do not exist, or if it would introduce a dependency cycle
-    against the project's current graph. Returns a proposal_id for task_batch_update / _commit /
-    _discard. A live spec-ingest role holding the matching approved vault path needs no approval step:
-    that batch is applied live in the same call and returns its task_ids, and a later task_batch_commit
-    is an idempotent replay. Those batches require epics with children and leaf dependency edges.
+    graph. Ordinary proposals stage changes for human approval. Tasks are identified by caller-chosen
+    ``tempId``s that edges reference; edges may also point at existing task ids. The proposal is
+    rejected up front if the shape is wrong, if it references tasks that do not exist, or if it would
+    introduce a dependency cycle against the project's current graph. Returns a proposal_id for
+    task_batch_update / _commit / _discard. A live spec-ingest role holding the matching approved
+    document materializes the implementation graph held for fidelity review and returns batch_id,
+    revision, digest and members. task_batch_commit refuses held batches; authorized release is
+    separate. Design approval creates an already released epic and authoring leaf. Ingest tasks require
+    section_anchor; leaves also require primary_outcome and acceptance.
 
     Args:
         body (TaskBatchProposeRequest):
@@ -111,22 +115,26 @@ def sync(
     body: TaskBatchProposeRequest,
 ) -> TaskBatchProposeResponse | TaskBatchProposeResponse422 | None:
     """Propose a transactional change set of creates, edits, edge changes and comments as one reviewable
-    graph, without creating anything live. Tasks are identified by caller-chosen ``tempId``s that edges
-    reference; edges may also point at existing task ids. The proposal is rejected up front if the shape
-    is wrong, if it references tasks that do not exist, or if it would introduce a dependency cycle
-    against the project's current graph. Returns a proposal_id for task_batch_update / _commit /
-    _discard. A live spec-ingest role holding the matching approved vault path needs no approval step:
-    that batch is applied live in the same call and returns its task_ids, and a later task_batch_commit
-    is an idempotent replay. Those batches require epics with children and leaf dependency edges.
+    graph. Ordinary proposals stage changes for human approval. Tasks are identified by caller-chosen
+    ``tempId``s that edges reference; edges may also point at existing task ids. The proposal is
+    rejected up front if the shape is wrong, if it references tasks that do not exist, or if it would
+    introduce a dependency cycle against the project's current graph. Returns a proposal_id for
+    task_batch_update / _commit / _discard. A live spec-ingest role holding the matching approved
+    document materializes the implementation graph held for fidelity review and returns batch_id,
+    revision, digest and members. task_batch_commit refuses held batches; authorized release is
+    separate. Design approval creates an already released epic and authoring leaf. Ingest tasks require
+    section_anchor; leaves also require primary_outcome and acceptance.
 
      Propose a transactional change set of creates, edits, edge changes and comments as one reviewable
-    graph, without creating anything live. Tasks are identified by caller-chosen ``tempId``s that edges
-    reference; edges may also point at existing task ids. The proposal is rejected up front if the shape
-    is wrong, if it references tasks that do not exist, or if it would introduce a dependency cycle
-    against the project's current graph. Returns a proposal_id for task_batch_update / _commit /
-    _discard. A live spec-ingest role holding the matching approved vault path needs no approval step:
-    that batch is applied live in the same call and returns its task_ids, and a later task_batch_commit
-    is an idempotent replay. Those batches require epics with children and leaf dependency edges.
+    graph. Ordinary proposals stage changes for human approval. Tasks are identified by caller-chosen
+    ``tempId``s that edges reference; edges may also point at existing task ids. The proposal is
+    rejected up front if the shape is wrong, if it references tasks that do not exist, or if it would
+    introduce a dependency cycle against the project's current graph. Returns a proposal_id for
+    task_batch_update / _commit / _discard. A live spec-ingest role holding the matching approved
+    document materializes the implementation graph held for fidelity review and returns batch_id,
+    revision, digest and members. task_batch_commit refuses held batches; authorized release is
+    separate. Design approval creates an already released epic and authoring leaf. Ingest tasks require
+    section_anchor; leaves also require primary_outcome and acceptance.
 
     Args:
         body (TaskBatchProposeRequest):
@@ -151,22 +159,26 @@ async def asyncio_detailed(
     body: TaskBatchProposeRequest,
 ) -> Response[TaskBatchProposeResponse | TaskBatchProposeResponse422]:
     """Propose a transactional change set of creates, edits, edge changes and comments as one reviewable
-    graph, without creating anything live. Tasks are identified by caller-chosen ``tempId``s that edges
-    reference; edges may also point at existing task ids. The proposal is rejected up front if the shape
-    is wrong, if it references tasks that do not exist, or if it would introduce a dependency cycle
-    against the project's current graph. Returns a proposal_id for task_batch_update / _commit /
-    _discard. A live spec-ingest role holding the matching approved vault path needs no approval step:
-    that batch is applied live in the same call and returns its task_ids, and a later task_batch_commit
-    is an idempotent replay. Those batches require epics with children and leaf dependency edges.
+    graph. Ordinary proposals stage changes for human approval. Tasks are identified by caller-chosen
+    ``tempId``s that edges reference; edges may also point at existing task ids. The proposal is
+    rejected up front if the shape is wrong, if it references tasks that do not exist, or if it would
+    introduce a dependency cycle against the project's current graph. Returns a proposal_id for
+    task_batch_update / _commit / _discard. A live spec-ingest role holding the matching approved
+    document materializes the implementation graph held for fidelity review and returns batch_id,
+    revision, digest and members. task_batch_commit refuses held batches; authorized release is
+    separate. Design approval creates an already released epic and authoring leaf. Ingest tasks require
+    section_anchor; leaves also require primary_outcome and acceptance.
 
      Propose a transactional change set of creates, edits, edge changes and comments as one reviewable
-    graph, without creating anything live. Tasks are identified by caller-chosen ``tempId``s that edges
-    reference; edges may also point at existing task ids. The proposal is rejected up front if the shape
-    is wrong, if it references tasks that do not exist, or if it would introduce a dependency cycle
-    against the project's current graph. Returns a proposal_id for task_batch_update / _commit /
-    _discard. A live spec-ingest role holding the matching approved vault path needs no approval step:
-    that batch is applied live in the same call and returns its task_ids, and a later task_batch_commit
-    is an idempotent replay. Those batches require epics with children and leaf dependency edges.
+    graph. Ordinary proposals stage changes for human approval. Tasks are identified by caller-chosen
+    ``tempId``s that edges reference; edges may also point at existing task ids. The proposal is
+    rejected up front if the shape is wrong, if it references tasks that do not exist, or if it would
+    introduce a dependency cycle against the project's current graph. Returns a proposal_id for
+    task_batch_update / _commit / _discard. A live spec-ingest role holding the matching approved
+    document materializes the implementation graph held for fidelity review and returns batch_id,
+    revision, digest and members. task_batch_commit refuses held batches; authorized release is
+    separate. Design approval creates an already released epic and authoring leaf. Ingest tasks require
+    section_anchor; leaves also require primary_outcome and acceptance.
 
     Args:
         body (TaskBatchProposeRequest):
@@ -194,22 +206,26 @@ async def asyncio(
     body: TaskBatchProposeRequest,
 ) -> TaskBatchProposeResponse | TaskBatchProposeResponse422 | None:
     """Propose a transactional change set of creates, edits, edge changes and comments as one reviewable
-    graph, without creating anything live. Tasks are identified by caller-chosen ``tempId``s that edges
-    reference; edges may also point at existing task ids. The proposal is rejected up front if the shape
-    is wrong, if it references tasks that do not exist, or if it would introduce a dependency cycle
-    against the project's current graph. Returns a proposal_id for task_batch_update / _commit /
-    _discard. A live spec-ingest role holding the matching approved vault path needs no approval step:
-    that batch is applied live in the same call and returns its task_ids, and a later task_batch_commit
-    is an idempotent replay. Those batches require epics with children and leaf dependency edges.
+    graph. Ordinary proposals stage changes for human approval. Tasks are identified by caller-chosen
+    ``tempId``s that edges reference; edges may also point at existing task ids. The proposal is
+    rejected up front if the shape is wrong, if it references tasks that do not exist, or if it would
+    introduce a dependency cycle against the project's current graph. Returns a proposal_id for
+    task_batch_update / _commit / _discard. A live spec-ingest role holding the matching approved
+    document materializes the implementation graph held for fidelity review and returns batch_id,
+    revision, digest and members. task_batch_commit refuses held batches; authorized release is
+    separate. Design approval creates an already released epic and authoring leaf. Ingest tasks require
+    section_anchor; leaves also require primary_outcome and acceptance.
 
      Propose a transactional change set of creates, edits, edge changes and comments as one reviewable
-    graph, without creating anything live. Tasks are identified by caller-chosen ``tempId``s that edges
-    reference; edges may also point at existing task ids. The proposal is rejected up front if the shape
-    is wrong, if it references tasks that do not exist, or if it would introduce a dependency cycle
-    against the project's current graph. Returns a proposal_id for task_batch_update / _commit /
-    _discard. A live spec-ingest role holding the matching approved vault path needs no approval step:
-    that batch is applied live in the same call and returns its task_ids, and a later task_batch_commit
-    is an idempotent replay. Those batches require epics with children and leaf dependency edges.
+    graph. Ordinary proposals stage changes for human approval. Tasks are identified by caller-chosen
+    ``tempId``s that edges reference; edges may also point at existing task ids. The proposal is
+    rejected up front if the shape is wrong, if it references tasks that do not exist, or if it would
+    introduce a dependency cycle against the project's current graph. Returns a proposal_id for
+    task_batch_update / _commit / _discard. A live spec-ingest role holding the matching approved
+    document materializes the implementation graph held for fidelity review and returns batch_id,
+    revision, digest and members. task_batch_commit refuses held batches; authorized release is
+    separate. Design approval creates an already released epic and authoring leaf. Ingest tasks require
+    section_anchor; leaves also require primary_outcome and acceptance.
 
     Args:
         body (TaskBatchProposeRequest):

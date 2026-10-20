@@ -32,6 +32,7 @@ from src.integration.ci import (
     AuthenticatedGitHubObserver,
     FailedCIObservation,
     IntegrationTrustManifest,
+    TrustedCIObservation,
 )
 from src.integration.delivery_observer import delivery_targets
 from src.integration.promotion_steps import cache_promotion_review, promotion_ref
@@ -330,6 +331,19 @@ async def test_operator_breaking_override_freezes_exact_evidence_and_publishes_a
     assert json.loads(encoded) == audit
 
 
+def attempt_jobs(path, checks, workflows):
+    """The attempt endpoint links each job to its exact check run and suite."""
+    run_id = int(path.split("/actions/runs/", 1)[1].split("/", 1)[0])
+    attempt = int(path.split("/attempts/", 1)[1].split("/", 1)[0])
+    workflow = next(row for row in workflows
+                    if row["id"] == run_id and row["run_attempt"] == attempt)
+    return [{"id": check["id"] + 5000, "name": check["name"],
+             "run_id": run_id, "run_attempt": attempt, "head_sha": check["head_sha"],
+             "status": check["status"], "conclusion": check["conclusion"],
+             "check_run_url": f"https://api.github.com/repos/test/repo/check-runs/{check['id']}"}
+            for check in checks if check["check_suite"]["id"] == workflow["check_suite_id"]]
+
+
 @pytest.fixture
 async def source_audit(promote_env):
     """The reported green delivery push: 16 prefixed tests and one audit check."""
@@ -358,6 +372,8 @@ async def source_audit(promote_env):
     listing = e.github.paged_items
 
     async def audit_listing(path, *, key):
+        if key == "jobs":
+            return attempt_jobs(path, e.audit_checks, e.audit_workflows)
         if e.source in path:
             if key == "check_runs":
                 return copy.deepcopy(e.audit_checks)
@@ -422,6 +438,7 @@ async def test_staging_source_audit_refuses_invalid_evidence_before_writes(sourc
         e.audit_checks[0].update(status="in_progress", conclusion=None)
     elif condition == "workflow_failed":
         e.audit_workflows[0]["conclusion"] = "failure"
+        e.audit_checks[0]["conclusion"] = "failure"
     elif condition == "pr_only":
         e.audit_workflows[0]["event"] = "pull_request"
     elif condition == "foreign_app":
@@ -471,6 +488,8 @@ async def cancelled_source_batch(promote_env):
     listing = e.github.paged_items
 
     async def source_listing(path, *, key):
+        if key == "jobs":
+            return attempt_jobs(path, e.source_checks, e.source_workflows)
         if e.source in path:
             if key == "check_runs":
                 return copy.deepcopy(e.source_checks)
@@ -492,18 +511,63 @@ async def test_request_accepts_green_source_under_cancelled_batch_checks(
     e.source_checks[1]["conclusion"] = check_conclusion
     e.source_workflows[0]["head_branch"] = green_branch
     e.source_workflows[1]["conclusion"] = conclusion
-    # The source-only exception cannot authorize candidate or attestation CI.
+    # Candidate/attestation CI uses the latest required job, even when another
+    # job cancelled its workflow. Only source admission may reuse older proof.
     strict = await AuthenticatedGitHubObserver(e.github, expected_event="push").observe(
         e.trust, e.source,
     )
-    assert isinstance(strict, FailedCIObservation)
-    assert strict.checks[0]["check_run_id"] == 3000
+    assert isinstance(strict, TrustedCIObservation if check_conclusion == "success"
+                      else FailedCIObservation)
+    if isinstance(strict, TrustedCIObservation):
+        assert strict.payload.checks[0].check_run_id == 3000
+    else:
+        assert strict.checks[0]["check_run_id"] == 3000
 
     opened = await request(e)
     assert opened["outcome"] == "requested", opened
     assert opened["promotion"]["source_sha"] == e.source
     assert e.github.pull["head"]["sha"] == e.source
     assert git(e.ops.git.remote_path, "rev-parse", "main") == e.base
+
+
+async def assert_source_admission_uses_required_jobs(e, conclusion, *, audit):
+    checks = e.audit_checks if audit else e.source_checks
+    workflows = e.audit_workflows if audit else e.source_workflows
+    workflows[0].update(status="queued" if conclusion is None else "completed",
+                        conclusion=conclusion)
+    if audit:
+        opened = await e.handler._cmd_promote_request({"project_id": "p", "step_id": "staging"})
+    else:
+        opened = await e.handler._cmd_promote_request({"project_id": "p", "step_id": "release"})
+    assert opened["outcome"] == "requested", opened
+    assert opened["promotion"]["source_sha"] == e.source
+    assert all(check["conclusion"] == "success" for check in checks if
+               check["check_suite"]["id"] == workflows[0]["check_suite_id"])
+
+
+@pytest.mark.parametrize("conclusion", [None, "failure", "cancelled", "skipped"])
+async def test_source_admission_uses_required_jobs_under_non_success_workflow(
+    cancelled_source_batch, conclusion,
+):
+    await assert_source_admission_uses_required_jobs(cancelled_source_batch, conclusion, audit=False)
+
+
+@pytest.mark.parametrize("conclusion", [None, "failure", "cancelled", "skipped"])
+async def test_source_audit_uses_required_jobs_under_non_success_workflow(source_audit, conclusion):
+    await assert_source_admission_uses_required_jobs(source_audit, conclusion, audit=True)
+
+
+@pytest.mark.parametrize("conclusion", ["success", "failure", None])
+async def test_queued_workflow_audit_cannot_replace_present_canonical_check(source_audit, conclusion):
+    e = source_audit
+    e.audit_workflows[0].update(status="queued", conclusion=None)
+    e.audit_checks.append({**e.audit_checks[0], "id": 3000,
+                          "name": e.trust.required_checks.names[0],
+                          "status": "in_progress" if conclusion is None else "completed",
+                          "conclusion": conclusion})
+    result = await e.handler._cmd_promote_request({"project_id": "p", "step_id": "staging"})
+    assert result["outcome"] == "promotion_source_pending", result
+    assert e.github.created == 0
 
 
 @pytest.mark.parametrize("condition,outcome", [
@@ -550,8 +614,10 @@ async def test_cancelled_batch_never_replaces_invalid_source_evidence(
         workflow["event"] = "pull_request"
     elif condition == "workflow_failed":
         workflow["conclusion"] = "failure"
+        good["conclusion"] = "failure"
     elif condition == "workflow_pending":
         workflow.update(status="in_progress", conclusion=None)
+        good.update(status="in_progress", conclusion=None)
     elif condition == "workflow_malformed":
         workflow["run_attempt"] = None
     elif condition == "batch_failure":
@@ -564,6 +630,7 @@ async def test_cancelled_batch_never_replaces_invalid_source_evidence(
         batch_workflow["conclusion"] = "failure"
     elif condition == "batch_workflow_pending":
         batch_workflow.update(status="in_progress", conclusion=None)
+        batch.update(status="in_progress", conclusion=None)
     elif condition == "batch_workflow_malformed":
         batch_workflow["run_attempt"] = None
     elif condition == "same_suite_rerun":

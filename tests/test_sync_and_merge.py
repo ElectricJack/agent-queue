@@ -11,12 +11,12 @@ Verifies the full sync-merge-push flow:
 
 import pathlib
 import subprocess
-import shutil
 from unittest.mock import patch
 
 import pytest
 
 from src.git.manager import GitError, GitManager
+from tests.git_seed_helpers import clone_seed, init_bare_seed
 
 
 # ---------------------------------------------------------------------------
@@ -57,22 +57,13 @@ def _current_branch(cwd: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture(scope="session")
-def _git_repo_seed(tmp_path_factory):
+@pytest.fixture
+def git_repo(tmp_path):
     """Create a bare remote + working clone with an initial commit."""
-    tmp_path = tmp_path_factory.mktemp("git-seed")
     remote = tmp_path / "remote.git"
-    subprocess.run(
-        ["git", "init", "--bare", "--initial-branch=main", str(remote)],
-        check=True,
-        capture_output=True,
-    )
+    init_bare_seed(str(remote))
     clone = tmp_path / "clone"
-    subprocess.run(
-        ["git", "clone", str(remote), str(clone)],
-        check=True,
-        capture_output=True,
-    )
+    clone_seed(str(remote), str(clone))
     # Initial commit
     (clone / "README.md").write_text("init")
     subprocess.run(["git", "add", "."], cwd=str(clone), check=True, capture_output=True)
@@ -86,20 +77,17 @@ def _git_repo_seed(tmp_path_factory):
     return {"remote": str(remote), "clone": str(clone)}
 
 
-@pytest.fixture
-def git_repo(tmp_path, _git_repo_seed):
-    """Copy both repos so every test owns its refs, objects, hooks and worktree."""
-    remote = tmp_path / "remote.git"
-    clone = tmp_path / "clone"
-    shutil.copytree(_git_repo_seed["remote"], remote)
-    shutil.copytree(_git_repo_seed["clone"], clone)
-    _git(["config", "remote.origin.url", str(remote)], cwd=str(clone))
-    return {"remote": str(remote), "clone": str(clone)}
-
-
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
+
+
+def test_repos_disable_auto_maintenance(git_repo):
+    """Fresh repos disable detached maintenance, including receive-pack."""
+    for repo in git_repo.values():
+        assert _git(["config", "--local", "--bool", "maintenance.auto"], cwd=repo) == "false"
+        assert _git(["config", "--local", "--int", "gc.auto"], cwd=repo) == "0"
+        assert _git(["config", "--local", "--bool", "receive.autogc"], cwd=repo) == "false"
 
 
 class TestSyncAndMerge:

@@ -73,6 +73,10 @@ def _waiting_reason(context: list[Mapping[str, Any]], leaves: list[Mapping[str, 
         return f"Waiting on {blocker}"
     if any(row.get("gated") or row.get("is_blocked") for row in context):
         return "Waiting on dependencies or gates"
+    delivery = [row["claim_readiness"]["reason"] for row in leaves
+                if row.get("claim_readiness", {}).get("state") == "waiting_on_delivery"]
+    if delivery:
+        return "Waiting on delivery: " + "; ".join(dict.fromkeys(delivery))
     if any(row.get("status") == "READY" for row in leaves):
         return "Waiting for a worker"
     return "Waiting for work to become ready"
@@ -163,7 +167,7 @@ def descendants_query(ids: Iterable[str]):
     ).correlate(tasks))
     return (
         select(
-            subtree.c.root_id, root.c.status.label("root_status"), tasks.c.id,
+            subtree.c.root_id, root.c.status.label("root_status"), tasks.c.id, tasks.c.project_id,
             tasks.c.parent_task_id, tasks.c.status, tasks.c.assigned_agent_id, tasks.c.is_blocked,
             open_gate().label("gated"), open_gate(*HUMAN_GATE_TYPES).label("human_gate"),
             blocker.label("blocker_id"), held.label("held"),
@@ -183,8 +187,13 @@ async def load_activity(db, ids: Iterable[str]) -> dict[str, dict[str, Any]]:
         subtrees: dict[str, list[Mapping[str, Any]]] = {}
         for row in result.mappings():
             subtrees.setdefault(row["root_id"], []).append(row)
+    from src.task_graph.readiness import load_readiness
+
+    readiness = await load_readiness(db, {row["id"]: row
+        for rows in subtrees.values() for row in rows}.values())
     return {
-        root_id: rollup(root_id, rows, own_status=rows[0]["root_status"])
+        root_id: rollup(root_id, [{**row, **readiness.get(row["id"], {})} for row in rows],
+                        own_status=rows[0]["root_status"])
         for root_id, rows in subtrees.items()
     }
 

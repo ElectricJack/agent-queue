@@ -81,6 +81,19 @@ aq vault reset-harness --dry-run
 | `base` | string | — | Inherit from another harness. **Single level only** — a chain is rejected, so cycles are impossible by construction. |
 | `provider` | string | — | The key this harness's model is looked up under in an intelligence class's per-provider mapping. Omit it for `claude`, `codex` and `gemini`, whose provider is inferred from the id (`anthropic`, `openai`, `google`). **Any other harness must declare it**: an unrecognised id infers `""`, and the launch then resolves no model at all and says so once in the log. Inherits through `base`. |
 
+Session launches discard inherited `CLAUDE*` controls and `AQ_*` variables,
+then inject the new session's identity, credentials and resource limits.
+The spec builder explicitly supplies `CLAUDE_CODE_AUTO_COMPACT_WINDOW` for
+Claude workers, including an override configured in the harness `env` map;
+other Claude controls in a harness `env` map are rejected. A launching shell's
+`CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` cannot override that compact window.
+This isolation also applies when the tmux server predates the daemon restart:
+the pane process starts with the scrubbed environment plus tmux's terminal
+metadata (`TERM`, `TMUX`, `TMUX_PANE`). Daemon startup warns about inherited
+harness controls and `AQ_*` variables by name, without logging their values.
+Restart from a clean operator environment when that warning appears; startup
+retains AQ variables so the worker database guard still prevents unsafe starts.
+
 ### Prompt delivery
 
 | Key | Type | Default | Meaning |

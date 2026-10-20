@@ -2,9 +2,9 @@
   "success": true,
   "artifact": {
     "playbook_id": "default-pipeline",
-    "artifact_sha256": "sha256:7563817097f26dc9246d6507c25f148b63876c5f387f264944e060ff057fa131",
+    "artifact_sha256": "sha256:f4079ff52ded96d6eecfd2db5e5d08a96a543c7d04d7fe9697beb4ed72b9db0b",
     "schema_generation": 2,
-    "contract_fingerprint": "sha256:565d015d06fea62c297544d45fc32cb6740ea04ea5f48b548f8911ece2b20c58",
+    "contract_fingerprint": "sha256:dd62d3b316d4dc39ba35d1a4d8d68278785f74b55c56554606ef8456ac3d2fda",
     "source_digest": "sha256:6f1c0d2b9a4e7f38c5b1de20a7f4c8931ee5b0a6d2c74f9138ab5e0c7d41928f",
     "compiler_build": "fixture",
     "compiled_at": "2026-09-01T00:00:00+00:00",
@@ -2068,7 +2068,7 @@
             "terminal_outcome": "failed"
           }
         ],
-        "contract_fingerprint": "sha256:cef412074d2e82ff21c66ce7aac359b3fd4211e7a2a7ec5f451db6ddf023500d",
+        "contract_fingerprint": "sha256:dd500df1eeafbdc80e2888c5ea44da49f2b2a221e1a0aeadbe7bb2bb08dd4ab5",
         "docs_url": "https://github.com/ElectricJack/agent-queue/blob/main/docs/reference/playbook-commands/gate_create.md",
         "renderer": "contract"
       },
@@ -2300,7 +2300,7 @@
             "policy": "safe"
           }
         ],
-        "execution_fingerprint": "sha256:cef412074d2e82ff21c66ce7aac359b3fd4211e7a2a7ec5f451db6ddf023500d"
+        "execution_fingerprint": "sha256:dd500df1eeafbdc80e2888c5ea44da49f2b2a221e1a0aeadbe7bb2bb08dd4ab5"
       },
       "diagnostics": [],
       "out_degree": 5,

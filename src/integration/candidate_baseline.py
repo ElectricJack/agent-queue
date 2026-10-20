@@ -202,13 +202,17 @@ async def target_baseline(
     if not target_sha or checks is None or not checks.compares_targets:
         return Baseline(None, "unavailable", red, (), (), unavailable=True)
     head = target_head(batch, target_sha)
-    result = await checks.read(head)
-    if result.state not in (ChecksState.GREEN, ChecksState.RED):
+    cached = await checks.read(head)
+    if cached.state not in (ChecksState.GREEN, ChecksState.RED):
         # The target has no verdict for this sha yet: ask for one run and observe
         # it, exactly as a candidate's own checks are obtained. Provider I/O stays
         # outside every lock.
         await checks.request(head)
-        result = await checks.refresh(head)
+    # Final evidence can be superseded by a rerun on the same SHA. In
+    # particular, an old red must not suppress repair of a candidate after
+    # the target's own checks have turned green. Observe before classifying,
+    # just as we do for the candidate and the publication proof.
+    result = await checks.refresh(head)
     return compare(candidate, result)
 
 

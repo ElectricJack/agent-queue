@@ -8,6 +8,8 @@ import hashlib
 from pathlib import Path
 import time
 
+import pytest
+
 import src.vault as vault_module
 from src.vault import (
     SUPERVISOR_PROFILE,
@@ -1029,6 +1031,40 @@ def test_reviewed_report_playbooks_remain_disabled_for_explicit_import():
         assert frontmatter["enabled"] is False, f"{playbook_id} must ship disabled"
         assert playbook_id not in REQUIRED_SYSTEM_PLAYBOOK_IDS
         assert playbook_id not in DEFAULT_SYSTEM_PLAYBOOK_IDS
+
+
+def test_legacy_seed_uses_reviewed_source_when_packaged_markdown_is_stale(tmp_path, monkeypatch):
+    package = tmp_path / "package"
+    defaults = package / "prompts/default_playbooks"
+    reviewed = package / "prompts/reviewed_playbooks/default-assignment-routing"
+    defaults.mkdir(parents=True)
+    reviewed.mkdir(parents=True)
+    (defaults / "default-assignment-routing.md").write_text("obsolete packaged policy")
+    (reviewed / "source.md").write_text("reviewed current policy")
+    monkeypatch.setattr(vault_module, "__file__", str(package / "vault.py"))
+    data = tmp_path / "data"
+
+    result = ensure_default_playbooks(str(data))
+
+    assert result["created"] == ["default-assignment-routing.md"]
+    assert (data / "vault/system/playbooks/default-assignment-routing.md").read_text() == (
+        "reviewed current policy"
+    )
+
+
+@pytest.mark.parametrize("identifier", [
+    "blocked-task-escalation", "supervisor-digest", "supervisor-hourly-report",
+])
+def test_retired_playbook_sources_are_preserved_but_never_reseeded(tmp_path, identifier):
+    path = tmp_path / "vault/system/playbooks" / f"{identifier}.md"
+    path.parent.mkdir(parents=True)
+    path.write_text("operator custom source")
+    ensure_default_playbooks(str(tmp_path))
+    assert path.read_text() == "operator custom source"
+    path.unlink()
+    ensure_default_playbooks(str(tmp_path))
+    ensure_default_playbooks(str(tmp_path))
+    assert not path.exists()
 
 
 def test_ensure_default_playbooks_idempotent(tmp_path):

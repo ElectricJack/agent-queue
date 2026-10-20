@@ -301,6 +301,12 @@ class CiCommandsMixin:
                 await self.db.get_task_meta(task.id, "work_commit_auto")
                 or await self.db.get_task_meta(task.id, "work_commit")
             )
+            proof = await self.db.get_task_meta(task.id, "completion_ci")
+            if (isinstance(proof, dict) and proof.get("reason") == "no_source_changes"
+                    and head and proof.get("head_sha") == head == proof.get("base_sha")
+                    and proof.get("branch") == (task.branch_name or "").removeprefix("refs/heads/")
+                    and proof.get("repository_url") == await task_repository_url(self.db, task, project)):
+                continue
             try:
                 required = await completion_checks(self.db, self.config, task, project, audit=True)
                 if required is None:
@@ -314,8 +320,9 @@ class CiCommandsMixin:
                         self.orchestrator.git, url, head, required,
                     )
                 observed = cache[key]
-            except (ValueError, TypeError, KeyError):
-                observed = unavailable(head, "Required completion CI policy is invalid")
+            except (ValueError, TypeError, KeyError) as exc:
+                observed = unavailable(head, "Required completion CI policy is invalid",
+                                       stage="policy", cause=exc)
             checked += 1
             row = {"task_id": task.id, "title": task.title, "branch": task.branch_name,
                    **observed}

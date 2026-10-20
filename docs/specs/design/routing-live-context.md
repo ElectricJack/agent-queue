@@ -14,15 +14,19 @@ The shipped bugfix rule starts at `standard-high` and escalates to `deep-high`
 after one substantive failure. The plan and applied route record
 `escalated_after_failure`, including the source and target classes and the
 failed attempt identities, classes, timestamps and reasons. Failed worker
-closes (other than explicitly transient failures), verification failures and
-review rejection via `reopen_with_feedback` count. Infrastructure transitions
-such as session launch/close errors, lost workers and provider outages do not.
-Unknown Git observations, authorization failures and failed delivery pushes
-are infrastructure failures; a blocked close alone is not a work verdict.
+closes (other than explicitly transient failures) and verification failures
+count. Infrastructure transitions such as session launch/close errors, lost
+workers and provider outages do not. Unknown Git observations, authorization
+failures and failed delivery pushes are infrastructure failures; a blocked
+close alone is not a work verdict. Rework after a passing attempt is not a
+capability failure either: `reopen_with_feedback`, and any reopen of a
+COMPLETED task, re-plans the route at the same class without journaling a
+failure, and the planner ignores journal rows with that reason or a COMPLETED
+`previous_status` (rows written before this rule).
 
 Transitions journal qualifying failures in `routing_failed_attempts` task
 metadata, in the same transaction as the guarded status write. An attempt
-counts once, including a failure followed by review feedback. The journal
+counts once; review feedback after a failure adds nothing. The journal
 survives retry-count resets and infrastructure restarts, so an escalated task
 does not fall back to standard after a later infrastructure incident.
 On retry/reopen, router-owned routes return to `unrouted` before the task can

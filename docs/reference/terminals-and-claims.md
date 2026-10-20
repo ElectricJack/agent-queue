@@ -348,7 +348,21 @@ the next reader can act on it:
 | `needs_attention: integration_prepare_failed` | the branch fence, not the filesystem, blocked preparation | same |
 | `needs_attention: branch_fenced` | the task's branch is fenced by a writer the owner-recovery sweep releases | same |
 | `branch_fenced` | same — carries reason, branch, repository, workspace, session and timestamp | same |
+| `prepare_failure` | any permanent preparation failure, released, blocked or retained — carries reason, error type, stage, cause chain, session, instance token, claim epoch, workspace, disposition, attempt and timestamp | same |
 | `manual_pause_checkpoint` | a task was explicitly paused | preparation next succeeds |
+
+Every surface reports one description of a failure, built by
+[`describe_preparation_failure`](../../src/preparation_failure.py): the claim
+response's `reason`, the session's `claim_failure_reason`, the `reason`,
+`error_type` and `stage` of the `pool.prepare_failed` event, the metadata above
+and the daemon log line. It reads `<stage>: <Type>: <message>`, followed by up
+to three `caused by`/`during` links. A link with no text, such as
+`asyncio.timeout`'s `TimeoutError`, reads `<Type> (no message) at <file:line
+function>` and names only the frame it was raised at, never a guessed cause.
+Messages are secret-scrubbed and bounded, and the text is deterministic, so
+identical refusals still count as identical. A fenced branch section that
+outlives its 30 s bound raises `BranchLockTimeout`, which names the bound and
+the ref.
 
 All of them are cleared together by one delete
 ([`clear_claim_preparation_metadata`](../../src/database/queries/claim_queries.py)),

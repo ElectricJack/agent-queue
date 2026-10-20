@@ -46,6 +46,7 @@ export function TaskCard({ data, selected = false, fluid = false, layoutScale = 
 
   const reason = stub ? null : taskReason({
     status: cardStatus,
+    claimReadiness: task.claim_readiness,
     isBlocked: Boolean(task.is_blocked),
     ...relations,
     profileId: task.profile_id,

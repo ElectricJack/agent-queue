@@ -33,6 +33,7 @@ def test_seeding_preserves_operator_edits_and_fills_missing_templates(tmp_path):
     custom = installed(tmp_path, "source-ci-repair", "Operator repair wording {{task_id}}")
     first = ensure_default_templates(str(tmp_path))
     assert "tasks/source-ci-repair.md" in first["skipped"]
+    assert "tasks/source-ci-reopen.md" in first["created"]
     assert custom.read_text() == "Operator repair wording {{task_id}}"
     for default in SHIPPED_TASK_TEMPLATES.glob("*.md"):
         assert (custom.parent / default.name).is_file()
@@ -71,9 +72,10 @@ def test_source_ci_builder_reads_each_edit_and_preserves_exact_facts(tmp_path):
     )
     path = installed(
         tmp_path,
-        "source-ci-repair",
+        "source-ci-reopen",
         "First {{task_id}}: {{source_pr_url}} {{source_base}}..{{source_head}}\n{{checks}}",
     )
+    legacy = installed(tmp_path, "source-ci-repair", "Legacy independent branch instructions")
     with task_template_scope(tmp_path):
         first = repair_description(observation)
         assert first.startswith("First source-task: https://example/pr/3 " + "a" * 40)
@@ -84,6 +86,9 @@ def test_source_ci_builder_reads_each_edit_and_preserves_exact_facts(tmp_path):
         assert repair_description(observation).startswith("Changed source-task\n")
         path.unlink()
         assert "Authorized source CI repair" in repair_description(observation)
+        assert "existing PR" in repair_description(observation)
+        assert "Legacy independent" not in repair_description(observation)
+        assert legacy.read_text() == "Legacy independent branch instructions"
 
 
 def test_root_pr_recovery_uses_live_instructions_and_only_actual_failures(tmp_path):

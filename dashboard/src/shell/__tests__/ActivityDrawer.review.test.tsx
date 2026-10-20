@@ -3,27 +3,9 @@ import { MemoryRouter, useLocation } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import ActivityDrawer from "../ActivityDrawer";
+import { askPage } from "../../testUtils/asks";
 
-vi.mock("../../api/hooks", () => ({
-  useAllOpenGates: () => ({ data: [{
-    id: "gate-1",
-    gate_type: "review",
-    await_id: "review-1",
-    status: "open",
-    title: "Architecture review",
-    project_id: "agent-queue",
-  }, {
-    id: "internal-gate", gate_type: "review", await_id: "internal-review",
-    status: "open", title: "Half-depth chip-scar probe", project_id: "agent-queue",
-  }], isLoading: false }),
-  useResolveGate: () => ({ mutate: vi.fn() }),
-}));
-vi.mock("../../api/reviews", () => ({
-  useReviews: () => ({ data: { reviews: [
-    { id: "review-1", decider: "user" },
-    { id: "internal-review", decider: "supervisor" },
-  ] }, isLoading: false }),
-}));
+vi.mock("../../api/asks", () => ({ useAsks: () => ({ data: askPage() }) }));
 vi.mock("../../ws/useEventStream", () => ({ useEventStream: () => {} }));
 vi.mock("../../panes/store", () => ({ useShellPaneStore: () => ({ open: vi.fn() }) }));
 vi.mock("../useRightSurface", () => ({
@@ -41,9 +23,9 @@ describe("ActivityDrawer review gates", () => {
   it("opens the review and does not expose generic decision buttons", () => {
     render(<MemoryRouter><ActivityDrawer /><Location /></MemoryRouter>);
 
-    fireEvent.click(screen.getByText("Architecture review"));
+    fireEvent.click(screen.getByText("Architecture proposal"));
 
-    expect(screen.getByLabelText("Current location")).toHaveTextContent("/reviews/review-1");
+    expect(screen.getByLabelText("Current location")).toHaveTextContent("/focus/asks/ask-one");
     expect(screen.queryByRole("button", { name: "Approve" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Reject" })).not.toBeInTheDocument();
     expect(screen.queryByText("Half-depth chip-scar probe")).not.toBeInTheDocument();

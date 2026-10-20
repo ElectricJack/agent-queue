@@ -194,14 +194,26 @@ class ProjectQueryMixin:
     async def list_projects(
         self,
         status: ProjectStatus | None = None,
+        *,
+        include_admission: bool = False,
     ) -> list[Project]:
         """List all projects, optionally filtered by status."""
         stmt = select(projects)
+        if include_admission:
+            from src.integration.admission import project_admission_required
+
+            stmt = stmt.add_columns(project_admission_required(projects).label("source_admission"))
         if status:
             stmt = stmt.where(projects.c.status == status.value)
         async with self._engine.begin() as conn:
             result = await conn.execute(stmt)
-            return [self._row_to_project(r) for r in result.mappings().fetchall()]
+            found = []
+            for row in result.mappings().fetchall():
+                project = self._row_to_project(row)
+                if include_admission:
+                    project._source_admission_required = row["source_admission"]
+                found.append(project)
+            return found
 
     async def update_project(self, project_id: str, **kwargs) -> None:
         """Update arbitrary project fields."""

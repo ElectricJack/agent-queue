@@ -182,6 +182,35 @@ def _identity(row):
     return {key: value for key, value in row.items() if key != "dependent"}
 
 
+@dataclass(frozen=True)
+class StackCurrentness:
+    """Whether a stack view still describes Git: current, changed or unavailable.
+
+    *changed* means Git answered and a pinned ref moved, so the view's selection
+    inputs are stale. *unavailable* means Git gave no answer (a failed or backed-off
+    snapshot, an unreadable remote): that proves no stack prerequisite at all, so a
+    caller drops every proof rather than reading the failure as a change.
+    """
+
+    state: str
+    reason: str | None = None
+    ref: str | None = None
+    expected: str | None = None
+    observed: str | None = None
+    task_id: str | None = None
+
+    @property
+    def current(self):
+        return self.state == "current"
+
+    def evidence(self):
+        return {key: value for key, value in vars(self).items() if value is not None}
+
+
+def _observed(ref):
+    return None if ref is None else f"{ref.state}:{ref.oid}" if ref.oid else str(ref.state)
+
+
 @dataclass
 class StackView:
     db: object
@@ -196,12 +225,23 @@ class StackView:
     cached_only: bool = False
 
     async def fresh(self):
+        return (await self.currentness()).current
+
+    def without_proofs(self):
+        """The same observation proving nothing, for evidence Git could not give."""
+        return replace(self, proofs={}, delivered_refs={})
+
+    async def currentness(self):
+        def unavailable(reason, ref=None, observed=None):
+            return StackCurrentness("unavailable", reason, ref, observed=observed)
+
         if self.snapshot is None:
-            return not self.rows
+            return (unavailable("stack_repository_unavailable") if self.rows
+                    else StackCurrentness("current"))
         snapshot = self.snapshot
-        if snapshot.error or not snapshot.target_oid:
-            return False
         target = snapshot.target_ref.removeprefix("refs/heads/")
+        if snapshot.error or not snapshot.target_oid:
+            return unavailable(snapshot.error or "missing_target", target)
         branches = {target}
         branches.update(proof["branch_name"].removeprefix("refs/heads/")
                         for proof in self.proofs.values())
@@ -218,14 +258,14 @@ class StackView:
             else:
                 missing.append(branch)
         if self.cached_only and missing:
-            return False
+            return unavailable("stack_refs_not_cached", missing[0])
         try:
             if (not self.cached_only and
                     await snapshot.git.aget_remote_url(snapshot.store) != snapshot.repository_url):
-                return False
+                return unavailable("stack_store_remote_mismatch")
             observed = await snapshot.git.als_remote_refs(snapshot.store, missing) if missing else {}
-        except (GitError, OSError):
-            return False
+        except (GitError, OSError) as exc:
+            return unavailable(f"stack_refs_unreadable: {type(exc).__name__}")
         for branch, ref in observed.items():
             refs[branch] = ref
             self.ref_cache[(*key, branch)] = now, ref
@@ -233,28 +273,36 @@ class StackView:
         for cached_key, (stamp, _) in list(self.ref_cache.items()):
             if now - stamp > 2:
                 self.ref_cache.pop(cached_key, None)
-        ref = refs.get(target)
-        if ref is None or ref.state is not RemoteRefState.PRESENT or ref.oid != snapshot.target_oid:
-            return False
-        for branch, expected in self.watched_refs.items():
+        for branch in branches:
             ref = refs.get(branch)
-            if ref is None or (ref.state, ref.oid) != (
+            if ref is None or ref.state is RemoteRefState.ERROR:
+                return unavailable("stack_ref_unreadable", branch, observed=_observed(ref))
+
+        def changed(branch, expected, task_id=None):
+            return StackCurrentness("changed", "stack_ref_moved", branch, expected,
+                                    _observed(refs.get(branch)), task_id)
+
+        ref = refs[target]
+        if ref.state is not RemoteRefState.PRESENT or ref.oid != snapshot.target_oid:
+            return changed(target, snapshot.target_oid)
+        for branch, expected in self.watched_refs.items():
+            ref = refs[branch]
+            if (ref.state, ref.oid) != (
                 RemoteRefState.PRESENT if expected else RemoteRefState.ABSENT, expected,
             ):
-                return False
+                return changed(branch, expected)
         for proof in self.proofs.values():
-            ref = refs.get(proof["branch_name"].removeprefix("refs/heads/"))
-            if ref is None:
-                return False
+            branch = proof["branch_name"].removeprefix("refs/heads/")
+            ref = refs[branch]
             if ref.state is RemoteRefState.PRESENT and ref.oid == proof["checkpoint_sha"]:
                 continue
             delivered = self.delivered_refs.get(proof["task_id"])
             if ref.state is not RemoteRefState.ABSENT or delivered is None:
-                return False
-            parent = refs.get(delivered[0])
-            if parent is None or parent.state is not RemoteRefState.PRESENT or parent.oid != delivered[1]:
-                return False
-        return True
+                return changed(branch, proof["checkpoint_sha"], proof["task_id"])
+            parent = refs[delivered[0]]
+            if parent.state is not RemoteRefState.PRESENT or parent.oid != delivered[1]:
+                return changed(delivered[0], delivered[1], proof["task_id"])
+        return StackCurrentness("current")
 
     async def verified_on(self, conn, ids=None):
         current = {
@@ -272,7 +320,8 @@ class StackView:
 
 
 async def observe_stacks(observer, project_id, *, task_id=None, max_age=0, snapshot=None,
-                         cached_only=False, preparation=False):
+                         cached_only=False, require_snapshot=False):
+    """Observe prerequisites; preparation and refresh need Git even for an empty set."""
     async with observer.db._engine.connect() as conn:
         rows = await _inputs(conn, project_id, task_id)
         parents = dict(
@@ -301,7 +350,7 @@ async def observe_stacks(observer, project_id, *, task_id=None, max_age=0, snaps
     view = StackView(observer.db, project_id, rows,
                      ref_cache=observer._stack_ref_cache, fresh_max_age=min(max_age, 2),
                      cached_only=cached_only)
-    if repository is None or not rows and not preparation:
+    if repository is None or not rows and not require_snapshot:
         return view
     target = DeliveryTarget(
         project_id,
@@ -453,7 +502,7 @@ class StackedBranches:
         """Retain a checkout's exact inputs after abort, then reserve one repair."""
         task = await self.db.get_task(task_id)
         view = await observe_stacks(
-            self.observer, task.project_id, task_id=task_id, preparation=True,
+            self.observer, task.project_id, task_id=task_id, require_snapshot=True,
         )
         ids = view.required(task_id)
         async with self.db._engine.connect() as conn:
@@ -501,7 +550,7 @@ class StackedBranches:
                 or not stacked_policy(project) and parent_base is None):
             return None
         view = await observe_stacks(
-            self.observer, task.project_id, task_id=task_id, preparation=True,
+            self.observer, task.project_id, task_id=task_id, require_snapshot=True,
         )
         ids = view.required(task_id)
         if not ids and parent_base is None:
@@ -553,15 +602,22 @@ class StackedBranches:
                 await self.observer.git._arun(
                     ["fetch", "--no-tags", workspace, local_head], cwd=str(view.snapshot.store),
                 )
-                if not await self.observer.git.ais_ancestor(
+                published_is_ancestor = await self.observer.git.ais_ancestor(
                     view.snapshot.store, dependent_head, local_head, strict=True,
-                ):
-                    raise GitError("local child does not descend from its published head")
-                await self.observer.git._arun(
-                    ["update-ref", "refs/aq/stacks/" + local_head, local_head],
-                    cwd=str(view.snapshot.store),
                 )
-                dependent_head = local_head
+                if published_is_ancestor is True:
+                    await self.observer.git._arun(
+                        ["update-ref", "refs/aq/stacks/" + local_head, local_head],
+                        cwd=str(view.snapshot.store),
+                    )
+                    dependent_head = local_head
+                elif published_is_ancestor is not False or await self.observer.git.ais_ancestor(
+                    view.snapshot.store, local_head, dependent_head, strict=True,
+                ) is not True:
+                    raise GitError("local child does not descend from its published head")
+                # A strictly behind cached child adds no unique commits. Keep
+                # the freshly observed published descendant as the merge input;
+                # checkout mutation and activation still use their existing fences.
         if parent:
             parent_ref = parent.removeprefix("refs/heads/")
             view.watched_refs[parent_ref] = view.snapshot.source_heads.get(
@@ -876,7 +932,8 @@ class StackedBranches:
             source_inputs = await self._refresh_inputs(conn, task_id, origin)
         checkpoint, request, outcome = source_inputs
         view = await observe_stacks(self.observer, task["project_id"], task_id=task_id,
-                                    snapshot=snapshot.observation if snapshot else None)
+                                    snapshot=snapshot.observation if snapshot else None,
+                                    require_snapshot=True)
         if view.snapshot and not view.snapshot.error and request:
             truth = snapshot or GitTruthSnapshot(
                 self.observer.truth or GitTruth(self.observer.git), view.snapshot,
@@ -896,7 +953,8 @@ class StackedBranches:
         ids = view.required(task_id)
         async with self.db._engine.connect() as conn:
             proofs = await view.verified_on(conn, ids)
-        if set(proofs) != ids or not set(old["prerequisites"]) <= ids or not await view.fresh():
+        if (view.snapshot is None or set(proofs) != ids
+                or not set(old["prerequisites"]) <= ids or not await view.fresh()):
             await self._hold(origin, old, "prerequisite_reopened_or_unavailable")
             return "waiting_prerequisite"
         if (not checkpoint or not request or not request.completion_id

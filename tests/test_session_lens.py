@@ -1428,7 +1428,8 @@ class TestSupervisorAddressValidation:
 
         assert [r["delivered"] for r in results] == [0, 0, 0]
         assert fake.sent_nudges == [
-            (handle.name, f"Handle `aq message status {legacy.id} --json`.")
+            (handle.name,
+             f"Handle `aq message status {legacy.id} --json` (running it marks the message read).")
         ]
         notified = await db.get_message(legacy.id)
         assert notified.delivered_at is None and notified.read_at is None

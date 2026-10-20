@@ -206,6 +206,13 @@ NAMED_BOOTSTRAP_PROMPT = (
 )
 
 SUPERVISOR_PATROL_PROMPT = (
+    "Keep pool workers executing or closing their own tasks. Never tell a worker "
+    "to hold idle for source mapping, integration controls or delivery paperwork. "
+    "Read the project's integration mode first: with the train off, train controls "
+    "are not prerequisites for worker publication and close. Resolve actual command "
+    "refusals through their owner; preserve human holds and integration ownership. "
+    "If execution needs an answer, give concrete guidance or one bounded durable "
+    "message wait; never an indefinite hold with no retries.\n"
     "You are responsible for keeping AQ running between messages. "
     "As your FIRST action on a cold start, list the scheduled jobs and establish "
     "a recurring patrol on your harness scheduler if one does not already exist. "

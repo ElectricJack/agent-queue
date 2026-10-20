@@ -98,6 +98,50 @@ the operator must reconcile the shipped spec-ingest Role and commit grant;
 profile seeding does not overwrite local copies. Preserve the installed
 harness when updating it.
 
+## Spec supersession checklist
+
+Before submitting or reviewing a design or implementation spec:
+
+1. Find approved specs it replaces or overlaps, including its approved design
+   and related specs without an explicit `Supersedes` link. Identify the
+   approved revision and approval evidence for each. If none apply, record
+   the search and that conclusion. If a required predecessor is inaccessible,
+   ask the supervisor for its approved text; do not assume its goals away.
+2. Use the [spec template's goal table](../templates/spec.md#approved-specs-and-goal-accounting).
+   Account for **every goal of every predecessor**, including goals outside
+   the overlap: `kept` with a replacement or retained-spec section, `changed`
+   with the old/new behavior and rationale, or `dropped` with a rationale and
+   Jack's sign-off. Check the actual replacement against each row. A removed
+   outcome counts as dropped even inside a changed goal or a deferred scope.
+3. Require Jack's explicit sign-off for each dropped goal, with a decision
+   reference, date and the replacement revision it covers. A general approval,
+   silence, author assertion or delegated supervisor approval is insufficient.
+   Authors may submit with sign-off pending, but the decider must request
+   changes or leave the review open until Jack decides; do not file affected
+   implementation work on the assumption that a drop is approved.
+4. Reviewers flag **every dropped goal** in the review and verdict, naming its
+   predecessor, rationale and sign-off status. Missing predecessors or goal
+   rows, unsupported `kept`/`changed` claims and unsigned drops are `[blocking]`
+   findings. Signed-off drops remain visible in the review as an acknowledged
+   scope change. Anchor findings to the goal table or the conflicting text.
+5. Repeat the comparison on revisions. A changed drop or replacement revision
+   needs sign-off that covers the new proposal. Deferring a finding or marking
+   a comment resolved cannot substitute for Jack's decision.
+
+For example, a replacement of the 2026-10-02 integration-train plan must account
+for its goal that train policy lives in per-project playbooks. If the new
+design puts those decisions in Python, it must flag that lost outcome as
+`dropped` and obtain Jack's sign-off. Calling the replacement git-first or
+simpler supplies no approval evidence.
+
+This is authoring and review policy, not automatic semantic enforcement by the
+review command. The shipped playbook carries it into spec-ingest task context;
+the spec-ingest role passes it to authors and checks it before deriving work.
+Shipped profiles and skills are write-if-absent: on an existing installation,
+the operator must reconcile the spec-ingest Role, reviewer Rules and installed
+aq-reviews skill with the shipped versions while preserving local edits.
+Grant-only profile reseeding does not update this prose.
+
 ## The commands in one table
 
 | Command | You | What |
@@ -303,6 +347,10 @@ From the worker's point of view the workflow is short:
    `aq review show --review-id <id> --comments`, then resubmit with
    `aq review submit --review-id <id> --file <draft> --changes "…"
    [--resolves <comment-id> …]`, and close it.
+   The daemon resolves an omitted `--review-id` from the held revision task's
+   assignment, so the ordinary submit command also updates that review.
+   Naming another review is refused with `not_your_task`; a revision worker
+   cannot open a parallel review.
    Revise a local draft; do not edit the vault mirror or its frontmatter
    directly. A passing close is refused with `reviews.revision_unpublished`
    until this task has submitted a newer revision of its assigned review.

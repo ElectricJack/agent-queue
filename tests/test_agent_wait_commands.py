@@ -16,7 +16,7 @@ from src.commands.contracts import CONTRACTS
 from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_context
 from src.config import AppConfig
 from src.database.tables import sessions, tasks
-from src.models import AgentProfile
+from src.models import AgentProfile, SessionRecord
 from src.profiles.capabilities import DENY_ALL
 from tests.test_agent_wait_queries import NOW, env as _wait_env
 
@@ -527,7 +527,7 @@ async def test_plain_message_wakes_idle_pool_holder(commands, env, monkeypatch, 
 
     await Orchestrator._deliver_messages(orch)
 
-    assert typed() == [f"Handle `aq message status {message_id} --json`."]
+    assert typed() == [f"Handle `aq message status {message_id} --json` (running it marks the message read)."]
     message = await env.db.get_message(message_id)
     assert message.delivered_at is None and message.read_at is None
     assert message.last_notified_at == NOW and message.notification_attempts == 1
@@ -640,15 +640,25 @@ async def test_operator_approval_on_the_wait_thread_satisfies_it(
     orch = await _wire_delivery(commands, env, monkeypatch, provider)
     _asked_id, wait_id = await _ask_on_thread(commands, env)
     to_kind, to_id = recipient
+    await env.db.create_profile(AgentProfile(
+        id="supervisor", name="Supervisor", aq_commands=["message_send"],
+        harness_tools=[], plugin_tools=[],
+    ))
+    await env.db.create_session(SessionRecord(
+        id="global-admin", project_id=None, profile_id="supervisor", harness="codex",
+        provider="fake", name="n-supervisor--global", lifecycle="named", work_dir="/tmp",
+        epoch="boot", instance_token="global-token", started_at=NOW, state="running",
+    ))
 
     approved = await _over_api(
         commands,
         "message_send",
         {
             "to_kind": to_kind, "to_id": to_id, "thread_id": "owner:graph-filing",
-            "from_kind": "user", "from_id": "cli", "body": "APPROVED: file the graph",
+            "body": "APPROVED: file the graph",
         },
         session_id="global-admin", project_id=None, elevated=True,
+        session_instance_token="global-token",
     )
     assert approved["message"]["project_id"] == "p", approved
     monkeypatch.setattr("src.commands.wait_commands.time.time", lambda: NOW + 30)
@@ -943,3 +953,119 @@ async def test_global_supervisor_subscription_does_not_block_and_pointer_needs_n
     assert cancelled["success"] and cancelled["wait"]["state"] == "cancelled"
     result = await env.db.get_message(cancelled["wait"]["result_message_id"])
     assert result.to_kind == "session" and result.to_id == "supervisor-global"
+
+
+async def _seed_wait_project_supervisor(env, **overrides):
+    from src.models import SessionRecord
+
+    # Project supervisor mail only stays with a project that opted in.
+    await env.db.update_project("p", supervisor_enabled=True)
+    # The shipped grants each side of the round trip runs under.
+    await env.db.update_profile("worker-codex", aq_commands=[
+        "wait_register", "wait_get", "message_send", "message_status", "message_reply",
+    ])
+    await env.db.create_profile(AgentProfile(
+        id="supervisor", name="Supervisor", harness_tools=[], plugin_tools=[],
+        aq_commands=["agent_message", "message_inbox", "wait_register", "wait_get"],
+    ))
+    values = {
+        "id": "sup-p", "project_id": "p", "profile_id": "supervisor", "harness": "codex",
+        "provider": "fake", "name": "n-supervisor--p", "lifecycle": "named",
+        "work_dir": "/tmp/sup", "epoch": "boot", "instance_token": "sup-token",
+        "started_at": NOW, "state": "running",
+    }
+    values.update(overrides)
+    await env.db.create_session(SessionRecord(**values))
+    return {
+        "session_id": "sup-p", "session_instance_token": "sup-token", "project_id": "p",
+        "elevated": True,
+    }
+
+
+_WORKER = {
+    "session_id": "s", "session_instance_token": "token", "project_id": "p", "elevated": False,
+}
+
+
+async def test_native_guidance_round_trips_to_its_authenticated_supervisor(
+    commands, env, monkeypatch
+):
+    """noble-bridge-92: ``aq agent message <task> --reply-to <id>`` from the
+    agent-queue supervisor was stored ``system:supervisor`` (msg-22949054…), so
+    the worker's ``aq message reply`` was refused as a reply to a system message
+    and the supervisor's thread wait never saw an answer."""
+    monkeypatch.setattr("src.commands.wait_commands.time.time", lambda: NOW)
+    supervisor = await _seed_wait_project_supervisor(env)
+    commands.orchestrator.bus.emit.reset_mock()
+    asked = await _over_api(commands, "message_send", {
+        "to_kind": "session", "to_id": "supervisor-p", "from_kind": "session", "from_id": "s",
+        "thread_id": "owner:graph-filing", "body": "May I file the graph?",
+        "claim_epoch": 1,
+    }, **_WORKER)
+    asked_seq = (await env.db.get_message(asked["message_id"])).created_seq
+    worker_wait = await _over_api(commands, "wait_register", {
+        "kind": "message", "ref": "owner:graph-filing", "after_seq": asked_seq,
+        "timeout": 900, "idempotency_key": "worker-wait", "claim_epoch": 1,
+    }, **_WORKER)
+    assert worker_wait["success"], worker_wait
+
+    guided = await _over_api(commands, "agent_message", {
+        "target": "owner", "body": "Yes, file it.", "reply_to": asked["message_id"],
+    }, **supervisor)
+
+    # The live claimant receives it on the worker's thread, signed by the
+    # supervisor's own mailbox rather than an unaddressable system sender.
+    assert guided["target"] == {"task_id": "owner", "session_id": "s"}, guided
+    guidance = await env.db.get_message(guided["message_id"])
+    assert (guidance.from_kind, guidance.from_id) == ("session", "supervisor-p")
+    assert (guidance.to_kind, guidance.to_id, guidance.project_id) == ("session", "s", "p")
+    assert guidance.thread_id == "owner:graph-filing"
+    assert guidance.reply_to_id == asked["message_id"]
+    assert (await env.db.get_message(asked["message_id"])).read_at is not None
+    comments = (await env.db.list_task_comments("owner", project_id="p"))["comments"]
+    assert [(c["author_kind"], c["author_id"], c["body"]) for c in comments] == [
+        ("supervisor", "supervisor-p", "Yes, file it.")
+    ]
+    await AgentWaitReconciler(commands).tick(now=NOW + 10)
+    worker_resolved = await env.db.get_agent_wait(worker_wait["wait"]["id"])
+    assert worker_resolved["state"] == "satisfied"
+    assert worker_resolved["digest"]["message_id"] == guidance.id
+
+    supervisor_wait = await _over_api(commands, "wait_register", {
+        "kind": "message", "ref": "owner:graph-filing", "after_seq": guidance.created_seq,
+        "timeout": 900, "idempotency_key": "supervisor-wait",
+    }, **supervisor)
+    assert supervisor_wait["success"], supervisor_wait
+    assert supervisor_wait["wait"]["owner_id"] == "supervisor-p"
+
+    read = await _over_api(commands, "message_status", {"message_id": guidance.id}, **_WORKER)
+    assert read["state"] == "acknowledged", read
+    replied = await _over_api(
+        commands, "message_reply", {"message_id": guidance.id, "body": "Filed."}, **_WORKER
+    )
+
+    reply = await env.db.get_message(replied["reply_id"])
+    assert (reply.from_kind, reply.from_id) == ("session", "s")
+    assert (reply.to_kind, reply.to_id, reply.project_id) == ("session", "supervisor-p", "p")
+    assert (reply.thread_id, reply.reply_to_id) == ("owner:graph-filing", guidance.id)
+    emitted = [call.args[0] for call in commands.orchestrator.bus.emit.await_args_list]
+    assert emitted.count("message.replied") == 1
+    assert emitted.count("message.delivered") == 1  # the worker's one read of the guidance
+    thread = await env.db.list_messages(thread_id="owner:graph-filing", include_archived=True)
+    assert sorted(m.id for m in thread if m.to_id == "supervisor-p") == sorted(
+        [asked["message_id"], reply.id]
+    )
+
+    inbox = await _over_api(commands, "message_inbox", {
+        "to_kind": "session", "to_id": "supervisor-p",
+    }, **supervisor)
+    assert reply.id in [row["id"] for row in inbox["messages"]], inbox
+    await AgentWaitReconciler(commands).tick(now=NOW + 20)
+    resolved = await env.db.get_agent_wait(supervisor_wait["wait"]["id"])
+    assert resolved["state"] == "satisfied"
+    assert resolved["digest"]["message_id"] == reply.id
+    consumed = await _over_api(
+        commands, "wait_get", {"wait_id": resolved["id"], "consume": True}, **supervisor
+    )
+    assert consumed["success"], consumed
+    assert consumed["wait"]["digest"]["message_id"] == reply.id

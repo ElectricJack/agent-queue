@@ -174,6 +174,36 @@ async def test_reconciler_selects_only_pr_ready_train_roots(db):
     git.acreate_pr.assert_not_awaited()
 
 
+@pytest.mark.parametrize("disposition", ["obsolete", "retire", None])
+async def test_epic_pr_preserves_archived_children_but_only_requires_delivery_archives(
+    db, disposition
+):
+    await _root(db)
+    async with db.immediate() as conn:
+        await conn.execute(insert(tasks).values(
+            id="r1.1", project_id="p", repo_id="repo", title="obsolete plan",
+            description="", status="BLOCKED", parent_task_id="r1",
+            created_at=1.0, updated_at=1.0,
+        ))
+        await conn.execute(update(task_integration_checkpoints).where(
+            task_integration_checkpoints.c.task_id == "r1",
+        ).values(verified_sha=HEAD))
+    assert await db.archive_task(
+        "r1.1", abandon_undelivered=disposition is not None, disposition=disposition,
+        abandon_reason="plan no longer applies", archive_reason="plan no longer applies",
+    )
+    git = _git()
+    result = await EpicPullRequestService(db, git_manager=git).open_for_epic("r1")
+    if disposition is None:
+        assert result["outcome"] == "children_incomplete" and result["pending"] == ["r1.1"]
+        git.acreate_pr.assert_not_awaited()
+    else:
+        assert result["outcome"] == "opened"
+        assert "`r1.1`" in git.acreate_pr.await_args.kwargs["body"]
+    assert (await db.get_archived_task("r1.1"))["status"] == "BLOCKED"
+    assert await db.get_task_completion("r1.1") is None
+
+
 async def test_reconciler_ignores_a_project_outside_train_mode(db):
     await _root(db)
     async with db.immediate() as conn:

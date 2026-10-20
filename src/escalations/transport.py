@@ -201,6 +201,10 @@ class EscalationTransport(Protocol):
 
     async def archive_thread(self, *, thread_id: str) -> None: ...
 
+    async def read_root(self, *, channel_id: str, root_message_id: str) -> str:
+        """Fetch this exact root; a history miss never proves deletion."""
+        ...
+
     async def find_marker(
         self, *, channel_id: str, thread_id: str | None, marker: str
     ) -> SendOutcome | None:
@@ -352,6 +356,14 @@ class SinkTransport:
         if thread_id not in self.threads:
             raise TransportMissing(f"thread {thread_id} is gone")
         self.archived.add(thread_id)
+
+    async def read_root(self, *, channel_id: str, root_message_id: str) -> str:
+        self.calls.append("read_root")
+        self._maybe_fail("read_root")
+        message = self.messages.get(root_message_id)
+        if message is None or message.where != channel_id:
+            raise TransportMissing("root is gone")
+        return message.content
 
     async def find_marker(
         self, *, channel_id: str, thread_id: str | None, marker: str

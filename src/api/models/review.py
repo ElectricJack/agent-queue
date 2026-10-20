@@ -96,12 +96,54 @@ class ReviewWithdrawResponse(BaseModel):
 
 
 class ReviewDecideResponse(BaseModel):
+    model_config = {"extra": "allow"}
+
+    application_state: str = "not_started"
+    decision_id: str | None = None
     success: bool = True
     review_id: str
     state: str
     unblocked_task_ids: list[str] = []
     #: What approving a playbook review did with its pinned artifact.
     playbook: dict[str, Any] | None = None
+
+
+class AskSourceVersion(BaseModel):
+    decision_generation: int
+    source_fingerprint: str
+    feedback_version: int
+
+
+class AskDecisionPreview(BaseModel):
+    model_config = {"extra": "allow"}
+
+    id: str
+    ask_id: str
+    decision_generation: int
+    actor_id: str
+    input_id: str | None = None
+    source_fingerprint: str
+    feedback_version: int
+    packet: dict[str, Any]
+    packet_sha256: str
+    created_at: float
+    expires_at: float
+
+
+class AskPrepareDecisionResponse(BaseModel):
+    success: bool = True
+    preview: AskDecisionPreview
+    expected: AskSourceVersion
+
+
+class AskDecideResponse(ReviewDecideResponse):
+    created: bool
+
+
+class ReviewFeedbackCompleteResponse(BaseModel):
+    success: bool = True
+    obligation_id: str
+    recorded: bool
 
 
 class PullRequestApproveResponse(BaseModel):
@@ -170,6 +212,10 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "review_withdraw": ReviewWithdrawResponse,
     "review_reopen": ReviewSubmitResponse,
     "review_decide": ReviewDecideResponse,
+    "ask_prepare_decision": AskPrepareDecisionResponse,
+    "ask_decide": AskDecideResponse,
+    "ask_retry_operation": ReviewDecideResponse,
+    "review_feedback_complete": ReviewFeedbackCompleteResponse,
     "approve_pull_request": PullRequestApproveResponse,
     "review_comment": ReviewCommentResponse,
     "review_delegate": ReviewDelegateResponse,

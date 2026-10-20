@@ -429,6 +429,19 @@ class TestTaskSetLabelEvents:
 # ── gate commands (WG-3) ─────────────────────────────────────────────────
 
 
+
+async def gate_decision(handler, gate_id):
+    shown = await handler._cmd_gate_show({"gate_id": gate_id})
+    ask = shown["gate"]["ask"]
+    intent = {"ask_id": ask["id"], "option_key": "approve", "expected": {
+        key: ask[key] for key in ("decision_generation", "source_fingerprint", "feedback_version")
+    }}
+    prepared = await handler._cmd_ask_prepare_decision(intent)
+    assert prepared["success"], prepared
+    return {"gate_id": gate_id, "option_key": "approve", "expected": intent["expected"],
+            "preview_id": prepared["preview"]["id"], "idempotency_key": f"approve:{gate_id}"}
+
+
 class TestGateCommands:
     async def test_gate_create_happy(self, handler, db):
         await mktask(db, "t1")
@@ -484,11 +497,15 @@ class TestGateCommands:
                 "project_id": PROJECT_ID,
                 "gate_type": "human",
                 "title": "r",
+                "question": "Approve this task?",
+                "human_request": {"policy": "approval_hold_v1", "context": {
+                    "waiting_effect": "The waiter remains blocked until approval.",
+                }},
                 "waiter_task_ids": ["t1"],
             }
         )
         gid = create["gate_id"]
-        res = await handler._cmd_gate_resolve({"gate_id": gid, "resolved_by": "jack"})
+        res = await handler._cmd_gate_resolve(await gate_decision(handler, gid))
         assert res["success"] is True
         assert "t1" in res["unblocked_task_ids"]
         assert (await db.get_task("t1")).is_blocked is False
@@ -500,15 +517,22 @@ class TestGateCommands:
                 "project_id": PROJECT_ID,
                 "gate_type": "human",
                 "title": "r",
+                "question": "Approve this task?",
+                "human_request": {"policy": "approval_hold_v1", "context": {
+                    "waiting_effect": "The waiter remains blocked until approval.",
+                }},
                 "waiter_task_ids": ["t1"],
             }
         )
         gid = create["gate_id"]
-        first = await handler._cmd_gate_resolve({"gate_id": gid, "resolved_by": "a"})
-        second = await handler._cmd_gate_resolve({"gate_id": gid, "resolved_by": "b"})
+        args = await gate_decision(handler, gid)
+        first = await handler._cmd_gate_resolve(args)
+        second = await handler._cmd_gate_resolve(args)
         assert first["success"] is True
         assert second["success"] is True
-        assert second["unblocked_task_ids"] == []
+        assert second["decision_id"] == first["decision_id"]
+        assert second["unblocked_task_ids"] == first["unblocked_task_ids"]
+        assert second["created"] is False
 
     async def test_gate_resolve_emits_task_unblocked_on_bus(self, handler, db):
         """The operator resolve path must emit ``task.unblocked`` on the
@@ -522,6 +546,10 @@ class TestGateCommands:
                 "project_id": PROJECT_ID,
                 "gate_type": "human",
                 "title": "r",
+                "question": "Approve this task?",
+                "human_request": {"policy": "approval_hold_v1", "context": {
+                    "waiting_effect": "The waiter remains blocked until approval.",
+                }},
                 "waiter_task_ids": ["t1"],
             }
         )
@@ -534,7 +562,7 @@ class TestGateCommands:
 
         handler.orchestrator.bus.subscribe("task.unblocked", _spy)
 
-        res = await handler._cmd_gate_resolve({"gate_id": gid, "resolved_by": "op"})
+        res = await handler._cmd_gate_resolve(await gate_decision(handler, gid))
         assert res["success"] is True
         assert "t1" in res["unblocked_task_ids"]
         # The command path fires task.unblocked just like _sweep_gates does.

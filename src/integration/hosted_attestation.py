@@ -278,8 +278,13 @@ def _require_shape(payload: Any) -> None:
             _require_fields(item, fields, field)
             _require_sha(item["head_sha"], f"{field}.head_sha")
             _require_id(item["check_suite_id"], f"{field}.check_suite_id")
-            if item["conclusion"] != "success":
+            if field == "checks" and item["conclusion"] != "success":
                 raise VerificationError(f"attestation {field} entry is not successful")
+            if field == "workflow_runs" and item["conclusion"] not in {
+                None, "success", "failure", "cancelled", "skipped", "neutral", "timed_out",
+                "action_required", "startup_failure", "stale",
+            }:
+                raise VerificationError("attestation workflow conclusion is malformed")
             if item["head_sha"] != payload["head_sha"]:
                 raise VerificationError(f"attestation {field} entry is on another head")
     for check in checks:

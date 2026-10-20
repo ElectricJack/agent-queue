@@ -81,6 +81,9 @@ def parse_workspace_kind_file(path: Path, project_id: str) -> WorkspaceKind:
         )
 
     now = time.time()
+    max_slots = fm.get("max_slots")
+    if max_slots is not None and (type(max_slots) is not int or max_slots <= 0):
+        raise ValueError(f"{path}: max_slots must be a positive integer")
     return WorkspaceKind(
         project_id=project_id,
         id=str(fm["id"]),
@@ -93,6 +96,7 @@ def parse_workspace_kind_file(path: Path, project_id: str) -> WorkspaceKind:
         auto_attach=bool(fm.get("auto_attach", False)),
         mode=mode,
         worktree_setup=list(setup_raw),
+        max_slots=max_slots,
         created_at=now,
         updated_at=now,
     )

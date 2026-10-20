@@ -179,7 +179,11 @@ def render_note(row: dict, payload: dict, current: dict) -> str:
     header += f"created_at: {display_data(row.get('created_at', 'unknown'))}."
     if stale:
         header += "\nStale handoff files/checkout: ownership or checkout changed; verify all paths."
-    footer = f"\nRead full note: `aq task show {current['task_id']}` (context row above)."
+    read_note = f"aq task show {current['task_id']} --field context --offset 0 --limit 4096"
+    footer = (
+        f"\nRead full stored note (context row {display_data(row['id'])}): `{read_note}`; "
+        "follow next_offset until null before acting on shortened fields."
+    )
     blocks: list[str] = []
     # Continuation/uncertainties survive optional prose trimming. Each retained
     # block gets a pointer when its escaped presentation exceeds the space.
@@ -212,8 +216,8 @@ def render_note(row: dict, payload: dict, current: dict) -> str:
         if len(block.encode("utf-8")) > allowance:
             if key in {"constraints", "evidence"}:
                 block = (
-                    f"\n\n**{key}:** read the full stored note with `aq task show "
-                    f"{current['task_id']}` before continuing; exact text retained there."
+                    f"\n\n**{key}:** read the full stored note with `{read_note}` "
+                    "before continuing; exact text retained there."
                 )
                 blocks.append(block)
                 remaining -= len(block.encode("utf-8"))

@@ -253,6 +253,26 @@ These auto-expose through the existing MCP registration and
 mounted at `src/api/app.py:83–85`) — no bespoke plumbing. `message_send`,
 `message_reply`, `message_inbox` join the slim task-scoped MCP allowlist (G.2).
 
+**Ordinary send identity.** Omitted sender flags on `aq message send` are omitted
+from the request. `CommandHandler` derives `session:<UUID>` from the authenticated
+execution principal, verifying the persisted live launch, project and (for task
+or pool workers) held task and agent. Pool sends require the current claim epoch.
+Explicit session senders must name that UUID; a live named supervisor may also
+use its own canonical logical/runtime address. A session cannot send as a user,
+another session or a foreign supervisor. A live global supervisor may explicitly
+issue nonreplyable system notices. Local human/operator/script calls without a
+session principal retain `user:cli` when omitted and their explicit sender options.
+Service callers retain explicit human/system attribution. Existing collaboration
+and scoped global-report attribution remain server-derived by those routes.
+
+A worker's ordinary report and the supervisor's `aq message reply <id> "..."`
+share the original thread and reply linkage; the reply addresses the worker's
+session UUID. Its durable message wait therefore retains the existing project
+and ownership checks without a visibility grant. Before this source is deployed,
+workers can explicitly supply `--from-kind session --from-id <held-session-UUID>`
+using `.aq/claim.json` or prime as identity evidence, retaining `--claim-epoch`
+for a pool claim. A successful source test does not change the running daemon.
+
 **Mailbox fence** (`_inbox_mailbox_scope_error`): `message_inbox` is not a pure
 read — `inject=true` marks the returned rows delivered, and
 `get_pending_messages` has no project filter. A non-elevated session token may
@@ -260,7 +280,16 @@ therefore only address the mailboxes it owns: `session:<its own session_id>`,
 `task:<the task pinned in its token>` (for pool tokens, the live claim on its
 session row), and `profile:<its session row's profile_id>`. `user` mailboxes
 are delivered by the delivery engine and are never agent-readable through this
-command. Local callers and elevated supervisor tokens are unrestricted.
+command. Local callers and global elevated supervisor tokens are unrestricted.
+For inbox reads and injection, a project-pinned elevated supervisor may address
+only that project's session/task mailboxes and its logical/runtime supervisor
+aliases. Both global supervisor aliases remain global even when a pending row
+carries the caller's project. Shared profile inboxes are filtered by the token's
+project before applying the limit, including the read-only consumed rows. A
+foreign mailbox is refused before any delivery, archival or supervisor backlog
+maintenance. This inbox fence does not change `message_status`'s project view:
+project supervisors can still inspect their project's rows and reports addressed
+to their mailboxes by other projects (clear-zenith-84).
 `message_status` applies the same fence to the one row it reads, answering
 "not found" for a message outside the caller's mailboxes. It is on the agent
 surface because the idle-session nudge names `aq message status <id>`, and
@@ -273,6 +302,46 @@ sender's project (another project's supervisor escalating to
 `supervisor-agent-queue` pins its own), so without the second half the
 recipient was nudged to a body its own token answered "not found" for
 (clear-zenith-84). The global supervisor's mailbox is no project's.
+
+**Projectless inbound and global reports (clear-meadow-62).** A projectless
+directive addressed to an authenticated project supervisor is inbound mail,
+not ownership of system chat. Its exact recipient may read status, pending and
+consumed inbox, inject its own transport, and find it in history. History retains
+the project fence and adds only inbound rows to that supervisor's server-derived
+mailboxes, before pagination. The immutable session UUID and the canonical
+`supervisor-<project>` / `n-supervisor--<project>` addresses are one mailbox only
+when the persisted named supervisor row matches the authenticated project and
+launch. An arbitrary alias, foreign UUID or project named `global` grants no
+global mailbox ownership. History is read-only; status/inject consume only the
+addressed recipient's transport. Foreign unrelated and global chat stay fenced.
+
+A project supervisor may acknowledge a projectless directive from the global
+supervisor with `aq message reply <id> "..."`, or send a scoped report using
+`aq message send --to session:supervisor-global --body "..."`. This is a narrow
+send route, not global chat access: the caller must be an authenticated elevated
+project session with a matching live named `supervisor` row, canonical name and
+launch instance. The sender is always the authenticated session UUID; caller
+sender labels cannot impersonate a user, system or another supervisor. The row
+and message event retain the originating project, thread and reply linkage.
+Replies require an exact-own original and a global-supervisor sender address
+bound to its persisted named global row (or canonical logical global address).
+An unaddressable system sender cannot be replied to; send a scoped report instead.
+Existing command capability checks and invocation auditing still apply. Explicit
+`system_only`, global inbox/history, unrelated projectless replies, ordinary
+workers and user/local behavior retain their existing authority requirements.
+Source validation of this contract does not establish loaded daemon acceptance.
+
+A pool worker whose claim is still `preparing` may report to its own project
+supervisor before `.aq/claim.json` exists. The authenticated live session instance,
+project/profile, persisted preparation epoch, IN_PROGRESS task and BUSY agent must
+still agree; a supplied epoch must match too. Only the canonical own-supervisor
+addresses or its persisted named session UUID are admitted by this exception.
+The sender remains the authenticated worker UUID and replies use its session inbox.
+This permits a blocker report while preparation retains ownership; it does not
+admit ordinary messaging to peers or users, task mutations, or a report after the
+preparation binding has been released. Active pool messaging still requires an
+explicit claim epoch.
+
 `agent_message --reply-to` still threads only onto the target worker's own
 project's messages; a readable row from another project is refused with the
 `aq message reply <id>` that answers it, and an unreadable one stays
@@ -312,6 +381,20 @@ already reach clients through the existing `/ws/events` WebSocket
 Click command using the REST client (`src/cli/client.py`) plus a `/ws/events`
 subscription; falls back to polling `GET .../messages?since=` when WS is unavailable.
 `aq task create` gains `--graph <file|->`, `--from-spec <path>`, `--dry-run`.
+
+An omitted inbox recipient resolves to `session:$AQ_SESSION_ID`, before falling
+back to `task:$AQ_TASK_ID`; `AQ_PROJECT_ID` and `AQ_PROFILE` never substitute a
+supervisor address. A named supervisor's immutable UUID expands on the daemon
+to its own runtime name and logical `supervisor-<project>` mailbox. Cron prompts
+target that UUID and retain the owner session's project. If existing redacted
+evidence confirms a stale session marker, use the supported explicit recipient
+`aq --json message inbox --to session:<own-session-uuid> --inject`; a logical
+alias alone does not include UUID-addressed cron prompts. Do not change tokens
+or grants. The error `system messages require global admin` alone does not prove
+an alias-resolution defect: it also results from a projectless pending or
+consumed row. Fixture reproduction is not proof of the installed daemon's source
+or a live session's identity; investigate those only through the owning project's
+supported evidence.
 
 ---
 
@@ -483,8 +566,10 @@ and read by almost nothing:
 Pick one model deliberately — recipient ids are globally unique, or delivery is
 always project-scoped — and make queries, index, and event fan-out agree.
 
-**Resolution (Phase 3):** `get_pending_messages` stays project-unscoped — recipient
-ids are globally unique so cross-project collisions cannot occur. The delivery engine
+**Resolution (Phase 3):** Session/task queues stay project-unscoped — recipient
+ids are globally unique so cross-project collisions cannot occur. Shared profile
+queues accept a project filter for project-pinned elevated inbox readers (§6.1).
+The delivery engine
 derives `project_id` per row from the message record itself for any calls that require
 it (e.g. `SessionLens` lookups). No index change needed.
 

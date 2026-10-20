@@ -170,6 +170,19 @@ That is the whole protocol an agent needs: `aq inbox` to see what is waiting,
 `aq reply <id> "…"` to answer, `aq message send` to raise something. The
 canonical human recipient is `user:dashboard`.
 
+The server, not the client, decides who a reply comes from and goes to. A
+worker session can reply only to a message addressed to one of its own
+mailboxes in its own project; anything else reads as not found. The reply is
+signed as the mailbox the original was addressed to; a worker that names a
+different `from_kind` or `from_id` is refused. The reply goes to the original's
+sender, so a message from a `system:*` sender cannot be replied to. Supervisor
+guidance (`aq agent message`) is signed by the caller's authenticated identity.
+A live launch of the target project's own supervisor signs as
+`session:supervisor-<project>`, so a worker can reply to it. The operator CLI,
+automation, the global supervisor and a stale launch have no such return
+address. Their guidance stays `system:supervisor`, and the worker answers it
+with `aq message send --to session:supervisor-<project>`.
+
 ## Inputs and outputs
 
 | Lane | Input | Output |
@@ -211,7 +224,10 @@ is this recipient doing right now?* — and acts on the answer:
 A nudge records a notification attempt, and leaves the message in the pending
 inbox. The recipient runs `aq message status <id> --json` to read and acknowledge
 the body; another supervisor or an operator inspecting status does not consume
-it. Unread notifications retry after 60 seconds, doubling to a five-minute cap.
+it. Reading the body some other way, such as a non-consuming `aq message inbox`
+peek, is not an acknowledgment, so the pointer says so: ``Handle `aq message status
+<id> --json` (running it marks the message read).`` Unread notifications retry after
+60 seconds, doubling to a five-minute cap. A read message is never nudged again.
 After three unanswered attempts, AQ queues one alert with the original body to
 the global supervisor. The original stays pending; alerts do not recursively
 escalate. Attempt records and alert deduplication survive daemon restarts.

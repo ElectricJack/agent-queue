@@ -191,6 +191,12 @@ class EscalationButtonPress:
             await self._respond(interaction, _UNKNOWN_INCIDENT_TEXT)
             return OUTCOME_REFUSED
 
+        retired = getattr(self._handler.db, "legacy_escalation_controls_retired", None)
+        migrated = await retired(incident["id"]) if retired else False
+        if migrated:
+            await self._respond(interaction, "This request moved. Open its current ask; old controls are disabled.")
+            return OUTCOME_REFUSED
+
         if str(incident.get("state") or "") in TERMINAL_STATES:
             self._ignore(CLOSED_INCIDENT, interaction, custom_id)
             await self._respond(interaction, _CLOSED_TEXT)

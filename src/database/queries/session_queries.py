@@ -42,8 +42,9 @@ import time
 from sqlalchemy import and_, delete, func, insert, or_, select, update
 
 from src.database.tables import (
-    agent_profiles, agents, gates, integration_batches, playbook_v2_runs,
-    projects, sessions, task_session_attempts, tasks, workspaces,
+    agent_profiles, agents, gates, integration_batches, integration_branch_owners, playbook_v2_runs,
+    projects, sessions, task_branch_origins, task_integration_checkpoints,
+    task_session_attempts, tasks, workspaces,
 )
 from src.database.queries.task_session_queries import TERMINAL_SESSION_STATES, open_attempts
 from src.models import AgentState, ProjectStatus, SessionRecord, TaskStatus
@@ -143,6 +144,7 @@ def _row_to_session(row) -> SessionRecord:
         claim_failure_count=int(row.get("claim_failure_count") or 0),
         claim_failure_reason=row.get("claim_failure_reason"),
         claim_failure_at=row.get("claim_failure_at"),
+        failed_preparation=row.get("failed_preparation"),
         claim_refusal=row.get("claim_refusal"),
         hooks_provisioned=bool(row.get("hooks_provisioned")),
         git_identity_digest=row.get("git_identity_digest"),
@@ -232,6 +234,7 @@ class SessionQueryMixin:
                 claim_failure_count=session.claim_failure_count,
                 claim_failure_reason=session.claim_failure_reason,
                 claim_failure_at=session.claim_failure_at,
+                failed_preparation=session.failed_preparation,
                 claim_refusal=session.claim_refusal,
                 hooks_provisioned=session.hooks_provisioned,
                 git_identity_digest=session.git_identity_digest,
@@ -366,8 +369,67 @@ class SessionQueryMixin:
             result = await conn.execute(query)
             return [_row_to_session(r) for r in result.mappings().fetchall()]
 
+    async def record_failed_preparation(
+        self, session_id: str, *, instance_token: str, task_id: str, claim_epoch: int,
+        preparation_started_at: float | None, task_created_at: float, failure: dict, now: float,
+    ) -> None:
+        """Retain one observation before cleanup erases the selected task binding.
+
+        Only the exact preparing claim can publish this diagnostic. Nothing reads
+        it for admission, mutation scope, release or reservation recovery.
+        """
+        from src.preparation_failure import preparation_identity
+
+        async with self.immediate() as conn:
+            row = (await conn.execute(select(sessions).where(
+                sessions.c.id == session_id,
+            ).with_for_update())).mappings().one_or_none()
+            if (row is None or row["instance_token"] != instance_token
+                    or row["task_id"] != task_id or row["last_claim_epoch"] != claim_epoch
+                    or row["claim_phase"] != "preparing"
+                    or row["claim_phase_at"] != preparation_started_at):
+                return
+            task = (await conn.execute(select(tasks).where(
+                tasks.c.id == task_id, tasks.c.claim_epoch == claim_epoch,
+                tasks.c.created_at == task_created_at, tasks.c.project_id == row["project_id"],
+                tasks.c.assigned_agent_id == row["agent_id"],
+                tasks.c.status == TaskStatus.IN_PROGRESS.value,
+            ))).mappings().one_or_none()
+            if task is None:
+                return
+            project = (await conn.execute(select(projects).where(
+                projects.c.id == task["project_id"],
+            ))).mappings().one_or_none()
+            repository_id = (
+                project["integration_repository_id"] if project is not None
+                and project["hierarchical_integration_mode"] in {"hierarchy", "train"}
+                else task["repo_id"]
+            )
+            origin = (await conn.execute(select(task_branch_origins).where(
+                task_branch_origins.c.task_id == task_id,
+                task_branch_origins.c.repository_id == repository_id,
+                task_branch_origins.c.retired_at.is_(None),
+            ))).mappings().one_or_none()
+            checkpoint = (await conn.execute(select(task_integration_checkpoints).where(
+                task_integration_checkpoints.c.task_id == task_id,
+            ))).mappings().one_or_none()
+            branch = task["branch_name"] or ""
+            refs = {branch, f"refs/heads/{branch.removeprefix('refs/heads/')}",
+                    branch.removeprefix("refs/heads/")}
+            owners = (await conn.execute(select(integration_branch_owners).where(
+                integration_branch_owners.c.repository_id == repository_id,
+                integration_branch_owners.c.ref.in_(refs),
+            ).order_by(integration_branch_owners.c.id).limit(2))).mappings().all()
+            record = preparation_identity(
+                row, task, repository_id, origin, checkpoint, owners, failure, now,
+            )
+            await conn.execute(update(sessions).where(sessions.c.id == session_id).values(
+                failed_preparation=record,
+            ))
+
     async def record_claim_refusal(
         self, session_id: str, *, result: str, reason: str, now: float,
+        expected_preparation: SessionRecord | None = None,
     ) -> SessionRecord | None:
         """Count actual identical failures, never cooldown replays or an active claim.
 
@@ -380,6 +442,28 @@ class SessionQueryMixin:
             ).with_for_update())).mappings().one_or_none()
             if row is None:
                 return None
+            if expected_preparation is not None:
+                from src.claim_preparation import same_session_launch
+
+                observed = _row_to_session(row)
+                diagnostic = observed.failed_preparation
+                if (not same_session_launch(expected_preparation, observed)
+                        or observed.last_claim_epoch != expected_preparation.last_claim_epoch
+                        or observed.task_id not in (None, expected_preparation.task_id)
+                        or (observed.claim_phase is not None and (
+                            observed.claim_phase != "preparing"
+                            or observed.claim_phase_at != expected_preparation.claim_phase_at
+                        ))
+                        # A previous failure's unchanged diagnostic may survive
+                        # into a new attempt (e.g. activation returns no row).
+                        # Only a newly published diagnostic can supersede it.
+                        or (diagnostic is not None
+                            and diagnostic != expected_preparation.failed_preparation and (
+                            diagnostic.get("task_id") != expected_preparation.task_id
+                            or diagnostic.get("preparation_started_at")
+                            != expected_preparation.claim_phase_at
+                        ))):
+                    return None
             if row["claim_phase"] == "active" or row["desired_state"] != "running":
                 return _row_to_session(row)
             prior = row["claim_refusal"] or {}
@@ -481,6 +565,48 @@ class SessionQueryMixin:
             ):
                 return 0
             return await self._update_session_on(conn, session_id, fields)
+
+    async def request_session_sleep(
+        self, observed: SessionRecord, *, stopped_confirmed: bool = False,
+    ) -> SessionRecord:
+        """Record sleep intent without reattaching terminal pool history.
+
+        Provider proof is obtained outside the transaction. Lock and compare
+        its instance/claim identity before normalizing a legacy stopped pool;
+        this operation never releases claims, owners or workspace locks.
+        """
+        async with self.immediate() as conn:
+            row = (await conn.execute(select(sessions).where(
+                sessions.c.id == observed.id,
+            ).with_for_update())).mappings().one_or_none()
+            identity = (
+                "instance_token", "provider", "name", "lifecycle", "work_dir",
+                "started_at", "last_claim_epoch",
+            )
+            if (row is None or any(row[key] != getattr(observed, key) for key in identity)
+                    or (observed.lifecycle == "pool" and observed.state == "stopped"
+                        and row["state"] != "stopped")):
+                raise ValueError("Session changed before sleep; refresh the session")
+            desired = "sleeping"
+            if row["lifecycle"] == "pool" and row["state"] == "stopped":
+                # A late sleep must never turn stopped/stopped history back
+                # into an attached writer. A concurrent teardown may already
+                # have completed since the command resolved the live row.
+                desired = "stopped"
+                if row["desired_state"] != "stopped" and not (
+                    stopped_confirmed
+                    and observed.state == "stopped"
+                    and observed.desired_state == row["desired_state"] == "sleeping"
+                    and row["task_id"] is None
+                    and row["claim_phase"] is None
+                    and row["failed_preparation"] is None
+                ):
+                    raise ValueError(
+                        "Stopped pool session retains work or lacks inactive-instance proof"
+                    )
+            if desired == "sleeping" or row["desired_state"] != desired:
+                await self._update_session_on(conn, observed.id, {"desired_state": desired})
+            return _row_to_session({**row, "desired_state": desired})
 
     async def _update_session_on(self, conn, session_id: str, fields: dict) -> int:
         row = (await conn.execute(select(sessions).where(

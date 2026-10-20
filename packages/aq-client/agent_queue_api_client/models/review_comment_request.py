@@ -18,6 +18,7 @@ class ReviewCommentRequest:
         review_id (str):
         revision (int):
         body (str):
+        source_discussion_id (None | str | Unset):
         quote (None | str | Unset):
         heading_path (list[Any] | None | Unset):
     """
@@ -25,6 +26,7 @@ class ReviewCommentRequest:
     review_id: str
     revision: int
     body: str
+    source_discussion_id: None | str | Unset = UNSET
     quote: None | str | Unset = UNSET
     heading_path: list[Any] | None | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
@@ -35,6 +37,12 @@ class ReviewCommentRequest:
         revision = self.revision
 
         body = self.body
+
+        source_discussion_id: None | str | Unset
+        if isinstance(self.source_discussion_id, Unset):
+            source_discussion_id = UNSET
+        else:
+            source_discussion_id = self.source_discussion_id
 
         quote: None | str | Unset
         if isinstance(self.quote, Unset):
@@ -60,6 +68,8 @@ class ReviewCommentRequest:
                 "body": body,
             }
         )
+        if source_discussion_id is not UNSET:
+            field_dict["source_discussion_id"] = source_discussion_id
         if quote is not UNSET:
             field_dict["quote"] = quote
         if heading_path is not UNSET:
@@ -75,6 +85,15 @@ class ReviewCommentRequest:
         revision = d.pop("revision")
 
         body = d.pop("body")
+
+        def _parse_source_discussion_id(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        source_discussion_id = _parse_source_discussion_id(d.pop("source_discussion_id", UNSET))
 
         def _parse_quote(data: object) -> None | str | Unset:
             if data is None:
@@ -106,6 +125,7 @@ class ReviewCommentRequest:
             review_id=review_id,
             revision=revision,
             body=body,
+            source_discussion_id=source_discussion_id,
             quote=quote,
             heading_path=heading_path,
         )

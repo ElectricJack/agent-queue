@@ -914,11 +914,10 @@ async def _activate_the_shipped_pipeline(db, tmp_path):
 async def test_the_shipped_pipeline_stales_when_a_delegated_profile_widens(db, tmp_path):
     """`solid-harbor.54`, end to end on the artifact the fleet runs.
 
-    `default-pipeline` has no AI step: `reviewer`, `final-reviewer` and
-    `spec-ingest` reach it only as literal `profile_id` arguments to
-    `ensure_task`.  While `compiled_against.profiles` was empty, widening any
-    of them left this activation `ready` forever, because health can only
-    compare what the artifact recorded.
+    `default-pipeline` has no AI step: `ensure_spec_ingest` creates its
+    server-owned `spec-ingest` role. An empty `compiled_against.profiles`
+    would leave activation `ready` after widening that role, because health
+    can only compare what the artifact recorded.
     """
     from src.playbooks.activation import ActivationHealth, load_activation_health
     from src.playbooks.validation import RegistryContractLookup

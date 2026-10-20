@@ -131,9 +131,14 @@ generation and target binding. Development status includes pending and unknown
 Git delivery evidence for completed prerequisites and containers.
 
 `control_only: true` reads configuration and Subject state without Git delivery
-observation. Neither form advances a Subject, changes ownership, clears gates,
-selects another engine or performs rollout preflight. The command writes no rows
-and enqueues no events.
+observation. With `integration.git_first: active` the projection is the train's:
+open batches, the last visits with their cached evidence, blockers and operator
+decisions. Full status adds `epics`, each container branch's distance from the
+default branch, which costs a retained fetch and one `rev-list` per epic, so the
+control-only read omits `epics` and touches no Git; the CLI keeps its default
+30-second response bound for it. Neither form advances a Subject, changes
+ownership, clears gates, selects another engine or performs rollout preflight.
+The command writes no rows and enqueues no events.
 
 ## Diagnostics
 

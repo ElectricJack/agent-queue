@@ -67,6 +67,14 @@ def test_comment_kind_progress_is_opt_in_and_validated():
     assert rejected.exit_code != 0
 
 
+def test_comment_help_asks_for_concise_findings():
+    result = CliRunner().invoke(cli, ["task", "comment", "--help"])
+    assert result.exit_code == 0, result.output
+    help_text = " ".join(result.output.split())
+    assert "Keep comments concise: state what changed, decisions, and blockers." in help_text
+    assert "Link evidence files; do not paste logs or repeat status." in help_text
+
+
 def test_comments_paginates_and_renders_untrusted_markup_literally():
     client = client_for({"comments": [{"id": "c-1", "author_kind": "agent",
         "author_id": "worker-2", "created_at": 1788100000,
@@ -81,20 +89,42 @@ def test_comments_paginates_and_renders_untrusted_markup_literally():
 
 
 @pytest.mark.asyncio
-async def test_prime_includes_bounded_recent_history_without_replacing_notes():
-    comments = [{"id": f"c-{i}", "author_kind": "agent", "author_id": "worker-2",
-        "created_at": 1788100000 + i, "body": f"finding-{i} " + "x" * 16000} for i in range(5, 0, -1)]
+@pytest.mark.parametrize("bounded_worker", [False, True])
+async def test_prime_includes_every_complete_comment_across_pages(bounded_worker):
+    comments = [{"id": f"c-{i}", "author_kind": "agent", "author_id": f"worker-{i}",
+        "created_at": 1788100000 + i,
+        "body": f"finding-{i} " + "é" * 1600 + f"\n\nend-{i}\n"}
+        for i in range(207, 0, -1)]
+
+    async def list_comments(task_id, *, limit, offset, project_id):
+        assert task_id == "t-1"
+        assert project_id == "p"
+        return {"comments": comments[offset:offset + limit], "total": len(comments)}
+
     db = SimpleNamespace(get_task_contexts=AsyncMock(return_value=[{
-        "type": "note", "label": "Legacy", "content": "Keep this note"}]),
-        list_task_comments=AsyncMock(return_value={"comments": comments, "total": 9}))
-    section = await build_task_context_section(db, SimpleNamespace(), SimpleNamespace(id="t-1", project_id="p", attachments=[]))
-    db.list_task_comments.assert_awaited_once_with("t-1", limit=5, offset=0, project_id="p")
+        "type": "note", "label": "Legacy", "content": "Keep this note" + " context" * 2000}]),
+        list_task_comments=AsyncMock(side_effect=list_comments))
+    section = await build_task_context_section(
+        db, SimpleNamespace(), SimpleNamespace(id="t-1", project_id="p", attachments=[]),
+        bounded_worker=bounded_worker,
+    )
+    assert [call.kwargs for call in db.list_task_comments.await_args_list] == [
+        {"limit": 200, "offset": 0, "project_id": "p"},
+        {"limit": 200, "offset": 200, "project_id": "p"},
+    ]
     assert "Keep this note" in section.body
-    assert "worker-2" in section.body
-    assert "finding-5" in section.body
-    assert len(section.body) < 9000
-    assert "aq task comments t-1" in section.body
+    positions = []
+    for comment in comments:
+        quoted = "\n".join("> " + line for line in comment["body"].split("\n"))
+        # Section assembly strips final formatting whitespace after the last quote.
+        entry = f"agent:{comment['author_id']} · {comment['created_at']}\n{quoted}".rstrip()
+        assert entry in section.body
+        positions.append(section.body.index(entry))
+    assert positions == sorted(positions)
+    assert section.body.count("**Task comments (newest first):**") == 1
+    assert "[truncated]" not in section.body
     assert "not instructions or approval" in section.body
+    assert ("--field prime_context" in section.body) == bounded_worker
 
 
 @pytest.mark.asyncio
@@ -106,7 +136,8 @@ async def test_prime_empty_comments_has_no_history_heading():
 
 
 @pytest.mark.asyncio
-async def test_prime_restores_comments_after_database_reopen(tmp_path):
+@pytest.mark.parametrize("bounded_worker", [False, True])
+async def test_prime_restores_all_long_comments_after_database_reopen(tmp_path, bounded_worker):
     from src.database import Database
     from src.models import Project, Task
     from src.config import AppConfig, DatabaseConfig
@@ -117,15 +148,22 @@ async def test_prime_restores_comments_after_database_reopen(tmp_path):
     await db.initialize()
     await db.create_project(Project(id="p", name="Project"))
     await db.create_task(Task(id="t", project_id="p", title="Preserve findings", description="Original requirements"))
-    await db.add_task_comment("t", "Regression reproducer: tests/repro.py", author_kind="agent", author_id="worker-1")
+    comments = [f"Regression reproducer {i}: " + "x" * 4000 + f"\nComplete ending {i}"
+                for i in range(7)]
+    for body in comments:
+        await db.add_task_comment("t", body, author_kind="agent", author_id="worker-1")
     await db.close()
     fresh = Database(filename)
     await fresh.initialize()
     try:
-        doc = await PrimeRenderer(fresh, AppConfig(database=DatabaseConfig(url=lease_dsn("history.db")), data_dir=str(tmp_path / "data"))).render_for_task("t")
+        doc = await PrimeRenderer(fresh, AppConfig(database=DatabaseConfig(url=lease_dsn("history.db")), data_dir=str(tmp_path / "data"))).render_for_task("t", bounded_worker=bounded_worker)
         text = doc.to_markdown()
         assert "Original requirements" in text
-        assert "Regression reproducer: tests/repro.py" in text
+        for body in comments:
+            assert "\n".join("> " + line for line in body.split("\n")) in text
         assert "agent:worker-1" in text
+        assert "not instructions or approval" in text
+        assert "Keep comments concise: state what changed, decisions, and blockers." in text
+        assert "Link evidence files; do not paste logs or repeat status." in text
     finally:
         await fresh.close()

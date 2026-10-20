@@ -160,7 +160,7 @@ async def test_hosted_success_is_cached_per_check_with_its_attempt(db):
     [cached] = await stored(db)
     assert (cached["repository_id"], cached["sha"], cached["check_name"]) == ("repo", HEAD, "unit")
     assert (cached["producer_id"], cached["run_id"], cached["attempt"]) == ("15368", "31", 1)
-    assert cached["run_url"] == "https://github.com/acme/widgets/actions/runs/31/attempts/1"
+    assert cached["run_url"] == "https://github.com/acme/widgets/actions/runs/31/job/51"
     assert (cached["batch_id"], cached["parent_task_id"]) == (None, None)
     client.paged_items.reset_mock()
     assert (await checks.read(head())).green
@@ -371,15 +371,25 @@ async def test_a_cancelled_job_is_not_a_run_failure(db, job_conclusions, state):
     ]
 
 
-async def test_a_failed_workflow_keeps_successful_checks_and_blocks_publication(db):
+async def test_a_failed_workflow_keeps_successful_required_checks_green(db):
     client, trust = github(app=False, names=("unit", "lint"), run_conclusion="failure")
 
     result = await hosted(db, client, trust, Clock()).refresh(head())
 
-    # The workflow still gates publication, without inventing failed jobs.
-    assert result.state is ChecksState.RED
+    # Unrequired jobs can fail the aggregate without invalidating required jobs.
+    assert result.state is ChecksState.GREEN
     assert [check.conclusion for check in result.checks] == [Conclusion.SUCCESS] * 2
     assert all(check.detail["workflow_conclusion"] == "failure" for check in result.checks)
+
+
+async def test_a_run_cancelled_outside_the_required_jobs_is_final(db):
+    # A waived platform's job was cancelled; every required job succeeded.
+    client, trust = github(app=False, names=("unit", "lint"), run_conclusion="cancelled")
+
+    result = await hosted(db, client, trust, Clock()).refresh(head())
+
+    assert result.state is ChecksState.GREEN and result.green
+    assert all(check.detail["workflow_conclusion"] == "cancelled" for check in result.checks)
 
 
 async def test_mixed_hosted_workflow_caches_each_required_jobs_own_conclusion(db):

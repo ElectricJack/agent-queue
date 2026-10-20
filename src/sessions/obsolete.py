@@ -49,9 +49,9 @@ to publish.
    or archived.
 
 It refuses a task a live session holds, a task with an agent still assigned,
-a container with open children, and, in hierarchy/train projects, a child
-(whose branch belongs to its parent's collection episode) or a root that is a
-member of an open integration batch.  The command
+a container with open children, and any task owned by an open integration
+batch. In hierarchy/train projects, a child additionally requires retirement
+evidence and dependent rewrites in the same transaction. The command
 (:meth:`src.commands.session_commands.SessionCommandsMixin._close_task_obsolete`)
 stops a live writer through the operator pause before it calls the close, so
 the first two refusals only fire when that stop could not be confirmed.
@@ -80,6 +80,7 @@ from src.database.tables import (
     projects,
     sessions,
     task_completion_records,
+    task_dependencies,
     task_metadata,
     tasks,
     workspaces,
@@ -93,7 +94,7 @@ from src.integration.owner_recovery import (
     OwnerRecovery,
     RecoveryOutcome,
 )
-from src.models import AgentState, TaskStatus
+from src.models import AgentState, DepType, TaskStatus
 
 logger = logging.getLogger(__name__)
 
@@ -144,6 +145,140 @@ class ObsoleteCloseRefused(Exception):
         super().__init__(detail)
         self.code = code
         self.detail = detail
+
+
+async def prepare_retirement_on(
+    db, conn, task_id, *, replacement_task_id=None, satisfied_by=None, rewire=None,
+) -> tuple[dict, set[str]]:
+    """Validate and apply a retirement's edge plan inside ``task_changes.boundary``.
+
+    A replacement redirects all incoming nonstructural edges, preserving their
+    types. Evidence alone never satisfies an edge: callers must explicitly
+    remove/replace every incoming edge in ``rewire`` (``edges``/``remove_edges``).
+    No status or completion record is authored here.
+    """
+    from src.commands.task_changes import ChangeSetError, final_graph, normalize, snapshot
+
+    row = (await conn.execute(select(tasks).where(tasks.c.id == task_id))).mappings().one_or_none()
+    if row is None:
+        raise ObsoleteCloseRefused("obsolete.not_found", f"no task {task_id!r}")
+    if replacement_task_id is not None and (
+        not isinstance(replacement_task_id, str) or not replacement_task_id.strip()
+    ):
+        raise ObsoleteCloseRefused("obsolete.invalid_replacement", "replacement must be a task id")
+    if satisfied_by is not None and (
+        not isinstance(satisfied_by, str) or not satisfied_by.strip()
+    ):
+        raise ObsoleteCloseRefused("obsolete.invalid_evidence", "satisfied_by must name evidence")
+    if not replacement_task_id and not satisfied_by:
+        raise ObsoleteCloseRefused(
+            "obsolete.evidence_required", "retirement requires a replacement or satisfied_by evidence"
+        )
+    if await conn.scalar(select(tasks.c.id).where(tasks.c.parent_task_id == task_id).limit(1)):
+        raise ObsoleteCloseRefused("obsolete.not_leaf", "retirement with evidence requires a leaf")
+    incoming = [dict(edge) for edge in (await conn.execute(select(task_dependencies).where(
+        task_dependencies.c.depends_on_task_id == task_id,
+        task_dependencies.c.dep_type != DepType.PARENT_CHILD.value,
+    ))).mappings()]
+    existing = await ObsoleteClose._marker(conn, task_id)
+    if existing:
+        if (existing.get("replacement_task_id") != replacement_task_id
+            or existing.get("satisfied_by") != (satisfied_by.strip() if satisfied_by else None)
+            or (rewire is not None and existing.get("rewire") != rewire)):
+            raise ObsoleteCloseRefused(
+                "obsolete.evidence_conflict", "task already retired with different evidence"
+            )
+        if incoming:
+            raise ObsoleteCloseRefused(
+                "obsolete.invalid_rewire", "dependent edges still reference the retired task"
+            )
+        return {key: existing.get(key) for key in (
+            "replacement_task_id", "satisfied_by", "rewire",
+        )}, set()
+    try:
+        if rewire is not None and (
+            not isinstance(rewire, dict) or set(rewire) - {"edges", "remove_edges"}
+        ):
+            raise ChangeSetError("rewire accepts only edges and remove_edges lists")
+        plan = {key: (rewire or {}).get(key, []) for key in ("edges", "remove_edges")}
+        if not all(isinstance(edges, list) for edges in plan.values()):
+            raise ChangeSetError("rewire edges and remove_edges must be lists")
+        plan = {key: list(edges) for key, edges in plan.items()}
+        if replacement_task_id:
+            replacement = (await conn.execute(select(tasks).where(
+                tasks.c.id == replacement_task_id,
+            ))).mappings().one_or_none()
+            if (replacement is None or replacement["project_id"] != row["project_id"]
+                or replacement_task_id == task_id
+                or await ObsoleteClose._marker(conn, replacement_task_id)
+                or await conn.scalar(select(tasks.c.id).where(
+                    tasks.c.parent_task_id == replacement_task_id,
+                ).limit(1))
+                or await db.is_container(replacement_task_id, conn=conn)):
+                raise ChangeSetError("replacement must be a distinct active leaf in this project")
+            if rewire is None:
+                for edge in incoming:
+                    original = {"from": edge["task_id"], "to": task_id,
+                                "dep_type": edge["dep_type"]}
+                    if edge["description"] is not None:
+                        original["reason"] = edge["description"]
+                    plan["remove_edges"].append(original)
+                    plan["edges"].append({**original, "to": replacement_task_id})
+        removed = {(e.get("from"), e.get("to"), e.get("dep_type", "blocks"))
+                   for e in plan["remove_edges"] if isinstance(e, dict)}
+        if any((e["task_id"], task_id, e["dep_type"]) not in removed for e in incoming):
+            raise ChangeSetError("every dependent edge must be explicitly rewired")
+        if replacement_task_id:
+            added = {(e.get("from"), e.get("to"), e.get("dep_type", "blocks"))
+                     for e in plan["edges"] if isinstance(e, dict)}
+            if any((e["task_id"], replacement_task_id, e["dep_type"]) not in added
+                   for e in incoming):
+                raise ChangeSetError("every dependent must retain its typed edge to the replacement")
+        # Removing incoming edges is the sole permitted reference to the retired leaf.
+        if any(e.get("from") == task_id or e.get("dep_type", "blocks") == "parent-child"
+               for e in plan["remove_edges"] if isinstance(e, dict)) or any(
+            e.get("from") == task_id or e.get("to") == task_id
+            or e.get("dep_type", "blocks") == "parent-child"
+            for e in plan["edges"] if isinstance(e, dict)
+        ):
+            raise ChangeSetError("rewire cannot edit hierarchy or retain the retired endpoint")
+        # Explicit replacement plans inherit the existing explanation unless
+        # they supply one; retain the authored plan unchanged for retries.
+        explanations = {(e["task_id"], e["dep_type"]): e["description"] for e in incoming}
+        payload = normalize({**plan, "comments": [{"task_id": task_id, "body": "retirement"}]})
+        expected, rows, _project = await snapshot(conn, row["project_id"], payload)
+        final_graph(payload, rows, expected)
+        affected = {edge["from"] for edge in payload["edges"] + payload["remove_edges"]}
+        live = await conn.scalar(select(sessions.c.id).where(
+            sessions.c.task_id.in_(sorted(affected)), sessions.c.state.in_(LIVE_SESSION_STATES),
+        ).limit(1))
+        if live or any(rows[tid]["status"] in {"ASSIGNED", "IN_PROGRESS"} for tid in affected):
+            raise ObsoleteCloseRefused(
+                "obsolete.needs_quiescence", "a dependent is running; stop it before rewiring"
+            )
+        for edge in payload["remove_edges"]:
+            await conn.execute(delete(task_dependencies).where(
+                task_dependencies.c.task_id == edge["from"],
+                task_dependencies.c.depends_on_task_id == edge["to"],
+                task_dependencies.c.dep_type == edge.get("dep_type", "blocks"),
+            ))
+        from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+        for edge in payload["edges"]:
+            await conn.execute(pg_insert(task_dependencies).values(
+                task_id=edge["from"], depends_on_task_id=edge["to"],
+                dep_type=edge.get("dep_type", "blocks"),
+                description=edge.get("reason", explanations.get(
+                    (edge["from"], edge.get("dep_type", "blocks")),
+                ) if edge["to"] == replacement_task_id else None),
+            ).on_conflict_do_nothing())
+    except (ChangeSetError, TypeError, ValueError) as exc:
+        raise ObsoleteCloseRefused("obsolete.invalid_rewire", str(exc)) from exc
+    return {
+        "replacement_task_id": replacement_task_id,
+        "satisfied_by": satisfied_by.strip() if satisfied_by else None,
+        "rewire": plan,
+    }, affected
 
 
 class ObsoleteOwnerRelease(OwnerRecovery):
@@ -203,6 +338,10 @@ class ObsoleteClose:
         reason: str,
         principal: str,
         disposition: str = "obsolete",
+        _prepare_on: Callable[[Any], Awaitable[Any]] | None = None,
+        replacement_task_id: str | None = None,
+        satisfied_by: str | None = None,
+        rewire: dict | None = None,
     ) -> dict[str, Any]:
         """Close *task_id* with *disposition*, then run its cleanup.
 
@@ -227,7 +366,22 @@ class ObsoleteClose:
             raise ObsoleteCloseRefused(
                 "obsolete.invalid_status", f"task {task_id} is {task.status.value}"
             )
-        async with self.db.immediate() as conn:
+        has_evidence = any(value is not None for value in (
+            replacement_task_id, satisfied_by, rewire,
+        ))
+        if has_evidence and disposition != "obsolete":
+            raise ObsoleteCloseRefused(
+                "obsolete.invalid_disposition", "retirement evidence requires obsolete"
+            )
+        if has_evidence:
+            from src.commands.task_changes import boundary
+
+            transaction = boundary(self.db, task.project_id)
+        else:
+            transaction = self.db.immediate()
+        async with transaction as conn:
+            # Recovery and retirement share the transaction; any refusal rolls both back.
+            settlement = await _prepare_on(conn) if _prepare_on is not None else None
             row = (
                 (
                     await conn.execute(
@@ -237,11 +391,26 @@ class ObsoleteClose:
                 .mappings()
                 .one()
             )
-            await self._refuse_unsafe(conn, row)
-            previous = row["status"]
             existing = await self._marker(conn, task_id)
+            evidence, rewired = {}, set()
+            if has_evidence and existing is None:
+                evidence, rewired = await prepare_retirement_on(
+                    self.db, conn, task_id, replacement_task_id=replacement_task_id,
+                    satisfied_by=satisfied_by, rewire=rewire,
+                )
+            elif has_evidence and (
+                existing.get("replacement_task_id") != replacement_task_id
+                or existing.get("satisfied_by") != (satisfied_by.strip() if satisfied_by else None)
+                or (rewire is not None and existing.get("rewire") != rewire)
+            ):
+                raise ObsoleteCloseRefused(
+                    "obsolete.evidence_conflict", "task already retired with different evidence"
+                )
+            await self._refuse_unsafe(conn, row, retirement=evidence or existing)
+            previous = row["status"]
             closed_at = self.clock()
             marker = existing or {
+                **evidence,
                 "reason": reason,
                 "disposition": disposition,
                 "closed_by": principal,
@@ -283,6 +452,7 @@ class ObsoleteClose:
                     context=context,
                     force=True,
                     _manual_pause_control=True,
+                    _obsolete_supersession_token=settlement if disposition == "obsolete" else None,
                     assigned_agent_id=None,
                     resume_after=None,
                     extra_values={"claim_epoch": tasks.c.claim_epoch + 1},
@@ -300,6 +470,14 @@ class ObsoleteClose:
                         conn, result.flipped, reason="unblocked"
                     )
                 ]
+            if rewired:
+                flips = await self.db.recompute_blocked(rewired, conn=conn)
+                result.flipped |= flips
+                result.ready.extend(
+                    (tid, "unblocked") for tid in await self.db._note_frontier_entry(
+                        conn, flips, reason="unblocked"
+                    )
+                )
             if existing is None:
                 from src.integration.branch_retirement import request_task_retirement_on
 
@@ -385,8 +563,16 @@ class ObsoleteClose:
             "workspaces": sorted(unlocked),
         }
 
-    async def _refuse_unsafe(self, conn, row) -> None:
+    async def _refuse_unsafe(self, conn, row, *, retirement=None) -> None:
         task_id = row["id"]
+        if retirement and (retirement.get("replacement_task_id") or retirement.get("satisfied_by")):
+            if await conn.scalar(select(task_dependencies.c.task_id).where(
+                task_dependencies.c.depends_on_task_id == task_id,
+                task_dependencies.c.dep_type != DepType.PARENT_CHILD.value,
+            ).limit(1)):
+                raise ObsoleteCloseRefused(
+                    "obsolete.invalid_rewire", "dependent edges still reference the retired task"
+                )
         mode = (
             await conn.execute(
                 select(projects.c.hierarchical_integration_mode).where(
@@ -395,7 +581,9 @@ class ObsoleteClose:
             )
         ).scalar_one_or_none()
         if mode in HIERARCHY_MODES:
-            if row["parent_task_id"] is not None:
+            if row["parent_task_id"] is not None and not (
+                retirement and (retirement.get("replacement_task_id") or retirement.get("satisfied_by"))
+            ):
                 raise ObsoleteCloseRefused(
                     "obsolete.unsupported_mode",
                     f"project {row['project_id']} integrates in {mode} mode, where a child's "
@@ -403,6 +591,14 @@ class ObsoleteClose:
                     "container close or `aq task archive --disposition obsolete --reason ...` "
                     "instead",
                 )
+            if row["parent_task_id"] is not None:
+                from src.integration.removal_guard import _sealed_member_on
+
+                held = await _sealed_member_on(conn, task_id, [task_id])
+                if held:
+                    raise ObsoleteCloseRefused(
+                        "obsolete.open_batch", f"ancestor is owned by batch {held['batch_id']}"
+                    )
             # A root is the train's own candidate; the marker keeps it out of
             # every later batch, but one already cut must settle first.
             batch_id = await conn.scalar(

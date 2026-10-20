@@ -1,12 +1,12 @@
 ---
 playbook_id: default-pipeline
-artifact_sha256: sha256:c5c42720d1b00b9ff14bed22c04b8afef338c090e894660d73be3a8076ed2d31
-source_sha256: sha256:a34ae4f0a406f1f171861246943dc023eb9dae1a955981eba2320d996afd86fa
-contract_fingerprint: sha256:82a81a1588d65c999b24e78bbf360fd2aa86f5f0612c65a74806262c4fa07fcd
+artifact_sha256: sha256:c4ab0bead50c2cb773f7fe901632468296e952bbbb5cdfc274e97c330adfb273
+source_sha256: sha256:e626ced6fc6a9bf2d2c6994ff1c189c788ea920b3cbb069f54eac8a976858f14
+contract_fingerprint: sha256:a0f47bce57968a66c1be8eefe5e1f3c6174773fd8d384c34ef4a5f6d52126fcd
 questions_resolved: 0
 capabilities_granted:
   aq_commands:
-  - ensure_task
+  - ensure_spec_ingest
   - gate_create
   - task_batch_commit
   harness_tools: []
@@ -30,3 +30,12 @@ and project to `task_batch_commit`, which re-checks the exact decision. Every
 terminal. Spec ingest is a role task; its `standard-high` input is a class hint,
 and the role profile supplies its execution class. Supersedes the
 integration-only artifact `sha256:7881d3089a34…`.
+
+Updated 2026-10-13 for `calm-falcon-54`: the executable spec-ingest task
+description carries the spec supersession checklist. Authors account for every
+approved predecessor goal as kept, changed or dropped; reviewers flag every
+drop and require Jack's explicit sign-off for the goal and replacement revision.
+Missing accounting or unsigned drops are reported to the supervisor before
+affected implementation work is committed. This adds agent instructions,
+not a new command-level semantic approval gate; the three rules and their
+success/refusal transitions are unchanged.

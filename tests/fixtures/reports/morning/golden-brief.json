@@ -246,5 +246,10 @@
     "projects": {
       "p": []
     }
+  },
+  "needs_you": {
+    "count": 0,
+    "source_health": "healthy",
+    "identity_hash": "empty"
   }
 }

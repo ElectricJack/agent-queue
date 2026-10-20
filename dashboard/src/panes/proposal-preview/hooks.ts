@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { getProposalApiProposalsProposalIdGet, taskBatchDiscard } from "../../api/client";
-import { useGates, useResolveGate, type GateSummary } from "../../api/hooks";
+import { getProposalApiProposalsProposalIdGet, gateShow, askPrepareDecision, askDecide } from "../../api/client";
+import { useGates, type GateSummary } from "../../api/hooks";
 
 export interface ProposalTask {
   tempId: string;
@@ -58,18 +58,44 @@ export function useProposalGate(projectId: string | undefined, proposalId: strin
   return { ...gatesQuery, gate };
 }
 
-export { useResolveGate };
+/** Freeze a preview for the exact source version shown by the server. */
+export function usePrepareProposalDecision() {
+  return useMutation({
+    mutationFn: async (input: { gate_id: string; option_key: "approve" | "decline" }) => {
+      const { data: shown } = await gateShow({ body: { gate_id: input.gate_id } });
+      const ask = shown?.gate.ask;
+      if (!ask || ask.context_state !== "complete") throw new Error("This request needs more context.");
+      const args = {
+        ask_id: ask.id, option_key: input.option_key,
+        expected: { decision_generation: ask.decision_generation,
+          source_fingerprint: ask.source_fingerprint, feedback_version: ask.feedback_version },
+      };
+      const { data } = await askPrepareDecision({ body: args });
+      if (!data?.success) throw new Error("The request changed; reload it before deciding.");
+      const choices = ask.context.choices as Array<{ key: string; effect: string }>;
+      return { args, preview_id: data.preview.id, idempotency_key: crypto.randomUUID(),
+        effect: choices.find((choice) => choice.key === input.option_key)?.effect ?? "" };
+    },
+  });
+}
 
-export function useDiscardProposal(proposalId: string) {
+export type ProposalDecisionPreview = NonNullable<ReturnType<typeof usePrepareProposalDecision>["data"]>;
+
+export function useApplyProposalDecision(proposalId: string) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async () => {
-      const { data } = await taskBatchDiscard({ body: { proposal_id: proposalId } });
-      if (data?.success === false) throw new Error("discard failed");
+    mutationFn: async (preview: ProposalDecisionPreview) => {
+      const { data } = await askDecide({ body: { ...preview.args,
+        preview_id: preview.preview_id, idempotency_key: preview.idempotency_key } });
+      if (!data?.success || data.application_state !== "applied") {
+        throw new Error("The decision has not finished applying. Reload to see its status.");
+      }
       return data;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["proposal", proposalId] });
+      queryClient.invalidateQueries({ queryKey: ["gates"] });
+      queryClient.invalidateQueries({ queryKey: ["tasks"] });
     },
   });
 }

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
+from src.api.models.ask import AskDecisionResponse
+
 from pydantic import BaseModel
 
 
@@ -140,11 +142,8 @@ class InspectPlaybookRunResponse(BaseModel):
     graph: dict[str, Any] | None = None
 
 
-class ResumePlaybookResponse(BaseModel):
-    resumed: str
-    playbook_id: str
-    status: str
-    tokens_used: int = 0
+class ResumePlaybookResponse(AskDecisionResponse):
+    """The exact human wait decision and its durable application state."""
 
 
 class CancelPlaybookRunResponse(BaseModel):

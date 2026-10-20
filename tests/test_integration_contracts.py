@@ -12,6 +12,7 @@ from src.commands.contracts.builtin import set_handler_provider
 from src.commands.contracts.integration import (
     IntegrationRecordRootNoopArgs,
     IntegrationReevaluateRepairArgs,
+    IntegrationReverifyEpicArgs,
     register_integration_contracts,
 )
 from src.commands.contracts.models import EffectSubject, OutcomeClass
@@ -56,6 +57,19 @@ DESIGN_EVENTS = {
 def test_root_noop_contract_requires_exact_apply_evidence(payload):
     with pytest.raises(ValidationError):
         IntegrationRecordRootNoopArgs(task_id="root", **payload)
+
+
+@pytest.mark.parametrize("payload", [
+    {},
+    {"expected_head_sha": "a" * 40},
+    {"reason": "retry aggregate"},
+    {"expected_head_sha": "bad", "reason": "retry aggregate"},
+    {"expected_head_sha": "a" * 40, "reason": "  "},
+])
+def test_epic_reverification_contract_requires_exact_apply_evidence(payload):
+    with pytest.raises(ValidationError):
+        IntegrationReverifyEpicArgs(task_id="epic", dry_run=False, **payload)
+    assert IntegrationReverifyEpicArgs(task_id="epic").dry_run is True
 
 
 @pytest.mark.parametrize("missing", [
@@ -636,5 +650,6 @@ def test_retired_publishers_are_absent_from_command_registry():
                  "integration_development_engine_transfer"):
         assert registry.get(name) is None
     for name in ("integration_seal_now", "integration_abort_batch", "integration_eject",
+                 "integration_settle_batch",
                  "integration_status", "integration_promotion_publish"):
         assert registry.get(name) is not None

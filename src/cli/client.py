@@ -124,10 +124,18 @@ _COMMAND_TIMEOUTS: dict[str, float] = {
     "integration_seal_now": 300.0,
     "integration_refresh_epic": 300.0,
     "integration_retire_origin": 300.0,
+    # Recovery confirms the provider and verifies remote Git even in dry runs.
+    "integration_release_owner": 300.0,
     "integration_pause_batch": 180.0,
     "integration_resume_batch": 180.0,
+    "integration_settle_batch": 180.0,
     "integration_abort_batch": 180.0,
     "integration_eject": 180.0,
+    # Completed-container recovery, preview included, proves the exact head under
+    # the retained repository's transaction lock: a full retained fetch (120s Git
+    # budget, then fsck), two authenticated ls-remote reads and ancestry checks
+    # before the preview or CAS answers. Read-only previews timed out live at 30s.
+    "integration_recover_completed_container": 300.0,
 }
 
 

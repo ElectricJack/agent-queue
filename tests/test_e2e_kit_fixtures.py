@@ -1447,25 +1447,45 @@ def test_ci_scenario_groups_cover_every_scenario_once():
     assert {phase.key for phase in smoke.FAILOVER_PHASES} == {"S16a", "S16b"}
 
 
-def test_s16_pauses_automatic_failover_while_it_drives_manual_sweeps(monkeypatch):
+@pytest.mark.parametrize("readiness_failure", [False, True])
+def test_s16_pauses_automatic_failover_while_it_drives_manual_sweeps(
+    monkeypatch, readiness_failure,
+):
     smoke = _load_smoke()
     calls: list[tuple[str, ...]] = []
-    restored: list[bool] = []
+    failure = smoke.Failure("readiness still unavailable after restoring the failover policy")
 
     def fake_aq(*args, **_kwargs):
         calls.append(args)
         return {"enabled": args[-1] == "--enabled"}
 
-    monkeypatch.setattr(smoke, "aq", fake_aq)
-    monkeypatch.setattr(smoke, "_s16", lambda state: "manual sweep complete")
-    monkeypatch.setattr(smoke, "_restore_providers", lambda: restored.append(True))
+    def manual_sweep(_state):
+        calls.append(("manual sweep",))
+        return "manual sweep complete"
 
-    assert smoke.s16_provider_failover({}) == "manual sweep complete"
+    def readiness():
+        calls.append(("readiness",))
+        if readiness_failure:
+            raise failure
+
+    monkeypatch.setattr(smoke, "aq", fake_aq)
+    monkeypatch.setattr(smoke, "_s16", manual_sweep)
+    monkeypatch.setattr(smoke, "_restore_providers", lambda: calls.append(("restore providers",)))
+    monkeypatch.setattr(smoke, "wait_for_restored_readiness", readiness)
+
+    if readiness_failure:
+        with pytest.raises(smoke.Failure) as error:
+            smoke.s16_provider_failover({})
+        assert error.value is failure
+    else:
+        assert smoke.s16_provider_failover({}) == "manual sweep complete"
     assert calls == [
         ("playbook", "set-enabled", "--playbook-id", "provider-failover", "--no-enabled"),
+        ("manual sweep",),
+        ("restore providers",),
         ("playbook", "set-enabled", "--playbook-id", "provider-failover", "--enabled"),
+        ("readiness",),
     ]
-    assert restored == [True]
 
 
 def test_s16_logout_stops_late_and_draining_recovery_sessions_once(monkeypatch):
@@ -1688,7 +1708,10 @@ def test_scenario_failure_cleans_chain_and_rebuilds_prerequisites(monkeypatch, f
     assert not world.completed
 
 
-def test_world_reset_removes_terminal_tasks_sessions_and_restores_globals(monkeypatch):
+@pytest.mark.parametrize("readiness_failure", [False, True])
+def test_world_reset_removes_terminal_tasks_sessions_and_restores_globals(
+    monkeypatch, readiness_failure,
+):
     from tests.test_e2e_cli_stateful import World
 
     world = World("graphs", {})
@@ -1723,8 +1746,26 @@ def test_world_reset_removes_terminal_tasks_sessions_and_restores_globals(monkey
     monkeypatch.setattr(smoke, "api", api)
     monkeypatch.setattr(smoke, "fake_script", lambda: modes.append("healthy"))
     monkeypatch.setattr(smoke, "wait_for", lambda fn, **_: fn() or fn())
+
+    def readiness():
+        assert calls[-1] == (
+            "set_playbook_enabled", {"playbook_id": smoke.FAILOVER_PLAYBOOK, "enabled": True},
+        )
+        calls.append(("readiness", {}))
+        if readiness_failure:
+            raise smoke.Failure("required_playbooks: provider-failover still disabled")
+
+    monkeypatch.setattr(smoke, "wait_for_restored_readiness", readiness)
     world.completed.add("S1")
-    world.reset()
+    if readiness_failure:
+        with pytest.raises(smoke.Failure, match="provider-failover still disabled"):
+            world.reset()
+        assert world.poisoned
+        with pytest.raises(AssertionError, match="contaminated"):
+            world.run("S18")
+    else:
+        world.reset()
+        assert not world.poisoned
     assert not tasks and not sessions and not world.completed
     assert modes == ["healthy"]
     assert ("update_config", {"section": "swarm", "data": world.swarm}) in calls
@@ -1825,12 +1866,39 @@ def test_s16_restoration_failure_is_a_failure_and_still_restores_policy(monkeypa
     smoke = _load_smoke()
     restored = []
     monkeypatch.setattr(smoke, "set_failover_policy_enabled", restored.append)
+    monkeypatch.setattr(smoke, "wait_for_restored_readiness", lambda: restored.append("ready"))
     monkeypatch.setattr(smoke, "_s16", lambda _: "passed")
     monkeypatch.setattr(smoke, "_restore_providers", lambda:
                         (_ for _ in ()).throw(RuntimeError("provider cleanup failed")))
     with pytest.raises(RuntimeError, match="provider cleanup failed"):
         smoke.s16_provider_failover({})
-    assert restored == [False, True]
+    assert restored == [False, True, "ready"]
+
+
+@pytest.mark.parametrize("code,reason", [
+    (1, "required_playbooks: provider-failover disabled"),
+    (2, "not answering: TimeoutError"),
+    (3, "health snapshot unavailable: timeout"),
+])
+def test_restored_readiness_expires_with_actual_diagnosis(monkeypatch, code, reason):
+    from scripts.e2e import probe
+
+    smoke = _load_smoke()
+    clock = SimpleNamespace(now=0.0)
+    monkeypatch.setattr(smoke, "time", SimpleNamespace(
+        monotonic=lambda: clock.now,
+        sleep=lambda seconds: setattr(clock, "now", clock.now + seconds),
+    ))
+
+    def fetch(_url, timeout):
+        assert 0 < timeout <= min(2, 15 - clock.now)
+        clock.now += timeout
+        return code, reason
+
+    monkeypatch.setattr(probe, "fetch", fetch)
+    with pytest.raises(smoke.Failure, match=reason):
+        smoke.wait_for_restored_readiness()
+    assert clock.now == 15
 
 
 @pytest.mark.asyncio

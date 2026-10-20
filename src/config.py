@@ -1731,6 +1731,9 @@ class SessionsConfig:
     provider: str = "subprocess"  # tmux | subprocess | fake
     tmux_socket: str = "aq"
     lease_ttl_seconds: int = 480
+    #: Bound on a pool holder's explicitly completed, unregistered idle turn.
+    #: Independent of terminal repaints; 0 disables this additional backstop.
+    idle_claim_timeout_seconds: int = 900
     #: Grace before the reconciler stops a session that has nothing left to
     #: do -- its task closed, or its claim budget is spent -- even though the
     #: harness never exited.  ``sessions.last_activity`` cannot measure that
@@ -1824,6 +1827,7 @@ class SessionsConfig:
                 pass
         for name in (
             "lease_ttl_seconds",
+            "idle_claim_timeout_seconds",
             "idle_stop_grace_seconds",
             "stop_intent_report_seconds",
             "stall_max_nudges",
@@ -5273,6 +5277,7 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
                     "provider": str,
                     "tmux_socket": str,
                     "lease_ttl_seconds": int,
+                    "idle_claim_timeout_seconds": int,
                     "idle_stop_grace_seconds": int,
                     "stop_intent_report_seconds": int,
                     "stall_max_nudges": int,

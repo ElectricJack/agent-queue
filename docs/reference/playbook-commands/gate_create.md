@@ -14,12 +14,13 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/builtin.py`](../../../src/commands/contracts/builtin.py) |
-| Contract fingerprint | `sha256:cef412074d2e82ff21c66ce7aac359b3fd4211e7a2a7ec5f451db6ddf023500d` |
+| Contract fingerprint | `sha256:dd500df1eeafbdc80e2888c5ea44da49f2b2a221e1a0aeadbe7bb2bb08dd4ab5` |
 
 ## Parameters
 
 | Parameter | Type | Required | Default | Description |
 |---|---|---|---|---|
+| `human_request` | `object \| null` | no | `null` | — |
 | `project_id` | `string` | yes | — | Project |
 | `gate_type` | `string` | yes | — | Gate type |
 | `title` | `string` | yes | — | Title |

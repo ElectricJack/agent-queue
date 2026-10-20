@@ -133,11 +133,11 @@ class KnowledgeService(AuthorityMixin, ProposalMixin, SharingMixin, RedactionMix
             "propose_correction": "knowledge_propose",
         }
         allowed_epoch = access.claim_epoch
-        if principal.task_id:
+        if access.principal.task_id:
             from src.database.tables import tasks
 
             allowed_epoch = await conn.scalar(
-                select(tasks.c.claim_epoch).where(tasks.c.id == principal.task_id)
+                select(tasks.c.claim_epoch).where(tasks.c.id == access.principal.task_id)
             )
         for action, operation in operations.items():
             if current["snapshot"] is None and action != "create_task":

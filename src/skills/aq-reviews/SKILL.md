@@ -36,6 +36,18 @@ aq review show --review-id <id> --diff-from 1        # block diff against an ear
 
 ## Author
 
+For a spec, use `docs/templates/spec.md` and the **Spec supersession checklist**
+in `docs/guides/reviews.md`. Find approved specs it supersedes or overlaps,
+including its approved design; cite their approved revisions and approval
+evidence. List every predecessor goal as `kept`, `changed` or `dropped`, with
+replacement/retained-spec sections and reasons. If none apply, record what you
+checked. A removed outcome is a drop even within a changed or deferred goal.
+Flag every drop in the submitted review. Each requires Jack's explicit sign-off
+for that goal and replacement revision; record its decision reference and date,
+or mark it pending. Pending sign-off blocks approval and affected implementation,
+not submission. Delegated approval and silence do not authorize a drop. Ask the
+supervisor for inaccessible predecessor evidence rather than guessing.
+
 1. Write the document in your checkout. Do not commit it.
 2. Submit it (`--kind spec`, `plan`, or `other` for a proposal or report):
 
@@ -110,6 +122,11 @@ else gets `not_your_task`).
 
 4. Close the task with the new revision number and content hash.
 
+The daemon resolves an omitted `--review-id` from your held revision task's
+assignment. It refuses a different review id with `not_your_task`; never
+create a parallel review to work around a resubmission refusal. Report the
+refusal and preserve the assigned review.
+
 A passing close is refused with `reviews.revision_unpublished` until this
 task publishes a newer revision of its assigned review. Edit a local draft,
 not the vault mirror or its frontmatter. An unrelated review or another
@@ -134,6 +151,15 @@ revision you review and whether this is a clean-room read.
   any session but the one holding this task (`not_dispatched`).
 - **Verify against the repository.** Treat every claim in the document as
   unproven until the code, a test or a command output supports it.
+- **Check spec supersession.** Follow the checklist in `docs/guides/reviews.md`:
+  independently compare approved predecessor goals with the spec's `kept`,
+  `changed`, `dropped` table and its replacement sections. Missing predecessors
+  or rows, unsupported dispositions and drops without Jack's explicit sign-off
+  are `[blocking]`. Flag every drop in the review and verdict, including signed-off
+  drops, citing the goal, approved revision, reason and decision evidence. A
+  deferral or delegated approval cannot replace sign-off. Recheck on revisions;
+  sign-off must cover the current proposal. If predecessor evidence is unavailable,
+  report the gap rather than claim there are no findings.
 - **Anchor every finding** with `--quote "<exact text>"` or
   `--heading-path '["<section>","<subsection>"]'` (else `anchor_required`).
 - **Lead with a severity**, then give the claim, the evidence (`path:symbol`

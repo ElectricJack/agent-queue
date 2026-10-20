@@ -57,15 +57,19 @@ def disable_fields(code: str, detail: str | None = None, *, now: float | None = 
 ENABLE_FIELDS = {"enabled": True, "disabled_reason": None, "disabled_at": None}
 
 
-def slot_cap(project) -> int:
+def slot_cap(project, kind=None) -> int:
     """A project's worktree slot cap — slot count equals its agent cap.
 
     Mirrors ``WorkspaceMixin._project_slot_cap`` so the capacity report and
     acquisition agree on which slots count.
     """
-    if project is None:
-        return 1
-    return max(1, getattr(project, "max_concurrent_agents", 1) or 1)
+    cap = max(1, getattr(project, "max_concurrent_agents", 1) or 1)
+    return kind_slot_cap(cap, kind)
+
+
+def kind_slot_cap(project_cap: int, kind) -> int:
+    limit = getattr(kind, "max_slots", None)
+    return min(project_cap, limit) if limit is not None else project_cap
 
 
 def disabled_slots_in_cap(project, workspaces) -> list:

@@ -381,6 +381,14 @@ class TestTaskMetadata:
         result = await db.get_task_meta("t-1", "config")
         assert result == {"retries": 3, "timeout": 60}
 
+    async def test_concurrent_first_writers(self, db):
+        import asyncio
+
+        await db.create_project(Project(id="p-1", name="alpha"))
+        await db.create_task(Task(id="t-1", project_id="p-1", title="A", description="D"))
+        await asyncio.gather(*(db.set_task_meta("t-1", "config", i) for i in range(10)))
+        assert await db.get_task_meta("t-1", "config") in range(10)
+
     async def test_get_all(self, db):
         await db.create_project(Project(id="p-1", name="alpha"))
         await db.create_task(Task(id="t-1", project_id="p-1", title="A", description="D"))

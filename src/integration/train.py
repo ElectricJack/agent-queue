@@ -435,6 +435,9 @@ class _Lane:
     start: int = 0
     visits: int = 0
     errors: int = 0
+    #: Diagnostic only: last change in batch, candidate, target or exact-check state.
+    progress_at: float = 0.0
+    progress_identity: tuple | None = None
     #: No visit starts before this time; :meth:`IntegrationTrain.wake` clears it.
     not_before: float = 0.0
     #: The unchanged refusal identity, and how many visits in a row.
@@ -584,6 +587,8 @@ class IntegrationTrain:
                 row["progress"] = dict(lane.progress)
                 row["visit_started_at"] = lane.started_at
             row["visits"], row["errors"] = lane.visits, lane.errors
+            if lane.progress_at:
+                row["progress_at"] = lane.progress_at
             if lane.not_before:
                 row["deferred_until"] = lane.not_before
             rows.append(row)
@@ -666,6 +671,11 @@ class IntegrationTrain:
             # A visit begun after the pause got past GitHub: the limit is over.
             del self._pauses[target.key[:2]]
         lane.visits += 1
+        identity = (visit.batch_id, visit.state, visit.candidate_sha, visit.target_sha, visit.checks)
+        if visit.state != "unknown" and lane.progress_identity != identity:
+            if lane.progress_identity is not None:
+                lane.progress_at = self.clock()
+            lane.progress_identity = identity
         lane.last = self._wait(target, lane, visit)
 
     def _admit(self, key: tuple[str, str, str], now: float) -> bool:
@@ -741,8 +751,14 @@ class IntegrationTrain:
         else:
             visit = await self._visit_batch(target, lane, snapshot, opened.batch, opened.members)
         blockers = opened.blockers
-        if target.kind == "epic" and lane.complete_epic and visit.state in {"idle", "delivered"}:
+        window_deferred = (opened.batch is None and opened.blockers and all(
+            item["code"] == "selection_deferred" for item in opened.blockers))
+        if (target.kind == "epic" and lane.complete_epic
+                and (visit.state in {"idle", "delivered"} or window_deferred)):
             _progress("settle_epic")
+            # A bounded selection window is not an aggregate verdict. The
+            # full evaluator still examines every required child. Other
+            # admission refusals (such as repository recovery) retain authority.
             # Publication moved the ref; readiness must examine the collected
             # head, rather than the snapshot from before the child batch landed.
             if visit.state == "delivered":
@@ -752,6 +768,8 @@ class IntegrationTrain:
             blockers += tuple(item for item in completion if item.get("blocking") is not False)
             if events:
                 visit = replace(visit, detail={**(visit.detail or {}), "epic_completions": events})
+                if any(item.get("code") == "epic_delivered" for item in events):
+                    visit = replace(visit, state="delivered")
             if blockers and visit.state == "idle":
                 visit = replace(visit, state="blocked")
         if blockers:

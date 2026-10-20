@@ -90,9 +90,17 @@ async def restore_disabled_slots(
         logger.warning("slot restore: list_workspaces(%s) failed: %s", project.id, e)
         return []
 
+    from src.workspace_disable import slot_cap
+
     actions: list[SlotRestoreAction] = []
     for ws in disabled_slots_in_cap(project, workspaces):
         try:
+            kind = await db.resolve_workspace_kind(project.id, ws.kind_id or "project-repo")
+            if (ws.slot_index or 0) >= slot_cap(project, kind):
+                continue
+            base = next((row for row in workspaces if row.id == ws.base_workspace_id), None)
+            if base is not None and not base.enabled:
+                continue
             action = await _reconcile_slot(db, mgr, project, ws, command_handler, now)
         except Exception as e:  # noqa: BLE001 — one slot never stops the pass
             logger.warning("slot restore: %s (%s) failed: %s", ws.id, _slot_label(ws), e)

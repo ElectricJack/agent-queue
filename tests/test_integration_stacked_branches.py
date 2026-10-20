@@ -5,6 +5,7 @@ import json
 import logging
 import subprocess
 
+from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -21,11 +22,13 @@ from src.database.tables import (
     tasks,
 )
 from src.git.github_contracts import GitHubRepositoryBinding
+from src.git.manager import GitError, RemoteRefResult, RemoteRefState
 from src.integration.batches import SupersedeMemberUnavailable, ejection_instruction
 from src.integration.gitops import GitOperations, RetainedRepository, SubjectGitAuthority
 from src.integration.provenance import CompletionIdentity, GitProvenance
 from src.integration.stacked_branches import (
     StackPrerequisitesConflict,
+    StackView,
     StackedBranches,
     merge_heads,
     observe_stacks,
@@ -35,7 +38,6 @@ from src.integration.train import TrainTarget
 from src.integration.train_controls import TrainControls
 from src.integration.train_sources import DatabaseBatches, _never_trusted
 from src.models import Project, Task, TaskCompletion, TaskStatus
-from tests.test_delivery_consumers import origin_template as origin_template
 from tests.test_delivery_consumers import close, git
 from tests.test_integration_gitops import LocalGit
 from tests.test_integration_train_sources import completed, lane, snapshot, world  # noqa: F401
@@ -163,6 +165,132 @@ async def test_single_stack_starts_at_completed_source_without_epic_delivery(sta
         )
     assert origin["base_sha"] == stack.first  # filing base remains immutable
     assert origin["stack_snapshot"]["prerequisites"]["first"]["checkpoint_sha"] == stack.first
+
+
+@pytest.mark.parametrize("relation", [
+    "behind", "equal", "ahead", "divergent", "unknown-forward", "unknown-reverse", "fetch-error",
+])
+async def test_prepare_preserves_child_history_against_fresh_publication(
+    stack, tmp_path, monkeypatch, relation,
+):
+    await stack.db.transition_task("child", TaskStatus.READY, force=True)
+    workspace = stack.origin.clone
+    published = stack.child
+    if relation != "equal":
+        # Publish from a separate clone so neither the local child nor its
+        # cached origin ref observes the preserved publication.
+        publisher = tmp_path / "publisher"
+        git(tmp_path, "clone", stack.origin.url, str(publisher))
+        git(publisher, "checkout", "aq/child")
+        (publisher / "published.txt").write_text("preserved publication\n")
+        git(publisher, "add", ".")
+        git(publisher, "commit", "-qm", "preserved published child")
+        published = git(publisher, "rev-parse", "HEAD")
+        git(publisher, "push", "origin", "aq/child")
+    if relation == "ahead":
+        git(workspace, "fetch", "origin")
+        git(workspace, "merge", "--ff-only", published)
+    if relation in {"ahead", "divergent"}:
+        (workspace / "unpublished.txt").write_text("unique local work\n")
+        git(workspace, "add", ".")
+        git(workspace, "commit", "-qm", "unpublished child")
+    local = git(workspace, "rev-parse", "aq/child")
+    cached = git(workspace, "rev-parse", "origin/aq/child")
+    if relation in {"behind", "unknown-forward", "unknown-reverse", "fetch-error"}:
+        assert cached == stack.child and cached != published
+    (workspace / "child.txt").write_text("dirty child edits\n")
+    git(workspace, "add", "child.txt")
+    (workspace / "untracked.txt").write_text("untracked child edits\n")
+    index = git(workspace, "write-tree")
+    status = git(workspace, "status", "--porcelain")
+    origin = await stack.db.get_task_branch_origin_for_promotion("child", "r")
+    manager = stack.service.observer.git
+    ancestor = manager.ais_ancestor
+    if relation.startswith("unknown"):
+        async def unknown_probe(store, first, second, **kwargs):
+            unknown_pair = ((published, local) if relation == "unknown-forward"
+                            else (local, published))
+            if (first, second) == unknown_pair:
+                return None
+            return await ancestor(store, first, second, **kwargs)
+
+        monkeypatch.setattr(manager, "ais_ancestor", unknown_probe)
+    if relation == "fetch-error":
+        run = manager._arun
+
+        async def failed_fetch(args, **kwargs):
+            if args[:3] == ["fetch", "--no-tags", str(workspace)]:
+                raise GitError("local object unavailable")
+            return await run(args, **kwargs)
+
+        monkeypatch.setattr(manager, "_arun", failed_fetch)
+    if relation in {"divergent", "unknown-forward", "unknown-reverse", "fetch-error"}:
+        with pytest.raises(GitError):
+            await stack.service.prepare("child", workspace=str(workspace))
+    else:
+        overlay = await stack.service.prepare("child", workspace=str(workspace))
+        expected = local if relation == "ahead" else published
+        assert overlay["base_sha"] == expected
+        assert git(overlay["stack_store"], "show", f"{expected}:child.txt") == "preserved child"
+        if relation != "equal":
+            assert git(overlay["stack_store"], "show", f"{expected}:published.txt") == (
+                "preserved publication"
+            )
+        if relation == "ahead":
+            assert git(overlay["stack_store"], "show", f"{expected}:unpublished.txt") == (
+                "unique local work"
+            )
+        assert await overlay.view.fresh()
+    assert git(workspace, "rev-parse", "aq/child") == local
+    assert git(workspace, "rev-parse", "origin/aq/child") == cached
+    assert git(workspace, "write-tree") == index
+    assert git(workspace, "status", "--porcelain") == status
+    assert (workspace / "child.txt").read_text() == "dirty child edits\n"
+    assert (workspace / "untracked.txt").read_text() == "untracked child edits\n"
+    assert git(stack.origin.url, "rev-parse", "aq/child") == published
+    assert await stack.db.get_task_branch_origin_for_promotion("child", "r") == origin
+@pytest.mark.parametrize("relationship", ["behind", "equal", "ahead", "diverged"])
+async def test_prepare_local_child_ancestry_at_published_head(stack, tmp_path, relationship):
+    await stack.db.transition_task("child", TaskStatus.IN_PROGRESS, force=True)
+    clone = stack.origin.clone
+    git(clone, "switch", "--detach")
+    if relationship in {"behind", "diverged"}:
+        git(clone, "branch", "-f", "aq/child", stack.first)
+    workspace = tmp_path / "child-slot"
+    git(clone, "worktree", "add", str(workspace), "aq/child")
+    if relationship in {"ahead", "diverged"}:
+        (workspace / "unpublished.txt").write_text("local child work\n")
+        git(workspace, "add", "unpublished.txt")
+        git(workspace, "commit", "-qm", "unpublished child")
+    local_head = git(workspace, "rev-parse", "HEAD")
+    recorded_stack = await stack_record(stack)
+
+    if relationship == "diverged":
+        with pytest.raises(GitError, match="local child does not descend"):
+            await stack.service.prepare("child", workspace=str(workspace))
+        assert git(workspace, "rev-parse", "HEAD") == local_head
+        assert await stack_record(stack) == recorded_stack
+        return
+
+    overlay = await stack.service.prepare("child", workspace=str(workspace))
+    expected = local_head if relationship == "ahead" else stack.child
+    assert overlay["base_sha"] == expected
+    # Observation must leave the branch untouched until the fenced checkout step.
+    assert git(workspace, "rev-parse", "HEAD") == local_head
+    transport = stack.service.observer.git
+    await transport._arun(
+        ["fetch", "--no-tags", str(overlay["stack_store"]), overlay["base_sha"]],
+        cwd=str(workspace),
+    )
+    # Slot reset uses this same preparation step for preserved worker branches.
+    await transport.aprepare_child_branch(str(workspace), "aq/child", overlay["base_sha"])
+    assert git(workspace, "rev-parse", "HEAD") == expected
+    assert git(workspace, "status", "--porcelain") == ""
+    assert git(workspace, "show", "HEAD:child.txt") == "preserved child"
+    if relationship == "ahead":
+        assert (workspace / "unpublished.txt").read_text() == "local child work\n"
+    assert git(stack.origin.url, "rev-parse", "aq/child") == stack.child
+    assert await stack_record(stack) == recorded_stack
 
 
 async def test_multiple_sources_merge_on_epic_and_pin_exact_base(stack):
@@ -344,6 +472,120 @@ async def test_changed_prerequisite_merges_preserves_child_and_rotates_completio
     await stack.service.prepare("child")
     assert (await stack_record(stack))["refreshed_head"] == head
     assert await stack.service.refresh("child", stack.gitops) == "unchanged"
+
+
+@pytest.fixture
+async def empty_stack(stack):
+    # Parent-only preparation records a stack even with no sibling prerequisites.
+    head = await completed(stack.world, "empty", parent="epic")
+    await checkpoint(stack.db, "empty", head)
+    overlay = await stack.service.prepare("empty", parent_base=stack.base)
+    assert overlay["stack_snapshot"]["prerequisites"] == {}
+    return SimpleNamespace(**vars(stack), empty=head)
+
+
+@pytest.mark.parametrize("selection", [False, True], ids=["refresh", "selection"])
+async def test_empty_prerequisite_stack_keeps_original_completion(empty_stack, selection):
+    stack = empty_stack
+    original = await stack.db.get_task_completion("empty")
+    origin = await stack.db.get_task_branch_origin_for_promotion("empty", "r")
+    original_generation = await generation(stack.db, "empty")
+    if selection:
+        target = TrainTarget("p", "r", "refs/heads/aq/epic", "epic")
+        train, _, _ = lane(stack.world, stack.gitops.git, target=target)
+        selected = await train.batches.open_batch(
+            target, await snapshot(stack.world, target), (await train.lane_for(target)).service,
+        )
+        assert selected.blockers == ()
+        assert any(member.task_id == "empty" and member.source_sha == stack.empty
+                   for member in selected.members)
+    else:
+        assert await stack.service.refresh("empty", stack.gitops) == "unchanged"
+    assert (await stack.db.get_task_completion("empty")).id == original.id
+    assert await generation(stack.db, "empty") == original_generation
+    assert await stack.db.get_task_branch_origin_for_promotion("empty", "r") == origin
+    assert git(stack.origin.url, "rev-parse", "refs/heads/aq/empty") == stack.empty
+    assert git(stack.origin.url, "rev-parse", "refs/heads/aq/epic") == stack.base
+
+
+@pytest.mark.parametrize("selection", [False, True], ids=["refresh", "frozen-selection"])
+@pytest.mark.parametrize("evidence", [
+    "repository_missing", "snapshot_error", "target_moved", "refs_unreadable",
+])
+async def test_empty_stack_requires_available_current_git(empty_stack, monkeypatch,
+                                                        evidence, selection):
+    stack = empty_stack
+    original = await stack.db.get_task_completion("empty")
+    original_generation = await generation(stack.db, "empty")
+    origin = await stack.db.get_task_branch_origin_for_promotion("empty", "r")
+    target = TrainTarget("p", "r", "refs/heads/aq/epic", "epic")
+    observed = await snapshot(stack.world, target)
+    if selection:
+        train, _, _ = lane(stack.world, stack.gitops.git, target=target)
+        service = (await train.lane_for(target)).service
+        frozen = await train.batches.open_batch(target, observed, service)
+        assert any(member.task_id == "empty" for member in frozen.members)
+    if evidence == "repository_missing":
+        await stack.db.update_project("p", hierarchical_integration_mode="disabled",
+                                      integration_repository_id=None)
+    elif evidence == "snapshot_error":
+        observed = replace(observed, observation=replace(
+            observed.observation, error="snapshot_git_error: fetch failed",
+        ))
+    elif evidence == "target_moved":
+        git(stack.origin.clone, "push", "origin", f"{stack.first}:aq/epic")
+    else:
+        monkeypatch.setattr(stack.service.observer.git, "als_remote_refs",
+                            AsyncMock(side_effect=GitError("remote unreadable")))
+    if selection:
+        selected = await train.batches.open_batch(target, observed, service)
+        # Lost evidence withholds publication without replacing frozen inputs.
+        assert selected.batch.id == frozen.batch.id
+        assert selected.members == frozen.members
+        assert not await train.batches.eligible(selected.batch, selected.members)
+    else:
+        assert await stack.service.refresh("empty", stack.gitops,
+                                           snapshot=observed) == "waiting_prerequisite"
+    held = await stack.db.get_task_branch_origin_for_promotion("empty", "r")
+    assert held == {**origin, "stack_snapshot": {
+        **origin["stack_snapshot"], "hold": "prerequisite_reopened_or_unavailable",
+    }}
+    assert (await stack.db.get_task_completion("empty")).id == original.id
+    assert await generation(stack.db, "empty") == original_generation
+    assert git(stack.origin.url, "rev-parse", "refs/heads/aq/empty") == stack.empty
+
+
+@pytest.mark.parametrize("selection", [False, True], ids=["refresh", "selection"])
+@pytest.mark.parametrize("change", ["source_missing", "source_changed", "writer_active"])
+async def test_empty_stack_preserves_source_and_writer_fences(empty_stack, change, selection):
+    stack = empty_stack
+    original = await stack.db.get_task_completion("empty")
+    original_generation = await generation(stack.db, "empty")
+    source = stack.empty
+    if change == "source_missing":
+        git(stack.origin.clone, "push", "origin", ":aq/empty")
+        source = None
+    elif change == "source_changed":
+        source = stack.origin.work("empty", "unreviewed post-close work")
+    else:
+        await stack.db.transition_task("empty", TaskStatus.IN_PROGRESS, force=True)
+    if selection:
+        target = TrainTarget("p", "r", "refs/heads/aq/epic", "epic")
+        train, _, _ = lane(stack.world, stack.gitops.git, target=target)
+        selected = await train.batches.open_batch(
+            target, await snapshot(stack.world, target), (await train.lane_for(target)).service,
+        )
+        assert "empty" not in {member.task_id for member in selected.members}
+        if change != "writer_active":
+            assert any(blocker["code"] == "stack_" + change
+                       and blocker["task_id"] == "empty" for blocker in selected.blockers)
+    else:
+        assert await stack.service.refresh("empty", stack.gitops) == change
+    assert (await stack.db.get_task_completion("empty")).id == original.id
+    assert await generation(stack.db, "empty") == original_generation
+    remote = git(stack.origin.clone, "ls-remote", "origin", "refs/heads/aq/empty")
+    assert (remote.split()[0] if remote else None) == source
+    assert git(stack.origin.url, "rev-parse", "refs/heads/aq/epic") == stack.base
 
 
 @pytest.mark.parametrize("cancel_visit", [False, True])
@@ -774,6 +1016,46 @@ async def test_open_batch_refreshes_only_its_targets_candidate_window(stack, mon
     assert refresh.call_args.kwargs == {"snapshot": observed}
 
 
+async def test_stack_refresh_quantum_preserves_guards_and_admits_independent_work(stack, monkeypatch):
+    original = await stack_record(stack)
+    await completed(stack.world, "later-child", parent="epic", needs=("first",),
+                    head=stack.child, source_base=stack.first)
+    git(stack.origin.clone, "push", "origin", f"{stack.child}:refs/heads/aq/later-child")
+    await checkpoint(stack.db, "later-child", stack.child)
+    held = {**original, "hold": "prerequisite_reopened_or_unavailable"}
+    async with stack.db.immediate() as conn:
+        await conn.execute(update(task_branch_origins).where(
+            task_branch_origins.c.task_id == "later-child",
+        ).values(stack_snapshot=held))
+    independent = await completed(stack.world, "z-independent", parent="epic")
+    target = TrainTarget("p", "r", "refs/heads/aq/epic", "epic")
+    train, _, _ = lane(stack.world, LocalGit(stack.origin.url), target=target)
+    batches, calls, elapsed = train.batches, [], 0.0
+    batches._selection_clock = lambda: elapsed
+    refresh = StackedBranches.refresh
+
+    async def slow_refresh(self, task_id, *args, **kwargs):
+        nonlocal elapsed
+        calls.append(task_id)
+        result = await refresh(self, task_id, *args, **kwargs)
+        elapsed += 61
+        return result
+
+    monkeypatch.setattr(StackedBranches, "refresh", slow_refresh)
+    selected = await batches.open_batch(
+        target, await snapshot(stack.world, target), (await train.lane_for(target)).service,
+    )
+    assert calls == ["child"]
+    assert selected.batch is not None
+    assert {m.task_id for m in selected.members} == {"child", "first", "z-independent"}
+    assert next(m.source_sha for m in selected.members if m.task_id == "z-independent") == independent
+    assert any(b["code"] == "stack_prerequisite_reopened_or_unavailable"
+               and b["task_id"] == "later-child" for b in selected.blockers)
+    assert await stack_record(stack) == original
+    assert git(stack.origin.url, "rev-parse", "refs/heads/aq/child") == stack.child
+    assert await generation(stack.db, "child") == 0
+
+
 @pytest.mark.parametrize("operation", ["reopen", "abandon", "missing", "rewind"])
 async def test_reopened_abandoned_or_unproved_prerequisite_pauses_delivery(stack, operation):
     if operation == "reopen":
@@ -1065,3 +1347,57 @@ async def test_conflict_dispatches_isolated_repairs_and_adopts_resolution(stack,
         await stack.db.transition_task(next_repair.id, TaskStatus.COMPLETED)
     assert await stack.service.refresh("child", stack.gitops) == "refreshed"
     assert await stack.service.current("child", source_sha=resolved)
+
+
+_TARGET, _MOVED, _PROOF = "a" * 40, "b" * 40, "c" * 40
+
+
+def _stack_view(refs=None, *, error=None, raises=None, proofs=None):
+    async def als_remote_refs(store, branches):
+        if raises:
+            raise raises
+        return {branch: refs[branch] for branch in branches if branch in refs}
+
+    git = SimpleNamespace(aget_remote_url=AsyncMock(return_value="u"),
+                          als_remote_refs=als_remote_refs)
+    snapshot = SimpleNamespace(error=error, target_oid=_TARGET, target_ref="refs/heads/main",
+                               store="s", repository_url="u", git=git)
+    return StackView(db=None, project_id="p", rows=({"task_id": "x"},), proofs=proofs or {},
+                     snapshot=snapshot)
+
+
+def _ref(oid=None, state=None):
+    return RemoteRefResult(state or (RemoteRefState.PRESENT if oid else RemoteRefState.ABSENT),
+                           oid)
+
+
+async def test_stack_currentness_separates_moved_refs_from_missing_git_evidence():
+    proof = {"x": {"task_id": "x", "branch_name": "refs/heads/aq/x", "checkpoint_sha": _PROOF}}
+    current = _stack_view({"main": _ref(_TARGET), "aq/x": _ref(_PROOF)}, proofs=proof)
+    assert (await current.currentness()).state == "current"
+    assert await current.fresh()
+
+    moved = await _stack_view({"main": _ref(_TARGET), "aq/x": _ref(_MOVED)},
+                              proofs=proof).currentness()
+    assert moved.evidence() == {"state": "changed", "reason": "stack_ref_moved", "ref": "aq/x",
+                                "expected": _PROOF, "observed": f"present:{_MOVED}",
+                                "task_id": "x"}
+    target = await _stack_view({"main": _ref(_MOVED)}).currentness()
+    assert (target.state, target.ref, target.expected) == ("changed", "main", _TARGET)
+
+    # No Git answer is never "current", and never claims a ref moved.
+    for view, reason in (
+        (_stack_view(error="snapshot_git_error: fetch failed"), "snapshot_git_error: fetch failed"),
+        (_stack_view(raises=GitError("ls-remote failed")), "stack_refs_unreadable: GitError"),
+        (_stack_view({"main": _ref(_TARGET), "aq/x": _ref(state=RemoteRefState.ERROR)},
+                     proofs=proof), "stack_ref_unreadable"),
+        (_stack_view({"main": _ref(_TARGET)}, proofs=proof), "stack_ref_unreadable"),
+        (StackView(db=None, project_id="p", rows=({"task_id": "x"},)),
+         "stack_repository_unavailable"),
+    ):
+        state = await view.currentness()
+        assert (state.state, state.reason) == ("unavailable", reason)
+        assert not await view.fresh()
+    assert await StackView(db=None, project_id="p").fresh()
+    unproven = _stack_view({"main": _ref(_TARGET)}, proofs=proof).without_proofs()
+    assert (unproven.proofs, unproven.delivered_refs) == ({}, {})

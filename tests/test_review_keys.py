@@ -15,6 +15,7 @@ from src.review_keys import (
     REVIEW_PROFILE_IDS,
     REVIEW_TASK_DEDUP_PREFIX,
     branch_review_dedup_key,
+    fidelity_review_dedup_key,
     is_pipeline_review_task,
     is_review_completion,
     is_review_role,
@@ -27,6 +28,7 @@ def test_keys_match_the_shipped_pipeline():
     assert branch_review_dedup_key("aq/x") == "branch-review:aq/x"
     assert review_task_dedup_key("t1").startswith(REVIEW_TASK_DEDUP_PREFIX)
     assert branch_review_dedup_key("aq/x").startswith(BRANCH_REVIEW_DEDUP_PREFIX)
+    assert fidelity_review_dedup_key("b1") == "fidelity-review:batch:b1"
 
 
 
@@ -36,6 +38,7 @@ def test_keys_match_the_shipped_pipeline():
     [
         ("review:task:abc", True),
         ("branch-review:aq/feature", True),
+        ("fidelity-review:batch:b1", True),
         ("spec-ingest:docs/specs/x.md", False),
         ("triage-open", False),
         ("", False),
@@ -96,6 +99,7 @@ def test_reviewed_pipeline_artifact_uses_these_prefixes():
     [
         ("reviewer", True),
         ("final-reviewer", True),
+        ("fidelity-reviewer", True),
         ("worker", False),
         ("spec-ingest", False),
         ("Reviewer", False),
@@ -132,6 +136,8 @@ def test_git_ops_no_code_fallback_shares_the_role_set():
         # the review rules exist for.
         (None, "worker", False),
         ("spec-ingest:docs/specs/x.md", "spec-ingest", False),
+        ("fidelity-review:batch:b1", "fidelity-reviewer", True),
+        ("fidelity-review:batch:b1", None, True),
         ("", "", False),
     ],
 )
@@ -144,7 +150,9 @@ def test_shipped_review_profiles_exist_with_these_ids():
     from pathlib import Path
 
     defaults = Path(__file__).parent.parent / "src" / "profiles" / "defaults"
-    for profile_id in REVIEW_PROFILE_IDS:
+    # ``fidelity-reviewer`` ships with its profile in held batches L5.1; drop
+    # this exception there.
+    for profile_id in REVIEW_PROFILE_IDS - {"fidelity-reviewer"}:
         assert (defaults / profile_id / "profile.md").is_file(), (
             f"REVIEW_PROFILE_IDS names '{profile_id}' but no such shipped profile exists"
         )

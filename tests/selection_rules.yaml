@@ -136,6 +136,7 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["tests/assignment_routing_helpers.py"], areas: ["orchestrator", "task-lifecycle", "task-routing"] }
   - { paths: ["tests/dashboard_server_helpers.py"], areas: ["dashboard-server", "install"] }
   - { paths: ["tests/git_mock_helpers.py"], areas: ["workspaces", "git-manager"] }
+  - { paths: ["tests/git_seed_helpers.py"], areas: ["git-manager", "worktree-slots", "integration-trains", "epic-trains"] }
   - { paths: ["tests/installer_machine.py"], areas: ["install"] }
   - { paths: ["tests/llm/**"], areas: ["llm-client"] }
   - { paths: ["tests/perf/__init__.py"], areas: ["claims", "formulas", "task-hierarchy", "graph-layout"] }
@@ -168,7 +169,7 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["src/aq_uri.py", "src/wiki_links.py", "src/vault_*.py", "src/file_watcher.py", "src/readme_handler.py", "src/override_handler.py", "src/reference_stub_enricher.py", "src/workspace_spec_watcher.py"], areas: ["vault"] }
   - { paths: ["src/vault.py"], areas: ["vault", "profiles", "intelligence-classes", "harnesses"] }
   - { paths: ["src/assignment_routing.py", "src/explain.py"], areas: ["task-routing", "work-graph"] }
-  - { paths: ["src/claim_file.py", "src/pool_claims.py"], areas: ["claims", "worker-pools"] }
+  - { paths: ["src/claim_file.py", "src/claim_timing.py", "src/claim_preparation.py", "src/pool_claims.py", "src/preparation_failure.py"], areas: ["claims", "worker-pools"] }
   - { paths: ["src/config_editor.py", "src/config_secrets.py", "src/config_tuning.py", "src/portable_config.py", "src/portable_setup.py"], areas: ["config"] }
   - { paths: ["src/conversations/**"], areas: ["discord-conversations", "supervisor"] }
   - { paths: ["src/deliverables.py", "src/state_machine.py", "src/task_summary.py", "src/task_names.py"], areas: ["task-lifecycle"] }
@@ -186,7 +187,7 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["src/review_keys.py"], areas: ["document-reviews"] }
   - { paths: ["src/schedule.py", "src/scheduler.py", "src/timer_service.py"], areas: ["scheduling"] }
   - { paths: ["src/surface_schema.py"], areas: ["command-dispatch"] }
-  - { paths: ["src/workspace_names.py"], areas: ["workspaces"] }
+  - { paths: ["src/workspace_names.py", "src/workspace_listing.py", "src/workspace_registration.py"], areas: ["workspaces"] }
   - { paths: ["src/playbook_schema.json", "src/playbook_v2_schema.json"], areas: ["playbook-definition"] }
 
   # ---- src/ packages
@@ -263,7 +264,7 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["src/commands/plugin_commands.py"], areas: ["plugins"] }
   - { paths: ["src/commands/profile_commands.py"], areas: ["profiles", "intelligence-classes"] }
   - { paths: ["src/commands/project_commands.py", "src/commands/project_onboarding_commands.py"], areas: ["projects"] }
-  - { paths: ["src/commands/proposal_commands.py", "src/commands/review_commands.py", "src/commands/spec_commands.py"], areas: ["document-reviews"] }
+  - { paths: ["src/commands/proposal_commands.py", "src/commands/review_commands.py", "src/commands/ask_commands.py", "src/commands/spec_commands.py"], areas: ["document-reviews"] }
   - { paths: ["src/commands/task_changes.py"], areas: ["task-dependencies", "task-hierarchy", "task-archive", "task-comments", "work-graph", "task-routing"] }
   - { paths: ["src/commands/provider_commands.py", "src/commands/provider_allocation_commands.py"], areas: ["provider-failover"] }
   - { paths: ["src/commands/question_commands.py"], areas: ["agent-questions"] }
@@ -348,7 +349,7 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["src/install/**"], areas: ["install"] }
   - { paths: ["src/install/pools.py"], areas: ["worker-pools"] }
 
-  - { paths: ["src/integration/delivery_truth.py", "src/integration/admission.py"], areas: ["development-delivery", "work-graph"] }
+  - { paths: ["src/integration/delivery_truth.py", "src/integration/admission.py", "src/integration/pr_admission.py"], areas: ["development-delivery", "work-graph"] }
   - { paths: ["src/integration/delivery_observer.py"], areas: ["development-delivery", "task-lifecycle", "task-archive", "integration-controls"] }
   - { paths: ["src/operator_decisions.py"], areas: ["integration-trains"] }
   - { paths: ["src/integration/**"], areas: ["integration-trains"] }
@@ -416,6 +417,7 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["src/routing/**"], areas: ["task-routing"] }
   - { paths: ["src/resources/test_db_reaper.py"], areas: ["test-substrate"] }
   - { paths: ["src/resources/slot_report.py"], areas: ["development-delivery"] }
+  - { paths: ["src/asks/**", "src/database/queries/ask_queries.py", "src/database/queries/ask_input_queries.py", "src/database/queries/ask_delivery_queries.py", "src/commands/ask_communication_commands.py", "tests/ask_helpers.py"], areas: ["document-reviews"] }
   - { paths: ["src/reviews/**"], areas: ["document-reviews"] }
   - { paths: ["src/runtimes/**"], areas: ["session-runtime"] }
   - { paths: ["src/services/**"], areas: ["plugins"] }

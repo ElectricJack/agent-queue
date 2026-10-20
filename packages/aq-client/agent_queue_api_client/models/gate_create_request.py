@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any, TypeVar, cast
+from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
 from ..types import UNSET, Unset
+
+if TYPE_CHECKING:
+    from ..models.gate_create_request_human_request_type_0 import GateCreateRequestHumanRequestType0
+
 
 T = TypeVar("T", bound="GateCreateRequest")
 
@@ -18,6 +22,7 @@ class GateCreateRequest:
         project_id (str):
         gate_type (str):
         title (str):
+        human_request (GateCreateRequestHumanRequestType0 | None | Unset):
         question (None | str | Unset):
         await_id (None | str | Unset):
         timeout_at (None | str | Unset):
@@ -27,6 +32,7 @@ class GateCreateRequest:
     project_id: str
     gate_type: str
     title: str
+    human_request: GateCreateRequestHumanRequestType0 | None | Unset = UNSET
     question: None | str | Unset = UNSET
     await_id: None | str | Unset = UNSET
     timeout_at: None | str | Unset = UNSET
@@ -34,11 +40,21 @@ class GateCreateRequest:
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
+        from ..models.gate_create_request_human_request_type_0 import GateCreateRequestHumanRequestType0
+
         project_id = self.project_id
 
         gate_type = self.gate_type
 
         title = self.title
+
+        human_request: dict[str, Any] | None | Unset
+        if isinstance(self.human_request, Unset):
+            human_request = UNSET
+        elif isinstance(self.human_request, GateCreateRequestHumanRequestType0):
+            human_request = self.human_request.to_dict()
+        else:
+            human_request = self.human_request
 
         question: None | str | Unset
         if isinstance(self.question, Unset):
@@ -76,6 +92,8 @@ class GateCreateRequest:
                 "title": title,
             }
         )
+        if human_request is not UNSET:
+            field_dict["human_request"] = human_request
         if question is not UNSET:
             field_dict["question"] = question
         if await_id is not UNSET:
@@ -89,12 +107,31 @@ class GateCreateRequest:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
+        from ..models.gate_create_request_human_request_type_0 import GateCreateRequestHumanRequestType0
+
         d = dict(src_dict)
         project_id = d.pop("project_id")
 
         gate_type = d.pop("gate_type")
 
         title = d.pop("title")
+
+        def _parse_human_request(data: object) -> GateCreateRequestHumanRequestType0 | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                human_request_type_0 = GateCreateRequestHumanRequestType0.from_dict(data)
+
+                return human_request_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(GateCreateRequestHumanRequestType0 | None | Unset, data)
+
+        human_request = _parse_human_request(d.pop("human_request", UNSET))
 
         def _parse_question(data: object) -> None | str | Unset:
             if data is None:
@@ -144,6 +181,7 @@ class GateCreateRequest:
             project_id=project_id,
             gate_type=gate_type,
             title=title,
+            human_request=human_request,
             question=question,
             await_id=await_id,
             timeout_at=timeout_at,

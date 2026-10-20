@@ -6,6 +6,8 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from src.api.models.ask import AskPreview, AskVersion
+
 
 class EscalationRecord(BaseModel):
     model_config = {"extra": "allow"}
@@ -107,6 +109,9 @@ class EscalationListResponse(BaseModel):
 
 
 class EscalationGetResponse(BaseModel):
+    ask_id: str | None = None
+    ask_url: str | None = None
+    deprecation: str | None = None
     success: bool = True
     escalation: EscalationRecord
     messages: list[EscalationMessage]
@@ -136,11 +141,16 @@ class EscalationResolveResponse(BaseModel):
 
 class EscalationApplyReplyResponse(BaseModel):
     success: bool = True
-    applied: bool
-    replayed: bool
-    action: EscalationAction
-    escalation: EscalationRecord
-    action_result: dict[str, Any] | None = None
+    applied: bool = False
+    replayed: bool = False
+    ask_id: str
+    preview: AskPreview | None = None
+    expected: AskVersion | None = None
+    decision_id: str | None = None
+    application_state: str | None = None
+    created: bool | None = None
+    receipt: dict[str, Any] | None = None
+    escalation: EscalationRecord | None = None
 
 
 class EscalationSweepResponse(BaseModel):

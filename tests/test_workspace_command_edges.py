@@ -259,3 +259,31 @@ async def test_edit_workspace_refuses_locked_or_duplicate_path_but_allows_forced
     await handler._cmd_edit_workspace({"workspace_id": "ws-a", "enabled": True})
     row = await handler.db.get_workspace("ws-a")
     assert (row.enabled, row.disabled_reason, row.disabled_at) == (True, None, None)
+
+
+async def test_relocation_rechecks_lock_acquired_after_the_snapshot(ws_handler, tmp_path, monkeypatch):
+    handler = ws_handler
+    old = tmp_path / "source"
+    old.mkdir()
+    await handler.db.create_agent(Agent(id="worker", name="worker", profile_id="worker"))
+    await handler.db.create_task(Task(id="work", project_id="p1", title="work", description=""))
+    await handler.db.create_workspace(Workspace(
+        id="slot", project_id="p1", workspace_path=str(old), source_type=RepoSourceType.LINK,
+    ))
+    list_workspaces = handler.db.list_workspaces
+
+    async def acquire_during_validation(*args, **kwargs):
+        rows = await list_workspaces(*args, **kwargs)
+        held = await handler.db.acquire_workspace("p1", "worker", "work", preferred_workspace_id="slot")
+        assert held.id == "slot"
+        return rows
+
+    monkeypatch.setattr(handler.db, "list_workspaces", acquire_during_validation)
+    result = await handler._cmd_edit_workspace({
+        "workspace_id": "slot", "workspace_path": str(tmp_path / "destination"), "force": True,
+    })
+    assert "binding changed or is locked" in result["error"]
+    row = await handler.db.get_workspace("slot")
+    assert row.workspace_path == str(old)
+    assert row.locked_by_task_id == "work"
+    assert row.locked_by_agent_id == "worker"

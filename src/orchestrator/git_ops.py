@@ -828,6 +828,31 @@ class GitOpsMixin:
                 )
         return ctx.repo is not None
 
+    async def _preserve_non_source_drafts(self, ctx: PipelineContext) -> bool:
+        """Refuse document/no-code closes for an already-proven dirty Git checkout.
+
+        Review submission copies the draft to the vault but leaves the local
+        file intact. Publishing that duplicate as source would manufacture
+        delivery work and a PR requirement for a document-only task.
+        """
+        from src.deliverables import resolve_task_deliverables
+
+        items = await resolve_task_deliverables(self.db, ctx.task)
+        review_only = bool(items) and all(item["kind"] == "review" for item in items)
+        if not review_only and not await self._task_produces_no_code(ctx):
+            return False
+        message = (
+            "Document-only/no-code task has uncommitted source-checkout files. "
+            "Drafts were preserved without committing or publishing them. "
+            "Submit the review to the vault, then move any local draft outside the "
+            "source checkout and retry close. A clean unchanged source branch needs "
+            "no source PR or CI; actual source changes require normal delivery."
+        )
+        ctx.verification_issues = [message]
+        ctx.verification_feedback = message
+        ctx.verification_retry_in_session = True
+        return True
+
     async def _vault_only_delivery(self, ctx: PipelineContext) -> bool:
         """Recognize an explicit vault-only task with a usable vault attachment.
 
@@ -1066,7 +1091,9 @@ class GitOpsMixin:
         ctx.no_work_proven = True
         return True
 
-    async def _sweep_uncommitted_before_skip(self, ctx: PipelineContext) -> None:
+    async def _sweep_uncommitted_before_skip(
+        self, ctx: PipelineContext, *, has_uncommitted: bool | None
+    ) -> None:
         """Best-effort dirty-slot cleanup on a verification path that skips the checks.
 
         A task that bypasses git verification must still not leave dirty
@@ -1077,7 +1104,9 @@ class GitOpsMixin:
         if not workspace or not await self.git.avalidate_checkout(workspace):
             return
         try:
-            if await self.git.ahas_uncommitted_changes(workspace):
+            if has_uncommitted is None:
+                has_uncommitted = await self.git.ahas_uncommitted_changes(workspace)
+            if has_uncommitted:
                 current = await self.git.aget_current_branch(workspace)
                 await self._auto_remediate_uncommitted(
                     workspace,
@@ -1225,6 +1254,15 @@ class GitOpsMixin:
         workspace = ctx.workspace_path
         task = ctx.task
 
+        uses_git = bool(workspace) and await self._task_uses_git(ctx)
+        # Share the initial status between draft protection and remediation;
+        # cleanliness is checked again after remediation.
+        has_uncommitted = (
+            await self.git.ahas_uncommitted_changes(workspace, strict=True) if uses_git else None
+        )
+        if has_uncommitted is True and await self._preserve_non_source_drafts(ctx):
+            return PhaseResult.STOP
+
         # Skip verification if the agent exited with an error — bad git state
         # is a symptom, not the root cause.  Let normal error handling deal
         # with the task instead of reopening for git fixes.
@@ -1237,10 +1275,10 @@ class GitOpsMixin:
             # Still auto-remediate uncommitted changes so the workspace is
             # clean for the next task.  Without this, a crashed agent leaves
             # dirty state that bleeds into subsequent tasks.
-            await self._sweep_uncommitted_before_skip(ctx)
+            await self._sweep_uncommitted_before_skip(ctx, has_uncommitted=has_uncommitted)
             return PhaseResult.CONTINUE
 
-        if not workspace or not await self._task_uses_git(ctx):
+        if not uses_git:
             return PhaseResult.CONTINUE
 
         if not await self.git.avalidate_checkout(workspace):
@@ -1250,7 +1288,6 @@ class GitOpsMixin:
         default_branch = ctx.default_branch or "main"
         has_remote = await self.git.ahas_remote(workspace, strict=True)
         current_branch = await self.git.aget_current_branch(workspace, strict=True)
-        has_uncommitted = await self.git.ahas_uncommitted_changes(workspace, strict=True)
         if has_remote is None or not current_branch or has_uncommitted is None:
             logger.error("Task %s: required Git state could not be verified", task.id)
             return PhaseResult.STOP

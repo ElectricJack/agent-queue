@@ -26,6 +26,7 @@ handful of its methods (``get_task``, ``get_task_contexts``,
 
 from __future__ import annotations
 
+import re
 from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any
@@ -245,7 +246,59 @@ class PrimeRenderer:
                 override_markdown=apply_override(override_template, doc),
             )
 
-        return _with_pause_notice(doc, project)
+        doc = _with_pause_notice(doc, project)
+        if bounded_worker:
+            from src.knowledge.context import context_enabled
+
+            if (
+                context_enabled(self.config)
+                and task.project_id in self.config.knowledge.enabled_projects
+            ):
+                from src.knowledge.budget import ContextBudget
+
+                doc = _fit_worker_previews(
+                    doc, ContextBudget.from_config(self.config), override_template, project,
+                )
+        return doc
+
+
+def _fit_worker_previews(doc, budget, override_template, project):
+    """Reduce only losslessly pageable prose; the delivery gate owns refusal.
+
+    Reassemble the actual override and pause notice after every reduction.
+    Independent section ceilings cannot guarantee an aggregate fit, and an
+    override may expand a section more than once. No database reads or writes
+    occur here, so message delivery and current repair fences are not replayed.
+    """
+    for key in ("task_context", "task", "messages"):
+        if override_template and not re.search(r"\{\{\s*" + re.escape(key) + r"\s*\}\}", override_template):
+            # Omitted slots cannot contribute bytes to this delivery.
+            continue
+        section = next((s for s in doc.sections if s.key == key), None)
+        if section is None or section.preview is None:
+            continue
+        preview = section.preview
+        if len(preview.render(doc.task_id, 0).encode("utf-8")) >= len(section.body.encode("utf-8")):
+            # A short complete paragraph can cost less than its continuation
+            # command. Keep it instead of growing the required prompt.
+            continue
+        limit = min(preview.max_bytes, len(preview.text.encode("utf-8")))
+        # Even a zero-length excerpt retains the complete read instruction.
+        # The pointer's bytes are counted by account(), not guessed here.
+        while limit > 0:
+            accounting = budget.account(doc.to_markdown())
+            if accounting["fits"]:
+                return doc
+            overflow = accounting["total_tokens"] - budget.input_tokens
+            limit = max(0, limit - max(1, overflow))
+            section = replace(section, body=preview.render(doc.task_id, limit))
+            doc = replace(doc, sections=tuple(
+                section if s.key == key else s for s in doc.sections
+            ), override_markdown=None)
+            if override_template:
+                doc = replace(doc, override_markdown=apply_override(override_template, doc))
+            doc = _with_pause_notice(doc, project)
+    return doc
 
 
 _PAUSED_NOTICE = (

@@ -14,14 +14,19 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/builtin.py`](../../../src/commands/contracts/builtin.py) |
-| Contract fingerprint | `sha256:e7a50ef1a3596569250a59ce94fbef77f295cc3e6813a364e1718557b38470a4` |
+| Contract fingerprint | `sha256:118b84dc8b752a5a441cddce108db12963c4132ca2846d5bc55eda3b523e25c1` |
 
 ## Parameters
 
 | Parameter | Type | Required | Default | Description |
 |---|---|---|---|---|
+| `expected` | `object \| null` | no | `null` | — |
+| `preview_id` | `string \| null` | no | `null` | — |
+| `idempotency_key` | `string \| null` | no | `null` | — |
+| `option_key` | `string \| null` | no | `null` | — |
+| `overall_note` | `string \| null` | no | `null` | — |
 | `gate_id` | `string` | yes | — | Gate |
-| `resolved_by` | `string` | yes | — | Resolved by |
+| `resolved_by` | `string \| null` | no | `null` | Resolved by |
 | `resolution` | `string \| null` | no | `null` | Resolution |
 
 ## Result

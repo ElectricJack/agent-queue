@@ -89,6 +89,8 @@ The final `policy_docs` retirement ratchet must cover all entries before activat
 | `src/database/queries/claim_queries.py` | Frontier fallback and attempt-progress inference from code/noop receipt | admission; policy_docs for attempt accounting |
 | `src/database/queries/integration_train_queries.py` | Root receipt predicate, pending requests and delivered-source lookup | dispatch; admission |
 | `src/database/queries/integration_delivery_queries.py` | Promotion finalizer receipt read/insert; public receipt listing | close_merge; policy_docs |
+| `src/database/queries/blocked_state.py` | Blocked-state projection reads landed root/parent receipts | admission |
+| `src/task_graph/readiness.py` | Readiness reads delivery receipts for sibling/parent landing | admission |
 | `src/database/base.py` | Receipt-list query protocol | policy_docs |
 | `src/commands/surface_commands.py` | Task delivery display via receipt-list API | dashboard; policy_docs |
 | `src/commands/integration_commands.py` | Compatibility integration delivery/status commands | cutover; policy_docs |

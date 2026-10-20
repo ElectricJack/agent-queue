@@ -170,6 +170,9 @@ class ChildTaskCompleted:
 class HumanDecision:
     decision: str
     payload: Mapping[str, Any] = field(default_factory=dict)
+    expected_wait_id: str | None = None
+    expected_artifact_sha256: str | None = None
+    decision_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1208,6 +1211,25 @@ class PlaybookEngine:
         snapshot = await repository.load_run(run_id)
         if snapshot is None:
             return RunOutcome(run_id, RunLifecycle.FAILED, "unknown_run")
+        if isinstance(cause, HumanDecision):
+            # Receipt reconciliation precedes terminal/current-visit checks. A
+            # replay can report its old result but cannot consume another visit.
+            receipts = await repository.list_receipts(run_id)
+            for receipt in receipts:
+                proof = (receipt.result or {}).get("human_decision", {})
+                if cause.decision_id and proof.get("decision_id") == cause.decision_id:
+                    matches = (proof.get("wait_id") == cause.expected_wait_id
+                               and proof.get("artifact_sha256") == cause.expected_artifact_sha256
+                               and proof.get("outcome") == cause.decision)
+                    return RunOutcome(run_id, snapshot.lifecycle,
+                                      "decision_replayed" if matches else "stale_human_decision",
+                                      snapshot)
+            if (not cause.decision_id or not snapshot.wait or snapshot.wait.kind != "human"
+                    or snapshot.wait.wait_id != cause.expected_wait_id
+                    or snapshot.artifact_sha256 != cause.expected_artifact_sha256):
+                return RunOutcome(run_id, snapshot.lifecycle, "stale_human_decision", snapshot)
+        if isinstance(cause, EventArrived) and snapshot.wait and snapshot.wait.kind == "human":
+            return RunOutcome(run_id, snapshot.lifecycle, "human_decision_required", snapshot)
         if snapshot.is_terminal:
             return RunOutcome(run_id, snapshot.lifecycle, "already_terminal", snapshot)
         if isinstance(cause, InterruptedByRestart):
@@ -1246,6 +1268,11 @@ class PlaybookEngine:
             # durable snapshot shape before replaying the identical attempt.
             snapshot = await repository.load_run(run_id) or snapshot
         current_step = artifact.steps.get(snapshot.current_step_id or "")
+        if isinstance(cause, HumanDecision) and (
+            not isinstance(current_step, WaitStep) or current_step.wait_kind != "human"
+            or cause.decision not in current_step.outcomes
+        ):
+            return RunOutcome(run_id, snapshot.lifecycle, "undeclared_human_outcome", snapshot)
         if isinstance(cause, ChildTaskCompleted):
             if not isinstance(current_step, WaitStep):
                 return await self._resume_child_task(
@@ -3176,6 +3203,8 @@ class PlaybookEngine:
             ),
         )
         attempt.outcome = outcome
+        if proof := claim.event_fields.get("human_decision"):
+            attempt.receipt_result = {"human_decision": dict(proof)}
         if outcome == "timed_out":
             attempt.timed_out = True
             attempt.error = f"{self._deadline_that_fired(snapshot, step, wait)} deadline fired"
@@ -3279,7 +3308,15 @@ class PlaybookEngine:
                 return None
             expired = True
         elif isinstance(cause, HumanDecision):
-            payload = {"resolution": cause.decision, **dict(cause.payload)}
+            if (wait.kind != "human" or wait.wait_id != cause.expected_wait_id
+                    or snapshot.artifact_sha256 != cause.expected_artifact_sha256
+                    or not cause.decision_id):
+                return None
+            payload = {**dict(cause.payload), "resolution": cause.decision,
+                       "human_decision": {"decision_id": cause.decision_id,
+                                          "wait_id": cause.expected_wait_id,
+                                          "artifact_sha256": cause.expected_artifact_sha256,
+                                          "outcome": cause.decision}}
         elif isinstance(cause, ChildTaskCompleted):
             payload = {"task_id": cause.task_id, "status": cause.status}
         else:

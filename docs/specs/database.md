@@ -24,6 +24,10 @@ them. Import requires an empty target apart from Alembic bookkeeping and the imm
 `record_installation` identity seed created with the schema. That installation identity
 is preserved. Any other target data, including record scopes or knowledge, refuses import.
 Task record backfill and knowledge import remain separate, explicit operations.
+Revision `a00000000091` also excludes its seven human ask audit tables from legacy
+imports. Older review and escalation rows retain their data: missing nullable ask
+references become SQL NULL, and new version, entry-kind and lease fields receive
+their PostgreSQL defaults.
 
 The class uses a convention of thin `_row_to_<model>` private methods to map result rows into typed dataclass instances from `src/models.py` (see [specs/models-and-state-machine](models-and-state-machine.md)). Update methods accept arbitrary `**kwargs` and build parameterized `SET` clauses dynamically, converting enum values to their `.value` string automatically.
 
@@ -554,6 +558,7 @@ There is no foreign key from `subject` to `projects(id)` — the column is also 
 | `description` | TEXT | NOT NULL | Full prompt/instructions for the agent |
 | `priority` | INTEGER | NOT NULL DEFAULT 100 | Lower number = higher priority |
 | `status` | TEXT | NOT NULL DEFAULT 'DEFINED' | See task state machine |
+| `held_batch_id` | TEXT | nullable, indexed by `ix_tasks_held_batch_id` | Independent ingestion admission hold; cleared by atomic batch release. Added by revision `a00000000100` |
 | `verification_type` | TEXT | NOT NULL DEFAULT 'auto_test' | One of: auto_test, qa_agent, human |
 | `retry_count` | INTEGER | NOT NULL DEFAULT 0 | How many times this task has been retried |
 | `max_retries` | INTEGER | NOT NULL DEFAULT 3 | |
@@ -604,10 +609,10 @@ Directed edge: "`task_id` depends on `depends_on_task_id`" (i.e., `depends_on_ta
 |---|---|---|---|
 | `task_id` | TEXT | NOT NULL REFERENCES tasks(id) | The waiting task |
 | `depends_on_task_id` | TEXT | NOT NULL REFERENCES tasks(id) | Must complete first |
-| `dep_type` | TEXT | NOT NULL DEFAULT `'blocks'` | Edge type: `blocks`, `parent-child`, `waits-for`, `conditional-blocks`, `discovered-from`, `related`, `duplicates`, `supersedes`. Part of the PK, so one pair of tasks may carry several differently-typed edges. |
+| `dep_type` | TEXT | NOT NULL DEFAULT `'blocks'` | Edge type: `blocks`, `parent-child`, `waits-for`, `conditional-blocks`, `delivery-of`, `discovered-from`, `related`, `duplicates`, `supersedes`. Part of the PK, so one pair of tasks may carry several differently-typed edges. `delivery-of` represents a landed delivery obligation independently of task completion. |
 | (composite PK) | | PRIMARY KEY (task_id, depends_on_task_id, dep_type) | No duplicate edges *of the same type* |
 | (check) | | CHECK (task_id != depends_on_task_id) | No self-dependencies |
-| (check) | | CHECK `ck_task_deps_dep_type` on `dep_type` | Only the eight known types |
+| (check) | | CHECK `ck_task_deps_dep_type` on `dep_type` | Only the nine known types |
 
 Partial unique index `uq_task_deps_single_parent` on `task_id` where
 `dep_type = 'parent-child'` (swarm-work-model §4): enforces exactly one
@@ -1374,12 +1379,93 @@ its tasks do not have real ids until the commit creates them.
 | `project_id` | TEXT | NOT NULL REFERENCES projects(id) | Owning project |
 | `source` | TEXT | NOT NULL | Provenance, e.g. `spec:projects/foo/specs/2026-08-21-thing.md`; stamped onto every task the commit creates |
 | `payload` | TEXT | NOT NULL | JSON: `tasks`, `edits`, `edges`, `remove_edges`, `comments`, validated `diff`, and committed `receipt`; legacy `expected` snapshots are ignored at commit; see [task change sets](../guides/task-change-sets.md) |
-| `status` | TEXT | NOT NULL DEFAULT 'draft' | CHECK `ck_task_proposals_status`: draft, ready, committed, discarded |
+| `status` | TEXT | NOT NULL DEFAULT 'draft' | CHECK `ck_task_proposals_status`: draft, ready, held, committed, discarded |
 | `created_at` | REAL | NOT NULL | Set on insert |
 | `updated_at` | REAL | NOT NULL | Set on insert and every update |
 
 Index: `idx_task_proposals_project_status` on (`project_id`, `status`) — the
 review surface lists pending proposals per project.
+
+### Table: `ingest_batches`
+
+Held ingestion batch identity and release evidence, added by revision `a00000000100`.
+The source approval identity is unique per project; the optional design lineage
+must be entirely present or entirely absent (`ck_ingest_batches_design_lineage`).
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `batch_id` | TEXT | PRIMARY KEY REFERENCES task_proposals(id) | Existing proposal identity |
+| `project_id` | TEXT | NOT NULL REFERENCES projects(id) | Owning project |
+| `source_review_id` | TEXT | NOT NULL | Immutable source review identity |
+| `source_revision` | INTEGER | NOT NULL | Approved source revision |
+| `source_content_sha256` | TEXT | NOT NULL | Approved content hash |
+| `decision_id` | TEXT | NOT NULL | Approval decision identity |
+| `design_review_id` | TEXT | nullable | Optional design ancestor review |
+| `design_revision` | INTEGER | nullable | Design ancestor revision |
+| `design_content_sha256` | TEXT | nullable | Design ancestor content hash |
+| `lineage_kind` | TEXT | NOT NULL, `ck_ingest_batches_lineage_kind` | `resolved` or `none` |
+| `idempotency_key` | TEXT | NOT NULL | Request replay identity |
+| `structure_revision` | INTEGER | NOT NULL DEFAULT 1 | Version of the proposed graph |
+| `structure_digest` | TEXT | NOT NULL | Canonical digest of that graph |
+| `state` | TEXT | NOT NULL DEFAULT 'held', `ck_ingest_batches_state` | `held`, `reviewing`, `needs_scope`, `released` or `retired` |
+| `check_results` | JSONB | nullable | Structural validation results |
+| `reviewer_task_id` | TEXT | nullable | Assigned fidelity reviewer task |
+| `reviewer_session_id` | TEXT | nullable | Reviewer session identity |
+| `reviewer_claim_epoch` | INTEGER | nullable | Reviewer claim fence |
+| `release_actor` | TEXT | nullable | Principal that released the batch |
+| `release_revision` | INTEGER | nullable | Released structure revision |
+| `release_digest` | TEXT | nullable | Released structure digest |
+| `released_at` | FLOAT | nullable | Release timestamp |
+| `release_receipt` | JSONB | nullable | Durable release evidence |
+| `created_at` | FLOAT | NOT NULL | Creation timestamp |
+| `updated_at` | FLOAT | NOT NULL | Last update timestamp |
+
+Unique constraint `uq_ingest_batches_source` covers (`project_id`,
+`source_review_id`, `source_revision`, `source_content_sha256`).
+
+### Table: `ingest_batch_members`
+
+Task membership and retirement history for an ingestion batch (revision
+`a00000000100`). Task identities are soft references so archival preserves the record.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `batch_id` | TEXT | PRIMARY KEY REFERENCES ingest_batches(batch_id) | Owning batch |
+| `task_id` | TEXT | PRIMARY KEY | Task identity, retained after archival |
+| `member_key` | TEXT | NOT NULL | Stable key within the batch |
+| `role` | TEXT | NOT NULL, `ck_ingest_batch_members_role` | `container`, `leaf` or `operational_root` |
+| `section_anchor` | TEXT | NOT NULL | Source section covered by this task |
+| `primary_outcome` | TEXT | NOT NULL | Intended task outcome |
+| `state` | TEXT | NOT NULL DEFAULT 'active', `ck_ingest_batch_members_state` | `active` or `retired` |
+| `retired_reason` | TEXT | nullable | Reason membership was retired |
+| `created_revision` | INTEGER | NOT NULL | Structure revision that introduced membership |
+| `retired_revision` | INTEGER | nullable | Structure revision that retired membership |
+
+Unique constraint `uq_ingest_batch_members_key` covers (`batch_id`, `member_key`).
+
+### Table: `ingest_batch_receipts`
+
+Fidelity review receipts bound to a batch's structure revision and digest
+(revision `a00000000100`). Reviewer identities survive task archival.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `receipt_id` | TEXT | PRIMARY KEY | Receipt identity |
+| `batch_id` | TEXT | NOT NULL REFERENCES ingest_batches(batch_id) | Reviewed batch |
+| `structure_revision` | INTEGER | NOT NULL | Reviewed structure version |
+| `structure_digest` | TEXT | NOT NULL | Reviewed graph digest |
+| `reviewer_task_id` | TEXT | NOT NULL | Reviewer task identity |
+| `reviewer_session_id` | TEXT | NOT NULL | Reviewer session identity |
+| `passing` | BOOLEAN | NOT NULL DEFAULT false | Whether the review passed |
+| `section_verdicts` | JSONB | NOT NULL | Verdict per source section |
+| `reverse_coverage_verdict` | TEXT | NOT NULL | Reverse coverage assessment |
+| `walkthrough_verdict` | TEXT | NOT NULL | Graph walkthrough assessment |
+| `structural_findings` | JSONB | NOT NULL | Structural review findings |
+| `created_at` | FLOAT | NOT NULL | Receipt timestamp |
+
+Partial unique index `uq_ingest_batch_receipts_passing` covers (`batch_id`,
+`structure_revision`) where `passing`: several failed receipts may be retained,
+but only one passing receipt exists for each structure revision.
 
 ### Table: `merge_slots`
 
@@ -2498,7 +2584,15 @@ default branch's exact head, when that head is train-produced or attested and
 its own trusted checks pass every failing name. The repair input pins the
 default ref, SHA, check names and provenance. Its ordinary filing dedup key
 (`repair:<batch-id>:sync-default-branch`) bounds sync to one task per batch across
-candidate generations, restarts and archival. The worker retains every frozen
+candidate generations, restarts and archival. Hierarchical frontier admission
+recognizes this key as well as the numeric ordinary repair key. The sync task
+must still be the deterministic filing for the batch's current allocation,
+with its exact repair input and managed branch reservation in the designated
+repository; it receives no canonical task origin. A released reservation or a
+mismatched batch, allocation, repository or branch does not authorize admission.
+Candidate observation restores a detached reservation only through the existing
+allocator recovery and fresh exact publication proof, without filing another
+task or refreshing an active writer's fence. The worker retains every frozen
 member, resolves source conflicts and regenerates generated files; publication
 still requires trusted checks and attestation on the repaired exact candidate.
 The train inspects the pinned merge without changing refs or resolving code,
@@ -2522,6 +2616,10 @@ target may never have run the required workflow, as with a hand-pushed `main`.
 Without a comparable baseline, candidate failures remain repairable. This does
 not satisfy any candidate check or change the trusted evidence needed to publish.
 Train status retains the baseline decision on both repair and re-request visits.
+Before classifying a red candidate, refresh the exact target's checks even when
+the cache has a final verdict. A rerun can supersede that verdict without moving
+the target SHA; a stale red must never suppress repair after the target turns green.
+An undecided target still receives a request before that refresh.
 
 ### Table: `integration_batch_members`
 
@@ -3580,6 +3678,16 @@ what makes a delivery sent — `idx_outbound_deliveries_due`
 | `last_error` | TEXT | nullable | Last dispatch error, if any |
 | `created_at` | REAL | NOT NULL | When the row was written |
 | `updated_at` | REAL | NOT NULL | Last state change |
+
+Revision 98 adds nullable ask-transport pins: `ask_id` (FK human_asks),
+`binding_id` (FK ask_external_bindings), `project_id` (FK projects),
+`decision_generation`, `display_version`, `mode_generation`, `root_generation`,
+`send_kind`, `write_started_at` and `attempt_token`. All foreign keys restrict
+deletion. `send_kind` is root, root_edit, reply, move_notice or redirect.
+`ck_outbound_deliveries_ask` requires the identity and generation pins for ask-owned
+rows; the ask, binding and mode indexes support scoped transport recovery.
+The upgrade creates missing foreign keys independently of column additions, so
+replaying an incomplete upgrade also restores references on existing columns.
 
 ### Table: `morning_reports`
 
@@ -4690,3 +4798,214 @@ actuals and the operation id; every other state carries no actuals
 | `provider_operation_id` | TEXT | nullable | Stable operation id, required once unknown or settled |
 | `created_at` | TIMESTAMPTZ | NOT NULL, DEFAULT now() | Reservation time |
 | `updated_at` | TIMESTAMPTZ | NOT NULL, DEFAULT now() | Last settlement time |
+
+## Human ask and decision ledgers (revision `a00000000091`)
+
+The ask ledger separates a human decision from its later application. Task and
+session identities in source packets remain soft references. Durable ask, review,
+discussion and operation evidence uses restrictive foreign keys; deleting an
+incident sets its discussion/action incident references to NULL and preserves that
+evidence. All timestamps below are FLOAT epoch seconds. JSON fields use JSONB.
+
+### Table: `human_asks`
+
+One canonical ask per `(project_id, source_kind, source_key)`, protected by
+`uq_human_asks_source`. The pending index covers project, next actor, decision state,
+creation time and id. Named checks bound identity lengths, versions, state values,
+severity and context size. Complete context requires a title, why, waiting effect
+and between one and twenty choices.
+
+| Columns | Type | Constraints / purpose |
+|---|---|---|
+| `id` | TEXT | PK; also unique with project_id |
+| `project_id` | TEXT | NOT NULL, FK projects.id, RESTRICT |
+| `source_kind`, `source_key` | TEXT | NOT NULL, canonical source identity |
+| `source_identity` | JSONB | NOT NULL, retained source identity |
+| `source_fingerprint`, `generation_fingerprint` | TEXT | NOT NULL, source and decision generation pins |
+| `feedback_version` | INTEGER | NOT NULL, DEFAULT 0, >= 0 |
+| `decision_generation`, `display_version` | INTEGER | NOT NULL, DEFAULT 1, >= 1 |
+| `context`, `audience`, `decider` | JSONB | NOT NULL, context, visibility and decision authority |
+| `logical_owner` | TEXT | NOT NULL, 1-512 characters |
+| `next_actor` | TEXT | DEFAULT human; human, agent or none |
+| `decision_state` | TEXT | DEFAULT pending; pending, approved, changes_requested, declined, withdrawn, superseded or answered |
+| `application_state` | TEXT | DEFAULT not_started; not_started, applying, applied, failed or unknown |
+| `context_state` | TEXT | DEFAULT complete; complete, context_needed or quarantined |
+| `severity` | TEXT | DEFAULT medium; critical, high, medium or low |
+| `created_at`, `updated_at` | FLOAT | NOT NULL |
+
+### Table: `ask_source_aliases`
+
+Maps legacy source handles to their canonical ask without discarding provenance.
+`fk_ask_source_aliases_ask` restricts deletion through the composite project/ask
+identity; `idx_ask_source_aliases_ask` supports reverse lookup.
+
+| Columns | Type | Constraints / purpose |
+|---|---|---|
+| `project_id`, `legacy_kind`, `legacy_id` | TEXT | Composite PK |
+| `ask_id` | TEXT | NOT NULL; composite FK with project_id to human_asks |
+| `source_generation` | INTEGER | NOT NULL, >= 1 |
+| `source_reference`, `provenance` | JSONB | NOT NULL, retained source and mapping evidence |
+| `created_at` | FLOAT | NOT NULL |
+
+### Table: `ask_decision_previews`
+
+A bounded preview packet pins the actor, source and feedback versions before a
+decision. `ck_ask_decision_previews_expiry` limits its lifetime to 600 seconds;
+the expiry index supports cleanup.
+
+| Columns | Type | Constraints / purpose |
+|---|---|---|
+| `id` | TEXT | PK |
+| `ask_id` | TEXT | NOT NULL, FK human_asks.id, RESTRICT |
+| `decision_generation`, `feedback_version` | INTEGER | NOT NULL, >= 1 and >= 0 respectively |
+| `actor_id`, `source_fingerprint`, `packet_sha256` | TEXT | NOT NULL, exact preview pins |
+| `input_id` | TEXT | Nullable durable input identity |
+| `packet` | JSONB | NOT NULL, retained decision packet |
+| `created_at`, `expires_at` | FLOAT | NOT NULL; creation < expiry <= creation + 600 |
+| `consumed_at` | FLOAT | Nullable, successful consumption time |
+
+### Table: `approved_document_snapshots`
+
+Retains approved document bytes when there is no review revision to pin. The
+`tr_approved_document_snapshots_immutable` trigger rejects UPDATE and DELETE on
+both fresh metadata and Alembic-created schemas.
+
+| Columns | Type | Constraints / purpose |
+|---|---|---|
+| `id` | TEXT | PK |
+| `project_id` | TEXT | NOT NULL, FK projects.id, RESTRICT |
+| `source_path`, `body_sha256` | TEXT | NOT NULL, original path and exact content hash |
+| `title` | TEXT | NOT NULL, 1-200 characters |
+| `body` | BYTEA | NOT NULL, at most 262144 bytes |
+| `spec_kind` | TEXT | NOT NULL, design or implementation |
+| `approval_provenance` | JSONB | NOT NULL, retained approval evidence |
+| `created_at` | FLOAT | NOT NULL |
+
+### Table: `ask_decisions`
+
+An immutable audit row for one decision generation. Unique constraints cover
+`(ask_id, decision_generation)` and `(ask_id, actor_id, idempotency_key)`; the
+history index orders by ask, creation time and id. `tr_ask_decisions_immutable`
+rejects UPDATE and DELETE. A document can pin either a review revision or an
+approved snapshot. Review id and revision must be supplied together.
+
+| Columns | Type | Constraints / purpose |
+|---|---|---|
+| `id` | TEXT | PK |
+| `ask_id` | TEXT | NOT NULL, FK human_asks.id, RESTRICT |
+| `decision_generation`, `feedback_version` | INTEGER | NOT NULL, >= 1 and >= 0 respectively |
+| `option_key`, `adapter`, `adapter_version`, `actor_id` | TEXT | NOT NULL, chosen adapter operation and actor |
+| `actor`, `packet` | JSONB | NOT NULL, actor evidence and exact decision packet |
+| `evidence_entry_id` | TEXT | NOT NULL, FK escalation_messages.id, RESTRICT |
+| `idempotency_key` | TEXT | NOT NULL, 1-512 characters |
+| `request_sha256`, `source_fingerprint`, `packet_sha256` | TEXT | NOT NULL, request and packet pins |
+| `review_id`, `review_revision` | TEXT, INTEGER | Nullable composite FK to doc_review_revisions, RESTRICT |
+| `content_sha256`, `attachment_manifest_sha256` | TEXT | Nullable review content and attachment pins |
+| `snapshot_id` | TEXT | Nullable FK approved_document_snapshots.id, RESTRICT |
+| `overall_note` | TEXT | NOT NULL, DEFAULT empty string, <= 16000 characters |
+| `accepted_dispositions` | JSONB | NOT NULL, DEFAULT [] |
+| `created_at` | FLOAT | NOT NULL |
+
+### Table: `review_feedback_obligations`
+
+Retains each accepted feedback obligation, unique per `(decision_id, feedback_key)`.
+The owner/progress index supports follow-up. Completed obligations require retained
+completion evidence (`ck_review_feedback_obligations_evidence`).
+
+| Columns | Type | Constraints / purpose |
+|---|---|---|
+| `id` | TEXT | PK |
+| `decision_id` | TEXT | NOT NULL, FK ask_decisions.id, RESTRICT |
+| `feedback_key` | TEXT | NOT NULL, identity within the decision |
+| `comment_id` | TEXT | Nullable FK doc_review_comments.id, RESTRICT |
+| `original_text`, `acceptance_text` | TEXT | NOT NULL, 1-16000 characters each |
+| `original_anchor`, `accepted_by` | JSONB | NOT NULL, original anchor and accepting actor |
+| `original_author`, `logical_owner` | TEXT | NOT NULL |
+| `original_revision` | INTEGER | Nullable source revision |
+| `disposition` | TEXT | NOT NULL; follow_up, fold_in, applied, no_change or withdrawn |
+| `required_before_release` | BOOLEAN | NOT NULL, DEFAULT false |
+| `operation_id` | TEXT | Nullable FK escalation_actions.id, RESTRICT |
+| `task_id` | TEXT | Nullable soft task reference |
+| `progress` | TEXT | DEFAULT pending; pending, filed, in_progress, completed or failed |
+| `completion_evidence` | JSONB | Nullable until completion |
+| `created_at`, `updated_at` | FLOAT | NOT NULL |
+
+### Table: `ask_reconciliation_cases`
+
+Retains conflicting source evidence for explicit repair, unique per project and
+conflict key. The owner index covers project, logical owner and status. Resolving a
+case requires a repair receipt (`ck_ask_reconciliation_cases_receipt`).
+
+| Columns | Type | Constraints / purpose |
+|---|---|---|
+| `id` | TEXT | PK |
+| `project_id` | TEXT | NOT NULL, FK projects.id, RESTRICT |
+| `conflict_key`, `logical_owner`, `reason` | TEXT | NOT NULL |
+| `source_evidence` | JSONB | NOT NULL, retained conflict evidence |
+| `affected_aliases`, `affected_deliveries` | JSONB | NOT NULL, DEFAULT [] |
+| `status` | TEXT | DEFAULT open; open or resolved |
+| `repair_receipt` | JSONB | Nullable until resolution |
+| `created_at`, `updated_at` | FLOAT | NOT NULL |
+
+Revision 91 also adds `feedback_version`, `decision_generation` and the restrictive
+`pending_decision_id` lock to `doc_reviews`; discussion provenance and responder
+dispositions to `doc_review_comments`; ask/input/version/entry-kind/reply references
+to `escalation_messages`; and ask decision, operation dependency, lease, retry and
+receipt fields to `escalation_actions`. Legacy incident action kinds remain valid.
+
+### Table: `human_communication_modes`
+
+Revision 93 records the communication mode and generation per project and
+destination. A migrated destination cannot return to legacy mode.
+
+| Columns | Type | Constraints / purpose |
+|---|---|---|
+| `project_id`, `destination` | TEXT | Composite PK; project FK projects.id, RESTRICT |
+| `generation` | INTEGER | NOT NULL, DEFAULT 1, > 0 |
+| `mode` | TEXT | NOT NULL, DEFAULT legacy; legacy, shadow, dashboard, transferring, channel or delivery_disabled |
+| `migrated` | BOOLEAN | NOT NULL, DEFAULT false; true requires a non-legacy mode |
+| `config_fingerprint` | TEXT | NOT NULL, destination configuration pin |
+| `compatibility_deadline` | FLOAT | Nullable end of compatibility window |
+| `inventory` | JSONB | NOT NULL, DEFAULT {}, cutover evidence |
+| `updated_at` | FLOAT | NOT NULL |
+
+### Table: `ask_external_bindings`
+
+Revision 93 binds an ask to its external root and retains transport receipts and
+display generations. A partial unique index permits one active binding per ask
+and destination. Root identity is unique per transport and channel; confirmed
+roots require both an external id and receipt. The project/ask composite FK
+prevents cross-project bindings, and the mode index supports destination scans.
+
+| Columns | Type | Constraints / purpose |
+|---|---|---|
+| `id` | TEXT | PK |
+| `ask_id`, `project_id` | TEXT | NOT NULL; ask FK human_asks.id and composite FK human_asks(project_id, id), RESTRICT |
+| `destination`, `guild_id`, `channel_id` | TEXT | NOT NULL, external destination |
+| `transport` | TEXT | NOT NULL, DEFAULT discord |
+| `mode_generation`, `root_generation` | INTEGER | NOT NULL, > 0; root generation DEFAULT 1 |
+| `external_root_id`, `legacy_thread_id` | TEXT | Nullable external references |
+| `alternate_roots` | JSONB | NOT NULL, DEFAULT [] |
+| `receipt` | JSONB | Nullable, required for confirmed roots |
+| `desired_display_version`, `applied_display_version` | INTEGER | NOT NULL, DEFAULT 1 and 0; > 0 and >= 0 respectively |
+| `root_state` | TEXT | NOT NULL, DEFAULT pending; pending, confirmed, unknown, missing or retired |
+| `active` | BOOLEAN | NOT NULL, DEFAULT true |
+| `inflight_id` | TEXT | Nullable durable external-write fence |
+| `created_at`, `updated_at` | FLOAT | NOT NULL |
+
+### Table: `ask_action_tokens`
+
+Revision 93 stores opaque, expiring button capabilities pinned to an ask, binding,
+root, audience and decision/display generations. Binding/display and expiry
+indexes support revocation and cleanup; token length is 20–80 characters and
+expiry must follow creation.
+
+| Columns | Type | Constraints / purpose |
+|---|---|---|
+| `token` | TEXT | PK |
+| `ask_id`, `binding_id` | TEXT | NOT NULL, FKs human_asks.id and ask_external_bindings.id, RESTRICT |
+| `decision_generation`, `feedback_version`, `display_version`, `mode_generation`, `root_generation` | INTEGER | NOT NULL, captured version pins |
+| `source_fingerprint`, `root_message_id`, `option_key` | TEXT | NOT NULL, source and action pins |
+| `audience` | JSONB | NOT NULL, authorized audience snapshot |
+| `created_at`, `expires_at` | FLOAT | NOT NULL |
+| `revoked_at` | FLOAT | Nullable revocation time |

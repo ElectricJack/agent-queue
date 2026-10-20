@@ -395,6 +395,66 @@ class OrdinaryRepairService:
             raise ValueError("ordinary repair input does not match filing identity")
         return value
 
+    async def resume_completed(
+        self, task_id: str, *, batch_id: str | None = None, attempt: int | None = None,
+    ) -> dict | None:
+        """Reseal a completed allocation for a fresh visit, never authorize delivery.
+
+        The completion timestamp makes replay idempotent, including a restart
+        between normal task completion and this handoff. A stale allocation or
+        an explicit pause/abort cannot change the batch.
+        """
+        from src.integration.batches import candidate_ref
+
+        original = await self.input(task_id)
+        archived_input = original is None
+        if archived_input and (batch_id is None or attempt is None
+                               or ordinary_repair_id(batch_id, attempt) != task_id):
+            return None
+        if archived_input:
+            # Archive removes task_context; ordinary filing identity and the
+            # archive's immutable origin/branch still bind this scheduling hint.
+            original = {"batch_id": batch_id, "attempt": attempt}
+        async with self.db.immediate() as conn:
+            batch = (await conn.execute(select(integration_batches).where(
+                integration_batches.c.id == original["batch_id"],
+            ).with_for_update())).mappings().one_or_none()
+            if (batch is None or batch["intent"] != "open"
+                    or batch["lifecycle"] in {"promoted", "aborted", "failed", "empty"}
+                    or batch["repair_attempt_count"] != original["attempt"]
+                    or (not archived_input and batch["repository_id"] != original["repository_id"])
+                    or (not archived_input and original["target_ref"] not in {
+                        candidate_ref(batch["id"]), batch["target_ref"]})):
+                return None
+            completed = None
+            for table in ((archived_tasks,) if archived_input else (tasks, archived_tasks)):
+                completed = (await conn.execute(select(
+                    table.c.status, table.c.updated_at, table.c.branch_name,
+                    table.c.created_by_kind, table.c.created_by_id, table.c.dedup_key,
+                ).where(table.c.id == task_id, table.c.project_id == batch["project_id"],
+                        table.c.repo_id == batch["repository_id"]))).mappings().one_or_none()
+                if completed is not None:
+                    break
+            if (completed is None or completed["status"] != "COMPLETED"
+                    or completed["updated_at"] <= batch["updated_at"]):
+                return None
+            if archived_input and (
+                completed["created_by_kind"] != "system"
+                or completed["created_by_id"] != batch["id"]
+                or completed["dedup_key"] not in {
+                    f"repair:{batch['id']}:{original['attempt']}",
+                    f"repair:{batch['id']}:sync-default-branch"}
+                or completed["branch_name"] not in {
+                    ref.removeprefix("refs/heads/") for ref in (
+                        candidate_ref(batch["id"]), batch["target_ref"]) if ref}
+            ):
+                return None
+            await conn.execute(update(integration_batches).where(
+                integration_batches.c.id == batch["id"],
+            ).values(lifecycle="sealed", updated_at=completed["updated_at"]))
+            return {"batch_id": batch["id"], "project_id": batch["project_id"],
+                    "repository_id": batch["repository_id"], "target_ref": batch["target_ref"]}
+
     @staticmethod
     def progress(start_sha: str | None, head_sha: str | None, *, green: bool) -> bool:
         from src.integration.git_truth import repair_progress

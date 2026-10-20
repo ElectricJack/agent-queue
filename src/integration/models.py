@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any, Literal
 
 from pydantic import (
@@ -121,6 +122,31 @@ class HostedCheckPolicy(BaseModel):
                     or len(set(checks)) != len(checks)):
                 raise ValueError("check sets must have nonempty names and distinct nonempty checks")
         return self
+
+
+def invalid_policy_producers(raw_policy: Any) -> list[dict[str, Any]]:
+    """Find invalid hosted producer IDs without invalidating frozen snapshots."""
+    if not isinstance(raw_policy, dict):
+        return []
+    invalid = []
+    for boundary in ("parent", "root"):
+        settings = raw_policy.get(boundary)
+        checks = settings.get("required_checks") if isinstance(settings, dict) else None
+        if not isinstance(checks, dict):
+            continue  # Structural policy validation owns missing check sets.
+        producer = checks.get("producer_id")
+        if not isinstance(producer, str) or re.fullmatch(r"[1-9][0-9]*", producer) is None:
+            invalid.append({"field": f"{boundary}.required_checks.producer_id",
+                            "producer_id": producer})
+    return invalid
+
+
+def validate_policy_producers(raw_policy: Any) -> None:
+    invalid = invalid_policy_producers(raw_policy)
+    if invalid:
+        fields = ", ".join(item["field"] for item in invalid)
+        raise ValueError(f"{fields} must be canonical positive decimal GitHub App IDs "
+                         "as strings (GitHub Actions: 15368)")
 
 
 class RepairPolicy(BaseModel):

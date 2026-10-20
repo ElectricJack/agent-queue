@@ -32,6 +32,7 @@ from src.integration.outbox import (
     RETRY_EXHAUSTED_PREFIX,
     UNSUBSCRIBED_EVENT_TYPES,
     enqueue_integration_event,
+    enqueue_batch_event,
     freeze_destination_manifest,
     load_acceptance_state,
 )
@@ -43,6 +44,41 @@ from src.playbooks.runtime import V2PlaybookRuntime
 
 
 NOW = 1_789_000_000.0
+
+
+@pytest.mark.parametrize("event_type", [
+    "batch.held", "batch.receipt_recorded", "batch.needs_scope", "batch.released",
+])
+async def test_batch_event_atomic_replay_and_consumer_requirement(db, event_type):
+    batch = {"project_id": "p", "batch_id": "b", "structure_revision": 2,
+             "structure_digest": "current", "reviewer_task_id": None,
+             "release_revision": 1, "release_digest": "released"}
+    with pytest.raises(RuntimeError, match="rollback"):
+        async with db.immediate() as conn:
+            await enqueue_batch_event(conn, batch, event_type, now=NOW)
+            raise RuntimeError("rollback")
+    assert not await _outbox_rows(db)
+    async with db.immediate() as conn:
+        event_id = await enqueue_batch_event(conn, batch, event_type, now=NOW)
+        assert await enqueue_batch_event(
+            conn, {**batch, "reviewer_task_id": "later-assignment"}, event_type, now=NOW,
+        ) == event_id
+    rows = await _outbox_rows(db)
+    assert len(rows) == 1
+    assert rows[0]["payload"]["reviewer_task_id"] is None
+    assert rows[0]["payload"]["structure_digest"] == (
+        "released" if event_type == "batch.released" else "current")
+
+    async def no_consumer(*args):
+        raise NoIntegrationEventConsumer("no matching policy")
+
+    outbox = IntegrationOutbox(db, no_consumer, clock=lambda: NOW)
+    assert await outbox.dispatch_due(NOW) == 0
+    row = (await _outbox_rows(db))[0]
+    assert (row["delivered_at"] is None) == (event_type in {"batch.held", "batch.receipt_recorded"})
+    outbox._accept_event = lambda *_args: asyncio.sleep(0, result=True)
+    await outbox.dispatch_due(NOW + 1)
+    assert (await _outbox_rows(db))[0]["delivered_at"] is not None
 
 
 @pytest.fixture
@@ -386,6 +422,34 @@ async def test_committed_event_survives_dispatcher_restart(db, tmp_path):
     assert row["delivered_at"] == NOW
     assert await _artifact_pin_rows(db) == []
     assert await _accepted_activation_count(db, "event-1") == 1
+
+
+@pytest.mark.parametrize("event_type", [
+    "batch.held", "batch.receipt_recorded", "batch.needs_scope", "batch.released",
+])
+async def test_batch_policy_acceptance_survives_restart_without_duplicate_run(db, tmp_path, event_type):
+    await _activate(db, tmp_path / "compiled", "batch-policy", event_type)
+    async with db.immediate() as conn:
+        event_id = await enqueue_batch_event(conn, {
+            "batch_id": "held-batch", "project_id": "p", "structure_revision": 1,
+            "structure_digest": "d" * 64, "reviewer_task_id": None,
+            "release_revision": 1, "release_digest": "d" * 64,
+        }, event_type, now=NOW)
+    first = _runtime(db, tmp_path / "compiled")
+    await first.refresh()
+    assert await first.accept_integration_event(
+        event_type, (await _outbox_rows(db))[0]["payload"], event_id,
+    )
+    # Lose the outbox acknowledgment, then replay against the durable consumer.
+    await first.shutdown()
+    restarted = _runtime(db, tmp_path / "compiled")
+    await restarted.refresh()
+    outbox = IntegrationOutbox(db, restarted.accept_integration_event, clock=lambda: NOW)
+    assert await outbox.dispatch_due(NOW) == 1
+    await _wait_for_accepted(db, event_id)
+    await _wait_for_pending_resolution(db, event_id)
+    assert await _accepted_activation_count(db, event_id) == 1
+    await restarted.shutdown()
 
 
 async def test_consumer_crash_after_acceptance_replays_one_activation(db, tmp_path):

@@ -152,13 +152,15 @@ def _install_run_env(monkeypatch, config, adapter):
 
 
 async def test_run_initializes_before_adapter_and_runs_degraded_after_login_failure(
-    monkeypatch, tmp_path, lifecycle_clock
+    monkeypatch, tmp_path, lifecycle_clock, caplog
 ):
     """Orchestrator initialization precedes adapter startup; a login failure
     degrades messaging instead of tearing the daemon down; shutdown closes
     the adapter and the orchestrator."""
     config = _postgres_config(tmp_path)
     monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "parent-session")
+    monkeypatch.setenv("CLAUDE_AUTOCOMPACT_PCT_OVERRIDE", "parent-compact-value")
+    monkeypatch.setenv("AQ_FUTURE_CONTROL", "parent-aq-value")
     adapter = _FakeAdapter([])
     events_ref, state = _install_run_env(monkeypatch, config, adapter)
     adapter.events = events_ref  # share the recorder installed by the env
@@ -175,6 +177,13 @@ async def test_run_initializes_before_adapter_and_runs_degraded_after_login_fail
     assert events_ref.index("first_cycle") < events_ref.index("adapter.close")
     assert "orch.shutdown" in events_ref
     assert "CLAUDE_CODE_SESSION_ID" not in os.environ
+    assert "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE" not in os.environ
+    assert "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE" in caplog.text
+    assert "AQ_FUTURE_CONTROL" in caplog.text
+    assert "parent-compact-value" not in caplog.text
+    assert "parent-aq-value" not in caplog.text
+    # Startup diagnostics must not remove the worker database fence.
+    assert os.environ["AQ_FUTURE_CONTROL"] == "parent-aq-value"
 
 
 async def test_run_never_creates_a_directory_from_the_database_url(monkeypatch, tmp_path):

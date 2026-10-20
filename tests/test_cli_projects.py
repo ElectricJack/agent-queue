@@ -478,3 +478,50 @@ def test_project_create_remote_flags_reach_server(runner, flag, value):
     assert args["private"] is True
     assert args["request_id"] == "widgets-create"
     assert "default_branch" not in args
+
+
+@pytest.mark.parametrize("apply", [False, True])
+def test_repository_checkout_repair_previews_by_default_and_emits_evidence(runner, apply):
+    from src.cli.app import cli
+
+    evidence = {"success": True, "preview": not apply, "changed": apply,
+                "before": {"source_path": "/missing"}, "after": {"source_path": "/live"}}
+    client = _client({"repair_repository_checkout": evidence})
+    argv = ["project", "repair-repository-checkout", "--project-id", "p",
+            "--repository-id", "repo", "--expected-path", "/missing",
+            "--replacement-path", "/live", "--reason", "Moved checkout", "--json"]
+    if apply:
+        argv.append("--apply")
+    with patch("src.cli.app._get_client", return_value=client):
+        result = runner.invoke(cli, argv)
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output)["data"] == evidence
+    expected_args = {
+        "project_id": "p", "repository_id": "repo", "expected_path": "/missing",
+        "replacement_path": "/live", "reason": "Moved checkout",
+    }
+    if apply:
+        expected_args["apply"] = True
+    client.execute.assert_awaited_once_with("repair_repository_checkout", expected_args)
+
+
+@pytest.mark.parametrize("apply", [False, True])
+def test_workspace_checkout_repair_previews_and_accepts_proof(runner, apply):
+    from src.cli.app import cli
+
+    evidence = {"success": True, "preview": not apply, "changed": apply, "proof": "digest",
+                "before": {"workspace_path": "/old"}, "after": {"workspace_path": "/live"}}
+    client = _client({"repair_workspace_checkout": evidence})
+    argv = ["project", "repair-workspace-checkout", "--project-id", "p", "--workspace-id", "base",
+            "--expected-path", "/old", "--replacement-path", "/live", "--reason", "Correct clone",
+            "--json"]
+    expected = dict(project_id="p", workspace_id="base", expected_path="/old",
+                    replacement_path="/live", reason="Correct clone")
+    if apply:
+        argv.extend(["--apply", "--expected-proof", "digest"])
+        expected.update(apply=True, expected_proof="digest")
+    with patch("src.cli.app._get_client", return_value=client):
+        result = runner.invoke(cli, argv)
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output)["data"] == evidence
+    client.execute.assert_awaited_once_with("repair_workspace_checkout", expected)

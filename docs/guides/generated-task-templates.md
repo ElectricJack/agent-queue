@@ -5,11 +5,13 @@ The default `data_dir` is `~/.agent-queue`. Initialization installs missing file
 operator edits survive upgrades. Source defaults are in `src/prompts/task_templates/`.
 
 Edit an installed file with the supervisor's granted file tools or an operator editor.
-For example, change `source-ci-repair.md`, preserving the fact placeholders you want
-displayed. The next repair task uses the edit immediately; no deployment, restart,
+For example, change `source-ci-reopen.md`, preserving the fact placeholders you want
+displayed. The next in-place repair uses the edit immediately; no deployment, restart,
 or profile reload is needed. Existing task descriptions remain snapshots.
 `root-pr-check-repair.md` can display the observed source SHA, base SHA, PR URL,
 policy generation, and failed checks with their test IDs.
+Historical `source-ci-repair.md` delegate instructions remain installed; new
+source-CI recovery uses `source-ci-reopen.md` without overwriting the old file.
 
 Templates are plain Markdown. `{{task_id}}` substitutes the corresponding fact.
 Only the variables listed below are available. Facts are inserted verbatim once,
@@ -88,7 +90,7 @@ wording does not display all of them.
 | `review-revision` | `src/commands/review_commands.py` | `review_id` |
 | `root-pr-check-repair` | `src/integration/root_pr_recovery.py` | `checks`, `policy_generation`, `pr_url`, `source_base_sha`, `source_sha` |
 | `source-ancestry-repair` | `src/integration/source_ancestry.py` | `branch`, `evidence_id`, `found`, `observation_details`, `pr_url`, `source_base`, `source_generation`, `source_head` |
-| `source-ci-repair` | `src/integration/source_ci.py` | `checks`, `policy_generation`, `source_base`, `source_branch`, `source_generation`, `source_head`, `source_pr_url`, `source_repository_id`, `state`, `task_id` |
+| `source-ci-reopen` | `src/integration/source_ci.py` | `checks`, `policy_generation`, `source_base`, `source_branch`, `source_generation`, `source_head`, `source_pr_url`, `source_repository_id`, `state`, `task_id` |
 | `train-ci-not-triggered` | `src/integration/train.py` | `candidate_ref`, `head`, `missing_push_reason`, `source` |
 | `train-conflict-batch-scope` | `src/integration/train.py` | None |
 | `train-conflict-carried` | `src/integration/train.py` | None |

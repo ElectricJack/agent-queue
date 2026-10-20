@@ -43,6 +43,7 @@ def frozen(name):
 
 def snapshot():
     return {
+        "needs_you": {"count": 0, "source_health": "healthy", "identity_hash": "empty"},
         "projects": [{"id": "p", "name": "Project P", "repo_default_branch": "main"}],
         "sources": {
             name: frozen(name)
@@ -528,7 +529,7 @@ async def test_db_frozen_sources_use_one_read_only_snapshot_and_half_open_bounds
     assert statements[0] == "SET TRANSACTION READ ONLY"
     assert len(connections) == 1
     assert all(
-        sql.startswith(("SELECT", "SET TRANSACTION", "SAVEPOINT", "RELEASE SAVEPOINT"))
+        sql.startswith(("SELECT", "WITH", "SET TRANSACTION", "SAVEPOINT", "RELEASE SAVEPOINT"))
         for sql in statements
     )
     for source in ("completions", "deliveries", "incidents", "escalations", "attempts", "reroutes"):

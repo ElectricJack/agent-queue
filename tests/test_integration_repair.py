@@ -2120,11 +2120,16 @@ async def _drained_parent_holder(db):
         epoch="epoch", instance_token="drained-instance", started_at=100.0,
         agent_id="drained-parent-agent",
     ))
+    await db.create_workspace(Workspace(
+        id="drained-parent-slot", project_id="p", workspace_path="/tmp/drained-parent",
+        source_type=RepoSourceType.LINK, locked_by_agent_id="drained-parent-agent",
+    ))
+    await db.update_task("parent", assigned_agent_id="drained-parent-agent")
     async with db.immediate() as conn:
         await db.record_holder(
             conn, session_id="stale-parent-holder", task_id="parent", claim_epoch=1,
             agent_id="drained-parent-agent", work_dir="/tmp/drained-parent", now=101.0,
-            agent_reserved=True,
+            agent_reserved=False,
         )
     assert await db.activate_claim("stale-parent-holder", "parent", epoch=1, now=102.0)
     assert (
@@ -2136,6 +2141,9 @@ async def _drained_parent_holder(db):
         "stale-parent-holder", state="stopped", desired_state="stopped",
         ended_at=120.0, end_reason="drained",
     )
+    # The recovery scenario begins after the stopped worker's unlocked
+    # workspace has retired, not before a registered claim ever existed.
+    await db.delete_workspace("drained-parent-slot")
 
 
 async def _stale_parent_noop(db, *, collector_fence=True):
@@ -2352,10 +2360,17 @@ async def test_transient_prepare_preserves_legacy_stage_attempts_and_fence(db, t
 
     _service, delegate = await _continuous_parent_stage(db)
     await _claimed_writer(db, delegate, epoch=1, live=True, sid="preparing-writer")
-    await db.update_session("preparing-writer", claim_phase="preparing", work_dir=str(tmp_path))
+    await db.create_agent(Agent(id="preparing-agent", name="Preparing", profile_id="repairer"))
+    await db.update_task(delegate, assigned_agent_id="preparing-agent")
+    await db.update_session("preparing-writer", agent_id="preparing-agent", work_dir=str(tmp_path))
     slot = Workspace(id="repair-slot", project_id="p", workspace_path=str(tmp_path),
-                     source_type=RepoSourceType.LINK, locked_by_task_id=delegate)
+                     source_type=RepoSourceType.LINK, locked_by_agent_id="preparing-agent")
     await db.create_workspace(slot)
+    async with db.immediate() as conn:
+        slot = await db.record_holder(
+            conn, session_id="preparing-writer", task_id=delegate, claim_epoch=1,
+            agent_id="preparing-agent", work_dir=str(tmp_path), now=101.0,
+        )
     target = BranchKey(repository_id="repo", branch="aq/parent")
     ownership = BranchOwnership(db)
     fence = ownership._fence(await ownership.get_owner(target))
@@ -5129,7 +5144,10 @@ async def test_debug_dossier_refreshes_exact_unpushed_commits_and_late_receipts(
         stop=AsyncMock(),
         confirm_stopped=AsyncMock(return_value=True),
     )
-    runtime = SimpleNamespace(
+    class Runtime(WorkspaceMixin, SimpleNamespace):
+        """Use the real cleanup proof before exercising retained writer handoff."""
+
+    runtime = Runtime(
         db=db,
         config=SimpleNamespace(),
         session_providers=SimpleNamespace(create=lambda *_args: provider),
@@ -5215,7 +5233,9 @@ async def test_debug_dossier_refreshes_exact_unpushed_commits_and_late_receipts(
     assert all(commit_sha in debug_task.description for commit_sha in exact_commits)
 
 
-async def _prepare_retained_debug_boundary(db, workspace_path: str, head_sha: str):
+async def _prepare_retained_debug_boundary(
+    db, workspace_path: str, head_sha: str, *, lifecycle: str = "task",
+):
     """Create an attached primary exactly at the debug handoff boundary."""
     from src.integration.repair import RepairService
 
@@ -5250,7 +5270,8 @@ async def _prepare_retained_debug_boundary(db, workspace_path: str, head_sha: st
             harness="fake",
             provider="fake",
             name="s-boundary-primary",
-            lifecycle="task",
+            lifecycle=lifecycle,
+            last_claim_epoch=1 if lifecycle == "pool" else None,
             state="running",
             work_dir=workspace_path,
             epoch="epoch",
@@ -5274,7 +5295,7 @@ async def _prepare_retained_debug_boundary(db, workspace_path: str, head_sha: st
         await conn.execute(
             update(tasks)
             .where(tasks.c.id == primary_task_id)
-            .values(status="IN_PROGRESS")
+            .values(status="IN_PROGRESS", claim_epoch=1 if lifecycle == "pool" else 0)
         )
         await conn.execute(
             update(integration_branch_owners)
@@ -5287,6 +5308,9 @@ async def _prepare_retained_debug_boundary(db, workspace_path: str, head_sha: st
         )
     await primary_service.record_result("operation", "failed-check", now=101.0)
     await primary_service.record_result("operation", "failed-check-2", now=102.0)
+    if lifecycle == "pool":
+        from src.claim_file import write_claim_file
+        write_claim_file(workspace_path, {"task_id": primary_task_id, "claim_epoch": 1})
     proof = {
         "session_id": "boundary-primary-session",
         "workspace_id": "boundary-workspace",
@@ -5378,8 +5402,13 @@ async def test_retained_dispatch_recovers_at_each_durable_boundary(
     assert (await db.get_task(primary_task_id)).status is TaskStatus.BLOCKED
 
 
+@pytest.mark.parametrize(("lifecycle", "protection"), [
+    (lifecycle, protection)
+    for lifecycle in ("task", "pool")
+    for protection in (None, "instance", "live", "foreign_task", "stage")
+] + [("pool", "epoch")])
 async def test_scheduler_launches_retained_debug_in_exact_workspace(
-    session_orch, tmp_path
+    session_orch, tmp_path, protection, lifecycle
 ):
     """The real scheduler preparation and launch attach the retained checkout."""
     from src.git.manager import GitManager
@@ -5436,7 +5465,7 @@ async def test_scheduler_launches_retained_debug_in_exact_workspace(
         (checkout / "untracked.txt").read_bytes(),
     )
     _primary_task_id, stopped = await _prepare_retained_debug_boundary(
-        db, str(checkout), retained_head
+        db, str(checkout), retained_head, lifecycle=lifecycle
     )
     debug = await RepairService(
         db,
@@ -5457,6 +5486,20 @@ async def test_scheduler_launches_retained_debug_in_exact_workspace(
                 materialized_at=1.0,
             )
         )
+    if protection == "instance":
+        await db.update_session("boundary-primary-session", instance_token="successor-instance")
+    elif protection == "epoch":
+        await db.update_session("boundary-primary-session", last_claim_epoch=2)
+    elif protection == "live":
+        await db.update_session("boundary-primary-session", desired_state="running")
+    elif protection == "foreign_task":
+        await db.update_workspace("boundary-workspace", locked_by_task_id="parent")
+    elif protection == "stage":
+        async with db.immediate() as conn:
+            await conn.execute(update(integration_repair_stages).where(
+                integration_repair_stages.c.operation_id == "operation",
+                integration_repair_stages.c.ordinal == 1,
+            ).values(retained_handoff={}))
     session_orch.git = GitManager()
     await session_orch._execute_task(
         AssignAction("debug-agent", debug_task_id, "p")
@@ -5466,6 +5509,19 @@ async def test_scheduler_launches_retained_debug_in_exact_workspace(
     owner = await BranchOwnership(db).get_owner(
         BranchKey(repository_id="repo", branch="aq/parent")
     )
+    if protection is not None:
+        assert session is None
+        assert not fake_provider(session_orch).starts
+        workspace = await db.get_workspace("boundary-workspace")
+        assert workspace.locked_by_agent_id is None
+        assert workspace.locked_by_task_id == (
+            "parent" if protection == "foreign_task" else debug_task_id
+        )
+        assert (
+            git("rev-parse", "HEAD"), git("ls-files", "--stage"),
+            (checkout / "tracked.txt").read_bytes(), (checkout / "untracked.txt").read_bytes(),
+        ) == before
+        return
     assert session is not None and session.state == "running"
     assert session.work_dir == str(checkout)
     assert owner["handoff_state"] == "attached"
@@ -5637,7 +5693,10 @@ async def test_retained_stop_proof_rejects_replaced_session_instance(db):
         stop=AsyncMock(),
         confirm_stopped=AsyncMock(side_effect=replace_instance),
     )
-    runtime = SimpleNamespace(
+    class Runtime(WorkspaceMixin, SimpleNamespace):
+        """Keep cleanup and stop proofs on the real workspace implementation."""
+
+    runtime = Runtime(
         db=db,
         config=SimpleNamespace(),
         session_providers=SimpleNamespace(create=lambda *_args: provider),
@@ -8036,6 +8095,77 @@ async def test_ordinary_repair_allocates_once_across_concurrent_visits_and_resta
     assert (await env.store.get("ordinary")).repair_attempt_count == 1
 
 
+@pytest.mark.parametrize("archived", [False, True])
+async def test_completed_ordinary_repair_reseals_once_and_recovers_on_visit(ordinary_env, archived):
+    from src.integration.train import TrainTarget
+    from src.integration.train_sources import DatabaseBatches
+
+    env = ordinary_env
+    result = await env.service.allocate("ordinary", target_ref=env.ref, head_sha=STARTING_SHA,
+                                       authorize=AsyncMock(return_value=True))
+    task_id = result["task_id"]
+    await env.db.update_task(task_id, status=TaskStatus.COMPLETED)
+    async with env.db.immediate() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == task_id).values(updated_at=2000))
+        await conn.execute(update(integration_batches).where(
+            integration_batches.c.id == "ordinary").values(lifecycle="repairing", updated_at=1000))
+    if archived:
+        await env.db.archive_task(task_id)
+    resumed = await asyncio.gather(*(env.service.resume_completed(
+        task_id, batch_id="ordinary", attempt=1) for _ in range(4)))
+    assert [row for row in resumed if row is not None] == [{
+        "batch_id": "ordinary", "project_id": "p", "repository_id": "repo",
+        "target_ref": "refs/heads/aq/epic"}]
+    original_members = await env.store.members("ordinary")
+    async with env.db._engine.connect() as conn:
+        row = (await conn.execute(select(integration_batches).where(
+            integration_batches.c.id == "ordinary"))).mappings().one()
+    assert (row["lifecycle"], row["updated_at"], row["repair_attempt_count"]) == ("sealed", 2000, 1)
+    # Simulate a close crash before the handoff and recover solely through selection.
+    async with env.db.immediate() as conn:
+        await conn.execute(update(integration_batches).where(
+            integration_batches.c.id == "ordinary").values(lifecycle="repairing", updated_at=1000))
+    target = TrainTarget("p", "repo", "refs/heads/aq/epic", kind="development")
+    batches = DatabaseBatches(env.db)
+    assert (await batches.current(target)).id == "ordinary"
+    async with env.db._engine.connect() as conn:
+        assert await conn.scalar(select(integration_batches.c.updated_at).where(
+            integration_batches.c.id == "ordinary")) == 1000  # Read/preview stays read-only.
+    selection = await batches.open_batch(
+        target, SimpleNamespace(error="fetch unavailable", target_oid=None),
+        SimpleNamespace(store=env.store))
+    assert selection.batch.id == "ordinary"
+    async with env.db._engine.connect() as conn:
+        assert await conn.scalar(select(integration_batches.c.updated_at).where(
+            integration_batches.c.id == "ordinary")) == 2000
+    assert await env.service.resume_completed(task_id) is None
+    assert await env.store.members("ordinary") == original_members
+
+
+@pytest.mark.parametrize("blocker", ["paused", "aborted", "promoted", "later_attempt", "READY", "FAILED"])
+async def test_completed_repair_handoff_preserves_intent_and_current_allocation(ordinary_env, blocker):
+    env = ordinary_env
+    result = await env.service.allocate("ordinary", target_ref=env.ref, head_sha=STARTING_SHA,
+                                       authorize=AsyncMock(return_value=True))
+    task_id = result["task_id"]
+    async with env.db.immediate() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == task_id).values(
+            status=blocker if blocker in {"READY", "FAILED"} else "COMPLETED", updated_at=2000))
+        changes = {"updated_at": 1000}
+        if blocker in {"paused", "aborted"}:
+            changes["intent"] = blocker
+        elif blocker == "promoted":
+            changes["lifecycle"] = blocker
+        elif blocker == "later_attempt":
+            changes["repair_attempt_count"] = 2
+        await conn.execute(update(integration_batches).where(
+            integration_batches.c.id == "ordinary").values(**changes))
+    assert await env.service.resume_completed(task_id) is None
+    async with env.db._engine.connect() as conn:
+        assert await conn.scalar(select(integration_batches.c.updated_at).where(
+            integration_batches.c.id == "ordinary")) == 1000
+
+
 async def test_ordinary_repair_is_filed_ahead_of_ordinary_work(ordinary_env):
     """A train repair holds the sealed batch, so it outranks the default priority.
 
@@ -8101,6 +8231,94 @@ async def test_ordinary_default_sync_is_bounded_across_restart_and_archival(ordi
         authorize=authorize,
     ))["outcome"] == "sync_exhausted"
     assert (await env.store.get("ordinary")).repair_attempt_count == 2
+
+
+@pytest.mark.parametrize("sync", [False, True])
+async def test_ordinary_allocated_repair_enters_hierarchy_frontier(ordinary_env, sync):
+    from src.database.queries.claim_queries import _frontier_where
+    from src.database.queries.hierarchy_queries import ProjectIntegrationMode
+
+    env = ordinary_env
+    decision = {"ref": "refs/heads/main", "sha": "c" * 40, "checks": ["unit"],
+                "provenance": "train_candidate"}
+    filed = await env.service.allocate(
+        "ordinary", target_ref=env.ref, head_sha=STARTING_SHA,
+        authorize=AsyncMock(return_value=True),
+        sync_default_branch=decision if sync else None,
+        policy=RepairPolicy(primary_seconds=1800, debug_intelligence_class="deep-high"),
+    )
+    assert filed["outcome"] == "filed"
+    task_id = filed["task_id"]
+    await env.db.update_task(task_id, status=TaskStatus.READY)
+    lease = await env.locks.get(env.target)
+    assert (lease.holder, lease.fence, lease.expires_at) == (task_id, 1, env.now + 480)
+    original = await env.service.input(task_id)
+    assert original["attempt"] == 1 and original["budget_seconds"] == 1800
+    async with env.db._engine.connect() as conn:
+        assert not (await conn.execute(select(task_branch_origins))).first()
+        assert not (await conn.execute(select(integration_repair_stages))).first()
+        for mode in (None, ProjectIntegrationMode(True, "repo")):
+            assert await conn.scalar(select(tasks.c.id).where(
+                tasks.c.id == task_id, _frontier_where("p", mode),
+            )) == task_id
+    assert await env.db.is_hierarchy_task_runnable(task_id)
+    assert await env.service.input(task_id) == original
+    assert (await env.store.get("ordinary")).repair_attempt_count == 1
+
+
+@pytest.mark.parametrize("invalid", [
+    "batch", "attempt", "dedup", "branch", "repository", "input", "lease", "other_writer",
+])
+async def test_ordinary_sync_frontier_requires_exact_allocation_and_reservation(
+    ordinary_env, invalid,
+):
+    from sqlalchemy import delete
+
+    from src.database.queries.claim_queries import _frontier_where
+    from src.database.queries.hierarchy_queries import ProjectIntegrationMode
+    from src.database.tables import task_context
+
+    env = ordinary_env
+    filed = await env.service.allocate(
+        "ordinary", target_ref=env.ref, head_sha=STARTING_SHA,
+        authorize=AsyncMock(return_value=True),
+        sync_default_branch={"ref": "refs/heads/main", "sha": "c" * 40},
+    )
+    task_id = filed["task_id"]
+    await env.db.update_task(task_id, status=TaskStatus.READY)
+    if invalid == "repository":
+        await env.db.create_repo(RepoConfig(
+            id="other", project_id="p", source_type=RepoSourceType.LINK,
+        ))
+        await env.db.update_task(task_id, repo_id="other")
+    if invalid in {"lease", "other_writer"}:
+        await env.locks.release((await env.locks.get(env.target)).grant())
+        if invalid == "other_writer":
+            await env.locks.acquire(env.target, "another-writer")
+    async with env.db.immediate() as conn:
+        if invalid == "batch":
+            await conn.execute(update(tasks).where(tasks.c.id == task_id).values(
+                created_by_id="other-batch",
+            ))
+        elif invalid == "attempt":
+            await conn.execute(update(integration_batches).where(
+                integration_batches.c.id == "ordinary",
+            ).values(repair_attempt_count=2))
+        elif invalid == "dedup":
+            await conn.execute(update(tasks).where(tasks.c.id == task_id).values(
+                dedup_key="repair:other-batch:sync-default-branch",
+            ))
+        elif invalid == "branch":
+            await conn.execute(update(tasks).where(tasks.c.id == task_id).values(
+                branch_name="aq/unrelated",
+            ))
+        elif invalid == "input":
+            await conn.execute(delete(task_context).where(task_context.c.id == task_id))
+        for mode in (None, ProjectIntegrationMode(True, "repo")):
+            assert await conn.scalar(select(tasks.c.id).where(
+                tasks.c.id == task_id, _frontier_where("p", mode),
+            )) is None
+    assert not await env.db.is_hierarchy_task_runnable(task_id)
 
 
 async def test_ordinary_repair_next_allocation_counts_once_and_has_no_ceiling(ordinary_env):
@@ -8171,17 +8389,21 @@ async def test_ordinary_repair_missing_completed_input_does_not_spend_a_successo
     assert (await env.store.get("ordinary")).repair_attempt_count == 1
 
 
+@pytest.mark.parametrize("sync", [False, True])
 @pytest.mark.parametrize("lost", ["released", "expired"])
 async def test_ordinary_repair_replay_restores_detached_reservation_without_allocation(
-    ordinary_env, lost,
+    ordinary_env, lost, sync,
 ):
     from src.database.queries.claim_queries import _frontier_where
     from src.database.queries.hierarchy_queries import ProjectIntegrationMode
     from src.integration.repair import OrdinaryRepairService
 
     env = ordinary_env
-    first = await env.service.allocate("ordinary", target_ref=env.ref, head_sha=STARTING_SHA,
-                                       authorize=AsyncMock(return_value=True), ttl_seconds=10)
+    first = await env.service.allocate(
+        "ordinary", target_ref=env.ref, head_sha=STARTING_SHA,
+        authorize=AsyncMock(return_value=True), ttl_seconds=10,
+        sync_default_branch={"ref": "refs/heads/main", "sha": "c" * 40} if sync else None,
+    )
     task_id = first["task_id"]
     await env.db.update_task(task_id, status=TaskStatus.READY)
     original = await env.service.input(task_id)
@@ -8193,8 +8415,10 @@ async def test_ordinary_repair_replay_restores_detached_reservation_without_allo
         env.now += 10
 
     restarted = OrdinaryRepairService(env.db, locks=env.locks, clock=lambda: env.now)
-    replay = await restarted.allocate("ordinary", target_ref=env.ref, head_sha="c" * 40,
-                                      authorize=AsyncMock(return_value=True))
+    replay = await restarted.recover_reservation(
+        "ordinary", target_ref=env.ref, head_sha="c" * 40,
+        authorize=AsyncMock(return_value=True),
+    )
     assert (replay["outcome"], replay["task_id"], replay["attempt_count"],
             replay["lease_expired"]) == ("exists", task_id, 1, False)
     lease = await env.locks.get(env.target)
@@ -8209,11 +8433,17 @@ async def test_ordinary_repair_replay_restores_detached_reservation_without_allo
         assert not (await conn.execute(select(integration_repair_stages))).first()
 
 
+@pytest.mark.parametrize("sync", [False, True])
 @pytest.mark.parametrize("status", [TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS])
-async def test_ordinary_repair_replay_never_regrants_claimed_expired_writer(ordinary_env, status):
+async def test_ordinary_repair_replay_never_regrants_claimed_expired_writer(
+    ordinary_env, status, sync,
+):
     env = ordinary_env
-    first = await env.service.allocate("ordinary", target_ref=env.ref, head_sha=STARTING_SHA,
-                                       authorize=AsyncMock(return_value=True), ttl_seconds=10)
+    first = await env.service.allocate(
+        "ordinary", target_ref=env.ref, head_sha=STARTING_SHA,
+        authorize=AsyncMock(return_value=True), ttl_seconds=10,
+        sync_default_branch={"ref": "refs/heads/main", "sha": "c" * 40} if sync else None,
+    )
     await env.db.update_task(first["task_id"], status=status)
     old = await env.locks.get(env.target)
     env.now += 10
@@ -8263,11 +8493,17 @@ async def test_ordinary_reservation_recovery_never_allocates_a_task(ordinary_env
     assert (await env.store.get("ordinary")).repair_attempt_count == before
 
 
+@pytest.mark.parametrize("sync", [False, True])
 @pytest.mark.parametrize("blocked_by", ["other_writer", "held", "unconfirmed", "target_changed"])
-async def test_ordinary_repair_reservation_recovery_honors_current_authority(ordinary_env, blocked_by):
+async def test_ordinary_repair_reservation_recovery_honors_current_authority(
+    ordinary_env, blocked_by, sync,
+):
     env = ordinary_env
-    first = await env.service.allocate("ordinary", target_ref=env.ref, head_sha=STARTING_SHA,
-                                       authorize=AsyncMock(return_value=True))
+    first = await env.service.allocate(
+        "ordinary", target_ref=env.ref, head_sha=STARTING_SHA,
+        authorize=AsyncMock(return_value=True),
+        sync_default_branch={"ref": "refs/heads/main", "sha": "c" * 40} if sync else None,
+    )
     await env.db.update_task(first["task_id"], status=TaskStatus.READY)
     old = (await env.locks.get(env.target)).grant()
     await env.locks.release(old)
@@ -8362,14 +8598,23 @@ async def test_ordinary_repair_green_beats_counter_and_expired_attached_writer(o
         assert not (await conn.execute(select(tasks))).first()
 
 
-async def test_ordinary_repair_claim_and_workspace_use_leased_ref_without_origin(ordinary_env):
+@pytest.mark.parametrize("sync", [False, True])
+@pytest.mark.parametrize("invalid_input", [None, "batch_id", "attempt", "repository_id", "target_ref"])
+async def test_ordinary_repair_claim_and_workspace_use_leased_ref_without_origin(
+    ordinary_env, sync, invalid_input,
+):
     from src.database.queries.claim_queries import _frontier_where
     from src.database.queries.hierarchy_queries import ProjectIntegrationMode
+    from src.database.tables import task_context
     from src.orchestrator.workspace import WorkspaceMixin
     from src.git.manager import RemoteRefResult, RemoteRefState
 
     env = ordinary_env
-    result = await env.service.allocate("ordinary", authorize=AsyncMock(return_value=True), target_ref=env.ref, head_sha=STARTING_SHA)
+    result = await env.service.allocate(
+        "ordinary", authorize=AsyncMock(return_value=True), target_ref=env.ref,
+        head_sha=STARTING_SHA,
+        sync_default_branch={"ref": "refs/heads/main", "sha": "e" * 40} if sync else None,
+    )
     await env.db.update_task(result["task_id"], status=TaskStatus.READY)
     task = await env.db.get_task(result["task_id"])
     async with env.db._engine.connect() as conn:
@@ -8382,6 +8627,20 @@ async def test_ordinary_repair_claim_and_workspace_use_leased_ref_without_origin
         als_remote_ref=AsyncMock(return_value=RemoteRefResult(RemoteRefState.PRESENT, oid="c" * 40)),
         ais_ancestor=AsyncMock(side_effect=AssertionError("moved head needs no old proof")),
     ))
+    if invalid_input:
+        original = await env.service.input(task.id)
+        original[invalid_input] = 2 if invalid_input == "attempt" else "other"
+        async with env.db.immediate() as conn:
+            await conn.execute(update(task_context).where(task_context.c.id == task.id).values(
+                content=json.dumps(original),
+            ))
+        lease = await env.locks.get(env.target)
+        with pytest.raises(ValueError):
+            await WorkspaceMixin._hierarchy_origin_and_fence(
+                stub, task, await env.db.get_project("p"),
+            )
+        assert await env.locks.get(env.target) == lease
+        return
     origin, fence, role = await WorkspaceMixin._hierarchy_origin_and_fence(
         stub, task, await env.db.get_project("p"))
     assert role == "repair" and fence.owner_id == task.id
@@ -8470,6 +8729,7 @@ async def test_ordinary_repair_close_uses_normal_published_completion(
         agent_id="ordinary-agent", claim_phase="active", last_claim_epoch=1,
         work_dir=str(checkout), epoch="epoch", instance_token="token", started_at=1))
     handler.orchestrator.git = GitManager()
+    handler.orchestrator.integration_train = SimpleNamespace(wake=MagicMock())
     handler.orchestrator._run_completion_pipeline = AsyncMock(
         side_effect=AssertionError("ordinary repair entered legacy completion pipeline"))
     handler.orchestrator.arelease_integration_writer_for_retry = AsyncMock(
@@ -8541,7 +8801,13 @@ async def test_ordinary_repair_close_uses_normal_published_completion(
     completion = await handler.db.get_task_completion(task_id)
     assert completion.outcome == "pass"
     assert head in completion.commits
+    handler.orchestrator.integration_train.wake.assert_called_once_with(
+        "p", "repo", "refs/heads/main")
     async with handler.db._engine.connect() as conn:
+        batch_row = (await conn.execute(select(integration_batches).where(
+            integration_batches.c.id == "ordinary"))).mappings().one()
+        assert batch_row["lifecycle"] == "sealed"
+        assert batch_row["updated_at"] > batch_row["created_at"]
         assert not (await conn.execute(select(integration_repair_operations))).first()
         assert not (await conn.execute(select(integration_promotion_intents))).first()
     assert (await service.locks.get(BranchKey(repository_id="repo", branch=ref))).holder is None

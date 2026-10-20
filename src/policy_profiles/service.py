@@ -1,4 +1,4 @@
-"""Explicit readers and writers for the six portable policy families.
+"""Explicit readers and writers for the portable policy families.
 
 Filesystem work runs on a thread from the command adapter. The service never
 reads a whole vault tree or serializes a project/profile/config object.
@@ -25,6 +25,7 @@ from src.policy_profiles.models import (
     CITestPolicy,
     DiffItem,
     Item,
+    IntegrationSettings,
     Placeholder,
     PlaybookPolicy,
     PromotionPolicy,
@@ -42,6 +43,10 @@ from src.policy_profiles.models import (
 )
 
 PLACEHOLDER = re.compile(r"\{\{\s*([a-z][a-z0-9_]*)\s*\}\}")
+# Filesystem roots, excluding URL routes such as /reports/:id and templated roots.
+ABSOLUTE_PATH = re.compile(
+    r'''(?<![\w:/}])/(?:home|Users|root|tmp|opt|srv|var|mnt|media|Volumes|data|usr|etc|workspace|workspaces)/[^\s`"'<>|;,()\[\]{}\\]+'''
+)
 TEST_FILES = {
     "selection_rules": ("tests/selection_rules.yaml", SelectionRules),
     "selection_areas": ("tests/selection_areas.yaml", SelectionAreas),
@@ -215,11 +220,12 @@ def _validate_setup_payload(payload) -> None:
 
 
 class PolicyFiles:
-    def __init__(self, vault: Path, project, workspace: str | None):
+    def __init__(self, vault: Path, project, workspace: str | None, *, integration=None):
         self.vault = vault.resolve()
         self.project = project
         self.project_root = contained(self.vault, f"projects/{project.id}")
         self.workspace = Path(workspace).resolve() if workspace else None
+        self.integration = integration
 
     def root(self, scope: str) -> Path:
         return self.project_root if scope == "project" else contained(self.vault, "system")
@@ -241,6 +247,7 @@ class PolicyFiles:
                 "intelligence_class",
                 "pool",
                 "project_settings",
+                "integration_settings",
             ):
                 directory = contained(self.root(scope), f"policy/{policy_type}")
                 for path in sorted(directory.glob("*.json")):
@@ -299,20 +306,29 @@ class PolicyFiles:
         return result
 
     def defaults(self) -> dict[str, str]:
+        from src.policy_profiles.integration import defaults
+
         return {
             "project_id": self.project.id,
             "repo": self.project.repo_url or "",
             "default_branch": self.project.repo_default_branch or "main",
             "workspace": str(self.workspace) if self.workspace else "",
+            "vault_root": str(self.vault),
+            "install_root": str(Path(__file__).resolve().parents[2]),
+            "home": str(Path.home()),
+            **defaults(self.integration),
         }
 
     def portable(self, items: list[Item], name: str | None) -> Bundle:
-        replacements = {value: "{{" + key + "}}" for key, value in self.defaults().items() if value}
+        replacements = {value: "{{" + key + "}}" for key, value in self.defaults().items()
+                        if value and not key.startswith("integration_")}
         # Additional branch names and absolute paths are declared, never kept
         # as defaults which would reveal source-project details.
         for entry in items:
-            if isinstance(entry.payload, PromotionPolicy):
-                for step in entry.payload.flow:
+            if isinstance(entry.payload, (PromotionPolicy, IntegrationSettings)):
+                flow = (entry.payload.flow if isinstance(entry.payload, PromotionPolicy)
+                        else entry.payload.promotion_flow)
+                for step in flow or []:
                     for field in ("source", "target"):
                         branch = step.get(field)
                         if isinstance(branch, str) and branch not in replacements:
@@ -321,11 +337,31 @@ class PolicyFiles:
                 for path in entry.payload.config.workspaces or []:
                     if Path(path).is_absolute() and path not in replacements:
                         replacements[path] = "{{path_" + str(len(replacements)) + "}}"
+            if isinstance(entry.payload, (PlaybookPolicy, IntegrationSettings)):
+                # Scan strings after known roots are replaced. Compiled excerpts
+                # and command inputs can contain paths absent from the source.
+                def collect(value):
+                    if isinstance(value, str):
+                        for path in ABSOLUTE_PATH.findall(transform(value, replacements)):
+                            if path not in replacements:
+                                replacements[path] = "{{path_" + str(len(replacements)) + "}}"
+                    elif isinstance(value, list):
+                        for child in value:
+                            collect(child)
+                    elif isinstance(value, dict):
+                        for child in value.values():
+                            collect(child)
+
+                collect(entry.payload.model_dump(mode="json"))
         portable = []
         used = set()
         for entry in items:
             validate_payload(entry.payload)
             data = transform(entry.payload.model_dump(mode="json"), replacements)
+            if entry.type == "integration_settings":
+                from src.policy_profiles.integration import portable as integration_portable
+
+                data = integration_portable(data)
             # Re-templating a playbook's source updates its digest. Recompilation
             # against the destination registry happens in document review.
             if entry.type == "playbook":
@@ -348,18 +384,35 @@ class PolicyFiles:
         )
 
     def materialize(
-        self, bundle: Bundle, values: dict[str, str], *, require_values: bool = True
+        self, bundle: Bundle, values: dict[str, str], *, require_values: bool = True,
+        selected_ids: set[str] | None = None,
     ) -> list[Item]:
         known = {placeholder.name for placeholder in bundle.placeholders}
         if set(values) - known:
             raise ValueError("values name undeclared placeholders")
         inputs = {**self.defaults(), **values}
-        missing = [key for key in known if not inputs.get(key)]
+        needed = set()
+        for entry in bundle.items:
+            if selected_ids is None or entry.id in selected_ids:
+                needed.update(PLACEHOLDER.findall(entry.payload.model_dump_json()))
+        missing = [key for key in needed & known if not inputs.get(key)]
         if missing and require_values:
             raise ValueError("fill placeholders: " + ", ".join(sorted(missing)))
 
         def fill(value):
             if isinstance(value, str):
+                match = PLACEHOLDER.fullmatch(value)
+                if (match and match[1] == "integration_ci_commands"
+                        and inputs.get(match[1])):
+                    return json.loads(inputs[match[1]])
+                if (match and match[1].startswith("integration_")
+                        and match[1].endswith("_checks_names") and inputs.get(match[1])):
+                    names = json.loads(inputs[match[1]])
+                    if not isinstance(names, list) or not names or not all(
+                        isinstance(name, str) and name.strip() for name in names
+                    ):
+                        raise ValueError(f"{match[1]} must be a nonempty JSON array of check names")
+                    return names
                 return PLACEHOLDER.sub(
                     lambda match: (
                         inputs.get(match[1]) or match[0] if match[1] in known else match[0]
@@ -380,7 +433,7 @@ class PolicyFiles:
 
                 data["artifact"]["source_hash"] = source_digest(data["source"])
             payload = PAYLOAD.validate_python(data)
-            if not missing:
+            if not missing and (selected_ids is None or entry.id in selected_ids):
                 validate_payload(payload)
             result.append(item(entry.name, entry.original_scope, payload))
         return result
@@ -492,9 +545,24 @@ class PolicyFiles:
             writes = self.writes(entry, scope)
             before = {str(path): path.read_text() if path.exists() else None for path in writes}
             after = {str(path): data.decode() for path, data in writes.items()}
+            if isinstance(entry.payload, IntegrationSettings) and scope == "project":
+                # The live row is authoritative. A retained draft is not proof
+                # that the integration settings still match it.
+                destination = f"project:{self.project.id}/integration-settings"
+                before = {destination: self.integration.model_dump(mode="json")
+                          if self.integration is not None else None}
+                after = {destination: entry.payload.model_dump(mode="json")}
+                if entry.payload.policy is None and self.integration is not None:
+                    # An absent policy leaves the existing policy in place;
+                    # configure does not support clearing a reviewed policy.
+                    after[destination]["policy"] = self.integration.policy
+                writes = {}
             current = (
                 checksum(before) if any(value is not None for value in before.values()) else None
             )
+            if isinstance(entry.payload, IntegrationSettings) and scope == "project":
+                current = checksum({"settings": before,
+                                    "generation": self.project.hierarchical_integration_generation})
             status = "identical" if before == after else "will overwrite" if current else "new"
             selected = not omitted and (
                 status != "will overwrite" or selection.overwrite and not no_overwrite
@@ -531,11 +599,13 @@ class PolicyFiles:
                     requires_scope_choice=entry.original_scope == "system",
                     current_checksum=current,
                     diff=diff,
-                    destinations=[str(path) for path in writes],
+                    destinations=list(after),
                     state="pending review"
                     if entry.type == "playbook"
                     else "system template"
                     if scope == "global"
+                    else "configure integration"
+                    if entry.type == "integration_settings"
                     else "pending configuration"
                     if entry.type in {"promotion_flow", "routing", "agent_settings",
                                       "intelligence_class", "pool", "project_settings"}

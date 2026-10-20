@@ -140,12 +140,12 @@ def message() -> None:
 @click.option("--to-id", default=None, help="Recipient id")
 @click.option("-b", "--body", required=True, help="Markdown message body")
 @click.option("-s", "--subject", default=None, help="Optional subject line")
-@click.option("--from-id", default="cli", help="Sender id (default: cli)")
+@click.option("--from-id", default=None, help="Explicit sender id (server validates ownership)")
 @click.option(
     "--from-kind",
-    default="user",
+    default=None,
     type=click.Choice(VALID_FROM_KINDS),
-    help="Sender kind (default: user)",
+    help="Explicit sender kind (default: authenticated session, or local user:cli)",
 )
 @click.option("--thread-id", default=None, help="Conversation grouping key")
 @click.option("--client-key", default=None, help="Collaboration send retry key (up to 128 characters)")
@@ -176,8 +176,8 @@ def message_send(
     to_id: str | None,
     body: str,
     subject: str | None,
-    from_id: str,
-    from_kind: str,
+    from_id: str | None,
+    from_kind: str | None,
     thread_id: str | None,
     client_key: str | None,
     claim_epoch: int | None,
@@ -194,11 +194,13 @@ def message_send(
 
     params: dict[str, Any] = {
         "body": body,
-        "from_kind": from_kind,
-        "from_id": from_id,
         "priority": priority,
         "archive_after_inject": archive_after_inject,
     }
+    if from_kind is not None:
+        params["from_kind"] = from_kind
+    if from_id is not None:
+        params["from_id"] = from_id
     if not fanout:
         params.update(to_kind=kind, to_id=ident)
     epoch = resolve_claim_epoch(claim_epoch)
