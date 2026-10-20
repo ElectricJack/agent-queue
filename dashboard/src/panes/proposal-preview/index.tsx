@@ -4,7 +4,8 @@ import "@xyflow/react/dist/style.css";
 import { ArrowPathIcon, DocumentTextIcon } from "@heroicons/react/24/outline";
 import type { PaneViewProps } from "../types";
 import type { ProposalPreviewArgs } from "./manifest";
-import { useApplyProposalDecision, usePrepareProposalDecision, useProposal, useProposalGate, type ProposalDecisionPreview } from "./hooks";
+import { useApplyProposalDecision, usePrepareProposalDecision, useProposal, useProposalGate, useIngestBatch, type ProposalDecisionPreview } from "./hooks";
+import BatchPanel from "./BatchPanel";
 import { layoutProposalGraph } from "./graph";
 import ProposalTaskNode from "./nodes";
 import { useShellPaneStore } from "../store";
@@ -44,13 +45,16 @@ function sourceSpecPath(source: string | undefined): string | undefined {
 
 export default function ProposalPreviewPane({
   args,
+  setArgs,
   close,
   setToolbar,
   setShortcuts,
 }: PaneViewProps<ProposalPreviewArgs>) {
   const proposalQ = useProposal(args.proposalId);
   const data = proposalQ.data;
-  const gateQ = useProposalGate(data?.project_id, args.proposalId);
+  const batchMode = !!args.batchProjectId || data?.status === "held";
+  const batchQ = useIngestBatch(args.batchProjectId ?? data?.project_id, args.proposalId, batchMode);
+  const gateQ = useProposalGate(batchMode ? undefined : data?.project_id, args.proposalId);
   const prepareDecision = usePrepareProposalDecision();
   const applyDecision = useApplyProposalDecision(args.proposalId);
   const pane = useShellPaneStore();
@@ -60,10 +64,18 @@ export default function ProposalPreviewPane({
   const [preview, setPreview] = useState<ProposalDecisionPreview | null>(null);
   const [mutationError, setMutationError] = useState<string | null>(null);
 
-  const specPath = sourceSpecPath(data?.source);
+  const specPath = sourceSpecPath(batchQ.data?.source ?? data?.source);
+
+  // Keep the batch address through a release event and a dashboard reload.
+  useEffect(() => {
+    if (data?.status === "held" && !args.batchProjectId) {
+      setArgs({ ...args, batchProjectId: data.project_id });
+    }
+  }, [data?.status, data?.project_id, args, setArgs]);
 
   const handleRefresh = () => {
     proposalQ.refetch();
+    if (batchMode) batchQ.refetch();
   };
 
   const handleViewSource = () => {
@@ -72,7 +84,7 @@ export default function ProposalPreviewPane({
   };
 
   async function handlePrepare(option_key: "approve" | "decline") {
-    if (!gateQ.gate) return;
+    if (batchMode || data?.status !== "ready" || !gateQ.gate) return;
     setMutationError(null);
     setPreview(null);
     try {
@@ -83,7 +95,7 @@ export default function ProposalPreviewPane({
   }
 
   async function handleConfirm() {
-    if (!preview) return;
+    if (batchMode || data?.status !== "ready" || !preview) return;
     setMutationError(null);
     try {
       await applyDecision.mutateAsync(preview);
@@ -112,14 +124,14 @@ export default function ProposalPreviewPane({
       },
     ]);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [setToolbar, specPath]);
+  }, [setToolbar, specPath, batchMode]);
 
   useEffect(() => {
     const status = data?.status;
     const bindings = [
       { key: "r", label: "Refresh", onFire: handleRefresh },
       { key: "s", label: "View spec source", onFire: handleViewSource },
-      ...(status === "ready"
+      ...(status === "ready" && !batchMode
         ? [
             { key: "a", label: "Approve", onFire: () => handlePrepare("approve") },
             {
@@ -132,7 +144,7 @@ export default function ProposalPreviewPane({
     ];
     setShortcuts(bindings);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [setShortcuts, data?.status, specPath, gateQ.gate]);
+  }, [setShortcuts, data?.status, specPath, gateQ.gate, batchMode]);
 
   const { nodes, edges } = useMemo(
     () => layoutProposalGraph(data?.tasks ?? [], data?.edges ?? []),
@@ -148,6 +160,14 @@ export default function ProposalPreviewPane({
     }
     return tasks;
   }, [data?.tasks, sortBy]);
+
+  if (batchMode) return <div className="h-full overflow-auto p-3 text-sm text-gray-200" data-testid="proposal-preview-pane">
+    {batchQ.isPending ? <p role="status">Loading fidelity review batch…</p>
+      : batchQ.isError || !batchQ.data ? <div role="alert">
+        <p>Could not load fidelity review batch.</p>
+        <button type="button" onClick={() => batchQ.refetch()}>Retry</button>
+      </div> : <BatchPanel batch={batchQ.data} />}
+  </div>;
 
   if (proposalQ.isPending) {
     return (

@@ -397,7 +397,16 @@ export interface ProposalStatusChangedEvent extends BaseEvent {
   event_type: "proposal.status_changed";
   project_id: string;
   proposal_id: string;
-  status: "committed" | "discarded";
+  status: "held" | "committed" | "discarded";
+}
+
+export interface BatchEvent extends BaseEvent {
+  event_type: "batch.held" | "batch.receipt_recorded" | "batch.needs_scope" | "batch.released";
+  project_id: string;
+  batch_id: string;
+  structure_revision: number;
+  structure_digest: string;
+  reviewer_task_id: string | null;
 }
 
 // --- Document review lifecycle ---
@@ -517,6 +526,7 @@ export type NotifyEvent =
   | AgentWaitingQuestionEvent
   | CommandInvokedEvent
   | ProposalStatusChangedEvent
+  | BatchEvent
   | ReviewSubmittedEvent
   | ReviewRevisedEvent
   | ReviewDecidedEvent

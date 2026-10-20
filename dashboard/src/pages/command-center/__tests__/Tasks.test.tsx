@@ -448,3 +448,19 @@ it("counts delivery-held work separately and filters it by the visible wait", ()
     mocks.tasks = original;
   }
 });
+
+it.each(["DEFINED", "IN_PROGRESS", "PAUSED", "READY"].flatMap((status) => ["", "24h"].map((window) => [status, window] as const)))
+  ("labels a held %s table row from canonical batch membership (window %s)", (status, window) => {
+  const original = mocks.tasks;
+  mocks.filters.window = window;
+  mocks.activityData = windowResponse([activityItem({ status })]);
+  mocks.tasks = [Object.assign({ ...original[0]!, status }, { held_batch: {
+    batch_id: "batch", state: "reviewing", structure_revision: 2,
+    source: "spec:approved", lineage: { lineage_kind: "none" },
+  } })];
+  try {
+    render(<Tasks />);
+    expect(screen.getByText("Held for fidelity review")).toBeInTheDocument();
+    expect(screen.queryByRole("combobox", { name: "Status for Fix checkout" })).toBeNull();
+  } finally { mocks.tasks = original; }
+});

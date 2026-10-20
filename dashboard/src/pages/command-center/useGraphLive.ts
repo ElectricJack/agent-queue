@@ -107,7 +107,7 @@ export function useGraphLive(projectIds: string[]) {
     // node arrives as agent.updated. Refetching the whole snapshot for every
     // session lifecycle frame multiplied the most expensive request the
     // dashboard makes (perf investigation 2026-09-04 §7).
-    const graphEvent = /^(task|agent|gate)\./.test(type) || (
+    const graphEvent = /^(task|agent|gate|batch)\./.test(type) || (
       type.startsWith("notify.") && !!task
     );
     if (!graphEvent) return;

@@ -41,6 +41,10 @@ import type { TaskDetailArgs } from "./manifest";
 import { useReviews } from "../../api/reviews";
 import { taskPreview } from "./preview";
 import { prefetchTaskPane } from "./prefetch";
+import { useShellPaneStore } from "../store";
+import { isIngestHeld, statusPillFor } from "../../pages/command-center/statusPillModel";
+import { StatusPill } from "../../pages/command-center/StatusPill";
+import { Evidence } from "../proposal-preview/BatchPanel";
 
 /** One row of the deliverables checklist, verdict included. */
 type DeliverableRow = { id: string; kind: string; target: string; met: boolean; reason: string };
@@ -97,6 +101,7 @@ export interface TaskDetailBodyProps {
  */
 export default function TaskDetailBody({ taskId, onOpenTask, onClose, onLeave = onClose, fromTaskPane = false, host }: TaskDetailBodyProps) {
   const queryClient = useQueryClient();
+  const pane = useShellPaneStore();
   const { data: task, isError } = useTask(taskId);
   useEffect(() => prefetchTaskPane(queryClient, taskId), [queryClient, taskId]);
   const { data: taskReviews } = useReviews({ taskId });
@@ -243,7 +248,7 @@ export default function TaskDetailBody({ taskId, onOpenTask, onClose, onLeave = 
           {task?.title ?? preview?.title ?? "Loading…"}
         </h2>
         <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
-          {task?.delivery_status && !rolledState(task, task.delivery_status) ? (
+          {task && isIngestHeld(task.held_batch) ? <StatusPill model={statusPillFor({ status: task.status ?? "", held_batch: task.held_batch })} /> : task?.delivery_status && !rolledState(task, task.delivery_status) ? (
             <EpicStatus delivery={task.delivery_status} status={task.status} />
           ) : (
             status && <TaskDisplayStatus task={task ?? { status, display_state: preview?.display_state, display_reason: preview?.display_reason }} />
@@ -278,6 +283,28 @@ export default function TaskDetailBody({ taskId, onOpenTask, onClose, onLeave = 
         </div>
         {task && <EpicActivitySummary task={task} />}
       </header>
+
+      {task?.held_batch && <section aria-label="Ingestion batch" className="space-y-2 rounded border border-gray-800 p-3 text-xs text-gray-300">
+        <h3 className="font-semibold">{isIngestHeld(task.held_batch) ? "Held for fidelity review" : `Ingestion batch · ${task.held_batch.state}`}</h3>
+        <p className="break-words">Source: {task.held_batch.source} · Structure revision {task.held_batch.structure_revision}</p>
+        <p>Reviewer: {task.held_batch.reviewer_task_id ? <button type="button" className="text-indigo-300 hover:underline"
+          onClick={() => onOpenTask(task.held_batch!.reviewer_task_id!)}>{task.held_batch.reviewer_task_id}</button> : "Not assigned"}</p>
+        <Evidence label={`Design lineage${task.held_batch.lineage.lineage_kind === "none" ? ": none" : ""}`} value={task.held_batch.lineage} />
+        <button type="button" className="text-indigo-300 hover:underline" onClick={() => pane.open("proposal-preview", {
+          proposalId: task.held_batch!.batch_id, batchProjectId: task.project_id,
+        })}>View batch review and release evidence</button>
+      </section>}
+
+      {task && (task.delivery_condition || task.depends_on?.some((dep) => dep.dep_type === "delivery-of")) && <section aria-label="Operational delivery condition" className="space-y-2 rounded border border-gray-800 p-3 text-xs text-gray-300">
+        <h3 className="font-semibold">Delivery condition</h3>
+        <p>Starts after these sources have landed. Completion alone does not satisfy delivery.</p>
+        <Evidence label="Recorded delivery condition" value={task.delivery_condition} />
+        {task.depends_on?.filter((dep) => dep.dep_type === "delivery-of").map((dep) => <div key={dep.id}>
+          <button type="button" className="text-indigo-300 hover:underline" onClick={() => onOpenTask(dep.id)}>{dep.title} ({dep.id})</button>
+          {dep.reason && <p>{dep.reason}</p>}
+        </div>)}
+        <p>Owner: {task.assigned_agent ?? "Unassigned"}</p>
+      </section>}
 
       {task && <TaskActions task={task} returnTo={location.pathname + location.search} onDeleted={onClose} onOpenTerminal={onLeave} />}
 

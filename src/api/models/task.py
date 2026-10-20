@@ -283,6 +283,7 @@ class TaskDetail(TaskDisplayFields):
     reroute: TaskReroute | None = None
     provider_hold: ProviderHoldDetail | None = None
     held_batch: HeldBatchSummary | None = None
+    delivery_condition: dict[str, Any] | None = None
     # Mandatory routing (spec 2026-09-28 §3): who wrote ``profile_id``
     # (unrouted | router | override | role | legacy), the filer's
     # intelligence-class hint, and the router's record of the route.  Set by
