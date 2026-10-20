@@ -9681,7 +9681,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:80ae10f07dc32be5d22fbf4bdd0a39849d73f136c5d7a208f2b2da0093454ad2",
+      "digest": "sha256:6d3f0d8bcc314e182b03f1c884ab54ecc9a013c89d3d4ca98902aa70ef7049b8",
       "imports": [
         "src.commands",
         "src.commands.integration_commands",
@@ -9694,6 +9694,7 @@
         "src.database.tables",
         "src.doctor.integration_checks",
         "src.doctor.models",
+        "src.event_bus",
         "src.git.github_contracts",
         "src.git.manager",
         "src.integration",
@@ -9723,6 +9724,7 @@
         "src.integration.root_pull_requests",
         "src.integration.runtime_contracts",
         "src.integration.selection_metrics",
+        "src.integration.service",
         "src.integration.source_repairs",
         "src.integration.stacked_branches",
         "src.integration.status",
