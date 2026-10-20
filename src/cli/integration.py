@@ -655,6 +655,8 @@ def integration_authorize_root(
 
 @integration.command("redrive-child")
 @click.argument("task_id")
+@click.option("--adopt-source", is_flag=True,
+              help="Retain a missing completion source after verifying its published head.")
 @click.option(
     "--apply", is_flag=True, help="Advance the child into assembly; default is a dry run."
 )
@@ -669,6 +671,7 @@ def integration_authorize_root(
 def integration_redrive_child(
     ctx: click.Context,
     task_id: str,
+    adopt_source: bool,
     apply: bool,
     expected_head_sha: str | None,
     reason: str | None,
@@ -681,11 +684,16 @@ def integration_redrive_child(
     child's origin base) and answers `would_advance`, `nothing_to_redrive`,
     `blocked` or `not_eligible` with the reason and the head.  `--apply` needs
     that head and a reason: it records approved evidence for exactly that head
-    and queues the parent's collection.
+    and queues the parent's collection. In Git-first mode delivery belongs to
+    the train. Use --adopt-source to preview retaining an older leaf's missing
+    completion source; --apply --head and --reason retain that exact generation
+    without granting review or declaring delivery.
     """
     if apply and not (expected_head_sha and reason):
         raise click.UsageError("--apply requires --head and --reason")
     args: dict[str, Any] = {"task_id": task_id, "dry_run": not apply}
+    if adopt_source:
+        args["adopt_source"] = True
     if expected_head_sha is not None:
         args["expected_head_sha"] = expected_head_sha
     if reason is not None:
