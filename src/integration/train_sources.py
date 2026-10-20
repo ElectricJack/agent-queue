@@ -433,16 +433,49 @@ class DatabaseTargets:
                 tasks.c.status == "COMPLETED",
             ))).scalars().all()
             closed_epics = await _epic_branches_on(conn, completed)
+            independent = set(closed_epics) - set(pending)
+            completed_aggregates = set((await conn.execute(select(
+                task_completion_records.c.task_id,
+            ).where(task_completion_records.c.task_id.in_(independent)))).scalars())
+            legacy_containers = independent - completed_aggregates
+            children: dict[str, set[str]] = {}
+            for child_id, parent_id in (await conn.execute(select(
+                tasks.c.id, tasks.c.parent_task_id,
+            ).where(tasks.c.parent_task_id.in_(legacy_containers)))).all():
+                children.setdefault(parent_id, set()).add(child_id)
         delivered = set()
+        contained_epics = set()
         observed = None
         if pending or closed_epics:
             try:
                 async with asyncio.timeout(self.probe_timeout_seconds):
                     observed = await self.snapshot(self.db, root)
                     delivered = await project_delivered(
-                        self.db, pending, project_id=project_id, repository_id=repository_id,
+                        self.db, sorted(set(pending) | set(closed_epics) |
+                                        {child for ids in children.values() for child in ids}),
+                        project_id=project_id, repository_id=repository_id,
                         target_ref=default, snapshot=observed,
                     )
+                    if observed is not None and not observed.error and observed.target_oid:
+                        # Legacy containers can lack their own completion even
+                        # though every child and their private tip reached the
+                        # root. Preserve that proof; unknown child delivery or
+                        # ancestry must retain the independent aggregate visit.
+                        provenance = GitProvenance(
+                            observed.observation.git, observed.observation.store,
+                            repository_url=observed.observation.repository_url,
+                        )
+                        for task_id in sorted(legacy_containers):
+                            if not children.get(task_id, set()) <= delivered:
+                                continue
+                            head = observed.for_target(_branch(closed_epics[task_id])).target_oid
+                            if head is None:
+                                continue
+                            facts = observed.truth._pair(observed.observation, head)
+                            if facts.ancestor is None:
+                                facts.ancestor = await provenance.ancestor(head, observed.target_oid)
+                            if facts.ancestor:
+                                contained_epics.add(task_id)
             except (TimeoutError, GitError, OSError):
                 logger.warning("integration root discovery probe unavailable for %s", root.key)
         retired = set()
@@ -474,6 +507,12 @@ class DatabaseTargets:
                     if task_id not in delivered and
                     (target.project_id, target.repository_id) == (project_id, repository_id))
         refs.update(_branch(branch) for task_id, branch in epics.items() if task_id not in delivered)
+        # Settlement is implementation bookkeeping, not aggregate verification.
+        # A completed root has no parent whose pending children could rediscover
+        # its lane. Keep its own visit even after origins have retired; ordinary
+        # readiness still refuses missing source identity instead of inventing it.
+        refs.update(_branch(branch) for task_id, branch in closed_epics.items()
+                    if task_id not in delivered and task_id not in contained_epics)
         refs.update(promotions)
         refs -= retired
         return [root if ref == default else promotions.get(ref) or

@@ -1190,6 +1190,7 @@ def _disposition(row, archived, branch, head, wip, rule, reason) -> dict[str, An
         "task_id": row["id"],
         "project_id": row["project_id"],
         "archived": archived,
+        "root": row["parent_task_id"] is None,
         "branch": branch,
         "head": head,
         "wip": wip,

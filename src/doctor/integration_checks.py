@@ -205,12 +205,17 @@ async def _check_completed_undelivered(ctx: DoctorContext) -> CheckResult:
     stranded = [e for e in entries if not e["accounted"] and e["rule"] != "unknown"]
     accounted = [e for e in entries if e["accounted"]]
     unknown = [e for e in entries if e["rule"] == "unknown"] + inventory["unavailable"]
+    # Accounting explains why a branch remains; it does not establish root
+    # delivery. In particular a queued PR/batch must not hide a completed root.
+    roots = [e for e in entries if e.get("root") and not e["archived"]
+             and not e["wip"] and e["rule"] != "unknown"]
     by_rule: dict[str, int] = {}
     for entry in entries:
         by_rule[entry["rule"]] = by_rule.get(entry["rule"], 0) + 1
     data = {
         "stranded": stranded[:100], "accounted": accounted[:100], "unknown": unknown[:100],
         "by_rule": dict(sorted(by_rule.items())), "projects": inventory["projects"],
+        "undelivered_roots": roots[:100],
     }
     if stranded:
         return CheckResult(
@@ -220,6 +225,16 @@ async def _check_completed_undelivered(ctx: DoctorContext) -> CheckResult:
                 "cannot reach, and nothing on record will deliver or retire them — e.g. "
                 f"{_describe_completed(stranded[0])}. Settle it: {stranded[0]['remedy']}"
             ),
+            data=data,
+        )
+    if roots:
+        first = roots[0]
+        return CheckResult(
+            id=check_id, severity=Severity.WARN,
+            detail=f"{len(roots)} COMPLETED root branch(es) are not contained in the default "
+                   f"branch — e.g. {_describe_completed(first)}. Inspect "
+                   f"`aq integration redrive-root {first['task_id']}`; implementation "
+                   "completion does not establish delivery",
             data=data,
         )
     detail = "no COMPLETED task branch holds work that nothing will deliver or retire"

@@ -383,7 +383,7 @@ async def test_redrive_reports_a_leaf_whose_close_recorded_no_head(db):
     assert "origin base" in result["reason"]
 
 
-async def test_redrive_leaves_an_unverified_epic_to_its_parent_integration(db):
+async def test_redrive_directs_an_unverified_root_to_the_train(db):
     await _root(db, "e1")
     async with db.immediate() as conn:
         await conn.execute(
@@ -399,6 +399,9 @@ async def test_redrive_leaves_an_unverified_epic_to_its_parent_integration(db):
     assert result["outcome"] == "blocked"
     assert result["kind"] == "parent"
     assert "aggregate verification" in result["reason"]
+    assert "integration train" in result["reason"]
+    assert "aq integration reverify-epic e1" in result["reason"]
+    assert "parent integration run" not in result["reason"]
     git.bind_github_repository.assert_not_awaited()
 
 

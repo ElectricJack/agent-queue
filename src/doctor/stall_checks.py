@@ -500,11 +500,15 @@ async def _completed_undelivered_findings(
         _finding(
             "completed_undelivered", entry["project_id"],
             f"{entry['task_id']} is COMPLETED but {entry['branch']} holds work the default "
-            f"branch cannot reach: {entry['reason']}; {entry['remedy']}",
+            f"branch cannot reach: {entry['reason']}; "
+            f"{entry['remedy'] or 'aq integration redrive-root ' + entry['task_id']}",
             **{key: value for key, value in entry.items() if key != "project_id"},
         )
         for entry in inventory["entries"]
-        if not entry["accounted"] and entry["rule"] != "unknown"
+        if entry["rule"] != "unknown" and (
+            not entry["accounted"]
+            or entry.get("root") and not entry["archived"] and not entry["wip"]
+        )
     ]
 
 
