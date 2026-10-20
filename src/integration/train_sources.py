@@ -42,7 +42,7 @@ from src.database.tables import (
     tasks,
 )
 from src.git.github_contracts import GitHubAccessError
-from src.git.manager import GitError, is_valid_git_oid
+from src.git.manager import GitError, RemoteRefState, is_valid_git_oid
 from src.integration.batches import (
     Batch,
     BatchMember,
@@ -382,9 +382,11 @@ class DatabaseTargets:
         self.snapshot = snapshot
         self.probe_timeout_seconds = probe_timeout_seconds
         self.flow_problems = flow_problems
+        self.retired_targets: set[tuple[str, str, str]] = set()
 
     async def targets(self, now: float) -> list[TrainTarget]:
         found: dict[tuple[str, str, str], TrainTarget] = {}
+        self.retired_targets.clear()
         async with self.db._engine.connect() as conn:
             rows = (await conn.execute(
                 select(projects.c.id, projects.c.hierarchical_integration_mode,
@@ -425,8 +427,15 @@ class DatabaseTargets:
             epics = await _epic_branches_on(conn, pending)
             batches = (await conn.execute(
                 _open_batch_rows(project_id, repository_id))).mappings().all()
+            completed = (await conn.execute(select(tasks.c.id).where(
+                tasks.c.project_id == project_id,
+                or_(tasks.c.repo_id == repository_id, tasks.c.repo_id.is_(None)),
+                tasks.c.status == "COMPLETED",
+            ))).scalars().all()
+            closed_epics = await _epic_branches_on(conn, completed)
         delivered = set()
-        if pending:
+        observed = None
+        if pending or closed_epics:
             try:
                 async with asyncio.timeout(self.probe_timeout_seconds):
                     observed = await self.snapshot(self.db, root)
@@ -436,12 +445,37 @@ class DatabaseTargets:
                     )
             except (TimeoutError, GitError, OSError):
                 logger.warning("integration root discovery probe unavailable for %s", root.key)
+        retired = set()
+        closed_refs = {_branch(branch) for branch in closed_epics.values()}
+        if closed_refs and observed is not None:
+            if (observed.error in {None, "target_ref_missing"}
+                    and not observed.observation.acquisition_error):
+                retired = {ref for ref in closed_refs if
+                           observed.for_target(ref).error == "target_ref_missing"}
+            else:
+                # Ref retirement needs no object bodies. On acquisition failure,
+                # a bounded independent remote read can still establish absence.
+                try:
+                    async with asyncio.timeout(self.probe_timeout_seconds):
+                        remote = await observed.observation.git.als_remote_refs(
+                            observed.observation.store, sorted(closed_refs),
+                            repository_url=observed.observation.repository_url,
+                        )
+                    retired = {ref for ref, result in remote.items()
+                               if result.state is RemoteRefState.ABSENT}
+                except (TimeoutError, GitError, OSError):
+                    pass
+        # A frozen batch still needs its recovery diagnostics, even if its
+        # container has since completed or its remote target disappeared.
+        retired -= {default, *promotions, *(batch["target_ref"] for batch in batches)}
+        self.retired_targets.update((project_id, repository_id, ref) for ref in retired)
         refs = {default, *(batch["target_ref"] for batch in batches)}
         refs.update(target.target_ref for task_id, target in routed.items()
                     if task_id not in delivered and
                     (target.project_id, target.repository_id) == (project_id, repository_id))
         refs.update(_branch(branch) for task_id, branch in epics.items() if task_id not in delivered)
         refs.update(promotions)
+        refs -= retired
         return [root if ref == default else promotions.get(ref) or
                 TrainTarget(project_id, repository_id, ref, "epic") for ref in sorted(refs)]
 

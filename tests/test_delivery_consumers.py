@@ -23,7 +23,7 @@ from sqlalchemy import insert, update
 
 from src.database.queries.hierarchy_queries import HierarchyError
 from src.database.tables import events, projects, tasks
-from src.git.manager import GitManager
+from src.git.manager import GitError, GitManager
 from src.integration.delivery_observer import DeliveryObserver
 from src.integration.delivery_truth import DeliveryState
 from src.integration.development import DevelopmentPrimitives
@@ -985,7 +985,7 @@ async def test_missing_target_fetch_warms_peers_but_decisions_refetch_it(world, 
                                 truth=GitTruth(transport))
     missing = DeliveryTarget("p", "r", origin.url, "refs/heads/absent")
     observer.truth.snapshot = AsyncMock(wraps=observer.truth.snapshot)
-    assert (await observer.snapshot(missing)).observation.error == "missing_target"
+    assert (await observer.snapshot(missing)).observation.error == "target_ref_missing"
     observer.truth.snapshot.assert_awaited_once()
     warm = await observer.observe(["done"], max_age=30, cached_only=True)
     # A fetched peer ref warms its observation, but diagnostics cannot build
@@ -996,10 +996,34 @@ async def test_missing_target_fetch_warms_peers_but_decisions_refetch_it(world, 
     warm = await observer.observe(["done"], max_age=30, cached_only=True)
     assert warm.satisfied("done")
     assert (await observer.snapshot(missing, max_age=30, cached_only=True)
-            ).observation.error == "missing_target"
+            ).observation.error == "target_ref_missing"
     observer.truth.snapshot.assert_awaited_once()
-    assert (await observer.snapshot(missing, max_age=30)).observation.error == "missing_target"
+    assert (await observer.snapshot(missing, max_age=30)).observation.error == "target_ref_missing"
     assert observer.truth.snapshot.await_count == 2
+
+
+async def test_integrity_absence_never_replaces_a_peer_with_an_incomplete_inventory(world, tmp_path):
+    from src.integration.delivery_observer import DeliveryTarget, _for_target
+    from src.integration.git_truth import GitTruth
+
+    db, origin, _observer, _service = world
+    transport = GitManager()
+    observer = DeliveryObserver(db, git=transport, data_dir=tmp_path / "incomplete-inventory",
+                                truth=GitTruth(transport))
+    main = DeliveryTarget("p", "r", origin.url, "refs/heads/main")
+    missing = DeliveryTarget("p", "r", origin.url, "refs/heads/absent")
+    assert (await observer.snapshot(main)).target_oid
+    warm = observer._recent[main]
+    failure = "retained Git object integrity is unavailable"
+    transport.afetch_origin = AsyncMock(side_effect=GitError(failure))
+    absent = (await observer.snapshot(missing)).observation
+    assert absent.error == "target_ref_missing"
+    assert absent.acquisition_error == "snapshot_git_error: " + failure
+    assert observer._recent[main] is warm
+    peer = _for_target(absent, main)
+    assert peer.error == "snapshot_git_error: " + failure
+    assert peer.target_oid is None
+    assert _for_target(peer, missing).error == "target_ref_missing"
 
 
 async def test_frontier_cache_uncertainty_preserves_known_delivery_exclusions(world, tmp_path):
@@ -1491,7 +1515,7 @@ class ControlledFetches:
         oid = heads.get("refs/remotes/origin/" + target_ref.removeprefix("refs/heads/"))
         return DeliverySnapshot(git, str(store), project_id, repository_id, repository_url,
                                 target_ref, oid, MappingProxyType(heads),
-                                None if oid else "missing_target")
+                                None if oid else "target_ref_missing")
 
 
 def oid(n: int) -> str:
@@ -1607,7 +1631,7 @@ async def test_one_observation_covers_other_refs_of_the_same_repository(shared_s
     assert fetches.count == 1
     assert (main.target_ref, main.target_oid, main.error) == ("refs/heads/main", oid(1), None)
     assert (epic.target_ref, epic.target_oid, epic.error) == ("refs/heads/aq/epic", oid(101), None)
-    assert (absent.target_oid, absent.error) == (None, "missing_target")
+    assert (absent.target_oid, absent.error) == (None, "target_ref_missing")
     # A name its own fetch would have rejected stays unknown, never "missing".
     for refused in (malformed, tag):
         assert refused.target_oid is None
@@ -1650,11 +1674,11 @@ async def test_moved_and_vanished_refs_are_seen_by_the_observation_after_them(sh
     fetches.release(2)
     assert (await held).target_oid == oid(2)
     # The vanished ref's cached evidence is retired by the covering fetch.
-    assert observer._recent[x][1].error == "missing_target"
+    assert observer._recent[x][1].error == "target_ref_missing"
     await fetches.started[3].wait()
     fetches.release(3)
-    assert ((await moved).target_oid, (await moved).error) == (None, "missing_target")
-    assert (await observer.snapshot(x, max_age=30, cached_only=True)).error == "missing_target"
+    assert ((await moved).target_oid, (await moved).error) == (None, "target_ref_missing")
+    assert (await observer.snapshot(x, max_age=30, cached_only=True)).error == "target_ref_missing"
     assert fetches.count == 3
 
 
@@ -1678,7 +1702,7 @@ async def test_failed_observation_is_unknown_for_every_joiner_until_recovery(
     assert fetches.count == 1
     for result in results:
         assert result.target_oid is None
-        assert result.error not in {None, "missing_target"}
+        assert result.error not in {None, "target_ref_missing"}
     assert observer._recent == {}
     fetches.release(2)
     recovered = await observer.snapshot(_target("refs/heads/aq/epic"))

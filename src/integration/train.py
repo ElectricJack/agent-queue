@@ -507,6 +507,11 @@ class IntegrationTrain:
         async with self._tick_lock:
             started, running, deferred = [], [], []
             targets = [target] if target is not None else await self.targets.targets(now)
+            if target is None:
+                for key in getattr(self.targets, "retired_targets", ()):
+                    lane = self._lanes.get(key)
+                    if lane is not None and (lane.task is None or lane.task.done()):
+                        del self._lanes[key]
             occupied: dict[str, int] = {}
             for key, lane in self._lanes.items():
                 if lane.task is not None and not lane.task.done():

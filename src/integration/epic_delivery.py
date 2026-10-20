@@ -596,7 +596,7 @@ _UNPROVEN_REASONS = {
     "missing_or_ambiguous_source": (
         "git could not locate an exact source for this completion"
     ),
-    "missing_target": "{target} does not exist, so nothing can be delivered to it",
+    "target_ref_missing": "{target} does not exist, so nothing can be delivered to it",
 }
 
 

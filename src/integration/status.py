@@ -722,12 +722,22 @@ class IntegrationStatusService:
                 project_id, repository.id, default))
             async with self.db._engine.connect() as conn:
                 child = tasks.alias("status_epic_child")
-                ids = (await conn.execute(select(tasks.c.id).where(
+                epics_on = (await conn.execute(select(
+                    tasks.c.id, tasks.c.status, tasks.c.branch_name,
+                ).where(
                     tasks.c.project_id == project_id, tasks.c.repo_id == repository.id,
                     tasks.c.branch_name.is_not(None),
                     select(child.c.id).where(child.c.parent_task_id == tasks.c.id).exists(),
-                ).order_by(tasks.c.id))).scalars().all()
-            for task_id in ids:
+                ).order_by(tasks.c.id))).all()
+            retired = getattr(getattr(self.train, "targets", None), "retired_targets", ())
+            open_refs = {batch["target_ref"] for batch in batches}
+            for task_id, task_status, branch in epics_on:
+                ref = "refs/heads/" + branch.removeprefix("refs/heads/")
+                absent = (observed is not None and
+                          observed.for_target(ref).error == "target_ref_missing")
+                if (task_status == "COMPLETED" and ref not in open_refs and
+                        (absent or (project_id, repository.id, ref) in retired)):
+                    continue
                 try:
                     if observed is None:
                         raise ValueError("default branch cannot be observed")
