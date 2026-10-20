@@ -14,7 +14,7 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/integration.py`](../../../src/commands/contracts/integration.py) |
-| Contract fingerprint | `sha256:65ca2cdc9adbce9094826d88b8471f542899a0d77379bc3eca535983c14e83a5` |
+| Contract fingerprint | `sha256:bb0ba01c7f653433f0735de81f5a3589444481c9174995a5e628887dca8f9334` |
 
 ## Parameters
 
@@ -24,6 +24,7 @@
 | `owner_row_id` | `string \| null` | no | `null` | — |
 | `dry_run` | `boolean` | no | `true` | — |
 | `no_push` | `boolean` | no | `false` | — |
+| `self_owned` | `boolean` | no | `false` | — |
 
 ## Result
 
