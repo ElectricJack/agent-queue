@@ -309,6 +309,23 @@ must not target a reused PID, and cleanup removes `daemon.pid` only while it sti
 names that child. A daemon that becomes healthy during diagnostics proceeds through
 the usual post-start readiness checks.
 
+HTTP requests and command dispatches emit timing diagnostics: DEBUG for fast
+completion and WARNING at one second or more. HTTP logs use registered route
+templates and the request ID, include authentication/dispatch time, and measure
+only the handshake for SSE and WebSocket streams. Timing logs remain available
+when performance metric collection is disabled. Command logs separate dispatch
+from the awaited `command.invoked` event delivery, so a completed handler followed
+by a slow subscriber is visible. Slow database query and pool-checkout logs carry
+the current request/command context and duration; pool logs also report occupancy.
+They never include SQL text, bind values, request bodies or credentials. Failed
+queries are observed as well as successful queries.
+
+Task detail and dependency reads batch related task rows in groups of up to 900
+IDs rather than acquiring a connection per edge. Edge types, reasons, provenance,
+and live task statuses retain their existing meanings. A single READY task
+read scopes prerequisite observation to that task, avoiding a project-wide Git
+evidence pass while retaining the same cached-evidence eligibility rules.
+
 ### 4.2 `--brief` lite projections
 
 `--brief` trims each entity to a fixed projection so agents can list cheaply:

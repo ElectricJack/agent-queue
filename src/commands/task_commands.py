@@ -3645,6 +3645,21 @@ class TaskCommandsMixin:
             report["spec"] = graph.spec
         return report
 
+    async def _task_dependency_rows(
+        self, task_id: str,
+    ) -> tuple[list[dict], set[str], dict[str, Task]]:
+        """Load related tasks in batches rather than one transaction per edge."""
+        edges = await self.db.get_typed_dependencies_detailed(task_id)
+        dependents = await self.db.get_dependents(task_id)
+        ids = sorted({edge["depends_on_task_id"] for edge in edges} | set(dependents))
+        related = {}
+        for start in range(0, len(ids), 900):
+            related.update({
+                task.id: task
+                for task in await self.db.list_tasks(task_ids=ids[start:start + 900])
+            })
+        return edges, dependents, related
+
     async def _cmd_get_task(self, args: dict) -> dict:
         context = await self._fidelity_read_context("get_task", args)
         if context is not None and "error" in context:
@@ -3727,13 +3742,13 @@ class TaskCommandsMixin:
         info["completion"] = asdict(completion) if completion else None
 
         # Dependency visualization: show what this task depends on and blocks
-        typed_edges = await self.db.get_typed_dependencies_detailed(task.id)
+        typed_edges, dependents, related = await self._task_dependency_rows(task.id)
         blocking_edges = [edge for edge in typed_edges if edge["dep_type"] in BLOCKING_DEP_TYPES]
         if blocking_edges:
             dep_details = []
             for edge in blocking_edges:
                 dep_id = edge["depends_on_task_id"]
-                dep_task = await self.db.get_task(dep_id)
+                dep_task = related.get(dep_id)
                 if dep_task:
                     dep_details.append(
                         {
@@ -3746,11 +3761,10 @@ class TaskCommandsMixin:
                     )
             info["depends_on"] = dep_details
 
-        dependents = await self.db.get_dependents(task.id)
         if dependents:
             dep_details = []
-            for dep_id in dependents:
-                dep_task = await self.db.get_task(dep_id)
+            for dep_id in sorted(dependents):
+                dep_task = related.get(dep_id)
                 if dep_task:
                     dep_details.append(
                         {
@@ -3829,12 +3843,12 @@ class TaskCommandsMixin:
 
         # Upstream: what this task depends on
         depends_on: list[dict] = []
-        detailed_edges = await self.db.get_typed_dependencies_detailed(task.id)
+        detailed_edges, dependent_ids, related = await self._task_dependency_rows(task.id)
         for edge in detailed_edges:
             if edge["dep_type"] not in BLOCKING_DEP_TYPES:
                 continue
             dep_id = edge["depends_on_task_id"]
-            dep_task = await self.db.get_task(dep_id)
+            dep_task = related.get(dep_id)
             if dep_task:
                 depends_on.append(
                     {
@@ -3847,10 +3861,9 @@ class TaskCommandsMixin:
                 )
 
         # Downstream: what this task blocks
-        dependent_ids = await self.db.get_dependents(task.id)
         blocks: list[dict] = []
         for dep_id in sorted(dependent_ids):
-            dep_task = await self.db.get_task(dep_id)
+            dep_task = related.get(dep_id)
             if dep_task:
                 blocks.append(
                     {
@@ -3868,7 +3881,7 @@ class TaskCommandsMixin:
             dep_type = edge["dep_type"]
             if dep_type in BLOCKING_DEP_TYPES:
                 continue
-            origin = await self.db.get_task(dep_id)
+            origin = related.get(dep_id)
             if origin is None:
                 continue
             provenance.append(
