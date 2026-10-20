@@ -34,6 +34,55 @@ def integration() -> None:
     """Inspect integration Subjects and apply current recovery proofs."""
 
 
+@integration.command("supersede-completion")
+@click.argument("task_id")
+@click.option("--project", "project_id", required=True)
+@click.option("--subject", "subject_id", required=True)
+@click.option("--expected-version", required=True, type=click.IntRange(min=0))
+@click.option("--expected-claim-epoch", required=True, type=click.IntRange(min=0))
+@click.option("--completion", "completion_id", required=True)
+@click.option("--head", "expected_head_sha", required=True, help="Exact retained source OID.")
+@click.option("--human-reply", "human_reply_id", required=True,
+              help="Original verified escalation reply, bound to this task.")
+@click.option("--reason", required=True, help="Interpretation of the human supersession directive.")
+@click.option("--proof", "expected_proof_sha256", help="SHA256 returned by preview.")
+@click.option("--apply/--dry-run", default=False, help="Settle this Subject and close obsolete.")
+@click.pass_context
+@_handle_errors
+def integration_supersede_completion(ctx, task_id, project_id, subject_id, expected_version,
+                                    expected_claim_epoch, completion_id, expected_head_sha,
+                                    human_reply_id, reason, expected_proof_sha256, apply):
+    """Retire one superseded passing root without invoking its stale close pipeline.
+
+    Local operator or live owning supervisor only. Preview preserves all rows;
+    apply rechecks the exact source, episode, owner and stopped writer proofs.
+    """
+    if apply and not expected_proof_sha256:
+        raise click.UsageError("--apply requires --proof SHA256 returned by preview")
+    _execute(ctx, "integration_supersede_completion", {
+        "task_id": task_id, "project_id": project_id, "subject_id": subject_id,
+        "expected_version": expected_version, "expected_claim_epoch": expected_claim_epoch,
+        "completion_id": completion_id, "expected_head_sha": expected_head_sha,
+        "human_reply_id": human_reply_id, "reason": reason,
+        "expected_proof_sha256": expected_proof_sha256, "dry_run": not apply,
+    })
+
+
+@integration.command("off")
+@click.argument("project_id")
+@click.option("--reason", required=True)
+@click.option("--apply/--dry-run", default=False)
+@click.option("--expected-plan-digest")
+@click.pass_context
+@_handle_errors
+def integration_off(ctx, project_id, reason, apply, expected_plan_digest):
+    """Preview manual mode while preserving frozen work and sources."""
+    if apply and not expected_plan_digest:
+        raise click.UsageError("--apply requires --expected-plan-digest from preview")
+    _execute(ctx, "integration_off", {"project_id": project_id, "reason": reason,
+             "dry_run": not apply, "expected_plan_digest": expected_plan_digest})
+
+
 @integration.command("migrate-provenance-refs")
 @click.argument("project_id")
 @click.option("--apply/--dry-run", default=False, help="Copy verified refs, then delete old heads.")
@@ -201,6 +250,23 @@ def integration_abort_batch(ctx, batch_id, reason, apply):
     })
 
 
+@integration.command("settle-batch")
+@click.argument("batch_id")
+@click.option("--target-sha", "expected_target_sha", help="Exact target SHA returned by preview.")
+@click.option("--reason", default="", help="Required explanation when settling.")
+@click.option("--apply", is_flag=True, help="Settle proven delivery; default is preview.")
+@click.pass_context
+@_handle_errors
+def integration_settle_batch(ctx, batch_id, expected_target_sha, reason, apply):
+    """Preview or settle BATCH_ID whose frozen inputs already reached its target."""
+    if apply and (not expected_target_sha or not reason.strip()):
+        raise click.UsageError("--apply requires --target-sha and --reason")
+    _execute(ctx, "integration_settle_batch", {
+        "batch_id": batch_id, "expected_target_sha": expected_target_sha,
+        "reason": reason, "dry_run": not apply,
+    })
+
+
 @integration.command("refresh-epic")
 @click.option("--task", "task_id", required=True, help="Epic whose branch needs the default branch.")
 @click.option("--apply", is_flag=True, help="Start or advance the attested refresh; default is preview.")
@@ -209,6 +275,23 @@ def integration_abort_batch(ctx, batch_id, reason, apply):
 def integration_refresh_epic(ctx, task_id, apply):
     """Preview or refresh an epic; pending checks/repairs continue through the train."""
     _execute(ctx, "integration_refresh_epic", {"task_id": task_id, "dry_run": not apply})
+
+
+@integration.command("reverify-epic")
+@click.argument("task_id")
+@click.option("--head", "expected_head_sha", default=None, help="Exact head returned by preview.")
+@click.option("--reason", default="", help="Reason for requesting aggregate verification.")
+@click.option("--apply", is_flag=True, help="Request a bounded train visit; default is preview.")
+@click.pass_context
+@_handle_errors
+def integration_reverify_epic(ctx, task_id, expected_head_sha, reason, apply):
+    """Preview or re-trigger a completed epic's guarded aggregate verification."""
+    if apply and (not expected_head_sha or not reason.strip()):
+        raise click.UsageError("--apply requires --head and --reason")
+    _execute(ctx, "integration_reverify_epic", {
+        "task_id": task_id, "expected_head_sha": expected_head_sha,
+        "reason": reason, "dry_run": not apply,
+    })
 
 
 @integration.command("retire-origin")
@@ -355,15 +438,18 @@ def integration_reevaluate_repair(ctx, operation_id, apply, head, episode, gener
 @click.option("--task-id")
 @click.option("--owner-row-id")
 @click.option("--dry-run", is_flag=True)
+@click.option("--apply", is_flag=True, help="Preserve work and release the proved stopped owner.")
 @click.pass_context
 @_handle_errors
 def integration_release_owner(
-    ctx: click.Context, task_id: str | None, owner_row_id: str | None, dry_run: bool
+    ctx: click.Context, task_id: str | None, owner_row_id: str | None, dry_run: bool, apply: bool
 ) -> None:
-    """Release a stranded branch owner after proving its writer and branch safe."""
+    """Preview a stranded owner's recovery; use --apply to preserve and release."""
     if (task_id is None) == (owner_row_id is None):
         raise click.UsageError("provide exactly one of --task-id or --owner-row-id")
-    args: dict[str, Any] = {"dry_run": dry_run}
+    if dry_run and apply:
+        raise click.UsageError("--dry-run and --apply are mutually exclusive")
+    args: dict[str, Any] = {"dry_run": not apply}
     if task_id is not None:
         args["task_id"] = task_id
     else:
@@ -378,6 +464,21 @@ def integration_release_owner(
 def integration_reserve_owner(ctx: click.Context, task_id: str) -> None:
     """Restore a stopped train task's missing canonical branch reservation."""
     _execute(ctx, "integration_reserve_owner", {"task_id": task_id})
+
+
+@integration.command("clear-retained-recovery")
+@click.option("--project-id", required=True)
+@click.option("--incident-id", default=None, help="Clear only this incident.")
+@click.pass_context
+@_handle_errors
+def integration_clear_retained_recovery(
+    ctx: click.Context, project_id: str, incident_id: str | None
+) -> None:
+    """Lift a retained Git cache admission hold once a full fsck is clean."""
+    args = {"project_id": project_id}
+    if incident_id is not None:
+        args["incident_id"] = incident_id
+    _execute(ctx, "integration_clear_retained_recovery", args)
 
 
 @integration.command("release-stale-owners")
@@ -554,6 +655,41 @@ def integration_redrive_child(
     if reason is not None:
         args["reason"] = reason
     _execute(ctx, "integration_redrive_child", args)
+
+
+@integration.command("recover-completed-container")
+@click.argument("task_id")
+@click.option("--project", "project_id", required=True)
+@click.option("--repository", "repository_id", required=True)
+@click.option("--branch", required=True, help="Exact task branch.")
+@click.option("--apply", is_flag=True, help="Apply the previewed checkpoint repair.")
+@click.option("--head", "expected_head_sha")
+@click.option("--completion", "expected_completion_id")
+@click.option("--generation", "expected_generation", type=click.IntRange(min=0))
+@click.option("--version", "expected_version", type=click.IntRange(min=0))
+@click.option("--origin-sha256", "expected_origin_sha256")
+@click.option("--snapshot-sha256", "expected_snapshot_sha256")
+@click.option("--reason")
+@click.pass_context
+@_handle_errors
+def integration_recover_completed_container(ctx: click.Context, task_id: str, **options) -> None:
+    """Preview a completed container's stale checkpoint repair from exact pass provenance.
+
+    Apply requires every identity printed by the preview and an audit reason.
+    Recovery changes only checkpoint provenance. Exact-source review, hosted CI
+    and normal train admission still control delivery.
+    """
+    apply = options.pop("apply")
+    if apply and any(options.get(key) is None for key in (
+        "expected_head_sha", "expected_completion_id", "expected_generation", "expected_version",
+        "expected_origin_sha256", "expected_snapshot_sha256", "reason",
+    )):
+        raise click.UsageError("--apply requires --head, --completion, --generation, --version, "
+                               "--origin-sha256, --snapshot-sha256 and --reason from preview")
+    _execute(ctx, "integration_recover_completed_container", {
+        "task_id": task_id, "dry_run": not apply,
+        **{key: value for key, value in options.items() if value is not None},
+    })
 
 
 @integration.command("reopen-collection")

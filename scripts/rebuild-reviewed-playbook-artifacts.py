@@ -71,19 +71,11 @@ SHIPPED = {
     "default-pipeline": "src/prompts/default_playbooks/default-pipeline.md",
     "default-assignment-routing": "src/prompts/default_playbooks/default-assignment-routing.md",
     "ci-main-sentinel": "src/prompts/project_playbooks/agent-queue/ci-main-sentinel.md",
-    "agent-queue-root-train": (
-        "src/prompts/project_playbooks/agent-queue/agent-queue-root-train.md"
-    ),
-    "agent-queue-parent-integration": (
-        "src/prompts/project_playbooks/agent-queue/agent-queue-parent-integration.md"
-    ),
     "supervisor-failure-triage": "src/prompts/default_playbooks/supervisor-failure-triage.md",
     "provider-usage-probe": "src/prompts/default_playbooks/provider-usage-probe.md",
     "morning-report": "src/prompts/default_playbooks/morning-report.md",
     "provider-failover": "src/prompts/default_playbooks/provider-failover.md",
     "github-issue-triage": "src/prompts/project_playbooks/agent-queue/github-issue-triage.md",
-    "parent-integration": "src/prompts/integration_playbooks/parent-integration.md",
-    "root-train": "src/prompts/integration_playbooks/root-train.md",
     "promotion-request": "src/prompts/integration_playbooks/promotion-request.md",
     "promotion-continuous": "src/prompts/integration_playbooks/promotion-continuous.md",
 }
@@ -246,22 +238,11 @@ def _default_pipeline_body(source: PlaybookSource) -> dict[str, Any]:
         "spec-ingest-on-approve",
         {"event_type": "spec.approved"},
         "spec_ingest_gate",
-        "ensure_task",
+        "ensure_spec_ingest",
         {
             "project_id": event("project_id"),
-            "dedup_key": template(lit("spec-ingest:"), event("spec_path")),
-            "title": template(lit("Ingest spec "), event("spec_path")),
-            "profile_id": lit("spec-ingest"),
-            "intelligence_class": lit("deep-high"),
-            "description": template(
-                lit("spec_path: "), event("spec_path"),
-                lit(". Read spec_kind and check implementation grounding. Design specs get "
-                    "one deep-high implementation-spec authoring child in an epic, submitted "
-                    "to Jack's review queue. Implementation specs get parallel phase epics "
-                    "and self-contained children. Validate, then task_batch_propose followed "
-                    "directly by task_batch_commit; no human proposal gate. The batch "
-                    "creates work only; updates to existing tasks need an approved change set."),
-            ),
+            "decision_id": event("decision_id"),
+            "packet_sha256": event("packet_sha256"),
         },
         ("created", "reused"),
     )

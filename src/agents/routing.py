@@ -18,6 +18,7 @@ from src.sessions.spec import _infer_provider_from_harness, _is_codex_cli
 #: generic worker's are.  These are single-purpose and stay enumerated.
 _CLASS_CAPABILITY_PROFILES = frozenset({
     "triage", "reviewer", "final-reviewer", "playbook-compiler", "spec-ingest",
+    "fidelity-reviewer",
 })
 
 

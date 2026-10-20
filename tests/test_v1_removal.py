@@ -66,9 +66,13 @@ def test_playbook_config_has_no_runtime_selector_or_v1_admission() -> None:
     assert retired.isdisjoint(fields)
 
 
-def test_no_cutover_or_migration_tools_exist() -> None:
+def test_no_playbook_cutover_or_migration_tools_exist() -> None:
     names = set(_TOOL_CATEGORIES)
-    assert not any("cutover" in name for name in names)
+    # Repository admission and the ask subsystem are unrelated to V1
+    # playbook migration. Every other cutover control remains forbidden.
+    assert {name for name in names if "cutover" in name} == {
+        "workspace_cutover", "ask_cutover", "ask_cutover_status",
+    }
     assert not any("v1_admission" in name for name in names)
     assert not any("migration_ack" in name for name in names)
     assert not any("migration_unack" in name for name in names)

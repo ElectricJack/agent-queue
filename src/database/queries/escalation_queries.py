@@ -24,6 +24,7 @@ from src.database.tables import (
     escalation_deliveries,
     escalation_messages,
     escalations,
+    human_communication_modes,
     messages,
     projects,
     supervisor_report_requests,
@@ -40,7 +41,10 @@ def _project_paused():
 def _delivery_project_paused():
     return exists().where(
         escalations.c.id == escalation_deliveries.c.escalation_id,
-        _project_paused(),
+        or_(_project_paused(), exists().where(
+            human_communication_modes.c.project_id == escalations.c.project_id,
+            human_communication_modes.c.mode.in_(("transferring", "channel", "delivery_disabled")),
+        )),
     )
 
 
@@ -1471,7 +1475,11 @@ class EscalationQueriesMixin:
                 (
                     await conn.execute(
                         select(escalation_deliveries.c.id, escalation_deliveries.c.status)
-                        .where(due, ~_delivery_project_paused())
+                        .where(due, ~_delivery_project_paused(),
+                               ~select(escalations.c.id).where(
+                                   escalations.c.id == escalation_deliveries.c.escalation_id,
+                                   escalations.c.terminal_outcome == "legacy_discarded",
+                               ).exists())
                         .order_by(
                             escalation_deliveries.c.priority,
                             escalation_deliveries.c.next_attempt_at,

@@ -993,7 +993,11 @@ def task_set(
 def task_comment(
     ctx: click.Context, task_id: str, body: str, kind: str, claim_epoch: int | None
 ) -> None:
-    """Append an attributed comment to a task's durable history."""
+    """Append an attributed comment to a task's durable history.
+
+    Keep comments concise: state what changed, decisions, and blockers.
+    Link evidence files; do not paste logs or repeat status.
+    """
     api_url = ctx.obj.get("api_url") if ctx.obj else None
     args: dict[str, Any] = {"task_id": task_id, "body": body, "kind": kind}
     epoch = resolve_claim_epoch(claim_epoch)

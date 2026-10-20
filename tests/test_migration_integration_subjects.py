@@ -179,8 +179,20 @@ async def test_upgrade_adds_subjects_to_a_deployed_install_and_replays():
             await conn.run_sync(_assert_current)
         await _assert_constraints_bind(engine)
 
-        # Replay: down removes exactly what up added, and up again restores it.
-        await _alembic(engine, "downgrade", previous_revision(REVISION))
+        # Replay this revision's body against current metadata. Later human
+        # evidence revisions deliberately refuse a whole-chain downgrade.
+        revision = import_module("migrations.versions.a00000000057_integration_subjects")
+
+        def apply(sync, *steps):
+            from alembic.migration import MigrationContext
+            from alembic.operations import Operations
+
+            with Operations.context(MigrationContext.configure(sync)):
+                for step in steps:
+                    getattr(revision, step)()
+
+        async with engine.begin() as conn:
+            await conn.run_sync(apply, "downgrade")
         async with engine.connect() as conn:
             shape = await conn.run_sync(_schema)
             functions = set(
@@ -195,24 +207,17 @@ async def test_upgrade_adds_subjects_to_a_deployed_install_and_replays():
                 ).scalars()
             )
         assert (shape["tables"], shape["triggers"], functions) == (set(), set(), set())
+        # The scratch schema keeps later unrelated revisions. Restamp only its
+        # history so the upgrade replays the later additive subject revisions too.
+        await _alembic(engine, "stamp", previous_revision(REVISION))
         await _alembic(engine, "upgrade", "head")
         async with engine.connect() as conn:
             await conn.run_sync(_assert_current)
 
         # The body itself is idempotent: rerunning it over the current schema
         # changes nothing and keeps one copy of each trigger.
-        revision = import_module("migrations.versions.a00000000057_integration_subjects")
-
-        def rerun(sync):
-            from alembic.migration import MigrationContext
-            from alembic.operations import Operations
-
-            with Operations.context(MigrationContext.configure(sync)):
-                revision.upgrade()
-                revision.upgrade()
-
         async with engine.begin() as conn:
-            await conn.run_sync(rerun)
+            await conn.run_sync(apply, "upgrade", "upgrade")
         async with engine.connect() as conn:
             await conn.run_sync(_assert_current)
     finally:

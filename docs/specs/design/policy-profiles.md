@@ -36,7 +36,7 @@ preview checksum before writing a directory or `.aqpolicy` zip.
 Typed adapters participate: reviewed playbook source and compiled
 artifact; agent profile settings and project overrides; promotion flow; CI check
 and test-selection policy; routing preferences; and spec, plan and formula
-templates; intelligence classes, pool settings and project/repository settings.
+templates; versioned integration settings; intelligence classes, pool settings and project/repository settings.
 Adapters read fixed policy locations and explicit fields. They never
 walk arbitrary vault content, serialize operator config, copy memory/history,
 account bindings, secrets, GitHub credentials or observed provider availability.
@@ -94,6 +94,32 @@ active promotion configuration or repository trust anchors.
 No signatures or continuing synchronization are part of v1. Copying identical
 items is idempotent. Write failures compensate touched files; review failures are
 reported with retained draft locations so the operator can retry normal review.
+
+Integration settings are independently selectable. Export captures configured
+review/delivery modes, the required engine selector, train policy (including
+cadence, repair and admission), repository binding and promotion flow. Repository
+ids, branches, required check sets and producers are placeholders; target project
+bindings provide defaults. Source activation/artifact identities and task-specific
+admission grants are never transferred. Existing target routes are retained;
+missing routes must be configured through the normal reviewed activation workflow.
+The installation engine selector is a prerequisite, never an imported global change.
+Global placement saves a template. Project placement applies active settings through
+the supported project configuration path shared with cutover: engine validation,
+PolicyActivation generation fencing and repository barriers, plus promotion trust
+validation and create-only target preparation. Preview fingerprints include live
+settings and generation; changed settings require a new preview and overwrite consent.
+No playbook is fabricated or activated by this operation. An absent integration
+policy leaves the target's reviewed policy in place. Configuration refusals
+occur before writing other selected files; later file/review failures report any
+already-configured integration item. Reapplying identical settings is a no-op.
+
+Exported playbook sources and artifacts replace installation, vault, home and
+workspace roots with target-install placeholders. Unrecognized absolute machine
+paths get explicit placeholders without source defaults. Imports require values
+only for selected items, so skipping integration settings or a playbook also skips
+its unresolved placeholders. Startup source seeding excludes the retired
+supervisor-digest, supervisor-hourly-report and blocked-task-escalation ids; existing
+operator files and historical reviewed bundles are retained.
 
 Profiles remain global. Project placement stores agent settings outside the retired
 project profile layouts and never creates runtime overrides. Configure the copied

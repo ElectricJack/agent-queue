@@ -24,6 +24,7 @@ from urllib.parse import urlparse
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import and_, insert, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+from src.integration.manual_control import fence_disable
 
 from src.task_templates import render_task_template
 from src.database.queries.hierarchy_queries import HierarchyError
@@ -1319,6 +1320,7 @@ class PolicyActivation:
         self.clock = clock
         self.hierarchy_service_factory = hierarchy_service_factory
 
+    @fence_disable
     async def configure(
         self,
         project_id: str,
@@ -1406,6 +1408,14 @@ class PolicyActivation:
             effective_mode = mode or project["hierarchical_integration_mode"]
             if "hierarchical_integration_policy" in updates:
                 raw_policy = updates["hierarchical_integration_policy"]
+                from src.integration.models import validate_policy_producers
+
+                try:
+                    validate_policy_producers(raw_policy)
+                except ValueError as exc:
+                    return {"success": False, "outcome": "invalid", "project_id": project_id,
+                            "generation": generation, "error_code": "invalid_ci_producer",
+                            "error": str(exc)}
                 if effective_mode == "development":
                     from src.integration.development import DevelopmentPolicy
                     from src.integration.models import PlaybookRoute

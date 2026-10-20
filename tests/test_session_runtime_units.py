@@ -364,6 +364,40 @@ class TestTranscriptWatcherRecovery:
 
 @pytest.mark.skipif(not os.path.isdir("/proc"), reason="requires /proc")
 class TestProctable:
+    @pytest.mark.parametrize("use", ["cwd", "descriptor", "marker", "none"])
+    async def test_workspace_quiescence_checks_unmarked_users_and_detached_markers(
+        self, tmp_path, monkeypatch, use,
+    ):
+        inventory = tmp_path / "proc"
+        proc = inventory / "123456789"
+        proc.mkdir(parents=True)
+        source, unrelated = tmp_path / "source", tmp_path / "other"
+        source.mkdir()
+        unrelated.mkdir()
+        (proc / "stat").write_text("123456789 (worker) S 1")
+        (proc / "environ").write_bytes(b"AQ_INSTANCE_TOKEN=target\0" if use == "marker" else b"")
+        (proc / "cwd").symlink_to(source if use == "cwd" else unrelated)
+        (proc / "fd").mkdir()
+        if use == "descriptor":
+            (source / "index.lock").touch()
+            (proc / "fd" / "4").symlink_to(source / "index.lock")
+        monkeypatch.setattr(proctable, "_PROC", inventory)
+        assert await proctable.workspace_quiescent((str(source),), "target") is (use == "none")
+
+    async def test_workspace_quiescence_retains_unknown_but_accepts_proved_exit(
+        self, tmp_path, monkeypatch,
+    ):
+        inventory = tmp_path / "proc"
+        proc = inventory / "123456789"
+        proc.mkdir(parents=True)
+        (proc / "stat").write_text("123456789 (worker) S 1")
+        monkeypatch.setattr(proctable, "_PROC", inventory)
+        # A missing/unreadable environment on a still-live row is no death proof.
+        with pytest.raises(OSError):
+            await proctable.workspace_quiescent((str(tmp_path),), "target")
+        (proc / "stat").write_text("123456789 (worker) Z 1")
+        assert await proctable.workspace_quiescent((str(tmp_path),), "target") is True
+
     async def test_read_start_ticks_of_a_live_process(self):
         ticks = await proctable.read_start_ticks(os.getpid())
         assert isinstance(ticks, int)

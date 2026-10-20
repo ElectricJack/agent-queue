@@ -587,14 +587,16 @@ DELEGATED_PROFILE_INPUT: Final[str] = "profile_id"
 def step_profile_ids(step: Any) -> tuple[str, ...]:
     """Every capability profile one step depends on, in declaration order.
 
-    Two positions carry one, and both are real dependencies of the artifact:
+    These are real dependencies of the artifact:
 
     * the *own* profile of an :class:`LlmStep` or :class:`AgentTaskStep`, which
-      the step runs as; and
+      the step runs as;
     * a *delegated* profile — a literal :data:`DELEGATED_PROFILE_INPUT` input,
-      which is how a command step hands work to another profile.
+      which is how a command step hands work to another profile; and
+    * a server-owned role created by a domain command, whose profile cannot
+      be supplied by the caller.
 
-    Only a literal counts.  A ``profile_id`` computed from an event reference
+    Only a literal delegated input counts. A ``profile_id`` computed from an event reference
     is not knowable at compile time, so there is no fingerprint to record and
     pretending otherwise would freeze a value the run picks.
     """
@@ -606,6 +608,10 @@ def step_profile_ids(step: Any) -> tuple[str, ...]:
     value = delegated.get(DELEGATED_PROFILE_INPUT) if hasattr(delegated, "get") else None
     if isinstance(value, LiteralValue) and isinstance(value.value, str) and value.value:
         found.append(value.value)
+    if isinstance(step, CommandStep) and step.command == "ensure_spec_ingest":
+        found.append("spec-ingest")
+    if isinstance(step, CommandStep) and step.command == "ensure_fidelity_review":
+        found.append("fidelity-reviewer")
     return tuple(dict.fromkeys(found))
 
 
