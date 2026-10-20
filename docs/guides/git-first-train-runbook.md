@@ -534,7 +534,10 @@ target, or delivery trailers for it; a matching tree alone is refused with
 target (never the untested candidate) and logs `integration.batch_settled` with
 the principal and reason; the next target visit runs epic completion. The train
 settles on its own an epic refresh whose epic already is the default head (an
-ancestor with an identical tree; a resolved merge still runs its checks), and a run whose only non-success job lies outside the required checks no longer
+ancestor with an identical tree; a resolved merge still runs its checks). A refresh
+whose repair published a resolved merge into the epic stays sealed while that merge
+is red; abort it, or settle it once the epic has the frozen default head as an
+ancestor. A run whose only non-success job lies outside the required checks no longer
 holds candidate checks unknown.
 
 The train excludes current completions whose exact retained source is an ancestor
