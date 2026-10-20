@@ -51830,6 +51830,16 @@
               "collect_ms": 0.0
             }
           },
+          "waits": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WaitMetrics"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "perf": {
             "$ref": "#/components/schemas/PerfMetrics",
             "default": {
@@ -81142,6 +81152,36 @@
         ],
         "title": "WaitCheckpointResponse"
       },
+      "WaitCounterfactual": {
+        "properties": {
+          "tokens": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tokens"
+          },
+          "cohort": {
+            "type": "string",
+            "title": "Cohort"
+          },
+          "window": {
+            "type": "string",
+            "title": "Window"
+          }
+        },
+        "type": "object",
+        "required": [
+          "cohort",
+          "window"
+        ],
+        "title": "WaitCounterfactual",
+        "description": "Estimated avoided monitoring tokens, never measured token savings."
+      },
       "WaitDecideArgs": {
         "properties": {
           "project_id": {
@@ -81280,6 +81320,46 @@
           "decision"
         ],
         "title": "WaitDecideResponse"
+      },
+      "WaitDurationMetrics": {
+        "properties": {
+          "condition_kind": {
+            "type": "string",
+            "title": "Condition Kind"
+          },
+          "source_class": {
+            "type": "string",
+            "title": "Source Class"
+          },
+          "wait_duration_p50": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Wait Duration P50"
+          },
+          "expected_duration_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Duration Seconds"
+          }
+        },
+        "type": "object",
+        "required": [
+          "condition_kind",
+          "source_class"
+        ],
+        "title": "WaitDurationMetrics"
       },
       "WaitExplainArgs": {
         "properties": {
@@ -81756,6 +81836,266 @@
         ],
         "title": "WaitListResponse"
       },
+      "WaitMetrics": {
+        "properties": {
+          "pending_in_place": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pending In Place"
+          },
+          "pending_hibernated": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pending Hibernated"
+          },
+          "pending_human": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pending Human"
+          },
+          "escalated": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Escalated"
+          },
+          "scheduler_by_reason": {
+            "additionalProperties": {
+              "type": "number"
+            },
+            "type": "object",
+            "title": "Scheduler By Reason",
+            "default": {}
+          },
+          "in_place_slot_seconds_1h": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "In Place Slot Seconds 1H"
+          },
+          "released_slot_seconds_1h": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WaitSlotSeconds"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "released_slot_seconds_24h": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WaitSlotSeconds"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "evicted_1h": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evicted 1H"
+          },
+          "ceiling_1h": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ceiling 1H"
+          },
+          "resume_cost_p50": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resume Cost P50"
+          },
+          "resume_cost_p95": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resume Cost P95"
+          },
+          "by_project": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/WaitProjectMetrics"
+            },
+            "type": "object",
+            "title": "By Project",
+            "default": {}
+          },
+          "wakes_1h": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WaitWakes"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "loops_1h": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Loops 1H"
+          },
+          "escalations_1h": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Escalations 1H"
+          },
+          "decisions_1h": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decisions 1H"
+          },
+          "decision_seconds_p50": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decision Seconds P50"
+          },
+          "human_pending": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Human Pending"
+          },
+          "human_age_max_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Human Age Max Seconds"
+          },
+          "priority": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WaitPriorityMetrics"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "wait_seconds_1h": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Wait Seconds 1H"
+          },
+          "overhead_tokens_1h": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Overhead Tokens 1H"
+          },
+          "tokens_saved_counterfactual": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WaitCounterfactual"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object",
+        "title": "WaitMetrics",
+        "description": "Observed wait accounting. Missing observations remain null at every tier.\n\nResume cost percentiles are seconds; configured resume_cost_minutes stays\nin minutes. Duration/cost cohorts cover the preceding thirty days."
+      },
       "WaitNodeDetailDTO": {
         "properties": {
           "wait_kind": {
@@ -81807,6 +82147,169 @@
         ],
         "title": "WaitNodeDetailDTO",
         "description": "WaitStep only."
+      },
+      "WaitPriorityMetrics": {
+        "properties": {
+          "donors": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Donors"
+          },
+          "reservations_pending": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reservations Pending"
+          },
+          "reservations_overdue": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reservations Overdue"
+          },
+          "deadline_breaches_1h": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Deadline Breaches 1H"
+          },
+          "unexplained": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unexplained"
+          }
+        },
+        "type": "object",
+        "title": "WaitPriorityMetrics"
+      },
+      "WaitProjectMetrics": {
+        "properties": {
+          "resume_cost_p50": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resume Cost P50"
+          },
+          "resume_cost_p95": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resume Cost P95"
+          },
+          "resume_cost_minutes": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resume Cost Minutes"
+          },
+          "summary_tokens": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Summary Tokens"
+          },
+          "resume_tokens": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resume Tokens"
+          },
+          "teardown_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Teardown Seconds"
+          },
+          "setup_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Setup Seconds"
+          },
+          "rebuild_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rebuild Seconds"
+          },
+          "durations": {
+            "items": {
+              "$ref": "#/components/schemas/WaitDurationMetrics"
+            },
+            "type": "array",
+            "title": "Durations",
+            "default": []
+          }
+        },
+        "type": "object",
+        "title": "WaitProjectMetrics"
       },
       "WaitRegisterArgs": {
         "properties": {
@@ -82139,6 +82642,95 @@
         "additionalProperties": false,
         "type": "object",
         "title": "WaitResponse"
+      },
+      "WaitSlotSeconds": {
+        "properties": {
+          "condition": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Condition"
+          },
+          "capacity": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Capacity"
+          }
+        },
+        "type": "object",
+        "title": "WaitSlotSeconds"
+      },
+      "WaitWakes": {
+        "properties": {
+          "outcome": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Outcome"
+          },
+          "decision": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decision"
+          },
+          "lift": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lift"
+          },
+          "launch_failed": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Launch Failed"
+          },
+          "other": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Other"
+          }
+        },
+        "type": "object",
+        "title": "WaitWakes"
       },
       "WithheldTask": {
         "properties": {

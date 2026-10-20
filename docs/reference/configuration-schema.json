@@ -3472,6 +3472,12 @@
         },
         "loop_window_registrations": 3,
         "loop_window_seconds": 3600,
+        "metrics": {
+          "cohort": null,
+          "pre_rollout_tokens_per_turn": null,
+          "pre_rollout_turn_rate": null,
+          "window": null
+        },
         "min_samples": 5,
         "projects": {},
         "resume_cost_minutes": 10,
@@ -3578,6 +3584,46 @@
         "loop_window_seconds": {
           "default": 3600,
           "type": "number"
+        },
+        "metrics": {
+          "additionalProperties": false,
+          "default": {
+            "cohort": null,
+            "pre_rollout_tokens_per_turn": null,
+            "pre_rollout_turn_rate": null,
+            "window": null
+          },
+          "properties": {
+            "cohort": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "pre_rollout_tokens_per_turn": {
+              "default": null,
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "pre_rollout_turn_rate": {
+              "default": null,
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "window": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "type": "object"
         },
         "min_samples": {
           "default": 5,

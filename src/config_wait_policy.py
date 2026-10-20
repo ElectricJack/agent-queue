@@ -33,6 +33,16 @@ class WaitProjectOverrides:
 
 
 @dataclass
+class WaitMetricsConfig:
+    """An operator supplied historical cohort; rates are turns per minute."""
+
+    pre_rollout_turn_rate: float | None = None
+    pre_rollout_tokens_per_turn: float | None = None
+    cohort: str | None = None
+    window: str | None = None
+
+
+@dataclass
 class WaitPolicyConfig:
     v2_enabled: bool = False
     hibernation_enabled: bool = False
@@ -49,6 +59,7 @@ class WaitPolicyConfig:
     transition_budget_seconds: float = 120
     resume_launch_attempts: int = 2
     projects: dict[str, WaitProjectOverrides] = field(default_factory=dict)
+    metrics: WaitMetricsConfig = field(default_factory=WaitMetricsConfig)
 
     def escalation_seconds(self, kind):
         return self.kinds[kind].escalate_after_seconds
@@ -93,6 +104,14 @@ class WaitPolicyConfig:
                 value = getattr(override, name)
                 if value is not None:
                     number(f"projects.{pid}.{name}", value, low)
+        for name in ("pre_rollout_turn_rate", "pre_rollout_tokens_per_turn"):
+            value = getattr(self.metrics, name)
+            if value is not None:
+                number(f"metrics.{name}", value, 0, math.inf)
+        for name in ("cohort", "window"):
+            value = getattr(self.metrics, name)
+            if value is not None and (not isinstance(value, str) or not value.strip()):
+                error(f"metrics.{name}", "must be a non-empty string")
         return errors
 
 
@@ -101,7 +120,7 @@ def parse_wait_policy(raw):
     known = {f.name for f in fields(WaitPolicyConfig)}
     if not isinstance(raw, dict) or set(raw) - known:
         raise ValueError("invalid wait_policy section")
-    values = {k: v for k, v in raw.items() if k not in {"kinds", "projects"}}
+    values = {k: v for k, v in raw.items() if k not in {"kinds", "projects", "metrics"}}
     kinds = default_kinds()
     for name, policy in raw.get("kinds", {}).items():
         base = kinds.get(name, WaitKindPolicy())
@@ -116,4 +135,5 @@ def parse_wait_policy(raw):
                 k: WaitKindPolicy(**v) for k, v in override.get("kinds", {}).items()
             },
         })
-    return WaitPolicyConfig(**values, kinds=kinds, projects=overrides)
+    return WaitPolicyConfig(**values, kinds=kinds, projects=overrides,
+                            metrics=WaitMetricsConfig(**raw.get("metrics", {})))

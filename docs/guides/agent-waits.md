@@ -4,6 +4,35 @@ tags: [guide, agents, waits]
 
 # Durable agent waits
 
+The Metrics page includes pending waits, observed slot time, wake causes and
+resume costs. Missing wait tables produce a null group and dashes in the UI;
+absent measurements stay null. Released slot time starts at the proven process
+stop and ends at the first resume reservation grant or report end. The pending
+reservation interval is reported separately as capacity delay. The 24-hour tile
+comes directly from these timestamps, independent of the selected chart range.
+`aq wait graph --costs` includes the same accounting projection. Resume-cost
+percentiles are in seconds, with configured defaults still labelled in minutes;
+cost and duration cohorts cover the preceding thirty days.
+Coarse chart samples average overlapping hourly snapshots, preserving fractional
+values and gaps instead of multiplying the same events or slot time.
+
+Avoided monitoring tokens are counterfactual. They are hidden by default. An
+operator can supply a historical cohort under `wait_policy.metrics`:
+
+```yaml
+wait_policy:
+  metrics:
+    pre_rollout_turn_rate: 2          # monitoring turns per minute of waiting
+    pre_rollout_tokens_per_turn: 100 # all tokens, including cache
+    cohort: "workers before rollout"
+    window: "2026-10-01/2026-10-07"
+```
+
+The estimate is baseline turns × observed wait minutes × baseline tokens per
+turn, minus measured summary and resume tokens. Incomplete overhead leaves the
+estimate null. The dashboard labels it counterfactual and shows its cohort and
+baseline window. No polling control arm or idle-terminal token assumption is used.
+
 A wait records one bounded condition for a task or a named supervisor. It
 keeps the task `IN_PROGRESS` and retains its claim, workspace and pool seat.
 Registration returns immediately. Job, task, message and timer adapters are available.

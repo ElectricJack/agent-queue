@@ -10,7 +10,7 @@ from sqlalchemy import insert, select, update
 
 from src.database.queries.continuation_queries import wait_outcome_envelope
 from src.database.tables import (
-    admission_reservations, agents, continuations, messages, provider_availability,
+    admission_reservations, agents, continuations, events, messages, provider_availability,
     tasks, sessions,
 )
 from src.models import Agent, AgentState
@@ -291,6 +291,14 @@ class ResumeTransaction:
             task_row, wait, intent = await locked_suspension(conn, original['wait_id'])
             if intent['suspension_generation'] != action.generation:
                 raise WaitError('continuation.stale_generation', 'failed launch generation changed')
+            # A failed launch is not a wake. Persist its timestamp on the
+            # owning command transaction so the metrics window can count it.
+            await conn.execute(insert(events).values(
+                event_type='wait.resume_launch_failed', project_id=wait['project_id'],
+                task_id=task_row['id'], timestamp=self.clock(),
+                payload=json.dumps({'wait_id': wait['id'], 'continuation_id': intent['id'],
+                                    'attempt': intent['launch_attempts']}),
+            ))
             if task_row['status'] == 'PAUSED':
                 hold_reason = 'paused'
             if hold_reason:

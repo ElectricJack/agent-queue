@@ -243,6 +243,13 @@ class MetricsQueryMixin:
         except Exception:  # noqa: BLE001 - no engine or a foreign pool class is an honest null
             return {"checked_out": None, "overflow": None, "size": None}
 
+    async def metrics_waits_snapshot(self, now: float, window_seconds: float = 3600):
+        """Wait accounting, or null on a database predating verified waits."""
+        from src.database.queries.wait_metrics import wait_metrics_snapshot
+
+        async with self._engine.connect() as conn:
+            return await wait_metrics_snapshot(conn, now=now, window_seconds=window_seconds)
+
     async def metrics_slow_snapshot(
         self,
         since_ts: float,
