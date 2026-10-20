@@ -66,7 +66,9 @@ async def env(tmp_path, request):
     orch = Orchestrator(config)
     orch.db = db
     orch.session_providers = SimpleNamespace(
-        create=lambda *_: SimpleNamespace(confirm_stopped=AsyncMock(return_value=True))
+        create=lambda *_: SimpleNamespace(
+            stop=AsyncMock(), confirm_stopped=AsyncMock(return_value=True),
+        )
     )
     yield SimpleNamespace(db=db, orch=orch, config=config, handler=CommandHandler(orch, config))
     await db.close()
@@ -1036,7 +1038,8 @@ async def test_resume_recovery_supersession_rolls_back_with_status(env):
     current = await incident(env)
     assert "error" not in await decide(env, current, "hold")
     await env.db.update_task("t", status=TaskStatus.READY)
-    await env.db.pause_task("t")
+    # Complete the stopped-session cleanup before exercising resume's rollback.
+    await env.orch.pause_task("t")
     held = await env.db.get_task_meta("t", "supervisor_recovery_incident")
     message_id = "msg-" + current["id"]
     archived_at = (await env.db.get_message(message_id)).archived_at
@@ -1084,7 +1087,7 @@ async def test_refused_resume_keeps_recovery_hold(env):
     await env.db.set_task_meta("t", "manual_pause", {**saved, "cleanup_pending": True})
     held = await env.db.get_task_meta("t", "supervisor_recovery_incident")
 
-    with pytest.raises(ValueError, match="session has not stopped"):
+    with pytest.raises(ValueError, match="pause cleanup is pending"):
         await env.db.resume_task("t")
     assert (await env.db.get_task("t")).status is TaskStatus.PAUSED
     assert await env.db.get_task_meta("t", "supervisor_recovery_incident") == held

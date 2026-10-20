@@ -2126,7 +2126,7 @@ class TestClaim:
         reset.side_effect = unproved
         release = AsyncMock(return_value=True)
         handler.orchestrator.arelease_integration_writer_for_retry = release
-        result = await scoped(handler, sid)._cmd_task_claim({"next": True})
+        result = await settled_claim(scoped(handler, sid), {"next": True})
         assert result["result"] == "prepare_failed"
         assert "ProcessCleanupError" in result["reason"]
         assert "PermissionError" in result["reason"]
@@ -7491,14 +7491,22 @@ async def test_cancelled_preparation_retains_identity_then_fences_successor(
     if phase == "after_claim_file":
         monkeypatch.setattr(db, "activate_claim", interruptible_activate)
     handler.orchestrator._worktree_slots.return_value.reset_slot_for_task = interruptible_reset
+    monkeypatch.setattr("src.commands.claim_commands._PREPARATION_RESPONSE_SECONDS", 60.0)
     request = asyncio.create_task(scoped(handler, sid)._cmd_task_claim({"next": True}))
     try:
         await asyncio.wait_for(reached.wait(), timeout=5)
         old = await db.get_session(sid)
         receipt = await db.get_task_meta("t1", "claim_workspace")
+        preparation = handler.orchestrator.claim_preparations[(sid, "t1", 1)]
         request.cancel()
         with pytest.raises(asyncio.CancelledError):
             await asyncio.wait_for(request, timeout=5)
+        # Disconnecting the HTTP caller leaves preparation shielded. Cancel
+        # the actual writer, as pause/shutdown do, and await its cleanup.
+        assert not preparation.done()
+        preparation.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(preparation, timeout=5)
         record = await db.get_task_meta("t1", "prepare_failure")
         assert record["disposition"] == "cancelled" and record["claim_epoch"] == 1
         assert "CancelledError" in record["reason"]
@@ -7520,7 +7528,7 @@ async def test_cancelled_preparation_retains_identity_then_fences_successor(
             return_value="aq/t1",
         )
         await db.set_task_meta("t1", "claim_prepare_backoff_until", time.time() - 1)
-        result = await scoped(handler, sid)._cmd_task_claim({"next": True})
+        result = await settled_claim(scoped(handler, sid), {"next": True})
         assert result["result"] == "claimed"
         current = read_claim_file(str(wd))
         assert current["claim_epoch"] == 2 and current["session_id"] == sid
@@ -7539,6 +7547,7 @@ async def test_cancelled_preparation_retains_identity_then_fences_successor(
         if not request.done():
             request.cancel()
         await asyncio.gather(request, return_exceptions=True)
+        await handler.orchestrator.cancel_claim_preparations()
 
 
 @pytest.mark.parametrize("requirements,primary", [
@@ -7568,7 +7577,7 @@ async def test_pool_claim_kind_uses_actual_held_workspace(
         assert (await worker._cmd_task_claim({"next": True}))["result"] == "no_ready_work"
         assert (await db.get_task("kind-task")).claim_epoch == 0
     else:
-        result = await worker._cmd_task_claim({"task_id": "kind-task"})
+        result = await settled_claim(worker, {"task_id": "kind-task"})
         assert result["result"] == "claimed", result
         assert (await db.get_workspace("ws-agent-1")).locked_by_task_id == "kind-task"
 

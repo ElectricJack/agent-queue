@@ -52,6 +52,9 @@ NOT_INGEST_HELD = {
     "src/database/queries/claim_queries.py::ClaimQueryMixin.lock_claim_for_activation": (
         "tests/test_claim_commands.py::test_activation_rechecks_ingestion_hold_without_admission"
     ),
+    "src/database/queries/claim_queries.py::ClaimQueryMixin._lock_activation_task": (
+        "tests/test_claim_commands.py::test_activation_rechecks_ingestion_hold_without_admission"
+    ),
     "src/database/queries/task_queries.py::TaskQueryMixin.list_active_tasks": "sql",
     "src/database/queries/task_queries.py::TaskQueryMixin._note_frontier_entry": "sql",
     "src/database/queries/task_queries.py::TaskQueryMixin.ingest_held_task_ids": (
