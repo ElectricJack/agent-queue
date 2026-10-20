@@ -522,7 +522,7 @@ async def run(
             ).run(),
             name="aq-review-notifier",
         )
-        from src.waits.service import WaitService
+        from src.wait_runtime.service import WaitService
 
         orch.wait_service = WaitService(orch)
         wait_service_task = asyncio.create_task(orch.wait_service.run(), name="aq-waits")

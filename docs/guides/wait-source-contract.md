@@ -75,8 +75,10 @@ fences and call `registry.verify(conn, Condition.from_record(row['condition']),
 service_scope)` with the actual admission reader. Its snapshot must reobserve owner,
 project, config and predicate freshness, not copy the event payload's claim.
 
-The registry leaf owns the authoritative admission reader/normalizer and generation-0
-adapter snapshot; this branch does not invent its identity fields. The listener leaf
+The admission leaf (`bold-zenith-11.7`) owns the authoritative admission reader/normalizer
+and guarded service integration. The registry leaf supplies the injected generation-0
+adapter seam. This ownership correction is authorized by supervisor message
+`msg-5128861479914dc3b3a1f41fa700d5ad`; approved review bytes remain unchanged. The listener leaf
 must route `resource_invalidation:` rows through this bridge instead of only doing
 exact-key matching, page all candidates, and preserve its normal cursor/lease protocol.
 The dispatcher leaf must perform its guarded owner/source lock, typed reobservation
@@ -162,3 +164,75 @@ Missing handlers leave deadlines unfired; failed effects roll back their writes 
 fire together. These seams enable the downstream leaves without activating unfinished
 hibernation, escalation, admission or delivery behavior. The absence of a `CANCELLED`
 task status is unchanged; downstream handlers must use actual settlement states.
+## Admission service and consumer dispatch
+
+`SchedulerWaitService` installs `scheduler_wait_sync` at the existing wait-reconciler
+cycle site. Both `v2_enabled` and `scheduler_waits_enabled` must be true; defaults
+remain false. Its candidate list carries no trusted verdict: every task and typed
+constraint is read again. `AdmissionReader` is the resource reader supplied to
+`build_registry(resource_reader=...)` for listener and dispatcher verification.
+It binds the actual task/project, repository, route/class/profile, configuration,
+claim epoch and scheduler owner. The identity hashes those bindings; occupancy,
+provider availability, backoff, budget and hold predicates produce opaque observation
+revisions. A stale binding is unavailable, never satisfied. Pending launches and
+reserved continuations occupy capacity; an in-place waiter remains busy and is also
+reported as `evictable`.
+
+The deadline-dispatch owner must call `SchedulerWaitService.deadline` for scheduler
+`reservation` and `escalation` deadlines through the exact `wait_deadline_fire`
+command hook. The temporary default hook refuses other lifecycle owners rather than
+handling their deadlines. The listener owns discovery/leases; it must compose this
+handler with its other deadline handlers before activation. Reconciliation preserves
+the first admission deadline across configuration rebinding. Firing it creates one
+reservation; its persisted second deadline creates one operational escalation.
+Configuration reload and restart never extend either clock. Deadline replay is inert.
+
+Reservations match the current repository, profile, class, route and claim epoch and
+reuse every ordinary frontier/routing/hold/backoff/Git-admission predicate. They order
+by effective priority then FIFO. The ordinary task transition cancels unconsumed
+reservations in the same SQL statement; a successful claim consumes only its selected
+reservation in that transaction. Disabled selection retains base-priority ordering and
+adds no claim round trips. Resume owns the continuation reservation scope (including
+`profile_id`) and `new_session_id`; occupancy counts its reservation before launch,
+then the live new session once, never the stopped origin session.
+
+The admission reader does not discover deadlines, dispatch source outcomes, launch
+continuations or evict sessions. The runtime composition below owns those operations
+and their integration checks. No installed policy is changed by this implementation.
+
+## Continuation runtime composition
+
+`src/wait_runtime/service.py` now composes the listener, dispatcher, scheduler
+admission deadlines, hibernation transaction, resume transaction and pool eviction.
+The database-only condition, graph and receipt code remains in `src/waits`; it does
+not import command, session or orchestrator packages. All v2 feature flags remain
+false by default.
+
+A task suspension retains its claim, token and workspace until the exact provider
+instance is stopped, the task branch is published, and the checkout is detached.
+The database park transaction then advances the claim epoch and retains the branch
+owner's reservation. An uncertain stop, publication or detach preserves ownership
+and records an operational hold. A source outcome during suspension is committed
+once and becomes resumable only after park.
+
+Resume uses `AdmissionReader` and a continuation-scoped reservation. It retires an
+unused pool process when a fresh session needs its seat, and counts that process
+until it actually stops. The resumed checkout has a new path; the saved head must
+remain an ancestor of the current branch. A new session receives an immutable
+outcome envelope and held-message snapshot. Rendering prime records delivery;
+only the exact session/instance/claim/generation ACK consumes that snapshot and
+returns the task to `IN_PROGRESS`. A failed launch retries once, then waits for a
+new, current provider recovery event.
+
+Sleep decisions record server-observed duration, resume cost, pressure and ceiling
+inputs. Thirty-day medians require the configured minimum sample count; otherwise
+configured defaults apply. `aq wait graph --costs` exposes aggregate measurements.
+Teardown runs from registration through workspace release, setup covers the new
+checkout, and rebuild runs from fresh-session start through the first successful
+prime. Token totals come from completed turns in the exact session transcript,
+including all calls and streamed counter revisions. Missing usage stays null;
+recent acknowledged continuations retry late first-turn accounting every 30 seconds.
+An eviction request selects the newest in-place wait, then less urgent priority,
+then lower resume cost. It sends one checkpoint request while keeping the source
+condition registered. Pool arbitration runs again immediately after proved park;
+a checkpoint request alone never authorizes a replacement process.

@@ -171,11 +171,15 @@ class WakeDispatcher:
                 )
                 if not isinstance(result, dict) or result.get("success") is not True:
                     raise ListenerUnavailable("transactional wait escalation resolution refused")
+        from src.waits.measurements import cost_values
+
         await conn.execute(insert(wait_measurements).values(
             id=f"outcome:{row['id']}", project_id=row["project_id"], wait_id=row["id"],
             condition_kind=cond.kind, source_class=adapter.source_class(cond),
             decision=row["sleep_decision"], waited_seconds=max(0, now - row["created_at"]),
-            hibernated=continuation is not None, evicted=False, recorded_at=now,
+            hibernated=bool(continuation and continuation['stopped_at'] is not None),
+            evicted=row['decision_reason'] == 'evicted', recorded_at=now,
+            **await cost_values(conn, row, continuation),
         ))
         await conn.execute(insert(events).values(
             event_type=f"wait.{outcome}", project_id=row["project_id"],
@@ -190,6 +194,11 @@ class WakeDispatcher:
             await conn.execute(update(wait_records).where(wait_records.c.id == row["id"]).values(
                 cleared_at=now,
             ))
+        elif continuation and continuation["stopped_at"] is None:
+            # The outcome commits once while the retiring writer still owns the
+            # slot. Park observes it and queues exactly this generation. Never
+            # deliver into a process which the stop transaction may be killing.
+            pass
         elif continuation:
             await conn.execute(update(continuations).where(
                 continuations.c.id == continuation["id"],

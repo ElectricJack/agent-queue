@@ -7267,3 +7267,31 @@ async def test_pr_missing_current_source_cannot_erase_recorded_artifact(db, pull
         )
     )
     assert not (await observe_admission(db, ["dependent"], env.service)).allowed
+
+
+@pytest.mark.parametrize('source_status, expected', [
+    (TaskStatus.READY, False), (TaskStatus.IN_PROGRESS, False), (TaskStatus.COMPLETED, True),
+])
+@pytest.mark.parametrize('artifact', ['branch', 'completion', 'legacy', None])
+async def test_project_admission_hint_ignores_unfinished_artifact_sources(
+    db, source_status, expected, artifact,
+):
+    from src.models import TaskCompletion
+
+    await db.create_task(Task(id='source-with-branch', project_id=PROJECT_ID,
+        title='Source', description='', status=source_status,
+        branch_name='aq/source' if artifact == 'branch' else None))
+    if artifact == 'completion':
+        await db.save_task_completion(TaskCompletion(
+            id='source-completion', task_id='source-with-branch', outcome='pass',
+            commits=['a' * 40],
+        ))
+    elif artifact == 'legacy':
+        await db.set_task_meta('source-with-branch', 'development_legacy_artifact',
+                               {'completion_id': None, 'source_sha': 'a' * 40})
+    await db.create_task(Task(id='blocked-dependent', project_id=PROJECT_ID,
+        title='Dependent', description='', status=TaskStatus.READY))
+    await db.add_dependency('blocked-dependent', 'source-with-branch')
+    async with db._engine.connect() as conn:
+        project = await db.get_project_for_claim(PROJECT_ID, conn=conn)
+    assert project._source_admission_required is (expected and artifact is not None)

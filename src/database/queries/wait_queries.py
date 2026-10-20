@@ -148,13 +148,17 @@ async def register_wait(
     escalate_after_seconds: float | None = None,
     loop_check=None,
     on_loop_detected=None,
+    ceiling_anchor_at=None,
+    observe_sleep_inputs=None,
 ) -> dict:
     """Register and return a stable receipt, or a structured refusal.
 
     ``policy``, ``decide_sleep`` and ``loop_check`` are server-injected seams
     for their owning leaves. decide_sleep(cond, evidence) is synchronous;
     loop_check(conn, scope, evidence, now) returns an overriding SleepDecision
-    or None. Runtime flag checks belong to the caller; v1 never calls here.
+    or None. observe_sleep_inputs optionally supplies audit inputs when the loop
+    policy bypasses the ordinary sleep decision. Runtime flag checks belong to
+    the caller; v1 never calls here.
 
     Supply exactly one of read_source_watermark or source_watermark. The async
     callback calls db.wait_source_watermark() on a separate short READ COMMITTED
@@ -284,6 +288,12 @@ async def register_wait(
         decision = await detect(conn, scope, evidence, now, policy=policy)
     if decision is None:
         decision = decide_sleep(cond, evidence)
+    else:
+        measured = observe_sleep_inputs(cond, evidence) if observe_sleep_inputs else {}
+        decision = SleepDecision(decision.mode, decision.reason,
+                                 {**measured, **decision.inputs, 'loop_detected': True})
+        if getattr(policy, 'hibernation_enabled', True) is False:
+            decision = SleepDecision('in_place', 'flag', decision.inputs)
     if not isinstance(decision, SleepDecision) or decision.mode not in {"in_place", "hibernate"}:
         raise ValueError("sleep decision must be supplied by the server")
     if cond.kind == "human":
@@ -297,8 +307,12 @@ async def register_wait(
     escalate_at = (deadlines.due_at or now) + seconds if seconds is not None else None
     if decision.reason == "wait.loop_detected":
         escalate_at = now
+    if ceiling_anchor_at is None:
+        from src.waits.decision import ceiling_anchor
+
+        ceiling_anchor_at = await ceiling_anchor(conn, scope, now=now, policy=policy)
     ceiling_at = (
-        now + policy.in_place_ceiling_seconds
+        ceiling_anchor_at + policy.in_place_ceiling_seconds
         if decision.mode == "in_place" and cond.kind not in {"human", "resource"}
         else None
     )
@@ -346,7 +360,7 @@ async def register_wait(
             created_at=now,
             escalate_at=escalate_at,
             due_at=deadlines.due_at,
-            ceiling_anchor_at=now if ceiling_at is not None else None,
+            ceiling_anchor_at=ceiling_anchor_at if ceiling_at is not None else None,
             sleep_decision=decision.mode,
             decision_reason=decision.reason,
             decision_inputs={**decision.inputs, "delivery": delivery,
@@ -752,7 +766,8 @@ async def wait_explain(
 
 
 async def wait_graph(
-    conn, *, project_id=None, fleet=False, fleet_authorized=False, now, limit=100, offset=0
+    conn, *, project_id=None, fleet=False, fleet_authorized=False, now, limit=100, offset=0,
+    costs=False,
 ):
     """Project/fleet summaries share the explain projection and explicit bounds.
 
@@ -884,9 +899,17 @@ async def wait_graph(
             .order_by(continuations.c.id)
             .limit(limit + 1),
         )
+        cost_projection = {}
+        if costs:
+            from src.database.queries.continuation_queries import measurement_medians
+
+            medians = await measurement_medians(conn, pid, now=now)
+            cost_projection = {'costs': {'durations': list(medians['durations'].values()),
+                                         'resume': medians['cost']}}
         summaries.append(
             {
                 "project_id": pid,
+                **cost_projection,
                 "counts": counts,
                 "waits": await _explain_rows(conn, records, project_id=pid, history=False, now=now),
                 "total_waits": sum(c["count"] for c in counts),

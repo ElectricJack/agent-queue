@@ -25,6 +25,7 @@ class PoolProjectStatus:
             ready (int | Unset):  Default: 0.
             running_idle (int | Unset):  Default: 0.
             running_busy (int | Unset):  Default: 0.
+            evictable (int | Unset):  Default: 0.
             starting (int | Unset):  Default: 0.
             draining (int | Unset):  Default: 0.
             max_concurrent_agents (int | None | Unset):
@@ -37,6 +38,7 @@ class PoolProjectStatus:
     ready: int | Unset = 0
     running_idle: int | Unset = 0
     running_busy: int | Unset = 0
+    evictable: int | Unset = 0
     starting: int | Unset = 0
     draining: int | Unset = 0
     max_concurrent_agents: int | None | Unset = UNSET
@@ -53,6 +55,8 @@ class PoolProjectStatus:
         running_idle = self.running_idle
 
         running_busy = self.running_busy
+
+        evictable = self.evictable
 
         starting = self.starting
 
@@ -91,6 +95,8 @@ class PoolProjectStatus:
             field_dict["running_idle"] = running_idle
         if running_busy is not UNSET:
             field_dict["running_busy"] = running_busy
+        if evictable is not UNSET:
+            field_dict["evictable"] = evictable
         if starting is not UNSET:
             field_dict["starting"] = starting
         if draining is not UNSET:
@@ -116,6 +122,8 @@ class PoolProjectStatus:
         running_idle = d.pop("running_idle", UNSET)
 
         running_busy = d.pop("running_busy", UNSET)
+
+        evictable = d.pop("evictable", UNSET)
 
         starting = d.pop("starting", UNSET)
 
@@ -155,6 +163,7 @@ class PoolProjectStatus:
             ready=ready,
             running_idle=running_idle,
             running_busy=running_busy,
+            evictable=evictable,
             starting=starting,
             draining=draining,
             max_concurrent_agents=max_concurrent_agents,
