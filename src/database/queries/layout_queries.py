@@ -1619,8 +1619,29 @@ class LayoutQueryMixin:
     )
 
     @classmethod
+    def _rows_with_tasks_statement(cls, *conditions):
+        """Join membership in one statement, bounded to the requested layout rows."""
+        from src.database.queries.ingest_batch_queries import task_batch_summary_rows
+        from src.database.tables import task_layouts, tasks
+
+        visible = (
+            select(task_layouts, *(tasks.c[f] for f in cls._TASK_FIELDS))
+            .select_from(task_layouts.join(tasks, tasks.c.id == task_layouts.c.task_id))
+            .where(*conditions)
+            .cte("visible_layout_tasks")
+        )
+        batches = task_batch_summary_rows(select(visible.c.task_id))
+        return select(visible, batches.c.ingest_batch_summary).select_from(
+            visible.outerjoin(batches, batches.c.task_id == visible.c.task_id)
+        )
+
+    @classmethod
     def _task_dict_from_mapping(cls, m):
+        from src.database.queries.ingest_batch_queries import batch_summary
+
         task = {f: m[f] for f in cls._TASK_FIELDS if f != "dedup_key"}
+        batch = m["ingest_batch_summary"]
+        task["held_batch"] = batch_summary(batch) if batch is not None else None
         task["is_blocked"] = bool(task["is_blocked"])
         dedup_key = m["dedup_key"]
         task["playbook_run_id"] = (
@@ -1667,19 +1688,16 @@ class LayoutQueryMixin:
             return out
 
     async def load_rows_with_tasks(self, project_id, variant, task_ids):
-        from src.database.tables import task_layouts, tasks
+        from src.database.tables import task_layouts
 
         ids = list(task_ids)
         if not ids:
             return {}
-        cols = [getattr(tasks.c, f) for f in self._TASK_FIELDS]
         async with self._engine.begin() as conn:
             out: dict = {}
             for chunk in _chunks(ids):
                 res = await conn.execute(
-                    select(task_layouts, *cols)
-                    .select_from(task_layouts.join(tasks, tasks.c.id == task_layouts.c.task_id))
-                    .where(
+                    self._rows_with_tasks_statement(
                         task_layouts.c.project_id == project_id,
                         task_layouts.c.variant == variant,
                         task_layouts.c.task_id.in_(chunk),
@@ -1731,7 +1749,7 @@ class LayoutQueryMixin:
         """
         from sqlalchemy import or_
 
-        from src.database.tables import task_layouts, tasks
+        from src.database.tables import task_layouts
 
         ids = list(dict.fromkeys(container_ids))
         if not ids:
@@ -1739,7 +1757,6 @@ class LayoutQueryMixin:
         want_root = None in ids
         named = [c for c in ids if c is not None]
         batches = _chunks(named) or ([[]] if want_root else [])
-        cols = [getattr(tasks.c, f) for f in self._TASK_FIELDS]
         out: dict = {}
         async with self._engine.begin() as conn:
             for i, chunk in enumerate(batches):
@@ -1752,9 +1769,7 @@ class LayoutQueryMixin:
                 if not clauses:
                     continue
                 res = await conn.execute(
-                    select(task_layouts, *cols)
-                    .select_from(task_layouts.join(tasks, tasks.c.id == task_layouts.c.task_id))
-                    .where(
+                    self._rows_with_tasks_statement(
                         task_layouts.c.project_id == project_id,
                         task_layouts.c.variant == variant,
                         or_(*clauses),
@@ -1765,14 +1780,11 @@ class LayoutQueryMixin:
             return out
 
     async def load_all_rows_with_tasks(self, project_id, variant):
-        from src.database.tables import task_layouts, tasks
+        from src.database.tables import task_layouts
 
-        cols = [getattr(tasks.c, f) for f in self._TASK_FIELDS]
         async with self._engine.begin() as conn:
             res = await conn.execute(
-                select(task_layouts, *cols)
-                .select_from(task_layouts.join(tasks, tasks.c.id == task_layouts.c.task_id))
-                .where(
+                self._rows_with_tasks_statement(
                     task_layouts.c.project_id == project_id, task_layouts.c.variant == variant
                 )
             )

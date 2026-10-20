@@ -26,7 +26,7 @@ import uuid
 from collections.abc import Iterable, Mapping
 from typing import Any
 
-from sqlalchemy import and_, or_, select, update
+from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from src.database.tables import (
@@ -320,6 +320,42 @@ async def task_batch_summary(conn, task_id: str) -> dict[str, Any] | None:
     return (await task_batch_summaries(conn, [task_id])).get(task_id)
 
 
+def _task_batch_rows(*, per_task=False):
+    """Membership order shared by standalone and joined task projections."""
+    return (
+        select(ingest_batches, task_proposals.c.source, ingest_batch_members.c.task_id)
+        .join(ingest_batch_members,
+              ingest_batch_members.c.batch_id == ingest_batches.c.batch_id)
+        .join(task_proposals, task_proposals.c.id == ingest_batches.c.batch_id)
+        .where(ingest_batch_members.c.state == "active")
+        .order_by(*([ingest_batch_members.c.task_id] if per_task else []),
+                  ingest_batches.c.state.in_(HELD_STATES).desc(),
+                  ingest_batches.c.created_at.desc(), ingest_batches.c.batch_id)
+    )
+
+
+def task_batch_summary_rows(task_ids):
+    """Canonical membership for an existing task SELECT, without a round trip.
+
+    Restrict the batched read to the caller's visible ids before choosing one
+    membership per task, retaining the same hold preference as bulk reads.
+    """
+    fields = {key: ingest_batches.c[key] for key in (*_SUMMARY_FIELDS, *_LINEAGE_FIELDS)
+              if key != "source"}
+    fields["source"] = task_proposals.c.source
+    summary = func.jsonb_build_object(
+        *(part for item in fields.items() for part in item)
+    )
+    return (
+        _task_batch_rows(per_task=True).with_only_columns(
+            ingest_batch_members.c.task_id, summary.label("ingest_batch_summary")
+        )
+        .where(ingest_batch_members.c.task_id.in_(task_ids))
+        .distinct(ingest_batch_members.c.task_id)
+        .subquery()
+    )
+
+
 async def task_batch_summaries(conn, task_ids: Iterable[str]) -> dict[str, dict[str, Any]]:
     """Canonical membership for visible tasks, independent of lifecycle status.
 
@@ -330,14 +366,7 @@ async def task_batch_summaries(conn, task_ids: Iterable[str]) -> dict[str, dict[
     if not ids:
         return {}
     rows = (await conn.execute(
-        select(ingest_batches, task_proposals.c.source, ingest_batch_members.c.task_id)
-        .join(ingest_batch_members,
-              ingest_batch_members.c.batch_id == ingest_batches.c.batch_id)
-        .join(task_proposals, task_proposals.c.id == ingest_batches.c.batch_id)
-        .where(ingest_batch_members.c.task_id.in_(ids),
-               ingest_batch_members.c.state == "active")
-        .order_by(ingest_batches.c.state.in_(HELD_STATES).desc(),
-                  ingest_batches.c.created_at.desc(), ingest_batches.c.batch_id)
+        _task_batch_rows().where(ingest_batch_members.c.task_id.in_(ids))
     )).mappings()
     summaries = {}
     for row in rows:
@@ -345,15 +374,17 @@ async def task_batch_summaries(conn, task_ids: Iterable[str]) -> dict[str, dict[
     return summaries
 
 
+_SUMMARY_FIELDS = ("batch_id", "state", "structure_revision", "reviewer_task_id", "source")
+_LINEAGE_FIELDS = (
+    "lineage_kind", "design_review_id", "design_revision", "design_content_sha256",
+)
+
+
 def batch_summary(batch: Mapping[str, Any]) -> dict[str, Any]:
     """Common task/batch read shape; source is the proposal's source label."""
     return {
-        **{key: batch[key] for key in (
-            "batch_id", "state", "structure_revision", "reviewer_task_id", "source",
-        )},
-        "lineage": {key: batch[key] for key in (
-            "lineage_kind", "design_review_id", "design_revision", "design_content_sha256",
-        )},
+        **{key: batch[key] for key in _SUMMARY_FIELDS},
+        "lineage": {key: batch[key] for key in _LINEAGE_FIELDS},
     }
 
 

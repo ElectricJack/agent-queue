@@ -7789,7 +7789,7 @@
         "task-dependencies"
       ],
       "default_arm": true,
-      "digest": "sha256:353691bbbd11cc3267fd96d7f95927f07b574074ab0bd7a856472049cca9cba5",
+      "digest": "sha256:b34e2f0a84f43287d86e2453cfaa5c260a73b44e47d8bb0d4d3988dec2ae0d93",
       "imports": [
         "src.database.queries",
         "src.database.queries.ingest_batch_queries",
@@ -7799,7 +7799,9 @@
         "src.reviews.service",
         "src.task_graph.batch_digest"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "Held ingestion batch queries (implementation spec 2026-10-14 P1 L1.1)."
     },
     "tests/test_ingest_hold_admission.py": {

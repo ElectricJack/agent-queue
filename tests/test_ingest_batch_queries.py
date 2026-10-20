@@ -180,6 +180,47 @@ async def test_create_replays_the_same_source(db):
     assert again["batch"]["batch_id"] == first["batch"]["batch_id"]
 
 
+@pytest.mark.parametrize(("older_state", "newer_state", "retire_newer", "preferred"), [
+    ("held", "released", False, "older"),
+    ("released", "held", False, "newer"),
+    ("released", "released", False, "newer"),
+    ("released", "held", True, "older"),
+])
+async def test_joined_batch_summary_preserves_membership_preference(
+    db, older_state, newer_state, retire_newer, preferred,
+):
+    for tid in ("member", "ordinary", "outside"):
+        await mktask(db, tid)
+    batch_ids = {}
+    for name, state, timestamp in (("older", older_state, 1), ("newer", newer_state, 2)):
+        bid = (await new_batch(db, review_id=name))["batch"]["batch_id"]
+        batch_ids[name] = bid
+        await join(db, bid, "member", "leaf")
+        await join(db, bid, "outside", "outside")
+        async with db.immediate() as conn:
+            await conn.execute(q.ingest_batches.update().where(
+                q.ingest_batches.c.batch_id == bid,
+            ).values(created_at=timestamp))
+            if state == "released":
+                digest = await q.store_live_digest(conn, bid)
+                assert (await q.release(
+                    conn, bid, expected_revision=1, expected_digest=digest,
+                    actor="supervisor", release_receipt={"task_ids": ["member", "outside"]},
+                ))["success"]
+    async with db.immediate() as conn:
+        if retire_newer:
+            assert (await q.retire_member(
+                conn, batch_ids["newer"], "member", reason="superseded", retired_revision=2,
+            ))["success"]
+        visible_ids = select(tasks.c.id).where(tasks.c.id.in_(["member", "ordinary"]))
+        joined = q.task_batch_summary_rows(visible_ids)
+        rows = (await conn.execute(select(joined))).mappings().all()
+        assert [row["task_id"] for row in rows] == ["member"]
+        actual = q.batch_summary(rows[0]["ingest_batch_summary"])
+        assert actual == await q.task_batch_summary(conn, "member")
+        assert actual["batch_id"] == batch_ids[preferred]
+
+
 async def test_members_hold_tasks_and_digest_reads_live_rows(db):
     batch_id, digest = await two_member_batch(db)
     assert await held_by(db, "root") == await held_by(db, "leaf-a") == batch_id

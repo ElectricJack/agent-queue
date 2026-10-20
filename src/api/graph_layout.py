@@ -58,7 +58,6 @@ from src.api.models.graph_layout import (
 from src.api.scope import check_request_scope
 from src.database.queries.hierarchy_queries import PHASE_KEY
 from src.task_graph.activity import load_activity
-from src.task_graph.ingestion import load_ingestion
 from src.task_graph.layout.compaction import Box, compact_layout
 from src.task_graph.layout.constants import CELL_SIZE, FINISHED_STATUSES, VARIANTS
 from src.task_graph.layout.view import (
@@ -247,9 +246,8 @@ def build_graph_layout_router(*, db, command_handler=None) -> APIRouter:
         readiness = await load_readiness(db, [
             {**task, "project_id": project_id} for _, task in rows_with_tasks
         ])
-        ingestion = await load_ingestion(db, [task for _, task in rows_with_tasks])
-        for tid, fields in ingestion.items():
-            readiness.setdefault(tid, {}).update(fields)
+        # Batch membership already rides on the joined task rows; a second
+        # ingestion read here would add a round trip to every viewport.
         if not ids:
             return _with_activity({}, readiness)
         from src.integration.epic_delivery import EpicDeliveryProjection, lease_ttl_from
