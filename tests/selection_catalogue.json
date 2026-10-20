@@ -44,6 +44,7 @@
         "tests/test_wait_commands.py",
         "tests/test_wait_decisions.py",
         "tests/test_wait_dispatch.py",
+        "tests/test_wait_faults.py",
         "tests/test_wait_graph.py",
         "tests/test_wait_hibernation.py",
         "tests/test_wait_holding.py",
@@ -18492,6 +18493,42 @@
         "parametrize"
       ],
       "summary": "Authoritative source transitions write unconditional, transactional wait events."
+    },
+    "tests/test_wait_faults.py": {
+      "areas": [
+        "agent-waits"
+      ],
+      "default_arm": true,
+      "digest": "sha256:41490c25b51d6ece8a891fce12554ea435750e8b874e6ef6528dad35a16e8551",
+      "imports": [
+        "src.config",
+        "src.database.queries.wait_queries",
+        "src.database.tables",
+        "src.git.manager",
+        "src.messages.delivery",
+        "src.models",
+        "src.prime",
+        "src.scheduler",
+        "src.sessions.reconciler",
+        "src.wait_runtime.eviction",
+        "src.wait_runtime.hibernate",
+        "src.wait_runtime.legacy_human",
+        "src.wait_runtime.lifecycle",
+        "src.wait_runtime.resume",
+        "src.wait_runtime.scheduler",
+        "src.waits.conditions",
+        "src.waits.decision",
+        "src.waits.fencing",
+        "src.waits.mail",
+        "src.waits.registry",
+        "src.waits.reservations",
+        "src.waits.resume_ack"
+      ],
+      "markers": [
+        "parametrize",
+        "tmux"
+      ],
+      "summary": "Design §15 acceptance matrix across persistence, delivery and lifecycle boundaries."
     },
     "tests/test_wait_graph.py": {
       "areas": [
