@@ -7,7 +7,8 @@ from pathlib import Path
 from sqlalchemy import or_, select
 
 from src.claim_file import read_claim_file
-from src.database.tables import integration_branch_owners, job_workspace_pins, sessions
+from src.database.tables import integration_branch_owners, job_workspace_pins, jobs, sessions
+from src.jobs.policy import TERMINAL
 
 
 async def reconcile_slot_bindings(db, mgr, project_id: str) -> list[dict]:
@@ -54,62 +55,105 @@ async def _inspect_binding(db, mgr, ws) -> str | None:
             sessions.c.agent_id == ws.locked_by_agent_id if ws.locked_by_agent_id
             else sessions.c.id.is_(None),
         )))).mappings().all()
-        retained = await conn.scalar(select(integration_branch_owners.c.owner_id).where(
+        owners = (await conn.execute(select(integration_branch_owners).where(
             integration_branch_owners.c.workspace_id == ws.id,
             integration_branch_owners.c.handoff_state.in_(("attached", "handoff_pending")),
-        ).limit(1))
-        pinned = await conn.scalar(select(job_workspace_pins.c.workspace_id).where(
-            job_workspace_pins.c.workspace_id == ws.id,
-        ).limit(1))
-    if retained is not None or pinned is not None:
-        return "integration owner or job pin retained; use its exact recovery fence"
+        ))).mappings().all()
+        pins = (await conn.execute(select(
+            job_workspace_pins.c.generation.label("pin_generation"), jobs,
+        ).select_from(job_workspace_pins.outerjoin(
+            jobs, jobs.c.id == job_workspace_pins.c.job_id,
+        )).where(job_workspace_pins.c.workspace_id == ws.id))).mappings().all()
     task = await db.get_task(ws.locked_by_task_id) if ws.locked_by_task_id else None
+    detail, session = await _prove_binding(db, mgr, ws, task, holders)
+    if owners or pins:
+        # A pin or attached owner protects the checkout. It is healthy only
+        # when it names exactly the binding proved above; anything else keeps
+        # its own fence and needs owner-fenced recovery.
+        mismatch = _retention_mismatch(ws, task, session, owners, pins)
+        if mismatch is not None:
+            return f"integration owner or job pin retained; use its exact recovery fence ({mismatch})"
+    return detail
+
+
+def _retention_mismatch(ws, task, session, owners, pins) -> str | None:
+    if task is None or session is None:
+        return "no unique current session proves the retained holder"
+    branch = (task.branch_name or "").removeprefix("refs/heads/")
+    for owner in owners:
+        if owner["fence"] is not None or owner["handoff_state"] != "attached":
+            return f"owner {owner['id']} is {owner['handoff_state']}, not a live attachment"
+        if owner["owner_id"] != task.id or owner["session_id"] != session["id"]:
+            return f"owner {owner['id']} belongs to another task or session"
+        if (not branch or owner["ref"].removeprefix("refs/heads/") != branch
+                or (task.repo_id and owner["repository_id"] != task.repo_id)):
+            return f"owner {owner['id']} names another repository or branch"
+    for pin in pins:
+        if pin["id"] is None:
+            return "job pin has no job record"
+        if (pin["pin_generation"] != ws.generation or pin["workspace_generation"] != ws.generation
+                or pin["workspace_id"] != ws.id or pin["project_id"] != ws.project_id):
+            return f"job {pin['id']} pins another workspace generation"
+        if (pin["owner_kind"] != "task" or pin["task_id"] != task.id
+                or pin["claim_epoch"] != task.claim_epoch
+                or pin["submitter_session_id"] != session["id"]):
+            return f"job {pin['id']} belongs to another task, claim or session"
+        if pin["state"] in TERMINAL or pin["cleanup_blocked"]:
+            return f"job {pin['id']} is {pin['state']} but its pin remains"
+    return None
+
+
+async def _prove_binding(db, mgr, ws, task, holders):
+    """Return the binding finding and the unique current session it proved."""
     if (task is None or task.project_id != ws.project_id
             or task.assigned_agent_id != ws.locked_by_agent_id):
-        return "registered task/agent binding disagrees; source and lock preserved"
-    claim_path = Path(ws.workspace_path, ".aq", "claim.json")
-    claim = read_claim_file(ws.workspace_path)
-    if claim_path.exists() and claim is None:
-        return "claim file is unreadable or malformed; source and lock preserved"
+        return "registered task/agent binding disagrees; source and lock preserved", None
     active = [row for row in holders if row["state"] in ("starting", "running", "draining")]
     exact = [row for row in active if row["project_id"] == ws.project_id
              and row["work_dir"] == ws.workspace_path
              and row["agent_id"] == ws.locked_by_agent_id
              and row["task_id"] == task.id and row["last_claim_epoch"] == task.claim_epoch]
+    session = exact[0] if len(exact) == 1 and len(active) == 1 else None
+    claim_path = Path(ws.workspace_path, ".aq", "claim.json")
+    claim = read_claim_file(ws.workspace_path)
+    if claim_path.exists() and claim is None:
+        return "claim file is unreadable or malformed; source and lock preserved", None
     if claim is not None and not any(
         claim.get("task_id") == task.id and claim.get("claim_epoch") == task.claim_epoch
         and claim.get("session_id") == row["id"] for row in exact
     ):
-        return "foreign or unproved claim retained; no automatic claim retirement"
-    if len(exact) == 1 and len(active) == 1 and exact[0]["claim_phase"] in ("claiming", "preparing"):
-        return "preparation in progress; predecessor checkout may still be valid"
+        return "foreign or unproved claim retained; no automatic claim retirement", None
+    if session is not None and session["claim_phase"] in ("claiming", "preparing"):
+        return "preparation in progress; predecessor checkout may still be valid", session
     try:
         sentinel = mgr.read_sentinel(ws.workspace_path)
         if (sentinel is None or sentinel.workspace_id != ws.id
                 or sentinel.project_id != ws.project_id
                 or sentinel.base_workspace_id != ws.base_workspace_id
                 or sentinel.task_id != task.id):
-            return "source sentinel disagrees with the active binding; source preserved"
+            return "source sentinel disagrees with the active binding; source preserved", session
         base = await mgr._base_of(ws)
         if (base is None or base.project_id != ws.project_id
                 or await mgr.git.aworktree_base_path(ws.workspace_path)
                 != await mgr.git.aworktree_base_path(base.workspace_path)):
-            return "checkout repository disagrees with the registered base; source preserved"
+            return ("checkout repository disagrees with the registered base; source preserved",
+                    session)
         branch = await mgr.git.aget_current_branch(ws.workspace_path)
         if branch != task.branch_name or sentinel.branch != task.branch_name:
-            return "checkout branch disagrees with the active binding; source preserved"
+            return "checkout branch disagrees with the active binding; source preserved", session
         # Process inventory failure cannot be interpreted as an empty inventory.
         await mgr._slot_is_live(ws)
     except Exception as exc:
-        return f"source or process inventory unverifiable ({type(exc).__name__}); binding preserved"
-    if len(exact) != 1 or len(active) != 1:
-        return "no unique current session proves this binding; absence is not quiescence"
+        reason = f"source or process inventory unverifiable ({type(exc).__name__})"
+        return f"{reason}; binding preserved", session
+    if session is None:
+        return "no unique current session proves this binding; absence is not quiescence", None
     if claim is None:
-        return "active binding has no claim-file proof; source and lock preserved"
+        return "active binding has no claim-file proof; source and lock preserved", None
     receipt = await db.get_task_meta(task.id, "claim_workspace")
     expected = {"workspace_id": ws.id, "generation": ws.generation,
-                "session_id": exact[0]["id"], "instance_token": exact[0]["instance_token"],
+                "session_id": session["id"], "instance_token": session["instance_token"],
                 "claim_epoch": task.claim_epoch}
     if receipt != expected:
-        return "acquisition receipt missing or stale; historical binding preserved"
-    return None
+        return "acquisition receipt missing or stale; historical binding preserved", None
+    return None, session
