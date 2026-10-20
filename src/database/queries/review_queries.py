@@ -361,6 +361,15 @@ class ReviewQueriesMixin:
             )
             .values(**values)
         )
+        if result.rowcount == 1 and "state" in values:
+            from src.waits.sources import record_source_event
+
+            await record_source_event(
+                conn, source_key=f"review:{review_id}", generation=expected_revision,
+                revision=str(values["state"]), outcome_ref=f"review:{review_id}:{expected_revision}",
+                payload={"review_id": review_id, "revision": expected_revision,
+                         "state": values["state"]},
+            )
         return result.rowcount == 1
 
     # -- revisions ---------------------------------------------------------

@@ -776,7 +776,8 @@ class KnowledgeGenerationConfig(KnowledgeFeatureConfig):
 
 @dataclass
 class KnowledgeContextConfig(KnowledgeFeatureConfig):
-    input_max_tokens: int = 32768
+    # None derives the ceiling from the live model window; integers are operator caps.
+    input_max_tokens: int | None = None
     output_reserve_tokens: int = 4096
     wrapper_reserve_tokens: int = 256
     max_tokens: int = 4096
@@ -858,6 +859,8 @@ class KnowledgeConfig:
             "bundle_ttl_seconds",
         ):
             value = getattr(self.context, name, None)
+            if name == "input_max_tokens" and value is None:
+                continue
             if type(value) is not int or value < 0:
                 errors.append(ConfigError("knowledge", f"context.{name}", "must be nonnegative"))
         item_limit = getattr(self.context, "discovery_max_items", None)
@@ -2108,6 +2111,11 @@ class SecurityConfig:
             )
         return errors
 
+
+from src.config_wait_policy import (  # noqa: E402
+    WaitKindPolicy as WaitKindPolicy, WaitPolicyConfig,
+    WaitProjectOverrides as WaitProjectOverrides, parse_wait_policy,
+)
 
 @dataclass
 class MessagesConfig:
@@ -3930,6 +3938,7 @@ class AppConfig:
     streams: StreamsConfig = field(default_factory=StreamsConfig)
     security: SecurityConfig = field(default_factory=SecurityConfig)
     pricing: PricingConfig = field(default_factory=PricingConfig)
+    wait_policy: WaitPolicyConfig = field(default_factory=WaitPolicyConfig)
     messages: MessagesConfig = field(default_factory=MessagesConfig)
     events: EventsConfig = field(default_factory=EventsConfig)
     supervisor_agent: SupervisorAgentConfig = field(default_factory=SupervisorAgentConfig)
@@ -4156,6 +4165,7 @@ class AppConfig:
         errors.extend(self.security.validate())
         errors.extend(self.pricing.validate())
         errors.extend(self.messages.validate())
+        errors.extend(self.wait_policy.validate())
         errors.extend(self.supervisor_agent.validate())
         errors.extend(self.api_auth.validate())
         errors.extend(self.surface.validate())
@@ -4312,6 +4322,7 @@ def config_section_names() -> tuple[str, ...]:
 
 
 HOT_RELOADABLE_SECTIONS = {
+    "wait_policy",
     "scheduling",
     "monitoring",
     "archive",
@@ -5360,6 +5371,9 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
                 )
             )
         config.pricing = PricingConfig(models=entries)
+
+    if "wait_policy" in raw:
+        config.wait_policy = parse_wait_policy(raw["wait_policy"])
 
     if "messages" in raw and isinstance(raw["messages"], dict):
         ms_cfg = raw["messages"]

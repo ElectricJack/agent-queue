@@ -455,6 +455,11 @@ class SurfaceCommandsMixin:
         except ValueError as exc:
             return {"error": str(exc)}
 
+        if any(section.key == "wait_outcome" for section in doc.sections):
+            await self._record_continuation_prime_delivery(
+                scope.get("session_id") or args.get("session_id"),
+            )
+
         from src.commands.principal import current_principal
         from src.knowledge.context import (
             ACCESS_REFUSAL_CODES,
@@ -484,14 +489,30 @@ class SurfaceCommandsMixin:
 
                         # Counts and configured limits only; do not expose the
                         # undelivered instruction bodies through diagnostics.
+                        accounting = (
+                            bundle.budget if bundle is not None
+                            else ContextBudget.from_config(self.config).account(doc.to_markdown())
+                        )
+                        section_bytes = {
+                            s.key: len(s.body.encode("utf-8")) for s in doc.sections
+                        }
+                        largest = sorted(section_bytes.items(), key=lambda item: -item[1])[:3]
+                        requested = accounting["requested"]
+                        available = max(0, requested["input_tokens"]
+                                        - requested["output_tokens"] - requested["wrapper_tokens"])
+                        result["error"] = (
+                            f"{exc.code}: required body {len(doc.to_markdown().encode('utf-8'))} "
+                            f"bytes exceeds {available} available "
+                            f"(input ceiling {requested['input_tokens']}, "
+                            f"output/wrapper reserve "
+                            f"{requested['output_tokens'] + requested['wrapper_tokens']}); "
+                            "largest required sections (UTF-8 bytes, excluding headings): "
+                            + ", ".join(f"{key}={size}" for key, size in largest)
+                        )
                         result.update(
-                            context_budget=ContextBudget.from_config(self.config).account(
-                                doc.to_markdown(),
-                            ),
+                            context_budget=accounting,
                             required_body_bytes=len(doc.to_markdown().encode("utf-8")),
-                            required_section_bytes={
-                                s.key: len(s.body.encode("utf-8")) for s in doc.sections
-                            },
+                            required_section_bytes=section_bytes,
                             source=doc.source,
                         )
                     return result

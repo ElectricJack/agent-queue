@@ -13143,6 +13143,53 @@
         }
       }
     },
+    "/api/project/workspace-clear-sentinel": {
+      "post": {
+        "tags": [
+          "project"
+        ],
+        "summary": "Return a worktree slot's .aq-worktree.json sentinel to the free form when the task it still names is completed, failed, blocked or gone. Refuses unless the slot holds no task lock, claim file, live claiming session, integration owner or job pin, and its tree is clean with HEAD published under a remote ref. Use when claim preparation reports 'branch disagrees with its source sentinel' after the named task ended.",
+        "description": "Return a worktree slot's .aq-worktree.json sentinel to the free form when the task it still names is completed, failed, blocked or gone. Refuses unless the slot holds no task lock, claim file, live claiming session, integration owner or job pin, and its tree is clean with HEAD published under a remote ref. Use when claim preparation reports 'branch disagrees with its source sentinel' after the named task ended.",
+        "operationId": "workspace_clear_sentinel",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WorkspaceClearSentinelRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkspaceClearSentinelResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/project/workspace-cutover": {
       "post": {
         "tags": [
@@ -18648,6 +18695,53 @@
         }
       }
     },
+    "/api/task/discard-pause-checkpoint": {
+      "post": {
+        "tags": [
+          "task"
+        ],
+        "summary": "Discard a task's paused Git checkpoint so preparation stops restoring it, e.g. one captured from another task's slot checkout. Its ref and commit stay reachable and are recorded in a manual_pause_checkpoint_discarded audit entry.",
+        "description": "Discard a task's paused Git checkpoint so preparation stops restoring it, e.g. one captured from another task's slot checkout. Its ref and commit stay reachable and are recorded in a manual_pause_checkpoint_discarded audit entry.",
+        "operationId": "discard_pause_checkpoint",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DiscardPauseCheckpointRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DiscardPauseCheckpointResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/task/edit": {
       "post": {
         "tags": [
@@ -22023,6 +22117,53 @@
         }
       }
     },
+    "/api/wait/ack": {
+      "post": {
+        "tags": [
+          "wait"
+        ],
+        "summary": "Acknowledge a verified wait outcome for the held claim.",
+        "description": "Acknowledge a verified wait outcome for the held claim.",
+        "operationId": "wait_ack",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WaitAckArgs"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WaitAckResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/wait/cancel": {
       "post": {
         "tags": [
@@ -22035,7 +22176,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/WaitCancelRequest"
+                "$ref": "#/components/schemas/WaitCancelArgs"
               }
             }
           },
@@ -22048,6 +22189,147 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/WaitResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/wait/checkpoint": {
+      "post": {
+        "tags": [
+          "wait"
+        ],
+        "summary": "Save a continuation checkpoint for the held claim's verified wait.",
+        "description": "Save a continuation checkpoint for the held claim's verified wait.",
+        "operationId": "wait_checkpoint",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WaitCheckpointArgs"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WaitCheckpointResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/wait/decide": {
+      "post": {
+        "tags": [
+          "wait"
+        ],
+        "summary": "Record a supervisor decision for a verified wait.",
+        "description": "Record a supervisor decision for a verified wait.",
+        "operationId": "wait_decide",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WaitDecideArgs"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WaitDecideResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/wait/explain": {
+      "post": {
+        "tags": [
+          "wait"
+        ],
+        "summary": "Explain a verified wait's condition, evidence and outcome.",
+        "description": "Explain a verified wait's condition, evidence and outcome.",
+        "operationId": "wait_explain",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WaitExplainArgs"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WaitExplainResponse"
                 }
               }
             }
@@ -22082,7 +22364,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/WaitGetRequest"
+                "$ref": "#/components/schemas/WaitGetArgs"
               }
             }
           },
@@ -22117,6 +22399,147 @@
         }
       }
     },
+    "/api/wait/graph": {
+      "post": {
+        "tags": [
+          "wait"
+        ],
+        "summary": "Inspect the dependency graph of verified waits.",
+        "description": "Inspect the dependency graph of verified waits.",
+        "operationId": "wait_graph",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WaitGraphArgs"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WaitGraphResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/wait/legacy-bridge": {
+      "post": {
+        "tags": [
+          "wait"
+        ],
+        "summary": "Wait legacy bridge through verified wait state.",
+        "description": "Wait legacy bridge through verified wait state.",
+        "operationId": "wait_legacy_bridge",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WaitLegacyBridgeArgs"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WaitBridgeResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/wait/lift": {
+      "post": {
+        "tags": [
+          "wait"
+        ],
+        "summary": "Lift an escalated verified wait with an authorized decision.",
+        "description": "Lift an escalated verified wait with an authorized decision.",
+        "operationId": "wait_lift",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WaitLiftArgs"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WaitDecideResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/wait/list": {
       "post": {
         "tags": [
@@ -22129,7 +22552,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/WaitListRequest"
+                "$ref": "#/components/schemas/WaitListArgs"
               }
             }
           },
@@ -22176,7 +22599,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/WaitRegisterRequest"
+                "$ref": "#/components/schemas/WaitRegisterArgs"
               }
             }
           },
@@ -33583,6 +34006,77 @@
         ],
         "title": "DigestWindowRecord"
       },
+      "DiscardPauseCheckpointRequest": {
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "title": "Task Id",
+            "description": "Task whose checkpoint to discard"
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason",
+            "description": "Why the checkpoint is discarded (audited)"
+          }
+        },
+        "type": "object",
+        "required": [
+          "task_id",
+          "reason"
+        ],
+        "title": "DiscardPauseCheckpointRequest"
+      },
+      "DiscardPauseCheckpointResponse": {
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "title": "Task Id"
+          },
+          "discarded": {
+            "type": "boolean",
+            "title": "Discarded"
+          },
+          "branch": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Branch"
+          },
+          "ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ref"
+          },
+          "commit": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Commit"
+          }
+        },
+        "type": "object",
+        "required": [
+          "task_id",
+          "discarded"
+        ],
+        "title": "DiscardPauseCheckpointResponse"
+      },
       "DiscordCutoverStatus": {
         "properties": {
           "status": {
@@ -34856,7 +35350,7 @@
               }
             ],
             "title": "Status",
-            "description": "New status \u2014 admin override, bypasses state machine (optional)"
+            "description": "New lifecycle status (optional); suspended states require wait controls"
           },
           "max_retries": {
             "anyOf": [
@@ -40633,6 +41127,21 @@
           },
           "status": {
             "type": "string",
+            "enum": [
+              "",
+              "DEFINED",
+              "READY",
+              "ASSIGNED",
+              "IN_PROGRESS",
+              "WAITING",
+              "HIBERNATED",
+              "RESUME_PENDING",
+              "WAITING_INPUT",
+              "PAUSED",
+              "COMPLETED",
+              "FAILED",
+              "BLOCKED"
+            ],
             "title": "Status",
             "default": ""
           },
@@ -51859,6 +52368,15 @@
       },
       "MessageWaitArgs": {
         "properties": {
+          "schema_version": {
+            "type": "integer",
+            "enum": [
+              1,
+              2
+            ],
+            "title": "Schema Version",
+            "default": 1
+          },
           "project_id": {
             "anyOf": [
               {
@@ -52060,6 +52578,9 @@
               "PAUSED": 0.0,
               "BLOCKED": 0.0,
               "WAITING_INPUT": 0.0,
+              "WAITING": 0.0,
+              "HIBERNATED": 0.0,
+              "RESUME_PENDING": 0.0,
               "other": 0.0,
               "total": 0.0
             }
@@ -52134,6 +52655,16 @@
             "default": {
               "collect_ms": 0.0
             }
+          },
+          "waits": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WaitMetrics"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "perf": {
             "$ref": "#/components/schemas/PerfMetrics",
@@ -58598,6 +59129,11 @@
             "title": "Running Busy",
             "default": 0
           },
+          "evictable": {
+            "type": "integer",
+            "title": "Evictable",
+            "default": 0
+          },
           "starting": {
             "type": "integer",
             "title": "Starting",
@@ -59277,6 +59813,11 @@
           "running_busy": {
             "type": "integer",
             "title": "Running Busy"
+          },
+          "evictable": {
+            "type": "integer",
+            "title": "Evictable",
+            "default": 0
           },
           "starting": {
             "type": "integer",
@@ -76926,6 +77467,21 @@
           },
           "status": {
             "type": "string",
+            "enum": [
+              "",
+              "DEFINED",
+              "READY",
+              "ASSIGNED",
+              "IN_PROGRESS",
+              "WAITING",
+              "HIBERNATED",
+              "RESUME_PENDING",
+              "WAITING_INPUT",
+              "PAUSED",
+              "COMPLETED",
+              "FAILED",
+              "BLOCKED"
+            ],
             "title": "Status",
             "default": ""
           },
@@ -77280,6 +77836,21 @@
           },
           "status": {
             "type": "string",
+            "enum": [
+              "",
+              "DEFINED",
+              "READY",
+              "ASSIGNED",
+              "IN_PROGRESS",
+              "WAITING",
+              "HIBERNATED",
+              "RESUME_PENDING",
+              "WAITING_INPUT",
+              "PAUSED",
+              "COMPLETED",
+              "FAILED",
+              "BLOCKED"
+            ],
             "title": "Status",
             "default": ""
           }
@@ -77352,6 +77923,21 @@
           "WAITING_INPUT": {
             "type": "number",
             "title": "Waiting Input",
+            "default": 0
+          },
+          "WAITING": {
+            "type": "number",
+            "title": "Waiting",
+            "default": 0
+          },
+          "HIBERNATED": {
+            "type": "number",
+            "title": "Hibernated",
+            "default": 0
+          },
+          "RESUME_PENDING": {
+            "type": "number",
+            "title": "Resume Pending",
             "default": 0
           },
           "other": {
@@ -78533,6 +79119,21 @@
           },
           "status": {
             "type": "string",
+            "enum": [
+              "",
+              "DEFINED",
+              "READY",
+              "ASSIGNED",
+              "IN_PROGRESS",
+              "WAITING",
+              "HIBERNATED",
+              "RESUME_PENDING",
+              "WAITING_INPUT",
+              "PAUSED",
+              "COMPLETED",
+              "FAILED",
+              "BLOCKED"
+            ],
             "title": "Status",
             "default": ""
           },
@@ -79066,6 +79667,21 @@
           },
           "status": {
             "type": "string",
+            "enum": [
+              "",
+              "DEFINED",
+              "READY",
+              "ASSIGNED",
+              "IN_PROGRESS",
+              "WAITING",
+              "HIBERNATED",
+              "RESUME_PENDING",
+              "WAITING_INPUT",
+              "PAUSED",
+              "COMPLETED",
+              "FAILED",
+              "BLOCKED"
+            ],
             "title": "Status",
             "default": ""
           },
@@ -81556,25 +82172,8 @@
         ],
         "title": "ValidationError"
       },
-      "WaitCancelRequest": {
+      "WaitAckArgs": {
         "properties": {
-          "wait_id": {
-            "type": "string",
-            "title": "Wait Id",
-            "description": ""
-          },
-          "claim_epoch": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Claim Epoch",
-            "description": ""
-          },
           "project_id": {
             "anyOf": [
               {
@@ -81584,8 +82183,7 @@
                 "type": "null"
               }
             ],
-            "title": "Project Id",
-            "description": ""
+            "title": "Project Id"
           },
           "task_id": {
             "anyOf": [
@@ -81596,8 +82194,7 @@
                 "type": "null"
               }
             ],
-            "title": "Task Id",
-            "description": ""
+            "title": "Task Id"
           },
           "session_id": {
             "anyOf": [
@@ -81608,15 +82205,633 @@
                 "type": "null"
               }
             ],
-            "title": "Session Id",
-            "description": ""
+            "title": "Session Id"
+          },
+          "claim_epoch": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claim Epoch"
+          },
+          "wait_id": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Wait Id"
+          },
+          "continuation_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Continuation Id"
+          },
+          "generation": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Generation"
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "required": [
           "wait_id"
         ],
-        "title": "WaitCancelRequest"
+        "title": "WaitAckArgs"
+      },
+      "WaitAckResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "wait_id": {
+            "type": "string",
+            "title": "Wait Id"
+          },
+          "acknowledged": {
+            "type": "boolean",
+            "title": "Acknowledged"
+          },
+          "continuation_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Continuation Id"
+          },
+          "generation": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Generation"
+          },
+          "next_step": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Step"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "wait_id",
+          "acknowledged"
+        ],
+        "title": "WaitAckResponse"
+      },
+      "WaitBridgeResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "result": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Result"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "WaitBridgeResponse"
+      },
+      "WaitCancelArgs": {
+        "properties": {
+          "schema_version": {
+            "type": "integer",
+            "enum": [
+              1,
+              2
+            ],
+            "title": "Schema Version",
+            "default": 1
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Id"
+          },
+          "wait_id": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Wait Id"
+          },
+          "claim_epoch": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claim Epoch"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "wait_id"
+        ],
+        "title": "WaitCancelArgs"
+      },
+      "WaitCheckpointArgs": {
+        "properties": {
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Id"
+          },
+          "claim_epoch": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claim Epoch"
+          },
+          "wait_id": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Wait Id"
+          },
+          "summary": {
+            "type": "string",
+            "maxLength": 8192,
+            "minLength": 1,
+            "title": "Summary"
+          },
+          "continuation_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Continuation Id"
+          },
+          "generation": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Generation"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "wait_id",
+          "summary"
+        ],
+        "title": "WaitCheckpointArgs"
+      },
+      "WaitCheckpointResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "continuation_id": {
+            "type": "string",
+            "title": "Continuation Id"
+          },
+          "generation": {
+            "type": "integer",
+            "title": "Generation"
+          },
+          "next_step": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Step"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "continuation_id",
+          "generation"
+        ],
+        "title": "WaitCheckpointResponse"
+      },
+      "WaitCounterfactual": {
+        "properties": {
+          "tokens": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tokens"
+          },
+          "cohort": {
+            "type": "string",
+            "title": "Cohort"
+          },
+          "window": {
+            "type": "string",
+            "title": "Window"
+          }
+        },
+        "type": "object",
+        "required": [
+          "cohort",
+          "window"
+        ],
+        "title": "WaitCounterfactual",
+        "description": "Estimated avoided monitoring tokens, never measured token savings."
+      },
+      "WaitDecideArgs": {
+        "properties": {
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id"
+          },
+          "wait_id": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Wait Id"
+          },
+          "decision": {
+            "type": "string",
+            "enum": [
+              "extend",
+              "wake",
+              "cancel",
+              "reroute",
+              "escalate_to_human"
+            ],
+            "title": "Decision"
+          },
+          "note": {
+            "type": "string",
+            "maxLength": 4000,
+            "minLength": 1,
+            "title": "Note"
+          },
+          "extend_seconds": {
+            "anyOf": [
+              {
+                "type": "number",
+                "maximum": 86400.0,
+                "minimum": 60.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Extend Seconds"
+          },
+          "to": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "To"
+          },
+          "expected_generation": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Generation"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "wait_id",
+          "decision",
+          "note"
+        ],
+        "title": "WaitDecideArgs"
+      },
+      "WaitDecideResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "wait_id": {
+            "type": "string",
+            "title": "Wait Id"
+          },
+          "decision": {
+            "type": "string",
+            "title": "Decision"
+          },
+          "outcome": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Outcome"
+          },
+          "generation": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Generation"
+          },
+          "next_step": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Step"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "wait_id",
+          "decision"
+        ],
+        "title": "WaitDecideResponse"
+      },
+      "WaitDurationMetrics": {
+        "properties": {
+          "condition_kind": {
+            "type": "string",
+            "title": "Condition Kind"
+          },
+          "source_class": {
+            "type": "string",
+            "title": "Source Class"
+          },
+          "wait_duration_p50": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Wait Duration P50"
+          },
+          "expected_duration_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Duration Seconds"
+          }
+        },
+        "type": "object",
+        "required": [
+          "condition_kind",
+          "source_class"
+        ],
+        "title": "WaitDurationMetrics"
+      },
+      "WaitExplainArgs": {
+        "properties": {
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Id"
+          },
+          "claim_epoch": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claim Epoch"
+          },
+          "wait_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Wait Id"
+          },
+          "history": {
+            "type": "boolean",
+            "title": "History",
+            "default": false
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "WaitExplainArgs"
+      },
+      "WaitExplainResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "explanation": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Explanation"
+          },
+          "waits": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Waits"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "WaitExplainResponse"
       },
       "WaitFactsDTO": {
         "properties": {
@@ -81696,99 +82911,138 @@
         ],
         "title": "WaitFactsDTO"
       },
-      "WaitGetRequest": {
+      "WaitGetArgs": {
         "properties": {
+          "schema_version": {
+            "type": "integer",
+            "enum": [
+              1,
+              2
+            ],
+            "title": "Schema Version",
+            "default": 1
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Id"
+          },
           "wait_id": {
             "type": "string",
-            "title": "Wait Id",
-            "description": ""
+            "minLength": 1,
+            "title": "Wait Id"
           },
           "consume": {
             "type": "boolean",
             "title": "Consume",
-            "description": "",
             "default": false
           },
           "claim_epoch": {
             "anyOf": [
               {
-                "type": "integer"
+                "type": "integer",
+                "minimum": 0.0
               },
               {
                 "type": "null"
               }
             ],
-            "title": "Claim Epoch",
-            "description": ""
-          },
-          "project_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Project Id",
-            "description": ""
-          },
-          "task_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Task Id",
-            "description": ""
-          },
-          "session_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Session Id",
-            "description": ""
+            "title": "Claim Epoch"
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "required": [
           "wait_id"
         ],
-        "title": "WaitGetRequest"
+        "title": "WaitGetArgs"
       },
-      "WaitListRequest": {
+      "WaitGraphArgs": {
         "properties": {
-          "limit": {
+          "project_id": {
             "anyOf": [
               {
-                "type": "integer"
+                "type": "string"
               },
               {
                 "type": "null"
               }
             ],
-            "title": "Limit",
-            "description": ""
+            "title": "Project Id"
           },
-          "offset": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
+          "fleet": {
+            "type": "boolean",
+            "title": "Fleet",
+            "default": false
+          },
+          "costs": {
+            "type": "boolean",
+            "title": "Costs",
+            "default": false
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "WaitGraphArgs"
+      },
+      "WaitGraphResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "graph": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Graph"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "graph"
+        ],
+        "title": "WaitGraphResponse"
+      },
+      "WaitLegacyBridgeArgs": {
+        "properties": {
+          "mode": {
+            "type": "string",
+            "enum": [
+              "project",
+              "agent-waits"
             ],
-            "title": "Offset",
-            "description": ""
+            "title": "Mode",
+            "default": "agent-waits"
           },
           "project_id": {
             "anyOf": [
@@ -81799,8 +83053,84 @@
                 "type": "null"
               }
             ],
-            "title": "Project Id",
-            "description": ""
+            "title": "Project Id"
+          },
+          "apply": {
+            "type": "boolean",
+            "title": "Apply",
+            "default": false
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "WaitLegacyBridgeArgs"
+      },
+      "WaitLiftArgs": {
+        "properties": {
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id"
+          },
+          "wait_id": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Wait Id"
+          },
+          "response": {
+            "type": "string",
+            "maxLength": 4000,
+            "minLength": 1,
+            "title": "Response"
+          },
+          "expected_generation": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Generation"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "wait_id",
+          "response"
+        ],
+        "title": "WaitLiftArgs"
+      },
+      "WaitListArgs": {
+        "properties": {
+          "schema_version": {
+            "type": "integer",
+            "enum": [
+              1,
+              2
+            ],
+            "title": "Schema Version",
+            "default": 1
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id"
           },
           "task_id": {
             "anyOf": [
@@ -81811,8 +83141,7 @@
                 "type": "null"
               }
             ],
-            "title": "Task Id",
-            "description": ""
+            "title": "Task Id"
           },
           "session_id": {
             "anyOf": [
@@ -81823,12 +83152,25 @@
                 "type": "null"
               }
             ],
-            "title": "Session Id",
-            "description": ""
+            "title": "Session Id"
+          },
+          "limit": {
+            "type": "integer",
+            "maximum": 100.0,
+            "minimum": 1.0,
+            "title": "Limit",
+            "default": 100
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Offset",
+            "default": 0
           }
         },
+        "additionalProperties": false,
         "type": "object",
-        "title": "WaitListRequest"
+        "title": "WaitListArgs"
       },
       "WaitListResponse": {
         "properties": {
@@ -81839,7 +83181,15 @@
           },
           "waits": {
             "items": {
-              "$ref": "#/components/schemas/AgentWaitRecord"
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/AgentWaitRecord"
+                },
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              ]
             },
             "type": "array",
             "title": "Waits"
@@ -81856,6 +83206,266 @@
           "count"
         ],
         "title": "WaitListResponse"
+      },
+      "WaitMetrics": {
+        "properties": {
+          "pending_in_place": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pending In Place"
+          },
+          "pending_hibernated": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pending Hibernated"
+          },
+          "pending_human": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pending Human"
+          },
+          "escalated": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Escalated"
+          },
+          "scheduler_by_reason": {
+            "additionalProperties": {
+              "type": "number"
+            },
+            "type": "object",
+            "title": "Scheduler By Reason",
+            "default": {}
+          },
+          "in_place_slot_seconds_1h": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "In Place Slot Seconds 1H"
+          },
+          "released_slot_seconds_1h": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WaitSlotSeconds"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "released_slot_seconds_24h": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WaitSlotSeconds"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "evicted_1h": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evicted 1H"
+          },
+          "ceiling_1h": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ceiling 1H"
+          },
+          "resume_cost_p50": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resume Cost P50"
+          },
+          "resume_cost_p95": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resume Cost P95"
+          },
+          "by_project": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/WaitProjectMetrics"
+            },
+            "type": "object",
+            "title": "By Project",
+            "default": {}
+          },
+          "wakes_1h": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WaitWakes"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "loops_1h": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Loops 1H"
+          },
+          "escalations_1h": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Escalations 1H"
+          },
+          "decisions_1h": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decisions 1H"
+          },
+          "decision_seconds_p50": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decision Seconds P50"
+          },
+          "human_pending": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Human Pending"
+          },
+          "human_age_max_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Human Age Max Seconds"
+          },
+          "priority": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WaitPriorityMetrics"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "wait_seconds_1h": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Wait Seconds 1H"
+          },
+          "overhead_tokens_1h": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Overhead Tokens 1H"
+          },
+          "tokens_saved_counterfactual": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WaitCounterfactual"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object",
+        "title": "WaitMetrics",
+        "description": "Observed wait accounting. Missing observations remain null at every tier.\n\nResume cost percentiles are seconds; configured resume_cost_minutes stays\nin minutes. Duration/cost cohorts cover the preceding thirty days."
       },
       "WaitNodeDetailDTO": {
         "properties": {
@@ -81909,38 +83519,9 @@
         "title": "WaitNodeDetailDTO",
         "description": "WaitStep only."
       },
-      "WaitRegisterRequest": {
+      "WaitPriorityMetrics": {
         "properties": {
-          "kind": {
-            "type": "string",
-            "title": "Kind",
-            "description": ""
-          },
-          "ref": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Ref",
-            "description": ""
-          },
-          "after_seq": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "After Seq",
-            "description": ""
-          },
-          "due_at": {
+          "donors": {
             "anyOf": [
               {
                 "type": "number"
@@ -81949,10 +83530,9 @@
                 "type": "null"
               }
             ],
-            "title": "Due At",
-            "description": ""
+            "title": "Donors"
           },
-          "timeout": {
+          "reservations_pending": {
             "anyOf": [
               {
                 "type": "number"
@@ -81961,25 +83541,157 @@
                 "type": "null"
               }
             ],
-            "title": "Timeout",
-            "description": ""
+            "title": "Reservations Pending"
           },
-          "idempotency_key": {
-            "type": "string",
-            "title": "Idempotency Key",
-            "description": ""
-          },
-          "claim_epoch": {
+          "reservations_overdue": {
             "anyOf": [
               {
-                "type": "integer"
+                "type": "number"
               },
               {
                 "type": "null"
               }
             ],
-            "title": "Claim Epoch",
-            "description": ""
+            "title": "Reservations Overdue"
+          },
+          "deadline_breaches_1h": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Deadline Breaches 1H"
+          },
+          "unexplained": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unexplained"
+          }
+        },
+        "type": "object",
+        "title": "WaitPriorityMetrics"
+      },
+      "WaitProjectMetrics": {
+        "properties": {
+          "resume_cost_p50": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resume Cost P50"
+          },
+          "resume_cost_p95": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resume Cost P95"
+          },
+          "resume_cost_minutes": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resume Cost Minutes"
+          },
+          "summary_tokens": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Summary Tokens"
+          },
+          "resume_tokens": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resume Tokens"
+          },
+          "teardown_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Teardown Seconds"
+          },
+          "setup_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Setup Seconds"
+          },
+          "rebuild_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rebuild Seconds"
+          },
+          "durations": {
+            "items": {
+              "$ref": "#/components/schemas/WaitDurationMetrics"
+            },
+            "type": "array",
+            "title": "Durations",
+            "default": []
+          }
+        },
+        "type": "object",
+        "title": "WaitProjectMetrics"
+      },
+      "WaitRegisterArgs": {
+        "properties": {
+          "schema_version": {
+            "type": "integer",
+            "enum": [
+              1,
+              2
+            ],
+            "title": "Schema Version",
+            "default": 1
           },
           "project_id": {
             "anyOf": [
@@ -81990,8 +83702,7 @@
                 "type": "null"
               }
             ],
-            "title": "Project Id",
-            "description": ""
+            "title": "Project Id"
           },
           "task_id": {
             "anyOf": [
@@ -82002,8 +83713,7 @@
                 "type": "null"
               }
             ],
-            "title": "Task Id",
-            "description": ""
+            "title": "Task Id"
           },
           "session_id": {
             "anyOf": [
@@ -82014,16 +83724,170 @@
                 "type": "null"
               }
             ],
-            "title": "Session Id",
-            "description": ""
+            "title": "Session Id"
+          },
+          "kind": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "job",
+                  "task",
+                  "message",
+                  "timer",
+                  "dependency",
+                  "ci_check",
+                  "ci_run",
+                  "pull_request",
+                  "batch",
+                  "human",
+                  "resource",
+                  "playbook_condition"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Kind"
+          },
+          "condition": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Condition"
+          },
+          "claimed": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 1024
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claimed"
+          },
+          "escalate_after_seconds": {
+            "anyOf": [
+              {
+                "type": "number",
+                "maximum": 86400.0,
+                "exclusiveMinimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Escalate After Seconds"
+          },
+          "owner_kind": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "scheduler",
+                  "integration",
+                  "playbook"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Owner Kind"
+          },
+          "owner_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Owner Id"
+          },
+          "ref": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 256
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ref"
+          },
+          "after_seq": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "After Seq"
+          },
+          "due_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Due At"
+          },
+          "timeout": {
+            "anyOf": [
+              {
+                "type": "number",
+                "maximum": 86400.0,
+                "exclusiveMinimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Timeout"
+          },
+          "idempotency_key": {
+            "type": "string",
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Idempotency Key"
+          },
+          "claim_epoch": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claim Epoch"
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "required": [
-          "kind",
           "idempotency_key"
         ],
-        "title": "WaitRegisterRequest"
+        "title": "WaitRegisterArgs"
       },
       "WaitResponse": {
         "properties": {
@@ -82033,7 +83897,106 @@
             "default": true
           },
           "wait": {
-            "$ref": "#/components/schemas/AgentWaitRecord"
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AgentWaitRecord"
+              },
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Wait"
+          },
+          "wait_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Wait Id"
+          },
+          "condition": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Condition"
+          },
+          "evidence": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evidence"
+          },
+          "decision": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decision"
+          },
+          "escalate_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Escalate At"
+          },
+          "ceiling_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ceiling At"
+          },
+          "continuation_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Continuation Id"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Warnings"
           },
           "next_step": {
             "anyOf": [
@@ -82049,10 +84012,96 @@
         },
         "additionalProperties": false,
         "type": "object",
-        "required": [
-          "wait"
-        ],
         "title": "WaitResponse"
+      },
+      "WaitSlotSeconds": {
+        "properties": {
+          "condition": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Condition"
+          },
+          "capacity": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Capacity"
+          }
+        },
+        "type": "object",
+        "title": "WaitSlotSeconds"
+      },
+      "WaitWakes": {
+        "properties": {
+          "outcome": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Outcome"
+          },
+          "decision": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decision"
+          },
+          "lift": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lift"
+          },
+          "launch_failed": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Launch Failed"
+          },
+          "other": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Other"
+          }
+        },
+        "type": "object",
+        "title": "WaitWakes"
       },
       "WithheldTask": {
         "properties": {
@@ -82074,6 +84123,88 @@
           "task_id"
         ],
         "title": "WithheldTask"
+      },
+      "WorkspaceClearSentinelRequest": {
+        "properties": {
+          "workspace_id": {
+            "type": "string",
+            "title": "Workspace Id",
+            "description": "Slot workspace id whose sentinel to clear."
+          },
+          "if_task_terminal": {
+            "type": "boolean",
+            "title": "If Task Terminal",
+            "description": "Clear only when the named task is terminal (default true; the only supported mode).",
+            "default": true
+          }
+        },
+        "type": "object",
+        "required": [
+          "workspace_id"
+        ],
+        "title": "WorkspaceClearSentinelRequest"
+      },
+      "WorkspaceClearSentinelResponse": {
+        "properties": {
+          "workspace_id": {
+            "type": "string",
+            "title": "Workspace Id"
+          },
+          "cleared": {
+            "type": "boolean",
+            "title": "Cleared",
+            "default": false
+          },
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detail"
+          },
+          "holder_task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Holder Task Id"
+          },
+          "branch": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Branch"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          }
+        },
+        "type": "object",
+        "required": [
+          "workspace_id"
+        ],
+        "title": "WorkspaceClearSentinelResponse"
       },
       "WorkspaceCutoverRequest": {
         "properties": {

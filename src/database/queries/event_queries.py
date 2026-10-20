@@ -43,6 +43,14 @@ class EventQueryMixin:
                 conn, event_type, project_id, task_id, agent_id, payload
             )
 
+    async def log_events(self, rows: list[dict]) -> None:
+        """Persist an audit fanout atomically with one insert, keeping every row."""
+        if rows:
+            async with self._engine.begin() as conn:
+                await conn.execute(insert(events).values([
+                    {"timestamp": time.time(), **row} for row in rows
+                ]))
+
     async def _insert_event_row(
         self, conn, event_type, project_id, task_id, agent_id, payload
     ) -> int:

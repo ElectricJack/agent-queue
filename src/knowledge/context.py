@@ -7,6 +7,7 @@ source and revision checks; preparation alone never records an injected citation
 from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
+from types import SimpleNamespace
 from uuid import UUID, uuid4
 
 from sqlalchemy import insert, select, text, update
@@ -111,6 +112,17 @@ class ContextService(KnowledgeService):
     def __init__(self, db, config):
         super().__init__(db, config.knowledge)
         self.app_config = config
+
+    async def _configured_budget(self, conn, session_id):
+        from src.sessions.context import read_context
+
+        row = (await conn.execute(select(sessions).where(
+            sessions.c.id == session_id,
+        ))).mappings().first()
+        observation = await read_context(SimpleNamespace(**row) if row else None)
+        return ContextBudget.from_config(
+            self.app_config, model_context_window=observation.get("model_context_window"),
+        )
 
     async def _owner(self, conn, principal, claim_epoch, *, bootstrap=False):
         if principal is None or not principal.session_id or not principal.session_instance_token:
@@ -250,9 +262,9 @@ class ContextService(KnowledgeService):
             raise RecordError("record.stale_claim")
         principal = replace(principal, task_id=owner["task_id"])
         accesses = await self._scopes(conn, principal, project_ids, global_scope, bootstrap=bootstrap)
-        budget = budget or ContextBudget.from_config(self.app_config)
+        configured = await self._configured_budget(conn, principal.session_id)
+        budget = budget or configured
         # A caller may reduce the budget, never bypass configured/operator limits.
-        configured = ContextBudget.from_config(self.app_config)
         budget = replace(budget, **{
             k: min(getattr(budget, k), getattr(configured, k))
             for k in ("input_tokens", "knowledge_tokens", "knowledge_bytes",
@@ -369,7 +381,7 @@ class ContextService(KnowledgeService):
             raise RecordError("context.expired")
         if not bundle.budget["fits"]:
             raise RecordError(bundle.budget["diagnostic"] or "context.over_budget")
-        configured = ContextBudget.from_config(self.app_config)
+        configured = await self._configured_budget(conn, principal.session_id)
         requested = ContextBudget(**bundle.budget["requested"])
         if any(getattr(requested, k) > getattr(configured, k) for k in (
             "input_tokens", "knowledge_tokens", "knowledge_bytes", "discovery_tokens",

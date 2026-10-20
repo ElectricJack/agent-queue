@@ -683,19 +683,34 @@ async def test_repair_start_allows_git_import_beyond_publication_bound(
     from src.integration import lock as lock_module
 
     env = await ordinary_pool_repair(handler, db, tmp_path)
-    # Scale both bounds: startup survives a slow import which would exceed
-    # the normal publication fence, without a wall-clock performance budget.
-    monkeypatch.setattr(lock_module, "CRITICAL_SECTION_SECONDS", 1)
-    monkeypatch.setattr(lock_module, "REPAIR_START_SECONDS", 10)
+    # Observe the real exclusions without shortening ordinary SQL work to a
+    # one-second deadline: contention there legitimately retries the import.
+    exclusion = lock_module.BranchLock.exclusion
+    bounds = []
+
+    def observe_exclusion(lock, fence, **kwargs):
+        bounds.append(kwargs.get("timeout_seconds"))
+        return exclusion(lock, fence, **kwargs)
+
+    monkeypatch.setattr(lock_module.BranchLock, "exclusion", observe_exclusion)
+    assert lock_module.REPAIR_START_SECONDS > lock_module.CRITICAL_SECTION_SECONDS
 
     async def import_objects(*args, **kwargs):
-        await asyncio.sleep(1.1)
+        assert bounds[-1] == lock_module.REPAIR_START_SECONDS
         return "b" * 40
 
+    async def reset_slot(*args, **kwargs):
+        # The extended import allowance must not leak into ordinary mutation.
+        assert bounds[-1] is None
+        return env.target.branch
+
     handler.orchestrator._hierarchy_repair_start.side_effect = import_objects
+    reset = handler.orchestrator._worktree_slots.return_value.reset_slot_for_task
+    reset.side_effect = reset_slot
     result = await settled_claim(env.handler, {"next": True})
     assert result["result"] == "claimed", result
     handler.orchestrator._hierarchy_repair_start.assert_awaited_once()
+    reset.assert_awaited_once()
     assert (await env.store.get("repair-batch")).repair_attempt_count == 1
 
 
@@ -6885,6 +6900,53 @@ async def test_preparation_failure_counter_fences_changed_session(handler, db, t
     assert (await db.get_workspace("ws-agent-1")).enabled
 
 
+@pytest.mark.parametrize("status", [
+    TaskStatus.WAITING, TaskStatus.HIBERNATED, TaskStatus.RESUME_PENDING,
+])
+async def test_suspended_task_is_never_claimed_from_frontier(handler, db, tmp_path, status):
+    await mktask(db, "suspended", status=status, profile_id="worker")
+    sid, _ = await pool_session(db, tmp_path)
+    result = await scoped(handler, sid)._cmd_task_claim({"next": True})
+    assert result["result"] == "no_ready_work"
+    assert (await db.get_task("suspended")).status is status
+    assert (await db.get_session(sid)).task_id is None
+
+
+@pytest.mark.parametrize("status", [
+    TaskStatus.WAITING, TaskStatus.HIBERNATED, TaskStatus.RESUME_PENDING,
+])
+async def test_suspended_held_claim_is_preserved_and_requires_ack_before_close(
+    handler, db, tmp_path, status,
+):
+    await mktask(db, "held", profile_id="worker")
+    sid, work_dir = await pool_session(db, tmp_path)
+    worker = scoped(handler, sid)
+    claim = await worker._cmd_task_claim({"next": True})
+    before = (work_dir / ".aq" / "claim.json").read_bytes()
+    await db.transition_task("held", status, force=True)
+    refused = await worker._cmd_task_claim({"next": True})
+    assert refused["result"] == "not_admissible"
+    assert refused["reason"] == "wait.task_suspended"
+    closed = await worker._cmd_task_close({
+        "task_id": "held", "outcome": "pass", "summary": "must not close",
+        "claim_epoch": claim["claim_epoch"],
+    })
+    assert closed["code"] == "wait.ack_required"
+    assert not closed["success"]
+    assert (await db.get_task("held")).status is status
+    assert (await db.get_session(sid)).task_id == "held"
+    assert (work_dir / ".aq" / "claim.json").read_bytes() == before
+
+
+async def test_command_handler_preserves_named_wait_transition_refusal(handler, db):
+    await mktask(db, "suspended", status=TaskStatus.HIBERNATED, profile_id="worker")
+    result = await handler.execute("set_task_status", {
+        "task_id": "suspended", "status": "IN_PROGRESS",
+    })
+    assert result["success"] is False
+    assert result["code"] == "task.invalid_transition"
+    assert (await db.get_task("suspended")).status is TaskStatus.HIBERNATED
+
 async def test_slow_claim_returns_progress_and_joins_one_preparation(handler, db, tmp_path):
     await mktask(db, "t1", profile_id="worker")
     sid, _ = await pool_session(db, tmp_path)
@@ -7694,6 +7756,36 @@ async def test_pr_missing_current_source_cannot_erase_recorded_artifact(db, pull
         )
     )
     assert not (await observe_admission(db, ["dependent"], env.service)).allowed
+
+
+@pytest.mark.parametrize('source_status, expected', [
+    (TaskStatus.READY, False), (TaskStatus.IN_PROGRESS, False), (TaskStatus.COMPLETED, True),
+])
+@pytest.mark.parametrize('artifact', ['branch', 'completion', 'legacy', None])
+async def test_project_admission_hint_ignores_unfinished_artifact_sources(
+    db, source_status, expected, artifact,
+):
+    from src.models import TaskCompletion
+
+    await db.create_task(Task(id='source-with-branch', project_id=PROJECT_ID,
+        title='Source', description='', status=source_status,
+        branch_name='aq/source' if artifact == 'branch' else None))
+    if artifact == 'completion':
+        await db.save_task_completion(TaskCompletion(
+            id='source-completion', task_id='source-with-branch', outcome='pass',
+            commits=['a' * 40],
+        ))
+    elif artifact == 'legacy':
+        await db.set_task_meta('source-with-branch', 'development_legacy_artifact',
+                               {'completion_id': None, 'source_sha': 'a' * 40})
+    await db.create_task(Task(id='blocked-dependent', project_id=PROJECT_ID,
+        title='Dependent', description='', status=TaskStatus.READY))
+    await db.add_dependency('blocked-dependent', 'source-with-branch')
+    async with db._engine.connect() as conn:
+        project = await db.get_project_for_claim(PROJECT_ID, conn=conn)
+    assert project._source_admission_required is (expected and artifact is not None)
+
+
 @pytest.mark.parametrize("phase", ["before_checkout", "after_checkout", "after_claim_file"])
 async def test_cancelled_preparation_retains_identity_then_fences_successor(
     handler, db, config, tmp_path, monkeypatch, phase,
@@ -7925,3 +8017,29 @@ async def test_activation_retires_only_accepted_completed_older_stop(
     assert (await db.get_task_meta(task.id, "needs_attention") is None) is accepted
     contexts = await db.get_task_contexts(task.id)
     assert any(c["type"] == "retained_workspace_checkpoint" and c["content"] == "durable" for c in contexts)
+
+
+@pytest.mark.parametrize("owner", ["t-next", "t-other"])
+async def test_retained_binding_probe_can_exclude_the_claimants_owner_row(db, owner):
+    """Only a foreign owner row retains a finished predecessor's slot.
+
+    Claim preparation attaches the claimant's own row before the slot reset
+    re-checks the predecessor (bold-torrent-46).
+    """
+    from src.orchestrator.worktree_manager import WorktreeSlotManager
+
+    async with db.immediate() as conn:
+        await conn.execute(integration_branch_owners.insert().values(
+            id="owner", repository_id="repo", ref="aq/t-next", owner_id=owner,
+            owner_role="worker", handoff_state="handoff_pending",
+            workspace_id="ws-slot", fence_token=1, created_at=NOW, updated_at=NOW,
+        ))
+    slots = WorktreeSlotManager(
+        db=db, git=MagicMock(), bus=MagicMock(), config=MagicMock(), git_mutex=MagicMock(),
+    )
+
+    assert await slots._slot_has_retained_binding("ws-slot") is True
+    assert await slots._slot_has_retained_binding("ws-other") is False
+    assert await slots._slot_has_retained_binding(
+        "ws-slot", excluding_owner="t-next",
+    ) is (owner != "t-next")

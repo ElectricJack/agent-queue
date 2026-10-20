@@ -164,6 +164,25 @@ def test_measured_context_counts_input_once_and_ignores_cumulative_spend(tmp_pat
     assert path.read_bytes() == original
 
 
+@pytest.mark.parametrize("window, expected", [
+    (258400, 258400), (None, None), (0, None), (-1, None), (True, None), ("258400", None),
+])
+def test_model_window_comes_from_fresh_pinned_codex_observation(tmp_path, window, expected):
+    from src.sessions.context import context_from_tail
+    from src.sessions.transcripts.base import parse_iso_ts
+
+    path = tmp_path / "log.jsonl"
+    record = _context_record("codex")
+    record["payload"]["info"]["model_context_window"] = window
+    path.write_text(json.dumps(record) + "\n")
+    now = parse_iso_ts(record["timestamp"])
+    assert context_from_tail(path, "codex", now=now)["model_context_window"] == expected
+    assert context_from_tail(path, "codex", now=now + 301)["model_context_window"] is None
+    with path.open("a") as stream:
+        stream.write(json.dumps({"type": "compacted"}) + "\n")
+    assert context_from_tail(path, "codex", now=now)["model_context_window"] is None
+
+
 @pytest.mark.parametrize("harness", ["claude", "codex"])
 def test_context_reader_is_bounded_and_does_not_reuse_precompact_or_stale_readings(tmp_path, harness):
     from src.sessions.context import CONTEXT_TAIL_BYTES, context_from_tail

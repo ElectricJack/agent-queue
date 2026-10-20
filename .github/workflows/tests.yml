@@ -64,7 +64,7 @@ jobs:
     # The cache-miss install and the tests each have their own step deadline;
     # this total is their sum plus setup and cleanup, so a slow PyPI cannot
     # spend the tests' time (eight jobs in runs up to 36831813696 did).
-    timeout-minutes: 25
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -256,10 +256,27 @@ jobs:
 
       - name: Run tests
         id: tests
-        timeout-minutes: 10
+        # Run 39368476563 default-8 passed in 594.60s, then hit the old
+        # 600s deadline during shutdown. 900s keeps that run below 70%.
+        timeout-minutes: 15
         # Include fixture setup/teardown in the per-test deadline. Keep the
         # failed/error node IDs and the slowest phases visible in every arm.
-        run: ${{ matrix.suite.command }} --timeout=120 --durations=50 -rfE
+        run: |
+          echo "started_at=$(date +%s)" >> "$GITHUB_OUTPUT"
+          ${{ matrix.suite.command }} --timeout=120 --durations=50 -rfE
+
+      - name: Check test runtime budget
+        if: ${{ always() && steps.tests.outputs.started_at != '' }}
+        env:
+          TEST_STARTED_AT: ${{ steps.tests.outputs.started_at }}
+          TEST_SUITE: ${{ matrix.suite.name }}
+          TEST_BUDGET_SECONDS: "900"
+        run: |
+          elapsed=$(( $(date +%s) - TEST_STARTED_AT ))
+          echo "$TEST_SUITE took ${elapsed}s of its ${TEST_BUDGET_SECONDS}s test budget"
+          if (( elapsed * 100 > TEST_BUDGET_SECONDS * 80 )); then
+            echo "::warning title=Test runtime budget::$TEST_SUITE took ${elapsed}s, exceeding 80% of its ${TEST_BUDGET_SECONDS}s budget; refresh timings and rebalance shards"
+          fi
 
       # Each default shard records only its selected tests. Keep the committed
       # map as the selection input; merge all eight outputs to refresh it.

@@ -295,6 +295,17 @@ def _dataclass_to_schema(cls: type) -> dict[str, Any]:
     }
 
 
+def _schema_default(value):
+    """Normalize nested dataclass maps as well as section dataclasses."""
+    if dataclasses.is_dataclass(value):
+        return dataclasses.asdict(value)
+    if isinstance(value, dict):
+        return {key: _schema_default(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_schema_default(item) for item in value]
+    return value
+
+
 def _field_default(f: dataclasses.Field) -> Any:
     if f.default is not dataclasses.MISSING:
         return f.default
@@ -303,9 +314,7 @@ def _field_default(f: dataclasses.Field) -> Any:
             value = f.default_factory()  # type: ignore[misc]
         except Exception:
             return dataclasses.MISSING
-        if dataclasses.is_dataclass(value):
-            return dataclasses.asdict(value)
-        return value
+        return _schema_default(value)
     return dataclasses.MISSING
 
 

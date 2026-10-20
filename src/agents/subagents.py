@@ -23,7 +23,9 @@ from typing import Any
 from src.models import AgentState, SessionRecord, Task, TaskStatus
 
 _ACTIVE_SESSIONS = {"starting", "running", "draining"}
-_ACTIVE_TASKS = {TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS, TaskStatus.WAITING_INPUT}
+_ACTIVE_TASKS = {
+    TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS, TaskStatus.WAITING_INPUT, TaskStatus.WAITING,
+}
 
 _NO_EVENTS: dict[str, int] = {"starts": 0, "stops": 0}
 

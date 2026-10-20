@@ -385,10 +385,12 @@ class WorkspaceMixin:
         if integration_origin is None and await self.db.get_task_meta(task.id, CHECKPOINT_META):
             try:
                 branch = await restore_checkpoint(self.db, self.git, task.id, workspace)
-                await self.db.update_task(task.id, branch_name=branch)
-                if is_git_workspace:
-                    await self._ensure_control_files_excluded(workspace)
-                return workspace  # Preserve the resumed task's plan files too.
+                # None: a foreign checkpoint was discarded; prepare normally.
+                if branch is not None:
+                    await self.db.update_task(task.id, branch_name=branch)
+                    if is_git_workspace:
+                        await self._ensure_control_files_excluded(workspace)
+                    return workspace  # Preserve the resumed task's plan files too.
             except Exception as exc:
                 logger.error("Cannot restore paused task %s: %s", task.id, exc)
                 self._remove_sentinel(workspace)
@@ -765,21 +767,25 @@ class WorkspaceMixin:
                 # backs off to the owner-recovery sweep instead of acquiring a
                 # branch a live writer may still hold.
                 if preparing_session_id and owner.get("session_id") == preparing_session_id:
-                    raise BranchBusy("current preparation has a pending branch handoff")
-                # Consume this exact snapshot. Re-reading inside the retry
-                # release helper could transfer a successor's attachment.
-                # Reclaim is external to the old worker's close, so it needs
-                # provider-backed proof, including for unbound pool attempts.
-                reclamation = BranchOwnership(
-                    self.db, confirm_handoff=self.aconfirm_integration_owner_handoff,
-                )
-                try:
-                    await reclamation.transfer(
-                        Fence(target=target, owner_id=task.id, token=int(owner["fence_token"])),
-                        task.id, "worker",
+                    from src.integration.preparation_handoff import resume_preparation_handoff
+
+                    if not await resume_preparation_handoff(
+                        self, owner, session_id=preparing_session_id,
+                        workspace_id=preparing_workspace_id,
+                    ):
+                        raise BranchBusy("current preparation branch handoff remains unproven")
+                else:
+                    # External reclaim still requires the prior provider stopped.
+                    reclamation = BranchOwnership(
+                        self.db, confirm_handoff=self.aconfirm_integration_owner_handoff,
                     )
-                except BranchOwnershipError as exc:
-                    raise BranchBusy("own branch handoff is unproven") from exc
+                    try:
+                        await reclamation.transfer(
+                            Fence(target=target, owner_id=task.id, token=int(owner["fence_token"])),
+                            task.id, "worker",
+                        )
+                    except BranchOwnershipError as exc:
+                        raise BranchBusy("own branch handoff is unproven") from exc
             owner = await ownership.get_owner(target)
         role = str(owner["owner_role"]) if owner is not None else ""
         expected_role = "verifier" if operation is not None or subject_id == task.id and role == "verifier" else "worker"
@@ -1444,6 +1450,11 @@ class WorkspaceMixin:
         if base is not None:
             self._register_slot_bases([ws], base.workspace_path)
 
+        if task.status == TaskStatus.RESUME_PENDING:
+            from src.wait_runtime.resume import verify_saved_branch
+
+            await verify_saved_branch(self, task, slot_dir)
+
         resume_branch = None if integration_origin is not None else await self._resume_branch_for(task)
 
         try:
@@ -2036,7 +2047,8 @@ class WorkspaceMixin:
         )
 
     async def aconfirm_integration_pool_owner_handoff(
-        self, owner: dict, *, retained_preparation=None,
+        self, owner: dict, *, retained_preparation=None, require_preparation=False,
+        expected_preparation=None,
     ) -> bool:
         """Detach a **pool** writer's checkout and release its exact attachment.
 
@@ -2119,6 +2131,12 @@ class WorkspaceMixin:
             and task.assigned_agent_id == session.agent_id
             else None
         )
+        if require_preparation and preparation_epoch is None:
+            return False
+        if expected_preparation is not None and expected_preparation != (
+            preparation_epoch, session.instance_token, workspace.generation,
+        ):
+            return False
         try:
             from src.orchestrator.workspace_attachments import (
                 detach_slot_for_integration_handoff,
@@ -2180,6 +2198,7 @@ class WorkspaceMixin:
             self.db, owner, workspace=workspace, task_id=session.task_id,
             session_instance_token=session.instance_token,
             preparation_epoch=preparation_epoch,
+            require_preparation=require_preparation,
         )
 
     async def aconfirm_integration_pool_published_repair_handoff(

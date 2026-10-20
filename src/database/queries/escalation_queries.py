@@ -17,6 +17,8 @@ from typing import Any
 from sqlalchemy import and_, delete, exists, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
+from src.waits.adapters.legacy_escalation import execute_mutation as execute_escalation_mutation
+from src.waits.sources import insert_message_with_source_event
 from src.dashboard_paths import escalation_path
 from src.database.tables import (
     digest_windows,
@@ -28,6 +30,7 @@ from src.database.tables import (
     messages,
     projects,
     supervisor_report_requests,
+    wait_records,
 )
 
 
@@ -243,7 +246,7 @@ class EscalationQueriesMixin:
             if inserted is not None:
                 await self._enqueue_initial_escalation_on(conn, inserted, now=now)
                 if supervisor_delivery_body_kind is not None:
-                    await conn.execute(
+                    await insert_message_with_source_event(conn,
                         pg_insert(messages)
                         .values(
                             id="msg-" + inserted["id"],
@@ -302,7 +305,7 @@ class EscalationQueriesMixin:
                 # The old gate migrator supplied provenance in place of
                 # decision context. Repair that known snapshot before its
                 # missing root becomes visible, without changing other replays.
-                repaired = (await conn.execute(update(escalations).where(
+                repaired = (await execute_escalation_mutation(conn, update(escalations).where(
                     escalations.c.id == existing["id"],
                     escalations.c.revision == existing["revision"],
                     escalations.c.state.in_(tuple(OPEN_ESCALATION_STATES)),
@@ -329,6 +332,18 @@ class EscalationQueriesMixin:
             incident["source_kind"] == "supervisor_delivery"
             or incident["state"] not in OPEN_ESCALATION_STATES
         ):
+            return
+        if incident["source_kind"] == "wait":
+            # Operational deadlines go to the supervisor. Only an explicit
+            # escalate_to_human decision creates a human delivery for this source.
+            await insert_message_with_source_event(conn, pg_insert(messages).values(
+                id="msg-" + incident["id"], project_id=incident["project_id"],
+                from_kind="system", from_id="wait-dispatcher", to_kind="session",
+                to_id=incident["supervisor_owner"], subject=incident["summary"],
+                body=(f"{incident['summary']}\n{incident['investigation']}\n"
+                      f"{incident['decision_requested']}\nIncident: {incident['id']}"),
+                thread_id=incident["id"], body_kind="wait_escalation", created_at=now,
+            ).on_conflict_do_nothing(index_elements=["id"]))
             return
         has_root = await conn.scalar(select(exists().where(
             escalation_deliveries.c.escalation_id == incident["id"],
@@ -496,7 +511,7 @@ class EscalationQueriesMixin:
         async with self.immediate() as conn:
             row = (
                 (
-                    await conn.execute(
+                    await execute_escalation_mutation(conn,
                         update(escalations)
                         .where(
                             escalations.c.id == escalation_id,
@@ -608,7 +623,7 @@ class EscalationQueriesMixin:
             recipient = supervisor_recipient or incident["supervisor_owner"]
             if not terminal:
                 _require_nonempty({"supervisor_recipient": recipient}, ("supervisor_recipient",))
-                await conn.execute(
+                await insert_message_with_source_event(conn,
                     pg_insert(messages).values(
                         id=supervisor_message_id,
                         project_id=incident["project_id"],
@@ -646,12 +661,29 @@ class EscalationQueriesMixin:
                 "created_at": now,
             }
             await conn.execute(pg_insert(escalation_messages).values(**reply_values))
+            if not terminal and incident["source_kind"] == "wait":
+                # Only an explicitly converted human wait consumes this verified
+                # transport reply. Operational supervisor discussion is not proof.
+                human_wait = (await conn.execute(select(wait_records).where(
+                    wait_records.c.project_id == incident["project_id"],
+                    wait_records.c.condition_kind == "human",
+                    wait_records.c.outcome == "pending",
+                    wait_records.c.decision_inputs["human_escalation_id"].astext == escalation_id,
+                ))).mappings().first()
+                if human_wait:
+                    await insert_message_with_source_event(conn, pg_insert(messages).values(
+                        id=f"msg-wait-human-{reply_id}", project_id=incident["project_id"],
+                        from_kind="user", from_id=verified_actor,
+                        to_kind=human_wait["owner_kind"], to_id=human_wait["owner_id"],
+                        thread_id=escalation_id, body=text, body_kind="escalation_reply",
+                        created_at=now,
+                    ))
             updated = dict(incident)
             if not terminal:
                 next_revision = int(incident["revision"]) + 1
                 changed = (
                     (
-                        await conn.execute(
+                        await execute_escalation_mutation(conn,
                             update(escalations)
                             .where(
                                 escalations.c.id == escalation_id,
@@ -751,7 +783,7 @@ class EscalationQueriesMixin:
             )
             if last_notice is not None and now - last_notice < interval_seconds:
                 return False
-            await conn.execute(
+            await insert_message_with_source_event(conn,
                 pg_insert(messages).values(
                     id=f"msg-escalation-owner-reminder-{uuid.uuid4()}",
                     project_id=incident["project_id"],
@@ -796,7 +828,7 @@ class EscalationQueriesMixin:
         async with (self.immediate() if conn is None else nullcontext(conn)) as conn:
             row = (
                 (
-                    await conn.execute(
+                    await execute_escalation_mutation(conn,
                         update(escalations)
                         .where(
                             escalations.c.id == escalation_id,
@@ -863,7 +895,7 @@ class EscalationQueriesMixin:
         async with self.immediate() as conn:
             row = (
                 (
-                    await conn.execute(
+                    await execute_escalation_mutation(conn,
                         update(escalations)
                         .where(
                             escalations.c.id == escalation_id,
@@ -904,7 +936,7 @@ class EscalationQueriesMixin:
         async with self.immediate() as conn:
             row = (
                 (
-                    await conn.execute(
+                    await execute_escalation_mutation(conn,
                         update(escalations)
                         .where(
                             escalations.c.id == escalation_id,
@@ -1127,7 +1159,7 @@ class EscalationQueriesMixin:
             next_revision = expected_revision + 1
             changed = (
                 (
-                    await conn.execute(
+                    await execute_escalation_mutation(conn,
                         update(escalations)
                         .where(
                             escalations.c.id == escalation_id,
@@ -1270,7 +1302,7 @@ class EscalationQueriesMixin:
                     )
                 incident = (
                     (
-                        await conn.execute(
+                        await execute_escalation_mutation(conn,
                             update(escalations)
                             .where(
                                 escalations.c.id == action["escalation_id"],

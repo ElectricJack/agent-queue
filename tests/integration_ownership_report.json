@@ -9746,25 +9746,25 @@
     "src/sessions/obsolete.py::import from src.database.tables import agents, integration_batch_members, integration_batches, integration_branch_owners, integration_subjects, projects, sessions, task_completion_records, task_metadata, tasks, workspaces": {
       "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing; widened for the operator one-shot close (amber-quest-41): agent binding, workspace locks, completion record and open-batch refusal for a train root."
     },
-    "src/database/queries/workspace_queries.py::WorkspaceQueryMixin.read_workspace_owner_facts": {
-      "reason": "Read-only list_workspaces owner readback: reads the claimed-by-session task metadata key (an owned claim primitive) to report the claim holder beside the workspace lock; writes nothing and adds no delivery state or authority."
+    "src/commands/task_commands.py::import from src.models import SUSPENDED_TASK_STATUSES, BLOCKING_DEP_TYPES, DEP_TYPE_VALUES, INTEGRATION_MODES, TASK_TYPE_VALUES, WORKSPACE_MODE_VALUES, DepType, Task, TaskStatus, TaskType, VerificationType, WorkspaceMode": {
+      "reason": "Shared task lifecycle/claim import; charged to integration ownership because the same adapter guards delivery and retained branches."
     },
-    "src/database/queries/workspace_queries.py::import from src.database.queries.claim_queries import CLAIMED_BY_SESSION_KEY": {
-      "reason": "Read-only list_workspaces owner readback: reads the claimed-by-session task metadata key (an owned claim primitive) to report the claim holder beside the workspace lock; writes nothing and adds no delivery state or authority."
-    },
-    "src/database/queries/claim_queries.py::ClaimQueryMixin._repair_pool_workspace_lock": {
-      "reason": "Claim preparation moves only an idle misplaced workspace lock to the session checkout. Reads attached/pending integration ownership and job pins to refuse retained bindings before updating ordinary workspace locks; no integration state or Git ref mutation.",
-      "landing_span": [
-        1036,
-        1106
-      ],
-      "baseline_span": null
+    "src/database/queries/task_queries.py::import from src.database.tables import agents, archived_tasks, continuations, events, gates, integration_branch_owners, integration_repair_operations, integration_repair_stages, projects, repos, sessions, task_branch_origins, task_comments, task_completion_records, task_context, task_criteria, task_dependencies, task_gates, task_integration_checkpoints, task_labels, task_metadata, task_results, task_subtasks, task_tools, task_workspace_requirements, tasks, wait_records, workspaces": {
+      "reason": "Shared task lifecycle/claim import; charged to integration ownership because the same adapter guards delivery and retained branches."
     },
     "src/database/queries/claim_queries.py::import from src.database.tables import agents, integration_batches, integration_branch_owners, integration_repair_operations, integration_repair_stages, job_workspace_pins, projects, sessions, task_branch_origins, task_completion_records, task_delivery_receipts, task_integration_checkpoints, task_metadata, task_session_attempts, task_workspace_requirements, tasks, workspaces": {
       "reason": "Claim queries import integration ownership, repair and origin tables alongside ordinary workspace/session tables; includes managed job pins used by the retained-binding guard.",
       "landing_span": [
         53,
         71
+      ],
+      "baseline_span": null
+    },
+    "src/database/queries/claim_queries.py::ClaimQueryMixin._repair_pool_workspace_lock": {
+      "reason": "Claim preparation moves only an idle misplaced workspace lock to the session checkout. Reads attached/pending integration ownership and job pins to refuse retained bindings before updating ordinary workspace locks; no integration state or Git ref mutation.",
+      "landing_span": [
+        1036,
+        1106
       ],
       "baseline_span": null
     },
@@ -9775,6 +9775,48 @@
         648
       ],
       "baseline_span": null
+    },
+    "src/database/queries/wait_queries.py::wait_graph": {
+      "reason": "Read-only wait evidence adapter inspects authoritative integration ownership; entire adapter remains charged."
+    },
+    "src/waits/adapters/batch.py::BatchAdapter.snapshot": {
+      "reason": "Read-only wait evidence adapter inspects authoritative integration ownership; entire adapter remains charged."
+    },
+    "src/waits/adapters/ci.py::CIAdapter.authorise": {
+      "reason": "Read-only wait evidence adapter inspects authoritative integration ownership; entire adapter remains charged."
+    },
+    "src/database/queries/wait_queries.py::import from src.database.tables import agents, admission_reservations, continuations, integration_batch_members, integration_batches, integration_branch_owners, integration_repair_stages, messages, projects, sessions, tasks, wait_deadlines, wait_edges, wait_escalations, wait_priority_projection, wait_records": {
+      "reason": "Shared integration source imports for verified wait observation; charged without moving integration authority."
+    },
+    "src/waits/adapters/batch.py::import from src.database.tables import integration_batch_members as members": {
+      "reason": "Shared integration source imports for verified wait observation; charged without moving integration authority."
+    },
+    "src/waits/adapters/batch.py::import from src.database.tables import integration_batches as batches": {
+      "reason": "Shared integration source imports for verified wait observation; charged without moving integration authority."
+    },
+    "src/waits/adapters/ci.py::import from src.database.tables import integration_batches as batches": {
+      "reason": "Shared integration source imports for verified wait observation; charged without moving integration authority."
+    },
+    "src/waits/adapters/ci.py::import from src.database.tables import integration_candidate_revisions as revisions": {
+      "reason": "Shared integration source imports for verified wait observation; charged without moving integration authority."
+    },
+    "src/api/target_scope.py::import from src.database.tables import agent_waits, continuations, escalation_messages, escalations, gates, integration_batches, integration_branch_owners, integration_candidate_resolutions, integration_check_evidence, integration_outbox, integration_parent_episodes, integration_subjects, jobs, projects, repos, task_branch_origins, test_selection_promotions, test_selections, wait_records": "Admission reads current integration branch, batch, repository and route constraints; charged to integration ownership.",
+    "src/waits/admission.py::AdmissionReader.observe_task": "Admission reads current integration branch, batch, repository and route constraints; charged to integration ownership.",
+    "src/waits/admission.py::branch_holders": "Admission reads current integration branch, batch, repository and route constraints; charged to integration ownership.",
+    "src/waits/admission.py::import from src.database.tables import integration_batch_members, integration_batches, integration_branch_owners, integration_repair_stages, projects, sessions, tasks, token_ledger": "Admission reads current integration branch, batch, repository and route constraints; charged to integration ownership.",
+    "src/waits/admission.py::reservation_scope": "Admission reads current integration branch, batch, repository and route constraints; charged to integration ownership.",
+    "src/waits/reservations.py::reserved_statement": "Admission reads current integration branch, batch, repository and route constraints; charged to integration ownership.",
+    "src/waits/scheduler.py::SchedulerWaitService.deadline": {
+      "reason": "Authoritative branch-holder admission and escalation reads; charged to integration ownership."
+    },
+    "src/waits/scheduler.py::import from src.waits.admission import AdmissionReader, branch_holders": {
+      "reason": "Authoritative branch-holder admission and escalation reads; charged to integration ownership."
+    },
+    "src/database/queries/workspace_queries.py::WorkspaceQueryMixin.read_workspace_owner_facts": {
+      "reason": "Read-only list_workspaces owner readback: reads the claimed-by-session task metadata key (an owned claim primitive) to report the claim holder beside the workspace lock; writes nothing and adds no delivery state or authority."
+    },
+    "src/database/queries/workspace_queries.py::import from src.database.queries.claim_queries import CLAIMED_BY_SESSION_KEY": {
+      "reason": "Read-only list_workspaces owner readback: reads the claimed-by-session task metadata key (an owned claim primitive) to report the claim holder beside the workspace lock; writes nothing and adds no delivery state or authority."
     },
     "src/commands/supervisor_authority.py::operator_or_global_supervisor": {
       "reason": "Authority gate for audited recovery-hold release, including train delegates; checks local operator or live global supervisor identity without granting publication authority."
@@ -9869,6 +9911,541 @@
     },
     "src/api/target_scope.py::import from src.database.tables import ask_decision_previews, ask_decisions, conversation_inputs, escalation_messages, escalations, gates, human_asks, integration_batches, integration_branch_owners, integration_candidate_resolutions, integration_check_evidence, integration_outbox, integration_parent_episodes, integration_subjects, jobs, projects, repos, task_branch_origins, test_selection_promotions, test_selections": {
       "reason": "Project ownership resolver table import includes integration targets alongside generic human ask targets. Integration table dependencies remain charged; human identity and decision evidence retain generic storage ownership."
+    },
+    "src/wait_runtime/scheduler.py::SchedulerWaitService.deadline": {
+      "reason": "Authoritative branch-holder admission and escalation reads; charged to integration ownership."
+    },
+    "src/wait_runtime/scheduler.py::import from src.waits.admission import AdmissionReader, branch_holders": {
+      "reason": "Authoritative branch-holder admission and escalation reads; charged to integration ownership."
+    },
+    "src/api/target_scope.py::import from src.database.tables import agent_waits, continuations, ask_decision_previews, ask_decisions, conversation_inputs, escalation_messages, escalations, gates, human_asks, integration_batches, integration_branch_owners, integration_candidate_resolutions, integration_check_evidence, integration_outbox, integration_parent_episodes, integration_subjects, jobs, projects, repos, task_branch_origins, test_selection_promotions, test_selections, wait_records": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        58,
+        84
+      ]
+    },
+    "src/cli/auto_commands.py::HANDCRAFTED_COVERAGE['integration_clear_retained_recovery']": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        157,
+        157
+      ]
+    },
+    "src/cli/auto_commands.py::HANDCRAFTED_COVERAGE['integration_recover_completed_container']": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        162,
+        162
+      ]
+    },
+    "src/cli/auto_commands.py::HANDCRAFTED_COVERAGE['integration_supersede_completion']": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        166,
+        166
+      ]
+    },
+    "src/cli/client.py::_COMMAND_TIMEOUTS['integration_recover_completed_container']": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        133,
+        137
+      ]
+    },
+    "src/cli/client.py::_COMMAND_TIMEOUTS['integration_release_owner']": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        127,
+        128
+      ]
+    },
+    "src/commands/claim_commands.py::ClaimCommandsMixin._claim_request": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        300,
+        497
+      ]
+    },
+    "src/commands/session_commands.py::SessionCommandsMixin._close_task_ordinary": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        1107,
+        1926
+      ]
+    },
+    "src/commands/task_commands.py::import from src.models import SUSPENDED_TASK_STATUSES, BLOCKING_DEP_TYPES, DEP_TYPE_VALUES, INTEGRATION_MODES, TASK_TYPE_VALUES, WORKSPACE_MODE_VALUES, AgentState, DepType, ProjectStatus, Task, TaskStatus, TaskType, VerificationType, WorkspaceMode": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        36,
+        51
+      ]
+    },
+    "src/database/queries/claim_queries.py::ClaimQueryMixin.claim_preparation_state": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        828,
+        863
+      ]
+    },
+    "src/database/queries/claim_queries.py::ClaimQueryMixin.get_project_for_claim": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        815,
+        827
+      ]
+    },
+    "src/database/queries/claim_queries.py::ClaimQueryMixin.park_task_for_continuation": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        1043,
+        1120
+      ]
+    },
+    "src/database/queries/claim_queries.py::_CLAIM_STACK_ORIGIN": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        87,
+        87
+      ]
+    },
+    "src/database/queries/claim_queries.py::_URGENT_OPERATION": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        80,
+        85
+      ]
+    },
+    "src/database/queries/claim_queries.py::_URGENT_STAGE": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        86,
+        86
+      ]
+    },
+    "src/database/queries/project_queries.py::ProjectQueryMixin.list_projects": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        193,
+        216
+      ]
+    },
+    "src/database/queries/session_queries.py::SessionQueryMixin.record_failed_preparation": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        371,
+        428
+      ]
+    },
+    "src/database/queries/session_queries.py::import from src.database.tables import agent_profiles, agents, gates, integration_batches, integration_branch_owners, playbook_v2_runs, projects, sessions, task_branch_origins, task_integration_checkpoints, task_session_attempts, tasks, workspaces": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        43,
+        48
+      ]
+    },
+    "src/database/queries/task_recovery_queries.py::TaskRecoveryQueryMixin._clear_stopped_recovery_assignment_on": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        1378,
+        1434
+      ]
+    },
+    "src/database/queries/wait_queries.py::import from src.database.tables import agents, admission_reservations, continuations, events, integration_batch_members, integration_batches, integration_branch_owners, integration_repair_stages, messages, projects, sessions, tasks, wait_deadlines, wait_edges, wait_escalations, wait_priority_projection, wait_records": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        23,
+        42
+      ]
+    },
+    "src/database/queries/workspace_queries.py::WorkspaceQueryMixin.remove_missing_workspace_registration": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        190,
+        255
+      ]
+    },
+    "src/doctor/stall_checks.py::_train_batch_findings": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        640,
+        648
+      ]
+    },
+    "src/event_schemas.py::EVENT_SCHEMAS['integration.completed_container_checkpoint_recovered']": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        2058,
+        2067
+      ]
+    },
+    "src/wait_runtime/hibernate.py::HibernationTransaction._advance_locked": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        132,
+        276
+      ]
+    },
+    "src/wait_runtime/hibernate.py::locked_suspension": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        62,
+        84
+      ]
+    },
+    "src/wait_runtime/resume.py::ResumeTransaction.failed": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        267,
+        335
+      ]
+    },
+    "src/wait_runtime/resume.py::verify_saved_branch": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        22,
+        36
+      ]
+    },
+    "src/wait_runtime/scheduler.py::SchedulerWaitService.deadline_locked": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        217,
+        292
+      ]
+    },
+    "src/wait_runtime/service.py::WaitService.__init__": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        19,
+        62
+      ]
+    },
+    "src/wait_runtime/service.py::WaitService.graph": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        70,
+        80
+      ]
+    },
+    "src/waits/admission.py::import from src.database.tables import continuations, integration_batch_members, integration_batches, integration_branch_owners, integration_repair_stages, projects, sessions, tasks, token_ledger": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        14,
+        18
+      ]
+    },
+    "src/waits/decisions.py::WaitDecisions.raise_escalation": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        36,
+        84
+      ]
+    },
+    "src/waits/decisions.py::import from src.database.tables import admission_reservations, continuations, escalation_deliveries, escalations, events, integration_branch_owners, messages, sessions, task_context, tasks, wait_deadlines, wait_edges, wait_escalations, wait_records": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        17,
+        21
+      ]
+    },
+    "src/waits/source_locking.py::lock_database_source": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        12,
+        50
+      ]
+    },
+    "src/wait_runtime/eviction.py::candidate": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        9,
+        18
+      ]
+    },
+    "src/wait_runtime/eviction.py::import from src.waits.holding import execution_waits": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        8,
+        8
+      ]
+    },
+    "src/wait_runtime/hibernate.py::begin_suspension": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        25,
+        61
+      ]
+    },
+    "src/wait_runtime/hibernate.py::import from src.database.queries.continuation_queries import degrade_checkpoint": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        18,
+        18
+      ]
+    },
+    "src/wait_runtime/hibernate.py::import from src.waits.checkpoint import collect_checkpoint_facts": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        21,
+        21
+      ]
+    },
+    "src/wait_runtime/lifecycle.py::WaitLifecycle.register": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        28,
+        86
+      ]
+    },
+    "src/wait_runtime/lifecycle.py::WaitLifecycle.sleep_decide": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        87,
+        124
+      ]
+    },
+    "src/wait_runtime/lifecycle.py::WaitLifecycle.suspend": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        130,
+        166
+      ]
+    },
+    "src/wait_runtime/lifecycle.py::import from src.database.queries.continuation_queries import measurement_medians": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        13,
+        13
+      ]
+    },
+    "src/wait_runtime/resume.py::ResumeTransaction.bind_launch": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        229,
+        266
+      ]
+    },
+    "src/wait_runtime/resume.py::ResumeTransaction.dispatch": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        177,
+        228
+      ]
+    },
+    "src/wait_runtime/resume.py::ResumeTransaction.fresh_workspace": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        108,
+        176
+      ]
+    },
+    "src/wait_runtime/resume.py::ResumeTransaction.recovery_event": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        336,
+        374
+      ]
+    },
+    "src/wait_runtime/resume.py::ResumeTransaction.reserve": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        45,
+        107
+      ]
+    },
+    "src/wait_runtime/resume.py::import from src.wait_runtime.hibernate import locked_suspension": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        19,
+        19
+      ]
+    },
+    "src/wait_runtime/scheduler.py::SchedulerWaitService.__init__": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        41,
+        46
+      ]
+    },
+    "src/wait_runtime/scheduler.py::SchedulerWaitService.authorize": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        47,
+        52
+      ]
+    },
+    "src/wait_runtime/scheduler.py::SchedulerWaitService.sync": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        53,
+        182
+      ]
+    },
+    "src/wait_runtime/scheduler.py::import from src.waits.graph import add_edges, clear_edges, lock_graph, recompute_from": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        22,
+        22
+      ]
+    },
+    "src/wait_runtime/scheduler.py::import from src.waits.registry import build_registry": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        23,
+        23
+      ]
+    },
+    "src/wait_runtime/scheduler.py::import from src.waits.reservations import SchedulerPolicy, enabled": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        24,
+        24
+      ]
+    },
+    "src/wait_runtime/scheduler.py::scheduler_tick": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        292,
+        314
+      ]
+    },
+    "src/wait_runtime/service.py::WaitService.lock_source": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        63,
+        69
+      ]
+    },
+    "src/wait_runtime/service.py::import from src.waits.graph import recompute_from": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        11,
+        11
+      ]
+    },
+    "src/wait_runtime/service.py::import from src.waits.registry import build_registry": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        8,
+        8
+      ]
+    },
+    "src/wait_runtime/service.py::import from src.waits.source_locking import lock_database_source": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        12,
+        12
+      ]
+    },
+    "src/wait_runtime/lifecycle.py::import from src.wait_runtime.hibernate import HibernationTransaction, begin_suspension": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        14,
+        14
+      ]
+    },
+    "src/wait_runtime/lifecycle.py::import from src.waits.decision import ceiling_anchor, decide_sleep, measured_inputs, project_policy": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        11,
+        11
+      ]
+    },
+    "src/wait_runtime/resume.py::import from src.database.queries.continuation_queries import wait_outcome_envelope": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        10,
+        11
+      ]
+    },
+    "src/wait_runtime/resume.py::import from src.waits.mail import held_messages": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        20,
+        20
+      ]
+    },
+    "src/wait_runtime/scheduler.py::close_row": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        27,
+        37
+      ]
+    },
+    "src/wait_runtime/lifecycle.py::WaitLifecycle.acknowledge": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        170,
+        183
+      ]
+    },
+    "src/wait_runtime/eviction.py::request_evictions": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        44,
+        63
+      ]
+    },
+    "src/wait_runtime/hibernate.py::HibernationTransaction.cleanup": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        277,
+        308
+      ]
+    },
+    "src/agent_waits.py::AgentWaitReconciler.tick": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        195,
+        207
+      ]
+    },
+    "src/commands/session_commands.py::SessionCommandsMixin._cmd_session_sleep": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        738,
+        784
+      ]
+    },
+    "src/orchestrator/pools.py::PoolsMixin._reconcile_pools_inner": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        611,
+        661
+      ]
+    },
+    "src/wait_runtime/measurements.py::capture_costs": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        46,
+        90
+      ]
+    },
+    "src/database/queries/claim_queries.py::_ordinary_activation_eligibility": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        100,
+        107
+      ]
+    },
+    "src/wait_runtime/legacy_parking.py::checkpoint_proof": {
+      "reason": "Migration admission checks canonical integration checkpoint evidence without modifying delivery authority."
+    },
+    "src/wait_runtime/legacy_parking.py::current_proof": {
+      "reason": "Migration admission checks canonical integration checkpoint evidence without modifying delivery authority."
+    },
+    "src/wait_runtime/legacy_parking.py::import from src.database.tables import agents, sessions, task_integration_checkpoints, wait_bridge_progress, workspaces": {
+      "reason": "Migration admission checks canonical integration checkpoint evidence without modifying delivery authority."
+    },
+    "src/wait_runtime/legacy_parking.py::legacy_parked": {
+      "reason": "Migration admission checks canonical integration checkpoint evidence without modifying delivery authority."
+    },
+    "src/wait_runtime/legacy_parking.py::parked": {
+      "reason": "Migration admission checks canonical integration checkpoint evidence without modifying delivery authority."
+    },
+    "src/waits/admission.py::import from src.database.tables import continuations, integration_batch_members, integration_batches, integration_branch_owners, integration_repair_stages, projects, sessions, tasks, token_ledger, wait_records": {
+      "reason": "Admission reads canonical integration ownership and repair blockers; integration source authority remains charged."
     },
     "src/orchestrator/workspace_binding_audit.py::_inspect_binding": {
       "reason": "Read-only reconciliation of existing registered slot bindings against retained integration owner/job pins, current session instance/claim epoch/acquisition receipt and physical source identity. Reports mismatches or unknown evidence; never clears claims, releases locks, changes retry budgets or writes integration lifecycle/ref replay state."
@@ -10323,7 +10900,7 @@
     "src/database/queries/agent_cron_queries.py::AgentCronQueriesMixin.reconcile_agent_cron": "Recurring prompt coalescing and message transport diagnostics; last_delivery_status describes terminal submission, not code integration.",
     "src/database/tables.py::agent_cron": "Session-owned recurring prompts and message delivery diagnostics introduced by revision 86; no integration state, ref mutations or replay journal.",
     "src/database/tables.py::agent_cron['last_delivery_status']": "Recurring prompt terminal delivery status, unrelated to code delivery.",
-    "src/prime/sections.py::_build_task_context_body": "Ordinary task context, recovery observations, comments and attachments, including reuse of the shared provider handoff formatter. No integration assignment, lifecycle or authority is read or rendered here; the live fenced parent-conflict snapshot remains in the independently charged build_task_context_section adapter, and the shared handoff formatter remains charged.",
+    "src/prime/sections.py::_build_task_context_preview": "Ordinary task context, recovery observations, comments and attachments, including reuse of the shared provider handoff formatter. No integration assignment, lifecycle or authority is read or rendered here; the live fenced parent-conflict snapshot remains in the independently charged build_task_context_section adapter, and the shared handoff formatter remains charged.",
     "src/commands/operator_authority.py::OPERATOR_FORBIDDEN": "Operator-worker denylist of human gate and delivery command names; it only refuses dispatch. The named commands keep their own charged handlers; no integration storage, lifecycle or ref authority.",
     "src/commands/operator_authority.py::OPERATOR_READS": "Operator-worker command-name allowlist; it grants nothing itself. Every named integration command keeps its own charged handler, authorization and storage; no integration storage, lifecycle or ref authority.",
     "src/commands/operator_authority.py::OPERATOR_WRITES": "Operator-worker command-name allowlist; it grants nothing itself. Every named integration command keeps its own charged handler, authorization and storage; no integration storage, lifecycle or ref authority.",
@@ -10506,7 +11083,7 @@
       "src/sessions/worker_recovery.py::STREAK_KEY": "Generic consecutive worker-failure metadata key; no integration lifecycle or replay authority."
     },
     "ordinary_context_boundary": {
-      "src/prime/sections.py::_build_task_context_body": "Ordinary task context, recovery observations, comments and attachments, including reuse of the shared provider handoff formatter. No integration assignment, lifecycle or authority is read or rendered here; the live fenced parent-conflict snapshot remains in the independently charged build_task_context_section adapter, and the shared handoff formatter remains charged."
+      "src/prime/sections.py::_build_task_context_preview": "Ordinary task context, recovery observations, comments and attachments, including reuse of the shared provider handoff formatter. No integration assignment, lifecycle or authority is read or rendered here; the live fenced parent-conflict snapshot remains in the independently charged build_task_context_section adapter, and the shared handoff formatter remains charged."
     },
     "storage_sinks": {
       "src/commands/task_commands.py::TaskCommandsMixin._restart_repair_delegate::422567dd28fcecb1a80d03028773f3ba177b912a1b2e264195e8ad9a0e83101f": {

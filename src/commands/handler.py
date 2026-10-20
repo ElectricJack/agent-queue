@@ -36,6 +36,7 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 from src.config import AppConfig
+from src.state_machine import InvalidTransition
 from src.logging_config import CorrelationContext
 
 # Mixin imports — each provides one domain of _cmd_* methods
@@ -44,6 +45,7 @@ from src.commands.object_loop_commands import ObjectLoopCommandsMixin
 from src.commands.claim_commands import ClaimCommandsMixin
 from src.commands.question_commands import QuestionCommandsMixin
 from src.commands.wait_commands import WaitCommandsMixin
+from src.commands.wait_v2_commands import WaitV2CommandsMixin
 from src.commands.cron_commands import CronCommandsMixin
 from src.commands.knowledge_commands import KnowledgeCommandsMixin
 from src.commands.collaboration_commands import CollaborationCommandsMixin
@@ -405,6 +407,7 @@ class CommandHandler(
     TestSelectionCommandsMixin,
     ReportCommandsMixin,
     WaitCommandsMixin,
+    WaitV2CommandsMixin,
     CronCommandsMixin,
     KnowledgeCommandsMixin,
     CollaborationCommandsMixin,
@@ -1048,6 +1051,9 @@ class CommandHandler(
                 # plugin path previously ran with no capability check at all.
                 # It composes with, and does not replace, check_request_scope:
                 # a command must pass both.
+                wait_refusal = await self._wait_mutation_fence(name, principal, mutating=mutating)
+                if wait_refusal:
+                    return wait_refusal
                 decision = authorize_command(
                     name,
                     principal,
@@ -1179,6 +1185,10 @@ class CommandHandler(
                 _emit_ok = False
                 _emit_error = f"Unknown command: {name}"
                 return {"error": f"Unknown command: {name}"}
+            except InvalidTransition as e:
+                _emit_ok = False
+                _emit_error = str(e)
+                return {"success": False, "code": e.code, "error": str(e)}
             except Exception as e:
                 logger.error(
                     "Command %s failed: args=%s err=%s",

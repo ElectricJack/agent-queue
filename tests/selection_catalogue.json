@@ -39,7 +39,23 @@
       "modules": [
         "tests/test_agent_wait_commands.py",
         "tests/test_agent_wait_queries.py",
-        "tests/test_agent_waits.py"
+        "tests/test_agent_waits.py",
+        "tests/test_wait_admission.py",
+        "tests/test_wait_commands.py",
+        "tests/test_wait_decisions.py",
+        "tests/test_wait_dispatch.py",
+        "tests/test_wait_faults.py",
+        "tests/test_wait_graph.py",
+        "tests/test_wait_hibernation.py",
+        "tests/test_wait_holding.py",
+        "tests/test_wait_legacy_bridge.py",
+        "tests/test_wait_metrics.py",
+        "tests/test_wait_migration.py",
+        "tests/test_wait_outcomes.py",
+        "tests/test_wait_queries.py",
+        "tests/test_wait_resource_sources.py",
+        "tests/test_wait_source_queries.py",
+        "tests/test_waits.py"
       ]
     },
     "api-contract": {
@@ -4285,13 +4301,17 @@
         "development-delivery"
       ],
       "default_arm": true,
-      "digest": "sha256:95127de3cedd5a3ac6953829e67593e80595369da5045aa528cc46867c4dbab8",
+      "digest": "sha256:4caec590f6a1f4f8dd9a82f2f55db1b4ba1ce7bd95d68d114d3396956682a8b1",
       "imports": [
         "src.commands.handler",
         "src.config",
+        "src.database.queries.result_queries",
+        "src.database.queries.task_queries",
         "src.git.manager",
+        "src.git.process",
         "src.models",
-        "src.orchestrator"
+        "src.orchestrator",
+        "src.orchestrator.stranded_work"
       ],
       "markers": [
         "parametrize"
@@ -8251,7 +8271,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:7d495a1e58b2b5a61d1d16c1b3e9a59c8adce69a7ae42958c1f7c186a45647c4",
+      "digest": "sha256:e3c0e33602a228d00afb805356041a434d4e1f9285e96b6239793fec54bc2e41",
       "imports": [
         "src.commands",
         "src.config",
@@ -8270,7 +8290,8 @@
         "src.integration.repository_recovery",
         "src.integration.train",
         "src.integration.train_sources",
-        "src.models"
+        "src.models",
+        "src.waits.sources"
       ],
       "markers": [
         "parametrize"
@@ -8932,15 +8953,17 @@
         "integration-ownership"
       ],
       "default_arm": true,
-      "digest": "sha256:98d0bc5c4c78575999e17bf295f27580b263fa6db0b215cafcee4cebc89de99e",
+      "digest": "sha256:d365abe971a426cfb0ba0e4e7da89c91763e5efa16381813bb911880979500db",
       "imports": [
         "src.api.auth",
         "src.claim_file",
+        "src.commands.contracts.integration",
         "src.commands.handler",
         "src.config",
         "src.database.queries.claim_queries",
         "src.database.tables",
         "src.git.manager",
+        "src.git.process",
         "src.integration.delegate_release",
         "src.integration.models",
         "src.integration.owner_recovery",
@@ -13350,13 +13373,14 @@
         "worker-pools"
       ],
       "default_arm": true,
-      "digest": "sha256:0691560cf622271b0605c4886e510632d6878cb90ea1a41f636544c2b0f82cac",
+      "digest": "sha256:85b2af34bcdc520f3f013655789e4476195e4d1b5bc4740a69f5a54e6211d400",
       "imports": [
         "src.models",
         "src.scheduler"
       ],
       "markers": [
-        "asyncio"
+        "asyncio",
+        "parametrize"
       ],
       "summary": "size_pools — desired-state sizing over the global (profile-only) pool key."
     },
@@ -16199,13 +16223,14 @@
         "session-runtime"
       ],
       "default_arm": true,
-      "digest": "sha256:6d0a4b57368a7dc8ae82b7123ebd9d4b27350adf997a55a73e27bcbf803ae463",
+      "digest": "sha256:3c9c577db0aa7ae525ae014ec7e7457f02b74abc7af84e93efc8d558985e17f9",
       "imports": [
         "src.agent_waits",
         "src.commands",
         "src.commands.contracts",
         "src.commands.contracts.builtin",
         "src.config",
+        "src.database.queries.wait_queries",
         "src.database.tables",
         "src.integration.lock",
         "src.integration.models",
@@ -16230,7 +16255,10 @@
         "src.sessions.transcripts",
         "src.sessions.transcripts.claude",
         "src.sessions.transcripts.codex",
-        "src.sessions.worker_recovery"
+        "src.sessions.worker_recovery",
+        "src.waits.conditions",
+        "src.waits.mail",
+        "src.waits.registry"
       ],
       "markers": [
         "parametrize",
@@ -17035,15 +17063,17 @@
         "task-lifecycle"
       ],
       "default_arm": true,
-      "digest": "sha256:532cff7257648c0e943341146e872d7b2375c5c42f3b3cc4bf0b5b4b91f05074",
+      "digest": "sha256:83a8b22a585e20eb4749da26b3a2ec7ae9776bd26858499c493b82dce5c8db26",
       "imports": [
         "src.commands",
         "src.commands.session_commands",
         "src.database.queries.result_queries",
         "src.database.queries.task_queries",
+        "src.git.manager",
         "src.models",
         "src.orchestrator",
-        "src.orchestrator.execution"
+        "src.orchestrator.execution",
+        "src.orchestrator.stranded_work"
       ],
       "markers": [
         "parametrize"
@@ -18477,6 +18507,420 @@
       ],
       "summary": "Tests for the internal vibecop plugin."
     },
+    "tests/test_wait_admission.py": {
+      "areas": [
+        "agent-waits"
+      ],
+      "default_arm": true,
+      "digest": "sha256:43bdc319cce686545f20467fc5d25955c9035191485356d2ef2d256973066b62",
+      "imports": [
+        "src.commands.principal",
+        "src.config",
+        "src.config_editor",
+        "src.config_wait_policy",
+        "src.database",
+        "src.database.queries.wait_queries",
+        "src.database.tables",
+        "src.models",
+        "src.scheduler",
+        "src.wait_runtime.scheduler",
+        "src.wait_runtime.service",
+        "src.waits.admission",
+        "src.waits.conditions",
+        "src.waits.occupancy",
+        "src.waits.registry",
+        "src.waits.reservations"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Real PostgreSQL admission bindings, deadlines, claim predicates and restart replay."
+    },
+    "tests/test_wait_commands.py": {
+      "areas": [
+        "agent-waits"
+      ],
+      "default_arm": true,
+      "digest": "sha256:f3b35c5721e3532a20bc347c355bd29819a00fed15f29a7e21ae517bd25f65b9",
+      "imports": [
+        "src.api.codegen",
+        "src.api.models.wait",
+        "src.api.scope",
+        "src.api.target_scope",
+        "src.cli.auto_commands",
+        "src.cli.inventory",
+        "src.cli.waits",
+        "src.commands",
+        "src.commands.contracts",
+        "src.commands.contracts.wait",
+        "src.commands.contracts.wait_v2",
+        "src.commands.principal",
+        "src.config",
+        "src.database.queries.continuation_queries",
+        "src.database.queries.wait_queries",
+        "src.database.tables",
+        "src.doctor.models",
+        "src.mcp_registration",
+        "src.models",
+        "src.profiles.capabilities",
+        "src.profiles.capability_sync",
+        "src.profiles.drift",
+        "src.tools.definitions",
+        "src.wait_runtime.lifecycle",
+        "src.wait_runtime.service",
+        "src.waits.conditions",
+        "src.waits.legacy",
+        "src.waits.registry"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Verified wait surfaces, principal fences and dormant runtime composition."
+    },
+    "tests/test_wait_decisions.py": {
+      "areas": [
+        "agent-waits"
+      ],
+      "default_arm": true,
+      "digest": "sha256:dc5accba4cdb745e213ea3054efc2532b25de09c89374388435b161dffafcbe9",
+      "imports": [
+        "src.config",
+        "src.database.queries.continuation_queries",
+        "src.database.tables",
+        "src.event_schemas",
+        "src.handoffs",
+        "src.messages.delivery",
+        "src.models",
+        "src.waits.conditions",
+        "src.waits.holding",
+        "src.waits.mail"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Operational deadlines never wake workers; only fenced supervisor decisions do."
+    },
+    "tests/test_wait_dispatch.py": {
+      "areas": [
+        "agent-waits"
+      ],
+      "default_arm": true,
+      "digest": "sha256:8bbbe40e9c960caf540a4f4ead57c6be8a6de71bbbd931d2eeaf6fe306a2ea1d",
+      "imports": [
+        "src.commands",
+        "src.commands.principal",
+        "src.config",
+        "src.database.tables",
+        "src.integration.checks",
+        "src.models",
+        "src.orchestrator.core",
+        "src.playbooks.run_state",
+        "src.playbooks.waits",
+        "src.scheduler",
+        "src.wait_runtime.service",
+        "src.waits.conditions",
+        "src.waits.listener",
+        "src.waits.registry",
+        "src.waits.resource_sources",
+        "src.waits.sources"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Authoritative source transitions write unconditional, transactional wait events."
+    },
+    "tests/test_wait_faults.py": {
+      "areas": [
+        "agent-waits"
+      ],
+      "default_arm": true,
+      "digest": "sha256:9e2352f31ab0a386af212713071ad808a670b1d061eb1a8faa9e89876955fd28",
+      "imports": [
+        "src.api.models.metrics",
+        "src.config",
+        "src.config_wait_policy",
+        "src.database.queries.wait_metrics",
+        "src.database.queries.wait_queries",
+        "src.database.tables",
+        "src.git.manager",
+        "src.messages.delivery",
+        "src.metrics.sampler",
+        "src.metrics.waits",
+        "src.models",
+        "src.prime",
+        "src.scheduler",
+        "src.sessions.reconciler",
+        "src.wait_runtime.eviction",
+        "src.wait_runtime.hibernate",
+        "src.wait_runtime.legacy_human",
+        "src.wait_runtime.lifecycle",
+        "src.wait_runtime.measurements",
+        "src.wait_runtime.resume",
+        "src.wait_runtime.scheduler",
+        "src.waits.conditions",
+        "src.waits.decision",
+        "src.waits.fencing",
+        "src.waits.mail",
+        "src.waits.registry",
+        "src.waits.reservations",
+        "src.waits.resume_ack"
+      ],
+      "markers": [
+        "parametrize",
+        "tmux"
+      ],
+      "summary": "Design §15 acceptance matrix across persistence, delivery and lifecycle boundaries."
+    },
+    "tests/test_wait_graph.py": {
+      "areas": [
+        "agent-waits"
+      ],
+      "default_arm": true,
+      "digest": "sha256:3cdef87877891a366dd387d18ce4c59a65ce8c8e8fb782b37643dbc917580df5",
+      "imports": [
+        "src.database",
+        "src.database.queries.wait_queries",
+        "src.database.tables",
+        "src.models",
+        "src.waits.conditions",
+        "src.waits.explain",
+        "src.waits.graph",
+        "src.waits.registry"
+      ],
+      "markers": [],
+      "summary": "Wait graph propagation, retraction, cycles and persisted explanations."
+    },
+    "tests/test_wait_hibernation.py": {
+      "areas": [
+        "agent-waits"
+      ],
+      "default_arm": true,
+      "digest": "sha256:d6d6392dcf29f94e6db3e643f5a7f1be49caea48232076dc6adbe335eeb0f318",
+      "imports": [
+        "src.cli.waits",
+        "src.commands",
+        "src.commands.principal",
+        "src.config",
+        "src.database",
+        "src.database.queries.continuation_queries",
+        "src.database.queries.wait_queries",
+        "src.database.tables",
+        "src.git.manager",
+        "src.models",
+        "src.prime",
+        "src.prime.budgets",
+        "src.prime.hook_envelopes",
+        "src.profiles.capabilities",
+        "src.scheduler",
+        "src.sessions.transcripts",
+        "src.wait_runtime",
+        "src.wait_runtime.eviction",
+        "src.wait_runtime.hibernate",
+        "src.wait_runtime.lifecycle",
+        "src.wait_runtime.measurements",
+        "src.wait_runtime.resume",
+        "src.wait_runtime.scheduler",
+        "src.waits.conditions",
+        "src.waits.decision",
+        "src.waits.fencing",
+        "src.waits.holding",
+        "src.waits.registry",
+        "src.waits.resume_ack"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Checkpoint and fresh-prime boundary, without enabling stop/launch services."
+    },
+    "tests/test_wait_holding.py": {
+      "areas": [
+        "agent-waits"
+      ],
+      "default_arm": true,
+      "digest": "sha256:aa50fa50d4d4cc288591fc963924fb3ca9556b435f2c575acc07fc1bb384e70f",
+      "imports": [
+        "src.config",
+        "src.database.tables",
+        "src.messages.delivery",
+        "src.waits.conditions",
+        "src.waits.holding"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Verified waits suppress routine delivery until the holder acknowledges."
+    },
+    "tests/test_wait_legacy_bridge.py": {
+      "areas": [
+        "agent-waits"
+      ],
+      "default_arm": true,
+      "digest": "sha256:b5f6670a211a9869dfc4219ef40aa13fe82b59bdbf2fd0736fd5d44d51316fe3",
+      "imports": [
+        "src.commands.contracts.wait_v2",
+        "src.commands.principal",
+        "src.config",
+        "src.database",
+        "src.database.tables",
+        "src.models",
+        "src.wait_runtime.legacy_bridge",
+        "src.wait_runtime.legacy_human",
+        "src.wait_runtime.legacy_parking",
+        "src.wait_runtime.legacy_projection",
+        "src.wait_runtime.service",
+        "src.waits.adapters.legacy_escalation",
+        "src.waits.conditions",
+        "src.waits.ownership"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Legacy adoption preserves age, ownership and exactly one outcome path."
+    },
+    "tests/test_wait_metrics.py": {
+      "areas": [
+        "agent-waits"
+      ],
+      "default_arm": true,
+      "digest": "sha256:7a6462a5adcf7ec9ec15f527e264dba939a51e32fd09538484f4206a9a8fb085",
+      "imports": [
+        "src.api.models.metrics",
+        "src.config_wait_policy",
+        "src.database",
+        "src.database.queries.wait_metrics",
+        "src.database.queries.wait_queries",
+        "src.database.tables",
+        "src.metrics.sampler",
+        "src.metrics.waits",
+        "src.models"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Wait accounting reproduces from persisted timestamps, including window edges."
+    },
+    "tests/test_wait_migration.py": {
+      "areas": [
+        "agent-waits"
+      ],
+      "default_arm": true,
+      "digest": "sha256:a699ed3975e1d07ff6f7bee0f703f6e17c9c3c925f57194d482d2db5921bbcf4",
+      "imports": [
+        "src.database.tables"
+      ],
+      "markers": [
+        "integration",
+        "migration",
+        "parametrize"
+      ],
+      "summary": "Verified-wait DDL on fresh and pre-v2 disposable PostgreSQL schemas."
+    },
+    "tests/test_wait_outcomes.py": {
+      "areas": [
+        "agent-waits"
+      ],
+      "default_arm": true,
+      "digest": "sha256:c23415302372244dbd08175ff7bc02aad8a850d69a18d30fd3820b495fb55f13",
+      "imports": [
+        "src.config",
+        "src.database.tables",
+        "src.messages.delivery",
+        "src.models",
+        "src.waits.conditions",
+        "src.waits.dispatcher",
+        "src.waits.graph",
+        "src.waits.holding",
+        "src.waits.listener",
+        "src.waits.mail",
+        "src.waits.source_locking"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Real transactional dispatch and mail acknowledgement; lifecycle hooks are explicit."
+    },
+    "tests/test_wait_queries.py": {
+      "areas": [
+        "agent-waits"
+      ],
+      "default_arm": true,
+      "digest": "sha256:aa841352a2d1a5caf22a0386941082f39e7ddc954bb4afcd2e5d696eb1ecfd0c",
+      "imports": [
+        "src.database",
+        "src.database.queries.wait_queries",
+        "src.database.queries.wait_source_queries",
+        "src.database.tables",
+        "src.models",
+        "src.waits.conditions",
+        "src.waits.registry",
+        "src.waits.sources"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Verified registration and source races on disposable PostgreSQL."
+    },
+    "tests/test_wait_resource_sources.py": {
+      "areas": [
+        "agent-waits"
+      ],
+      "default_arm": true,
+      "digest": "sha256:85c7a299ef0bcd324d8461cfe2c80ec20044e46bf60e6bef64f7c16fc5ae0a67",
+      "imports": [
+        "src.database.tables",
+        "src.models",
+        "src.orchestrator.core",
+        "src.scheduler",
+        "src.waits.resource_sources",
+        "src.waits.sources"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Actual resource producers, persisted registry bindings and fresh service proofs."
+    },
+    "tests/test_wait_source_queries.py": {
+      "areas": [
+        "agent-waits"
+      ],
+      "default_arm": true,
+      "digest": "sha256:88d47673cf163d7f5a784c10dc8c60a931919862ac22ca75545990480c460dcb",
+      "imports": [
+        "src.database.queries.wait_source_queries",
+        "src.database.tables",
+        "src.models",
+        "src.waits.sources"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Source outbox atomicity, commit ordering, watermark and safe retention."
+    },
+    "tests/test_waits.py": {
+      "areas": [
+        "agent-waits"
+      ],
+      "default_arm": true,
+      "digest": "sha256:27e39a5319454a6ac1637bc3ec1f7945c9d722bdf64e3108314624a5d35fd51a",
+      "imports": [
+        "src.api.models.task",
+        "src.commands.task_commands",
+        "src.config_wait_policy",
+        "src.database.queries.metrics_queries",
+        "src.database.tables",
+        "src.models",
+        "src.orchestrator.events",
+        "src.sessions.obsolete",
+        "src.state_machine",
+        "src.waits.conditions",
+        "src.waits.decision",
+        "src.waits.registry"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Verified-wait lifecycle vocabulary and typed condition boundaries."
+    },
     "tests/test_websocket_forwarding.py": {
       "areas": [
         "events"
@@ -18602,12 +19046,13 @@
         "github"
       ],
       "default_arm": true,
-      "digest": "sha256:94960140ca7f2f48a9bff50efa918b40cd8895685b29418cdc81f9057cbfd080",
+      "digest": "sha256:e261159034933b8f9bf8cc18e9ef9695a9bb1c3e941a8541d23a16f7643893f5",
       "imports": [
         "src.api.auth",
         "src.api.scope",
         "src.cli.app",
         "src.config",
+        "src.database.tables",
         "src.git.github_contracts",
         "src.git.identity",
         "src.git.manager",
