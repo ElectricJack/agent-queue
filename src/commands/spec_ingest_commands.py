@@ -1,5 +1,6 @@
 """Server-owned approval task receipts and the scoped immutable document read."""
 
+import hashlib
 import time
 
 from sqlalchemy import and_, or_, select, update
@@ -196,6 +197,47 @@ class SpecIngestCommandsMixin:
             session_instance_token=principal.session_instance_token,
             project_id=principal.project_id, task_id=principal.task_id,
         )
+        context = await self._fidelity_read_context("approved_spec_packet", args)
+        if context is not None:
+            if "error" in context:
+                return context
+            batch = context["batch"]
+            async with self.db.immediate() as conn:
+                decision = await self.db.get_ask_decision(batch["decision_id"], conn=conn)
+                if (not decision or args.get("decision_id") != batch["decision_id"]
+                        or args.get("packet_sha256") != decision["packet_sha256"]):
+                    return {"success": False, "error": "out of scope: approved packet mismatch"}
+                try:
+                    packet = await approved_packet(
+                        self.db, batch["decision_id"], decision["packet_sha256"],
+                        batch["project_id"], conn=conn, require_current=False,
+                    )
+                    if (packet["content_sha256"] != batch["source_content_sha256"]
+                            or (packet["review_id"] or packet["snapshot_id"])
+                            != batch["source_review_id"]
+                            or (packet["revision"] or 1) != batch["source_revision"]):
+                        raise AskError("ask.stale_source", "Batch source identity differs")
+                    packet["design"] = None
+                    if batch["lineage_kind"] == "resolved":
+                        review = await self.db.get_review(batch["design_review_id"], conn=conn)
+                        revision = await self.db.get_review_revision(
+                            batch["design_review_id"], batch["design_revision"], conn=conn,
+                        )
+                        if (not review or review["project_id"] != batch["project_id"]
+                                or not revision or revision["spec_kind"] != "design"
+                                or revision["content_sha256"] != batch["design_content_sha256"]
+                                or hashlib.sha256(revision["content"].encode()).hexdigest()
+                                != batch["design_content_sha256"]):
+                            raise AskError("ask.stale_source", "Batch design identity differs")
+                        packet["design"] = {
+                            "review_id": batch["design_review_id"],
+                            "revision": batch["design_revision"],
+                            "content_sha256": batch["design_content_sha256"],
+                            "body": revision["content"],
+                        }
+                    return {"success": True, **packet}
+                except AskError as exc:
+                    return {"success": False, "error": str(exc), "code": exc.code}
         task = await spec_ingest_task_for_session(self.db, scope)
         if task is None:
             return {"success": False, "error": "A live held spec-ingest role is required"}

@@ -2149,16 +2149,15 @@ async def test_train_control_handlers_refuse_non_supervisor_principals(world, ki
     with principal_context(ExecutionPrincipal(kind=PrincipalKind(kind), policy=DENY_ALL,
                                               elevated=True, project_id="p")):
         abort = await handler._cmd_integration_abort_batch({"batch_id": "batch"})
+        settle = await handler._cmd_integration_settle_batch({"batch_id": "batch"})
         retire = await handler._cmd_integration_retire_origin({"task_id": "a"})
         pause = await handler._cmd_integration_pause_batch({"batch_id": "batch"})
         resume = await handler._cmd_integration_resume_batch({"batch_id": "batch"})
         eject = await handler._cmd_integration_eject({"batch_id": "batch", "task_id": "a"})
         seal = await handler._cmd_integration_seal_now({"project_id": "p"})
         refresh = await handler._cmd_integration_refresh_epic({"task_id": "a"})
-        settle = await handler._cmd_integration_settle_batch({"batch_id": "batch"})
     assert abort["outcome"] == retire["outcome"] == refresh["outcome"] == "unauthorized"
-    assert settle["outcome"] == "unauthorized"
-    assert {r["outcome"] for r in (pause, resume, eject, seal)} == {"unauthorized"}
+    assert {r["outcome"] for r in (pause, resume, eject, seal, settle)} == {"unauthorized"}
     assert (await store.get("batch")).intent == "open"
 
 
@@ -2196,13 +2195,13 @@ async def test_settle_batch_records_promotion_of_contained_members(world):
     with pytest.raises(ValueError, match="cannot be aborted"):
         await controls.abort_batch(batch.id, dry_run=True, operator_id="operator", reason="")
     with pytest.raises(ValueError, match="nonblank reason"):
-        await controls.settle_batch(batch.id, dry_run=False, operator_id="operator", reason=" ")
-    preview = await controls.settle_batch(batch.id, dry_run=True, operator_id="operator",
+        await controls.settle_batch(batch.id, dry_run=False, expected_target_sha=source, operator_id="operator", reason=" ")
+    preview = await controls.settle_batch(batch.id, dry_run=True, expected_target_sha=None, operator_id="operator",
                                           reason="")
     target = git(world.origin.url, "rev-parse", "main")
     assert (preview["outcome"], preview["target_sha"]) == ("preview", target)
     assert (await db.get_integration_batch(batch.id))["lifecycle"] == "sealed"
-    applied = await controls.settle_batch(batch.id, dry_run=False, operator_id="operator",
+    applied = await controls.settle_batch(batch.id, dry_run=False, expected_target_sha=target, operator_id="operator",
                                           reason="target already matches")
     assert applied["outcome"] == "settled"
     settled = await db.get_integration_batch(batch.id)
@@ -2212,9 +2211,10 @@ async def test_settle_batch_records_promotion_of_contained_members(world):
         [audit] = (await conn.execute(select(events.c.payload).where(
             events.c.event_type == "integration.batch_settled"))).scalars().all()
     assert "target already matches" in audit
-    with pytest.raises(ValueError, match="already promoted"):
-        await controls.settle_batch(batch.id, dry_run=False, operator_id="operator",
-                                    reason="again")
+    replay = await controls.settle_batch(batch.id, dry_run=False, expected_target_sha=target,
+                                        operator_id="operator", reason="again")
+    assert replay["outcome"] == "settled"
+    assert (await db.get_integration_batch(batch.id))["final_main_sha"] == target
 
 
 async def test_settle_batch_refuses_an_undelivered_member(world):
@@ -2226,12 +2226,13 @@ async def test_settle_batch_refuses_an_undelivered_member(world):
     batch = Batch("unsettled", "p", "r", MAIN.target_ref)
     await store.freeze(batch, (BatchMember("a", source, source),), trees={"a": tree(world, source)})
     with pytest.raises(TrainControlError) as refused:
-        await TrainControls(db).settle_batch(batch.id, dry_run=False, operator_id="operator",
+        await TrainControls(db).settle_batch(batch.id, dry_run=False,
+                                             expected_target_sha=git(world.origin.url, "rev-parse", "main"), operator_id="operator",
                                              reason="looks delivered")
     assert refused.value.outcome == "target_not_settled"
     assert (await db.get_integration_batch(batch.id))["lifecycle"] == "sealed"
     with pytest.raises(TrainControlError) as missing:
-        await TrainControls(db).settle_batch("missing", dry_run=True, operator_id="operator",
+        await TrainControls(db).settle_batch("missing", dry_run=True, expected_target_sha=None, operator_id="operator",
                                              reason="")
     assert missing.value.outcome == "unknown_batch"
 
@@ -3220,6 +3221,155 @@ async def test_visit_freezes_gates_and_fast_forwards_through_the_lease(world):
     lease = await BranchLock(db).get(BranchKey(repository_id="r", branch="refs/heads/main"))
     assert lease is None or lease.holder is None
     assert (await train.visit(MAIN)).state == "idle"
+
+
+async def test_required_job_passes_while_unrequired_workflow_job_is_queued_and_batch_delivers(world):
+    await completed(world, "linux-source")
+    train, github, _ = await hosted_train(world)
+    testing = await train.visit(MAIN)
+    assert testing.state == "testing"
+    github.runs[testing.candidate_sha] = "success"
+    rows = github._rows
+
+    def queued_workflow(sha, event="push"):
+        check, workflow, job = rows(sha, event)
+        if sha == testing.candidate_sha and event == "push":
+            workflow = {**workflow, "status": "queued", "conclusion": None}
+        return check, workflow, job
+
+    github._rows = queued_workflow
+    listing = github.paged_items
+
+    async def with_unrequired_job(path, *, key):
+        records = await listing(path, key=key)
+        if key == "jobs" and records and records[0]["head_sha"] == testing.candidate_sha:
+            return records + [{**records[0], "id": 99999, "name": "waived-windows",
+                               "status": "queued", "conclusion": None}]
+        return records
+
+    github.paged_items = with_unrequired_job
+    delivered = await train.visit(MAIN)
+    async with world.db._engine.connect() as conn:
+        from src.database.tables import integration_check_evidence
+
+        checks = (await conn.execute(select(integration_check_evidence).where(
+            integration_check_evidence.c.sha == testing.candidate_sha,
+        ))).mappings().all()
+        lifecycle = await conn.scalar(select(integration_batches.c.lifecycle).where(
+            integration_batches.c.id == testing.batch_id))
+    assert delivered.state == "delivered", (delivered, [dict(row) for row in checks])
+    assert git(world.origin.url, "rev-parse", "main") == testing.candidate_sha
+    assert lifecycle == "promoted"
+    assert len(checks) == 1 and checks[0]["conclusion"] == "success"
+    assert "/job/" in checks[0]["run_url"]
+
+
+@pytest.mark.parametrize("removed_policy", [False, True])
+async def test_train_settles_candidate_already_on_target_before_source_admission(world, removed_policy):
+    await completed(world, "externally-delivered")
+    train, github, _ = await hosted_train(world)
+    testing = await train.visit(MAIN)
+    assert testing.state == "testing"
+    git(world.origin.clone, "push", "origin", testing.candidate_sha + ":main")
+    git(world.origin.clone, "push", "origin", ":aq/externally-delivered")
+    if removed_policy:
+        await world.db.update_project("p", hierarchical_integration_policy={
+            "root": {"required_checks": {"version": "v2", "names": []}},
+        })
+    train.batches.pending = AsyncMock(side_effect=AssertionError("delivery precedes admission"))
+    delivered = await train.visit(MAIN)
+    assert delivered.state == "delivered", delivered
+    assert delivered.batch_id == testing.batch_id
+    async with world.db._engine.connect() as conn:
+        assert await conn.scalar(select(integration_batches.c.lifecycle).where(
+            integration_batches.c.id == testing.batch_id)) == "promoted"
+
+
+async def test_settle_batch_preview_apply_and_replay_preserve_git(world):
+    await completed(world, "external")
+    train, _, _ = lane(world, LocalGit(Path(world.origin.url)))
+    testing = await train.visit(MAIN)
+    git(world.origin.clone, "push", "origin", testing.candidate_sha + ":main")
+    controls = TrainControls(world.db, train=train)
+    store = BatchStore(world.db)
+    before = git(world.origin.url, "show-ref")
+    preview = await controls.settle_batch(testing.batch_id, dry_run=True,
+        expected_target_sha=None, operator_id="supervisor", reason="")
+    assert preview["outcome"] == "preview" and preview["target_sha"] == testing.candidate_sha
+    async with world.db._engine.connect() as conn:
+        assert await conn.scalar(select(integration_batches.c.lifecycle).where(
+            integration_batches.c.id == testing.batch_id)) == "sealed"
+    for _ in range(2):
+        applied = await controls.settle_batch(testing.batch_id, dry_run=False,
+            expected_target_sha=preview["target_sha"], operator_id="supervisor",
+            reason="target was fast-forwarded externally")
+        assert applied["outcome"] == "settled"
+    assert await store.members(testing.batch_id)
+    assert git(world.origin.url, "show-ref") == before
+    async with world.db._engine.connect() as conn:
+        row = (await conn.execute(select(integration_batches.c.lifecycle,
+            integration_batches.c.final_main_sha).where(
+                integration_batches.c.id == testing.batch_id))).one()
+    assert tuple(row) == ("promoted", testing.candidate_sha)
+
+
+async def test_settle_batch_refuses_incomplete_or_changed_target(world):
+    await completed(world, "waiting")
+    train, _, _ = lane(world, LocalGit(Path(world.origin.url)))
+    testing = await train.visit(MAIN)
+    controls = TrainControls(world.db)
+    with pytest.raises(ValueError, match="every frozen source"):
+        await controls.settle_batch(testing.batch_id, dry_run=True,
+            expected_target_sha=None, operator_id="supervisor", reason="")
+    git(world.origin.clone, "push", "origin", testing.candidate_sha + ":main")
+    with pytest.raises(ValueError, match="target changed"):
+        await controls.settle_batch(testing.batch_id, dry_run=False,
+            expected_target_sha=testing.target_sha, operator_id="supervisor", reason="external FF")
+
+
+@pytest.mark.parametrize("blocker", ["hold", "promotion", "unknown", "moved"])
+async def test_settle_batch_refuses_held_special_or_stale_evidence(world, blocker):
+    from src.integration.train_sources import project_snapshot
+    from src.operator_decisions import OperatorDecisions
+
+    await completed(world, "delivered-source")
+    train, _, _ = lane(world, LocalGit(Path(world.origin.url)))
+    testing = await train.visit(MAIN)
+    git(world.origin.clone, "push", "origin", testing.candidate_sha + ":main")
+    expected = {"hold": "operator hold", "promotion": "promotion settlement",
+                "unknown": "every frozen source", "moved": "target changed"}[blocker]
+    if blocker == "hold":
+        await OperatorDecisions(world.db).record({
+            "object_kind": "batch", "object_id": testing.batch_id, "operator": "operator",
+            "decision": "Keep this batch", "effect": "hold", "source": "dashboard",
+            "source_ref": "message:hold", "idempotency_key": "settlement-hold", "releases": None,
+        }, recorded_by="human:local-operator")
+    batch_id = testing.batch_id
+    if blocker == "promotion":
+        store = BatchStore(world.db)
+        members = await store.members(batch_id)
+        batch_id = "promotion-already-delivered"
+        await store.freeze(Batch(batch_id, "p", "r", MAIN.target_ref), members,
+            trees={m.task_id: tree(world, m.source_sha) for m in members},
+            promotion={"repository_id": "r", "request_id": "promotion:r:release:1",
+                       "step": {"id": "release"}})
+
+    async def observed(db, target):
+        snapshot = await project_snapshot(db, target)
+        return SimpleNamespace(
+            error=snapshot.error, target_oid=snapshot.target_oid, observation=snapshot.observation,
+            contains_source=(AsyncMock(return_value=None) if blocker == "unknown"
+                             else snapshot.contains_source),
+            is_fresh=(AsyncMock(return_value=False) if blocker == "moved" else snapshot.is_fresh),
+        )
+
+    with pytest.raises(ValueError, match=expected):
+        await TrainControls(world.db, snapshot=observed).settle_batch(batch_id,
+            dry_run=False, expected_target_sha=testing.candidate_sha, operator_id="supervisor",
+            reason="externally delivered")
+    async with world.db._engine.connect() as conn:
+        assert await conn.scalar(select(integration_batches.c.lifecycle).where(
+            integration_batches.c.id == batch_id)) == "sealed"
 
 
 @pytest.mark.parametrize("staged_auth", [False, True])
@@ -4900,7 +5050,10 @@ async def test_completed_epic_verifies_despite_selection_window_blocker(collecte
     assert git(case.origin.url, "rev-parse", "main") == case.base
 
 
-async def test_reverify_completed_epic_with_released_owner_preserves_gates(collected_epic):
+@pytest.mark.parametrize("reservation", ["released", "legacy", "expired_lease"])
+async def test_reverify_completed_epic_with_released_owner_preserves_gates(
+    collected_epic, reservation,
+):
     from src.database.tables import integration_branch_owners, task_integration_checkpoints
 
     case = collected_epic
@@ -4911,6 +5064,16 @@ async def test_reverify_completed_epic_with_released_owner_preserves_gates(colle
             integration_branch_owners.c.ref == "aq/epic",
         ))).mappings().one()
         assert owner["handoff_state"] == "released" and owner["holder"] is None
+        if reservation != "released":
+            await conn.execute(update(integration_branch_owners).where(
+                integration_branch_owners.c.id == owner["id"],
+            ).values(owner_id="epic", owner_role="worker", handoff_state="reserved",
+                     session_id=None, workspace_id=None, fence_token=2,
+                     fence=2 if reservation == "expired_lease" else None,
+                     holder="epic" if reservation == "expired_lease" else None, expires_at=1.0))
+        owner = dict((await conn.execute(select(integration_branch_owners).where(
+            integration_branch_owners.c.id == owner["id"],
+        ))).mappings().one())
         await conn.execute(insert(task_integration_checkpoints).values(
             task_id="epic", repository_id="r", branch="aq/epic", generation=1,
             checkpoint_sha=case.base, state="working", version=0, updated_at=time.time(),
@@ -4924,12 +5087,27 @@ async def test_reverify_completed_epic_with_released_owner_preserves_gates(colle
     assert preview["completion_id"] is None
     assert await case.db.get_task_completion("epic") is None
     assert not case.train.status()
+    async with case.db._engine.connect() as conn:
+        assert dict((await conn.execute(select(integration_branch_owners).where(
+            integration_branch_owners.c.id == owner["id"],
+        ))).mappings().one()) == owner
     apply = dict(dry_run=False, operator_id="supervisor", expected_head_sha=head,
                  reason="verify the collected aggregate")
     blocked = await controls.reverify_epic("epic", **apply)
     assert blocked["outcome"] == "visited" and blocked["state"] == "blocked"
     assert "review_missing" in {b["code"] for b in blocked["blockers"]}
     assert blocked["completion_id"] is None
+    if reservation != "released":
+        async with case.db._engine.connect() as conn:
+            retired = (await conn.execute(select(integration_branch_owners).where(
+                integration_branch_owners.c.id == owner["id"],
+            ))).mappings().one()
+        assert retired["handoff_state"] == "released" and retired["holder"] is None
+        assert retired["fence_token"] == 3
+        assert retired["fence"] == (3 if reservation == "expired_lease" else None)
+        assert not await BranchLock(case.db).release(Fence(
+            target=BranchKey(repository_id="r", branch="aq/epic"), owner_id="epic", token=2,
+        ))
     await review_epic(case)
     verified = await controls.reverify_epic("epic", **apply)
     assert verified["outcome"] == "visited" and verified["state"] == "idle"
@@ -4948,6 +5126,126 @@ async def test_reverify_completed_epic_with_released_owner_preserves_gates(colle
     assert len(receipts) == 3
     assert {json.loads(item)["operator_id"] for item in receipts} == {"supervisor"}
     assert {json.loads(item)["head_sha"] for item in receipts} == {head}
+    async with case.db._engine.connect() as conn:
+        retirements = (await conn.execute(select(events.c.payload).where(
+            events.c.task_id == "epic",
+            events.c.event_type == "integration.epic_reservation_released",
+        ))).scalars().all()
+    assert len(retirements) == (0 if reservation == "released" else 1)
+    if retirements:
+        assert json.loads(retirements[0]) == {
+            "owner_row_id": owner["id"], "previous_fence_token": 2,
+            "previous_fence": owner["fence"], "released_fence_token": 3,
+            "operator_id": "supervisor", "reason": apply["reason"], "head_sha": head,
+        }
+
+
+@pytest.mark.parametrize("blocker", [
+    "other_owner", "collector", "repair", "attached", "session_binding", "workspace_binding",
+    "live_lease", "live_writer", "restart_pending", "workspace_lock", "open_batch",
+    "live_operation", "ref_mutation", "changed_head",
+])
+async def test_reverify_retains_unsafe_epic_reservations(collected_epic, monkeypatch, blocker):
+    from src.database.tables import integration_branch_owners
+
+    case = collected_epic
+    head = await collect_epic(case)
+    values = dict(owner_id="epic", owner_role="worker", handoff_state="reserved",
+                  fence=None, holder=None, fence_token=2, expires_at=None,
+                  session_id=None, workspace_id=None)
+    values.update({
+        "other_owner": {"owner_id": "other"},
+        "collector": {"owner_role": "collector"},
+        "repair": {"owner_role": "repair"},
+        "attached": {"handoff_state": "attached"},
+        "session_binding": {"session_id": "former-session"},
+        "workspace_binding": {"workspace_id": "former-workspace"},
+        "live_lease": {"fence": 2, "holder": "epic", "expires_at": time.time() + 3600},
+    }.get(blocker, {}))
+    async with case.db.immediate() as conn:
+        await conn.execute(update(integration_branch_owners).where(
+            integration_branch_owners.c.repository_id == "r",
+            integration_branch_owners.c.ref == "aq/epic",
+        ).values(**values))
+        owner = dict((await conn.execute(select(integration_branch_owners).where(
+            integration_branch_owners.c.repository_id == "r",
+            integration_branch_owners.c.ref == "aq/epic",
+        ))).mappings().one())
+        if blocker in {"live_writer", "restart_pending"}:
+            await conn.execute(insert(sessions).values(
+                id="live-writer", task_id="epic", project_id="p", profile_id="worker",
+                harness="codex", provider="test", name="writer", lifecycle="pool",
+                state="running" if blocker == "live_writer" else "stopped",
+                desired_state="running", work_dir="/worker",
+                epoch="0", instance_token="token", started_at=time.time(),
+            ))
+        elif blocker == "workspace_lock":
+            await conn.execute(insert(workspaces).values(
+                id="held-slot", project_id="p", workspace_path="/held-slot",
+                locked_by_task_id="epic", created_at=time.time(),
+            ))
+        elif blocker == "live_operation":
+            from src.database.tables import integration_parent_episodes, integration_repair_operations
+
+            await conn.execute(insert(integration_parent_episodes).values(
+                id="live-episode", parent_task_id="epic", repository_id="r", generation=1,
+                pre_collection_checkpoint_sha=case.base, created_at=time.time(),
+            ))
+            await conn.execute(insert(integration_repair_operations).values(
+                id="live-operation", target_kind="parent", parent_task_id="epic", state="active",
+                episode_id="live-episode",
+                policy_snapshot={}, artifact_snapshot={}, required_check_version="v1",
+                created_at=time.time(), updated_at=time.time(),
+            ))
+        elif blocker == "ref_mutation":
+            from src.database.tables import (
+                integration_candidate_ref_mutations,
+                integration_candidate_revisions,
+            )
+
+            batch_id = await conn.scalar(select(integration_batches.c.id).where(
+                integration_batches.c.target_ref == case.target.target_ref,
+            ))
+            await conn.execute(insert(integration_candidate_revisions).values(
+                batch_id=batch_id, revision=0, construction_base_sha=case.base,
+                state="green", created_at=time.time(), updated_at=time.time(),
+            ))
+            await conn.execute(insert(integration_candidate_ref_mutations).values(
+                id="pending-mutation", batch_id=batch_id, revision=0, purpose="candidate_final",
+                repository_id="r", branch="refs/heads/aq/epic", target_branch="main",
+                expected_old_sha=case.base, desired_sha=head, operation_id="old-operation",
+                operation_episode_id="old-episode", operation_stage=1, lease_owner_id="lease",
+                lease_fence_token=2, branch_owner_id="epic", branch_owner_role="worker",
+                branch_fence_token=2, nonce="nonce", state="reserved", expires_at=1.0,
+                created_at=time.time(), updated_at=time.time(),
+            ))
+    if blocker == "open_batch":
+        await BatchStore(case.db).freeze(Batch("open-root", "p", "r", MAIN.target_ref), (
+            BatchMember("epic", head, case.base),
+        ), trees={"epic": tree(case.world, head)})
+    observed = await snapshot(case.world, case.target)
+    if blocker == "changed_head":
+        monkeypatch.setattr(type(observed.observation), "is_fresh", AsyncMock(return_value=False))
+    train = SimpleNamespace(request_visit=AsyncMock(), wake=Mock())
+    controls = TrainControls(case.db, train=train, snapshot=AsyncMock(return_value=observed))
+    apply = dict(dry_run=False, operator_id="supervisor", expected_head_sha=head,
+                 reason="verify the collected aggregate")
+    if blocker == "changed_head":
+        assert (await controls.reverify_epic("epic", **apply))["outcome"] == "changed"
+    else:
+        with pytest.raises(ValueError):
+            await controls.reverify_epic("epic", **apply)
+    train.request_visit.assert_not_awaited()
+    train.wake.assert_not_called()
+    assert await case.db.get_task_completion("epic") is None
+    async with case.db._engine.connect() as conn:
+        assert dict((await conn.execute(select(integration_branch_owners).where(
+            integration_branch_owners.c.id == owner["id"],
+        ))).mappings().one()) == owner
+        assert not (await conn.execute(select(events.c.id).where(
+            events.c.task_id == "epic",
+            events.c.event_type == "integration.epic_reservation_released",
+        ))).all()
 
 
 async def test_reopened_container_settlement_still_owes_aggregate_completion(collected_epic):

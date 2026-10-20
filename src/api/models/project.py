@@ -292,6 +292,33 @@ class ReleaseProjectConstraintResponse(BaseModel):
     remaining_fields: list[str] = []
 
 
+class RepairRepositoryCheckoutResponse(BaseModel):
+    success: bool = True
+    project_id: str
+    repository_id: str
+    changed: bool = False
+    preview: bool = True
+    before: dict[str, Any]
+    after: dict[str, Any]
+    event_id: int | None = None
+
+
+class RepairWorkspaceCheckoutResponse(BaseModel):
+    success: bool = True
+    project_id: str
+    workspace_id: str
+    changed: bool = False
+    preview: bool = True
+    proof: str
+    before: dict[str, Any]
+    after: dict[str, Any]
+    slots: list[dict[str, Any]]
+    identity: dict[str, Any]
+    authorized_origin: str | None = None
+    reason: str
+    event_id: int | None = None
+
+
 class SetActiveProjectResponse(BaseModel):
     active_project: str | None = None
     name: str | None = None
@@ -302,6 +329,8 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "list_projects": ListProjectsResponse,
     "create_project": CreateProjectResponse,
     "project_doctor": ProjectDoctorResponse,
+    "repair_repository_checkout": RepairRepositoryCheckoutResponse,
+    "repair_workspace_checkout": RepairWorkspaceCheckoutResponse,
     "edit_project": EditProjectResponse,
     "bind_project_repository": BindProjectRepositoryResponse,
     "delete_project": DeleteProjectResponse,

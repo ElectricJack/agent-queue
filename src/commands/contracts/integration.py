@@ -63,9 +63,9 @@ DESIGN_INTEGRATION_COMMANDS = frozenset(
         "integration_cutover_plan",
         "integration_cutover",
         "integration_abort_batch",
+        "integration_settle_batch",
         "integration_pause_batch",
         "integration_resume_batch",
-        "integration_settle_batch",
         "integration_seal_now",
         "integration_retire_origin",
         "integration_refresh_epic",
@@ -166,6 +166,18 @@ class IntegrationAbortBatchArgs(CommandArgs):
     batch_id: str = Field(min_length=1)
     reason: str = ""
     dry_run: bool = True
+
+
+class IntegrationSettleBatchArgs(IntegrationAbortBatchArgs):
+    expected_target_sha: str | None = None
+
+    @model_validator(mode="after")
+    def require_preview_target(self):
+        if not self.dry_run and (
+            not is_valid_git_oid(self.expected_target_sha or "") or not self.reason.strip()
+        ):
+            raise ValueError("apply requires the previewed target SHA and a nonblank reason")
+        return self
 
 
 class IntegrationCutoverArgs(CommandArgs):
@@ -2409,9 +2421,9 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
         ("integration_record_root_noop", IntegrationRecordRootNoopArgs, "recorded",
          IntegrationRecordRootNoopValue),
         ("integration_abort_batch", IntegrationAbortBatchArgs, "aborted", IntegrationTrainControlValue),
+        ("integration_settle_batch", IntegrationSettleBatchArgs, "settled", IntegrationTrainControlValue),
         ("integration_pause_batch", IntegrationAbortBatchArgs, "paused", IntegrationTrainControlValue),
         ("integration_resume_batch", IntegrationAbortBatchArgs, "resumed", IntegrationTrainControlValue),
-        ("integration_settle_batch", IntegrationAbortBatchArgs, "settled", IntegrationTrainControlValue),
         ("integration_seal_now", IntegrationSealNowArgs, "sealed", IntegrationTrainControlValue),
         ("integration_retire_origin", IntegrationRetireOriginArgs, "retired", IntegrationTrainControlValue),
         ("integration_refresh_epic", IntegrationRefreshEpicArgs, "refreshed", IntegrationRefreshEpicValue),

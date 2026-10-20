@@ -252,16 +252,18 @@ def integration_abort_batch(ctx, batch_id, reason, apply):
 
 @integration.command("settle-batch")
 @click.argument("batch_id")
+@click.option("--target-sha", "expected_target_sha", help="Exact target SHA returned by preview.")
 @click.option("--reason", default="", help="Required explanation when settling.")
-@click.option("--apply", is_flag=True, help="Record the promotion; default is preview.")
+@click.option("--apply", is_flag=True, help="Settle proven delivery; default is preview.")
 @click.pass_context
 @_handle_errors
-def integration_settle_batch(ctx, batch_id, reason, apply):
-    """Preview or settle BATCH_ID when its target already contains every member."""
-    if apply and not reason.strip():
-        raise click.UsageError("--apply needs a nonblank --reason")
+def integration_settle_batch(ctx, batch_id, expected_target_sha, reason, apply):
+    """Preview or settle BATCH_ID whose frozen inputs already reached its target."""
+    if apply and (not expected_target_sha or not reason.strip()):
+        raise click.UsageError("--apply requires --target-sha and --reason")
     _execute(ctx, "integration_settle_batch", {
-        "batch_id": batch_id, "reason": reason, "dry_run": not apply,
+        "batch_id": batch_id, "expected_target_sha": expected_target_sha,
+        "reason": reason, "dry_run": not apply,
     })
 
 

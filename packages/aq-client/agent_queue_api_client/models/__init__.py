@@ -51,6 +51,7 @@ from .approve_pull_request_response_422 import ApprovePullRequestResponse422
 from .approved_spec_packet_request import ApprovedSpecPacketRequest
 from .approved_spec_packet_response import ApprovedSpecPacketResponse
 from .approved_spec_packet_response_422 import ApprovedSpecPacketResponse422
+from .approved_spec_packet_response_design_type_0 import ApprovedSpecPacketResponseDesignType0
 from .approved_spec_packet_response_feedback_item import ApprovedSpecPacketResponseFeedbackItem
 from .approved_spec_packet_response_packet import ApprovedSpecPacketResponsePacket
 from .archive_settings_request import ArchiveSettingsRequest
@@ -1537,6 +1538,18 @@ from .render_prompt_response_variables_used import RenderPromptResponseVariables
 from .reopen_with_feedback_request import ReopenWithFeedbackRequest
 from .reopen_with_feedback_response import ReopenWithFeedbackResponse
 from .reopen_with_feedback_response_422 import ReopenWithFeedbackResponse422
+from .repair_repository_checkout_request import RepairRepositoryCheckoutRequest
+from .repair_repository_checkout_response import RepairRepositoryCheckoutResponse
+from .repair_repository_checkout_response_422 import RepairRepositoryCheckoutResponse422
+from .repair_repository_checkout_response_after import RepairRepositoryCheckoutResponseAfter
+from .repair_repository_checkout_response_before import RepairRepositoryCheckoutResponseBefore
+from .repair_workspace_checkout_request import RepairWorkspaceCheckoutRequest
+from .repair_workspace_checkout_response import RepairWorkspaceCheckoutResponse
+from .repair_workspace_checkout_response_422 import RepairWorkspaceCheckoutResponse422
+from .repair_workspace_checkout_response_after import RepairWorkspaceCheckoutResponseAfter
+from .repair_workspace_checkout_response_before import RepairWorkspaceCheckoutResponseBefore
+from .repair_workspace_checkout_response_identity import RepairWorkspaceCheckoutResponseIdentity
+from .repair_workspace_checkout_response_slots_item import RepairWorkspaceCheckoutResponseSlotsItem
 from .reparent_task_request import ReparentTaskRequest
 from .reparent_task_response import ReparentTaskResponse
 from .reparent_task_response_422 import ReparentTaskResponse422
@@ -1931,24 +1944,28 @@ from .task_set_request import TaskSetRequest
 from .task_set_request_meta_type_0 import TaskSetRequestMetaType0
 from .task_set_response import TaskSetResponse
 from .task_set_response_422 import TaskSetResponse422
+from .task_set_response_batch_member_type_0 import TaskSetResponseBatchMemberType0
 from .task_set_response_child_state_counts_type_0 import TaskSetResponseChildStateCountsType0
 from .task_set_response_children_type_0 import TaskSetResponseChildrenType0
 from .task_set_response_context_item import TaskSetResponseContextItem
 from .task_set_response_deliverables_item import TaskSetResponseDeliverablesItem
 from .task_set_response_descendant_state_counts_type_0 import TaskSetResponseDescendantStateCountsType0
 from .task_set_response_display_state_type_0 import TaskSetResponseDisplayStateType0
+from .task_set_response_fidelity_type_0 import TaskSetResponseFidelityType0
 from .task_set_response_parent_type_0 import TaskSetResponseParentType0
 from .task_set_response_provenance_item import TaskSetResponseProvenanceItem
 from .task_set_response_route_type_0 import TaskSetResponseRouteType0
 from .task_show_request import TaskShowRequest
 from .task_show_response import TaskShowResponse
 from .task_show_response_422 import TaskShowResponse422
+from .task_show_response_batch_member_type_0 import TaskShowResponseBatchMemberType0
 from .task_show_response_child_state_counts_type_0 import TaskShowResponseChildStateCountsType0
 from .task_show_response_children_type_0 import TaskShowResponseChildrenType0
 from .task_show_response_context_item import TaskShowResponseContextItem
 from .task_show_response_deliverables_item import TaskShowResponseDeliverablesItem
 from .task_show_response_descendant_state_counts_type_0 import TaskShowResponseDescendantStateCountsType0
 from .task_show_response_display_state_type_0 import TaskShowResponseDisplayStateType0
+from .task_show_response_fidelity_type_0 import TaskShowResponseFidelityType0
 from .task_show_response_parent_type_0 import TaskShowResponseParentType0
 from .task_show_response_provenance_item import TaskShowResponseProvenanceItem
 from .task_show_response_route_type_0 import TaskShowResponseRouteType0
@@ -2131,6 +2148,7 @@ __all__ = (
     "ApprovedSpecPacketRequest",
     "ApprovedSpecPacketResponse",
     "ApprovedSpecPacketResponse422",
+    "ApprovedSpecPacketResponseDesignType0",
     "ApprovedSpecPacketResponseFeedbackItem",
     "ApprovedSpecPacketResponsePacket",
     "ApprovePendingPullRequestRequest",
@@ -3611,6 +3629,18 @@ __all__ = (
     "ReopenWithFeedbackRequest",
     "ReopenWithFeedbackResponse",
     "ReopenWithFeedbackResponse422",
+    "RepairRepositoryCheckoutRequest",
+    "RepairRepositoryCheckoutResponse",
+    "RepairRepositoryCheckoutResponse422",
+    "RepairRepositoryCheckoutResponseAfter",
+    "RepairRepositoryCheckoutResponseBefore",
+    "RepairWorkspaceCheckoutRequest",
+    "RepairWorkspaceCheckoutResponse",
+    "RepairWorkspaceCheckoutResponse422",
+    "RepairWorkspaceCheckoutResponseAfter",
+    "RepairWorkspaceCheckoutResponseBefore",
+    "RepairWorkspaceCheckoutResponseIdentity",
+    "RepairWorkspaceCheckoutResponseSlotsItem",
     "ReparentTaskRequest",
     "ReparentTaskResponse",
     "ReparentTaskResponse422",
@@ -4003,24 +4033,28 @@ __all__ = (
     "TaskSetRequestMetaType0",
     "TaskSetResponse",
     "TaskSetResponse422",
+    "TaskSetResponseBatchMemberType0",
     "TaskSetResponseChildrenType0",
     "TaskSetResponseChildStateCountsType0",
     "TaskSetResponseContextItem",
     "TaskSetResponseDeliverablesItem",
     "TaskSetResponseDescendantStateCountsType0",
     "TaskSetResponseDisplayStateType0",
+    "TaskSetResponseFidelityType0",
     "TaskSetResponseParentType0",
     "TaskSetResponseProvenanceItem",
     "TaskSetResponseRouteType0",
     "TaskShowRequest",
     "TaskShowResponse",
     "TaskShowResponse422",
+    "TaskShowResponseBatchMemberType0",
     "TaskShowResponseChildrenType0",
     "TaskShowResponseChildStateCountsType0",
     "TaskShowResponseContextItem",
     "TaskShowResponseDeliverablesItem",
     "TaskShowResponseDescendantStateCountsType0",
     "TaskShowResponseDisplayStateType0",
+    "TaskShowResponseFidelityType0",
     "TaskShowResponseParentType0",
     "TaskShowResponseProvenanceItem",
     "TaskShowResponseRouteType0",

@@ -8,7 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-from sqlalchemy import update
+from sqlalchemy import insert, update
 
 from src.api.auth import RequestScope
 from src.api.scope import check_command_scope
@@ -17,7 +17,7 @@ from src.commands.operator_authority import (
     operator_grant_var,
 )
 from src.commands.principal import ExecutionPrincipal, PrincipalKind, current_principal, principal_context
-from src.database.tables import events
+from src.database.tables import events, integration_batches
 from src.git.github_contracts import GitHubCredentialIdentity, GitHubRepositoryBinding
 from src.models import Agent, AgentProfile, AgentState, Project, SessionRecord, Task, TaskStatus, TaskType
 from src.operator_decisions import OperatorDecisions
@@ -234,12 +234,45 @@ async def test_operator_playbooks_need_project_scope_and_reviewed_exact_hash(ope
         operator_grant_var.reset(token)
 
 
-@pytest.mark.parametrize("command", ["playbook_activate", "playbook_delete", "policy_apply", "pr_merge", "review_decide", "decision_record"])
+@pytest.mark.parametrize("command", ["playbook_activate", "playbook_delete", "policy_apply", "pr_merge", "review_decide", "decision_record", "integration_settle_batch"])
 async def test_raw_operator_commands_cannot_bypass_wrapper_even_with_capabilities_off(operator, command):
     handler, _ = operator
     handler.config.security.capability_enforcement = "off"
     result = await execute(operator, command)
     assert not result.get("success", "error" not in result), result
+
+
+async def test_operator_batch_settlement_requires_human_decision_and_preflight(operator, monkeypatch):
+    handler, _ = operator
+    async with handler.db._engine.begin() as conn:
+        await conn.execute(insert(integration_batches).values(
+            id="batch", project_id="p", repository_id="r", request_id="settle",
+            source_manifest_digest="digest", lifecycle="empty", policy_snapshot={},
+            artifact_snapshot={}, cleanup_state="pending", created_at=time.time(),
+            updated_at=time.time(),
+        ))
+    for command in ("integration_trust_manifest", "integration_app_verify"):
+        monkeypatch.setattr(handler, "_cmd_" + command,
+                            AsyncMock(return_value={"success": True}))
+    monkeypatch.setattr(handler, "_operator_repository_probes", AsyncMock())
+    arguments = {"batch_id": "batch", "dry_run": False, "expected_target_sha": "a" * 40,
+                 "reason": "Sources are already delivered"}
+    action = AsyncMock(return_value={"success": True})
+    monkeypatch.setattr(handler, "_cmd_integration_settle_batch", action)
+    result = await execute(operator, "operator_execute", command="integration_settle_batch",
+                           arguments=arguments)
+    assert not result["success"] and "human decision" in result["error"], result
+    human = await decision(handler, "integration_settle_batch", arguments)
+    plan = {"command": "integration_settle_batch", "arguments": arguments,
+            "decision_id": human["id"]}
+    result = await execute(operator, "operator_execute", **plan)
+    assert not result["success"] and "preflight" in result["error"], result
+    preflight = await execute(operator, "operator_preflight", actions=[plan])
+    assert preflight["ready"], preflight
+    result = await execute(operator, "operator_execute", **plan,
+                           preflight_id=preflight["preflight_id"])
+    assert result["success"], result
+    action.assert_awaited_once_with(arguments)
 
 
 async def test_project_policy_copy_runs_through_preflight_and_blocks_global_placement(operator):

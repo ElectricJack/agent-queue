@@ -101,7 +101,7 @@ Every slot carries a sentinel at `<slot>/.aq-worktree.json`:
 }
 ```
 
-Written at slot creation, updated at every assignment. It is the filesystem half of adoption and doctoring: a directory with a sentinel but no DB row is an orphan; a DB row with no sentinel is a broken slot; a `setup_hash` mismatch means `worktree_setup` changed and the setup commands re-run at next reset. The sentinel is data for recovery — the DB row remains authoritative for locks.
+Written at slot creation, updated at every assignment. It is the filesystem half of adoption and doctoring: a directory with a sentinel but no DB row is an orphan; a DB row with no sentinel needs its identity re-proved during preparation; a `setup_hash` mismatch means `worktree_setup` changed and the setup commands re-run at next reset. The sentinel is data for recovery — the DB row remains authoritative for locks.
 
 ---
 
@@ -217,6 +217,25 @@ Missing directories, foreign claims and mismatched sentinel/repository identity
 are preserved for investigation. Preparation does not transfer misplaced locks,
 unlock Git registrations or recreate a missing source. Valid idle predecessor
 branches remain reusable after existing salvage/checkpoint ownership checks.
+An absent sentinel alone does not permanently quarantine a registered slot.
+Under the preparation workspace fence, recovery requires the enabled base and
+slot in the incoming project, the canonical slot path and index, an exact Git
+worktree-list registration, matching nonempty common repository identity,
+reciprocal Git administrative-directory pointers and the slot's actual top-level
+directory. Duplicate registrations, Git locks,
+retained owners/job pins, foreign live sessions and foreign or unreadable claim
+files still refuse recovery. An existing unreadable or conflicting sentinel is
+preserved, never overwritten. A predecessor task id in an otherwise valid
+sentinel is ordinary reusable-slot metadata, not a reason to delete that file.
+Before restoring a missing sentinel, preparation records the identity proof,
+HEAD and branch on the incoming task, explicitly leaving predecessor authorship
+unknown. Any unpublished commits must be successfully salvaged to the incoming
+task's recovery branch before proceeding; a failed/unknown salvage preserves
+the checkout and refuses preparation. The reconstructed sentinel records the
+actual branch, no predecessor task and an unknown setup hash, so normal reset
+salvages dirty work and reruns setup. Publishing the sentinel must not overwrite
+a file that appeared concurrently. No branch, index, working file, claim or
+workspace binding is changed by metadata reconstruction.
 Managed slots detached by normal release may retain the predecessor sentinel
 while HEAD equals the cached default tip; an explicit operator handoff may use
 its proved commit instead. Attached branch disagreement still refuses reset.
