@@ -88,6 +88,9 @@ _WITHHOLDING_PARENT_STATUSES = (
 #: the task's work was superseded, so there is nothing of it to publish.  JSON:
 #: ``reason``, ``closed_by``, ``closed_at``, ``previous_status`` and the
 #: ``cleanup`` it still owes (src/sessions/obsolete.py).
+#: Evidence-preserving retirement also records ``replacement_task_id``,
+#: ``satisfied_by`` and the transactional ``rewire`` plan. These are audit
+#: evidence, never dependency satisfaction: dependent edges must be rewritten.
 OBSOLETE_META_KEY = "obsolete"
 
 

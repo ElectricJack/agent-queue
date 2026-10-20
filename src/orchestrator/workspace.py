@@ -983,8 +983,11 @@ class WorkspaceMixin:
             return fence.target.branch
         owner = await BranchOwnership(self.db).get_owner(fence.target)
         role = owner["owner_role"] if owner else None
+        from src.integration.lock import REPAIR_START_SECONDS
+
         async with BranchOwnership(self.db).mutation_exclusion(
-            fence, expected_role=role
+            fence, expected_role=role,
+            timeout_seconds=REPAIR_START_SECONDS if role == "repair" else None,
         ):
             from src.integration.owner_recovery import resume_recovery_snapshots
 
@@ -1197,11 +1200,12 @@ class WorkspaceMixin:
         return a single ``warming`` bool computed *before* growth ran, which
         made all three indistinguishable — see :class:`SlotGrowth`.
         """
-        cap = self._project_slot_cap(project)
-
         kind = await self.db.resolve_workspace_kind(project.id, kind_id)
         if kind is None or not kind.is_git_repo or kind.mode != KIND_MODE_WORKTREE:
             return SlotGrowth()
+        from src.workspace_disable import kind_slot_cap
+
+        cap = kind_slot_cap(self._project_slot_cap(project), kind)
 
         base = await self.db.find_worktree_base(project.id, kind.id)
         if base is None:
@@ -1330,7 +1334,8 @@ class WorkspaceMixin:
         from src.orchestrator.worktree_manager import task_branch_name
 
         branch = await self._resume_branch_for(task) or task_branch_name(task.id)
-        cap = self._project_slot_cap(project)
+        from src.workspace_disable import slot_cap
+
         affinity: dict[str, str] = {}
         seen: set[str] = set()
         for req in await effective_requirements(self.db, task):
@@ -1347,7 +1352,7 @@ class WorkspaceMixin:
                 slots = [
                     s
                     for s in await self.db.list_slots_for_base(base.id)
-                    if (s.slot_index or 0) < cap
+                    if s.enabled and (s.slot_index or 0) < slot_cap(project, kind)
                 ]
                 holder = await self._worktree_slots().find_slot_holding_branch(
                     base, slots, branch
@@ -1372,7 +1377,9 @@ class WorkspaceMixin:
         rows, not a filename convention.
         """
         for slot in slots:
-            self._worktree_base_paths[slot.workspace_path] = base_path
+            self._worktree_base_paths[os.path.normcase(os.path.realpath(slot.workspace_path))] = (
+                os.path.normcase(os.path.realpath(base_path))
+            )
         self._git_mutex(base_path)  # ensure the lock exists for the resolver
 
     def _recover_worktree_base_paths(self, all_workspaces: list[Workspace]) -> None:
@@ -1543,6 +1550,12 @@ class WorkspaceMixin:
         else:
             await self.db.release_workspace(ws.id)
 
+    async def _integration_preparation_cleanup_unproved(self, owner: dict) -> bool:
+        from src.git.process import PREPARE_CLEANUP_HOLD
+
+        task_id = owner.get("owner_id")
+        return bool(task_id and await self.db.get_task_meta(task_id, PREPARE_CLEANUP_HOLD) is not None)
+
     async def aconfirm_integration_owner_handoff(
         self, owner: dict, *, save_wip_reason: str | None = None
     ) -> bool:
@@ -1562,6 +1575,8 @@ class WorkspaceMixin:
         ordinary proof runs on the result.  A branch that cannot fast-forward
         stays fenced, for owner recovery to preserve.
         """
+        if await self._integration_preparation_cleanup_unproved(owner):
+            return False
         session_id = owner.get("session_id")
         workspace_id = owner.get("workspace_id")
         from src.orchestrator.workspace_attachments import (
@@ -1876,6 +1891,8 @@ class WorkspaceMixin:
         current READY claim epoch is evidence of a successor attempt, not a
         value to restore or overwrite.
         """
+        if await self._integration_preparation_cleanup_unproved(owner):
+            return False
         session_id = owner.get("session_id")
         workspace_id = owner.get("workspace_id")
         from src.orchestrator.workspace_attachments import (
@@ -2044,6 +2061,8 @@ class WorkspaceMixin:
         and (via ``arelease_integration_writer_for_retry``) makes the caller
         retain the claim rather than close over an unprovable handoff.
         """
+        if await self._integration_preparation_cleanup_unproved(owner):
+            return False
         session_id = owner.get("session_id")
         workspace_id = owner.get("workspace_id")
         from src.orchestrator.workspace_attachments import (
@@ -2169,6 +2188,8 @@ class WorkspaceMixin:
         """Prove a qualified candidate repair without advancing its canonical ref."""
         from src.integration.published_repair_handoff import confirm_published_pool_repair_handoff
 
+        if await self._integration_preparation_cleanup_unproved(owner):
+            return False
         try:
             return await confirm_published_pool_repair_handoff(
                 self.db, self.git, self._git_mutex, owner, reservation_id,
@@ -2321,6 +2342,8 @@ class WorkspaceMixin:
         self, owner: dict
     ) -> dict | None:
         """Stop one exact writer without touching its retained repair checkout."""
+        if await self._integration_preparation_cleanup_unproved(owner):
+            return None
         session_id = owner.get("session_id")
         workspace_id = owner.get("workspace_id")
         if not session_id or not workspace_id or owner.get("handoff_state") != "attached":

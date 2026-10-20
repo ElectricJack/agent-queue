@@ -101,6 +101,7 @@ from src.git.github_contracts import (
     GitHubRepositoryBinding,
 )
 from src.git.identity import FALLBACK_IDENTITY, GitIdentity, PublishPolicy, identity_digest
+from src.git.process import ProcessCleanupError, run_owned_process
 from src.git.locks import remove_stale_locks
 
 if TYPE_CHECKING:
@@ -695,6 +696,20 @@ class GitManager:
         identity = self.commit_identity_env(args)
         return {**self._SUBPROCESS_ENV, **identity} if identity else self._SUBPROCESS_ENV
 
+    @staticmethod
+    def _foreground_git_env(env: Mapping[str, str]) -> dict[str, str]:
+        # Git's automatic maintenance can setsid() and escape the process
+        # group. Repository maintenance belongs to its scheduled owner, not
+        # a cancellable checkout/fetch. Preserve existing command config.
+        result = dict(env)
+        count = int(result.get("GIT_CONFIG_COUNT", "0"))
+        for key, value in (("maintenance.auto", "false"), ("gc.auto", "0")):
+            result[f"GIT_CONFIG_KEY_{count}"] = key
+            result[f"GIT_CONFIG_VALUE_{count}"] = value
+            count += 1
+        result["GIT_CONFIG_COUNT"] = str(count)
+        return result
+
     async def bind_github_repository(self, repository_url: str) -> GitHubRepositoryBinding:
         if self.github_access is None:
             raise GitError("GitHub access service is not configured")
@@ -795,30 +810,16 @@ class GitManager:
         """
         effective_timeout = self._command_timeout(timeout)
         try:
-            proc = await self._spawn_isolated_git(
-                "git",
-                *args,
-                cwd=cwd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                env=self._env_for(args),
-                start_new_session=True,
-            )
             try:
-                stdout, stderr = await asyncio.wait_for(
-                    proc.communicate(),
-                    timeout=effective_timeout,
+                proc, stdout, stderr = await run_owned_process(
+                    "git", *args, cwd=cwd, timeout=effective_timeout,
+                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+                    env=self._foreground_git_env(self._env_for(args)),
                 )
-            except (asyncio.TimeoutError, asyncio.CancelledError) as exc:
-                # Cancellation (including daemon shutdown) must not leave a
-                # reset writing after its claim request has gone away.
-                await self._kill_app_git_group(proc)
-                if isinstance(exc, asyncio.CancelledError):
-                    raise
+            except asyncio.TimeoutError as exc:
                 raise GitError(
-                    f"git {' '.join(args)} timed out after "
-                    f"{effective_timeout}s"
-                )
+                    f"git {' '.join(args)} timed out after {effective_timeout}s"
+                ) from exc
         except FileNotFoundError as exc:
             if cwd is not None and not Path(cwd).is_dir():
                 raise GitError(f"git working directory does not exist: {cwd}") from exc
@@ -879,27 +880,20 @@ class GitManager:
         effective_timeout = self._command_timeout(timeout)
         command = ["git", *args]
         try:
-            proc = await self._spawn_isolated_git(
-                *command,
-                cwd=cwd,
-                stdin=asyncio.subprocess.PIPE if stdin is not None else None,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                env={**self._SUBPROCESS_ENV, **self.commit_identity_env(args), **env},
-                start_new_session=True,
-            )
             try:
-                stdout, stderr = await asyncio.wait_for(
-                    proc.communicate(None if stdin is None else stdin.encode("utf-8")),
-                    timeout=effective_timeout,
+                proc, stdout, stderr = await run_owned_process(
+                    *command, cwd=cwd, timeout=effective_timeout,
+                    input=None if stdin is None else stdin.encode("utf-8"),
+                    stdin=asyncio.subprocess.PIPE if stdin is not None else None,
+                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+                    env=self._foreground_git_env({
+                        **self._SUBPROCESS_ENV, **self.commit_identity_env(args), **env,
+                    }),
                 )
-            except (asyncio.TimeoutError, asyncio.CancelledError) as exc:
-                await self._kill_app_git_group(proc)
-                if isinstance(exc, asyncio.CancelledError):
-                    raise
+            except asyncio.TimeoutError as exc:
                 raise GitError(
                     f"git {' '.join(args)} timed out after {effective_timeout}s"
-                )
+                ) from exc
         except FileNotFoundError as exc:
             if not Path(cwd).is_dir():
                 raise GitError(f"git working directory does not exist: {cwd}") from exc
@@ -934,25 +928,14 @@ class GitManager:
         """
         effective_timeout = self._command_timeout(timeout)
         try:
-            proc = await asyncio.create_subprocess_exec(
-                *cmd,
-                cwd=cwd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                env=self._SUBPROCESS_ENV,
-            )
             try:
-                stdout, stderr = await asyncio.wait_for(
-                    proc.communicate(),
-                    timeout=effective_timeout,
+                proc, stdout, stderr = await run_owned_process(
+                    *cmd, cwd=cwd, timeout=effective_timeout,
+                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+                    env=self._foreground_git_env(self._SUBPROCESS_ENV),
                 )
-            except asyncio.TimeoutError:
-                try:
-                    proc.kill()
-                except ProcessLookupError:
-                    pass  # Process already exited before we could kill it
-                await proc.wait()
-                raise subprocess.TimeoutExpired(cmd, effective_timeout)
+            except asyncio.TimeoutError as exc:
+                raise subprocess.TimeoutExpired(cmd, effective_timeout) from exc
         except FileNotFoundError:
             raise FileNotFoundError(f"{cmd[0]} executable not found")
         return subprocess.CompletedProcess(
@@ -2440,6 +2423,8 @@ class GitManager:
             result = await self._arun_subprocess(
                 ["git", "remote"], cwd=checkout_path, timeout=self._GIT_TIMEOUT
             )
+        except ProcessCleanupError:
+            raise
         except Exception:
             return None if strict else False
         if result.returncode != 0:
@@ -2747,6 +2732,8 @@ class GitManager:
                     "project_id": project_id,
                 },
             )
+        except ProcessCleanupError:
+            raise
         except Exception:
             logger.debug("Failed to emit git.push event for %s", checkout_path, exc_info=True)
 
@@ -3280,6 +3267,8 @@ class GitManager:
                         "agent_id": agent_id,
                     },
                 )
+            except ProcessCleanupError:
+                raise
             except Exception:
                 # Event emission is best-effort; never fail the commit
                 # because we couldn't emit the event.
@@ -3320,6 +3309,8 @@ class GitManager:
                     {"pr_url": pr_url, "branch": branch, "title": title,
                      "project_id": project_id},
                 )
+            except ProcessCleanupError:
+                raise
             except Exception:
                 logger.debug("Failed to emit git.pr.created event for %s", checkout_path,
                              exc_info=True)
@@ -5013,6 +5004,8 @@ class GitManager:
                     pass
                 raise
             return False
+        except ProcessCleanupError:
+            raise
         except Exception:
             return False
 
@@ -5747,6 +5740,8 @@ class GitManager:
                 cwd=checkout_path,
                 timeout=self._GIT_TIMEOUT,
             )
+        except ProcessCleanupError:
+            raise
         except Exception:
             return None
         if result.returncode != 0:
@@ -5769,6 +5764,8 @@ class GitManager:
                 cwd=checkout_path,
                 timeout=self._GIT_TIMEOUT,
             )
+        except ProcessCleanupError:
+            raise
         except Exception:
             return None
         if result.returncode != 0:
@@ -5888,6 +5885,8 @@ class GitManager:
             if output.returncode != 0:
                 return None if strict else False
             return bool(output.stdout and output.stdout.strip())
+        except ProcessCleanupError:
+            raise
         except Exception:
             return None if strict else False
 
@@ -6113,6 +6112,8 @@ class GitManager:
                 cwd=checkout_path,
                 timeout=self._GIT_TIMEOUT,
             )
+        except ProcessCleanupError:
+            raise
         except Exception:
             return None if strict else False
         if result.returncode == 0:
@@ -6260,6 +6261,8 @@ class GitManager:
                 cwd=checkout_path,
                 timeout=self._GIT_TIMEOUT,
             )
+        except ProcessCleanupError:
+            raise
         except Exception:
             return None
         if result.returncode == 0:

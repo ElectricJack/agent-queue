@@ -634,6 +634,7 @@ async def apply_input(handler, args):
 
 
 async def backfill_legacy(handler, *, conn, limit=100, project_id=None):
+    from src.asks.reset_policy import before_reset
     """Bounded resumable import; conflicts remain owned repair cases."""
     rows = (
         (
@@ -648,6 +649,8 @@ async def backfill_legacy(handler, *, conn, limit=100, project_id=None):
                     escalation_messages.c.input_id.is_(None),
                     escalation_messages.c.external_message_id.is_not(None),
                     escalations.c.project_id == project_id if project_id else True,
+                    ~before_reset(escalation_messages, escalations.c.project_id),
+                    escalations.c.terminal_outcome.is_distinct_from("legacy_discarded"),
                 )
                 .order_by(escalation_messages.c.id)
                 .limit(limit)

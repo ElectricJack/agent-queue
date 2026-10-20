@@ -515,6 +515,17 @@ _CANONICAL_PAYLOADS: dict[str, dict] = {
         "path": "/repos/myrepo/.aq/worktrees/slot-3",
         "reason": "cap_shrunk",
     },
+    "worktree.stale_claim_retired": {
+        "project_id": "proj-1",
+        "workspace_id": "ws-slot-5",
+        "path": "/repos/myrepo/.aq/worktrees/slot-5",
+        "holder_task_id": "steady-harbor-62",
+        "holder_claim_epoch": 1,
+        "holder_session_id": "sess-old",
+        "reason": "holder task is COMPLETED",
+        "actor": "claim",
+        "claimant_task_id": "task-new",
+    },
     "worktree.restored": {
         "project_id": "proj-1",
         "workspace_id": "ws-slot-2",

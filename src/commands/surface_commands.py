@@ -72,6 +72,11 @@ class SurfaceCommandsMixin:
         if "error" in info:
             return info
 
+        # The reviewer projection is complete: expanding ordinary detail here
+        # would disclose unrelated parents, children and provenance.
+        if "batch_member" in info:
+            return info
+
         from src.operator_decisions import OperatorDecisions
 
         info["operator_decisions"] = await OperatorDecisions(self.db).history("task", task_id)
@@ -272,6 +277,8 @@ class SurfaceCommandsMixin:
 
         if any(str(key).startswith("manual_pause") for key in (args.get("meta") or {})):
             return {"error": "manual_pause is reserved; use pause_task/resume_task."}
+        if "retained_workspace_stop" in (args.get("meta") or {}):
+            return {"error": "retained_workspace_stop is reserved; use stop_task."}
 
         if {"notes_input", "promotion_prepare", "promotion_hotfix", "backmerge",
             "backmerge_result", "promotion_intent", "promotion_result",

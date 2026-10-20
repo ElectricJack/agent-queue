@@ -372,6 +372,25 @@ re-enabling it; do not delete Git locks or discard a retained branch.
 that have activated no claim after 15 minutes despite matching READY work or
 preparation refusals, even if their claim loop keeps reporting activity.
 
+### Retained workspace after a task status change
+
+An administrative change to BLOCKED or FAILED does not prove the workspace's
+writer stopped. The existing recovery owner can run `aq task stop <id>` to
+finish cleanup of an exactly identified managed slot without changing that
+status or its retry counters. Stop checks the acquisition generation, claim and
+session instance, source repository and branch, job and integration ownership,
+and fresh provider/process termination evidence. It captures a full checkpoint
+of HEAD, staged, unstaged and untracked work before releasing the reservation.
+The worktree and its registration remain available for later qualified reuse.
+
+For a pending manual pause, repeat `aq task pause <id>`. Its
+`manual_pause.cleanup_pending` receipt and checkpoint context describe unfinished
+cleanup. Managed slots stay held if a full checkpoint cannot be written, even
+after automatic retries end. Resolve the reported proof through the existing
+recovery owner, then retry the same control. Resume, deleting a claim or lock,
+or clearing pause/preparation metadata is not a cleanup procedure. A changed
+session or generation never inherits the old cleanup's authority.
+
 ### Interactive prompts on idle workers
 
 `aq doctor --check pools.session_awaiting_input` distinguishes a silent claim
@@ -810,6 +829,28 @@ the pause converged without a checkpoint, the marker stays and the foreign-claim
 handling above applies. Retirement removes only the marker. Workspace bytes, the pause
 checkpoint, branches and holder fences are untouched, and the successor's ordinary slot
 reset still salvages dirty work before it checks out.
+
+A marker whose holder has let go is retired at preparation instead of refused
+(`retire_stale_slot_claim`). In matter-engine-cpp, slots that kept the markers of a
+COMPLETED and a PAUSED task blocked reuse for five days. Before raising the foreign
+claim, preparation re-checks under row locks that:
+
+- the workspace is a slot, unlocked or locked only by the claimant's task;
+- the holder task is gone, its claim epoch has moved past the marker's, or its status
+  holds no claim (`COMPLETED`, `FAILED`, `PAUSED`, `BLOCKED`, `READY`, `DEFINED`);
+- the marker's session no longer holds that task at that epoch, and no other live
+  session works in the slot;
+- the file is the same inode and content read before the checks.
+
+If every check passes, the marker is removed and `worktree.stale_claim_retired` is
+emitted. Preparation then continues, and the slot reset salvages any dirty or unpushed
+work under the holder's name. A holder that may still hold its claim is refused as
+above.
+
+`aq project workspace-doctor` reports an unlocked slot that still has a claim file as
+`unlocked_slot_claim`. The supervisor's control is
+`aq project workspace-retire-claim --workspace-id SLOT`. It applies the same checks
+and either retires the marker or refuses, naming the holder to examine.
 
 Workers report a repeated blocker once to the project supervisor. Idle workers
 drain-ack and exit; workers with retained preparation end their turn awaiting the
@@ -1415,10 +1456,10 @@ and pass the vault artifact SHA with `aq task close --commit <vault-commit-sha>`
 The shipped profiles that read their own mailbox (`worker-claude`,
 `worker-codex`, `planner`, `reviewer`, `final-reviewer`, `spec-ingest`,
 `triage`, `playbook-compiler`) also grant `message_status`. The idle-session
-nudge types ``Handle `aq message status <id> --json`.``, and it marks the
-message delivered, so `aq message inbox` no longer lists it. On a vault copy
-without the grant, a worker that follows the nudge is denied and the message
-goes unhandled. Apply the grants-only repair to each profile that drift names
+nudge types ``Handle `aq message status <id> --json` (running it marks the
+message read).``; the message stays pending, and the nudge repeats, until the
+recipient runs it. On a vault copy without the grant, a worker that follows the
+nudge is denied and the message goes unhandled. Apply the grants-only repair to each profile that drift names
 as missing `message_status`, for example
 `aq agent profile-reseed --profile-id worker-claude --grants-only`.
 

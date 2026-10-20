@@ -96,6 +96,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`integration_file_children`](integration_file_children.md) | File isolated child tasks | Reserve child origins and advance the parent integration generation atomically. |
 | [`integration_migrate_provenance_refs`](integration_migrate_provenance_refs.md) | Move Git provenance out of branches | Local operator copies and verifies immutable provenance refs before deleting legacy heads. |
 | [`integration_mutate_hierarchy`](integration_mutate_hierarchy.md) | Mutate integration hierarchy | Apply a guarded hierarchy change and invalidate affected parent generations. |
+| [`integration_off`](integration_off.md) | Disable automatic integration | Local operator applies an exact preview while preserving sources and frozen work. |
 | [`integration_parent_verify`](integration_parent_verify.md) | Integration Parent Verify | Record one parent verification against its exact checkpoint head and evidence. |
 | [`integration_pause_batch`](integration_pause_batch.md) | Integration Pause Batch | Authenticated hierarchical integration operational control. |
 | [`integration_promotion_notes_input`](integration_promotion_notes_input.md) | Integration Promotion Notes Input | Assemble immutable promotion notes from full Git history. |
@@ -125,7 +126,9 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`integration_resume_batch`](integration_resume_batch.md) | Integration Resume Batch | Authenticated hierarchical integration operational control. |
 | [`integration_retire_legacy_park`](integration_retire_legacy_park.md) | Retire a historical parked operation | Local operator abandons every explicitly selected source under an exact journal fence. |
 | [`integration_retire_origin`](integration_retire_origin.md) | Integration Retire Origin | Authenticated hierarchical integration operational control. |
+| [`integration_reverify_epic`](integration_reverify_epic.md) | Integration Reverify Epic | Authenticated hierarchical integration operational control. |
 | [`integration_seal_now`](integration_seal_now.md) | Integration Seal Now | Authenticated hierarchical integration operational control. |
+| [`integration_settle_batch`](integration_settle_batch.md) | Integration Settle Batch | Authenticated hierarchical integration operational control. |
 | [`integration_status`](integration_status.md) | Integration Status | Authenticated hierarchical integration operational control. |
 | [`integration_supersede_completion`](integration_supersede_completion.md) | Supersede one retained completion | Operator or owning supervisor retires an exact stopped Subject with original verified human evidence. |
 | [`integration_transfer_owner`](integration_transfer_owner.md) | Transfer integration branch owner | Stop and detach the current branch writer before granting a fresh fence. |
@@ -144,6 +147,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`ask_discussion_reply`](ask_discussion_reply.md) | Ask Discussion Reply | Scoped human request communication and decision evidence. |
 | [`ask_history`](ask_history.md) | Ask History | Scoped human request communication and decision evidence. |
 | [`ask_intake`](ask_intake.md) | Ask Intake | Scoped human request communication and decision evidence. |
+| [`ask_legacy_reset`](ask_legacy_reset.md) | Ask Legacy Reset | Preview or discard legacy asks and start fresh. |
 | [`ask_list`](ask_list.md) | Ask List | Scoped human request communication and decision evidence. |
 | [`ask_prepare_decision`](ask_prepare_decision.md) | Ask Prepare Decision | Scoped human request communication and decision evidence. |
 | [`ask_reconcile`](ask_reconcile.md) | Ask Reconcile | Scoped human request communication and decision evidence. |
@@ -167,6 +171,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`decision_list`](decision_list.md) | Decision List | Record or read durable operator instructions on a task or integration. |
 | [`decision_record`](decision_record.md) | Decision Record | Record or read durable operator instructions on a task or integration. |
 | [`digest_request`](digest_request.md) | Digest Request | Queue one supervisor author turn per reserved digest window, releasing held windows when supervisor authoring is off. |
+| [`ensure_fidelity_review`](ensure_fidelity_review.md) | Ensure fidelity review | Create or recover the one fidelity-reviewer role task for a held batch. |
 | [`ensure_spec_ingest`](ensure_spec_ingest.md) | Ensure approved spec ingestion | Create or recover the role task receipt for an immutable approved decision. |
 | [`get_stuck_tasks`](get_stuck_tasks.md) | Read stuck tasks | Read aged active tasks, orphaned workers and failed routes in active projects. |
 | [`git_diff`](git_diff.md) | Read a Git diff | Read a project's working-tree or branch diff. |
@@ -246,6 +251,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`supervisor_inbox_post`](supervisor_inbox_post.md) | Supervisor Inbox Post | Accept verified gateway input or local test/replay provenance into the global inbox. |
 | [`supervisor_inbox_reply`](supervisor_inbox_reply.md) | Supervisor Inbox Reply | Record an explicit live global-supervisor answer and queue its Discord delivery. |
 | [`supervisor_inbox_status`](supervisor_inbox_status.md) | Supervisor Inbox Status | Read installation-wide conversation preconditions, limits, counts and intake health. |
+| [`task_batch_review_record`](task_batch_review_record.md) | Record a batch fidelity review | Attest every mapped section and whole-batch intent on the exact held graph. |
 | [`task_batch_validate`](task_batch_validate.md) | Check a task batch | Run the deterministic ingestion-batch checks against the live graph and report hard, retryable and advisory findings without writing anything. |
 | [`task_failure_triage_notify`](task_failure_triage_notify.md) | Wake supervisor failure triage | Record or reuse the durable incident for a terminal task failure and queue its single supervisor triage notice; replayed failures reuse the same incident. |
 | [`task_handoff`](task_handoff.md) | Record a task handoff | Store bounded agent assertions with current daemon facts. Auto is note-only; non-auto records a restart request, without performing a restart. |

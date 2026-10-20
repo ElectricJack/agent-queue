@@ -128,6 +128,7 @@ _COMMAND_TIMEOUTS: dict[str, float] = {
     "integration_release_owner": 300.0,
     "integration_pause_batch": 180.0,
     "integration_resume_batch": 180.0,
+    "integration_settle_batch": 180.0,
     "integration_abort_batch": 180.0,
     "integration_eject": 180.0,
     # Completed-container recovery, preview included, proves the exact head under

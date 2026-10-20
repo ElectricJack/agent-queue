@@ -1029,6 +1029,12 @@ _WORKTREE_SCHEMAS: dict[str, EventSchema] = {
         "required": ["project_id", "workspace_id", "slot", "path", "reason"],
         "optional": [],
     },
+    # A slot's leftover .aq/claim.json whose holder provably let go was
+    # retired at claim preparation or by ``workspace_retire_claim``.
+    "worktree.stale_claim_retired": {
+        "required": ["project_id", "workspace_id", "path", "holder_task_id", "reason", "actor"],
+        "optional": ["holder_claim_epoch", "holder_session_id", "claimant_task_id"],
+    },
     # Slot reconciler (src.orchestrator.slot_restore): a disabled in-cap slot
     # came back into service, or was held out because it carries changes.
     "worktree.restored": {

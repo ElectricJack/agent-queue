@@ -317,11 +317,19 @@ class MessageCommandsMixin:
                 task = await self.db.get_task(session.task_id) if session.task_id else None
                 agent = await self.db.get_agent(session.agent_id) if session.agent_id else None
                 epoch = args.get("claim_epoch")
+                # Preparing holders have no claim file yet. Their persisted
+                # epoch admits only a report to their own project supervisor;
+                # it does not grant ordinary messaging or task mutations.
+                preparing_report = (
+                    session.lifecycle == "pool" and session.claim_phase == "preparing"
+                    and session.last_claim_epoch is not None
+                    and await self._preparation_report_recipient(session, args)
+                )
                 if (
                     task is None or task.project_id != session.project_id
                     or task.status != TaskStatus.IN_PROGRESS
                     or (session.lifecycle == "pool" and (
-                        session.claim_phase != "active" or epoch is None
+                        not preparing_report and (session.claim_phase != "active" or epoch is None)
                     ))
                     or (epoch is not None and (
                         isinstance(epoch, bool) or not isinstance(epoch, int)
@@ -362,6 +370,22 @@ class MessageCommandsMixin:
             ):
                 return {"error": "out of scope: sender identity is not owned by this session"}
         return from_kind, from_id
+
+    async def _preparation_report_recipient(self, session, args: dict) -> bool:
+        """Admit canonical own-supervisor addresses and its persisted session UUID."""
+        if args.get("to_kind") != "session":
+            return False
+        address = args.get("to_id")
+        if address in {
+            f"supervisor-{session.project_id}", f"n-supervisor--{session.project_id}",
+        }:
+            return True
+        recipient = await self.db.get_session(address) if address else None
+        return bool(
+            recipient and recipient.project_id == session.project_id
+            and recipient.profile_id == "supervisor" and recipient.lifecycle == "named"
+            and recipient.name == f"n-supervisor--{session.project_id}"
+        )
 
     async def _cmd_message_send(self, args: dict) -> dict:
         """Queue a message to a session, task, profile, or user."""

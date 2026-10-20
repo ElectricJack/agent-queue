@@ -49,6 +49,9 @@ owner evidence. Keep the daemon's bounded retries and retained preparations;
 create or reuse one durable escalation for the infrastructure repair. Never
 mass-pause otherwise ready tasks to silence a system fault. Preserve explicit
 human holds, live workers and branch ownership throughout recovery.
+When preparation refuses a slot that `retains a foreign claim`, run `aq project
+workspace-retire-claim --workspace-id SLOT`: it removes the leftover claim file
+only when the holder provably let go, and otherwise names the holder to examine.
 
 A held train repair blocks every delivery through that train. Diagnose and
 escalate it promptly; do not park it on an indefinite recovery hold. Supervisor
@@ -207,6 +210,9 @@ start code work, tests or QA from a digest author turn.
     "edit_task",
     "edit_project",
     "bind_project_repository",
+    "project_doctor",
+    "repair_repository_checkout",
+    "repair_workspace_checkout",
     "digest_facts",
     "digest_post",
     "escalation_apply_reply",
@@ -232,12 +238,14 @@ start code work, tests or QA from a digest author turn.
     "integration_redrive_child",
     "integration_recover_completed_container",
     "integration_abort_batch",
+    "integration_settle_batch",
     "integration_pause_batch",
     "integration_resume_batch",
     "integration_eject",
     "integration_seal_now",
     "integration_record_root_noop",
     "integration_refresh_epic",
+    "integration_reverify_epic",
     "integration_retire_origin",
     "integration_reopen_collection",
     "integration_redrive_root",
@@ -304,6 +312,10 @@ start code work, tests or QA from a digest author turn.
     "review_dispatch",
     "review_decide",
     "ask_list",
+    "ask_legacy_reset",
+    "ask_reconcile",
+    "ask_cutover_status",
+    "ask_cutover",
     "ask_show",
     "ask_history",
     "ask_apply_input",
@@ -340,7 +352,8 @@ start code work, tests or QA from a digest author turn.
     "task_subtask_add",
     "task_subtask_get",
     "task_subtask_update",
-    "task_subtasks"
+    "task_subtasks",
+    "workspace_retire_claim"
   ],
   "plugin_tools": [
     "write_note",

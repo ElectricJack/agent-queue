@@ -811,3 +811,20 @@ def test_digest_hash_includes_the_full_pending_set_not_the_visible_cap():
     assert len(before["needs_you"]["items"]) == 5
     assert before["needs_you"]["omitted"] == 96
     assert facts_hash(before) != facts_hash(after)
+
+
+def test_authored_digest_receives_delivery_waits_as_separate_facts():
+    waiting = [{"task_id": "consumer.4", "project_id": "p", "reason": "Land source.6 on dev"}]
+    facts = _idle_brief(waiting_on_delivery=waiting)
+    assert facts["counts"]["waiting_on_delivery"] == 1
+    assert facts["waiting_on_delivery"]["items"] == waiting
+    assert facts["stuck"]["items"] == []
+
+
+def test_empty_activity_fallback_names_frozen_delivery_wait():
+    facts = _idle_brief(waiting_on_delivery=[{
+        "task_id": "consumer.4", "reason": "Land source.6 on dev; refresh aq/epic",
+    }])
+    text = fallback_text("", facts)
+    assert "Waiting on delivery" in text
+    assert "source.6 on dev" in text and "aq/epic" in text

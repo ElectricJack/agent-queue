@@ -535,7 +535,7 @@ async def test_hosted_mixed_checks_reach_status_baseline_and_filed_repair_brief(
     assert listings.count("check_runs") == (1 if baseline_kind == "unwired" else 2)
 
 
-async def test_failed_workflow_without_failed_required_jobs_reports_named_blocker(db):
+async def test_failed_unrequired_workflow_jobs_keep_required_candidate_checks_green(db):
     from src.integration.status import IntegrationStatusService
     from tests.test_integration_ci_producers import github
 
@@ -554,12 +554,16 @@ async def test_failed_workflow_without_failed_required_jobs_reports_named_blocke
     status = await IntegrationStatusService(db, git_first="active", train=t).train_status("p")
 
     [visit] = status["targets"]
-    assert visit["state"] == "blocked" and visit["checks"] == "red"
+    assert visit["state"] == "testing" and visit["checks"] == "green"
     assert all(row["conclusion"] == "success" for row in visit["check_runs"])
-    assert visit["detail"]["blocker"] == "candidate_failing_checks_unknown"
-    assert "candidate_failing_checks_unknown" in {blocker["code"] for blocker in status["blockers"]}
+    assert "candidate_failing_checks_unknown" not in {blocker["code"] for blocker in status["blockers"]}
     assert repair.calls == []
     async with db._engine.connect() as conn:
+        evidence = (await conn.execute(select(integration_check_evidence).where(
+            integration_check_evidence.c.sha == CANDIDATE,
+        ))).mappings().all()
+        assert len(evidence) == 2
+        assert all(row["checks"]["workflow_conclusion"] == "failure" for row in evidence)
         assert (await conn.execute(select(integration_batches.c.repair_attempt_count).where(
             integration_batches.c.id == frozen_batch.id,
         ))).scalar_one() == 0

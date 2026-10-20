@@ -154,7 +154,11 @@ the same database transaction as the `COMPLETED` transition. Git provenance is
 already retained before that transition. Delivery readers use this current id
 even while the full task completion record is being saved after close hooks;
 an earlier generation's record must never stand in for a reopened close. The
-transition out of `COMPLETED` clears the current id.
+transition out of `COMPLETED` clears the current id. A descriptive close older
+than the task's `integration_rework_at` fence remains historical even if
+automatic container settlement returns the task to `COMPLETED`. Delivery
+requests and recursive aggregate readers withhold that old close until a fresh
+completion supplies the new generation's evidence.
 
 Claim selection receives an ephemeral allowed set and retains priority, age,
 affinity and `SKIP LOCKED` exclusivity. Keyset paging continues past withheld
@@ -431,6 +435,17 @@ predicates; claim retains fresh Git and identity revalidation. The explicit
 
 ### 9.2 Ready frontier
 
+Task list/detail, graph (including epic children), CLI and digest reads expose
+`claim_readiness` for READY tasks. This is a read-only projection of the shared
+claim-frontier predicates, never a new lifecycle status. Failed delivery fences
+read **Waiting on delivery**, naming each missing sibling/cross-epic source and
+its target branch, or the epic and open refresh batches that must finish.
+Missing cached delivery evidence reads **Checking delivery evidence** and must
+not imply proven delivery or claimability. Interactive reads never fetch Git.
+Held rows contribute no claimable count; pool demand retains its authoritative
+admission query. Stall readers classify delivery fences as
+`WAITING-ON-DELIVERY`, separately from stuck routing or execution.
+
 Pool demand and claim selection use the same `claim_frontier_predicates` builder,
 including preparation backoff, prerequisite-stack repair, workspace requirements
 and hold labels. A READY task rejected by that builder contributes no demand.
@@ -542,6 +557,27 @@ reason in retained comments, and still refuses running sessions and live operati
 Bulk/automatic archive keeps its terminal-only selection. Delete/archive refusals
 in the dashboard offer **Remove while keeping history and branches** where that
 control can resolve the refusal.
+
+Evidence-preserving duplicate retirement uses
+`aq task archive --task-id <id> --disposition obsolete --reason ... --replacement <leaf>`.
+In one change-set transaction, every incoming nonstructural edge is redirected
+to the replacement with its original type and explanation, the final graph is validated, and
+the duplicate is archived. A replacement must be a distinct live leaf in the
+same project; cycles, incomplete rewrites, running dependents and active
+integration ownership refuse the transaction. `--satisfied-by <evidence>`
+records why the requirement is already met; it requires an explicit `--rewire`
+JSON object with `edges` and `remove_edges` arrays when dependents exist. Their
+edge objects use `from`, `to`, and `dep_type`, as ordinary change sets do.
+Evidence never produces a passing completion or satisfies an unchanged edge.
+
+The obsolete marker records `replacement_task_id`, `satisfied_by` and the edge
+plan. Archive retains that exact marker in task comments because live metadata
+is FK-bound to the removed task row. Source identity, original status, branch
+and completion history remain archived. Branches go through the existing
+audited retirement service, which preserves tips before fenced deletion;
+empty parents settle under the existing container rules. `ObsoleteClose` also
+accepts these evidence arguments for a hierarchical leaf through the same
+transactional edge proof, while keeping the live task marked abandoned.
 
 ## 13a. Claims and pools
 

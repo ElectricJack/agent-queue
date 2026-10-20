@@ -289,6 +289,60 @@ async def test_pool_epoch_and_legacy_user_thread_ownership_remain_required(api):
     assert not foreign["ok"] and "not found" in foreign["error"]
 
 
+@pytest.mark.parametrize("recipient", ["supervisor-p", "n-supervisor--p", "sup-p"])
+async def test_preparing_pool_reports_without_claim_file_and_receives_reply(api, env, recipient):
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(sessions).where(sessions.c.id == "s").values(
+            claim_phase="preparing",
+        ))
+    args = send_args()
+    args.pop("claim_epoch")  # Preparation has not written .aq/claim.json yet.
+    args["to_id"] = recipient
+    sent = await command(api, "message_send", args)
+    assert sent["ok"], sent
+    report = sent["result"]["message"]
+    assert (report["from_kind"], report["from_id"], report["project_id"]) == ("session", "s", "p")
+    reply = await command(api, "message_reply", {
+        "message_id": report["id"], "body": "preserve preparation; awaiting repair",
+    }, caller="sup-p")
+    assert reply["ok"], reply
+    inbox = await command(api, "message_inbox", {"to_kind": "session", "to_id": "s"})
+    assert reply["result"]["reply"]["id"] in [m["id"] for m in inbox["result"]["messages"]]
+
+
+@pytest.mark.parametrize("change", [
+    "epoch", "missing_epoch", "holder", "agent", "released", "foreign_supervisor",
+    "user", "peer", "forged_sender", "instance", "stopped", "task_status", "supplied_epoch",
+])
+async def test_preparing_report_keeps_holder_sender_and_recipient_fences(api, env, change):
+    async with env.db._engine.begin() as conn:
+        values = {"claim_phase": "preparing"}
+        values.update({
+            "epoch": {"last_claim_epoch": 2}, "missing_epoch": {"last_claim_epoch": None},
+            "released": {"claim_phase": None, "task_id": None},
+            "instance": {"instance_token": "replacement"}, "stopped": {"state": "stopped"},
+        }.get(change, {}))
+        await conn.execute(update(sessions).where(sessions.c.id == "s").values(**values))
+        if change == "holder":
+            await conn.execute(update(tasks).where(tasks.c.id == "owner").values(assigned_agent_id=None))
+        if change == "agent":
+            await conn.execute(update(agents).where(agents.c.id == "a").values(current_task_id=None))
+        if change == "task_status":
+            await conn.execute(update(tasks).where(tasks.c.id == "owner").values(status="READY"))
+    args = send_args()
+    args.pop("claim_epoch")
+    args.update({
+        "foreign_supervisor": {"to_id": "supervisor-q"},
+        "user": {"to_kind": "user", "to_id": "dashboard"},
+        "peer": {"to_id": "other-worker"},
+        "forged_sender": {"from_id": "sup-p"},
+        "supplied_epoch": {"claim_epoch": 2},
+    }.get(change, {}))
+    result = await command(api, "message_send", args)
+    assert not result["ok"] and "out of scope" in result["error"], result
+    assert await env.db.list_messages(project_id="p") == []
+
+
 async def test_foreign_project_and_server_identity_args_do_not_change_ownership(api):
     foreign = await command(api, "message_send", send_args(project_id="q"))
     assert not foreign["ok"] and "project_id mismatch" in foreign["error"]

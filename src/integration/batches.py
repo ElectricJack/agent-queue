@@ -168,8 +168,9 @@ class SupersedeMemberUnavailable(ValueError):
 class BatchStore:
     """Intent/input writes invoked by commands; legacy columns retire at stage four."""
 
-    def __init__(self, db, *, clock=time.time):
+    def __init__(self, db, *, clock=time.time, require_enabled=False):
         self.db, self.clock = db, clock
+        self.require_enabled = require_enabled
 
     async def get(self, batch_id: str) -> Batch | None:
         async with self.db._engine.connect() as conn:
@@ -202,6 +203,18 @@ class BatchStore:
                                              promotion=promotion)
 
     async def _freeze_locked(self, conn, batch, members, *, trees, exclusive_target, promotion):
+        if self.require_enabled:
+            from src.database.tables import projects
+
+            await self.db.lock_hierarchy_project(conn, batch.project_id)
+            enabled = await conn.scalar(select(projects.c.id).where(
+                projects.c.id == batch.project_id,
+                projects.c.integration_repository_id == batch.repository_id,
+                projects.c.status == "ACTIVE",
+                projects.c.hierarchical_integration_mode.in_(("train", "hierarchy", "development")),
+            ).with_for_update())
+            if enabled is None:
+                raise ValueError("automatic integration is off")
         await self._target_lock(conn, batch)
         if exclusive_target:
             await self._exclusive_target(conn, batch)
@@ -788,6 +801,24 @@ class BatchService:
         ref = candidate_ref(batch.id)
         candidate = observed.source_heads.get("refs/remotes/origin/" + branch(ref))
         try:
+            target_tree = (
+                await self.gitops.git.atree_sha(str(repo.store), target)
+                if batch.epic_refresh and members else None
+            )
+            if target_tree is not None and all([
+                await self.gitops.is_ancestor(repo, member.source_sha, target)
+                and await self.gitops.git.atree_sha(str(repo.store), member.source_sha)
+                == target_tree
+                for member in members
+            ]):
+                # The epic already is the refreshed default head, by ancestry and
+                # an identical tree: the default branch gated that content, so
+                # nothing is left to test or publish and the reused candidate's
+                # checks must not hold it. A resolved merge differs in tree and
+                # still runs its candidate checks.
+                return BatchObservation("delivered", None, target, detail={
+                    "reason": "refresh_source_in_target", "candidate_sha": candidate,
+                })
             # Historical inclusion settles even a held/aborted intent. It does
             # not authorize another write, and stale progress never blocks it.
             # A published repair start can be the target itself or only a

@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any
+from typing import Any, Literal
 
-from pydantic import Field, ValidationError
+from pydantic import Field, ValidationError, model_validator
 
 from src.commands.contracts.models import (
     ClausePredicate,
@@ -130,6 +130,12 @@ class EnsureSpecIngestArgs(CommandArgs):
     project_id: str
     decision_id: str
     packet_sha256: str
+
+
+class EnsureFidelityReviewArgs(CommandArgs):
+    project_id: str
+    batch_id: str
+    structure_revision: int
 
 
 class EnsureTaskValue(CommandValue):
@@ -417,6 +423,42 @@ class GetDownstreamTasksValue(CommandValue):
     tasks: list[dict[str, str]]
 
 
+class HeldBatchOperation(CommandArgs):
+    """Scoped operation. The command checks kind-specific fields and live membership."""
+
+    kind: Literal["rewrite", "split", "combine", "reparent", "rewire", "add_leaf",
+                  "move_to_root", "retire"]
+    task_id: str | None = None
+    task_ids: list[str] | None = None
+    changes: dict[str, Any] | None = None
+    task: dict[str, Any] | None = None
+    tasks: list[dict[str, Any]] | None = None
+    parent_id: str | None = None
+    delivery_targets: list[str] | None = None
+    edges: list[dict[str, Any]] | None = None
+    remove_edges: list[dict[str, Any]] | None = None
+    reason: str | None = None
+    replacement_task_id: str | None = None
+    satisfied_by: str | None = None
+    rewire: dict[str, list[dict[str, Any]]] | None = None
+
+
+class TaskBatchUpdateArgs(CommandArgs):
+    proposal_id: str
+    project_id: str | None = None
+    payload: dict[str, Any] | None = None
+    expected_revision: int | None = Field(default=None, ge=1, strict=True)
+    operations: list[HeldBatchOperation] | None = Field(default=None, min_length=1)
+
+    @model_validator(mode="after")
+    def update_shape(self):
+        if (self.payload is None) == (self.operations is None):
+            raise ValueError("Supply payload or operations")
+        if self.operations is not None and self.expected_revision is None:
+            raise ValueError("Held operations require expected_revision")
+        return self
+
+
 class TaskBatchCommitArgs(CommandArgs):
     proposal_id: str
     #: The human gate whose resolution approves this proposal.  Omitted, the
@@ -455,6 +497,29 @@ class TaskBatchValidateValue(CommandValue):
     hard: list[dict[str, Any]] = Field(default_factory=list)
     advisory: list[dict[str, Any]] = Field(default_factory=list)
     gaps: list[dict[str, Any]] = Field(default_factory=list)
+
+
+FidelityVerdict = Literal["faithful", "fixed", "scope_question"]
+
+
+class TaskBatchReviewRecordArgs(CommandArgs):
+    batch_id: str = Field(min_length=1)
+    expected_revision: int = Field(strict=True, ge=1)
+    expected_digest: str = Field(min_length=1)
+    section_verdicts: dict[str, FidelityVerdict]
+    reverse_coverage_verdict: FidelityVerdict
+    walkthrough_verdict: FidelityVerdict
+    structural_findings: list[dict[str, Any]]
+    project_id: str | None = None
+
+
+class TaskBatchReviewRecordValue(CommandValue):
+    batch_id: str
+    state: str
+    passing: bool
+    receipt: dict[str, Any]
+    replayed: bool
+    ask_id: str | None = None
 
 
 class TaskRoutePlanArgs(CommandArgs):
@@ -893,7 +958,7 @@ def _outcome_of(name: str, raw: dict[str, Any]) -> str:
     if name == "ci_repair_adopt":
         outcome = str(raw.get("outcome") or "")
         return outcome if outcome in {"adopted", "recorded", "unchanged"} else "rejected"
-    if name in {"ensure_task", "ensure_spec_ingest"}:
+    if name in {"ensure_task", "ensure_spec_ingest", "ensure_fidelity_review"}:
         return "created" if raw.get("created") else "reused"
     if name == "github_issue_triage":
         return "swept"
@@ -907,6 +972,8 @@ def _outcome_of(name: str, raw: dict[str, Any]) -> str:
         if not raw.get("passed"):
             return "retryable" if raw.get("retryable") else "failed"
         return "passed"
+    if name == "task_batch_review_record":
+        return "recorded" if raw.get("passing") else "needs_scope"
     if name == "task_route_plan":
         outcome = str(raw.get("outcome") or "")
         return outcome if outcome in _ROUTE_PLAN_OUTCOMES else "rejected"
@@ -1194,6 +1261,15 @@ PRESENTATIONS: dict[str, CommandPresentation] = {
         result_labels={"task_id": "Task", "created": "Was created"},
         subject_labels={"task": "an approved spec ingestion task"},
     ),
+    "ensure_fidelity_review": CommandPresentation(
+        title="Ensure fidelity review",
+        summary="Create or recover the one fidelity-reviewer role task for a held batch.",
+        arg_labels={"project_id": "Project", "batch_id": "Batch",
+                    "structure_revision": "Structure revision"},
+        outcome_labels={"created": "Created", "reused": "Reused", "rejected": "Rejected"},
+        result_labels={"task_id": "Task", "created": "Was created"},
+        subject_labels={"task": "a fidelity review task"},
+    ),
     "github_issue_triage": CommandPresentation(
         title="Triage GitHub issues",
         summary="File bounded investigations and label the corresponding issues.",
@@ -1342,6 +1418,21 @@ PRESENTATIONS: dict[str, CommandPresentation] = {
         },
         result_labels={"task_ids": "Created tasks"},
         subject_labels={"task_graph": "the proposed task graph"},
+    ),
+    "task_batch_review_record": CommandPresentation(
+        title="Record a batch fidelity review",
+        summary="Attest every mapped section and whole-batch intent on the exact held graph.",
+        arg_labels={
+            "batch_id": "Held batch", "expected_revision": "Expected structure revision",
+            "expected_digest": "Expected structure digest", "section_verdicts": "Section verdicts",
+            "reverse_coverage_verdict": "Reverse coverage", "walkthrough_verdict": "Walkthrough",
+            "structural_findings": "Findings and dispositions", "project_id": "Project",
+        },
+        outcome_labels={"recorded": "Recorded", "needs_scope": "Needs scope answer",
+                        "rejected": "Rejected"},
+        result_labels={"batch_id": "Batch", "state": "State", "passing": "Passing",
+                       "receipt": "Receipt", "replayed": "Replayed", "ask_id": "Scope ask"},
+        subject_labels={"task_graph": "the held task graph"},
     ),
     "task_batch_validate": CommandPresentation(
         title="Check a task batch",
@@ -1808,6 +1899,12 @@ def register_builtin_contracts(registry: ContractRegistry) -> None:
             IdempotencySpec(mode="keyed", key_field="decision_id"), True,
         ),
         (
+            "ensure_fidelity_review", EnsureFidelityReviewArgs, EnsureTaskValue,
+            _outcomes("created", "reused"), SideEffectClass.CREATE,
+            (CreateOrReuseClause(subject=EffectSubject.TASK, key_arg="batch_id"),),
+            IdempotencySpec(mode="keyed", key_field="batch_id"), True,
+        ),
+        (
             "github_issue_triage", GitHubIssueTriageArgs, GitHubIssueTriageValue,
             _outcomes("swept"), SideEffectClass.COMPOSITE,
             (CreateClause(subject=EffectSubject.TASK),),
@@ -1910,6 +2007,12 @@ def register_builtin_contracts(registry: ContractRegistry) -> None:
             (),
             IdempotencySpec(mode="natural"),
             True,
+        ),
+        (
+            "task_batch_review_record", TaskBatchReviewRecordArgs, TaskBatchReviewRecordValue,
+            _outcomes("recorded", "needs_scope"), SideEffectClass.COMPOSITE,
+            (UpdateClause(subject=EffectSubject.TASK_GRAPH),),
+            IdempotencySpec(mode="natural"), True,
         ),
         (
             "task_route_plan",

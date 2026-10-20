@@ -5,9 +5,11 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-from sqlalchemy import select, update
+from sqlalchemy import insert, select, update
 
-from src.database.tables import integration_batches, integration_subject_journal, task_delivery_receipts
+from src.database.tables import (
+    integration_batches, integration_subject_journal, projects, task_delivery_receipts,
+)
 from src.integration.batches import Batch, BatchMember, BatchService, BatchStore, candidate_ref, ordered_members
 from src.integration.git_truth import GitTruth
 from src.integration.gitops import branch
@@ -325,6 +327,12 @@ async def test_local_lane_never_calls_attestation_publish(batch_env, monkeypatch
     from src.integration.train_sources import DaemonLanes
 
     db, ops, repo, _, _, _, batch, members, _, _, snapshot, _ = batch_env
+    async with db.immediate() as conn:
+        await conn.execute(insert(projects).values(
+            id="p", name="Local integration lane", integration_repository_id="r",
+            hierarchical_integration_mode="development",
+            created_at=1700000000,
+        ))
     monkeypatch.setattr(db, "get_repo", AsyncMock(return_value=SimpleNamespace(
         url=str(ops.git.remote_path), default_branch="main",
     )))

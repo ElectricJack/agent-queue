@@ -639,6 +639,12 @@ class TaskCommandsMixin:
             ``depends_on`` and ``blocks`` lists and include a pre-formatted
             ``formatted`` key with the dependency-aware text representation.
         """
+        context = await self._fidelity_read_context("list_tasks", args)
+        if context is not None:
+            if "error" in context:
+                return context
+            return await self._fidelity_list_tasks(args, context)
+
         # Normalize show_all → include_completed so all downstream helpers
         # only need to check include_completed.
         if args.get("show_all") and not args.get("include_completed"):
@@ -725,6 +731,9 @@ class TaskCommandsMixin:
         capped_tasks = active + finished[:cap]
         task_dicts = [self._task_to_dict(t) for t in capped_tasks]
         await attach_activity(self.db, task_dicts)
+        from src.task_graph.readiness import attach_readiness
+
+        await attach_readiness(self.db, task_dicts)
 
         if show_dependencies:
             await self._enrich_with_dependencies(task_dicts, capped_tasks)
@@ -793,8 +802,11 @@ class TaskCommandsMixin:
             }
             if include_project:
                 d["project_id"] = t.project_id
-            return {**d, **activity.get(t.id, {})}
+            return {**d, **activity.get(t.id, {}), **readiness.get(t.id, {})}
 
+        from src.task_graph.readiness import load_readiness
+
+        readiness = await load_readiness(self.db, [self._task_to_dict(t) for t in tasks])
         activity = await load_activity(self.db, [t.id for t in tasks])
         by_project: dict[str, list[dict]] = {}
         for t in tasks:
@@ -978,6 +990,15 @@ class TaskCommandsMixin:
             # Count root + all its subtasks
             total_tasks += 1 + subtask_total
 
+        from src.task_graph.readiness import load_readiness
+
+        readiness = await load_readiness(self.db, [self._task_to_dict(task)
+            for root, children in raw_trees for task in [root, *_collect_tree_tasks(children)]])
+        for entry, (root, children) in zip(trees, raw_trees):
+            entry["root"].update(readiness.get(root.id, {}))
+            entry["formatted"] = _format_task_tree(
+                root, children, compact=compact, readiness_map=readiness,
+            )
         await attach_activity(self.db, [entry["root"] for entry in trees])
         # Enrich root task dicts with dependency info when requested.
         if show_dependencies:
@@ -1001,6 +1022,7 @@ class TaskCommandsMixin:
                             children,
                             compact=False,
                             dep_map=dep_map,
+                            readiness_map=readiness,
                         )
 
         result: dict = {
@@ -1253,6 +1275,10 @@ class TaskCommandsMixin:
         root_task: Task = tree_data["task"]
         children: list[dict] = tree_data.get("children", [])
 
+        from src.task_graph.readiness import load_readiness
+
+        readiness = await load_readiness(self.db, [self._task_to_dict(task)
+            for task in [root_task, *_collect_tree_tasks(children)]])
         completed, subtask_total = _count_subtree(children)
         status_counts = _count_subtree_by_status(children)
 
@@ -1271,10 +1297,12 @@ class TaskCommandsMixin:
             compact=compact,
             max_depth=max_depth,
             dep_map=dep_map,
+            readiness_map=readiness,
         )
 
         result: dict = {
-            "root": {**self._task_to_dict(root_task), **await task_activity(self.db, root_task.id)},
+            "root": {**self._task_to_dict(root_task), **await task_activity(self.db, root_task.id),
+                     **readiness.get(root_task.id, {})},
             "formatted": formatted,
             "subtask_completed": completed,
             "subtask_total": subtask_total,
@@ -1305,12 +1333,11 @@ class TaskCommandsMixin:
             limit=args.get("limit"),
             offset=int(args.get("offset") or 0),
         )
-        return {
-            "success": True,
-            "task_id": task_id,
-            "count": len(children),
-            "children": [self._task_to_dict(t) for t in children],
-        }
+        from src.task_graph.readiness import attach_readiness
+
+        rows = [self._task_to_dict(t) for t in children]
+        await attach_readiness(self.db, rows)
+        return {"success": True, "task_id": task_id, "count": len(rows), "children": rows}
 
     async def _cmd_task_progress(self, args: dict) -> dict:
         """Computed group progress (counts, waves, max parallelism).  Backs ``aq task progress``."""
@@ -3619,9 +3646,14 @@ class TaskCommandsMixin:
         return report
 
     async def _cmd_get_task(self, args: dict) -> dict:
+        context = await self._fidelity_read_context("get_task", args)
+        if context is not None and "error" in context:
+            return context
         task = await self.db.get_task(args["task_id"])
         if not task:
             return {"error": f"Task '{args['task_id']}' not found"}
+        if context is not None:
+            return await self._fidelity_member_detail(task, context)
         if args.get("clear_needs_attention") and args.get("needs_attention") is not None:
             return {"error": "--clear-needs-attention and --needs-attention are mutually exclusive"}
         out_of_scope = self._assert_task_in_scope(task)
@@ -3745,6 +3777,9 @@ class TaskCommandsMixin:
         # Implementation progress kept apart from delivery (a read-only
         # projection; it never changes the stored status shown above).
         info.update(await task_activity(self.db, task.id), delivery_status=None)
+        from src.task_graph.readiness import attach_readiness
+
+        await attach_readiness(self.db, [info])
         if info["children"]:
             from src.integration.epic_delivery import EpicDeliveryProjection, lease_ttl_from
 
@@ -4313,7 +4348,10 @@ class TaskCommandsMixin:
             task = await self.db.get_task(task_id)
             await self._emit_task_graph_change("task.updated", task)
             return {"task_id": task_id, "status": task.status.value}
-        task = await self.orchestrator.resume_task(task_id)
+        task = await self.orchestrator.resume_task(
+            task_id, recover_stale_pause=bool(args.get("recover_stale_pause")),
+            actor=(self._current_scope or {}).get("session_id") or "local-operator",
+        )
         await self._emit_task_graph_change("task.updated", task)
         return {"task_id": task_id, "status": task.status.value}
 
@@ -5053,6 +5091,9 @@ class TaskCommandsMixin:
             ``retire``: the decision for completed work that has not reached
             the default branch. ``obsolete`` and ``retire`` abandon it and
             archive; ``deliver`` keeps the task and reports its delivery.
+            ``replacement`` / ``satisfied_by`` – (obsolete only) retirement
+            evidence. A replacement redirects all dependent edges; evidence
+            alone requires an explicit ``rewire`` edge plan.
         """
         from src.integration.removal_guard import DELIVERY_DISPOSITIONS
 
@@ -5061,6 +5102,15 @@ class TaskCommandsMixin:
         abandon_undelivered = bool(args.get("abandon_undelivered"))
         abandon_reason = args.get("reason")
         disposition = args.get("disposition") or None
+        replacement_task_id = args.get("replacement", args.get("replacement_task_id"))
+        satisfied_by = args.get("satisfied_by")
+        rewire = args.get("rewire")
+        if any(value is not None for value in (replacement_task_id, satisfied_by, rewire)):
+            if not task_id or disposition != "obsolete":
+                return {
+                    "success": False, "code": "obsolete.invalid_disposition",
+                    "error": "Replacement, satisfied-by and rewire require a single obsolete archive.",
+                }
         if disposition is not None and disposition not in DELIVERY_DISPOSITIONS:
             return {
                 "error": f"--disposition must be one of {', '.join(DELIVERY_DISPOSITIONS)}.",
@@ -5128,6 +5178,9 @@ class TaskCommandsMixin:
                     abandoned_by=(self._current_scope or {}).get("session_id") or "operator",
                     archive_reason=abandon_reason,
                     disposition=disposition,
+                    replacement_task_id=replacement_task_id,
+                    satisfied_by=satisfied_by,
+                    rewire=rewire,
                 )
             except HierarchyError as exc:
                 # Same renderer as delete: an ``integration_owned`` refusal
@@ -6513,6 +6566,9 @@ class TaskCommandsMixin:
         ``src/database/queries/blocked_state.py``). Returns ``[]`` if the
         task has no dependents.
         """
+        context = await self._fidelity_read_context("get_downstream_tasks", args)
+        if context is not None and "error" in context:
+            return context
         task_id = args.get("task_id")
         if not task_id:
             return {"success": False, "error": "task_id is required"}
@@ -6528,8 +6584,10 @@ class TaskCommandsMixin:
         ids = await self.db.get_transitive_dependents(str(task_id), edge_types)
         out = []
         for tid in ids:
+            if context is not None and tid not in context["task_ids"]:
+                continue
             t = await self.db.get_task(tid)
-            if t is None:
+            if t is None or (context is not None and t.project_id != context["batch"]["project_id"]):
                 continue
             out.append({"id": t.id, "title": t.title, "status": t.status.value})
         return {"success": True, "tasks": out}
