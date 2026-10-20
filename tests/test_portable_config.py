@@ -127,6 +127,32 @@ def test_every_application_section_has_an_explicit_portability_decision():
     assert sections - local <= PORTABLE_CONFIG_SECTIONS
 
 
+async def test_wait_policy_roundtrip_preserves_operator_policy(tmp_path):
+    policy = {
+        "v2_enabled": True,
+        "hibernation_enabled": True,
+        "in_place_ceiling_seconds": 900,
+        "kinds": {"job": {"escalate_after_seconds": 3600}},
+        "projects": {"p": {"resume_cost_minutes": 7}},
+        "metrics": {"pre_rollout_turn_rate": 2, "cohort": "before rollout"},
+    }
+    source = tmp_path / "source.yaml"
+    source.write_text(yaml.safe_dump({"wait_policy": policy}))
+    archive = tmp_path / "wait-policy.aqbundle"
+    export_bundle(str(archive), str(source), str(tmp_path / "source-data"))
+    assert read_bundle(str(archive)).config["wait_policy"] == policy
+    target = tmp_path / "target.yaml"
+    target.write_text(yaml.safe_dump({"messaging_platform": "none", "database": {
+        "url": "postgresql+asyncpg://localhost/aq",
+    }}))
+    result = await import_bundle(
+        str(archive), config_path=str(target), data_dir=str(tmp_path / "target-data"),
+        db=FakeProfileDB(), conflict="replace",
+    )
+    assert result.get("error") is None, result
+    assert yaml.safe_load(target.read_text())["wait_policy"] == policy
+
+
 async def test_replacing_profile_preserves_destination_install_credentials_and_paths(tmp_path):
     source, data = _write_source(tmp_path)
     source_profile = data / "vault/agent-types/reviewer/profile.md"

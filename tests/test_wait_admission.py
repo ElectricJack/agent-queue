@@ -154,6 +154,25 @@ async def test_disabled_service_does_not_mutate(env):
     assert not await rows(env, wait_deadlines)
 
 
+async def test_admission_reader_preserves_ingestion_hold(env):
+    reader = AdmissionReader(env.o, clock=lambda: NOW)
+    async with env.db._engine.begin() as conn:
+        free = await reader.observe_task(conn, "holder")
+        assert not free.constraints["policy_hold"]["blocked"]
+        await conn.execute(update(tasks).where(tasks.c.id == "holder").values(
+            held_batch_id="awaiting-fidelity-review",
+        ))
+        held = await reader.observe_task(conn, "holder")
+        assert held.constraints["policy_hold"]["blocked"]
+        assert "ingest_held" in held.constraints["policy_hold"]["reasons"]
+        assert held.snapshot("policy_hold").observation.state == "unsatisfied"
+        assert "policy_hold" in {condition.parameters["blocker"] for condition in held.conditions()}
+    async with env.db._engine.connect() as conn:
+        assert await conn.scalar(select(tasks.c.held_batch_id).where(
+            tasks.c.id == "holder",
+        )) == "awaiting-fidelity-review"
+
+
 def test_policy_defaults_are_dormant_and_string_flags_refused():
     policy = AppConfig().wait_policy
     assert not policy.v2_enabled and not policy.hibernation_enabled and not policy.scheduler_waits_enabled

@@ -23,6 +23,7 @@ from src.intelligence_classes import IntelligenceClass
 from src.models import AgentProfile, Project, RepoSourceType, Task, TaskStatus, Workspace
 from src.orchestrator import Orchestrator
 from src.providers.availability import DEGRADED, UNAUTHENTICATED
+from src.scheduler import AssignAction
 from src.sessions.harness_parser import Harness
 from tests.db_fixtures import lease_dsn
 from tests.session_dispatch_helpers import (
@@ -187,7 +188,7 @@ async def test_a_pre_launch_refusal_does_not_notify_a_launch_failure(push_orch):
     )
     orch._emit_text_notify = AsyncMock()
     task = await orch.db.get_task("t0")
-    action = MagicMock(task_id="t0", agent_id="a-x", project_id="p-1")
+    action = AssignAction(task_id="t0", agent_id="a-x", project_id="p-1")
     await orch._fail_session_launch(action, task, "refused", backoff=30, notify=False)
     orch._emit_text_notify.assert_not_awaited()
     paused = await orch.db.get_task("t0")

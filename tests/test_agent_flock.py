@@ -252,7 +252,10 @@ async def test_active_legacy_session_wins_over_linked_history(handler):
     assert row["current_task_id"] == "task"
 
 
-async def test_roster_reads_only_active_tasks_and_keeps_current_work(handler, monkeypatch):
+@pytest.mark.parametrize("active_status", ["ASSIGNED", "IN_PROGRESS", "WAITING_INPUT", "WAITING"])
+async def test_roster_reads_only_active_tasks_and_keeps_current_work(
+    handler, monkeypatch, active_status
+):
     """A large backlog of idle tasks is not hydrated for the roster (wise-ember.16)."""
     from src.models import AgentState, SessionRecord, Task, TaskStatus
     await handler.db.create_project(Project(id="p", name="Project"))
@@ -260,13 +263,18 @@ async def test_roster_reads_only_active_tasks_and_keeps_current_work(handler, mo
     await handler.db.create_agent(Agent(id="b", name="Bea", profile_id="coder"))
     await handler.db.create_task(Task(
         id="task", project_id="p", title="Current work", description="Work",
-        status=TaskStatus.IN_PROGRESS, assigned_agent_id="a",
+        status=TaskStatus(active_status), assigned_agent_id="a",
     ))
     # Bea's pointer names a finished task: a non-active row reads as no task.
     await handler.db.create_task(Task(
         id="done", project_id="p", title="Finished", description="Work",
         status=TaskStatus.COMPLETED, assigned_agent_id="b",
     ))
+    for status in (TaskStatus.HIBERNATED, TaskStatus.RESUME_PENDING):
+        await handler.db.create_task(Task(
+            id=status.value, project_id="p", title="Continuation", description="Work",
+            status=status,
+        ))
     for index in range(5):
         await handler.db.create_task(Task(
             id=f"backlog-{index}", project_id="p", title="Backlog", description="Work",
@@ -294,7 +302,9 @@ async def test_roster_reads_only_active_tasks_and_keeps_current_work(handler, mo
     assert everyone["a"]["current_task_title"] == "Current work"
     assert everyone["b"]["current_task_id"] is None
     assert reads and all(
-        statuses == {TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS, TaskStatus.WAITING_INPUT}
+        statuses == {
+            TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS, TaskStatus.WAITING_INPUT, TaskStatus.WAITING,
+        }
         and ids == ["task"]
         for statuses, ids in reads
     )
