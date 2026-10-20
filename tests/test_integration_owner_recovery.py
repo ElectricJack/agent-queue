@@ -697,6 +697,32 @@ async def test_unproved_task_work_refuses_before_any_git_mutation(env, broken, d
     assert git(env.origin, "for-each-ref", "refs/heads/aq/recovery/") == ""
 
 
+@pytest.mark.parametrize("role", ["worker", "repair"])
+async def test_integration_writer_rows_preserve_without_a_task_origin(env, role):
+    """Repair writers lease a shared integration branch that has no task origin."""
+    tip = env.branch("aq/integration/batch", extra=1)
+    published = remote_sha(env.origin, "aq/integration/batch")
+    slot = await env.slot("slot", "aq/integration/batch")
+    (slot / "dirty.txt").write_text("unfinished repair\n")
+    await env.session("writer", work_dir=slot)
+    await env.owner("owner", "aq/integration/batch", "repair-task", role=role,
+                    session_id="writer", workspace_id="ws-slot", provenance=False)
+
+    result = await env.service().recover("owner", principal="supervisor")
+
+    if role == "worker":
+        assert (result.outcome, result.reason) == ("not_eligible", "unproven_task_work"), result
+        assert remote_sha(env.origin, "aq/integration/batch") == published
+        assert (await env.row("owner"))["fence_token"] == 3
+        return
+    assert result.outcome == "preserved_and_released", result
+    assert "task_work_proof" not in result.evidence
+    preserved = remote_sha(env.origin, "aq/integration/batch")
+    git(env.base, "fetch", "-q", "origin")
+    git(env.base, "merge-base", "--is-ancestor", tip, preserved)
+    assert git(env.base, "show", f"{preserved}:dirty.txt") == "unfinished repair"
+
+
 @pytest.mark.parametrize("managed", [False, True])
 @pytest.mark.parametrize("qualified_ref", [False, True])
 async def test_restore_task_origin_previews_and_applies_exact_recorded_base(

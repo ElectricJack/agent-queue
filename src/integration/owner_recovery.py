@@ -18,8 +18,9 @@ never from the task row or its status:
 2. **The branch is safe.**  After ``git fetch origin`` in the repository's
    base checkout, every worktree holding the branch (or the row's own
    checkout, detached) is inspected.  One a live session works in refuses
-   with ``checkout_in_use``. Only work proved against the recorded task origin,
-   claim time and matching slot sentinel is eligible for preservation. A missing
+   with ``checkout_in_use``. On a ``worker`` row only work proved against the
+   recorded task origin, claim time and matching slot sentinel is eligible for
+   preservation; integration rows rely on their fenced writer binding. A missing
    local task ref never borrows a detached slot's HEAD. Uncommitted work is
    snapshotted through a temporary index -- the working tree and the live index are never touched
    -- and anything origin does not already carry (a dirty tree, a HEAD or a
@@ -99,6 +100,11 @@ RECOVERABLE_STATES: tuple[str, ...] = ("attached", "handoff_pending")
 
 #: A ``collector`` row's owner is an integration operation, not a writer.
 COLLECTOR_ROLE = "collector"
+
+#: Roles whose branch authority comes from the owner task's recorded origin.
+#: Repair, verifier and collector rows lease a shared integration branch that
+#: successive writers extend; their fenced writer binding is the identity proof.
+ORIGIN_PROVEN_ROLES: tuple[str, ...] = ("worker",)
 
 RELEASED = "released"
 PRESERVED_AND_RELEASED = "preserved_and_released"
@@ -723,7 +729,7 @@ class OwnerRecovery:
 
             # Prove every source before taking a snapshot, pushing or detaching.
             # Slot reuse must never lend another task's HEAD to this branch.
-            if preserve:
+            if preserve and row["owner_role"] in ORIGIN_PROVEN_ROLES:
                 try:
                     await self._prove_task_work(
                         row, checkout, branch, local_sha, origin_sha, default_branch,
