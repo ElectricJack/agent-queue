@@ -12,14 +12,14 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
 from typing import Literal
 
-from sqlalchemy import literal, select
+from sqlalchemy import and_, literal, or_, select
 
 from src.database.tables import (
-    archived_tasks, events, gates, projects, repos, task_completion_records, task_dependencies,
+    archived_tasks, events, gates, projects, repos, task_dependencies,
     task_gates, task_labels, task_metadata, tasks,
 )
 from src.git.manager import GitError
-from src.integration.delivery_truth import DeliveryRequest, DeliveryState, completion_after_rework
+from src.integration.delivery_truth import DeliveryRequest, DeliveryState, load_delivery_requests
 from src.integration.git_truth import GitDeliveryEvidence, GitTruthSnapshot
 from src.integration.reviews import ReviewRequirements, ReviewSubject, TreeReviews, TreeVerdict
 
@@ -73,6 +73,24 @@ class EpicGraph:
 
     def children(self, task_id: str) -> tuple[EpicNode, ...]:
         return tuple(node for node in self.nodes if node.parent_id == task_id and node.required)
+
+    def authorization(self, task_id: str) -> tuple[str, ...]:
+        """Transitive prerequisite closure of this subtree, including absent inputs."""
+        subtree, pending = set(), [task_id]
+        while pending:
+            current = pending.pop()
+            if current not in subtree:
+                subtree.add(current)
+                pending.extend(child.task_id for child in self.children(current))
+        closure, pending = set(subtree), list(subtree)
+        while pending:
+            current = pending.pop()
+            for dependent, prerequisite, kind in self.dependencies:
+                if (dependent == current and kind in {"blocks", "waits-for", "conditional-blocks"}
+                        and prerequisite not in closure):
+                    closure.add(prerequisite)
+                    pending.append(prerequisite)
+        return tuple(sorted(closure - subtree))
 
     def target(self, task_id: str) -> str:
         node = self.node(task_id)
@@ -147,16 +165,13 @@ class EpicGraphReader:
     explicitly waived. A terminal failure is not an implicit waiver.
     """
 
-    def __init__(self, *, policy_on: Callable, required_on: Callable | None = None,
+    def __init__(self, db, *, policy_on: Callable, required_on: Callable | None = None,
                  source_base_on: Callable | None = None):
+        self.db = db
         self.policy_on, self.required_on = policy_on, required_on
         self.source_base_on = source_base_on
 
     async def read_on(self, conn, epic_id: str) -> EpicGraph:
-        from src.database.queries.task_queries import (
-            DEVELOPMENT_COMPLETION_ID_KEY, INTEGRATION_REWORK_AT_KEY,
-        )
-
         root = (await conn.execute(select(tasks).where(tasks.c.id == epic_id))).mappings().one()
         project = (await conn.execute(select(projects).where(
             projects.c.id == root["project_id"],
@@ -179,24 +194,28 @@ class EpicGraphReader:
             descendants, ordinary.c.parent_task_id == descendants.c.id,
         ).where(ordinary.c.project_id == root["project_id"]))
         rows = list((await conn.execute(select(descendants))).mappings())
+        # Freeze prerequisite identities as well as hierarchy membership. A
+        # cross-epic prerequisite can itself depend on another source or hold.
+        closure = select(ordinary).where(ordinary.c.id.in_([row["id"] for row in rows])).cte(
+            "epic_authorization", recursive=True,
+        )
+        closure = closure.union(select(ordinary).outerjoin(
+            task_dependencies, and_(task_dependencies.c.depends_on_task_id == ordinary.c.id,
+                task_dependencies.c.dep_type.in_(("blocks", "waits-for", "conditional-blocks"))),
+        ).join(closure, or_(task_dependencies.c.task_id == closure.c.id,
+                           ordinary.c.parent_task_id == closure.c.id)))
+        rows = list((await conn.execute(select(closure))).mappings())
         # The immediate parent supplies the delivery target but is not another
         # subtree to complete in this visit.
         if root["parent_task_id"]:
             parent = (await conn.execute(select(ordinary).where(
                 ordinary.c.id == root["parent_task_id"],
             ))).mappings().one()
-            rows.append(parent)
+            if parent["id"] not in {row["id"] for row in rows}:
+                rows.append(parent)
         ids = [row["id"] for row in rows]
         abandoned = await abandoned_archive_ids(conn, rows, project_id=root["project_id"])
-        completions = (await conn.execute(select(task_completion_records).where(
-            task_completion_records.c.task_id.in_(ids),
-        ).order_by(task_completion_records.c.completed_at.desc(),
-                   task_completion_records.c.id.desc()))).mappings()
-        latest = {}
-        for completion in completions:
-            latest.setdefault(completion["task_id"], completion)
         holds: dict[str, list[str]] = {task_id: [] for task_id in ids}
-        generations, rework = {}, {}
         containers = {row["parent_task_id"] for row in rows if row["parent_task_id"]}
         for task_id, label in await conn.execute(select(task_labels.c.task_id,
                                                       task_labels.c.label).where(
@@ -206,16 +225,11 @@ class EpicGraphReader:
         for task_id, key, value in await conn.execute(select(
             task_metadata.c.task_id, task_metadata.c.key, task_metadata.c.value,
         ).where(task_metadata.c.task_id.in_(ids),
-                task_metadata.c.key.in_(("manual_pause", "container",
-                                        DEVELOPMENT_COMPLETION_ID_KEY, INTEGRATION_REWORK_AT_KEY)))):
+                task_metadata.c.key.in_(("manual_pause", "container")))):
             if key == "manual_pause":
                 holds[task_id].append("manual_pause")
             elif key == "container" and json.loads(value) is True:
                 containers.add(task_id)
-            elif key == DEVELOPMENT_COMPLETION_ID_KEY:
-                generations[task_id] = json.loads(value)
-            elif key == INTEGRATION_REWORK_AT_KEY:
-                rework[task_id] = value
         for task_id, gate_id in await conn.execute(select(task_gates.c.task_id, gates.c.id)
                                                   .join(gates, gates.c.id == task_gates.c.gate_id)
                                                   .where(task_gates.c.task_id.in_(ids),
@@ -223,22 +237,12 @@ class EpicGraphReader:
             holds[task_id].append("gate:" + gate_id)
         nodes = []
         default_ref = "refs/heads/" + repository["default_branch"].removeprefix("refs/heads/")
+        requests = await load_delivery_requests(
+            self.db, ids, repository_id=repository["id"], target_ref=default_ref,
+            conn=conn, reduced=True,
+        )
         for row in rows:
-            completion = latest.get(row["id"])
-            generation = generations.get(row["id"])
-            if completion and (
-                generation and generation != completion["id"]
-                or not completion_after_rework(completion["completed_at"], rework.get(row["id"]))
-            ):
-                completion = None
-            request = DeliveryRequest(
-                project_id=row["project_id"], repository_id=row["repo_id"] or repository["id"],
-                target_ref=default_ref, task_id=row["id"], task_version=row["updated_at"],
-                legacy_generation=row["legacy_completion_id"], branch_name=row["branch_name"],
-                completion_id=completion["id"] if completion else generation,
-                completed_at=completion["completed_at"] if completion else None,
-                task_status=row["status"], claim_epoch=row["claim_epoch"], archived=row["archived"],
-            )
+            request = requests[row["id"]]
             required = row["id"] not in abandoned and (
                 await self.required_on(conn, row) if self.required_on else True
             )
@@ -286,6 +290,36 @@ class EpicReadinessEvaluator:
         if target.observation.error or not target.target_oid:
             return EpicReadiness(graph, task_id, "unknown", blockers=(
                 (task_id, target.observation.error or "missing_target"),))
+        for prerequisite_id in graph.authorization(task_id):
+            prerequisite = next((item for item in graph.nodes
+                                 if item.task_id == prerequisite_id), None)
+            if prerequisite is None:
+                unknown = True
+                blockers.append((prerequisite_id, "authorization_missing"))
+                continue
+            if prerequisite.holds:
+                held = True
+                blockers.extend((prerequisite_id, reason) for reason in prerequisite.holds)
+            prerequisite_readiness = None
+            if prerequisite.container:
+                prerequisite_readiness = await self.evaluate(graph, snapshot,
+                                                             task_id=prerequisite_id)
+                nested.append(prerequisite_readiness)
+                if not prerequisite_readiness.ready:
+                    blockers.append((prerequisite_id, "prerequisite_" + prerequisite_readiness.state))
+                    unknown |= prerequisite_readiness.state == "unknown"
+                    held |= prerequisite_readiness.state == "held"
+                    rejected |= prerequisite_readiness.state == "rejected"
+            proof = await target.strict_is_delivered(
+                replace(prerequisite.request, target_ref=node.branch_ref),
+                source_base=prerequisite.source_base,
+            )
+            sources.append(proof)
+            if prerequisite_readiness and proof.source_oid != prerequisite_readiness.head_sha:
+                blockers.append((prerequisite_id, "prerequisite_source_changed"))
+            if not proof.satisfied:
+                unknown |= proof.state == DeliveryState.UNKNOWN
+                blockers.append((prerequisite_id, proof.reason))
         for child in graph.children(task_id):
             if child.holds:
                 held = True
@@ -301,11 +335,11 @@ class EpicReadinessEvaluator:
             if child.request.task_status != "COMPLETED":
                 blockers.append((child.task_id, "work_" + child.request.task_status.lower()))
                 continue
-            proof = await target.is_delivered(replace(child.request, target_ref=node.branch_ref),
-                                              source_base=child.source_base)
+            proof = await target.strict_is_delivered(
+                replace(child.request, target_ref=node.branch_ref), source_base=child.source_base)
             sources.append(proof)
             if proof.state not in {
-                DeliveryState.CONTAINED, DeliveryState.NO_CHANGE, DeliveryState.NO_ARTIFACT,
+                DeliveryState.CONTAINED, DeliveryState.NOT_APPLICABLE,
             }:
                 blockers.append((child.task_id, proof.reason))
                 unknown |= proof.state == DeliveryState.UNKNOWN
@@ -424,14 +458,14 @@ class EpicReadinessEvaluator:
         if node.parent_id and readiness.graph.node(node.parent_id).holds:
             return {"success": False, "outcome": "held"}
         target = snapshot.for_target(target_ref)
-        proof = await target.is_delivered(replace(node.request, target_ref=target_ref),
-                                          source_base=node.source_base)
+        proof = await target.strict_is_delivered(replace(node.request, target_ref=target_ref),
+                                                source_base=node.source_base)
         if proof.state == DeliveryState.UNKNOWN:
             return {"success": False, "outcome": "unknown", "reason": proof.reason}
         if not await target.observation.is_fresh():
             return {"success": False, "outcome": "changed"}
         if proof.state in {
-            DeliveryState.CONTAINED, DeliveryState.NO_CHANGE, DeliveryState.NO_ARTIFACT,
+            DeliveryState.CONTAINED, DeliveryState.NOT_APPLICABLE,
         }:
             return {"success": True, "outcome": "delivered"}
         if proof.source_oid != readiness.head_sha:
