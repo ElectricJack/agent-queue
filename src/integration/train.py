@@ -881,15 +881,39 @@ class IntegrationTrain:
                 "reason": "red candidate has no identifiable failing required checks",
             }), result)
         _progress("compare_target_baseline")
+        baseline_sha, baseline_ref = observation.target_sha, None
+        if batch.epic_refresh:
+            # The epic can itself have introduced these failures. Only the
+            # frozen default input can establish that a refresh failure already
+            # exists on the default branch; never substitute its later head.
+            (default_member,) = members
+            baseline_sha = default_member.source_sha
+            repo = await lane.service.gitops.repository(batch)
+            baseline_ref = "refs/heads/" + repo.default_branch.removeprefix("refs/heads/")
         baseline = await self.baseline.verdict(
-            batch, candidate=result, target_sha=observation.target_sha, checks=checks,
+            batch, candidate=result, target_sha=baseline_sha, checks=checks,
+            target_ref=baseline_ref,
         )
         if baseline.repair:
             visit = await self._repair(
                 target, lane, batch, members, observation, result,
                 brief=red_brief(baseline, head.sha, candidate=result),
             )
-            return replace(visit, detail={**(visit.detail or {}), **baseline.detail()})
+            detail = {**(visit.detail or {}), **baseline.detail()}
+            if batch.epic_refresh and baseline.repairable:
+                detail.update(
+                    blocker="epic_refresh_checks_failed",
+                    reason="the refresh candidate fails required checks that pass on its "
+                           "frozen default-branch input",
+                    supervisor_action=(
+                        f"Inspect and repair refresh candidate {head.sha} for batch {batch.id}; "
+                        f"baseline {baseline_ref} at {baseline_sha} passes "
+                        f"{', '.join(baseline.repairable)}. Publication requires trusted checks "
+                        "and attestation on the exact candidate. To abandon the refresh, use "
+                        f"aq integration abort-batch {batch.id} --apply --reason REASON."
+                    ),
+                )
+            return replace(visit, detail=detail)
         sync = None
         if target.kind == "epic" and baseline.state == "pre_existing" and lane.sync_default_branch:
             _progress("verify_default_branch")

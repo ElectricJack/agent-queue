@@ -319,6 +319,16 @@ class OrdinaryRepairService:
         decision = (f"Choose eject for a member of batch {batch_id}, or abort-batch for the "
                     "whole batch. The train still observes the candidate and clears this "
                     "escalation if it becomes green.")
+        choices = ["eject", "abort-batch"]
+        if batch_id.startswith("train-epic-refresh-"):
+            decision = (
+                f"Repair epic refresh candidate {head_sha} for batch {batch_id}, retaining "
+                "its frozen default-branch input, or abandon the refresh with "
+                f"aq integration abort-batch {batch_id} --apply --reason REASON. "
+                "Publication requires trusted checks and attestation on the exact candidate; "
+                "the train clears this escalation when the candidate becomes green."
+            )
+            choices = ["repair", "abort-batch"]
         incident, created = await self.db.create_escalation(conn=conn,
             id=incident_id, project_id=batch["project_id"], source_kind="integration_repair",
             source_identity=batch_id, incident_key=f"repair-exhausted:{batch_id}",
@@ -327,7 +337,7 @@ class OrdinaryRepairService:
             investigation=(f"{batch['repair_attempt_count']} ordinary repairs were filed "
                            f"({policy.primary_attempts} primary, {policy.debug_attempts} debug). "
                            f"Candidate: {head_sha}; target: {batch['target_ref']}."),
-            decision_requested=decision, choices=["eject", "abort-batch"], severity="high",
+            decision_requested=decision, choices=choices, severity="high",
             now=now,
         )
         if not created:

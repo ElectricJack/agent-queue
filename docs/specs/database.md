@@ -2621,6 +2621,17 @@ the cache has a final verdict. A rerun can supersede that verdict without moving
 the target SHA; a stale red must never suppress repair after the target turns green.
 An undecided target still receives a request before that refresh.
 
+For a `train-epic-refresh-` batch, compare against the default-branch SHA in
+its single frozen member, using the repository's default ref. The epic's own
+red checks cannot establish a pre-existing default-branch failure. Later default
+commits do not replace this frozen baseline. A check the default passes remains
+repairable even after the repair budget is exhausted; it never permits red
+candidate publication. Status names the default baseline and the supervisor's
+action to repair the refresh candidate or abort the batch. Exhaustion sends one
+supervisor incident with those actions; ejecting the frozen default input is
+not a recovery action for a refresh. Publication still needs trusted checks and
+attestation on the exact candidate.
+
 ### Table: `integration_batch_members`
 
 The sealed, ordered members of a batch.  Append-only: the
