@@ -360,6 +360,16 @@ used 961 Git commands in 2.864 seconds; the warm pass used zero commands with
 - `aq integration reverify-epic EPIC_ID` previews aggregate verification for a completed epic. Apply with `--apply --head HEAD_SHA --reason REASON` to request one bounded train visit, including when the old owner is released. The result names the actual visit state and blockers; `visited` does not mean checks or review passed. Read the [control specification](../specs/design/epic-aggregate-reverification.md) for the operator handoff.
 - `aq integration record-root-noop ROOT_TASK_ID` previews a no-artifact completion for an unheld no-code root; apply requires `--apply --head HEAD_SHA --reason REASON`.
 
+Completed root epics receive ordinary aggregate train visits automatically,
+including after child origins retire. They do not depend on a parent integration
+run. A missing root origin stays visible as a readiness blocker. Implementation
+settlement alone does not display delivery as complete: the epic waits for
+aggregate verification or reports unavailable delivery evidence. Both
+`integration.completed_undelivered` and `stall.sweep` report completed root
+branches outside the default branch even when a PR, batch or disposition
+accounts for the pending work. The diagnostic clears when the branch tip is
+contained; an unreadable ancestry result remains unknown.
+
 Reverification apply also retires the completed epic's own detached `worker`
 reservation under its branch fence. The reservation must have no session,
 workspace or unexpired lease. Preview leaves it intact; live writers, other
