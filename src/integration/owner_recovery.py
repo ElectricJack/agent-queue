@@ -43,7 +43,9 @@ emit ``integration.owner_recovery_refused``; a refusal repeating the latest
 recorded reason within :data:`REFUSAL_THROTTLE_SECONDS` is not recorded again,
 and the task hears about each refusal reason once.  A dry run pushes,
 detaches and records nothing and lists what it would do in
-``evidence["planned"]``.
+``evidence["planned"]``.  ``no_push`` releases without publishing: nothing is
+proved, snapshotted or pushed, every unpublished source stays where it is
+(listed in ``evidence["unpublished"]``) and the row's checkout is retained.
 
 There is no force: a row the check refuses stays refused, with its reason.
 
@@ -312,9 +314,13 @@ class OwnerRecovery:
     # -- public ---------------------------------------------------------------
 
     async def recover(
-        self, owner_row_id: str, *, principal: str, dry_run: bool = False
+        self, owner_row_id: str, *, principal: str, dry_run: bool = False, no_push: bool = False,
     ) -> RecoveryOutcome:
-        """Run the check on one owner row and release it when it passes."""
+        """Run the check on one owner row and release it when it passes.
+
+        *no_push* releases without publishing: every unpublished source is
+        left where it is and listed in ``evidence["unpublished"]``.
+        """
         row = await self._load(owner_row_id)
         if row is None:
             return RecoveryOutcome(
@@ -343,7 +349,9 @@ class OwnerRecovery:
             session = await self._prove_writer_gone(row, evidence)
             # Preservation commits carry the owning project's identity.
             with commit_identity(await self._row_identity(row)):
-                plan = await self._secure_branch(row, evidence, dry_run=dry_run)
+                plan = await self._secure_branch(
+                    row, evidence, dry_run=dry_run, no_push=no_push,
+                )
             outcome = PRESERVED_AND_RELEASED if plan.preserved else RELEASED
             if dry_run:
                 return RecoveryOutcome(row["id"], outcome, None, evidence, True)
@@ -356,7 +364,8 @@ class OwnerRecovery:
             return result
 
     async def recover_many(
-        self, owner_row_ids: list[str], *, principal: str, dry_run: bool = False
+        self, owner_row_ids: list[str], *, principal: str, dry_run: bool = False,
+        no_push: bool = False,
     ) -> list[RecoveryOutcome]:
         """:meth:`recover` each row in turn.
 
@@ -367,7 +376,9 @@ class OwnerRecovery:
         for owner_row_id in owner_row_ids:
             try:
                 results.append(
-                    await self.recover(owner_row_id, principal=principal, dry_run=dry_run)
+                    await self.recover(
+                        owner_row_id, principal=principal, dry_run=dry_run, no_push=no_push,
+                    )
                 )
             except Exception:
                 logger.warning("Owner recovery of %s failed", owner_row_id, exc_info=True)
@@ -593,7 +604,8 @@ class OwnerRecovery:
     # -- step 3: the branch is safe -------------------------------------------
 
     async def _secure_branch(
-        self, row: dict[str, Any], evidence: dict[str, Any], *, dry_run: bool
+        self, row: dict[str, Any], evidence: dict[str, Any], *, dry_run: bool,
+        no_push: bool = False,
     ) -> _Plan:
         branch = row["ref"].removeprefix("refs/heads/")
         checkout, default_branch, row_path, repository_url = await self._checkout_for(row)
@@ -727,6 +739,25 @@ class OwnerRecovery:
             ):
                 preserve.append(("commit", None, local_sha))
 
+            if preserve and no_push:
+                # The caller declined publication, so no source needs proving:
+                # nothing is snapshotted or pushed, and the row's checkout is
+                # retained so allocation cannot reset what stays behind.
+                evidence["unpublished"] = []
+                for kind, path, sha in preserve:
+                    # A dirty checkout's sha is its HEAD; the changes stay on disk.
+                    item = {"source": _source_label(kind, path, branch), "sha": sha}
+                    evidence["unpublished"].append(item)
+                    planned.append({"action": "skip_preserve", "reason": "no_push", **item})
+                    if path is not None and row_path is not None and _same_path(path, row_path):
+                        if not retain_checkout:
+                            planned.append({
+                                "action": "retain_checkout", "worktree": path,
+                                "reason": "no_push", "disable_workspace": True,
+                            })
+                        retain_checkout = True
+                preserve = []
+
             # Prove every source before taking a snapshot, pushing or detaching.
             # Slot reuse must never lend another task's HEAD to this branch.
             if preserve and row["owner_role"] in ORIGIN_PROVEN_ROLES:
@@ -747,13 +778,7 @@ class OwnerRecovery:
                         {
                             "action": "push",
                             "ref": (f"{RECOVERY_PREFIX}{row['id']}/{sha}" if diverged else branch),
-                            "source": (
-                                f"snapshot of {path}"
-                                if kind == "snapshot"
-                                else f"HEAD of {path}"
-                                if path
-                                else f"local branch {branch}"
-                            ),
+                            "source": _source_label(kind, path, branch),
                             "sha": None if kind == "snapshot" else sha,
                         }
                     )
@@ -1391,11 +1416,25 @@ async def _project_for(conn, row: dict[str, Any]) -> str | None:
     return integrating[0] if len(integrating) == 1 else None
 
 
+def _source_label(kind: str, path: str | None, branch: str) -> str:
+    if kind == "snapshot":
+        return f"snapshot of {path}"
+    return f"HEAD of {path}" if path else f"local branch {branch}"
+
+
 def _same_path(a: str, b: str) -> bool:
     return os.path.realpath(a) == os.path.realpath(b)
 
 
 def _release_comment(row: dict[str, Any], result: RecoveryOutcome, principal: str) -> str:
+    unpublished = result.evidence.get("unpublished")
+    if unpublished:
+        sources = ", ".join(f"{item['source']} (`{item['sha']}`)" for item in unpublished)
+        return (
+            f"Integration owner `{row['id']}` of `{row['ref']}` was released by owner recovery "
+            f"({principal}) without publishing (no push): {result.outcome}. Its writer is "
+            f"gone; unpublished work was left in place: {sources}."
+        )
     body = (
         f"Integration owner `{row['id']}` of `{row['ref']}` was released by owner recovery "
         f"({principal}): {result.outcome}. Its writer is gone and the branch is safe on origin"

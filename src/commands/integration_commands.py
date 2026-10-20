@@ -1804,7 +1804,8 @@ class IntegrationCommandsMixin:
         if request.owner_row_id is not None and not owner_row_ids:
             owner_row_ids = [request.owner_row_id]
         outcomes = await recovery.recover_many(
-            owner_row_ids, principal=principal, dry_run=request.dry_run
+            owner_row_ids, principal=principal, dry_run=request.dry_run,
+            no_push=request.no_push,
         )
         serialized = [outcome.to_dict() for outcome in outcomes]
         if not serialized:

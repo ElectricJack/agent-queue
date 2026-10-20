@@ -14669,6 +14669,11 @@
             "default": true,
             "title": "Dry Run",
             "type": "boolean"
+          },
+          "no_push": {
+            "default": false,
+            "title": "No Push",
+            "type": "boolean"
           }
         },
         "title": "IntegrationReleaseOwnerArgs",

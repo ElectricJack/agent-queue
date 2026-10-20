@@ -654,6 +654,82 @@ async def test_missing_task_ref_never_preserves_a_predecessors_detached_head(
 
 
 @pytest.mark.parametrize("dry_run", [False, True])
+async def test_a_foreign_head_in_the_rows_slot_is_never_pushed_to_its_branch(env, dry_run):
+    """sharp-nexus-43: its slot was reused and held nimble-rapids-30's unpublished commit."""
+    published = env.branch("aq/owner")
+    foreign = env.branch("aq/foreign", push=False)
+    await env.task("owner")
+    slot = await env.slot("slot", "aq/owner", locked_by_task_id="owner")
+    sentinel = WorktreeSlotManager.read_sentinel(slot)
+    sentinel.task_id, sentinel.branch = "foreign", "aq/foreign"
+    WorktreeSlotManager.write_sentinel(slot, sentinel)
+    git(slot, "switch", "--detach", foreign)
+    await env.session("writer", work_dir=slot)
+    await env.owner("owner", "aq/owner", "owner", session_id="writer", workspace_id="ws-slot")
+
+    result = await env.service().recover("owner", principal="supervisor", dry_run=dry_run)
+
+    assert result.outcome == "released", result
+    planned = result.evidence["planned"]
+    assert {"action": "skip_preserve", "reason": "sentinel_mismatch",
+            "worktree": str(slot)} in planned
+    assert {"action": "retain_checkout", "worktree": str(slot),
+            "reason": "sentinel_mismatch", "disable_workspace": True} in planned
+    assert not [step for step in planned if step["action"] == "push"]
+    assert remote_sha(env.origin, "aq/owner") == published
+    assert remote_sha(env.origin, "aq/foreign") is None
+    assert git(env.origin, "for-each-ref", "refs/heads/aq/recovery/") == ""
+    assert git(slot, "rev-parse", "HEAD") == foreign
+    assert (await env.db.get_workspace("ws-slot")).enabled is dry_run
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+@pytest.mark.parametrize("sentinel_owner", ["owner", "foreign"])
+async def test_no_push_releases_and_leaves_unpublished_work_in_place(
+    env, dry_run, sentinel_owner,
+):
+    tip = env.branch("aq/owner", extra=1)
+    published = remote_sha(env.origin, "aq/owner")
+    await env.task("owner")
+    slot = await env.slot("slot", "aq/owner", locked_by_task_id="owner")
+    if sentinel_owner != "owner":
+        # Unprovable work refuses a publishing release; --no-push needs no proof.
+        sentinel = WorktreeSlotManager.read_sentinel(slot)
+        sentinel.task_id = sentinel_owner
+        WorktreeSlotManager.write_sentinel(slot, sentinel)
+    (slot / "dirty.txt").write_text("keep my work\n")
+    await env.session("writer", work_dir=slot)
+    await env.owner("owner", "aq/owner", "owner", session_id="writer", workspace_id="ws-slot")
+    before = git(slot, "status", "--porcelain")
+
+    result = await env.service().recover(
+        "owner", principal="human:local-operator", dry_run=dry_run, no_push=True,
+    )
+
+    assert (result.outcome, result.reason) == ("released", None), result
+    unpublished = {"source": f"snapshot of {slot}", "sha": tip}
+    assert result.evidence["unpublished"] == [unpublished]
+    planned = result.evidence["planned"]
+    assert {"action": "skip_preserve", "reason": "no_push", **unpublished} in planned
+    assert {"action": "retain_checkout", "worktree": str(slot), "reason": "no_push",
+            "disable_workspace": True} in planned
+    assert not [step for step in planned if step["action"] == "push"]
+    assert remote_sha(env.origin, "aq/owner") == published
+    assert git(env.origin, "for-each-ref", "refs/heads/aq/recovery/") == ""
+    assert git(env.base, "rev-parse", "aq/owner") == tip
+    assert git(slot, "rev-parse", "HEAD") == tip
+    assert git(slot, "status", "--porcelain") == before
+    assert (await env.db.get_workspace("ws-slot")).enabled is dry_run
+    row = await env.row("owner")
+    assert row["handoff_state"] == ("attached" if dry_run else "released")
+    if not dry_run:
+        assert detached(slot)
+        assert result.evidence["workspace_disabled"] is True
+        [comment] = [c for c in await env.comments("owner") if "without publishing" in c]
+        assert f"snapshot of {slot} (`{tip}`)" in comment
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
 @pytest.mark.parametrize("broken", [
     "origin", "ancestor", "claim", "date", "sentinel", "assignment", "head",
 ])
@@ -1757,6 +1833,11 @@ async def test_release_owner_command_previews_by_default_without_runtime_couplin
     assert (await env.db.get_task("producer")).status is TaskStatus.IN_PROGRESS
     assert (await env.db.get_workspace("ws-slot")).locked_by_task_id == "producer"
     assert await env.audits("owner") == []
+    unpushed = await handler.execute(
+        "integration_release_owner", {"task_id": "producer", "no_push": True},
+    )
+    assert unpushed["outcome"] == "released", unpushed
+    assert unpushed["outcomes"][0]["dry_run"] is True
     applied = await handler.execute(
         "integration_release_owner", {"task_id": "producer", "dry_run": False},
     )

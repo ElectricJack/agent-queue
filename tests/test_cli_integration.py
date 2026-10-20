@@ -35,6 +35,23 @@ def test_release_owner_defaults_to_preview(target, flags):
     assert args[target[0][2:].replace("-", "_")] == target[1]
 
 
+@pytest.mark.parametrize("flags", [[], ["--apply"]])
+def test_release_owner_no_push_is_forwarded_only_when_set(flags):
+    from src.cli.app import cli
+
+    client = _client({"success": True, "outcome": "released"})
+    with patch("src.cli.integration._get_client", return_value=client):
+        result = CliRunner().invoke(
+            cli, ["integration", "release-owner", "--task-id", "task", "--no-push", *flags],
+        )
+        assert result.exit_code == 0, result.output
+        assert client.execute.call_args.args[1] == {
+            "dry_run": not flags, "no_push": True, "task_id": "task",
+        }
+        CliRunner().invoke(cli, ["integration", "release-owner", "--task-id", "task", *flags])
+    assert "no_push" not in client.execute.call_args.args[1]
+
+
 def test_release_owner_refuses_conflicting_preview_and_apply_flags():
     from src.cli.app import cli
 
