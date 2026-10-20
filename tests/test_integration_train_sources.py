@@ -1615,8 +1615,10 @@ async def test_source_ci_binding_never_contradicts_a_declared_order(world):
 
     outcome = await train.visit(MAIN)
     assert outcome.state == "blocked" and outcome.batch_id is None, outcome
-    [blocker] = outcome.detail["blockers"]
-    assert (blocker["code"], blocker["task_id"]) == ("undeclared_stack_base", "repair")
+    blockers = {(b["code"], b["task_id"]): b for b in outcome.detail["blockers"]}
+    assert set(blockers) == {("undeclared_stack_base", "repair"),
+                             ("prerequisite_pending", "source")}
+    assert blockers["prerequisite_pending", "source"]["prerequisite_task_ids"] == ["repair"]
     assert git(origin.url, "rev-parse", "refs/heads/main") == base
 
 
@@ -6830,17 +6832,17 @@ async def test_completed_child_conflict_files_one_repair_and_exposes_epic_blocke
 
 
 @pytest.mark.parametrize("guard,code", [
-    ("origin", "source_identity_unavailable"),
+    ("request", "source_identity_unavailable"),
     ("stack", "stack_source_changed"),
     ("prerequisite", "prerequisite_pending"),
 ])
 async def test_unadmitted_conflicting_child_exposes_blocker_instead_of_idle(world, monkeypatch, guard, code):
     source, target = await conflicting_child(world)
-    if guard == "origin":
-        async with world.db.immediate() as conn:
-            await conn.execute(update(task_branch_origins).where(
-                task_branch_origins.c.task_id == "child",
-            ).values(base_sha="unknown"))
+    if guard == "request":
+        # A retained source cannot authorize admission without a current
+        # delivery request. Keep the materialized origin immutable.
+        monkeypatch.setattr("src.integration.train_sources.load_delivery_requests",
+                            AsyncMock(return_value={}))
     elif guard == "stack":
         # The source must contain its recorded stack, even if the DB identity
         # is current. An admission refusal never authorizes a conflict fixer.
