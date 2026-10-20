@@ -9956,6 +9956,351 @@
     },
     "src/orchestrator/task_checkpoint.py::salvage_checkpoint": {
       "reason": "Preserves best-effort patch using an isolated index with fresh repository/branch validation; explicit partial evidence grants no restoration or ref publication authority."
+    },
+    "dashboard/src/pages/project/PolicyProfiles.tsx::export function PolicyDialog({ projectId, mode = \"import\", initialProfile = \"exported\", onClose }: {": {
+      "reason": "Integration-aware admission, configuration, lifecycle or delivery dependency in the assembled epic. Conservatively charges the complete shared definition, including generic parts; no exclusion, fixed baseline or budget change."
+    },
+    "src/api/scope.py::fidelity_review_task_for_session": {
+      "reason": "Integration-aware admission, configuration, lifecycle or delivery dependency in the assembled epic. Conservatively charges the complete shared definition, including generic parts; no exclusion, fixed baseline or budget change."
+    },
+    "src/api/scope.py::held_task_for_session": {
+      "reason": "Integration-aware admission, configuration, lifecycle or delivery dependency in the assembled epic. Conservatively charges the complete shared definition, including generic parts; no exclusion, fixed baseline or budget change."
+    },
+    "src/asks/batch_scope.py::scope_ask": {
+      "reason": "Integration-aware admission, configuration, lifecycle or delivery dependency in the assembled epic. Conservatively charges the complete shared definition, including generic parts; no exclusion, fixed baseline or budget change."
+    },
+    "src/asks/batch_scope.py::scope_source": {
+      "reason": "Integration-aware admission, configuration, lifecycle or delivery dependency in the assembled epic. Conservatively charges the complete shared definition, including generic parts; no exclusion, fixed baseline or budget change."
+    },
+    "src/asks/operations.py::operation": {
+      "reason": "Integration-aware admission, configuration, lifecycle or delivery dependency in the assembled epic. Conservatively charges the complete shared definition, including generic parts; no exclusion, fixed baseline or budget change."
+    },
+    "src/claim_timing.py::claim_phase": {
+      "reason": "Integration-aware admission, configuration, lifecycle or delivery dependency in the assembled epic. Conservatively charges the complete shared definition, including generic parts; no exclusion, fixed baseline or budget change."
+    },
+    "src/claim_timing.py::claim_selection": {
+      "reason": "Integration-aware admission, configuration, lifecycle or delivery dependency in the assembled epic. Conservatively charges the complete shared definition, including generic parts; no exclusion, fixed baseline or budget change."
+    },
+    "src/claim_timing.py::current_claim_timing": {
+      "reason": "Integration-aware admission, configuration, lifecycle or delivery dependency in the assembled epic. Conservatively charges the complete shared definition, including generic parts; no exclusion, fixed baseline or budget change."
+    },
+    "src/cli/auto_commands.py::HANDCRAFTED_COVERAGE['integration_clear_retained_recovery']": {
+      "reason": "Integration-aware admission, configuration, lifecycle or delivery dependency in the assembled epic. Conservatively charges the complete shared definition, including generic parts; no exclusion, fixed baseline or budget change."
+    },
+    "src/cli/auto_commands.py::HANDCRAFTED_COVERAGE['integration_recover_completed_container']": {
+      "reason": "Integration-aware admission, configuration, lifecycle or delivery dependency in the assembled epic. Conservatively charges the complete shared definition, including generic parts; no exclusion, fixed baseline or budget change."
+    },
+    "src/cli/auto_commands.py::HANDCRAFTED_COVERAGE['integration_supersede_completion']": {
+      "reason": "Integration-aware admission, configuration, lifecycle or delivery dependency in the assembled epic. Conservatively charges the complete shared definition, including generic parts; no exclusion, fixed baseline or budget change."
+    },
+    "src/cli/client.py::_COMMAND_TIMEOUTS['integration_recover_completed_container']": {
+      "reason": "Integration-aware admission, configuration, lifecycle or delivery dependency in the assembled epic. Conservatively charges the complete shared definition, including generic parts; no exclusion, fixed baseline or budget change."
+    },
+    "src/cli/client.py::_COMMAND_TIMEOUTS['integration_release_owner']": {
+      "reason": "Integration-aware admission, configuration, lifecycle or delivery dependency in the assembled epic. Conservatively charges the complete shared definition, including generic parts; no exclusion, fixed baseline or budget change."
+    },
+    "src/cli/client.py::_COMMAND_TIMEOUTS['integration_settle_batch']": {
+      "reason": "Integration-aware admission, configuration, lifecycle or delivery dependency in the assembled epic. Conservatively charges the complete shared definition, including generic parts; no exclusion, fixed baseline or budget change."
+    },
+    "src/commands/claim_commands.py::ClaimCommandsMixin._claim_request": {
+      "reason": "Integration-aware admission, configuration, lifecycle or delivery dependency in the assembled epic. Conservatively charges the complete shared definition, including generic parts; no exclusion, fixed baseline or budget change."
+    },
+    "src/commands/claim_commands.py::_retryable_preparation_error": {
+      "reason": "Integration-aware admission, configuration, lifecycle or delivery dependency in the assembled epic. Conservatively charges the complete shared definition, including generic parts; no exclusion, fixed baseline or budget change."
+    },
+    "src/commands/contracts/ask.py::GLOBAL_CONTROL_COMMANDS": {
+      "reason": "Integration-aware admission, configuration, lifecycle or delivery dependency in the assembled epic. Conservatively charges the complete shared definition, including generic parts; no exclusion, fixed baseline or budget change."
+    },
+    "src/commands/fidelity_review_commands.py::FidelityReviewCommandsMixin._cmd_task_batch_review_record": {
+      "reason": "Integration-aware admission, configuration, lifecycle or delivery dependency in the assembled epic. Conservatively charges the complete shared definition, including generic parts; no exclusion, fixed baseline or budget change."
+    },
+    "src/commands/fidelity_review_commands.py::import from src.integration.outbox import enqueue_batch_event": {
+      "reason": "Integration-aware admission, configuration, lifecycle or delivery dependency in the assembled epic. Conservatively charges the complete shared definition, including generic parts; no exclusion, fixed baseline or budget change."
+    },
+    "src/commands/policy_commands.py::PolicyCommandsMixin._cmd_policy_apply": {
+      "reason": "Integration-aware admission, configuration, lifecycle or delivery dependency in the assembled epic. Conservatively charges the complete shared definition, including generic parts; no exclusion, fixed baseline or budget change."
+    },
+    "src/commands/policy_commands.py::PolicyCommandsMixin._policy_export_bundle": {
+      "reason": "Integration-aware admission, configuration, lifecycle or delivery dependency in the assembled epic. Conservatively charges the complete shared definition, including generic parts; no exclusion, fixed baseline or budget change."
+    },
+    "src/commands/policy_commands.py::PolicyCommandsMixin._policy_files": {
+      "reason": "Integration-aware admission, configuration, lifecycle or delivery dependency in the assembled epic. Conservatively charges the complete shared definition, including generic parts; no exclusion, fixed baseline or budget change."
+    },
+    "src/commands/project_commands.py::ProjectCommandsMixin._cmd_repair_repository_checkout": {
+      "reason": "Integration-aware admission, configuration, lifecycle or delivery dependency in the assembled epic. Conservatively charges the complete shared definition, including generic parts; no exclusion, fixed baseline or budget change."
+    },
+    "src/commands/proposal_commands.py::TaskProposalCommandsMixin._create_ingest_batch": {
+      "reason": "Integration-aware admission, configuration, lifecycle or delivery dependency in the assembled epic. Conservatively charges the complete shared definition, including generic parts; no exclusion, fixed baseline or budget change."
+    },
+    "src/commands/proposal_commands.py::TaskProposalCommandsMixin._update_held_batch": {
+      "reason": "Integration-aware admission, configuration, lifecycle or delivery dependency in the assembled epic. Conservatively charges the complete shared definition, including generic parts; no exclusion, fixed baseline or budget change."
+    },
+    "src/commands/proposal_commands.py::import from src.integration.outbox import enqueue_integration_event": {
+      "reason": "Integration-aware admission, configuration, lifecycle or delivery dependency in the assembled epic. Conservatively charges the complete shared definition, including generic parts; no exclusion, fixed baseline or budget change."
+    },
+    "src/commands/session_commands.py::SessionCommandsMixin._close_task_ordinary": {
+      "reason": "Integration-aware admission, configuration, lifecycle or delivery dependency in the assembled epic. Conservatively charges the complete shared definition, including generic parts; no exclusion, fixed baseline or budget change."
+    },
+    "src/commands/session_commands.py::SessionCommandsMixin._cmd_session_sleep": {
+      "reason": "Integration-aware admission, configuration, lifecycle or delivery dependency in the assembled epic. Conservatively charges the complete shared definition, including generic parts; no exclusion, fixed baseline or budget change."
+    },
+    "src/commands/spec_ingest_commands.py::_batch_recovery_candidates": {
+      "reason": "Integration-aware admission, configuration, lifecycle or delivery dependency in the assembled epic. Conservatively charges the complete shared definition, including generic parts; no exclusion, fixed baseline or budget change."
+    },
+    "src/commands/spec_ingest_commands.py::_repair_batch_wakeup": {
+      "reason": "Integration-aware admission, configuration, lifecycle or delivery dependency in the assembled epic. Conservatively charges the complete shared definition, including generic parts; no exclusion, fixed baseline or budget change."
+    },
+    "src/commands/spec_ingest_commands.py::import from src.database.tables import archived_tasks, escalation_actions, ingest_batch_receipts, ingest_batches, integration_outbox, tasks": {
+      "reason": "Integration-aware admission, configuration, lifecycle or delivery dependency in the assembled epic. Conservatively charges the complete shared definition, including generic parts; no exclusion, fixed baseline or budget change."
+    },
+    "src/commands/spec_ingest_commands.py::import from src.integration.outbox import RETRY_EXHAUSTED_PREFIX, enqueue_batch_event": {
+      "reason": "Integration-aware admission, configuration, lifecycle or delivery dependency in the assembled epic. Conservatively charges the complete shared definition, including generic parts; no exclusion, fixed baseline or budget change."
+    },
+    "src/commands/task_changes.py::final_graph": {
+      "reason": "Integration-aware admission, configuration, lifecycle or delivery dependency in the assembled epic. Conservatively charges the complete shared definition, including generic parts; no exclusion, fixed baseline or budget change."
+    },
+    "src/commands/task_changes.py::normalize": {
+      "reason": "Integration-aware admission, configuration, lifecycle or delivery dependency in the assembled epic. Conservatively charges the complete shared definition, including generic parts; no exclusion, fixed baseline or budget change."
+    },
+    "src/commands/workspace_checkout_repair.py::import from src.commands.supervisor_authority import operator_or_global_supervisor": {
+      "reason": "Integration-aware admission, configuration, lifecycle or delivery dependency in the assembled epic. Conservatively charges the complete shared definition, including generic parts; no exclusion, fixed baseline or budget change."
+    },
+    "src/commands/workspace_checkout_repair.py::import from src.database.tables import integration_branch_owners, projects, sessions, workspaces": {
+      "reason": "Integration-aware admission, configuration, lifecycle or delivery dependency in the assembled epic. Conservatively charges the complete shared definition, including generic parts; no exclusion, fixed baseline or budget change."
+    },
+    "src/commands/workspace_checkout_repair.py::repair": {
+      "reason": "Integration-aware admission, configuration, lifecycle or delivery dependency in the assembled epic. Conservatively charges the complete shared definition, including generic parts; no exclusion, fixed baseline or budget change."
+    },
+    "src/config_secrets.py::is_secret_key": {
+      "reason": "Integration-aware admission, configuration, lifecycle or delivery dependency in the assembled epic. Conservatively charges the complete shared definition, including generic parts; no exclusion, fixed baseline or budget change."
+    },
+    "src/database/queries/blocked_state.py::BlockedStateMixin.delivery_failures": {
+      "reason": "Integration-aware admission, configuration, lifecycle or delivery dependency in the assembled epic. Conservatively charges the complete shared definition, including generic parts; no exclusion, fixed baseline or budget change."
+    },
+    "src/database/queries/blocked_state.py::delivery_landed": {
+      "reason": "Integration-aware admission, configuration, lifecycle or delivery dependency in the assembled epic. Conservatively charges the complete shared definition, including generic parts; no exclusion, fixed baseline or budget change."
+    },
+    "src/database/queries/blocked_state.py::import from src.database.tables import events, gates, projects, repos, task_completion_records, task_delivery_receipts, task_dependencies, task_gates, task_labels, task_metadata, tasks": {
+      "reason": "Integration-aware admission, configuration, lifecycle or delivery dependency in the assembled epic. Conservatively charges the complete shared definition, including generic parts; no exclusion, fixed baseline or budget change."
+    },
+    "src/database/queries/claim_queries.py::ClaimQueryMixin.claim_frontier_exclusions_many": {
+      "reason": "Integration-aware admission, configuration, lifecycle or delivery dependency in the assembled epic. Conservatively charges the complete shared definition, including generic parts; no exclusion, fixed baseline or budget change."
+    },
+    "src/database/queries/claim_queries.py::ClaimQueryMixin.claim_preparation_state": {
+      "reason": "Integration-aware admission, configuration, lifecycle or delivery dependency in the assembled epic. Conservatively charges the complete shared definition, including generic parts; no exclusion, fixed baseline or budget change."
+    },
+    "src/database/queries/claim_queries.py::ClaimQueryMixin.get_project_for_claim": {
+      "reason": "Integration-aware admission, configuration, lifecycle or delivery dependency in the assembled epic. Conservatively charges the complete shared definition, including generic parts; no exclusion, fixed baseline or budget change."
+    },
+    "src/database/queries/claim_queries.py::_CLAIM_STACK_ORIGIN": {
+      "reason": "Integration-aware admission, configuration, lifecycle or delivery dependency in the assembled epic. Conservatively charges the complete shared definition, including generic parts; no exclusion, fixed baseline or budget change."
+    },
+    "src/database/queries/claim_queries.py::_URGENT_OPERATION": {
+      "reason": "Integration-aware admission, configuration, lifecycle or delivery dependency in the assembled epic. Conservatively charges the complete shared definition, including generic parts; no exclusion, fixed baseline or budget change."
+    },
+    "src/database/queries/claim_queries.py::_URGENT_STAGE": {
+      "reason": "Integration-aware admission, configuration, lifecycle or delivery dependency in the assembled epic. Conservatively charges the complete shared definition, including generic parts; no exclusion, fixed baseline or budget change."
+    },
+    "src/database/queries/hierarchy_queries.py::CONTAINER_KEY": {
+      "reason": "Integration-aware admission, configuration, lifecycle or delivery dependency in the assembled epic. Conservatively charges the complete shared definition, including generic parts; no exclusion, fixed baseline or budget change."
+    },
+    "src/database/queries/hierarchy_queries.py::CONTAINER_VALUE": {
+      "reason": "Integration-aware admission, configuration, lifecycle or delivery dependency in the assembled epic. Conservatively charges the complete shared definition, including generic parts; no exclusion, fixed baseline or budget change."
+    },
+    "src/database/queries/ingest_batch_queries.py::get_batch": {
+      "reason": "Integration-aware admission, configuration, lifecycle or delivery dependency in the assembled epic. Conservatively charges the complete shared definition, including generic parts; no exclusion, fixed baseline or budget change."
+    },
+    "src/database/queries/ingest_batch_queries.py::live_digest": {
+      "reason": "Integration-aware admission, configuration, lifecycle or delivery dependency in the assembled epic. Conservatively charges the complete shared definition, including generic parts; no exclusion, fixed baseline or budget change."
+    },
+    "src/database/queries/ingest_batch_queries.py::members": {
+      "reason": "Integration-aware admission, configuration, lifecycle or delivery dependency in the assembled epic. Conservatively charges the complete shared definition, including generic parts; no exclusion, fixed baseline or budget change."
+    },
+    "src/database/queries/ingest_batch_queries.py::passing_receipt": {
+      "reason": "Integration-aware admission, configuration, lifecycle or delivery dependency in the assembled epic. Conservatively charges the complete shared definition, including generic parts; no exclusion, fixed baseline or budget change."
+    },
+    "src/database/queries/project_queries.py::ProjectQueryMixin.list_projects": {
+      "reason": "Integration-aware admission, configuration, lifecycle or delivery dependency in the assembled epic. Conservatively charges the complete shared definition, including generic parts; no exclusion, fixed baseline or budget change."
+    },
+    "src/database/queries/proposal_queries.py::detect_cycles": {
+      "reason": "Integration-aware admission, configuration, lifecycle or delivery dependency in the assembled epic. Conservatively charges the complete shared definition, including generic parts; no exclusion, fixed baseline or budget change."
+    },
+    "src/database/queries/session_queries.py::SessionQueryMixin.record_failed_preparation": {
+      "reason": "Integration-aware admission, configuration, lifecycle or delivery dependency in the assembled epic. Conservatively charges the complete shared definition, including generic parts; no exclusion, fixed baseline or budget change."
+    },
+    "src/database/queries/session_queries.py::import from src.database.tables import agent_profiles, agents, gates, integration_batches, integration_branch_owners, playbook_v2_runs, projects, sessions, task_branch_origins, task_integration_checkpoints, task_session_attempts, tasks, workspaces": {
+      "reason": "Integration-aware admission, configuration, lifecycle or delivery dependency in the assembled epic. Conservatively charges the complete shared definition, including generic parts; no exclusion, fixed baseline or budget change."
+    },
+    "src/database/queries/task_recovery_queries.py::TaskRecoveryQueryMixin._clear_stopped_recovery_assignment_on": {
+      "reason": "Integration-aware admission, configuration, lifecycle or delivery dependency in the assembled epic. Conservatively charges the complete shared definition, including generic parts; no exclusion, fixed baseline or budget change."
+    },
+    "src/database/queries/workspace_queries.py::WorkspaceQueryMixin.remove_missing_workspace_registration": {
+      "reason": "Integration-aware admission, configuration, lifecycle or delivery dependency in the assembled epic. Conservatively charges the complete shared definition, including generic parts; no exclusion, fixed baseline or budget change."
+    },
+    "src/doctor/stall_checks.py::_train_batch_findings": {
+      "reason": "Integration-aware admission, configuration, lifecycle or delivery dependency in the assembled epic. Conservatively charges the complete shared definition, including generic parts; no exclusion, fixed baseline or budget change."
+    },
+    "src/event_schemas.py::EVENT_SCHEMAS['integration.completed_container_checkpoint_recovered']": {
+      "reason": "Integration-aware admission, configuration, lifecycle or delivery dependency in the assembled epic. Conservatively charges the complete shared definition, including generic parts; no exclusion, fixed baseline or budget change."
+    },
+    "src/git/manager.py::_object_store_fingerprint": {
+      "reason": "Integration-aware admission, configuration, lifecycle or delivery dependency in the assembled epic. Conservatively charges the complete shared definition, including generic parts; no exclusion, fixed baseline or budget change."
+    },
+    "src/playbooks/artifact_store.py::index_playbook_sources": {
+      "reason": "Integration-aware admission, configuration, lifecycle or delivery dependency in the assembled epic. Conservatively charges the complete shared definition, including generic parts; no exclusion, fixed baseline or budget change."
+    },
+    "src/playbooks/definition.py::referenced_profile_ids": {
+      "reason": "Integration-aware admission, configuration, lifecycle or delivery dependency in the assembled epic. Conservatively charges the complete shared definition, including generic parts; no exclusion, fixed baseline or budget change."
+    },
+    "src/policy_profiles/integration.py::defaults": {
+      "reason": "Integration-aware admission, configuration, lifecycle or delivery dependency in the assembled epic. Conservatively charges the complete shared definition, including generic parts; no exclusion, fixed baseline or budget change."
+    },
+    "src/policy_profiles/integration.py::import from src.integration.models import HierarchicalIntegrationPolicy": {
+      "reason": "Integration-aware admission, configuration, lifecycle or delivery dependency in the assembled epic. Conservatively charges the complete shared definition, including generic parts; no exclusion, fixed baseline or budget change."
+    },
+    "src/policy_profiles/integration.py::import from src.policy_profiles.models import IntegrationSettings": {
+      "reason": "Integration-aware admission, configuration, lifecycle or delivery dependency in the assembled epic. Conservatively charges the complete shared definition, including generic parts; no exclusion, fixed baseline or budget change."
+    },
+    "src/policy_profiles/integration.py::portable": {
+      "reason": "Integration-aware admission, configuration, lifecycle or delivery dependency in the assembled epic. Conservatively charges the complete shared definition, including generic parts; no exclusion, fixed baseline or budget change."
+    },
+    "src/policy_profiles/integration.py::settings": {
+      "reason": "Integration-aware admission, configuration, lifecycle or delivery dependency in the assembled epic. Conservatively charges the complete shared definition, including generic parts; no exclusion, fixed baseline or budget change."
+    },
+    "src/policy_profiles/integration.py::updates": {
+      "reason": "Integration-aware admission, configuration, lifecycle or delivery dependency in the assembled epic. Conservatively charges the complete shared definition, including generic parts; no exclusion, fixed baseline or budget change."
+    },
+    "src/policy_profiles/models.py::IntegrationSettings": {
+      "reason": "Integration-aware admission, configuration, lifecycle or delivery dependency in the assembled epic. Conservatively charges the complete shared definition, including generic parts; no exclusion, fixed baseline or budget change."
+    },
+    "src/policy_profiles/models.py::IntegrationSettings.hierarchical_integration_mode": {
+      "reason": "Integration-aware admission, configuration, lifecycle or delivery dependency in the assembled epic. Conservatively charges the complete shared definition, including generic parts; no exclusion, fixed baseline or budget change."
+    },
+    "src/policy_profiles/models.py::IntegrationSettings.integration_mode": {
+      "reason": "Integration-aware admission, configuration, lifecycle or delivery dependency in the assembled epic. Conservatively charges the complete shared definition, including generic parts; no exclusion, fixed baseline or budget change."
+    },
+    "src/policy_profiles/models.py::IntegrationSettings.integration_repository_id": {
+      "reason": "Integration-aware admission, configuration, lifecycle or delivery dependency in the assembled epic. Conservatively charges the complete shared definition, including generic parts; no exclusion, fixed baseline or budget change."
+    },
+    "src/policy_profiles/models.py::IntegrationSettings.type": {
+      "reason": "Integration-aware admission, configuration, lifecycle or delivery dependency in the assembled epic. Conservatively charges the complete shared definition, including generic parts; no exclusion, fixed baseline or budget change."
+    },
+    "src/policy_profiles/models.py::Payload": {
+      "reason": "Integration-aware admission, configuration, lifecycle or delivery dependency in the assembled epic. Conservatively charges the complete shared definition, including generic parts; no exclusion, fixed baseline or budget change."
+    },
+    "src/policy_profiles/models.py::PolicyType": {
+      "reason": "Integration-aware admission, configuration, lifecycle or delivery dependency in the assembled epic. Conservatively charges the complete shared definition, including generic parts; no exclusion, fixed baseline or budget change."
+    },
+    "src/policy_profiles/models.py::checksum": {
+      "reason": "Integration-aware admission, configuration, lifecycle or delivery dependency in the assembled epic. Conservatively charges the complete shared definition, including generic parts; no exclusion, fixed baseline or budget change."
+    },
+    "src/policy_profiles/models.py::encoded": {
+      "reason": "Integration-aware admission, configuration, lifecycle or delivery dependency in the assembled epic. Conservatively charges the complete shared definition, including generic parts; no exclusion, fixed baseline or budget change."
+    },
+    "src/policy_profiles/service.py::PolicyFiles.__init__": {
+      "reason": "Integration-aware admission, configuration, lifecycle or delivery dependency in the assembled epic. Conservatively charges the complete shared definition, including generic parts; no exclusion, fixed baseline or budget change."
+    },
+    "src/policy_profiles/service.py::PolicyFiles.defaults": {
+      "reason": "Integration-aware admission, configuration, lifecycle or delivery dependency in the assembled epic. Conservatively charges the complete shared definition, including generic parts; no exclusion, fixed baseline or budget change."
+    },
+    "src/policy_profiles/service.py::PolicyFiles.diff": {
+      "reason": "Integration-aware admission, configuration, lifecycle or delivery dependency in the assembled epic. Conservatively charges the complete shared definition, including generic parts; no exclusion, fixed baseline or budget change."
+    },
+    "src/policy_profiles/service.py::PolicyFiles.materialize": {
+      "reason": "Integration-aware admission, configuration, lifecycle or delivery dependency in the assembled epic. Conservatively charges the complete shared definition, including generic parts; no exclusion, fixed baseline or budget change."
+    },
+    "src/policy_profiles/service.py::PolicyFiles.portable": {
+      "reason": "Integration-aware admission, configuration, lifecycle or delivery dependency in the assembled epic. Conservatively charges the complete shared definition, including generic parts; no exclusion, fixed baseline or budget change."
+    },
+    "src/policy_profiles/service.py::apply_files": {
+      "reason": "Integration-aware admission, configuration, lifecycle or delivery dependency in the assembled epic. Conservatively charges the complete shared definition, including generic parts; no exclusion, fixed baseline or budget change."
+    },
+    "src/policy_profiles/service.py::import from src.policy_profiles.models import PAYLOAD, AgentConfig, PolicyAgentSettings, Bundle, Capabilities, CIPolicy, CITestPolicy, DiffItem, Item, IntegrationSettings, Placeholder, PlaybookPolicy, PromotionPolicy, RoutingPreferences, Selection, SelectionAreas, SelectionPolicy, SelectionRules, TemplatePolicy, IntelligenceClassPolicy, PoolPolicy, ProjectPolicy, checksum, encoded": {
+      "reason": "Integration-aware admission, configuration, lifecycle or delivery dependency in the assembled epic. Conservatively charges the complete shared definition, including generic parts; no exclusion, fixed baseline or budget change."
+    },
+    "src/policy_profiles/service.py::item": {
+      "reason": "Integration-aware admission, configuration, lifecycle or delivery dependency in the assembled epic. Conservatively charges the complete shared definition, including generic parts; no exclusion, fixed baseline or budget change."
+    },
+    "src/policy_profiles/service.py::read_profile": {
+      "reason": "Integration-aware admission, configuration, lifecycle or delivery dependency in the assembled epic. Conservatively charges the complete shared definition, including generic parts; no exclusion, fixed baseline or budget change."
+    },
+    "src/portable_config.py::sanitize_policy_text": {
+      "reason": "Integration-aware admission, configuration, lifecycle or delivery dependency in the assembled epic. Conservatively charges the complete shared definition, including generic parts; no exclusion, fixed baseline or budget change."
+    },
+    "src/portable_setup.py::collect_classes": {
+      "reason": "Integration-aware admission, configuration, lifecycle or delivery dependency in the assembled epic. Conservatively charges the complete shared definition, including generic parts; no exclusion, fixed baseline or budget change."
+    },
+    "src/portable_setup.py::pool_settings": {
+      "reason": "Integration-aware admission, configuration, lifecycle or delivery dependency in the assembled epic. Conservatively charges the complete shared definition, including generic parts; no exclusion, fixed baseline or budget change."
+    },
+    "src/portable_setup.py::project_settings": {
+      "reason": "Integration-aware admission, configuration, lifecycle or delivery dependency in the assembled epic. Conservatively charges the complete shared definition, including generic parts; no exclusion, fixed baseline or budget change."
+    },
+    "src/preparation_failure.py::preparation_identity": {
+      "reason": "Integration-aware admission, configuration, lifecycle or delivery dependency in the assembled epic. Conservatively charges the complete shared definition, including generic parts; no exclusion, fixed baseline or budget change."
+    },
+    "src/prime/sections.py::_build_task_context_preview": {
+      "reason": "Integration-aware admission, configuration, lifecycle or delivery dependency in the assembled epic. Conservatively charges the complete shared definition, including generic parts; no exclusion, fixed baseline or budget change."
+    },
+    "src/profiles/inheritance.py::resolve_inheritance": {
+      "reason": "Integration-aware admission, configuration, lifecycle or delivery dependency in the assembled epic. Conservatively charges the complete shared definition, including generic parts; no exclusion, fixed baseline or budget change."
+    },
+    "src/profiles/sync.py::sync_profile_text_to_db": {
+      "reason": "Integration-aware admission, configuration, lifecycle or delivery dependency in the assembled epic. Conservatively charges the complete shared definition, including generic parts; no exclusion, fixed baseline or budget change."
+    },
+    "src/review_keys.py::FIDELITY_REVIEWER_PROFILE_ID": {
+      "reason": "Integration-aware admission, configuration, lifecycle or delivery dependency in the assembled epic. Conservatively charges the complete shared definition, including generic parts; no exclusion, fixed baseline or budget change."
+    },
+    "src/review_keys.py::fidelity_review_dedup_key": {
+      "reason": "Integration-aware admission, configuration, lifecycle or delivery dependency in the assembled epic. Conservatively charges the complete shared definition, including generic parts; no exclusion, fixed baseline or budget change."
+    },
+    "src/sessions/obsolete.py::import from src.database.tables import agents, integration_batch_members, integration_batches, integration_branch_owners, integration_subjects, projects, sessions, task_completion_records, task_dependencies, task_metadata, tasks, workspaces": {
+      "reason": "Integration-aware admission, configuration, lifecycle or delivery dependency in the assembled epic. Conservatively charges the complete shared definition, including generic parts; no exclusion, fixed baseline or budget change."
+    },
+    "src/sessions/obsolete.py::prepare_retirement_on": {
+      "reason": "Integration-aware admission, configuration, lifecycle or delivery dependency in the assembled epic. Conservatively charges the complete shared definition, including generic parts; no exclusion, fixed baseline or budget change."
+    },
+    "src/state_machine.py::validate_waits_for": {
+      "reason": "Integration-aware admission, configuration, lifecycle or delivery dependency in the assembled epic. Conservatively charges the complete shared definition, including generic parts; no exclusion, fixed baseline or budget change."
+    },
+    "src/task_graph/batch_checks.py::LiveGraph.integration_owner": {
+      "reason": "Integration-aware admission, configuration, lifecycle or delivery dependency in the assembled epic. Conservatively charges the complete shared definition, including generic parts; no exclusion, fixed baseline or budget change."
+    },
+    "src/task_graph/batch_checks.py::RETRYABLE_CODES['integration_owned']": {
+      "reason": "Integration-aware admission, configuration, lifecycle or delivery dependency in the assembled epic. Conservatively charges the complete shared definition, including generic parts; no exclusion, fixed baseline or budget change."
+    },
+    "src/task_graph/batch_checks.py::check": {
+      "reason": "Integration-aware admission, configuration, lifecycle or delivery dependency in the assembled epic. Conservatively charges the complete shared definition, including generic parts; no exclusion, fixed baseline or budget change."
+    },
+    "src/task_graph/batch_checks.py::load_live_graph": {
+      "reason": "Integration-aware admission, configuration, lifecycle or delivery dependency in the assembled epic. Conservatively charges the complete shared definition, including generic parts; no exclusion, fixed baseline or budget change."
+    },
+    "src/task_graph/batch_digest.py::canonical_batch_structure": {
+      "reason": "Integration-aware admission, configuration, lifecycle or delivery dependency in the assembled epic. Conservatively charges the complete shared definition, including generic parts; no exclusion, fixed baseline or budget change."
+    },
+    "src/task_graph/batch_digest.py::compute_structure_digest": {
+      "reason": "Integration-aware admission, configuration, lifecycle or delivery dependency in the assembled epic. Conservatively charges the complete shared definition, including generic parts; no exclusion, fixed baseline or budget change."
+    },
+    "src/task_graph/batch_digest.py::normalize_description": {
+      "reason": "Integration-aware admission, configuration, lifecycle or delivery dependency in the assembled epic. Conservatively charges the complete shared definition, including generic parts; no exclusion, fixed baseline or budget change."
+    },
+    "src/task_graph/readiness.py::attach_readiness": {
+      "reason": "Integration-aware admission, configuration, lifecycle or delivery dependency in the assembled epic. Conservatively charges the complete shared definition, including generic parts; no exclusion, fixed baseline or budget change."
+    },
+    "src/task_graph/readiness.py::delivery_details": {
+      "reason": "Integration-aware admission, configuration, lifecycle or delivery dependency in the assembled epic. Conservatively charges the complete shared definition, including generic parts; no exclusion, fixed baseline or budget change."
+    },
+    "src/task_graph/readiness.py::load_readiness": {
+      "reason": "Integration-aware admission, configuration, lifecycle or delivery dependency in the assembled epic. Conservatively charges the complete shared definition, including generic parts; no exclusion, fixed baseline or budget change."
+    },
+    "src/tools/definitions.py::_ALL_TOOL_DEFINITIONS[task_batch_validate]": {
+      "reason": "Integration-aware admission, configuration, lifecycle or delivery dependency in the assembled epic. Conservatively charges the complete shared definition, including generic parts; no exclusion, fixed baseline or budget change."
+    },
+    "src/workspace_registration.py::path_is_missing": {
+      "reason": "Integration-aware admission, configuration, lifecycle or delivery dependency in the assembled epic. Conservatively charges the complete shared definition, including generic parts; no exclusion, fixed baseline or budget change."
+    },
+    "src/workspace_registration.py::workspace_missing_detail": {
+      "reason": "Integration-aware admission, configuration, lifecycle or delivery dependency in the assembled epic. Conservatively charges the complete shared definition, including generic parts; no exclusion, fixed baseline or budget change."
     }
   },
   "shared_state": {
@@ -10941,5 +11286,15 @@
       "src/workspace_disable.py::kind_slot_cap": "Generic pure capacity arithmetic for a workspace kind and project limit; no integration storage, ownership or delivery authority."
     },
     "storage": "Ten changed existing metadata/audit sink owners reviewed individually. No new ref replay authority, journal, integration storage category, baseline or budget increase."
+  },
+  "assembled_epic_source_review": {
+    "sources": [
+      "769baff7c",
+      "094b61ab",
+      "decd7ffd"
+    ],
+    "shared_definitions_added": 115,
+    "storage_calls_reviewed": 75,
+    "decision": "Charge all uncovered shared dependencies, retain legacy journal retirement, preserve fixed baseline/landing and current approved playbook recordings."
   }
 }
