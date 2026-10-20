@@ -115,6 +115,7 @@ from src.database.tables import (
     repos,
     sessions,
     task_branch_origins,
+    task_integration_checkpoints,
     tasks,
     workspaces,
 )
@@ -1737,6 +1738,15 @@ async def test_scoped_legacy_delivery_attestation_suppresses_missing_provenance(
     assert await fixture_batches(db).pending(epic, await snapshot(world, epic)) is None
     # A new close never inherits the old delivery attestation.
     await close(db, "child", [source], close_id="reopened-generation", origin=origin)
+    assert "refs/heads/aq/epic" in {
+        t.target_ref for t in await DatabaseTargets(db).targets(time.time())
+    }
+    # Retiring the child's origin must not let a contained but uncollected
+    # private tip stand in for delivery of the child's new completion.
+    async with db._engine.begin() as conn:
+        await conn.execute(update(task_branch_origins).where(
+            task_branch_origins.c.task_id == "child",
+        ).values(retired_at=time.time()))
     assert "refs/heads/aq/epic" in {
         t.target_ref for t in await DatabaseTargets(db).targets(time.time())
     }
@@ -5675,6 +5685,44 @@ async def test_closed_epic_retries_after_child_origins_retire(collected_epic):
     # the exact retained sources in the collected branch.
     assert (await case.train.visit(case.target)).state == "idle"
     assert await case.db.get_task_completion("epic") is not None
+
+
+@pytest.mark.parametrize("missing_origin", [False, True])
+async def test_completed_root_gets_automatic_aggregate_visit_without_child_origins(
+    collected_epic, missing_origin,
+):
+    case = collected_epic
+    head = await collect_epic(case)
+    await review_epic(case)
+    assert (await case.db.get_task("epic")).parent_task_id is None
+    async with case.db._engine.begin() as conn:
+        # The incident's legacy checkpoint never acquired verified_sha. The
+        # current train must generate aggregate completion without a parent run.
+        await conn.execute(insert(task_integration_checkpoints).values(
+            task_id="epic", repository_id="r", branch="aq/epic", generation=5,
+            checkpoint_sha=head, state="awaiting_children", version=0,
+            updated_at=time.time(),
+        ))
+        await conn.execute(update(task_branch_origins).where(
+            task_branch_origins.c.task_id.in_(
+                ("epic", "child-a", "child-b") if missing_origin else ("child-a", "child-b")),
+        ).values(retired_at=time.time()))
+    # The daemon's ordinary discovery/tick must visit the completed root;
+    # neither a parent nor an explicit reverify/request_visit may be needed.
+    scheduled = await case.train.tick()
+    await case.train.drain()
+    assert "/".join(case.target.key) in scheduled["started"]
+    visit = next(row for row in case.train.status()
+                 if row["target_ref"] == case.target.target_ref)
+    completion = await case.db.get_task_completion("epic")
+    if missing_origin:
+        assert completion is None
+        assert visit["state"] == "blocked"
+        assert "epic_origin_missing" in {b["code"] for b in visit["detail"]["blockers"]}
+    else:
+        assert completion is not None and completion.outcome == "pass"
+        assert completion.commits == [head]
+    assert git(case.origin.url, "rev-parse", "main") == case.base
 
 
 @pytest.mark.parametrize("change", ["child", "review", "checks", "hold", "policy", "completion"])
