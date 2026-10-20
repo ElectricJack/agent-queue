@@ -234,6 +234,7 @@ start code work, tests or QA from a digest author turn.
     "integration_abort_batch",
     "integration_pause_batch",
     "integration_resume_batch",
+    "integration_settle_batch",
     "integration_eject",
     "integration_seal_now",
     "integration_record_root_noop",

@@ -250,6 +250,21 @@ def integration_abort_batch(ctx, batch_id, reason, apply):
     })
 
 
+@integration.command("settle-batch")
+@click.argument("batch_id")
+@click.option("--reason", default="", help="Required explanation when settling.")
+@click.option("--apply", is_flag=True, help="Record the promotion; default is preview.")
+@click.pass_context
+@_handle_errors
+def integration_settle_batch(ctx, batch_id, reason, apply):
+    """Preview or settle BATCH_ID when its target already contains every member."""
+    if apply and not reason.strip():
+        raise click.UsageError("--apply needs a nonblank --reason")
+    _execute(ctx, "integration_settle_batch", {
+        "batch_id": batch_id, "reason": reason, "dry_run": not apply,
+    })
+
+
 @integration.command("refresh-epic")
 @click.option("--task", "task_id", required=True, help="Epic whose branch needs the default branch.")
 @click.option("--apply", is_flag=True, help="Start or advance the attested refresh; default is preview.")

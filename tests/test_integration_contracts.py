@@ -650,5 +650,6 @@ def test_retired_publishers_are_absent_from_command_registry():
                  "integration_development_engine_transfer"):
         assert registry.get(name) is None
     for name in ("integration_seal_now", "integration_abort_batch", "integration_eject",
+                 "integration_settle_batch",
                  "integration_status", "integration_promotion_publish"):
         assert registry.get(name) is not None

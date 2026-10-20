@@ -65,6 +65,7 @@ DESIGN_INTEGRATION_COMMANDS = frozenset(
         "integration_abort_batch",
         "integration_pause_batch",
         "integration_resume_batch",
+        "integration_settle_batch",
         "integration_seal_now",
         "integration_retire_origin",
         "integration_refresh_epic",
@@ -2410,6 +2411,7 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
         ("integration_abort_batch", IntegrationAbortBatchArgs, "aborted", IntegrationTrainControlValue),
         ("integration_pause_batch", IntegrationAbortBatchArgs, "paused", IntegrationTrainControlValue),
         ("integration_resume_batch", IntegrationAbortBatchArgs, "resumed", IntegrationTrainControlValue),
+        ("integration_settle_batch", IntegrationAbortBatchArgs, "settled", IntegrationTrainControlValue),
         ("integration_seal_now", IntegrationSealNowArgs, "sealed", IntegrationTrainControlValue),
         ("integration_retire_origin", IntegrationRetireOriginArgs, "retired", IntegrationTrainControlValue),
         ("integration_refresh_epic", IntegrationRefreshEpicArgs, "refreshed", IntegrationRefreshEpicValue),
@@ -2428,6 +2430,8 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
         if name == "integration_seal_now":
             outcomes += ("no_ready_work", "existing_batch")
             successes.update({"no_ready_work", "existing_batch"})
+        elif name == "integration_settle_batch":
+            outcomes += ("unknown_batch", "target_not_settled")
         elif name == "integration_refresh_epic":
             outcomes += ("pending", "current")
             successes.update({"pending", "current"})

@@ -202,6 +202,7 @@ OPERATOR_INTEGRATION_CONTROLS = frozenset(
         "integration_abort_batch",
         "integration_pause_batch",
         "integration_resume_batch",
+        "integration_settle_batch",
         "integration_seal_now",
         "integration_eject",
         "integration_refresh_epic",

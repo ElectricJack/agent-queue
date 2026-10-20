@@ -2155,7 +2155,9 @@ async def test_train_control_handlers_refuse_non_supervisor_principals(world, ki
         eject = await handler._cmd_integration_eject({"batch_id": "batch", "task_id": "a"})
         seal = await handler._cmd_integration_seal_now({"project_id": "p"})
         refresh = await handler._cmd_integration_refresh_epic({"task_id": "a"})
+        settle = await handler._cmd_integration_settle_batch({"batch_id": "batch"})
     assert abort["outcome"] == retire["outcome"] == refresh["outcome"] == "unauthorized"
+    assert settle["outcome"] == "unauthorized"
     assert {r["outcome"] for r in (pause, resume, eject, seal)} == {"unauthorized"}
     assert (await store.get("batch")).intent == "open"
 
@@ -2182,6 +2184,56 @@ async def test_abort_batch_preview_apply(world):
             events.c.event_type == "integration.batch_intent"))).scalars().all()
     assert "duplicate work" in audit
     assert await fixture_batches(db).pending(MAIN, await snapshot(world)) is None
+
+
+async def test_settle_batch_records_promotion_of_contained_members(world):
+    db = world.db
+    source = await completed(world, "a", land=True)
+    store = BatchStore(db)
+    batch = Batch("settle-me", "p", "r", MAIN.target_ref)
+    await store.freeze(batch, (BatchMember("a", source, source),), trees={"a": tree(world, source)})
+    controls = TrainControls(db)
+    with pytest.raises(ValueError, match="cannot be aborted"):
+        await controls.abort_batch(batch.id, dry_run=True, operator_id="operator", reason="")
+    with pytest.raises(ValueError, match="nonblank reason"):
+        await controls.settle_batch(batch.id, dry_run=False, operator_id="operator", reason=" ")
+    preview = await controls.settle_batch(batch.id, dry_run=True, operator_id="operator",
+                                          reason="")
+    target = git(world.origin.url, "rev-parse", "main")
+    assert (preview["outcome"], preview["target_sha"]) == ("preview", target)
+    assert (await db.get_integration_batch(batch.id))["lifecycle"] == "sealed"
+    applied = await controls.settle_batch(batch.id, dry_run=False, operator_id="operator",
+                                          reason="target already matches")
+    assert applied["outcome"] == "settled"
+    settled = await db.get_integration_batch(batch.id)
+    assert (settled["lifecycle"], settled["final_main_sha"]) == ("promoted", target)
+    assert settled["tested_candidate_sha"] is None
+    async with db._engine.connect() as conn:
+        [audit] = (await conn.execute(select(events.c.payload).where(
+            events.c.event_type == "integration.batch_settled"))).scalars().all()
+    assert "target already matches" in audit
+    with pytest.raises(ValueError, match="already promoted"):
+        await controls.settle_batch(batch.id, dry_run=False, operator_id="operator",
+                                    reason="again")
+
+
+async def test_settle_batch_refuses_an_undelivered_member(world):
+    from src.integration.train_controls import TrainControlError
+
+    db = world.db
+    source = await completed(world, "a")
+    store = BatchStore(db)
+    batch = Batch("unsettled", "p", "r", MAIN.target_ref)
+    await store.freeze(batch, (BatchMember("a", source, source),), trees={"a": tree(world, source)})
+    with pytest.raises(TrainControlError) as refused:
+        await TrainControls(db).settle_batch(batch.id, dry_run=False, operator_id="operator",
+                                             reason="looks delivered")
+    assert refused.value.outcome == "target_not_settled"
+    assert (await db.get_integration_batch(batch.id))["lifecycle"] == "sealed"
+    with pytest.raises(TrainControlError) as missing:
+        await TrainControls(db).settle_batch("missing", dry_run=True, operator_id="operator",
+                                             reason="")
+    assert missing.value.outcome == "unknown_batch"
 
 
 async def test_abort_first_member_conflict_at_target_releases_member(world):
@@ -3492,6 +3544,33 @@ async def test_epic_refresh_preview_apply_attestation_lease_and_origin(world):
     assert recorded["base_sha"] == filing["base_sha"]
     assert recorded["base_refresh"]["head_sha"] == head
     assert recorded["base_refresh"]["default_sha"] == default
+
+
+async def test_epic_refresh_already_in_epic_settles_without_its_candidate_checks(world):
+    db, origin = world.db, world.origin
+    _epic, _prerequisite, target = await cross_epic_world(world)
+    origin.land("prerequisite")
+    default = git(origin.url, "rev-parse", "main")
+    train, _checks, _ = lane(world, LocalGit(Path(origin.url)), target=target)
+    controls = TrainControls(db, train=train)
+    pending = await controls.refresh_epic("epic", dry_run=False, operator_id="operator")
+    assert pending["state"] == "testing"
+    # The default head reaches the epic another way, with the default's exact
+    # tree; the candidate never goes green.
+    git(origin.clone, "fetch", "-q", "origin")
+    epic_head = git(origin.clone, "rev-parse", "origin/aq/epic")
+    head = git(origin.clone, "commit-tree", f"{default}^{{tree}}", "-p", epic_head,
+               "-p", default, "-m", "refresh elsewhere")
+    git(origin.clone, "push", "-q", "origin", f"{head}:refs/heads/aq/epic")
+
+    settled = await controls.refresh_epic("epic", dry_run=False, operator_id="operator")
+
+    assert settled["state"] == "delivered" and settled["outcome"] == "refreshed"
+    assert settled["detail"]["reason"] == "refresh_source_in_target"
+    assert git(origin.url, "rev-parse", "aq/epic") == head
+    row = await db.get_integration_batch(pending["batch_id"])
+    assert (row["lifecycle"], row["final_main_sha"]) == ("promoted", head)
+    assert await DatabaseBatches(db).current(target) is None
 
 
 @pytest.mark.parametrize("repair_contains_prerequisite", [True, False])
