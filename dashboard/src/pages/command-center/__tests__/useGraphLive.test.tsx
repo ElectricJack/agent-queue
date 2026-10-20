@@ -64,6 +64,10 @@ describe("shared task workspace live snapshots", () => {
     ["task.updated", { ...empty(), tasks: [node("parent"), node("child")], edges: [{ from: "child", to: "parent", dep_type: "blocks" }] }],
     ["task.deleted", { ...empty(), tasks: [node("parent")] }],
     ["task.archived", { ...empty(), tasks: [node("parent")] }],
+    ["batch.held", { ...empty(), tasks: [node("materialized-held")] }],
+    ["batch.receipt_recorded", { ...empty(), tasks: [node("reviewed")] }],
+    ["batch.needs_scope", { ...empty(), tasks: [node("scope-question")] }],
+    ["batch.released", { ...empty(), tasks: [node("released")] }],
   ])("refreshes actual task and edge data on raw %s frames", async (eventType, next) => {
     const { result } = setup();
     await waitFor(() => expect(result.current.data.tasks).toHaveLength(2));

@@ -14232,16 +14232,19 @@
         "document-reviews"
       ],
       "default_arm": true,
-      "digest": "sha256:f61515d34273d12b1d1a68d10c16521c9e8c0f33ddc922df4c4d1857820c08d0",
+      "digest": "sha256:b65fe87c286735ac80e68069b526fb46fe654f3887f993d188816b2a4f08883e",
       "imports": [
         "src.api.auth",
+        "src.api.graph",
+        "src.api.graph_layout",
         "src.api.models.task",
         "src.api.routers.proposals",
         "src.database.queries",
         "src.database.queries.ingest_batch_queries",
         "src.database.queries.proposal_queries",
         "src.database.tables",
-        "src.models"
+        "src.models",
+        "src.task_graph.layout.driver"
       ],
       "markers": [
         "parametrize"

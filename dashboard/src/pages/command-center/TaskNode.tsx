@@ -6,7 +6,7 @@ import { ProgressBar } from "./ProgressBar";
 import { NODE_HEIGHT, NODE_WIDTH, type TaskNodeData } from "./types";
 import { ReviewWaitBadge } from "./ReviewWaitBadge";
 import { StatusPill } from "./StatusPill";
-import { pillForCard } from "./statusPillModel";
+import { isIngestHeld, pillForCard } from "./statusPillModel";
 import { profileTags } from "./taskCardFormat";
 import { taskReason, type Reason } from "./taskReason";
 import { childCountText, epicLeafProgress } from "../../components/epicActivityFormat";
@@ -44,7 +44,10 @@ export function TaskCard({ data, selected = false, fluid = false, layoutScale = 
   const { progress, stateCounts, displayReason } = cardActivity(data);
   const openGates = gates.filter((gate) => gate.status.toLowerCase() === "open");
 
-  const reason = stub ? null : taskReason({
+  const reason = stub ? null : isIngestHeld(task.held_batch) ? {
+    text: `Batch ${task.held_batch!.batch_id} · revision ${task.held_batch!.structure_revision}`,
+    segments: [{ text: `Batch ${task.held_batch!.batch_id} · revision ${task.held_batch!.structure_revision}` }],
+  } : taskReason({
     status: cardStatus,
     claimReadiness: task.claim_readiness,
     isBlocked: Boolean(task.is_blocked),

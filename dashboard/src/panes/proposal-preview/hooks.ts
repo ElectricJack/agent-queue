@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { getProposalApiProposalsProposalIdGet, gateShow, askPrepareDecision, askDecide } from "../../api/client";
+import { getProposalApiProposalsProposalIdGet, getIngestBatch, gateShow, askPrepareDecision, askDecide } from "../../api/client";
 import { useGates, type GateSummary } from "../../api/hooks";
 
 export interface ProposalTask {
@@ -31,7 +31,17 @@ export interface ProposalDetail {
       after: Record<string, unknown> | null;
     }>;
   } | null;
-  status: "draft" | "ready" | "committed" | "discarded";
+  status: "draft" | "ready" | "held" | "committed" | "discarded";
+}
+
+export function useIngestBatch(projectId: string | undefined, batchId: string, enabled = true) {
+  return useQuery({
+    queryKey: ["batch", projectId, batchId],
+    enabled: enabled && !!projectId && !!batchId,
+    queryFn: async () => (await getIngestBatch({
+      path: { project_id: projectId!, batch_id: batchId }, throwOnError: true,
+    })).data,
+  });
 }
 
 /** Proposal operations and their validated before/after diff. */

@@ -728,6 +728,9 @@ class TaskCommandsMixin:
         from src.task_graph.readiness import attach_readiness
 
         await attach_readiness(self.db, task_dicts)
+        from src.task_graph.ingestion import attach_ingestion
+
+        await attach_ingestion(self.db, task_dicts)
 
         if show_dependencies:
             await self._enrich_with_dependencies(task_dicts, capped_tasks)
@@ -796,11 +799,15 @@ class TaskCommandsMixin:
             }
             if include_project:
                 d["project_id"] = t.project_id
-            return {**d, **activity.get(t.id, {}), **readiness.get(t.id, {})}
+            return {**d, **activity.get(t.id, {}), **readiness.get(t.id, {}),
+                    **ingestion.get(t.id, {})}
 
         from src.task_graph.readiness import load_readiness
 
         readiness = await load_readiness(self.db, [self._task_to_dict(t) for t in tasks])
+        from src.task_graph.ingestion import load_ingestion
+
+        ingestion = await load_ingestion(self.db, [self._task_to_dict(t) for t in tasks])
         activity = await load_activity(self.db, [t.id for t in tasks])
         by_project: dict[str, list[dict]] = {}
         for t in tasks:
@@ -994,6 +1001,9 @@ class TaskCommandsMixin:
                 root, children, compact=compact, readiness_map=readiness,
             )
         await attach_activity(self.db, [entry["root"] for entry in trees])
+        from src.task_graph.ingestion import attach_ingestion
+
+        await attach_ingestion(self.db, [entry["root"] for entry in trees])
         # Enrich root task dicts with dependency info when requested.
         if show_dependencies:
             root_dicts = [entry["root"] for entry in trees]
@@ -1331,6 +1341,9 @@ class TaskCommandsMixin:
 
         rows = [self._task_to_dict(t) for t in children]
         await attach_readiness(self.db, rows)
+        from src.task_graph.ingestion import attach_ingestion
+
+        await attach_ingestion(self.db, rows)
         return {"success": True, "task_id": task_id, "count": len(rows), "children": rows}
 
     async def _cmd_task_progress(self, args: dict) -> dict:
@@ -3711,6 +3724,7 @@ class TaskCommandsMixin:
         info["integration_mode_source"] = mode_source
 
         info["needs_attention"] = await self.db.get_task_meta(task.id, "needs_attention")
+        info["delivery_condition"] = await self.db.get_task_meta(task.id, "delivery_condition")
         info["reroute"], info["provider_hold"] = await self._task_provider_view(task, project)
         from src.database.queries.ingest_batch_queries import task_batch_summary
 
