@@ -2277,7 +2277,7 @@ class TestClaim:
         assert (await db.get_workspace("ws-agent-1")).locked_by_task_id == "child"
         assert (await ownership.get_owner(fence.target))["handoff_state"] == "attached"
         await expire_claim_refusal(db, sid)
-        retried = await scoped(handler, sid)._cmd_task_claim({"next": True})
+        retried = await settled_claim(scoped(handler, sid), {"next": True})
         assert retried["result"] == "prepare_failed"
         assert reset.await_count == 1
         owner = await ownership.get_owner(fence.target)
