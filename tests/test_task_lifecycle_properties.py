@@ -81,6 +81,7 @@ def lifecycle_histories(draw):
     return history
 
 
+@pytest.mark.parametrize("response_seconds", [None, 0.0], ids=["default", "deferred"])
 @PROPERTY_SETTINGS
 @given(history=lifecycle_histories())
 @example(
@@ -99,7 +100,14 @@ def lifecycle_histories(draw):
     ]
 )
 @pytest.mark.asyncio
-async def test_generated_lifecycle_histories(handler, db, tmp_path, history):
+async def test_generated_lifecycle_histories(
+    handler, db, tmp_path, monkeypatch, response_seconds, history
+):
+    if response_seconds is not None:
+        # Force preparation to outlive the initial response, independent of load.
+        monkeypatch.setattr(
+            "src.commands.claim_commands._PREPARATION_RESPONSE_SECONDS", response_seconds
+        )
     git = create_autospec(GitManager, instance=True)
     git.avalidate_checkout.return_value = False  # No Git files in these pool workspaces.
     git.arev_parse.return_value = HEAD
@@ -140,7 +148,7 @@ async def test_generated_lifecycle_histories(handler, db, tmp_path, history):
             )
             identity = str(next(IDENTITIES))
             sid, _ = await pool_session(db, tmp_path, f"s-{identity}", f"a-{identity}")
-            result = await scoped(handler, sid)._cmd_task_claim({"task_id": tid})
+            result = await claim_tests.settled_claim(scoped(handler, sid), {"task_id": tid})
             assert result["result"] == "claimed", (
                 operation,
                 expected,
@@ -201,6 +209,9 @@ async def test_generated_lifecycle_histories(handler, db, tmp_path, history):
         after = await db.get_task(tid)
         assert after.status == expected, (history, operation, after)
         assert is_valid_status_transition(before.status, after.status), operation
+        if operation == "claim":
+            assert result["task"]["id"] == tid
+            assert result["claim_epoch"] == after.claim_epoch
         if sid:
             session = await db.get_session(sid)
             if after.status == TaskStatus.IN_PROGRESS:

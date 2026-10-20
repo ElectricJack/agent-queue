@@ -1970,6 +1970,10 @@
           "task_id": {
             "type": "string",
             "description": "Task ID to resume"
+          },
+          "recover_stale_pause": {
+            "type": "boolean",
+            "description": "Operator/supervisor recovery of a stale pause on an unchanged retained source; still requires writer stop proof and ordinary checkpoint cleanup."
           }
         },
         "required": [
