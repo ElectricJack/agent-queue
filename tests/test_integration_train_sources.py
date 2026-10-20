@@ -1617,8 +1617,10 @@ async def test_source_ci_binding_never_contradicts_a_declared_order(world):
 
     outcome = await train.visit(MAIN)
     assert outcome.state == "blocked" and outcome.batch_id is None, outcome
-    [blocker] = outcome.detail["blockers"]
-    assert (blocker["code"], blocker["task_id"]) == ("undeclared_stack_base", "repair")
+    blockers = {(b["code"], b["task_id"]): b for b in outcome.detail["blockers"]}
+    assert set(blockers) == {("undeclared_stack_base", "repair"),
+                             ("prerequisite_pending", "source")}
+    assert blockers["prerequisite_pending", "source"]["prerequisite_task_ids"] == ["repair"]
     assert git(origin.url, "rev-parse", "refs/heads/main") == base
 
 
@@ -6741,6 +6743,130 @@ async def test_conflicting_pr_does_not_hide_checks_or_review_refusals(world, con
     assert visit.batch_id is None, visit
     assert visit.detail["blockers"][0]["code"] == code
     assert git(world.origin.url, "rev-parse", "aq/leaf") == head
+
+
+async def conflicting_child(world, parent_status=TaskStatus.IN_PROGRESS):
+    """A completed child whose shared code conflicts with its epic's current tip."""
+    origin, db = world.origin, world.db
+    base = git(origin.url, "rev-parse", "main")
+    await db.create_task(Task(
+        id="epic", project_id="p", repo_id="r", title="epic", description="",
+        branch_name="aq/epic", status=parent_status,
+    ))
+    git(origin.clone, "checkout", "-q", "-B", "aq/child", base)
+    (origin.clone / "base.txt").write_text("child edit\n")
+    git(origin.clone, "commit", "-qam", "child changes shared code")
+    git(origin.clone, "push", "-q", "origin", "aq/child")
+    source = git(origin.clone, "rev-parse", "HEAD")
+    await completed(world, "child", parent="epic", head=source, source_base=base)
+    await completed(world, "waiting-sibling", parent="epic", needs=("child",), done=False)
+    git(origin.clone, "checkout", "-q", "-B", "aq/epic", base)
+    (origin.clone / "base.txt").write_text("epic edit\n")
+    git(origin.clone, "commit", "-qam", "epic changes shared code")
+    git(origin.clone, "push", "-q", "origin", "aq/epic")
+    target = git(origin.clone, "rev-parse", "HEAD")
+    return source, target
+
+
+@pytest.mark.parametrize("parent_status", [TaskStatus.IN_PROGRESS, TaskStatus.COMPLETED])
+async def test_completed_child_conflict_files_one_repair_and_exposes_epic_blocker(world, parent_status):
+    origin, db = world.origin, world.db
+    source, target = await conflicting_child(world, parent_status)
+    train, github, _ = await hosted_train(world)
+    policy = (await db.get_project("p")).hierarchical_integration_policy
+    policy["parent"] = policy["root"]
+    await db.update_project("p", hierarchical_integration_policy=policy)
+    epic = TrainTarget("p", "r", "refs/heads/aq/epic", "epic")
+
+    first = await train.request_visit(epic)
+    assert first.state == "repair", first
+    assert first.repair["outcome"] == "filed"
+    repair = await db.get_task(first.repair["task_id"])
+    assert source in repair.description and "base.txt" in repair.description
+    assert [(m.task_id, m.source_sha) for m in await BatchStore(db).members(first.batch_id)] == [
+        ("child", source),
+    ]
+    # Restarting the train must reuse the frozen batch and its repair budget.
+    train = IntegrationTrain(
+        targets=train.targets, batches=DatabaseBatches(db, pr_gate=green_pr),
+        lane_for=train.lane_for, repair=OrdinaryRepairService(db),
+    )
+    for _ in range(2):
+        visit = await train.request_visit(epic)
+        assert visit.state == "repair", visit
+        assert visit.batch_id == first.batch_id
+        assert visit.repair["task_id"] == repair.id
+    status = await IntegrationStatusService(db, git_first="active", train=train).train_status("p")
+    assert {b["code"] for b in status["blockers"]} >= {"merge_conflict", "repair_open"}
+    assert next(t for t in status["targets"] if t["target_ref"] == epic.target_ref)["state"] == "repair"
+    assert (await BatchStore(db).get(first.batch_id)).repair_attempt_count == 1
+    assert git(origin.url, "rev-parse", "aq/epic") == target
+    assert (await db.get_task("child")).status is TaskStatus.COMPLETED
+    assert (await db.get_task("waiting-sibling")).status is TaskStatus.IN_PROGRESS
+
+    git(origin.clone, "fetch", "-q", "origin")
+    git(origin.clone, "checkout", "-q", "--detach", first.candidate_sha)
+    merge = subprocess.run(["git", "merge", "--no-ff", "--no-commit", source],
+                           cwd=origin.clone, capture_output=True, text=True)
+    assert merge.returncode == 1, merge.stdout + merge.stderr
+    (origin.clone / "base.txt").write_text("epic edit\nchild edit\n")
+    git(origin.clone, "add", "base.txt")
+    git(origin.clone, "commit", "-qm", "resolve child conflict on epic")
+    repaired = git(origin.clone, "rev-parse", "HEAD")
+    fence = Fence.model_validate(first.repair["fence"])
+    locks = BranchLock(db)
+    await locks.fenced_push(
+        fence, git=train.lane_for.git, checkout_path=str(origin.clone),
+        repository=GitHubRepositoryBinding(123, github.full_name),
+        tip_oid=repaired, expected_old_oid=first.candidate_sha,
+    )
+    await close(db, repair.id, [repaired], origin=origin)
+    await locks.release(fence)
+    testing = await train.request_visit(epic)
+    assert testing.state == "testing", testing
+    assert git(origin.url, "rev-parse", "aq/epic") == target
+    github.runs[repaired] = "success"
+    delivered = await train.request_visit(epic)
+    assert delivered.state == "delivered", delivered
+    assert delivered.target_sha == repaired
+    git(origin.url, "merge-base", "--is-ancestor", source, repaired)
+    assert await train.batches.pending(epic, await snapshot(world, epic)) is None
+
+
+@pytest.mark.parametrize("guard,code", [
+    ("request", "source_identity_unavailable"),
+    ("stack", "stack_source_changed"),
+    ("prerequisite", "prerequisite_pending"),
+])
+async def test_unadmitted_conflicting_child_exposes_blocker_instead_of_idle(world, monkeypatch, guard, code):
+    source, target = await conflicting_child(world)
+    if guard == "request":
+        # A retained source cannot authorize admission without a current
+        # delivery request. Keep the materialized origin immutable.
+        monkeypatch.setattr("src.integration.train_sources.load_delivery_requests",
+                            AsyncMock(return_value={}))
+    elif guard == "stack":
+        # The source must contain its recorded stack, even if the DB identity
+        # is current. An admission refusal never authorizes a conflict fixer.
+        monkeypatch.setattr("src.integration.stacked_branches.StackedBranches.source_contains_stack",
+                            AsyncMock(return_value=False))
+    else:
+        await completed(world, "unfinished", parent="epic", done=False)
+        await world.db.add_dependency("child", "unfinished")
+    train, _, _ = await hosted_train(world)
+    epic = TrainTarget("p", "r", "refs/heads/aq/epic", "epic")
+    visit = await train.request_visit(epic)
+    assert visit.state == "blocked", visit
+    assert visit.batch_id is None and visit.repair is None
+    blocker = next(b for b in visit.detail["blockers"] if b.get("task_id") == "child")
+    assert blocker["code"] == code
+    if guard == "prerequisite":
+        assert blocker["prerequisite_task_ids"] == ["unfinished"]
+    status = await IntegrationStatusService(world.db, git_first="active", train=train).train_status("p")
+    assert any(b["code"] == code and b.get("task_id") == "child" for b in status["blockers"])
+    assert (await world.db.get_task("child")).status is TaskStatus.COMPLETED
+    assert git(world.origin.url, "rev-parse", "aq/child") == source
+    assert git(world.origin.url, "rev-parse", "aq/epic") == target
 
 
 async def test_one_repair_keeps_every_conflicting_source_until_combined_candidate_passes(world):
