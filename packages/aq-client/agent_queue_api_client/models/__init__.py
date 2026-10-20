@@ -1523,6 +1523,18 @@ from .render_prompt_response_variables_used import RenderPromptResponseVariables
 from .reopen_with_feedback_request import ReopenWithFeedbackRequest
 from .reopen_with_feedback_response import ReopenWithFeedbackResponse
 from .reopen_with_feedback_response_422 import ReopenWithFeedbackResponse422
+from .repair_repository_checkout_request import RepairRepositoryCheckoutRequest
+from .repair_repository_checkout_response import RepairRepositoryCheckoutResponse
+from .repair_repository_checkout_response_422 import RepairRepositoryCheckoutResponse422
+from .repair_repository_checkout_response_after import RepairRepositoryCheckoutResponseAfter
+from .repair_repository_checkout_response_before import RepairRepositoryCheckoutResponseBefore
+from .repair_workspace_checkout_request import RepairWorkspaceCheckoutRequest
+from .repair_workspace_checkout_response import RepairWorkspaceCheckoutResponse
+from .repair_workspace_checkout_response_422 import RepairWorkspaceCheckoutResponse422
+from .repair_workspace_checkout_response_after import RepairWorkspaceCheckoutResponseAfter
+from .repair_workspace_checkout_response_before import RepairWorkspaceCheckoutResponseBefore
+from .repair_workspace_checkout_response_identity import RepairWorkspaceCheckoutResponseIdentity
+from .repair_workspace_checkout_response_slots_item import RepairWorkspaceCheckoutResponseSlotsItem
 from .reparent_task_request import ReparentTaskRequest
 from .reparent_task_response import ReparentTaskResponse
 from .reparent_task_response_422 import ReparentTaskResponse422
@@ -3579,6 +3591,18 @@ __all__ = (
     "ReopenWithFeedbackRequest",
     "ReopenWithFeedbackResponse",
     "ReopenWithFeedbackResponse422",
+    "RepairRepositoryCheckoutRequest",
+    "RepairRepositoryCheckoutResponse",
+    "RepairRepositoryCheckoutResponse422",
+    "RepairRepositoryCheckoutResponseAfter",
+    "RepairRepositoryCheckoutResponseBefore",
+    "RepairWorkspaceCheckoutRequest",
+    "RepairWorkspaceCheckoutResponse",
+    "RepairWorkspaceCheckoutResponse422",
+    "RepairWorkspaceCheckoutResponseAfter",
+    "RepairWorkspaceCheckoutResponseBefore",
+    "RepairWorkspaceCheckoutResponseIdentity",
+    "RepairWorkspaceCheckoutResponseSlotsItem",
     "ReparentTaskRequest",
     "ReparentTaskResponse",
     "ReparentTaskResponse422",

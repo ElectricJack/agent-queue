@@ -1052,7 +1052,8 @@
         "tests/test_project_paths.py",
         "tests/test_project_repository_binding.py",
         "tests/test_project_roots_config.py",
-        "tests/test_project_supervisors.py"
+        "tests/test_project_supervisors.py",
+        "tests/test_repository_checkout_repair.py"
       ]
     },
     "prompts": {
@@ -14988,6 +14989,27 @@
         "parametrize"
       ],
       "summary": "Durable hourly author requests, CAS submission and deterministic fallback."
+    },
+    "tests/test_repository_checkout_repair.py": {
+      "areas": [
+        "projects"
+      ],
+      "default_arm": true,
+      "digest": "sha256:c4ed865e56bf58a04088bc76f173fd8716c8a0c587a6c647ebd46ba7ad95222c",
+      "imports": [
+        "src.api.auth",
+        "src.api.scope",
+        "src.commands.principal",
+        "src.config",
+        "src.git.manager",
+        "src.models",
+        "src.orchestrator.worktree_manager",
+        "src.profiles.capabilities"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Checkout repair preserves repository identity and requires attributable authority."
     },
     "tests/test_required_playbooks.py": {
       "areas": [

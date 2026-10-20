@@ -828,6 +828,7 @@ areas:
     match:
       - tests/test_project_onboarding_*.py
       - tests/test_project_repository_binding.py
+      - tests/test_repository_checkout_repair.py
       - tests/test_project_supervisors.py
       - tests/test_onboarding_queries.py
       - tests/test_project_roots_config.py

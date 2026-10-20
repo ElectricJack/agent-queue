@@ -4127,17 +4127,22 @@ class Orchestrator(
             retained_origins = {}
             for repository in repositories:
                 origin = repository.url
+                for registered_path in sorted({repository.source_path,
+                                               repository.checkout_base_path}):
+                    if path_is_missing(registered_path):
+                        key = json.dumps(["repository", repository.id, registered_path])
+                        if str(Path(registered_path).resolve()) not in missing_paths:
+                            missing_notices[key] = (
+                                f"repository {repository.id}: {registered_path} is missing; "
+                                "restore the directory or preview aq project "
+                                "repair-repository-checkout with --project-id, --repository-id, "
+                                "--expected-path, --replacement-path and --reason; "
+                                "add --apply after reviewing the before/after evidence"
+                            )
                 if getattr(repository, "source_type", None) is RepoSourceType.LINK:
                     extra_paths.append(repository.source_path)
                     missing = path_is_missing(repository.source_path)
-                    if missing:
-                        key = json.dumps(["repository", repository.id, repository.source_path])
-                        if str(Path(repository.source_path).resolve()) not in missing_paths:
-                            missing_notices[key] = (
-                                f"repository {repository.id}: {repository.source_path} is missing; "
-                                "restore the directory or remove its stale repository registration"
-                            )
-                    if not origin and not missing:
+                    if not origin and repository.source_path and not missing:
                         try:
                             if not repository.source_path or not Path(repository.source_path).is_dir():
                                 raise ValueError("registered source path is unavailable")
