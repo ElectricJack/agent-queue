@@ -43,6 +43,23 @@ from src.integration.delivery_truth import (
 
 logger = logging.getLogger(__name__)
 
+
+async def source_bases_on(conn, task_ids, repository_id):
+    """Retirement ends a reservation, not the immutable source-base history."""
+    rows = (await conn.execute(select(
+        task_branch_origins.c.task_id, task_branch_origins.c.base_sha,
+    ).where(
+        task_branch_origins.c.task_id.in_(task_ids),
+        task_branch_origins.c.repository_id == repository_id,
+    ).distinct(task_branch_origins.c.task_id).order_by(
+        task_branch_origins.c.task_id,
+        task_branch_origins.c.retired_at.is_(None).desc(),
+        task_branch_origins.c.creation_generation.desc(),
+        task_branch_origins.c.created_at.desc(), task_branch_origins.c.id.desc(),
+    ))).all()
+    return dict(rows)
+
+
 def development_delivery_scope(task, *, modes=("development",)):
     """Select artifacts whose delivery requires Git proof, never a delivery row.
 
@@ -203,7 +220,12 @@ async def delivery_targets(conn, task_ids: Iterable[str], *, reduced=False) -> d
     from src.integration.promotion_routing import promotion_origin_target
 
     origins = (await conn.execute(select(task_branch_origins).where(
-        task_branch_origins.c.task_id.in_(ids), task_branch_origins.c.retired_at.is_(None),
+        task_branch_origins.c.task_id.in_(ids),
+    ).distinct(task_branch_origins.c.task_id, task_branch_origins.c.repository_id).order_by(
+        task_branch_origins.c.task_id, task_branch_origins.c.repository_id,
+        task_branch_origins.c.retired_at.is_(None).desc(),
+        task_branch_origins.c.creation_generation.desc(),
+        task_branch_origins.c.created_at.desc(), task_branch_origins.c.id.desc(),
     ))).mappings().all()
     configs = {row.id: row for row in (await conn.execute(select(
         projects.c.id, projects.c.promotion_flow, projects.c.default_branch_cutover).where(
@@ -306,11 +328,9 @@ class DeliveryView:
                 if current.get(task_id) == evidence.request:
                     base = getattr(evidence, "source_base", None)
                     if base is not None:
-                        current_base = await conn.scalar(select(task_branch_origins.c.base_sha).where(
-                            task_branch_origins.c.task_id == task_id,
-                            task_branch_origins.c.repository_id == target.repository_id,
-                            task_branch_origins.c.retired_at.is_(None),
-                        ))
+                        current_base = (await source_bases_on(
+                            conn, [task_id], target.repository_id,
+                        )).get(task_id)
                         if current_base != base:
                             continue
                     verified[task_id] = evidence
@@ -645,11 +665,7 @@ class DeliveryObserver:
                 from src.integration.git_truth import GitTruthSnapshot
 
                 async with self.db._engine.connect() as conn:
-                    bases = dict((await conn.execute(select(
-                        task_branch_origins.c.task_id, task_branch_origins.c.base_sha,
-                    ).where(task_branch_origins.c.task_id.in_(task_ids),
-                            task_branch_origins.c.repository_id == target.repository_id,
-                            task_branch_origins.c.retired_at.is_(None)))).all())
+                    bases = await source_bases_on(conn, task_ids, target.repository_id)
                 truth = GitTruthSnapshot(self.truth, snapshot, cached_only=cached_only)
                 evaluated = {tid: await truth.is_delivered(request, source_base=bases.get(tid))
                              for tid, request in requests.items()}

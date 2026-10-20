@@ -8260,6 +8260,11 @@ _FALLBACK_INPUT_SCHEMAS["integration_train_tick"] = {
     "properties": {"now": {"type": ["number", "null"]}},
     "additionalProperties": False,
 }
+_FALLBACK_INPUT_SCHEMAS["integration_reconcile_git_truth"] = {
+    "type": "object",
+    "properties": {"now": {"type": ["number", "null"]}},
+    "additionalProperties": False,
+}
 
 
 

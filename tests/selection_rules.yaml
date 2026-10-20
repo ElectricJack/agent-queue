@@ -363,6 +363,7 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["src/integration/epic_*.py", "src/integration/candidate_ci.py"], areas: ["epic-trains"] }
   - { paths: ["src/integration/development*.py", "src/integration/repository_git.py", "src/integration/development_policy_template.md", "src/integration/branch_discard.py", "src/integration/delivery_branches.py", "src/integration/publishable_artifact.py", "src/integration/preflight.py"], areas: ["development-delivery"] }
   - { paths: ["src/integration/delivery_path.py"], areas: ["development-delivery", "integration-trains"] }
+  - { paths: ["src/integration/truth_*.py"], areas: ["integration-trains", "integration-ownership"] }
   - { paths: ["src/integration/provenance*.py"], areas: ["development-delivery", "git-manager", "session-runtime"] }
   - { paths: ["src/integration/trust_manifest.py", "src/integration/app_mode.py"], areas: ["epic-trains", "integration-controls"] }
 

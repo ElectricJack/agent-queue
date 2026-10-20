@@ -12115,6 +12115,22 @@
         "type": "object"
       }
     },
+    "integration_reconcile_git_truth": {
+      "name": "integration_reconcile_git_truth",
+      "description": "Daemon-only repair of Git-derived integration projections.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "now": {
+            "type": [
+              "number",
+              "null"
+            ]
+          }
+        },
+        "additionalProperties": false
+      }
+    },
     "integration_record_delivered": {
       "name": "integration_record_delivered",
       "description": "Local operator verifies exact source on the designated default and records shipped work.",

@@ -409,6 +409,7 @@ areas:
       - tests/test_integration_train_regressions.py
       - tests/test_integration_gitops.py
       - tests/test_integration_git_truth.py
+      - tests/test_integration_truth_reconciler.py
       - tests/test_integration_replay.py
       - tests/test_integration_reconciler.py
       - tests/test_integration_observe.py

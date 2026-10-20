@@ -2091,6 +2091,22 @@ class Orchestrator(
         )
         owner_recovery = owner_recovery_for(self)
         self.development_integration.owner_recovery = owner_recovery
+        from src.integration.truth_reconciler import GitTruthReconciler
+
+        self.git_truth_reconciler = GitTruthReconciler(
+            self.db, self.git, data_dir=self.config.data_dir,
+            owner_recovery=owner_recovery if self.config.integration.owner_recovery_sweep else None,
+        )
+
+        async def reconcile_git_truth(now):
+            from src.commands.principal import ExecutionPrincipal, principal_context
+
+            if self._command_handler is not None:
+                with principal_context(ExecutionPrincipal.service("git-truth-reconciler")):
+                    return await self._command_handler.execute(
+                        "integration_reconcile_git_truth", {"now": now},
+                    )
+
         from src.integration.train_sources import TrainCommandDriver, train_for
 
         self.parent_owner_recovery = owner_recovery
@@ -2112,11 +2128,11 @@ class Orchestrator(
             train=TrainCommandDriver(self.integration_train, lambda: self._command_handler)
             if train_active else None,
             maintenance={
+                "git truth": reconcile_git_truth,
                 "orphaned parent operations": settle_orphaned_parents,
                 "batch cleanup": self.integration_cleanup_service.reconcile,
                 "branch discard": self._drain_branch_discards,
                 "branch materialization": self._drain_branch_materializations,
-                "owner recovery": self._sweep_stranded_owners,
                 "delegate cleanup": RepairService(self.db).retire_terminal_delegates,
                 "GitHub PR reviews": GitHubReviewPoller(
                     self.db, ReviewEvidenceProducer(self.db, self.repository_git), self.git,

@@ -417,6 +417,17 @@ class IntegrationCommandsMixin:
             return _failure("blocked", str(exc))
         return _with_reason(result["outcome"] == "reverifying", result)
 
+    async def _cmd_integration_reconcile_git_truth(self, args: dict) -> dict:
+        """Daemon-only repair of Git-derived integration projections."""
+        principal = current_principal()
+        if principal is None or principal.kind is not PrincipalKind.SERVICE:
+            return _failure("unauthorized", "only the daemon may reconcile Git truth")
+        reconciler = getattr(self.orchestrator, "git_truth_reconciler", None)
+        if reconciler is None:
+            return _failure("unavailable", "the Git truth reconciler is not attached")
+        now = args.get("now")
+        return {"success": True, **await reconciler.tick(time.time() if now is None else now)}
+
     async def _cmd_integration_train_tick(self, args: dict) -> dict:
         """Start one level-triggered visit per idle target (git_first: active).
 
