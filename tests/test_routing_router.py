@@ -1153,6 +1153,55 @@ async def test_apply_reads_the_preference_from_the_task_not_from_the_plan(handle
     assert applied["profile_id"] == "standard-high-claude"
 
 
+async def test_strict_repair_preference_survives_a_concurrent_old_apply(handler, orch, monkeypatch):
+    await _workspace(orch)
+    await _create(orch.db, "repair", task_type=TaskType.BUGFIX,
+                  created_by_kind="integration_repair", class_hint="standard-high")
+    plan = await _plan(handler, "repair", NARROW_NO)
+    assert plan["profile_id"] == "standard-high-codex"
+    snapshot_read, release_apply = asyncio.Event(), asyncio.Event()
+    original_snapshot = handler._routing_snapshot
+
+    async def paused_snapshot(*args, **kwargs):
+        snapshot = await original_snapshot(*args, **kwargs)
+        snapshot_read.set()
+        await release_apply.wait()
+        return snapshot
+
+    monkeypatch.setattr(handler, "_routing_snapshot", paused_snapshot)
+    with _as_playbook():
+        applying = asyncio.create_task(handler.execute("task_route_apply", {
+            "task_id": "repair", "plan": plan,
+        }))
+    resetting = None
+    try:
+        await asyncio.wait_for(snapshot_read.wait(), 10)
+        resetting = asyncio.create_task(orch.db.reset_task_route(
+            "repair", prefer_target="claude", prefer_mode="strict",
+        ))
+        # The reset must wait for the old apply's task row, then clear its
+        # route. Otherwise the old apply can write Codex over strict Claude.
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(asyncio.shield(resetting), 0.2)
+    finally:
+        release_apply.set()
+        applied = await asyncio.wait_for(applying, 10)
+        if resetting is not None:
+            assert await asyncio.wait_for(resetting, 10)
+    assert applied["outcome"] == "routed"
+    task = await orch.db.get_task("repair")
+    assert (task.profile_id, task.route_source, task.prefer_target, task.prefer_mode) == (
+        None, UNROUTED, "claude", "strict",
+    )
+    monkeypatch.setattr(handler, "_routing_snapshot", original_snapshot)
+    strict = await _plan(handler, "repair", NARROW_NO)
+    assert strict["profile_id"] == "standard-high-claude"
+    with _as_playbook():
+        result = await handler.execute("task_route_apply", {"task_id": "repair", "plan": strict})
+    assert result["outcome"] == "routed"
+    assert result["profile_id"] == "standard-high-claude"
+
+
 async def test_apply_refuses_a_plan_that_cannot_serve_a_strict_preference(handler, orch):
     await _create(orch.db, "t", task_type=TaskType.RESEARCH, class_hint="standard-high")
     plan = await _plan(handler, "t")

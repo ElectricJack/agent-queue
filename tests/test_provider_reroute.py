@@ -29,7 +29,7 @@ from hypothesis import HealthCheck, given, settings, strategies as st
 
 from src.config import ProviderFailoverConfig
 from src.intelligence_classes import IntelligenceClass
-from src.models import Agent, AgentProfile, Project, SessionRecord, Task, TaskStatus
+from src.models import Agent, AgentProfile, Project, SessionRecord, Task, TaskStatus, WorkspaceKind
 from src.providers.availability import AVAILABLE, DEGRADED, DISABLED, EXHAUSTED, UNAUTHENTICATED
 from src.providers.intent import CLASS_ONLY, PINNED, PREFERRED
 from src.providers.reroute import (
@@ -1465,6 +1465,25 @@ async def test_spill_candidates_are_the_claim_frontier(orch):
     everything = await orch.db.list_spill_candidates(["standard-high-codex"])
     assert [row["id"] for row in everything] == ["young", "b", "a"]
     assert await orch.db.list_spill_candidates([]) == []
+
+
+async def test_both_reroute_passes_read_the_claim_primary_repository_kind(orch):
+    await orch.db.upsert_workspace_kind(WorkspaceKind(project_id="p-1", id="other-repo"))
+    await _waiting(orch, "default")
+    await _waiting(orch, "other")
+    await orch.db.add_task_workspace_requirements("other", [("other-repo", None), ("vault", None)])
+    profiles = ["standard-high-codex"]
+    for query in (orch.db.list_reroute_candidates, orch.db.list_spill_candidates):
+        rows = await query(profiles)
+        assert {row["id"]: row["workspace_kind"] for row in rows} == {
+            "default": "project-repo", "other": "other-repo",
+        }
+    candidates = await orch.provider_reroute._candidates(
+        await orch.provider_reroute.context(), providers=None, task_ids=["default", "other"],
+    )
+    assert {candidate.task_id: candidate.workspace_kind for candidate in candidates} == {
+        "default": "project-repo", "other": "other-repo",
+    }
 
 
 # -- the direct path fails fast (D13a) ---------------------------------------------
