@@ -1940,7 +1940,11 @@ async def test_cancelled_git_proof_advances_selection_without_reusing_mutable_in
     async def delayed_git(args, **kwargs):
         if "push" in args:
             writes.append(args)
-        if "diff" in args and first in args and not stopped.is_set():
+        # Stall the candidate's strict proof, after the root-delivery scan.
+        # Both now use ancestry; only candidate selection owns the cursor.
+        if (args[:3] == ["--no-replace-objects", "merge-base", "--is-ancestor"]
+                and first in args and batches._selection_after.get(MAIN.key) == "a"
+                and not stopped.is_set()):
             entered.set()
             try:
                 await asyncio.Event().wait()
