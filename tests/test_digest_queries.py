@@ -22,7 +22,6 @@ from src.database.tables import (
 from src.digest import DigestWindow, build_digest
 from src.digest.facts import KIND_PROVIDER
 from src.models import Project, SessionRecord, Task, TaskCompletion
-from tests.db_fixtures import lease_dsn
 
 NOW = 2_000_000.0
 HOUR = 3600.0
@@ -30,13 +29,11 @@ WINDOW = DigestWindow(since=NOW - HOUR, until=NOW)
 
 
 @pytest.fixture
-async def db():
-    database = Database(lease_dsn("digest.db"))
-    await database.initialize()
+async def db(reuse_database):
+    database = await reuse_database("digest.db")
     await database.create_project(Project(id="p", name="Agent Queue"))
     await database.create_project(Project(id="other", name="Other"))
     yield database
-    await database.close()
 
 
 async def make_task(db, task_id, *, project_id="p", status="COMPLETED", title=None):
@@ -399,3 +396,24 @@ async def test_a_reroute_batch_is_one_system_fact(db):
     assert "1 re-route batch" in result.text
     off = await collect(db, provider_facts=False)
     assert not [f for f in off.facts if f.key.startswith("reroute:")]
+
+
+async def test_delivery_holds_are_scoped_facts_and_never_stuck_or_active(db, monkeypatch):
+    for tid, project in (("waiting", "p"), ("foreign", "other")):
+        await make_task(db, tid, project_id=project, status="READY")
+    for index in range(2):
+        await db.save_task_completion(TaskCompletion(
+            id=f"failed-{index}", task_id="waiting", outcome="fail", completed_at=NOW - 60,
+        ))
+
+    async def exclusions(ids, **kwargs):
+        return {tid: [{"code": "frontier_prerequisite_not_on_default_branch", "ref": tid,
+                       "detail": "Land source.6 on dev; refresh aq/epic"}] for tid in ids}
+
+    monkeypatch.setattr(db, "claim_frontier_exclusions_many", exclusions)
+    inputs = await collect(db, project_ids=("p",))
+    assert [row["task_id"] for row in inputs.waiting_on_delivery] == ["waiting"]
+    assert inputs.active == ()
+    brief = await db.collect_digest_supervisor_facts(WINDOW, now=NOW, project_ids=("p",))
+    assert [row["task_id"] for row in brief["waiting_on_delivery"]] == ["waiting"]
+    assert brief["stuck"] == []

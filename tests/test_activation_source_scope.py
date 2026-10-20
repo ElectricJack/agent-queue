@@ -10,19 +10,15 @@ from __future__ import annotations
 
 import pytest
 
-from src.database import Database
 from src.models import Project, RepoConfig, RepoSourceType
 from src.playbooks.artifact_ref import ArtifactRef
 from src.playbooks.services import DatabaseActivationSource, is_global_event
-from tests.db_fixtures import lease_dsn
 
 
 @pytest.fixture
-async def db(tmp_path):
-    database = Database(lease_dsn("scope.db"))
-    await database.initialize()
+async def db(reuse_database):
+    database = await reuse_database("scope.db")
     yield database
-    await database.close()
 
 
 async def _activate(db, playbook_id: str, scope: str, identifier: str, digit: str) -> str:

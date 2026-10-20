@@ -307,6 +307,69 @@ async def scan_by_env_marker(marker_key: str) -> list[ProcEntry]:
     return await asyncio.to_thread(_scan_sync, marker_key)
 
 
+def _workspace_quiescent_sync(paths: tuple[str, ...], instance_token: str) -> bool:
+    """Strict local proof for reuse, including unmarked and detached child writers.
+
+    Unlike discovery scans, unreadable same-user processes are unknown, not an
+    empty result. A provider stop alone says nothing about an unmarked process
+    with its cwd or an open index/file descriptor inside the retained source.
+    """
+    if not instance_token:
+        raise OSError("Missing session instance for process proof")
+    roots = tuple(Path(path).resolve(strict=True) for path in paths)
+    for proc in list(_PROC.iterdir()):
+        if not proc.name.isdigit() or int(proc.name) == os.getpid():
+            continue
+        try:
+            if proc.stat().st_uid != os.getuid():
+                continue  # Providers launch workers under the daemon's uid.
+            stat = (proc / "stat").read_text()
+            if stat[stat.rfind(")") + 2:].split()[0] in {"Z", "X"}:
+                continue
+            env = (proc / "environ").read_bytes().split(b"\0")
+            if f"AQ_INSTANCE_TOKEN={instance_token}".encode() in env:
+                return False
+            targets = [os.readlink(proc / "cwd")]
+            for fd in (proc / "fd").iterdir():
+                try:
+                    targets.append(os.readlink(fd))
+                except FileNotFoundError:
+                    continue  # An individual descriptor closed during the scan.
+            if any(Path(target).is_absolute() and any(
+                Path(target.removesuffix(" (deleted)")).is_relative_to(root) for root in roots
+            ) for target in targets):
+                return False
+        except OSError:
+            # A process can exit between stat and environ/fd: Linux can deny
+            # environ during that teardown. Only a fresh terminal state (or
+            # disappearance) settles it; a live unreadable process still refuses.
+            try:
+                latest = (proc / "stat").read_text()
+            except (FileNotFoundError, ProcessLookupError):
+                continue
+            if latest[latest.rfind(")") + 2:].split()[0] in {"Z", "X"}:
+                continue
+            raise
+        except (IndexError, ValueError) as exc:
+            raise OSError("Process identity is unreadable") from exc
+    return True
+
+
+async def workspace_quiescent(paths: tuple[str, ...], instance_token: str) -> bool:
+    """True only after a complete local process inventory proves no source user."""
+    for attempt in range(3):
+        try:
+            return await asyncio.to_thread(_workspace_quiescent_sync, paths, instance_token)
+        except OSError:
+            if attempt == 2:
+                raise
+            # Teardown and exec can briefly make proc entries unreadable. Start
+            # a complete fresh inventory; never turn an unreadable entry into
+            # evidence of quiescence. Persistent uncertainty still retains work.
+            await asyncio.sleep(0.1)
+    raise AssertionError("unreachable")
+
+
 async def read_start_ticks(pid: int) -> int | None:
     """Kernel start time for *pid*, or ``None`` when the process is gone."""
     stat = await asyncio.to_thread(_read_stat_sync, pid)

@@ -99,6 +99,8 @@ class WorkerFacts:
     needs_attention: str | None = None
     #: Frontier predicates that exclude this task while it is READY.
     exclusions: tuple[str, ...] = ()
+    #: Ingestion batch awaiting fidelity review; held members are not candidates.
+    held_batch_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -594,7 +596,7 @@ _UNPROVEN_REASONS = {
     "missing_or_ambiguous_source": (
         "git could not locate an exact source for this completion"
     ),
-    "missing_target": "{target} does not exist, so nothing can be delivered to it",
+    "target_ref_missing": "{target} does not exist, so nothing can be delivered to it",
 }
 
 
@@ -822,7 +824,8 @@ def _queued_or_excluded(
     predicate = worker.exclusions[0]
     return result(
         "blocked", f"{noun} blocked - not claimable",
-        reason=f"{worker.id}: {FRONTIER_PREDICATE_DETAILS.get(predicate, predicate)}",
+        reason=f"{worker.id}: "
+        + FRONTIER_PREDICATE_DETAILS.get(predicate, predicate).format(batch_id=worker.held_batch_id),
         responsible=_ref("system", None, "Claim frontier"), since=since, extra=links,
     )
 
@@ -1459,7 +1462,8 @@ class EpicDeliveryProjection:
 
     async def _workers_on(self, conn, worker_ids: list[str]) -> dict[str, WorkerFacts]:
         _delivery_query = select(
-            tasks.c.id, tasks.c.status, tasks.c.updated_at, tasks.c.profile_id, tasks.c.project_id
+            tasks.c.id, tasks.c.status, tasks.c.updated_at, tasks.c.profile_id, tasks.c.project_id,
+            tasks.c.held_batch_id,
         ).where(tasks.c.id.in_(worker_ids))
         found = {row["id"]: dict(row) for row in (await conn.execute(_delivery_query)).mappings()}
         meta: dict[str, dict[str, Any]] = {}
@@ -1520,6 +1524,7 @@ class EpicDeliveryProjection:
                 blocked_terminal=_text(meta.get(task_id, {}).get(TERMINAL_BLOCKED_META_KEY)),
                 needs_attention=_text(meta.get(task_id, {}).get("needs_attention")),
                 exclusions=exclusions.get(task_id, ()),
+                held_batch_id=row["held_batch_id"],
             )
         return out
 

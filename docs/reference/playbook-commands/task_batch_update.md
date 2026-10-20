@@ -14,14 +14,17 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/generated.py`](../../../src/commands/contracts/generated.py) |
-| Contract fingerprint | `sha256:c6b44a1c8e7f2403e946295cfd79dba91a197273586b64e944581aeee8d600e0` |
+| Contract fingerprint | `sha256:80ec63468bdb22ae4e653a91534524cf09300a824ce7749a60dff163c894fa31` |
 
 ## Parameters
 
 | Parameter | Type | Required | Default | Description |
 |---|---|---|---|---|
-| `proposal_id` | `string` | yes | — | Proposal to replace. |
-| `payload` | `object` | yes | — | The complete replacement change set (tasks, edits, edges, remove_edges, comments), in the same shape task_batch_propose takes. |
+| `proposal_id` | `string` | yes | — | — |
+| `project_id` | `string \| null` | no | `null` | — |
+| `payload` | `object \| null` | no | `null` | — |
+| `expected_revision` | `integer \| null` | no | `null` | — |
+| `operations` | `HeldBatchOperation[] \| null` | no | `null` | — |
 
 This generated contract exposes the **playbook** input-schema view. MCP/CLI/API retain their legacy **transport** view.
 Schema source: `explicit_tool`; quality: `declared`; coarse effect: `destructive`.
@@ -32,6 +35,27 @@ Schema source: `explicit_tool`; quality: `declared`; coarse effect: `destructive
 
 
 The result model is a JSON object. It preserves the original keys without a `root` or `payload` wrapper; its execution protocol is gated.
+
+## Nested objects
+
+### `HeldBatchOperation`
+
+| Field | Type | Description |
+|---|---|---|
+| `kind` | `"rewrite" \| "split" \| "combine" \| "reparent" \| "rewire" \| "add_leaf" \| "move_to_root" \| "retire"` | — |
+| `task_id` | `string \| null` | — |
+| `task_ids` | `string[] \| null` | — |
+| `changes` | `object \| null` | — |
+| `task` | `object \| null` | — |
+| `tasks` | `object[] \| null` | — |
+| `parent_id` | `string \| null` | — |
+| `delivery_targets` | `string[] \| null` | — |
+| `edges` | `object[] \| null` | — |
+| `remove_edges` | `object[] \| null` | — |
+| `reason` | `string \| null` | — |
+| `replacement_task_id` | `string \| null` | — |
+| `satisfied_by` | `string \| null` | — |
+| `rewire` | `object \| null` | — |
 
 ## Outcomes
 
@@ -46,7 +70,7 @@ This command declares no effect clause, so the playbook graph falls back to its 
 
 | Effect | Subject | Condition |
 |---|---|---|
-| Composite using proposal_id, payload | — | always |
+| Composite using proposal_id, project_id, payload, expected_revision, operations | — | always |
 
 <!-- aq:generated:end -->
 

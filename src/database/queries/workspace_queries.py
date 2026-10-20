@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import time
+from pathlib import Path
 
-from sqlalchemy import case, delete, func, insert, nulls_first, select, true, update
+from sqlalchemy import and_, case, delete, exists, func, insert, nulls_first, or_, select, true, update
 
-from src.database.tables import workspaces
+from src.database.queries.claim_queries import CLAIMED_BY_SESSION_KEY
 from src.database.queries.job_queries import unpinned_workspace
+from src.database.tables import sessions, task_metadata, tasks, workspaces
+from src.workspace_disable import kind_slot_cap
 from src.models import (
     KIND_MODE_WORKTREE,
     RepoSourceType,
@@ -60,13 +64,18 @@ class WorkspaceQueryMixin:
                     locked_by_task_id=workspace.locked_by_task_id,
                     locked_at=workspace.locked_at,
                     enabled=workspace.enabled,
+                    disabled_reason=workspace.disabled_reason,
+                    disabled_at=workspace.disabled_at,
                     slot_index=workspace.slot_index,
                     base_workspace_id=workspace.base_workspace_id,
                     created_at=time.time(),
                 )
             )
 
-    async def update_workspace(self, workspace_id: str, **fields) -> int:
+    async def update_workspace(
+        self, workspace_id: str, *, expected_generation: int | None = None,
+        require_unlocked: bool = False, **fields,
+    ) -> int:
         """Update arbitrary columns on a workspace. Returns rows affected.
 
         Used by ``_cmd_edit_workspace`` to atomically change path, source_type,
@@ -75,10 +84,14 @@ class WorkspaceQueryMixin:
         """
         if not fields:
             return 0
+        stmt = update(workspaces).where(workspaces.c.id == workspace_id)
+        if expected_generation is not None:
+            stmt = stmt.where(workspaces.c.generation == expected_generation)
+        if require_unlocked:
+            stmt = stmt.where(workspaces.c.locked_by_agent_id.is_(None),
+                              workspaces.c.locked_by_task_id.is_(None), unpinned_workspace())
         async with self._engine.begin() as conn:
-            result = await conn.execute(
-                update(workspaces).where(workspaces.c.id == workspace_id).values(**fields)
-            )
+            result = await conn.execute(stmt.values(**fields))
             return result.rowcount
 
     async def get_workspace(self, workspace_id: str) -> Workspace | None:
@@ -120,11 +133,132 @@ class WorkspaceQueryMixin:
             result = await conn.execute(stmt)
             return [self._row_to_workspace(r) for r in result.mappings().fetchall()]
 
-    async def delete_workspace(self, workspace_id: str) -> None:
-        """Delete a workspace record."""
+    async def read_workspace_owner_facts(
+        self, rows: list[Workspace]
+    ) -> dict[str, list[dict]]:
+        """Read-only owner facts for listed workspaces, in one transaction.
+
+        Returns ``{"tasks": [...], "sessions": [...]}``: each task a lock
+        names (status, claim fence, and the session its claim record names)
+        and every unended session whose agent, task or ``work_dir`` points at
+        one of *rows*.  Matching facts to rows is the caller's job
+        (:mod:`src.workspace_listing`); nothing here writes or takes a row
+        lock, so a listing can never contend with a claim.
+        """
+        if not rows:
+            return {"tasks": [], "sessions": []}
+        task_ids = sorted({ws.locked_by_task_id for ws in rows if ws.locked_by_task_id})
+        agent_ids = sorted({ws.locked_by_agent_id for ws in rows if ws.locked_by_agent_id})
+        paths = sorted({ws.workspace_path for ws in rows if ws.workspace_path})
+        session_match = [sessions.c.work_dir.in_(paths)]
+        if task_ids:
+            session_match.append(sessions.c.task_id.in_(task_ids))
+        if agent_ids:
+            session_match.append(sessions.c.agent_id.in_(agent_ids))
         async with self._engine.begin() as conn:
-            await conn.execute(
-                delete(workspaces).where(workspaces.c.id == workspace_id, unpinned_workspace())
+            task_rows = []
+            if task_ids:
+                task_rows = (await conn.execute(
+                    select(
+                        tasks.c.id, tasks.c.status, tasks.c.claim_epoch,
+                        tasks.c.assigned_agent_id,
+                        task_metadata.c.value.label("claimed_by_session"),
+                    )
+                    .select_from(tasks.outerjoin(task_metadata, and_(
+                        task_metadata.c.task_id == tasks.c.id,
+                        task_metadata.c.key == CLAIMED_BY_SESSION_KEY,
+                    )))
+                    .where(tasks.c.id.in_(task_ids))
+                )).mappings().fetchall()
+            session_rows = (await conn.execute(
+                select(
+                    sessions.c.id, sessions.c.project_id, sessions.c.agent_id,
+                    sessions.c.task_id, sessions.c.lifecycle, sessions.c.state,
+                    sessions.c.desired_state, sessions.c.claim_phase,
+                    sessions.c.claim_phase_at, sessions.c.last_claim_epoch,
+                    sessions.c.last_activity, sessions.c.work_dir,
+                    sessions.c.started_at,
+                )
+                .where(sessions.c.ended_at.is_(None), or_(*session_match))
+                .order_by(sessions.c.started_at.desc(), sessions.c.id)
+            )).mappings().fetchall()
+        return {
+            "tasks": [dict(r) for r in task_rows],
+            "sessions": [dict(r) for r in session_rows],
+        }
+
+    async def delete_workspace(self, workspace_id: str, *, conn=None) -> bool:
+        """Delete an unpinned record, optionally inside a retirement transaction."""
+        stmt = delete(workspaces).where(workspaces.c.id == workspace_id, unpinned_workspace())
+        if conn is not None:
+            return (await conn.execute(stmt)).rowcount == 1
+        async with self._engine.begin() as connection:
+            return (await connection.execute(stmt)).rowcount == 1
+
+    async def remove_missing_workspace_registration(
+        self, workspace_id: str, *, expected_path: str,
+    ) -> None:
+        """Remove missing inventory and its unused repo identities in one audited transaction."""
+        from src.database.tables import repos
+        from src.workspace_registration import path_is_missing
+
+        async with self._engine.begin() as conn:
+            ws = (await conn.execute(select(workspaces).where(
+                workspaces.c.id == workspace_id,
+            ).with_for_update())).mappings().one_or_none()
+            if ws is None:
+                raise ValueError("workspace registration no longer exists")
+            if (ws["workspace_path"] != expected_path or ws["slot_index"] is not None
+                    or not path_is_missing(expected_path)):
+                raise ValueError("workspace path or presence changed; diagnose again before removal")
+            if ws["locked_by_agent_id"] or ws["locked_by_task_id"] or ws["job_pin_count"]:
+                raise ValueError("workspace is locked or pinned; release its owner first")
+            if (await conn.execute(select(sessions.c.id).where(
+                sessions.c.work_dir == expected_path, sessions.c.ended_at.is_(None),
+            ).limit(1))).first():
+                raise ValueError("a live session still names the workspace; reconcile it first")
+            if (await conn.execute(select(workspaces.c.id).where(
+                workspaces.c.base_workspace_id == workspace_id,
+            ).limit(1))).first():
+                raise ValueError("workspace still has child slots; reconcile them first")
+
+            path = Path(expected_path).resolve()
+            # Repository rows have no workspace FK. Match only the actual local
+            # source/base path, never a similar name, URL, or another project.
+            other_paths = (await conn.execute(select(workspaces.c.workspace_path).where(
+                workspaces.c.project_id == ws["project_id"], workspaces.c.id != workspace_id,
+            ))).scalars().all()
+            repo_ids = []
+            if not any(Path(p).resolve() == path for p in other_paths):
+                candidates = (await conn.execute(select(repos).where(
+                    repos.c.project_id == ws["project_id"],
+                ).with_for_update())).mappings().all()
+                for repo in candidates:
+                    local = (repo["source_path"] if repo["source_type"] == "link"
+                             else repo["checkout_base_path"])
+                    if local and Path(local).resolve() == path:
+                        repo_ids.append(repo["id"])
+            if repo_ids:
+                # Some retained history/owner tables intentionally have soft
+                # repository references. A missing checkout does not authorize
+                # orphaning those identities, even after task archival.
+                for table in repos.metadata.tables.values():
+                    for name in ("repo_id", "repository_id", "parent_repository_id",
+                                 "integration_repository_id"):
+                        column = table.c.get(name)
+                        if column is not None and (await conn.execute(
+                            select(column).where(column.in_(repo_ids)).limit(1),
+                        )).first():
+                            raise ValueError(f"matching repository is referenced by {table.name}")
+                # Foreign keys additionally refuse task/lease references, rolling
+                # back both deletes and the audit entry on any failure.
+                await conn.execute(delete(repos).where(repos.c.id.in_(repo_ids)))
+            await conn.execute(delete(workspaces).where(workspaces.c.id == workspace_id))
+            await self.log_event(
+                "workspace.registration_removed", project_id=ws["project_id"],
+                payload=json.dumps({"workspace_id": workspace_id, "path": expected_path,
+                                    "repository_ids": repo_ids, "reason": "missing_path"}),
+                conn=conn,
             )
 
     async def acquire_workspace(
@@ -305,8 +439,8 @@ class WorkspaceQueryMixin:
         Args:
             project_id: Project scope.
             kind_id: Required kind id.  Workspaces are filtered by
-                ``workspaces.kind_id == kind_id`` (no kind resolution here —
-                callers resolve via ``resolve_workspace_kind`` and pass
+                their kind (legacy NULL means ``project-repo``; callers
+                resolve via ``resolve_workspace_kind`` and pass
                 ``kind.id``).
             mode: Lock mode string (``"exclusive"`` / ``"branch_isolated"`` /
                 ``"directory_isolated"``).  Comes from
@@ -342,13 +476,30 @@ class WorkspaceQueryMixin:
         # the project's current cap.  ``true()`` keeps the legacy path a
         # byte-for-byte no-op in the generated SQL shape.
         if kind_mode == KIND_MODE_WORKTREE:
-            slot_filter = workspaces.c.slot_index.isnot(None)
+            if worktree_slot_cap is not None:
+                kind = await self.resolve_workspace_kind(project_id, kind_id)
+                worktree_slot_cap = kind_slot_cap(worktree_slot_cap, kind)
+            base = workspaces.alias("acquisition_base")
+            slot_filter = workspaces.c.slot_index.isnot(None) & exists(select(base.c.id).where(
+                base.c.id == workspaces.c.base_workspace_id,
+                base.c.enabled.is_(True),
+                base.c.project_id == workspaces.c.project_id,
+                func.coalesce(base.c.kind_id, "project-repo") == kind_id,
+            ))
             if worktree_slot_cap is not None:
                 slot_filter = slot_filter & (
                     workspaces.c.slot_index < worktree_slot_cap
                 )
         else:
             slot_filter = true()
+
+        task_available = workspaces.c.locked_by_task_id.is_(None)
+        if prefer_workspace_id:
+            from src.integration.retained_workspace import retained_repair_reservation
+
+            task_available = or_(task_available, retained_repair_reservation(
+                locked_by_task_id, locked_by_agent_id, prefer_workspace_id,
+            ))
 
         async with self._engine.begin() as conn:
             candidate_ids: list[str] = []
@@ -359,8 +510,9 @@ class WorkspaceQueryMixin:
                         select(workspaces.c.id).where(
                             (workspaces.c.id == prefer_workspace_id)
                             & (workspaces.c.project_id == project_id)
-                            & (workspaces.c.kind_id == kind_id)
+                            & (func.coalesce(workspaces.c.kind_id, "project-repo") == kind_id)
                             & (workspaces.c.locked_by_agent_id.is_(None))
+                            & task_available
                             & (workspaces.c.enabled.is_(True))
                             & slot_filter
                         )
@@ -374,8 +526,9 @@ class WorkspaceQueryMixin:
                     select(workspaces.c.id)
                     .where(
                         (workspaces.c.project_id == project_id)
-                        & (workspaces.c.kind_id == kind_id)
+                        & (func.coalesce(workspaces.c.kind_id, "project-repo") == kind_id)
                         & (workspaces.c.locked_by_agent_id.is_(None))
+                        & task_available
                         & (workspaces.c.enabled.is_(True))
                         & slot_filter
                     )
@@ -436,6 +589,9 @@ class WorkspaceQueryMixin:
                     .where(
                         (workspaces.c.id == ws_row["id"])
                         & (workspaces.c.locked_by_agent_id.is_(None))
+                        & task_available
+                        & (workspaces.c.enabled.is_(True))
+                        & slot_filter
                     )
                     .values(
                         locked_by_agent_id=locked_by_agent_id,
@@ -463,6 +619,7 @@ class WorkspaceQueryMixin:
         self,
         project_id: str,
         kind_id: str,
+        *, workspace_snapshot: list[Workspace] | None = None,
     ) -> Workspace | None:
         """The base workspace that hosts a kind's slot worktrees.
 
@@ -477,12 +634,18 @@ class WorkspaceQueryMixin:
         used for fetch, branch queries and ``git worktree`` bookkeeping, so
         it must be resolvable while every slot beneath it is busy.
         """
+        if workspace_snapshot is not None:
+            # list_workspaces supplies the same clone-first/id ordering as
+            # the SQL below. Reuse it when measuring every kind in a tick.
+            return next((w for w in workspace_snapshot if w.project_id == project_id
+                         and (w.kind_id or "project-repo") == kind_id
+                         and w.slot_index is None and w.enabled), None)
         async with self._engine.begin() as conn:
             result = await conn.execute(
                 select(workspaces)
                 .where(
                     (workspaces.c.project_id == project_id)
-                    & (workspaces.c.kind_id == kind_id)
+                    & (func.coalesce(workspaces.c.kind_id, "project-repo") == kind_id)
                     & (workspaces.c.slot_index.is_(None))
                     & (workspaces.c.enabled.is_(True))
                 )
@@ -575,7 +738,9 @@ class WorkspaceQueryMixin:
                 return None
             return self._row_to_workspace(row)
 
-    async def get_project_workspace_path(self, project_id: str) -> str | None:
+    async def get_project_workspace_path(
+        self, project_id: str, kind_id: str = "project-repo"
+    ) -> str | None:
         """Return the workspace_path of the first workspace for a project.
 
         Non-locking read. Prefers clone workspaces over link workspaces.
@@ -583,7 +748,12 @@ class WorkspaceQueryMixin:
         async with self._engine.begin() as conn:
             result = await conn.execute(
                 select(workspaces.c.workspace_path)
-                .where(workspaces.c.project_id == project_id)
+                .where(
+                    workspaces.c.project_id == project_id,
+                    workspaces.c.enabled.is_(True),
+                    workspaces.c.slot_index.is_(None),
+                    func.coalesce(workspaces.c.kind_id, "project-repo") == kind_id,
+                )
                 .order_by(_source_type_order, workspaces.c.id)
                 .limit(1)
             )
@@ -596,6 +766,8 @@ class WorkspaceQueryMixin:
         *,
         worktree_slot_cap: int | None = None,
         kind_id: str | None = None,
+        workspace_snapshot: list[Workspace] | None = None,
+        kind_snapshot: dict | None = None,
     ) -> int:
         """Count acquirable capacity for a project.
 
@@ -610,12 +782,17 @@ class WorkspaceQueryMixin:
         lazily on demand.  Counting inventory there would refuse to create
         any agent at all, and the project would never start.
         """
-        # Pool workers acquire project-repo only. Callers can restrict the
+        # Pool workers acquire their primary kind. Callers restrict the
         # count to that kind so an auto-attached vault cannot advertise a
         # launch slot when the repository has no acquirable capacity.
         # The legacy path stays a single SQL COUNT: it runs per project on
         # every 5 s cascade cycle and, with worktrees off (the default), no
         # kind resolution is needed to answer it.
+        if workspace_snapshot is not None and worktree_slot_cap is None:
+            return sum(w.project_id == project_id and w.enabled
+                       and w.locked_by_agent_id is None and w.locked_by_task_id is None
+                       and (kind_id is None or (w.kind_id or "project-repo") == kind_id)
+                       for w in workspace_snapshot)
         if worktree_slot_cap is None:
             async with self._engine.begin() as conn:
                 result = await conn.execute(
@@ -624,13 +801,16 @@ class WorkspaceQueryMixin:
                     .where(
                         (workspaces.c.project_id == project_id)
                         & (workspaces.c.locked_by_agent_id.is_(None))
+                        & (workspaces.c.locked_by_task_id.is_(None))
                         & (workspaces.c.enabled.is_(True))
-                        & (workspaces.c.kind_id == kind_id if kind_id is not None else true())
+                        & (func.coalesce(workspaces.c.kind_id, "project-repo") == kind_id
+                           if kind_id is not None else true())
                     )
                 )
                 return result.fetchone()[0]
 
-        all_rows = await self.list_workspaces(project_id)
+        all_rows = (await self.list_workspaces(project_id) if workspace_snapshot is None
+                    else [w for w in workspace_snapshot if w.project_id == project_id])
         if kind_id is not None:
             all_rows = [w for w in all_rows if (w.kind_id or "project-repo") == kind_id]
         rows = [w for w in all_rows if w.enabled]
@@ -640,7 +820,8 @@ class WorkspaceQueryMixin:
         for w in rows:
             kid = w.kind_id or "project-repo"
             if kid not in kinds:
-                kinds[kid] = await self.resolve_workspace_kind(project_id, kid)
+                kinds[kid] = (await self.resolve_workspace_kind(project_id, kid)
+                              if kind_snapshot is None else kind_snapshot.get(kid))
 
         # Only *the* base row of a worktree-mode kind carries capacity (§7.3);
         # any further clone rows contribute nothing under worktree mode — they
@@ -655,7 +836,9 @@ class WorkspaceQueryMixin:
         bases: dict[str, str | None] = {}
         for kid, kind in kinds.items():
             if _is_worktree_mode(kind):
-                base = await self.find_worktree_base(project_id, kid)
+                base = await self.find_worktree_base(
+                    project_id, kid, workspace_snapshot=all_rows,
+                )
                 bases[kid] = base.id if base is not None else None
 
         total = 0
@@ -664,22 +847,24 @@ class WorkspaceQueryMixin:
             kind = kinds.get(kid)
             worktree_mode = _is_worktree_mode(kind)
             if not worktree_mode:
-                if w.locked_by_agent_id is None:
+                if w.locked_by_agent_id is None and w.locked_by_task_id is None:
                     total += 1
                 continue
             if w.slot_index is not None:
                 continue  # counted through its base's capacity
             if bases.get(kid) != w.id:
                 continue  # a redundant clone under worktree mode
+            cap = kind_slot_cap(worktree_slot_cap, kind)
             unavailable_slots = sum(
                 1
                 for s in all_rows
                 if s.base_workspace_id == w.id
                 and s.slot_index is not None
-                and (not s.enabled or s.locked_by_agent_id is not None)
-                and s.slot_index < worktree_slot_cap
+                and (not s.enabled or s.locked_by_agent_id is not None
+                     or s.locked_by_task_id is not None)
+                and s.slot_index < cap
             )
-            total += max(0, worktree_slot_cap - unavailable_slots)
+            total += max(0, cap - unavailable_slots)
         return total
 
     async def count_free_slots(
@@ -701,6 +886,7 @@ class WorkspaceQueryMixin:
         :meth:`acquire_one_unlocked` will consider.
         """
         rows = [w for w in await self.list_workspaces(project_id) if w.enabled]
+        bases = {(w.id, w.kind_id or "project-repo") for w in rows if not w.is_slot}
 
         kinds: dict[str, object] = {}
         for w in rows:
@@ -712,8 +898,10 @@ class WorkspaceQueryMixin:
             1
             for w in rows
             if w.slot_index is not None
-            and w.slot_index < worktree_slot_cap
+            and w.slot_index < kind_slot_cap(worktree_slot_cap, kinds.get(w.kind_id or "project-repo"))
+            and (w.base_workspace_id, w.kind_id or "project-repo") in bases
             and w.locked_by_agent_id is None
+            and w.locked_by_task_id is None
             and _is_worktree_mode(kinds.get(w.kind_id or "project-repo"))
         )
 
@@ -733,6 +921,9 @@ class WorkspaceQueryMixin:
             locked_at=row["locked_at"],
             lock_mode=WorkspaceMode(raw_mode) if raw_mode else None,
             enabled=bool(row["enabled"]),
+            generation=row["generation"],
+            disabled_reason=row.get("disabled_reason"),
+            disabled_at=row.get("disabled_at"),
             slot_index=row["slot_index"],
             base_workspace_id=row["base_workspace_id"],
         )

@@ -24,6 +24,7 @@ from src.integration.promotion_steps import (
     StepPullRequestGate,
     frozen_required_checks, promotion_ref, promotion_task_defect, settle_promotion,
 )
+from tests.test_integration_gitops import git_history_template as git_history_template
 from tests.test_integration_gitops import commit, git, setup as setup
 from tests.test_integration_train_sources import HostedGitHub
 
@@ -733,6 +734,9 @@ async def test_managed_publication_leases_cover_branch_tag_and_cleanup(promotion
     from src.integration.train_sources import LeasedPublish
 
     e = promotion
+    await e.db.update_project(
+        "p", integration_repository_id="r", hierarchical_integration_mode="train",
+    )
     publisher = LeasedPublish(e.db, e.ops.git)
     e.service.publish = publisher
     e.service.publish_tag = publisher.qualified
@@ -748,6 +752,9 @@ async def test_busy_managed_target_defers_branch_and_tag(promotion):
     from src.integration.train_sources import LeasedPublish
 
     e = promotion
+    await e.db.update_project(
+        "p", integration_repository_id="r", hierarchical_integration_mode="train",
+    )
     publisher = LeasedPublish(e.db, e.ops.git)
     fence = await publisher.locks.acquire(BranchKey(repository_id="r", branch=e.batch.target_ref),
                                           "another-publisher", role="integration")

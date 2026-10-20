@@ -435,6 +435,9 @@ class _Lane:
     start: int = 0
     visits: int = 0
     errors: int = 0
+    #: Diagnostic only: last change in batch, candidate, target or exact-check state.
+    progress_at: float = 0.0
+    progress_identity: tuple | None = None
     #: No visit starts before this time; :meth:`IntegrationTrain.wake` clears it.
     not_before: float = 0.0
     #: The unchanged refusal identity, and how many visits in a row.
@@ -504,6 +507,11 @@ class IntegrationTrain:
         async with self._tick_lock:
             started, running, deferred = [], [], []
             targets = [target] if target is not None else await self.targets.targets(now)
+            if target is None:
+                for key in getattr(self.targets, "retired_targets", ()):
+                    lane = self._lanes.get(key)
+                    if lane is not None and (lane.task is None or lane.task.done()):
+                        del self._lanes[key]
             occupied: dict[str, int] = {}
             for key, lane in self._lanes.items():
                 if lane.task is not None and not lane.task.done():
@@ -584,6 +592,8 @@ class IntegrationTrain:
                 row["progress"] = dict(lane.progress)
                 row["visit_started_at"] = lane.started_at
             row["visits"], row["errors"] = lane.visits, lane.errors
+            if lane.progress_at:
+                row["progress_at"] = lane.progress_at
             if lane.not_before:
                 row["deferred_until"] = lane.not_before
             rows.append(row)
@@ -666,6 +676,11 @@ class IntegrationTrain:
             # A visit begun after the pause got past GitHub: the limit is over.
             del self._pauses[target.key[:2]]
         lane.visits += 1
+        identity = (visit.batch_id, visit.state, visit.candidate_sha, visit.target_sha, visit.checks)
+        if visit.state != "unknown" and lane.progress_identity != identity:
+            if lane.progress_identity is not None:
+                lane.progress_at = self.clock()
+            lane.progress_identity = identity
         lane.last = self._wait(target, lane, visit)
 
     def _admit(self, key: tuple[str, str, str], now: float) -> bool:
@@ -741,8 +756,14 @@ class IntegrationTrain:
         else:
             visit = await self._visit_batch(target, lane, snapshot, opened.batch, opened.members)
         blockers = opened.blockers
-        if target.kind == "epic" and lane.complete_epic and visit.state in {"idle", "delivered"}:
+        window_deferred = (opened.batch is None and opened.blockers and all(
+            item["code"] == "selection_deferred" for item in opened.blockers))
+        if (target.kind == "epic" and lane.complete_epic
+                and (visit.state in {"idle", "delivered"} or window_deferred)):
             _progress("settle_epic")
+            # A bounded selection window is not an aggregate verdict. The
+            # full evaluator still examines every required child. Other
+            # admission refusals (such as repository recovery) retain authority.
             # Publication moved the ref; readiness must examine the collected
             # head, rather than the snapshot from before the child batch landed.
             if visit.state == "delivered":
@@ -752,6 +773,8 @@ class IntegrationTrain:
             blockers += tuple(item for item in completion if item.get("blocking") is not False)
             if events:
                 visit = replace(visit, detail={**(visit.detail or {}), "epic_completions": events})
+                if any(item.get("code") == "epic_delivered" for item in events):
+                    visit = replace(visit, state="delivered")
             if blockers and visit.state == "idle":
                 visit = replace(visit, state="blocked")
         if blockers:
@@ -863,15 +886,39 @@ class IntegrationTrain:
                 "reason": "red candidate has no identifiable failing required checks",
             }), result)
         _progress("compare_target_baseline")
+        baseline_sha, baseline_ref = observation.target_sha, None
+        if batch.epic_refresh:
+            # The epic can itself have introduced these failures. Only the
+            # frozen default input can establish that a refresh failure already
+            # exists on the default branch; never substitute its later head.
+            (default_member,) = members
+            baseline_sha = default_member.source_sha
+            repo = await lane.service.gitops.repository(batch)
+            baseline_ref = "refs/heads/" + repo.default_branch.removeprefix("refs/heads/")
         baseline = await self.baseline.verdict(
-            batch, candidate=result, target_sha=observation.target_sha, checks=checks,
+            batch, candidate=result, target_sha=baseline_sha, checks=checks,
+            target_ref=baseline_ref,
         )
         if baseline.repair:
             visit = await self._repair(
                 target, lane, batch, members, observation, result,
                 brief=red_brief(baseline, head.sha, candidate=result),
             )
-            return replace(visit, detail={**(visit.detail or {}), **baseline.detail()})
+            detail = {**(visit.detail or {}), **baseline.detail()}
+            if batch.epic_refresh and baseline.repairable:
+                detail.update(
+                    blocker="epic_refresh_checks_failed",
+                    reason="the refresh candidate fails required checks that pass on its "
+                           "frozen default-branch input",
+                    supervisor_action=(
+                        f"Inspect and repair refresh candidate {head.sha} for batch {batch.id}; "
+                        f"baseline {baseline_ref} at {baseline_sha} passes "
+                        f"{', '.join(baseline.repairable)}. Publication requires trusted checks "
+                        "and attestation on the exact candidate. To abandon the refresh, use "
+                        f"aq integration abort-batch {batch.id} --apply --reason REASON."
+                    ),
+                )
+            return replace(visit, detail=detail)
         sync = None
         if target.kind == "epic" and baseline.state == "pre_existing" and lane.sync_default_branch:
             _progress("verify_default_branch")

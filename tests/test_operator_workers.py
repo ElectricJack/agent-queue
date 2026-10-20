@@ -8,7 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-from sqlalchemy import update
+from sqlalchemy import insert, update
 
 from src.api.auth import RequestScope
 from src.api.scope import check_command_scope
@@ -17,11 +17,12 @@ from src.commands.operator_authority import (
     operator_grant_var,
 )
 from src.commands.principal import ExecutionPrincipal, PrincipalKind, current_principal, principal_context
-from src.database.tables import events
+from src.database.tables import events, integration_batches
 from src.git.github_contracts import GitHubCredentialIdentity, GitHubRepositoryBinding
 from src.models import Agent, AgentProfile, AgentState, Project, SessionRecord, Task, TaskStatus, TaskType
 from src.operator_decisions import OperatorDecisions
 from src.profiles.capabilities import CapabilityPolicy
+from tests.test_review_service import decided
 
 
 @pytest.fixture
@@ -48,6 +49,7 @@ async def operator(command_handler_factory, monkeypatch):
                             provider="openai", name="ops", lifecycle="pool", work_dir="/tmp",
                             epoch="epoch", instance_token="instance", started_at=time.time(),
                             state="running", task_id="t", agent_id="a", last_claim_epoch=7,
+                            claim_phase="active",
                             intelligence_class="deep-high")
     await db.create_session(session)
     principal = ExecutionPrincipal(
@@ -232,12 +234,45 @@ async def test_operator_playbooks_need_project_scope_and_reviewed_exact_hash(ope
         operator_grant_var.reset(token)
 
 
-@pytest.mark.parametrize("command", ["playbook_activate", "playbook_delete", "policy_apply", "pr_merge", "review_decide", "decision_record"])
+@pytest.mark.parametrize("command", ["playbook_activate", "playbook_delete", "policy_apply", "pr_merge", "review_decide", "decision_record", "integration_settle_batch"])
 async def test_raw_operator_commands_cannot_bypass_wrapper_even_with_capabilities_off(operator, command):
     handler, _ = operator
     handler.config.security.capability_enforcement = "off"
     result = await execute(operator, command)
     assert not result.get("success", "error" not in result), result
+
+
+async def test_operator_batch_settlement_requires_human_decision_and_preflight(operator, monkeypatch):
+    handler, _ = operator
+    async with handler.db._engine.begin() as conn:
+        await conn.execute(insert(integration_batches).values(
+            id="batch", project_id="p", repository_id="r", request_id="settle",
+            source_manifest_digest="digest", lifecycle="empty", policy_snapshot={},
+            artifact_snapshot={}, cleanup_state="pending", created_at=time.time(),
+            updated_at=time.time(),
+        ))
+    for command in ("integration_trust_manifest", "integration_app_verify"):
+        monkeypatch.setattr(handler, "_cmd_" + command,
+                            AsyncMock(return_value={"success": True}))
+    monkeypatch.setattr(handler, "_operator_repository_probes", AsyncMock())
+    arguments = {"batch_id": "batch", "dry_run": False, "expected_target_sha": "a" * 40,
+                 "reason": "Sources are already delivered"}
+    action = AsyncMock(return_value={"success": True})
+    monkeypatch.setattr(handler, "_cmd_integration_settle_batch", action)
+    result = await execute(operator, "operator_execute", command="integration_settle_batch",
+                           arguments=arguments)
+    assert not result["success"] and "human decision" in result["error"], result
+    human = await decision(handler, "integration_settle_batch", arguments)
+    plan = {"command": "integration_settle_batch", "arguments": arguments,
+            "decision_id": human["id"]}
+    result = await execute(operator, "operator_execute", **plan)
+    assert not result["success"] and "preflight" in result["error"], result
+    preflight = await execute(operator, "operator_preflight", actions=[plan])
+    assert preflight["ready"], preflight
+    result = await execute(operator, "operator_execute", **plan,
+                           preflight_id=preflight["preflight_id"])
+    assert result["success"], result
+    action.assert_awaited_once_with(arguments)
 
 
 async def test_project_policy_copy_runs_through_preflight_and_blocks_global_placement(operator):
@@ -266,18 +301,41 @@ async def test_project_policy_copy_runs_through_preflight_and_blocks_global_plac
     assert not (Path(handler.config.vault_root) / "system/templates/spec/base.md").exists()
 
 
-async def test_operator_activation_requires_approved_current_revision_and_exact_hash(operator):
+def setup_playbook_pin():
+    from src.playbooks.definition import PlaybookDefinition, canonical_bytes, source_digest
     from src.reviews.service import PlaybookPin
 
+    source = "# Scoped setup\n"
+    reference = {"path": "setup.md", "start_line": 1, "end_line": 1}
+    definition = PlaybookDefinition.model_validate({
+        "id": "p.setup", "version": 1, "scope": {"type": "project", "project_id": "p"},
+        "source_hash": source_digest(source), "compiled_at": "2026-10-10T00:00:00Z",
+        "rules": [{"id": "setup", "name": "Setup", "trigger": {"event_type": "task.created"},
+                   "entry_step": "done", "source": reference}],
+        "steps": {"done": {"type": "terminal", "title": "Done", "rule": "setup", "outcome": "completed",
+                           "source": reference}},
+    })
+    pin = PlaybookPin(meta={
+        "playbook_id": definition.id, "artifact_sha256": definition.artifact_sha256(),
+        "scope": "project", "scope_identifier": "p", "source_markdown": source,
+        "activate_on_approval": False,
+    }, artifact=canonical_bytes(definition).decode())
+    return source, definition, pin
+
+
+async def test_operator_activation_requires_approved_current_revision_and_exact_hash(operator):
     handler, _ = operator
-    sha = "sha256:" + "b" * 64
+    handler.config.playbooks.enabled = True
+    source, definition, pin = setup_playbook_pin()
+    sha = definition.artifact_sha256()
     service = handler._review_service()
     review = await service.submit(project_id="p", author_task_id="t", kind="other",
-                                  title="Setup", content="# Setup artifact\n", submitted_by="session:s",
-                                  playbook=PlaybookPin(meta={"artifact_sha256": sha}, artifact="{}"))
+                                  title="Setup", content=source, submitted_by="session:s",
+                                  playbook=pin)
     assert not await handler._operator_artifact_approved("p", sha)
-    await service.decide(review_id=review["review_id"], revision=1, decision="approve", note="ok",
-                         decided_by="human:local-operator")
+    approved = await decided(service, review_id=review["review_id"], revision=1,
+                             decision="approve", note="", decided_by="human:local-operator")
+    assert approved["application_state"] == "applied" and approved["playbook"]["stored"], approved
     assert await handler._operator_artifact_approved("p", sha)
     assert not await handler._operator_artifact_approved("foreign", sha)
     assert not await handler._operator_artifact_approved("p", "sha256:" + "c" * 64)
@@ -301,21 +359,11 @@ def test_operator_cli_parses_action_objects_and_preflight_receipt(monkeypatch):
 
 async def test_operator_imports_project_bundle_then_activates_only_after_approval(operator):
     import yaml
-    from src.playbooks.definition import PlaybookDefinition, canonical_bytes, source_digest
-    from src.reviews.service import PlaybookPin
+    from src.playbooks.definition import canonical_bytes
 
     handler, _ = operator
     handler.config.playbooks.enabled = True
-    source = "# Scoped setup\n"
-    reference = {"path": "setup.md", "start_line": 1, "end_line": 1}
-    definition = PlaybookDefinition.model_validate({
-        "id": "p.setup", "version": 1, "scope": {"type": "project", "project_id": "p"},
-        "source_hash": source_digest(source), "compiled_at": "2026-10-10T00:00:00Z",
-        "rules": [{"id": "setup", "name": "Setup", "trigger": {"event_type": "task.created"},
-                   "entry_step": "done", "source": reference}],
-        "steps": {"done": {"type": "terminal", "title": "Done", "rule": "setup", "outcome": "completed",
-                           "source": reference}},
-    })
+    source, definition, pin = setup_playbook_pin()
     sha = definition.artifact_sha256()
     bundle = Path(handler.config.vault_root) / "reviewed" / definition.id
     bundle.mkdir(parents=True)
@@ -338,10 +386,10 @@ async def test_operator_imports_project_bundle_then_activates_only_after_approva
     assert not preflight["ready"] and "approved review" in str(preflight["blockers"]), preflight
     service = handler._review_service()
     review = await service.submit(project_id="p", author_task_id="t", kind="other", title="Setup",
-                                  content=source, submitted_by="session:s", playbook=PlaybookPin(
-                                      meta={"artifact_sha256": sha}, artifact=canonical_bytes(definition).decode()))
-    await service.decide(review_id=review["review_id"], revision=1, decision="approve", note="ok",
-                         decided_by="human:local-operator")
+                                  content=source, submitted_by="session:s", playbook=pin)
+    approved = await decided(service, review_id=review["review_id"], revision=1,
+                             decision="approve", note="", decided_by="human:local-operator")
+    assert approved["application_state"] == "applied" and approved["playbook"]["stored"], approved
     preflight = await execute(operator, "operator_preflight", actions=[plan])
     assert preflight["ready"], preflight
     activated = await execute(operator, "operator_execute", **plan, preflight_id=preflight["preflight_id"])

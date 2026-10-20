@@ -11,7 +11,7 @@ from sqlalchemy import select
 
 from src.collaboration import is_collaboration_thread
 from src.commands.principal import PrincipalKind, current_principal
-from src.models import MESSAGE_FROM_KINDS, MESSAGE_TO_KINDS
+from src.models import MESSAGE_TO_KINDS
 
 _SUPERVISOR_ADDRESS_PREFIX = "supervisor-"
 _GLOBAL_SUPERVISOR_ADDRESS = "supervisor-global"
@@ -129,15 +129,7 @@ async def prepare_submission(handler, args, *, conn=None):
         return {"success": False, "error": "to_id is required"}
 
     from_kind = (args.get("from_kind") or "user").strip()
-    if from_kind not in MESSAGE_FROM_KINDS:
-        return {
-            "success": False,
-            "error": f"Invalid from_kind '{from_kind}'. "
-            f"Allowed: {', '.join(sorted(MESSAGE_FROM_KINDS))}"
-        }
     from_id = (args.get("from_id") or "").strip()
-    if not from_id:
-        return {"success": False, "error": "from_id is required"}
 
     # A task, or a session addressed by id, belongs to one project, and its
     # readers are fenced to that project: a durable message wait matches
@@ -152,6 +144,28 @@ async def prepare_submission(handler, args, *, conn=None):
         else await recipient_project(handler, to_kind, to_id, conn)
     )
     scope = handler._current_scope or {}
+    scoped_global_report = False
+    if (
+        to_kind == "session" and scope.get("kind") == "session"
+        and scope.get("project_id") is not None
+        and (to_id == "n-supervisor--global" or await handler._global_supervisor_address(to_id))
+    ):
+        if (
+            to_id != _GLOBAL_SUPERVISOR_ADDRESS or args.get("system_only")
+            or await handler._project_supervisor_session() is None
+            or args.get("project_id") not in (None, scope["project_id"])
+        ):
+            return {"success": False, "error": "out of scope: system messages require global admin"}
+        scoped_global_report = True
+        requested_project_id = scope["project_id"]
+        from_kind, from_id = "session", scope["session_id"]
+    if not scoped_global_report and not (
+        principal and principal.kind is PrincipalKind.PLAYBOOK
+    ):
+        sender = await handler._ordinary_message_sender(args)
+        if isinstance(sender, dict):
+            return {"success": False, **sender}
+        from_kind, from_id = sender
     global_sender = bool(principal and principal.kind is PrincipalKind.PLAYBOOK
                          and principal.project_id is None and not requested_project_id) or (
         scope.get("kind") == "session"
@@ -160,7 +174,7 @@ async def prepare_submission(handler, args, *, conn=None):
         and not requested_project_id
     )
     system_only = global_sender or bool(args.get("system_only")) or (
-        to_kind == "session" and to_id == "supervisor-global"
+        to_kind == "session" and to_id == "supervisor-global" and not scoped_global_report
     ) or (
         not requested_project_id
         and from_kind == "session"
@@ -210,6 +224,14 @@ async def prepare_submission(handler, args, *, conn=None):
         parent = await lookup(handler, "messages", reply_to_id, conn)
         if parent is None:
             return {"success": False, "error": f"Message '{reply_to_id}' not found (reply_to_id)"}
+        if scoped_global_report:
+            if (
+                parent["to_kind"] != "session"
+                or parent["to_id"] not in await handler._own_supervisor_addresses()
+                or parent["from_kind"] != "session"
+                or not await handler._global_supervisor_address(parent["from_id"])
+            ):
+                return {"success": False, "error": "out of scope: reply must address an own global directive"}
         if is_collaboration_thread(parent["thread_id"]):
             return {
                 "success": False,

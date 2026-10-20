@@ -1,6 +1,6 @@
 ---
 playbook_id: ci-main-sentinel
-artifact_sha256: sha256:b26948267049ce66b380c6e83039d749e42c9800a97769295d9e9ffbbfb743f7
+artifact_sha256: sha256:1a72fdfbc5b1979b7be0264eb7336bfd161f4a94fd0fded8ef694c28772648cd
 source_sha256: sha256:1d9d609da7bb5c2fa6f6ac8e80a281a508accebe2f14ceb4b9eedf032fa7b8ee
 contract_fingerprint: sha256:422c596ade1f08822936de82ae7ba1a574cb59f081ff9fa9bd9f4e91d5f2d132
 questions_resolved: 0

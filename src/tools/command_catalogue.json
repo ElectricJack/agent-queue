@@ -191,6 +191,79 @@
       }
     },
     {
+      "name": "repair_repository_checkout",
+      "description": "Preview or apply an audited replacement for a confirmed missing repository checkout path. Preserves repository identity and verifies the replacement origin. Requires local operator or global supervisor authority.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "project_id": {
+            "type": "string"
+          },
+          "repository_id": {
+            "type": "string"
+          },
+          "expected_path": {
+            "type": "string"
+          },
+          "replacement_path": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "apply": {
+            "type": "boolean",
+            "default": false
+          }
+        },
+        "required": [
+          "project_id",
+          "repository_id",
+          "expected_path",
+          "replacement_path",
+          "reason"
+        ]
+      }
+    },
+    {
+      "name": "repair_workspace_checkout",
+      "description": "Preview or apply an audited base workspace path repair. Proves replacement origin and shared Git object store with all existing slots; preserves slots and claims. Apply requires expected_proof from preview. Local operator/global supervisor.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "project_id": {
+            "type": "string"
+          },
+          "workspace_id": {
+            "type": "string"
+          },
+          "expected_path": {
+            "type": "string"
+          },
+          "replacement_path": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "expected_proof": {
+            "type": "string"
+          },
+          "apply": {
+            "type": "boolean",
+            "default": false
+          }
+        },
+        "required": [
+          "project_id",
+          "workspace_id",
+          "expected_path",
+          "replacement_path",
+          "reason"
+        ]
+      }
+    },
+    {
       "name": "project_doctor",
       "description": "Check a project's repository authorization and offer an audited binding command.",
       "input_schema": {
@@ -1193,6 +1266,10 @@
             "type": "string",
             "description": "Workspace name (optional)"
           },
+          "enabled": {
+            "type": "boolean",
+            "description": "Enable admission (default true). Register a cutover target with false."
+          },
           "kind_id": {
             "type": "string",
             "description": "Workspace kind id (e.g. 'project-repo', 'package-foo', 'vault'). Defaults to 'project-repo'. Must resolve via project-scoped or system-wide vault/workspace-kinds/<id>.md."
@@ -1206,13 +1283,21 @@
     },
     {
       "name": "list_workspaces",
-      "description": "List workspaces, optionally filtered by project. Shows lock status (which agent/task holds each workspace).",
+      "description": "List workspaces, optionally filtered by project. Shows lock status and owner identity (lock task, claim fence, live session) per workspace, with bounded checkout diagnostics. Answers within deadline_seconds; `diagnostics.complete` is false when any part is unknown or timed out. A partial or failed diagnostic is not evidence that a lock is stale or a workspace is free. Read-only.",
       "input_schema": {
         "type": "object",
         "properties": {
           "project_id": {
             "type": "string",
             "description": "Filter by project ID (optional)"
+          },
+          "git": {
+            "type": "boolean",
+            "description": "Probe each checkout's branch and dirty state with git (default true). False returns lock and owner facts only."
+          },
+          "deadline_seconds": {
+            "type": "number",
+            "description": "Overall time budget for diagnostics (default 10, clamped to 0.5-20). Unfinished probes report timeout/not_started."
           }
         }
       }
@@ -1434,6 +1519,77 @@
             "description": "Project id to scope diagnosis (optional; active project when omitted)."
           }
         }
+      }
+    },
+    {
+      "name": "workspace_cutover",
+      "description": "Preview or apply a source-preserving base switch. Apply requires the exact preview proof. Disables the old base and slots without moving or deleting any source or releasing writers.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "description": "Project owning both bases."
+          },
+          "source_id": {
+            "type": "string",
+            "description": "Current enabled base."
+          },
+          "target_id": {
+            "type": "string",
+            "description": "New disabled, idle base of the same kind."
+          },
+          "apply": {
+            "type": "boolean",
+            "description": "Apply the preview (default false)."
+          },
+          "expected_proof": {
+            "type": "string",
+            "description": "Exact SHA256 proof returned by preview."
+          }
+        },
+        "required": [
+          "project_id",
+          "source_id",
+          "target_id"
+        ]
+      }
+    },
+    {
+      "name": "workspace_retire_claim",
+      "description": "Remove a worktree slot's leftover .aq/claim.json when its holder provably let go: the slot is unlocked, the holder task is completed, paused, released or superseded, and no live session works there. Refuses a claim that may still be live. Use when claim preparation reports 'retains a foreign claim'.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "workspace_id": {
+            "type": "string",
+            "description": "Slot workspace id whose claim file to retire."
+          }
+        },
+        "required": [
+          "workspace_id"
+        ]
+      }
+    },
+    {
+      "name": "workspace_clear_sentinel",
+      "description": "Return a worktree slot's .aq-worktree.json sentinel to the free form when the task it still names is completed, failed, blocked or gone. Refuses unless the slot holds no task lock, claim file, live claiming session, integration owner or job pin, and its tree is clean with HEAD published under a remote ref. Use when claim preparation reports 'branch disagrees with its source sentinel' after the named task ended.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "workspace_id": {
+            "type": "string",
+            "description": "Slot workspace id whose sentinel to clear."
+          },
+          "if_task_terminal": {
+            "type": "boolean",
+            "description": "Clear only when the named task is terminal (default true; the only supported mode).",
+            "default": true
+          }
+        },
+        "required": [
+          "workspace_id"
+        ]
       }
     },
     {
@@ -1946,10 +2102,35 @@
           "task_id": {
             "type": "string",
             "description": "Task ID to resume"
+          },
+          "recover_stale_pause": {
+            "type": "boolean",
+            "description": "Operator/supervisor recovery of a stale pause on an unchanged retained source; still requires writer stop proof and ordinary checkpoint cleanup."
           }
         },
         "required": [
           "task_id"
+        ]
+      }
+    },
+    {
+      "name": "discard_pause_checkpoint",
+      "description": "Discard a task's paused Git checkpoint so preparation stops restoring it, e.g. one captured from another task's slot checkout. Its ref and commit stay reachable and are recorded in a manual_pause_checkpoint_discarded audit entry.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "description": "Task whose checkpoint to discard"
+          },
+          "reason": {
+            "type": "string",
+            "description": "Why the checkpoint is discarded (audited)"
+          }
+        },
+        "required": [
+          "task_id",
+          "reason"
         ]
       }
     },
@@ -1971,7 +2152,7 @@
     },
     {
       "name": "task_recover",
-      "description": "Decide a supervisor recovery incident: retry safely within existing budgets or hold with a recorded diagnosis. Never bypass a rejection using restart_task or status edits.",
+      "description": "Decide a supervisor recovery incident: retry safely within existing budgets, hold with a diagnosis, or explicitly release an exact hold with operator/global-supervisor authority. Never bypass a rejection using restart_task or status edits.",
       "input_schema": {
         "type": "object",
         "properties": {
@@ -1987,12 +2168,17 @@
             "type": "string",
             "enum": [
               "retry",
-              "hold"
+              "hold",
+              "release"
             ]
+          },
+          "operator_release": {
+            "type": "boolean",
+            "description": "Local operator or live global supervisor only: release the exact prior hold. With decision release, preserve task state and integration controls; with retry, authorize a reviewed nonautomatic failure while retaining all ownership, liveness, gate and budget guards. Requires expected_hold_at."
           },
           "expected_hold_at": {
             "type": "number",
-            "description": "Release a cleared hold by retrying this incident; exact decided_at of the prior hold. All recovery guards and remaining budgets still apply."
+            "description": "Exact decided_at of the prior hold. Required for operator_release; normal retry releases retain automatic recovery guards and remaining budgets."
           },
           "reason": {
             "type": "string",
@@ -2168,6 +2354,33 @@
           "reason": {
             "type": "string",
             "description": "Required to archive PAUSED/DEFINED/READY or abandon undelivered work."
+          },
+          "replacement": {
+            "type": "string",
+            "description": "Obsolete only: replacement leaf; atomically redirects dependents."
+          },
+          "satisfied_by": {
+            "type": "string",
+            "description": "Obsolete only: evidence the requirement is met; dependent edges must be explicitly removed or replaced through rewire. Never records a pass."
+          },
+          "rewire": {
+            "type": "object",
+            "description": "Obsolete edge plan, validated and committed with retirement. Uses task change-set edges/remove_edges objects (from, to, dep_type).",
+            "properties": {
+              "edges": {
+                "type": "array",
+                "items": {
+                  "type": "object"
+                }
+              },
+              "remove_edges": {
+                "type": "array",
+                "items": {
+                  "type": "object"
+                }
+              }
+            },
+            "additionalProperties": false
           }
         }
       }
@@ -3475,6 +3688,18 @@
       "input_schema": {
         "type": "object",
         "properties": {
+          "expected": {
+            "type": "object"
+          },
+          "preview_id": {
+            "type": "string"
+          },
+          "idempotency_key": {
+            "type": "string"
+          },
+          "overall_note": {
+            "type": "string"
+          },
           "run_id": {
             "type": "string",
             "description": "The playbook run ID to resume"
@@ -3908,6 +4133,29 @@
         },
         "required": [
           "playbook_id"
+        ]
+      }
+    },
+    {
+      "name": "playbook_source_resync",
+      "description": "Supervisor control: restore system Markdown from the digest-verified source retained with its active reviewed artifact, preserving the old bytes in a backup. Requires the active artifact hash and current source hash; never compiles or activates.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "playbook_id": {
+            "type": "string"
+          },
+          "artifact_sha256": {
+            "type": "string"
+          },
+          "expected_source_hash": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "playbook_id",
+          "artifact_sha256",
+          "expected_source_hash"
         ]
       }
     },
@@ -4732,7 +4980,7 @@
     },
     {
       "name": "task_close",
-      "description": "Close a task with an outcome. This is the ONLY way a session-run task reaches COMPLETED \u2014 process exit is a failure signal, never success. Records outcome metadata, runs the completion pipeline (commit/push/PR/verify), and transitions the task. Follow it with `aq session drain-ack`. Backs `aq task close`. With `obsolete` (and `reason`, no `outcome`) an operator or supervisor instead retires superseded work: the task goes to COMPLETED as abandoned and is never published, its branch owners are released through the release-owner safety proof and it is dropped from parked development batches, so it can then be deleted.",
+      "description": "Close a task with an outcome. This is the ONLY way a session-run task reaches COMPLETED \u2014 process exit is a failure signal, never success. Records outcome metadata, runs the completion pipeline (commit/push/PR/verify), and transitions the task. Follow it with `aq session drain-ack`. Backs `aq task close`. With `obsolete` (and `reason`, no `outcome`) an operator or supervisor instead retires superseded work: the task goes to COMPLETED as abandoned and is never published, its branch owners are released through the release-owner safety proof and it is dropped from parked development batches, so it can then be deleted. `no_change` and `done` are the same one-shot operator close for work that needed nothing or already landed: from any non-terminal state, in one call, a live writer is stopped (PAUSED, never READY), stale claims, workspace locks and the agent binding are cleared, a no-op or shipped completion record is written and the task goes to COMPLETED.",
       "input_schema": {
         "type": "object",
         "properties": {
@@ -4833,9 +5081,19 @@
             "default": false,
             "description": "Close the task as obsolete/superseded instead of with an outcome (operator or supervisor only; needs task_id and reason, not outcome)."
           },
+          "no_change": {
+            "type": "boolean",
+            "default": false,
+            "description": "One-shot operator close: nothing needed doing (work_outcome no-op). Works from any state; operator or supervisor only; needs task_id and reason, not outcome."
+          },
+          "done": {
+            "type": "boolean",
+            "default": false,
+            "description": "One-shot operator close: the work already landed (work_outcome shipped). Works from any state; operator or supervisor only; needs task_id and reason, not outcome."
+          },
           "reason": {
             "type": "string",
-            "description": "Why the task is obsolete (required with obsolete)."
+            "description": "Why the task is closed (required with obsolete, no_change or done)."
           }
         },
         "required": [
@@ -5008,7 +5266,7 @@
     },
     {
       "name": "message_send",
-      "description": "Queue a message to a session, task, profile, or user.  Messages are the single transport for user<->agent and agent<->agent traffic; delivery is asynchronous. For an accepted collaboration thread, omit the recipient to send to every other member; sender identity is server-derived.",
+      "description": "Queue a message to a session, task, profile, or user.  Messages are the single transport for user<->agent and agent<->agent traffic; delivery is asynchronous. Omitted sender identity is derived from the authenticated live session, or user:cli for local callers. For an accepted collaboration thread, omit the recipient to send to every other member; sender identity is server-derived.",
       "input_schema": {
         "type": "object",
         "properties": {
@@ -5045,11 +5303,11 @@
               "user",
               "system"
             ],
-            "description": "Sender kind (default: user)"
+            "description": "Explicit sender kind; session callers must own the identity"
           },
           "from_id": {
             "type": "string",
-            "description": "Sender id"
+            "description": "Explicit authorized sender id"
           },
           "thread_id": {
             "type": "string",
@@ -5492,6 +5750,22 @@
       }
     },
     {
+      "name": "ci_completed_status",
+      "description": "Audit COMPLETED tasks' recorded source commits against the project's required CI. List failing checks separately from pending or unavailable observations, with exact SHAs and check links. Read-only; operator or supervisor only.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "description": "Project to audit."
+          }
+        },
+        "required": [
+          "project_id"
+        ]
+      }
+    },
+    {
       "name": "ci_baseline_status",
       "description": "Read the CI verdict for a project's default branch head (or ``ref``): green / red / pending / unknown, the failing checks and pytest node ids, and a failure signature.  Read-only.  When red it also returns the deduplication key, title and description of the repair task the ci-main-sentinel playbook files, and ``escalated`` once the same signature has already burned two repair attempts.",
       "input_schema": {
@@ -5925,7 +6199,7 @@
     },
     {
       "name": "task_batch_propose",
-      "description": "Propose a transactional change set of creates, edits, edge changes and comments as one reviewable graph, without creating anything live. Tasks are identified by caller-chosen ``tempId``s that edges reference; edges may also point at existing task ids. The proposal is rejected up front if the shape is wrong, if it references tasks that do not exist, or if it would introduce a dependency cycle against the project's current graph. Returns a proposal_id for task_batch_update / _commit / _discard. A live spec-ingest role holding the matching approved vault path needs no approval step: that batch is applied live in the same call and returns its task_ids, and a later task_batch_commit is an idempotent replay. Those batches require epics with children and leaf dependency edges.",
+      "description": "Propose a transactional change set of creates, edits, edge changes and comments as one reviewable graph. Ordinary proposals stage changes for human approval. Tasks are identified by caller-chosen ``tempId``s that edges reference; edges may also point at existing task ids. The proposal is rejected up front if the shape is wrong, if it references tasks that do not exist, or if it would introduce a dependency cycle against the project's current graph. Returns a proposal_id for task_batch_update / _commit / _discard. A live spec-ingest role holding the matching approved document materializes the implementation graph held for fidelity review and returns batch_id, revision, digest and members. task_batch_commit refuses held batches; authorized release is separate. Design approval creates an already released epic and authoring leaf. Ingest tasks require section_anchor; leaves also require primary_outcome and acceptance.",
       "input_schema": {
         "type": "object",
         "properties": {
@@ -5955,6 +6229,59 @@
                 },
                 "description": {
                   "type": "string"
+                },
+                "section_anchor": {
+                  "type": "string"
+                },
+                "primary_outcome": {
+                  "type": "string"
+                },
+                "acceptance": {
+                  "description": "Required leaf acceptance criteria or validation commands.",
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  ]
+                },
+                "constraints": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "owned_modules": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "size": {
+                  "type": "string",
+                  "enum": [
+                    "s",
+                    "m",
+                    "l"
+                  ]
+                },
+                "placement": {
+                  "type": "string",
+                  "enum": [
+                    "child",
+                    "operational_root"
+                  ]
+                },
+                "delivery_targets": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
                 },
                 "priority": {
                   "type": "integer"
@@ -6156,23 +6483,284 @@
     },
     {
       "name": "task_batch_update",
-      "description": "Replace a pending change set, re-running final graph and state checks as task_batch_propose. Only proposals still in ``draft`` or ``ready`` can be updated \u2014 a committed or discarded one is history.",
+      "description": "Update an ungated pending proposal with payload, or edit a held ingestion batch with expected_revision and scoped operations. Only the live assigned fidelity reviewer or project supervisor may edit held members. Atomic hard checks roll back invalid edits; structural changes supersede old receipts. No edit releases work.",
       "input_schema": {
-        "type": "object",
+        "$defs": {
+          "HeldBatchOperation": {
+            "additionalProperties": false,
+            "description": "Scoped operation. The command checks kind-specific fields and live membership.",
+            "properties": {
+              "kind": {
+                "enum": [
+                  "rewrite",
+                  "split",
+                  "combine",
+                  "reparent",
+                  "rewire",
+                  "add_leaf",
+                  "move_to_root",
+                  "retire"
+                ],
+                "title": "Kind",
+                "type": "string"
+              },
+              "task_id": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Task Id"
+              },
+              "task_ids": {
+                "anyOf": [
+                  {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Task Ids"
+              },
+              "changes": {
+                "anyOf": [
+                  {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Changes"
+              },
+              "task": {
+                "anyOf": [
+                  {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Task"
+              },
+              "tasks": {
+                "anyOf": [
+                  {
+                    "items": {
+                      "additionalProperties": true,
+                      "type": "object"
+                    },
+                    "type": "array"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Tasks"
+              },
+              "parent_id": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Parent Id"
+              },
+              "delivery_targets": {
+                "anyOf": [
+                  {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Delivery Targets"
+              },
+              "edges": {
+                "anyOf": [
+                  {
+                    "items": {
+                      "additionalProperties": true,
+                      "type": "object"
+                    },
+                    "type": "array"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Edges"
+              },
+              "remove_edges": {
+                "anyOf": [
+                  {
+                    "items": {
+                      "additionalProperties": true,
+                      "type": "object"
+                    },
+                    "type": "array"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Remove Edges"
+              },
+              "reason": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Reason"
+              },
+              "replacement_task_id": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Replacement Task Id"
+              },
+              "satisfied_by": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Satisfied By"
+              },
+              "rewire": {
+                "anyOf": [
+                  {
+                    "additionalProperties": {
+                      "items": {
+                        "additionalProperties": true,
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "type": "object"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Rewire"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "title": "HeldBatchOperation",
+            "type": "object"
+          }
+        },
+        "additionalProperties": false,
         "properties": {
           "proposal_id": {
-            "type": "string",
-            "description": "Proposal to replace."
+            "title": "Proposal Id",
+            "type": "string"
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Project Id"
           },
           "payload": {
-            "type": "object",
-            "description": "The complete replacement change set (tasks, edits, edges, remove_edges, comments), in the same shape task_batch_propose takes."
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Payload"
+          },
+          "expected_revision": {
+            "anyOf": [
+              {
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Expected Revision"
+          },
+          "operations": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/$defs/HeldBatchOperation"
+                },
+                "minItems": 1,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Operations"
           }
         },
         "required": [
-          "proposal_id",
-          "payload"
-        ]
+          "proposal_id"
+        ],
+        "title": "TaskBatchUpdateArgs",
+        "type": "object"
       }
     },
     {
@@ -6196,6 +6784,69 @@
         },
         "required": [
           "proposal_id"
+        ]
+      }
+    },
+    {
+      "name": "task_batch_validate",
+      "description": "Run the ingestion-batch automatic checks (design \u00a75.1) against the live graph and write nothing. Takes the change set task_batch_propose takes, with the ingestion fields (section_anchor, primary_outcome, acceptance, size, owned_modules, placement, delivery_targets). Hard findings (authority, membership, parent_not_unique, cross_project, depth_exceeded, cycle, container_endpoint, external_target_invalid, dependency_on_ancestor, post_landing_inside_delivery_epic, delivery_condition_cycle, section_anchor_missing, primary_outcome_missing, acceptance_missing, profile_pinned) fail the batch; stale_revision, active_claim and integration_owned fail it with retryable: true. Advisory findings (large_leaf, mixed_outcomes, broad_command, duplicate_title, redundant_edge, unexplained_serialization, concentrated_ownership) never fail it; gaps name advisory checks that lacked declared metadata. Checks are deterministic: no score and no model judgement.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "description": "Project the batch is for."
+          },
+          "source": {
+            "type": "string",
+            "description": "Proposal source; checked against a stored batch's."
+          },
+          "tasks": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            },
+            "description": "Task specs keyed by tempId, as task_batch_propose takes."
+          },
+          "edges": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            },
+            "description": "Edges {from, to, dep_type, reason}; from depends on to."
+          },
+          "edits": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            },
+            "description": "Edits of existing batch members, keyed by task_id."
+          },
+          "remove_edges": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            },
+            "description": "Edges {from, to, dep_type} the change set removes."
+          },
+          "comments": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            },
+            "description": "Comments {task_id, body} on batch members."
+          },
+          "batch_id": {
+            "type": "string",
+            "description": "Held batch whose members the change set may edit."
+          },
+          "expected_revision": {
+            "type": "integer",
+            "description": "Structure revision the caller read; a mismatch is stale_revision."
+          }
+        },
+        "required": [
+          "project_id"
         ]
       }
     },
@@ -6768,8 +7419,244 @@
       }
     },
     {
+      "name": "gate_reopen",
+      "description": "Operator reopens a declined approval as a new generation.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "gate_id": {
+            "type": "string"
+          },
+          "expected": {
+            "type": "object"
+          }
+        },
+        "required": [
+          "gate_id",
+          "expected"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "ask_prepare_decision",
+      "description": "Prepare a ten-minute source decision packet preview without applying its decision.",
+      "input_schema": {
+        "$defs": {
+          "AskVersion": {
+            "additionalProperties": false,
+            "properties": {
+              "decision_generation": {
+                "title": "Decision Generation",
+                "type": "integer"
+              },
+              "source_fingerprint": {
+                "title": "Source Fingerprint",
+                "type": "string"
+              },
+              "feedback_version": {
+                "title": "Feedback Version",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "decision_generation",
+              "source_fingerprint",
+              "feedback_version"
+            ],
+            "title": "AskVersion",
+            "type": "object"
+          }
+        },
+        "additionalProperties": false,
+        "properties": {
+          "ask_id": {
+            "minLength": 1,
+            "title": "Ask Id",
+            "type": "string"
+          },
+          "expected": {
+            "$ref": "#/$defs/AskVersion"
+          },
+          "option_key": {
+            "minLength": 1,
+            "title": "Option Key",
+            "type": "string"
+          },
+          "overall_note": {
+            "default": "",
+            "title": "Overall Note",
+            "type": "string"
+          },
+          "dispositions": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Dispositions",
+            "type": "array"
+          },
+          "responder_class": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Responder Class"
+          }
+        },
+        "required": [
+          "ask_id",
+          "expected",
+          "option_key"
+        ],
+        "title": "AskPrepareArgs",
+        "type": "object"
+      }
+    },
+    {
+      "name": "ask_decide",
+      "description": "Accept the exact prepared source packet and report durable application state.",
+      "input_schema": {
+        "$defs": {
+          "AskVersion": {
+            "additionalProperties": false,
+            "properties": {
+              "decision_generation": {
+                "title": "Decision Generation",
+                "type": "integer"
+              },
+              "source_fingerprint": {
+                "title": "Source Fingerprint",
+                "type": "string"
+              },
+              "feedback_version": {
+                "title": "Feedback Version",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "decision_generation",
+              "source_fingerprint",
+              "feedback_version"
+            ],
+            "title": "AskVersion",
+            "type": "object"
+          }
+        },
+        "additionalProperties": false,
+        "properties": {
+          "ask_id": {
+            "minLength": 1,
+            "title": "Ask Id",
+            "type": "string"
+          },
+          "expected": {
+            "$ref": "#/$defs/AskVersion"
+          },
+          "option_key": {
+            "minLength": 1,
+            "title": "Option Key",
+            "type": "string"
+          },
+          "overall_note": {
+            "default": "",
+            "title": "Overall Note",
+            "type": "string"
+          },
+          "dispositions": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Dispositions",
+            "type": "array"
+          },
+          "responder_class": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Responder Class"
+          },
+          "preview_id": {
+            "minLength": 1,
+            "title": "Preview Id",
+            "type": "string"
+          },
+          "idempotency_key": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Idempotency Key",
+            "type": "string"
+          }
+        },
+        "required": [
+          "ask_id",
+          "expected",
+          "option_key",
+          "preview_id",
+          "idempotency_key"
+        ],
+        "title": "AskDecideArgs",
+        "type": "object"
+      }
+    },
+    {
+      "name": "ask_retry_operation",
+      "description": "Operator reconciliation of an already accepted decision; never creates approval.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "decision_id": {
+            "minLength": 1,
+            "title": "Decision Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "decision_id"
+        ],
+        "title": "AskRetryOperationArgs",
+        "type": "object"
+      }
+    },
+    {
+      "name": "review_feedback_complete",
+      "description": "Record per-comment evidence on the held feedback task; does not approve a review.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "task_id": {
+            "type": "string"
+          },
+          "obligation_id": {
+            "type": "string"
+          },
+          "evidence": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "task_id",
+          "obligation_id",
+          "evidence"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
       "name": "review_decide",
-      "description": "Approve, request changes, or reject a current review revision.",
+      "description": "Decide on a current review using its feedback preview. Reject retains legacy reject-and-revise behavior; decline holds work without creating a revision task.",
       "input_schema": {
         "type": "object",
         "properties": {
@@ -6785,11 +7672,28 @@
             "enum": [
               "approve",
               "request_changes",
-              "reject"
+              "reject",
+              "decline",
+              "fold_in"
             ]
           },
           "note": {
             "type": "string"
+          },
+          "preview_id": {
+            "type": "string"
+          },
+          "expected": {
+            "type": "object"
+          },
+          "idempotency_key": {
+            "type": "string"
+          },
+          "dispositions": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
           },
           "responder_class": {
             "type": "string",
@@ -6832,6 +7736,9 @@
         "type": "object",
         "properties": {
           "review_id": {
+            "type": "string"
+          },
+          "source_discussion_id": {
             "type": "string"
           },
           "revision": {
@@ -7359,6 +8266,19 @@
       "input_schema": {
         "type": "object",
         "properties": {
+          "expected": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "preview_id": {
+            "type": "string"
+          },
+          "option_key": {
+            "type": "string"
+          },
+          "prepare": {
+            "type": "boolean"
+          },
           "escalation_id": {
             "type": "string"
           },
@@ -10905,6 +11825,930 @@
         },
         "additionalProperties": false
       }
+    },
+    {
+      "name": "ensure_spec_ingest",
+      "description": "Ensure one role task per applied approval decision, including archived receipts.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "title": "Project Id",
+            "type": "string"
+          },
+          "decision_id": {
+            "title": "Decision Id",
+            "type": "string"
+          },
+          "packet_sha256": {
+            "title": "Packet Sha256",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id",
+          "decision_id",
+          "packet_sha256"
+        ],
+        "title": "EnsureSpecIngestArgs",
+        "type": "object"
+      }
+    },
+    {
+      "name": "ensure_fidelity_review",
+      "description": "Ensure one fidelity-reviewer role task per held batch; service/operator only.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "title": "Project Id",
+            "type": "string"
+          },
+          "batch_id": {
+            "title": "Batch Id",
+            "type": "string"
+          },
+          "structure_revision": {
+            "title": "Structure Revision",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "project_id",
+          "batch_id",
+          "structure_revision"
+        ],
+        "title": "EnsureFidelityReviewArgs",
+        "type": "object"
+      }
+    },
+    {
+      "name": "approved_spec_packet",
+      "description": "Read the immutable document and feedback of the live held ingestion role.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "title": "Project Id",
+            "type": "string"
+          },
+          "decision_id": {
+            "title": "Decision Id",
+            "type": "string"
+          },
+          "packet_sha256": {
+            "title": "Packet Sha256",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id",
+          "decision_id",
+          "packet_sha256"
+        ],
+        "title": "EnsureSpecIngestArgs",
+        "type": "object"
+      }
+    },
+    {
+      "name": "spec_ingest_reconcile",
+      "description": "Replay at most twenty pending approved-spec dispatches; operator/service only.",
+      "input_schema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "batch_reconcile",
+      "description": "Repair at most twenty held-batch dispatch, receipt and release wakeups; operator/service only.",
+      "input_schema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "spec_ingest_legacy_inventory",
+      "description": "Inventory path-only ingestion assignments for explicit operator reconciliation.",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "type": "string"
+          },
+          "after_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id"
+        ]
+      }
+    },
+    {
+      "name": "ask_list",
+      "description": "Scoped human request communication and decision evidence.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "source_kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Source Kind"
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Project Id"
+          },
+          "view": {
+            "default": "needs_you",
+            "enum": [
+              "needs_you",
+              "waiting",
+              "history"
+            ],
+            "title": "View",
+            "type": "string"
+          },
+          "limit": {
+            "default": 50,
+            "maximum": 100,
+            "minimum": 1,
+            "title": "Limit",
+            "type": "integer"
+          },
+          "cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Cursor"
+          }
+        },
+        "title": "AskListArgs",
+        "type": "object"
+      }
+    },
+    {
+      "name": "ask_show",
+      "description": "Scoped human request communication and decision evidence.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "alias_kind": {
+            "anyOf": [
+              {
+                "enum": [
+                  "review",
+                  "escalation"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Alias Kind"
+          },
+          "ask_id": {
+            "minLength": 1,
+            "title": "Ask Id",
+            "type": "string"
+          },
+          "input_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Input Id"
+          }
+        },
+        "required": [
+          "ask_id"
+        ],
+        "title": "AskShowArgs",
+        "type": "object"
+      }
+    },
+    {
+      "name": "ask_history",
+      "description": "Scoped human request communication and decision evidence.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "ask_id": {
+            "minLength": 1,
+            "title": "Ask Id",
+            "type": "string"
+          },
+          "limit": {
+            "default": 50,
+            "maximum": 100,
+            "minimum": 1,
+            "title": "Limit",
+            "type": "integer"
+          },
+          "cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Cursor"
+          }
+        },
+        "required": [
+          "ask_id"
+        ],
+        "title": "AskHistoryArgs",
+        "type": "object"
+      }
+    },
+    {
+      "name": "ask_reply",
+      "description": "Scoped human request communication and decision evidence.",
+      "input_schema": {
+        "$defs": {
+          "AskVersion": {
+            "additionalProperties": false,
+            "properties": {
+              "decision_generation": {
+                "title": "Decision Generation",
+                "type": "integer"
+              },
+              "source_fingerprint": {
+                "title": "Source Fingerprint",
+                "type": "string"
+              },
+              "feedback_version": {
+                "title": "Feedback Version",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "decision_generation",
+              "source_fingerprint",
+              "feedback_version"
+            ],
+            "title": "AskVersion",
+            "type": "object"
+          }
+        },
+        "additionalProperties": false,
+        "properties": {
+          "ask_id": {
+            "minLength": 1,
+            "title": "Ask Id",
+            "type": "string"
+          },
+          "intent": {
+            "const": "discuss",
+            "default": "discuss",
+            "title": "Intent",
+            "type": "string"
+          },
+          "text": {
+            "maxLength": 4000,
+            "minLength": 1,
+            "title": "Text",
+            "type": "string"
+          },
+          "idempotency_key": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Idempotency Key",
+            "type": "string"
+          },
+          "expected": {
+            "$ref": "#/$defs/AskVersion"
+          },
+          "post_decision": {
+            "default": false,
+            "title": "Post Decision",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ask_id",
+          "text",
+          "idempotency_key",
+          "expected"
+        ],
+        "title": "AskReplyArgs",
+        "type": "object"
+      }
+    },
+    {
+      "name": "ask_apply_input",
+      "description": "Scoped human request communication and decision evidence.",
+      "input_schema": {
+        "$defs": {
+          "AskVersion": {
+            "additionalProperties": false,
+            "properties": {
+              "decision_generation": {
+                "title": "Decision Generation",
+                "type": "integer"
+              },
+              "source_fingerprint": {
+                "title": "Source Fingerprint",
+                "type": "string"
+              },
+              "feedback_version": {
+                "title": "Feedback Version",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "decision_generation",
+              "source_fingerprint",
+              "feedback_version"
+            ],
+            "title": "AskVersion",
+            "type": "object"
+          }
+        },
+        "additionalProperties": false,
+        "properties": {
+          "ask_id": {
+            "minLength": 1,
+            "title": "Ask Id",
+            "type": "string"
+          },
+          "input_id": {
+            "minLength": 1,
+            "title": "Input Id",
+            "type": "string"
+          },
+          "expected": {
+            "$ref": "#/$defs/AskVersion"
+          },
+          "option_key": {
+            "minLength": 1,
+            "title": "Option Key",
+            "type": "string"
+          },
+          "interpretation": {
+            "maxLength": 4000,
+            "minLength": 1,
+            "title": "Interpretation",
+            "type": "string"
+          },
+          "idempotency_key": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Idempotency Key",
+            "type": "string"
+          }
+        },
+        "required": [
+          "ask_id",
+          "input_id",
+          "expected",
+          "option_key",
+          "interpretation",
+          "idempotency_key"
+        ],
+        "title": "AskApplyInputArgs",
+        "type": "object"
+      }
+    },
+    {
+      "name": "ask_discussion_reply",
+      "description": "Scoped human request communication and decision evidence.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "ask_id": {
+            "minLength": 1,
+            "title": "Ask Id",
+            "type": "string"
+          },
+          "input_id": {
+            "minLength": 1,
+            "title": "Input Id",
+            "type": "string"
+          },
+          "text": {
+            "maxLength": 15000,
+            "minLength": 1,
+            "title": "Text",
+            "type": "string"
+          },
+          "idempotency_key": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Idempotency Key",
+            "type": "string"
+          }
+        },
+        "required": [
+          "ask_id",
+          "input_id",
+          "text",
+          "idempotency_key"
+        ],
+        "title": "AskDiscussionReplyArgs",
+        "type": "object"
+      }
+    },
+    {
+      "name": "ask_update_context",
+      "description": "Scoped human request communication and decision evidence.",
+      "input_schema": {
+        "$defs": {
+          "AskVersion": {
+            "additionalProperties": false,
+            "properties": {
+              "decision_generation": {
+                "title": "Decision Generation",
+                "type": "integer"
+              },
+              "source_fingerprint": {
+                "title": "Source Fingerprint",
+                "type": "string"
+              },
+              "feedback_version": {
+                "title": "Feedback Version",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "decision_generation",
+              "source_fingerprint",
+              "feedback_version"
+            ],
+            "title": "AskVersion",
+            "type": "object"
+          }
+        },
+        "additionalProperties": false,
+        "properties": {
+          "ask_id": {
+            "minLength": 1,
+            "title": "Ask Id",
+            "type": "string"
+          },
+          "expected": {
+            "$ref": "#/$defs/AskVersion"
+          }
+        },
+        "required": [
+          "ask_id",
+          "expected"
+        ],
+        "title": "AskUpdateContextArgs",
+        "type": "object"
+      }
+    },
+    {
+      "name": "ask_reconcile",
+      "description": "Scoped human request communication and decision evidence.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Project Id"
+          },
+          "apply": {
+            "default": false,
+            "title": "Apply",
+            "type": "boolean"
+          },
+          "limit": {
+            "default": 100,
+            "maximum": 100,
+            "minimum": 1,
+            "title": "Limit",
+            "type": "integer"
+          },
+          "case_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Case Id"
+          },
+          "disposition": {
+            "anyOf": [
+              {
+                "enum": [
+                  "mapped_work",
+                  "reviewed_no_action",
+                  "retain_unknown"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Disposition"
+          },
+          "evidence": {
+            "anyOf": [
+              {
+                "maxLength": 4000,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Evidence"
+          }
+        },
+        "title": "AskReconcileArgs",
+        "type": "object"
+      }
+    },
+    {
+      "name": "ask_legacy_reset",
+      "description": "Scoped human request communication and decision evidence.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "minLength": 1,
+            "title": "Project Id",
+            "type": "string"
+          },
+          "apply": {
+            "default": false,
+            "title": "Apply",
+            "type": "boolean"
+          },
+          "max_rows": {
+            "default": 10000,
+            "maximum": 100000,
+            "minimum": 1,
+            "title": "Max Rows",
+            "type": "integer"
+          },
+          "evidence_sha256": {
+            "anyOf": [
+              {
+                "pattern": "^[a-f0-9]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Evidence Sha256"
+          }
+        },
+        "required": [
+          "project_id"
+        ],
+        "title": "AskLegacyResetArgs",
+        "type": "object"
+      }
+    },
+    {
+      "name": "ask_cutover",
+      "description": "Scoped human request communication and decision evidence.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "title": "Project Id",
+            "type": "string"
+          },
+          "mode": {
+            "enum": [
+              "legacy",
+              "shadow",
+              "dashboard",
+              "transferring",
+              "channel",
+              "delivery_disabled"
+            ],
+            "title": "Mode",
+            "type": "string"
+          },
+          "expected_generation": {
+            "minimum": 0,
+            "title": "Expected Generation",
+            "type": "integer"
+          },
+          "inventory_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Inventory Sha256"
+          },
+          "evidence": {
+            "anyOf": [
+              {
+                "maxLength": 4000,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Evidence"
+          },
+          "legacy_controls_disabled": {
+            "default": false,
+            "title": "Legacy Controls Disabled",
+            "type": "boolean"
+          },
+          "aliases_redirected": {
+            "default": false,
+            "title": "Aliases Redirected",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "project_id",
+          "mode",
+          "expected_generation"
+        ],
+        "title": "AskCutoverArgs",
+        "type": "object"
+      }
+    },
+    {
+      "name": "ask_cutover_status",
+      "description": "Scoped human request communication and decision evidence.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "minLength": 1,
+            "title": "Project Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id"
+        ],
+        "title": "AskCutoverStatusArgs",
+        "type": "object"
+      }
+    },
+    {
+      "name": "ask_repair_delivery",
+      "description": "Scoped human request communication and decision evidence.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "delivery_id": {
+            "title": "Delivery Id",
+            "type": "string"
+          },
+          "expected_generation": {
+            "minimum": 0,
+            "title": "Expected Generation",
+            "type": "integer"
+          },
+          "disposition": {
+            "enum": [
+              "confirmed_sent",
+              "confirmed_absent",
+              "cancel"
+            ],
+            "title": "Disposition",
+            "type": "string"
+          },
+          "evidence": {
+            "maxLength": 4000,
+            "minLength": 1,
+            "title": "Evidence",
+            "type": "string"
+          }
+        },
+        "required": [
+          "delivery_id",
+          "expected_generation",
+          "disposition",
+          "evidence"
+        ],
+        "title": "AskRepairDeliveryArgs",
+        "type": "object"
+      }
+    },
+    {
+      "name": "ask_intake",
+      "description": "Scoped human request communication and decision evidence.",
+      "input_schema": {
+        "$defs": {
+          "AskEnvelope": {
+            "additionalProperties": false,
+            "properties": {
+              "transport": {
+                "const": "discord",
+                "title": "Transport",
+                "type": "string"
+              },
+              "guild_id": {
+                "title": "Guild Id",
+                "type": "string"
+              },
+              "channel_id": {
+                "title": "Channel Id",
+                "type": "string"
+              },
+              "external_message_id": {
+                "title": "External Message Id",
+                "type": "string"
+              },
+              "external_root_message_id": {
+                "title": "External Root Message Id",
+                "type": "string"
+              },
+              "external_thread_id": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "External Thread Id"
+              },
+              "author_id": {
+                "title": "Author Id",
+                "type": "string"
+              },
+              "text": {
+                "title": "Text",
+                "type": "string"
+              },
+              "received_at": {
+                "title": "Received At",
+                "type": "number"
+              },
+              "mentions_bot": {
+                "title": "Mentions Bot",
+                "type": "boolean"
+              },
+              "tag": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Tag"
+              },
+              "reference_message_id": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Reference Message Id"
+              }
+            },
+            "required": [
+              "transport",
+              "guild_id",
+              "channel_id",
+              "external_message_id",
+              "external_root_message_id",
+              "author_id",
+              "text",
+              "received_at",
+              "mentions_bot"
+            ],
+            "title": "AskEnvelope",
+            "type": "object"
+          }
+        },
+        "additionalProperties": false,
+        "properties": {
+          "envelope": {
+            "$ref": "#/$defs/AskEnvelope"
+          },
+          "source": {
+            "default": "gateway",
+            "enum": [
+              "gateway",
+              "backfill"
+            ],
+            "title": "Source",
+            "type": "string"
+          }
+        },
+        "required": [
+          "envelope"
+        ],
+        "title": "AskIntakeArgs",
+        "type": "object"
+      }
+    },
+    {
+      "name": "ask_button",
+      "description": "Scoped human request communication and decision evidence.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "interaction_id": {
+            "title": "Interaction Id",
+            "type": "string"
+          },
+          "custom_id": {
+            "title": "Custom Id",
+            "type": "string"
+          },
+          "guild_id": {
+            "title": "Guild Id",
+            "type": "string"
+          },
+          "channel_id": {
+            "title": "Channel Id",
+            "type": "string"
+          },
+          "message_id": {
+            "title": "Message Id",
+            "type": "string"
+          },
+          "author_id": {
+            "title": "Author Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "interaction_id",
+          "custom_id",
+          "guild_id",
+          "channel_id",
+          "message_id",
+          "author_id"
+        ],
+        "title": "AskButtonArgs",
+        "type": "object"
+      }
     }
   ],
   "fallback": {
@@ -11151,6 +12995,19 @@
       "input_schema": {
         "additionalProperties": false,
         "properties": {
+          "human_request": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Human Request"
+          },
           "project_id": {
             "title": "Project Id",
             "type": "string"
@@ -11271,13 +13128,82 @@
       "input_schema": {
         "additionalProperties": false,
         "properties": {
+          "expected": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Expected"
+          },
+          "preview_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Preview Id"
+          },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Idempotency Key"
+          },
+          "option_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Option Key"
+          },
+          "overall_note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Overall Note"
+          },
           "gate_id": {
             "title": "Gate Id",
             "type": "string"
           },
           "resolved_by": {
-            "title": "Resolved By",
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Resolved By"
           },
           "resolution": {
             "anyOf": [
@@ -11293,8 +13219,7 @@
           }
         },
         "required": [
-          "gate_id",
-          "resolved_by"
+          "gate_id"
         ],
         "title": "GateResolveArgs",
         "type": "object"
@@ -11594,6 +13519,38 @@
           "batch_id"
         ],
         "title": "IntegrationCleanupArgs",
+        "type": "object"
+      }
+    },
+    "integration_clear_retained_recovery": {
+      "name": "integration_clear_retained_recovery",
+      "description": "Authenticated hierarchical integration operational control.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "minLength": 1,
+            "title": "Project Id",
+            "type": "string"
+          },
+          "incident_id": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Incident Id"
+          }
+        },
+        "required": [
+          "project_id"
+        ],
+        "title": "IntegrationClearRetainedRecoveryArgs",
         "type": "object"
       }
     },
@@ -12029,6 +13986,49 @@
         "type": "object"
       }
     },
+    "integration_off": {
+      "name": "integration_off",
+      "description": "Local operator applies an exact preview while preserving sources and frozen work.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "minLength": 1,
+            "title": "Project Id",
+            "type": "string"
+          },
+          "reason": {
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          },
+          "dry_run": {
+            "default": true,
+            "title": "Dry Run",
+            "type": "boolean"
+          },
+          "expected_plan_digest": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9a-f]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Expected Plan Digest"
+          }
+        },
+        "required": [
+          "project_id",
+          "reason"
+        ],
+        "title": "IntegrationOffArgs",
+        "type": "object"
+      }
+    },
     "integration_parent_verify": {
       "name": "integration_parent_verify",
       "description": "Record one parent verification against its exact checkpoint head and evidence.",
@@ -12243,6 +14243,12 @@
             "default": null,
             "description": "Completed hotfix task to promote.",
             "title": "From Task"
+          },
+          "allow_breaking_migration": {
+            "default": false,
+            "description": "Local operator override of non-additive migrations; disables code rollback.",
+            "title": "Allow Breaking Migration",
+            "type": "boolean"
           }
         },
         "required": [
@@ -12551,6 +14557,139 @@
           "task_id"
         ],
         "title": "IntegrationRecordRootNoopArgs",
+        "type": "object"
+      }
+    },
+    "integration_recover_completed_container": {
+      "name": "integration_recover_completed_container",
+      "description": "Prove accepted published pass provenance and CAS only its checkpoint; delivery gates remain.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "task_id": {
+            "minLength": 1,
+            "title": "Task Id",
+            "type": "string"
+          },
+          "dry_run": {
+            "default": true,
+            "title": "Dry Run",
+            "type": "boolean"
+          },
+          "expected_head_sha": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Expected Head Sha"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reason"
+          },
+          "project_id": {
+            "minLength": 1,
+            "title": "Project Id",
+            "type": "string"
+          },
+          "repository_id": {
+            "minLength": 1,
+            "title": "Repository Id",
+            "type": "string"
+          },
+          "branch": {
+            "minLength": 1,
+            "title": "Branch",
+            "type": "string"
+          },
+          "expected_completion_id": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Expected Completion Id"
+          },
+          "expected_generation": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Expected Generation"
+          },
+          "expected_version": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Expected Version"
+          },
+          "expected_origin_sha256": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9a-f]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Expected Origin Sha256"
+          },
+          "expected_snapshot_sha256": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9a-f]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Expected Snapshot Sha256"
+          }
+        },
+        "required": [
+          "task_id",
+          "project_id",
+          "repository_id",
+          "branch"
+        ],
+        "title": "IntegrationRecoverCompletedContainerArgs",
         "type": "object"
       }
     },
@@ -12890,8 +15029,18 @@
             "title": "Owner Row Id"
           },
           "dry_run": {
-            "default": false,
+            "default": true,
             "title": "Dry Run",
+            "type": "boolean"
+          },
+          "no_push": {
+            "default": false,
+            "title": "No Push",
+            "type": "boolean"
+          },
+          "self_owned": {
+            "default": false,
+            "title": "Self Owned",
             "type": "boolean"
           }
         },
@@ -13185,6 +15334,73 @@
         "type": "object"
       }
     },
+    "integration_restore_task_origin": {
+      "name": "integration_restore_task_origin",
+      "description": "Authenticated hierarchical integration operational control.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "task_id": {
+            "minLength": 1,
+            "title": "Task Id",
+            "type": "string"
+          },
+          "dry_run": {
+            "default": true,
+            "title": "Dry Run",
+            "type": "boolean"
+          },
+          "origin_id": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Origin Id"
+          },
+          "expected_remote_oid": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Expected Remote Oid"
+          },
+          "expected_fence_token": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Expected Fence Token"
+          },
+          "reason": {
+            "default": "",
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "task_id"
+        ],
+        "title": "IntegrationRestoreTaskOriginArgs",
+        "type": "object"
+      }
+    },
     "integration_resume_batch": {
       "name": "integration_resume_batch",
       "description": "Authenticated hierarchical integration operational control.",
@@ -13327,6 +15543,47 @@
         "type": "object"
       }
     },
+    "integration_reverify_epic": {
+      "name": "integration_reverify_epic",
+      "description": "Authenticated hierarchical integration operational control.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "task_id": {
+            "minLength": 1,
+            "title": "Task Id",
+            "type": "string"
+          },
+          "dry_run": {
+            "default": true,
+            "title": "Dry Run",
+            "type": "boolean"
+          },
+          "expected_head_sha": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Expected Head Sha"
+          },
+          "reason": {
+            "default": "",
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "task_id"
+        ],
+        "title": "IntegrationReverifyEpicArgs",
+        "type": "object"
+      }
+    },
     "integration_seal_now": {
       "name": "integration_seal_now",
       "description": "Authenticated hierarchical integration operational control.",
@@ -13351,6 +15608,47 @@
         "type": "object"
       }
     },
+    "integration_settle_batch": {
+      "name": "integration_settle_batch",
+      "description": "Authenticated hierarchical integration operational control.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "batch_id": {
+            "minLength": 1,
+            "title": "Batch Id",
+            "type": "string"
+          },
+          "reason": {
+            "default": "",
+            "title": "Reason",
+            "type": "string"
+          },
+          "dry_run": {
+            "default": true,
+            "title": "Dry Run",
+            "type": "boolean"
+          },
+          "expected_target_sha": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Expected Target Sha"
+          }
+        },
+        "required": [
+          "batch_id"
+        ],
+        "title": "IntegrationSettleBatchArgs",
+        "type": "object"
+      }
+    },
     "integration_status": {
       "name": "integration_status",
       "description": "Authenticated hierarchical integration operational control.",
@@ -13372,6 +15670,91 @@
           "project_id"
         ],
         "title": "IntegrationStatusReadArgs",
+        "type": "object"
+      }
+    },
+    "integration_supersede_completion": {
+      "name": "integration_supersede_completion",
+      "description": "Operator or owning supervisor retires an exact stopped Subject with original verified human evidence.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "minLength": 1,
+            "title": "Project Id",
+            "type": "string"
+          },
+          "task_id": {
+            "minLength": 1,
+            "title": "Task Id",
+            "type": "string"
+          },
+          "subject_id": {
+            "minLength": 1,
+            "title": "Subject Id",
+            "type": "string"
+          },
+          "expected_version": {
+            "minimum": 0,
+            "title": "Expected Version",
+            "type": "integer"
+          },
+          "expected_claim_epoch": {
+            "minimum": 0,
+            "title": "Expected Claim Epoch",
+            "type": "integer"
+          },
+          "completion_id": {
+            "minLength": 1,
+            "title": "Completion Id",
+            "type": "string"
+          },
+          "expected_head_sha": {
+            "pattern": "^[a-f0-9]{40}$",
+            "title": "Expected Head Sha",
+            "type": "string"
+          },
+          "human_reply_id": {
+            "minLength": 1,
+            "title": "Human Reply Id",
+            "type": "string"
+          },
+          "reason": {
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          },
+          "expected_proof_sha256": {
+            "anyOf": [
+              {
+                "pattern": "^[a-f0-9]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Expected Proof Sha256"
+          },
+          "dry_run": {
+            "default": true,
+            "title": "Dry Run",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "project_id",
+          "task_id",
+          "subject_id",
+          "expected_version",
+          "expected_claim_epoch",
+          "completion_id",
+          "expected_head_sha",
+          "human_reply_id",
+          "reason"
+        ],
+        "title": "IntegrationSupersedeCompletionArgs",
         "type": "object"
       }
     },
@@ -15877,6 +18260,12 @@
             "default": null,
             "description": "Completed hotfix task to promote.",
             "title": "From Task"
+          },
+          "allow_breaking_migration": {
+            "default": false,
+            "description": "Local operator override of non-additive migrations; disables code rollback.",
+            "title": "Allow Breaking Migration",
+            "type": "boolean"
           }
         },
         "required": [
@@ -16478,6 +18867,91 @@
         }
       }
     },
+    "task_batch_review_record": {
+      "name": "task_batch_review_record",
+      "description": "Attest every mapped section and whole-batch intent on the exact held graph.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "batch_id": {
+            "minLength": 1,
+            "title": "Batch Id",
+            "type": "string"
+          },
+          "expected_revision": {
+            "minimum": 1,
+            "title": "Expected Revision",
+            "type": "integer"
+          },
+          "expected_digest": {
+            "minLength": 1,
+            "title": "Expected Digest",
+            "type": "string"
+          },
+          "section_verdicts": {
+            "additionalProperties": {
+              "enum": [
+                "faithful",
+                "fixed",
+                "scope_question"
+              ],
+              "type": "string"
+            },
+            "title": "Section Verdicts",
+            "type": "object"
+          },
+          "reverse_coverage_verdict": {
+            "enum": [
+              "faithful",
+              "fixed",
+              "scope_question"
+            ],
+            "title": "Reverse Coverage Verdict",
+            "type": "string"
+          },
+          "walkthrough_verdict": {
+            "enum": [
+              "faithful",
+              "fixed",
+              "scope_question"
+            ],
+            "title": "Walkthrough Verdict",
+            "type": "string"
+          },
+          "structural_findings": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Structural Findings",
+            "type": "array"
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Project Id"
+          }
+        },
+        "required": [
+          "batch_id",
+          "expected_revision",
+          "expected_digest",
+          "section_verdicts",
+          "reverse_coverage_verdict",
+          "walkthrough_verdict",
+          "structural_findings"
+        ],
+        "title": "TaskBatchReviewRecordArgs",
+        "type": "object"
+      }
+    },
     "task_failure_triage_notify": {
       "name": "task_failure_triage_notify",
       "description": "Record or reuse the durable incident for a terminal task failure and queue its single supervisor triage notice; replayed failures reuse the same incident.",
@@ -16655,6 +19129,7 @@
     "policy": "Portable project policy profiles: export, diff and selective import",
     "cron": "Session-owned recurring prompts: register, inspect and cancel wake-ups.",
     "git": "Branch, commit, push, PR, merge, and remote URL operations for project repositories",
+    "ci": "Required CI evidence and completed task audits",
     "project": "Project CRUD, workspace management, project metadata (repo URL, GitHub URL, workspace path)",
     "agent": "Agent management, agent profiles, profile import/export",
     "supervisor": "Supervisor session lifecycle \u2014 fresh or resumed restarts through AQ",
@@ -16713,6 +19188,8 @@
     "list_projects": "project",
     "create_project": "project",
     "project_doctor": "project",
+    "repair_repository_checkout": "project",
+    "repair_workspace_checkout": "project",
     "pause_project": "project",
     "resume_project": "project",
     "set_project_constraint": "project",
@@ -16732,6 +19209,9 @@
     "queue_sync_workspaces": "project",
     "workspace_doctor": "project",
     "workspace_reap": "project",
+    "workspace_cutover": "project",
+    "workspace_retire_claim": "project",
+    "workspace_clear_sentinel": "project",
     "list_project_roots": "project",
     "browse_project_root": "project",
     "get_github_auth_status": "project",
@@ -16799,6 +19279,10 @@
     "review_withdraw": "review",
     "review_reopen": "review",
     "review_decide": "review",
+    "ask_prepare_decision": "review",
+    "ask_decide": "review",
+    "ask_retry_operation": "review",
+    "review_feedback_complete": "review",
     "approve_pull_request": "review",
     "review_comment": "review",
     "review_dispatch": "review",
@@ -16846,6 +19330,7 @@
     "stop_task": "task",
     "pause_task": "task",
     "resume_task": "task",
+    "discard_pause_checkpoint": "task",
     "restart_task": "task",
     "task_recover": "task",
     "reopen_with_feedback": "task",
@@ -16894,6 +19379,7 @@
     "playbook_graph_layout_save": "playbook",
     "playbook_activation_health": "playbook",
     "playbook_activate": "playbook",
+    "playbook_source_resync": "playbook",
     "playbook_artifacts": "playbook",
     "playbook_artifact_diff": "playbook",
     "playbook_pending_events": "playbook",
@@ -17004,6 +19490,7 @@
     "gate_create": "task",
     "gate_list": "task",
     "gate_show": "task",
+    "gate_reopen": "task",
     "gate_resolve": "task",
     "explain_task": "task",
     "project_ready": "project",
@@ -17012,12 +19499,14 @@
     "task_batch_update": "task",
     "task_batch_commit": "task",
     "task_batch_discard": "task",
+    "task_batch_validate": "task",
     "ensure_task": "task",
     "get_downstream_tasks": "task",
     "task_route": "task",
     "task_route_override": "task",
     "pr_merge": "git",
     "ci_baseline_status": "git",
+    "ci_completed_status": "ci",
     "ci_repair_adopt": "git",
     "provider_status": "provider",
     "provider_history": "provider",
@@ -17046,9 +19535,44 @@
     "knowledge_share": "knowledge",
     "knowledge_redact": "knowledge",
     "knowledge_generation_tick": "knowledge",
-    "knowledge_generation_status": "knowledge"
+    "knowledge_generation_status": "knowledge",
+    "ensure_spec_ingest": "task",
+    "approved_spec_packet": "task",
+    "spec_ingest_reconcile": "task",
+    "spec_ingest_legacy_inventory": "task",
+    "batch_reconcile": "task",
+    "ensure_fidelity_review": "task",
+    "ask_list": "review",
+    "ask_show": "review",
+    "ask_history": "review",
+    "ask_reply": "review",
+    "ask_apply_input": "review",
+    "ask_discussion_reply": "review",
+    "ask_update_context": "review",
+    "ask_reconcile": "review",
+    "ask_legacy_reset": "review",
+    "ask_cutover": "review",
+    "ask_cutover_status": "review",
+    "ask_repair_delivery": "review",
+    "ask_intake": "review",
+    "ask_button": "review"
   },
   "cli_category_overrides": {
+    "ask_list": "ask",
+    "ask_show": "ask",
+    "ask_reply": "ask",
+    "ask_prepare_decision": "ask",
+    "ask_decide": "ask",
+    "ask_history": "ask",
+    "ask_apply_input": "ask",
+    "ask_discussion_reply": "ask",
+    "ask_update_context": "ask",
+    "ask_reconcile": "ask",
+    "ask_cutover": "ask",
+    "ask_cutover_status": "ask",
+    "ask_retry_operation": "ask",
+    "ask_repair_delivery": "ask",
+    "ask_legacy_reset": "ask",
     "create_task": "task",
     "list_tasks": "task",
     "get_task": "task",

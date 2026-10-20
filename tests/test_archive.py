@@ -36,17 +36,220 @@ from tests.db_fixtures import lease_dsn
 POSTGRES_TEST_DSN = ensure_worker_postgres_dsn()
 
 
+def _retirement_handler(db, tmp_path):
+    config = AppConfig(
+        data_dir=str(tmp_path / "data"),
+        workspace_dir=str(tmp_path / "workspaces"),
+        database=DatabaseConfig(url=lease_dsn("test.db")),
+    )
+    orchestrator = Orchestrator(config)
+    orchestrator.db = db
+    return CommandHandler(orchestrator, config)
+
+
+async def _retirement_graph(db):
+    await _seed_hierarchy_project(db)
+    await _seed_task(db, "epic", pid="p-hier", status=TaskStatus.IN_PROGRESS)
+    await _seed_task(db, "duplicate", pid="p-hier", status=TaskStatus.READY)
+    await db.add_dependency("duplicate", "epic", "parent-child")
+    await _seed_task(db, "replacement", pid="p-hier", status=TaskStatus.READY)
+    await _seed_task(db, "dependent", pid="p-hier", status=TaskStatus.READY)
+    await db.add_dependency("dependent", "duplicate", "blocks")
+    await _enable_hierarchy_mode(db)
+
+
+async def test_obsolete_with_replacement_rewires_dependents(db, tmp_path):
+    """The dependent waits for real replacement work; the duplicate records no pass."""
+    import json
+
+    await _retirement_graph(db)
+    handler = _retirement_handler(db, tmp_path)
+    result = await handler._cmd_archive_task({
+        "task_id": "duplicate", "disposition": "obsolete", "reason": "duplicate scope",
+        "replacement": "replacement",
+    })
+    assert result["archived"] == "duplicate", result
+    assert await db.get_task("duplicate") is None
+    assert (await db.get_archived_task("duplicate"))["status"] == "READY"
+    assert await db.get_task_result("duplicate") is None
+    assert await db.get_task_completions("duplicate") == []
+    deps = await db.get_dependencies("dependent")
+    assert deps == {"replacement"}
+    assert await db.get_typed_dependencies("dependent") == [("replacement", "blocks")]
+    assert (await db.get_task("dependent")).is_blocked
+    assert (await db.get_task("epic")).status == TaskStatus.COMPLETED
+    history = (await db.list_task_comments("duplicate", project_id="p-hier"))["comments"]
+    evidence = next(c["body"] for c in history if c["body"].startswith("Retirement evidence: "))
+    marker = json.loads(evidence.removeprefix("Retirement evidence: "))
+    assert marker["replacement_task_id"] == "replacement"
+    assert marker["previous_status"] == "READY"
+    await db.transition_task("replacement", TaskStatus.COMPLETED, force=True)
+    assert not (await db.get_task("dependent")).is_blocked
+
+
+@pytest.mark.parametrize("replacement", ["duplicate", "missing", "epic", "dependent"])
+async def test_obsolete_invalid_replacement_rolls_back(db, tmp_path, replacement):
+    await _retirement_graph(db)
+    handler = _retirement_handler(db, tmp_path)
+    result = await handler._cmd_archive_task({
+        "task_id": "duplicate", "disposition": "obsolete", "reason": "duplicate scope",
+        "replacement": replacement,
+    })
+    assert result.get("success") is False, result
+    assert await db.get_task("duplicate") is not None
+    assert await db.get_archived_task("duplicate") is None
+    assert await db.get_task_meta("duplicate", "obsolete") is None
+    assert await db.get_dependencies("dependent") == {"duplicate"}
+
+
+async def test_satisfied_by_requires_explicit_edge_plan(db, tmp_path):
+    await _retirement_graph(db)
+    handler = _retirement_handler(db, tmp_path)
+    args = {
+        "task_id": "duplicate", "disposition": "obsolete", "reason": "already implemented",
+        "satisfied_by": "verified delivery receipt source:abc",
+    }
+    refused = await handler._cmd_archive_task(args)
+    assert refused["success"] is False
+    assert (await db.get_task("dependent")).is_blocked
+    result = await handler._cmd_archive_task({**args, "rewire": {
+        "remove_edges": [{"from": "dependent", "to": "duplicate", "dep_type": "blocks"}],
+    }})
+    assert result["archived"] == "duplicate", result
+    assert not (await db.get_task("dependent")).is_blocked
+    assert await db.get_task_completions("duplicate") == []
+
+
+async def test_obsolete_replacement_cycle_rolls_back(db, tmp_path):
+    await _retirement_graph(db)
+    await db.add_dependency("replacement", "dependent", "blocks")
+    result = await _retirement_handler(db, tmp_path)._cmd_archive_task({
+        "task_id": "duplicate", "disposition": "obsolete", "reason": "duplicate",
+        "replacement": "replacement",
+    })
+    assert result["success"] is False
+    assert "cycle" in result["error"]
+    assert await db.get_dependencies("dependent") == {"duplicate"}
+
+
+@pytest.mark.parametrize("dep_type", ["blocks", "conditional-blocks", "related"])
+@pytest.mark.parametrize("explicit", [False, True])
+async def test_obsolete_replacement_preserves_edge_type(db, tmp_path, dep_type, explicit):
+    await _retirement_graph(db)
+    await db.remove_dependency("dependent", "duplicate", "blocks")
+    await db.add_dependency("dependent", "duplicate", dep_type, description="required scope")
+    result = await _retirement_handler(db, tmp_path)._cmd_archive_task({
+        "task_id": "duplicate", "disposition": "obsolete", "reason": "duplicate",
+        "replacement": "replacement",
+        **({"rewire": {
+            "remove_edges": [{"from": "dependent", "to": "duplicate", "dep_type": dep_type}],
+            "edges": [{"from": "dependent", "to": "replacement", "dep_type": dep_type}],
+        }} if explicit else {}),
+    })
+    assert result["archived"] == "duplicate", result
+    assert await db.get_typed_dependencies("dependent") == [("replacement", dep_type)]
+    async with db.immediate() as conn:
+        assert await conn.scalar(text(
+            "SELECT description FROM task_dependencies WHERE task_id='dependent' "
+            "AND depends_on_task_id='replacement'"
+        )) == "required scope"
+
+
+async def test_obsolete_partial_rewire_cannot_orphan_a_dependent(db, tmp_path):
+    await _retirement_graph(db)
+    await _seed_task(db, "second", pid="p-hier", status=TaskStatus.READY)
+    await db.add_dependency("second", "duplicate", "blocks")
+    result = await _retirement_handler(db, tmp_path)._cmd_archive_task({
+        "task_id": "duplicate", "disposition": "obsolete", "reason": "duplicate",
+        "replacement": "replacement", "rewire": {
+            "remove_edges": [{"from": "dependent", "to": "duplicate"}],
+            "edges": [{"from": "dependent", "to": "replacement"}],
+        },
+    })
+    assert result["success"] is False
+    assert await db.get_dependencies("dependent") == {"duplicate"}
+    assert await db.get_dependencies("second") == {"duplicate"}
+    assert await db.get_task_meta("duplicate", "obsolete") is None
+
+
+async def test_obsolete_rewire_requires_stopped_dependents(db, tmp_path):
+    await _retirement_graph(db)
+    await db.update_task("dependent", status=TaskStatus.IN_PROGRESS)
+    result = await _retirement_handler(db, tmp_path)._cmd_archive_task({
+        "task_id": "duplicate", "disposition": "obsolete", "reason": "duplicate",
+        "replacement": "replacement",
+    })
+    assert result["success"] is False
+    assert "needs_quiescence" in result["code"]
+    assert await db.get_dependencies("dependent") == {"duplicate"}
+
+
+async def test_hierarchical_obsolete_close_retains_replacement_evidence(db):
+    from src.sessions.obsolete import ObsoleteClose
+
+    await _retirement_graph(db)
+    closer = ObsoleteClose(db, release_owner=None)
+    result = await closer.close(
+        "duplicate", reason="duplicate", principal="supervisor:test",
+        replacement_task_id="replacement",
+    )
+    assert result["outcome"] == "closed"
+    marker = await db.get_task_meta("duplicate", "obsolete")
+    assert marker["replacement_task_id"] == "replacement"
+    assert await db.get_task_meta("duplicate", "work_outcome") == "abandoned"
+    assert await db.get_task_completions("duplicate") == []
+    assert (await db.get_task("dependent")).is_blocked
+    assert await db.get_dependencies("dependent") == {"replacement"}
+    assert (await closer.close(
+        "duplicate", reason="duplicate", principal="supervisor:test",
+        replacement_task_id="replacement",
+    ))["outcome"] == "already_obsolete"
+    marker = await db.get_task_meta("duplicate", "obsolete")
+    await db.archive_task(
+        "duplicate", disposition="obsolete", abandon_undelivered=True,
+        abandon_reason="retain obsolete evidence", archive_reason="retain obsolete evidence",
+        replacement_task_id="replacement",
+    )
+    import json
+
+    history = (await db.list_task_comments("duplicate", project_id="p-hier"))["comments"]
+    archived_marker = next(json.loads(c["body"].removeprefix("Retirement evidence: "))
+                           for c in history if c["body"].startswith("Retirement evidence: "))
+    assert archived_marker == marker
+
+
+async def test_obsolete_replacement_in_another_project_is_refused(db, tmp_path):
+    await _retirement_graph(db)
+    await _seed_project(db, "other")
+    await _seed_task(db, "other-leaf", pid="other")
+    result = await _retirement_handler(db, tmp_path)._cmd_archive_task({
+        "task_id": "duplicate", "disposition": "obsolete", "reason": "duplicate",
+        "replacement": "other-leaf",
+    })
+    assert result["success"] is False
+    assert await db.get_dependencies("dependent") == {"duplicate"}
+
+
+@pytest.mark.parametrize("plan", [[], {"edges": {}}, {"remove_edges": [None]}, {"invalid": []}])
+async def test_obsolete_malformed_edge_plan_is_refused(db, tmp_path, plan):
+    await _retirement_graph(db)
+    result = await _retirement_handler(db, tmp_path)._cmd_archive_task({
+        "task_id": "duplicate", "disposition": "obsolete", "reason": "duplicate",
+        "replacement": "replacement", "rewire": plan,
+    })
+    assert result["success"] is False
+    assert await db.get_dependencies("dependent") == {"duplicate"}
+
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
 
 
 @pytest.fixture
-async def db(tmp_path, request):
-    database = Database(lease_dsn("test.db"))
-    await database.initialize()
+async def db(tmp_path, request, reuse_database):
+    database = await reuse_database("test.db")
     yield database
-    await database.close()
 
 
 async def _seed_project(
@@ -2385,3 +2588,43 @@ class TestBulkArchiveCommandReportsDeliveryPending:
         assert [(s["task_id"], s["code"]) for s in result["skipped"]] == [
             ("t-undelivered", "hierarchy.integration_undelivered")
         ]
+
+
+@pytest.mark.parametrize("refusal", ["replacement", "after_rewire", None])
+async def test_recovery_preparation_and_replacement_retirement_share_transaction(db, monkeypatch, refusal):
+    """Both merge parents' behavior survives, including rollback after rewiring."""
+    from src.sessions.obsolete import ObsoleteClose, ObsoleteCloseRefused
+
+    await _retirement_graph(db)
+    closer = ObsoleteClose(db, release_owner=None)
+    prepared = []
+
+    async def prepare(conn):
+        prepared.append(conn)
+        await db._upsert_meta("duplicate", "recovery-transaction-proof", "prepared", conn=conn)
+        return None
+
+    if refusal == "after_rewire":
+        async def refuse(*args, **kwargs):
+            assert (await prepared[0].execute(text(
+                "SELECT depends_on_task_id FROM task_dependencies "
+                "WHERE task_id='dependent' AND dep_type='blocks'"
+            ))).scalars().all() == ["replacement"]
+            raise ObsoleteCloseRefused("obsolete.test_refusal", "late refusal")
+        monkeypatch.setattr(closer, "_refuse_unsafe", refuse)
+    kwargs = dict(reason="duplicate", principal="supervisor:test", _prepare_on=prepare,
+                  replacement_task_id="missing" if refusal == "replacement" else "replacement")
+    if refusal:
+        with pytest.raises(ObsoleteCloseRefused):
+            await closer.close("duplicate", **kwargs)
+        assert await db.get_task_meta("duplicate", "recovery-transaction-proof") is None
+        assert await db.get_task_meta("duplicate", "obsolete") is None
+        assert await db.get_dependencies("dependent") == {"duplicate"}
+        assert (await db.get_task("duplicate")).status == TaskStatus.READY
+    else:
+        result = await closer.close("duplicate", **kwargs)
+        assert result["outcome"] == "closed"
+        assert await db.get_task_meta("duplicate", "recovery-transaction-proof") == "prepared"
+        assert await db.get_dependencies("dependent") == {"replacement"}
+    assert len(prepared) == 1
+    assert await db.get_task_completions("duplicate") == []

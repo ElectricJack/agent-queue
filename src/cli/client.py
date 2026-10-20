@@ -96,6 +96,8 @@ _COMMAND_TIMEOUTS: dict[str, float] = {
     # has its own 10s bound, so a busy fleet can outlast the default 30s read.
     "pool_status": 120.0,
     "explain_task": 120.0,
+    # Fleet-wide failover/spill snapshots, including observational dry runs.
+    "provider_reroute": 120.0,
     "session_cleanup": 600.0,
     # Both long-poll (clamped to swarm.claim_wait_max, default well under
     # this) — see src/cli/agent_surface.py's task_claim/task_close commands.
@@ -122,10 +124,19 @@ _COMMAND_TIMEOUTS: dict[str, float] = {
     "integration_seal_now": 300.0,
     "integration_refresh_epic": 300.0,
     "integration_retire_origin": 300.0,
+    # Recovery confirms the provider and verifies remote Git even in dry runs.
+    "integration_release_owner": 300.0,
+    "integration_restore_task_origin": 300.0,
     "integration_pause_batch": 180.0,
     "integration_resume_batch": 180.0,
+    "integration_settle_batch": 180.0,
     "integration_abort_batch": 180.0,
     "integration_eject": 180.0,
+    # Completed-container recovery, preview included, proves the exact head under
+    # the retained repository's transaction lock: a full retained fetch (120s Git
+    # budget, then fsck), two authenticated ls-remote reads and ancestry checks
+    # before the preview or CAS answers. Read-only previews timed out live at 30s.
+    "integration_recover_completed_container": 300.0,
 }
 
 

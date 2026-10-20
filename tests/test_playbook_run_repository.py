@@ -17,7 +17,6 @@ from typing import Any
 
 import pytest
 
-from src.database import Database
 from src.database.tables import playbook_artifacts
 from src.playbooks.receipts import StepReceipt, transition_id
 from src.playbooks.run_state import (
@@ -40,7 +39,6 @@ from src.playbooks.run_state import (
 )
 from src.playbooks.waits import WaitChangeSet, WaitSpec
 from tests.pg_dsn import ensure_worker_postgres_dsn
-from tests.db_fixtures import lease_dsn
 
 POSTGRES_TEST_DSN = ensure_worker_postgres_dsn()
 
@@ -49,12 +47,10 @@ NOW = 1_000_000.0
 
 
 @pytest.fixture
-async def db(request, tmp_path):
-    database = Database(lease_dsn("test.db"))
-    await database.initialize()
+async def db(reuse_database):
+    database = await reuse_database("test.db")
     await seed_artifact(database, ARTIFACT)
     yield database
-    await database.close()
 
 
 async def seed_artifact(database, digest: str) -> None:

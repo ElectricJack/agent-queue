@@ -14,6 +14,7 @@ from dataclasses import fields, replace
 from pathlib import Path
 
 import pytest
+from hypothesis import given, strategies as st
 
 from src.routing.planner import (
     FALLBACK,
@@ -134,6 +135,76 @@ def _snapshot(profiles=None, *, out=(), degraded=(), usage=None, busy=None, back
         profiles=tuple(_fleet() if profiles is None else profiles),
         providers=providers, busy=dict(busy or {}), backlog=dict(backlog or {}),
     )
+
+
+@st.composite
+def routing_history(draw):
+    profiles = tuple(
+        _rung("standard-high", harness, slots=draw(st.integers(0, 5)),
+              enabled=draw(st.booleans()))
+        for harness in ("codex", "claude")
+    )
+    states = st.sampled_from([
+        "available", "degraded", "exhausted", "unauthenticated", "failing", "disabled",
+    ])
+    transitions = draw(st.lists(
+        st.tuples(st.integers(0, 1), st.booleans(), states, st.integers(0, 10)),
+        min_size=1, max_size=15,
+    ))
+    return profiles, transitions
+
+
+@given(history=routing_history())
+def test_property_routes_and_fresh_apply_never_choose_disabled_capacity(history):
+    profiles, transitions = history
+    providers = {p.provider: ProviderFacts() for p in profiles}
+    busy = {}
+    saved_candidates = []
+    task = _task(task_type="feature", class_hint="standard-high")
+    for index, enabled, state, load in transitions:
+        profiles = tuple(replace(p, enabled=enabled) if i == index else p
+                         for i, p in enumerate(profiles))
+        profile = profiles[index]
+        providers[profile.provider] = ProviderFacts(
+            state=state, launchable=state in {"available", "degraded"},
+        )
+        busy[profile.id] = load
+        snapshot = Snapshot(profiles=profiles, providers=providers, busy=busy)
+        # task_route_apply revalidates a saved plan against the fresh snapshot
+        # before scoring it; a profile/provider can change after planning.
+        selection = reselect(
+            [c for c in saved_candidates if is_candidate(c, snapshot)], snapshot, POLICY.balance,
+        )
+        if selection is not None:
+            chosen = snapshot.profile(selection.chosen.profile_id)
+            assert chosen.enabled and chosen.slots > 0
+            assert providers[chosen.provider].launchable
+            assert providers[chosen.provider].state in {"available", "degraded"}
+        result = _plan(task, snapshot, NARROW_NO)
+        if result.outcome == "planned":
+            chosen = snapshot.profile(result.value["profile_id"])
+            assert chosen is not None and chosen.enabled and chosen.slots > 0
+            assert providers[chosen.provider].state in {"available", "degraded"}
+            saved_candidates = [Candidate.from_dict(c) for c in result.value["candidates"]]
+        else:
+            assert result.outcome in {"held", "no_candidates"}
+            assert not any(p.enabled and p.slots > 0 and providers[p.provider].launchable
+                           for p in profiles)
+
+
+@given(excluded=st.sets(st.sampled_from(["codex", "claude"])),
+       loads=st.tuples(st.integers(0, 20), st.integers(0, 20)))
+def test_property_router_honors_provider_exclusions_at_any_load(excluded, loads):
+    profiles = tuple(_rung("standard-high", h) for h in ("codex", "claude"))
+    snapshot = _snapshot(profiles, busy=dict(zip((p.id for p in profiles), loads)))
+    result = _plan(_task(task_type="feature", exclude_providers=frozenset(excluded)),
+                   snapshot, NARROW_NO)
+    if excluded == {"codex", "claude"}:
+        assert result.outcome == "no_candidates"
+    else:
+        assert result.outcome == "planned"
+        assert result.value["provider"] not in excluded
+        assert all(c["provider"] not in excluded for c in result.value["candidates"])
 
 
 @pytest.mark.parametrize("class_hint", ["standard-high", "deep-high", "fast-high", "deep-low"])
@@ -848,6 +919,131 @@ def test_a_degraded_provider_counts_at_its_degraded_factor() -> None:
     assert codex["avail_factor"] == 0.5
 
 
+def _headroom_policy():
+    return parse_policy(BALANCED_POLICY.replace(
+        "  usage_soft_percent: 80", "  usage_mode: headroom\n  usage_soft_percent: 80",
+    ))
+
+
+def _quota_provider(*readings, usage_percent=None):
+    from src.routing.context import quota_observations
+
+    return ProviderFacts(usage_percent=usage_percent, quota=quota_observations(
+        [{"window": window, "scope": "account", "used_percent": used,
+          "observed_at": observed, "resets_at": reset}
+         for window, used, observed, reset in readings],
+        now=1000, stale_after=100,
+    ))
+
+
+def test_usage_mode_is_opt_in_and_preserves_existing_policy_digests():
+    explicit, digest = parse_policy(BALANCED_POLICY.replace(
+        "  usage_soft_percent: 80", "  usage_mode: soft_limit\n  usage_soft_percent: 80",
+    ))
+    assert explicit.balance.usage_mode == POLICY.balance.usage_mode == "soft_limit"
+    assert digest == DIGEST
+    assert "usage_mode" not in json.loads(POLICY.canonical_json())["balance"]
+    headroom, headroom_digest = _headroom_policy()
+    assert headroom_digest != DIGEST
+    assert parse_policy(headroom.canonical_json())[1] == headroom_digest
+    with pytest.raises(PolicyError, match="usage_mode"):
+        parse_policy(BALANCED_POLICY.replace(
+            "  usage_soft_percent: 80", "  usage_mode: fullest\n  usage_soft_percent: 80",
+        ))
+
+
+def test_headroom_mode_spreads_routine_work_in_proportion_to_remaining_usage():
+    policy, digest = _headroom_policy()
+    snapshot = replace(_snapshot(), providers={
+        "claude": _quota_provider(("weekly", 20, 995, 2000)),
+        "codex": _quota_provider(("five_hour", 70, 995, 1100)),
+    })
+    backlog = {}
+    for _ in range(110):
+        plan = plan_route(_task(task_type="feature"), policy,
+                          replace(snapshot, backlog=backlog), policy_sha256=digest,
+                          classification=NARROW_NO)
+        assert plan.outcome == "planned"
+        assert plan.value["intelligence_class"] == "standard-high"
+        profile = plan.value["profile_id"]
+        backlog[profile] = backlog.get(profile, 0) + 1
+    assert backlog == {"standard-high-claude": 80, "standard-high-codex": 30}
+    first = plan_route(_task(task_type="feature"), policy, snapshot,
+                       policy_sha256=digest, classification=NARROW_NO).value
+    assert first["provider"] == "claude"
+    assert "usage headroom factor 0.8 (binding weekly(account), resets at 2000)" in first["reason"]
+    assert {s["profile_id"]: s["usage_headroom_factor"] for s in first["scores"]} == {
+        "standard-high-claude": 0.8, "standard-high-codex": 0.3,
+    }
+
+
+@pytest.mark.parametrize("provider", [
+    ProviderFacts(), ProviderFacts(usage_percent=70),
+    _quota_provider(("weekly", 99, 100, 2000), usage_percent=99),
+    _quota_provider(("weekly", 99, 995, 999), usage_percent=99),
+    _quota_provider(("weekly", 99, 995, 1000), usage_percent=99),
+])
+def test_headroom_mode_keeps_stale_reset_and_unknown_quota_neutral(provider):
+    policy, digest = _headroom_policy()
+    snapshot = replace(_snapshot(), providers={"claude": provider, "codex": ProviderFacts()})
+    result = plan_route(_task(task_type="feature"), policy, snapshot,
+                        policy_sha256=digest, classification=NARROW_NO).value
+    assert result["provider"] == "codex"  # equal pressure, original tie order
+    assert {s["usage_headroom_factor"] for s in result["scores"]} == {1.0}
+    assert {s["usage_factor"] for s in result["scores"]} == {1.0}
+    assert all(s["usage_binding_window"] is None for s in result["scores"])
+
+
+def test_headroom_uses_the_fullest_fresh_window_and_ignores_expired_resets():
+    policy, digest = _headroom_policy()
+    provider = _quota_provider(
+        ("weekly", 20, 995, 2000), ("five_hour", 70, 990, 1100),
+        ("stale", 99, 100, 2000), ("reset", 100, 995, 999),
+    )
+    snapshot = replace(_snapshot(), providers={"claude": provider})
+    result = plan_route(_task(task_type="feature"), policy, snapshot,
+                        policy_sha256=digest, classification=NARROW_NO).value
+    claude = next(s for s in result["scores"] if s["profile_id"] == "standard-high-claude")
+    assert claude["usage_percent"] == 70
+    assert claude["usage_headroom_factor"] == 0.3
+    assert claude["usage_binding_window"] == {
+        "window": "five_hour", "scope": "account", "resets_at": 1100,
+    }
+
+
+@pytest.mark.parametrize("usage", [0, 80, 80.00001, 95, 100])
+def test_headroom_preserves_the_existing_penalty_above_the_soft_limit(usage):
+    policy, digest = _headroom_policy()
+    snapshot = replace(_snapshot(), providers={
+        "claude": _quota_provider(("weekly", usage, 995, 2000)),
+    })
+    task = _task(task_type="research")
+    original = _planned(task, snapshot)
+    result = plan_route(task, policy, snapshot, policy_sha256=digest).value
+    before = next(s for s in original["scores"] if s["profile_id"] == "standard-high-claude")
+    after = next(s for s in result["scores"] if s["profile_id"] == "standard-high-claude")
+    assert after["usage_factor"] == before["usage_factor"]
+    if usage > 80:
+        assert after["usage_headroom_factor"] == 1
+        assert after["pressure"] == before["pressure"]
+        assert result["provider"] == original["provider"]
+    else:
+        assert after["usage_headroom_factor"] == pytest.approx(1 - usage / 100)
+
+
+def test_headroom_mode_preserves_reserved_cells_and_design_lane_preference():
+    policy, digest = _headroom_policy()
+    snapshot = replace(_snapshot(), providers={
+        "claude": _quota_provider(("weekly", 70, 995, 2000)),
+        "codex": _quota_provider(("weekly", 20, 995, 2000)),
+    })
+    bugfix = plan_route(_task(task_type="bugfix", class_hint="deep-high"), policy,
+                        snapshot, policy_sha256=digest, classification=NARROW_NO).value
+    assert {c["provider"] for c in bugfix["candidates"]} == {"codex"}
+    design = plan_route(_task(task_type="design"), policy, snapshot, policy_sha256=digest).value
+    assert design["profile_id"] == "deep-high-claude"
+
+
 def test_exclude_providers_steers_a_review_to_the_other_family() -> None:
     review = _task(task_type="research", created_by_kind="review_dispatch",
                    exclude_providers=frozenset({"claude"}))
@@ -1103,13 +1299,15 @@ def test_routine_preference_preserves_local_design_art_and_operator_rules():
                         policy_sha256=digest, classification={**NARROW_YES, "risk": "low"})
     assert narrow.value["provider"] == "opencode"
     assert narrow.value["decision"]["mode"] == "lane_preference"
-    # The shipped narrow lanes take only work classified low risk: narrow and
-    # test-verified alone no longer qualifies.  No risk answer is a medium one.
+    # Narrow, test-verified medium-risk work (an assumed medium included) may
+    # run on local OpenCode through narrow-medium; high risk never does.
     for classification in (NARROW_YES, {**NARROW_YES, "risk": "medium"}):
-        hosted = plan_route(_task(task_type="feature"), policy, _snapshot(),
+        medium = plan_route(_task(task_type="feature"), policy, _snapshot(),
                             policy_sha256=digest, classification=classification)
-        assert hosted.value["provider"] == "codex", classification
-        assert {c["harness"] for c in hosted.value["candidates"]} <= {"claude", "codex"}
+        assert medium.value["provider"] == "opencode", classification
+    hosted = plan_route(_task(task_type="feature"), policy, _snapshot(),
+                        policy_sha256=digest, classification={**NARROW_YES, "risk": "high"})
+    assert {c["harness"] for c in hosted.value["candidates"]} <= {"claude", "codex"}
     assert routine_plan(task_type="design").value["profile_id"] == "deep-high-claude"
     assert routine_plan(task_type="art").value["provider_intent"] == "pinned"
     assert routine_plan(_snapshot(out={"codex"}), task_type="art").outcome == "held"
@@ -1802,6 +2000,29 @@ def test_bugfix_escalation_names_the_failed_attempt():
         "failed_attempts": [failure],
     }
     assert "escalated_after_failure" in result.value["reason"]
+
+
+@pytest.mark.parametrize("rework", [
+    {"reason": "reopen_with_feedback", "previous_status": "COMPLETED"},
+    {"reason": "reopen_with_feedback", "previous_status": "BLOCKED"},
+    {"reason": "verification_reopen", "previous_status": "COMPLETED"},
+])
+def test_rework_after_a_passing_attempt_does_not_escalate(rework):
+    attempt = {"attempt_id": "rework", "intelligence_class": "standard-high", **rework}
+    result = _risk_plan(
+        ESCALATING_POLICY, _task(task_type="bugfix", failed_attempts=(attempt,)),
+        classification={**NARROW_NO, "risk": "very_high"},
+    )
+    assert result.value["intelligence_class"] == "standard-high"
+    assert "escalated_after_failure" not in result.value
+    failure = {"attempt_id": "hard", "intelligence_class": "standard-high",
+               "reason": "session_close_hard_failure", "previous_status": "IN_PROGRESS"}
+    escalated = _risk_plan(
+        ESCALATING_POLICY, _task(task_type="bugfix", failed_attempts=(attempt, failure)),
+        classification={**NARROW_NO, "risk": "very_high"},
+    )
+    assert escalated.value["intelligence_class"] == "deep-high"
+    assert escalated.value["escalated_after_failure"]["failed_attempts"] == [failure]
 
 
 @pytest.mark.parametrize("failed_class", ["fast-high", "deep-high"])

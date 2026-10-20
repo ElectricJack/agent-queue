@@ -25,7 +25,6 @@ from src.api.scope import (
     worker_branches_for_session,
 )
 from src.config import AppConfig, DatabaseConfig, DiscordConfig
-from src.database import Database
 from src.git.github_contracts import GitHubRepositoryBinding
 from src.git.manager import GitManager
 from src.plugins.internal.git import _build_tool_definitions
@@ -48,9 +47,8 @@ pytestmark = pytest.mark.asyncio
 
 
 @pytest.fixture(params=["task", "pool"])
-async def env(tmp_path, request):
-    db = Database(lease_dsn("worker-git.db"))
-    await db.initialize()
+async def env(tmp_path, request, reuse_database):
+    db = await reuse_database("worker-git.db")
     await db.create_project(Project(id="p", name="p", repo_default_branch="main"))
     await db.create_project(Project(id="other", name="other"))
     await db.upsert_profile(AgentProfile(
@@ -76,7 +74,6 @@ async def env(tmp_path, request):
         task_id="t1" if request.param == "task" else None, project_id="p",
     )
     yield db, scope
-    await db.close()
 
 
 # --- the grant ------------------------------------------------------------
@@ -202,6 +199,55 @@ async def test_worker_lease_reaches_the_validated_delivery_push(worker_git, comm
 
     assert result["oid"] == _TIP
     assert w.git.apush_validated_delivery.await_args.kwargs["expected_remote_oid"] == oid
+
+
+@pytest.mark.parametrize("command", ["git_push", "push_branch"])
+async def test_worker_publication_advances_checkpoint_once_per_published_tip(worker_git, command):
+    from sqlalchemy import insert
+
+    from src.database.tables import task_branch_origins, task_integration_checkpoints
+    from src.git.manager import GitError
+
+    w = worker_git
+    branch = "aq/calm-ember-48"
+    base = "a" * 40
+    await w.db.create_repo(RepoConfig(
+        id="repo", project_id="p", source_type=RepoSourceType.CLONE, url=_REPOSITORY,
+    ))
+    await w.db.update_task("t1", repo_id="repo")
+    async with w.db.immediate() as conn:
+        await conn.execute(insert(task_branch_origins).values(
+            id="origin", task_id="t1", repository_id="repo", parent_ref="main",
+            base_sha=base, creation_generation=0, reserved=True, materialized=True,
+            created_at=1.0, materialized_at=1.0,
+        ))
+        await conn.execute(insert(task_integration_checkpoints).values(
+            task_id="t1", repository_id="repo", branch=branch, generation=0,
+            checkpoint_sha=base, verified_sha=base, verified_generation=0,
+            updated_at=1.0,
+        ))
+    for _ in range(2):
+        result = await w.handler.execute(command, w.scoped())
+        assert result["oid"] == _TIP
+        checkpoint = await w.db.get_integration_checkpoint("t1")
+        assert checkpoint["checkpoint_sha"] == _TIP
+        assert checkpoint["generation"] == checkpoint["version"] == 1
+        assert checkpoint["verified_sha"] is checkpoint["verified_generation"] is None
+
+    # A deliberate leased rewrite is another publication, not stale generation 0.
+    rewritten = "d" * 40
+    w.git.apush_validated_delivery.return_value = rewritten
+    await w.handler.execute(command, w.scoped(expected_remote_oid=_TIP))
+    checkpoint = await w.db.get_integration_checkpoint("t1")
+    assert checkpoint["checkpoint_sha"] == rewritten
+    assert checkpoint["generation"] == 2
+    origin = await w.db.get_task_branch_origin_for_promotion("t1", "repo")
+    assert origin["base_sha"] == base and origin["creation_generation"] == 0
+
+    w.git.apush_validated_delivery.side_effect = GitError("remote moved")
+    result = await w.handler.execute(command, w.scoped())
+    assert "remote moved" in result["error"]
+    assert await w.db.get_integration_checkpoint("t1") == checkpoint
 
 
 async def test_worker_push_without_a_fetched_default_is_a_root_delivery(worker_git):
@@ -637,16 +683,24 @@ async def test_old_custom_worker_profile_reports_and_merges_missing_grants(tmp_p
     "integration_resolve_conflict", "integration_push_conflict_resolution",
     "integration_resolve_candidate_member",
 ])
-async def test_retired_conflict_commands_are_refused_before_repair_lookup(env, monkeypatch, command):
+@pytest.mark.parametrize('assignment', ['parent', 'batch', 'inactive', 'ordinary'])
+async def test_retired_conflict_commands_are_denied_for_every_assignment(env, monkeypatch, command, assignment):
     from unittest.mock import AsyncMock
 
     db, scope = env
-    lookup = AsyncMock()
-    monkeypatch.setattr(db, "get_repair_filing_scope", lookup)
-    args = {"intent_id": "intent", "fence": {}}
-    assert await check_request_scope(command, args, scope, db=db) == f"out of scope: {command}"
-    assert args == {"intent_id": "intent", "fence": {}}
+    repair = None if assignment == 'ordinary' else {
+        'active': assignment != 'inactive', 'writer_kind': 'repair_delegate',
+        'target_kind': assignment,
+    }
+    lookup = AsyncMock(return_value=repair)
+    monkeypatch.setattr(db, 'get_repair_filing_scope', lookup)
+    args = {'intent_id': 'intent', 'fence': {}}
+    result = await check_request_scope(command, args, scope, db=db)
+    assert result == f"out of scope: {command}"
+    assert args == {'intent_id': 'intent', 'fence': {}}
     lookup.assert_not_awaited()
+    await db.update_task('t1', status=TaskStatus.COMPLETED)
+    assert await check_request_scope(command, args, scope, db=db) is not None
 
 
 async def test_worker_pull_updates_only_its_checkout(worker_git):

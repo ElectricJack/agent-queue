@@ -18,7 +18,6 @@ import pytest
 from sqlalchemy import update
 
 from src.config import DiscordConfig, DiscordDigestConfig, DiscordEscalationConfig
-from src.database import Database
 from src.database.tables import tasks
 from src.digest import DigestScheduleService, schedule_for
 from src.digest.dispatch import MARKER_PREFIX, marker_for
@@ -75,13 +74,11 @@ class Clock:
 
 
 @pytest.fixture
-async def db():
-    database = Database(lease_dsn("digest_dispatch"))
-    await database.initialize()
+async def db(reuse_database):
+    database = await reuse_database("digest_dispatch")
     await database.create_project(Project(id="p", name="Agent Queue"))
     await database.create_project(Project(id="other", name="Other"))
     yield database
-    await database.close()
 
 
 def make_service(db, transport, config=None, *, clock=None, owner="daemon-a", **kwargs):

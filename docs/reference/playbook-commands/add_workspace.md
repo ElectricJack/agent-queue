@@ -14,7 +14,7 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/generated.py`](../../../src/commands/contracts/generated.py) |
-| Contract fingerprint | `sha256:b874bde7d34064728a580af2db6230a768543ac176a7ac1173f3b71913936fba` |
+| Contract fingerprint | `sha256:045f3d63953294aefbb9b7d7a518b3647fb72384a512aee3b6efdc8c5316a5f6` |
 
 ## Parameters
 
@@ -24,6 +24,7 @@
 | `source` | `"clone" \| "link"` | yes | — | How to set up the workspace: clone (from project repo_url), link (existing dir) |
 | `path` | `string` | no | — | Directory path (required for link, auto-generated for clone) |
 | `name` | `string` | no | — | Workspace name (optional) |
+| `enabled` | `boolean` | no | — | Enable admission (default true). Register a cutover target with false. |
 | `kind_id` | `string` | no | — | Workspace kind id (e.g. 'project-repo', 'package-foo', 'vault'). Defaults to 'project-repo'. Must resolve via project-scoped or system-wide vault/workspace-kinds/<id>.md. |
 
 This generated contract exposes the **playbook** input-schema view. MCP/CLI/API retain their legacy **transport** view.
@@ -49,7 +50,7 @@ This command declares no effect clause, so the playbook graph falls back to its 
 
 | Effect | Subject | Condition |
 |---|---|---|
-| Composite using project_id, source, path, name, kind_id | — | always |
+| Composite using project_id, source, path, name, enabled, kind_id | — | always |
 
 <!-- aq:generated:end -->
 

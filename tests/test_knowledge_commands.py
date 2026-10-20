@@ -9,9 +9,17 @@ the static shape; this file pins the *behavior* those contracts dispatch to.
 
 from __future__ import annotations
 
-import pytest
+from pathlib import Path
 
-from tests.record_helpers import knowledge_config, seed_project
+import pytest
+from sqlalchemy import update
+
+from src.database.tables import sessions
+from src.models import AgentProfile
+from src.profiles.catalog import render_rung_stub, shipped_profile_catalog
+from src.profiles.inheritance import resolve_inheritance
+from src.profiles.parser import parse_profile
+from tests.record_helpers import knowledge_config, seed_project, worker_principal
 
 pytestmark = pytest.mark.usefixtures("unpooled_postgres")
 
@@ -27,6 +35,48 @@ async def handler(command_handler_factory, reuse_database):
 
 def ident(result):
     return f"record:{result['record_id']}"
+
+
+async def test_all_worker_rungs_use_knowledge_from_pool_bearer_scope(handler):
+    for rung in shipped_profile_catalog():
+        if not rung.source_profile_id.startswith("worker-"):
+            continue
+        template = parse_profile(Path(
+            f"src/profiles/defaults/{rung.source_profile_id}/profile.md"
+        ).read_text())
+        merged, errors = resolve_inheritance(parse_profile(render_rung_stub(rung)), lambda _: template)
+        assert not errors
+        await handler.db.create_profile(AgentProfile(
+            id=rung.id, name=rung.name, **merged.capabilities,
+        ))
+        worker = await worker_principal(handler.db, rung.id)
+        async with handler.db.immediate() as conn:
+            await conn.execute(update(sessions).where(sessions.c.id == worker.session_id)
+                               .values(profile_id=rung.id))
+        scope = {
+            "kind": "session", "session_id": worker.session_id,
+            "session_instance_token": worker.session_instance_token,
+            "project_id": "p", "task_id": None, "elevated": False,
+        }
+
+        async def execute(name, **args):
+            result = await handler.execute(name, {"_scope": scope, "project_id": "p", **args})
+            assert result["success"], (rung.id, name, result)
+            return result
+
+        created = await execute(
+            "knowledge_create", title=rung.id, body="Pool worker evidence", category="incident",
+            claim_epoch=1, idempotency_key=f"pool-{rung.id}",
+        )
+        shown = await execute("knowledge_show", identity=ident(created))
+        assert shown["record_id"] == created["record_id"]
+        listed = await execute("knowledge_list")
+        assert created["record_id"] in [row["record_id"] for row in listed["items"]]
+        cited = await execute(
+            "knowledge_cite", identity=ident(created), revision_id=created["revision_id"],
+            kind="explicit_read", claim_epoch=1, idempotency_key=f"cite-{rung.id}",
+        )
+        assert cited["citation_id"]
 
 
 class TestKnowledgeWriteFlow:

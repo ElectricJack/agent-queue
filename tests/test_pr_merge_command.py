@@ -12,7 +12,6 @@ import pytest
 
 from src.commands.handler import CommandHandler
 from src.config import DatabaseConfig, AppConfig, DiscordConfig
-from src.database import Database
 from src.git.manager import GitError
 from src.git.github import GitHubAccess, GitHubMergeReconciled, PullRequestCreation
 from src.git.github_contracts import (
@@ -822,9 +821,8 @@ async def test_direct_manager_merge_validates_and_pins_identity(monkeypatch):
 
 
 @pytest.fixture
-async def db(tmp_path):
-    d = Database(lease_dsn("pm.db"))
-    await d.initialize()
+async def db(reuse_database):
+    d = await reuse_database("pm.db")
     await d.create_project(Project(id="p1", name="P1", repo_url="https://github.com/o/r.git"))
     await d.create_workspace(
         Workspace(
@@ -835,7 +833,6 @@ async def db(tmp_path):
         )
     )
     yield d
-    await d.close()
 
 
 @pytest.fixture

@@ -38,7 +38,6 @@ from src.commands.playbook_v2_commands import (
 )
 from src.commands.principal import SERVER_OWNED_ARG_KEYS
 from src.config import PlaybooksConfig
-from src.database import Database
 from src.database.queries.playbook_run_queries import (
     PENDING_EVENT_EXPIRY_ACTOR,
     PENDING_EVENT_OVERFLOW_ACTOR,
@@ -46,7 +45,6 @@ from src.database.queries.playbook_run_queries import (
 from src.playbooks.run_state import PendingEventQuotaExceeded
 from src.playbooks.runtime import V2PlaybookRuntime
 from tests.pg_dsn import ensure_worker_postgres_dsn
-from tests.db_fixtures import lease_dsn
 
 POSTGRES_TEST_DSN = ensure_worker_postgres_dsn()
 
@@ -73,13 +71,9 @@ async def test_live_arrival_overwrites_publisher_timestamp(monkeypatch, supplied
 
 
 @pytest.fixture
-async def db(request, tmp_path):
-    database = Database(lease_dsn("test.db"))
-    await database.initialize()
-    try:
-        yield database
-    finally:
-        await database.close()
+async def db(reuse_database):
+    database = await reuse_database("test.db")
+    yield database
 
 
 async def retain(db, **overrides) -> str | None:

@@ -42,6 +42,50 @@ async def _check_delivery_engine(ctx: DoctorContext) -> CheckResult:
     )
 
 
+async def _check_branch_origins(ctx: DoctorContext) -> CheckResult:
+    from src.integration.hierarchy import missing_origin_tasks_on
+
+    check_id = "integration.branch_origins"
+    if ctx.db is None:
+        return _unavailable(check_id)
+    findings = []
+    for project in await ctx.db.list_projects():
+        if project.hierarchical_integration_mode not in {"hierarchy", "train"}:
+            continue
+        if not project.integration_repository_id:
+            continue  # integration.delivery_engine owns a missing repository.
+        async with ctx.db._engine.connect() as conn:
+            missing = await missing_origin_tasks_on(conn, project.id, project.integration_repository_id)
+        if missing:
+            findings.append({"project_id": project.id, "task_ids": missing,
+                             "mode": project.hierarchical_integration_mode,
+                             "generation": project.hierarchical_integration_generation})
+    return CheckResult(
+        check_id, Severity.ERROR if findings else Severity.OK,
+        f"{sum(len(row['task_ids']) for row in findings)} task(s) lack live branch origins; "
+        "repair with `aq doctor --check integration.branch_origins --fix`"
+        if findings else "every managed task has a live branch origin",
+        fixable=bool(findings), data={"projects": findings},
+    )
+
+
+async def _fix_branch_origins(ctx: DoctorContext) -> CheckResult:
+    if ctx.handler is None:
+        return _unavailable("integration.branch_origins", "command handler unavailable for Git proof")
+    before = await _check_branch_origins(ctx)
+    results = []
+    for row in before.data.get("projects", []):
+        results.append(await ctx.handler.execute("edit_project", {
+            "project_id": row["project_id"], "hierarchical_integration_mode": row["mode"],
+            "expected_integration_generation": row["generation"],
+            "reason": "doctor backfill missing branch origins",
+        }))
+    after = await _check_branch_origins(ctx)
+    after.fix_applied = bool(results) and after.severity == Severity.OK
+    after.data["repairs"] = results
+    return after
+
+
 async def _subjects(ctx, *, held):
     check_id = "integration.subjects_held" if held else "integration.subjects_overdue"
     if ctx.db is None:
@@ -485,6 +529,27 @@ async def _check_continuous_promotion_lag(ctx: DoctorContext) -> CheckResult:
         data=report)
 
 
+async def _check_ci_producer(ctx: DoctorContext) -> CheckResult:
+    from src.integration.models import invalid_policy_producers
+
+    check_id = "integration.ci_producer"
+    if ctx.db is None:
+        return _unavailable(check_id)
+    invalid = [
+        {"project_id": project.id, **entry}
+        for project in await ctx.db.list_projects()
+        for entry in invalid_policy_producers(project.hierarchical_integration_policy)
+    ]
+    return CheckResult(
+        check_id, Severity.ERROR if invalid else Severity.OK,
+        "; ".join(f"{entry['project_id']}: {entry['field']}={entry['producer_id']!r} "
+                  "must be a positive decimal GitHub App ID (GitHub Actions: 15368); "
+                  "update with `aq project set <id> integration-policy`" for entry in invalid)
+        or "every configured CI producer is a numeric GitHub App ID",
+        data={"invalid": invalid},
+    )
+
+
 async def _check_ci_source(ctx: DoctorContext) -> CheckResult:
     """Name the runner producing each project's required checks, per target kind.
 
@@ -581,11 +646,94 @@ async def _check_promotion_stranded(ctx: DoctorContext) -> CheckResult:
         or "every open promotion intent has an admissible task", data={"stranded": stranded})
 
 
+async def stalled_train_batches(
+    ctx: DoctorContext, *, now=None, project_ids=None, alert_after_seconds=None,
+) -> list[dict]:
+    """Age alarms for sealed inputs, independent of the legacy Subject journal."""
+    from sqlalchemy import union_all
+
+    from src.database.tables import archived_tasks, integration_batches, projects, tasks
+    from src.integration.models import IntegrationTrainPolicy
+    from src.integration.repair import ordinary_repair_id
+
+    now = time.time() if now is None else now
+    batch = integration_batches.c
+    statement = select(
+        batch.id.label("batch_id"), batch.project_id, batch.repository_id, batch.target_ref,
+        batch.updated_at, batch.repair_attempt_count, projects.c.hierarchical_integration_policy,
+    ).select_from(integration_batches.join(projects, projects.c.id == batch.project_id)).where(
+        batch.target_ref.is_not(None), batch.intent == "open", batch.lifecycle == "sealed",
+        projects.c.status == "ACTIVE",
+        projects.c.hierarchical_integration_mode.in_(("development", "hierarchy", "train")),
+    ).order_by(batch.id)
+    if project_ids is not None:
+        statement = statement.where(batch.project_id.in_(project_ids))
+    async with ctx.db._engine.connect() as conn:
+        rows = (await conn.execute(statement)).mappings().all()
+        ids = [ordinary_repair_id(row["batch_id"], row["repair_attempt_count"])
+               for row in rows if row["repair_attempt_count"]]
+        repairs = {}
+        if ids:
+            # Prefer the live row if archival overlaps a read.
+            repairs = {row["id"]: row for row in (await conn.execute(union_all(*(
+                select(table.c.id, table.c.status, table.c.updated_at).where(table.c.id.in_(ids))
+                for table in (archived_tasks, tasks)
+            )))).mappings().all()}
+    train = getattr(getattr(ctx.handler, "orchestrator", None), "integration_train", None)
+    lanes = {(row["project_id"], row["repository_id"], row["target_ref"]): row
+             for row in train.status()} if train is not None else {}
+    findings = []
+    for row in rows:
+        repair_id = (ordinary_repair_id(row["batch_id"], row["repair_attempt_count"])
+                     if row["repair_attempt_count"] else None)
+        repair = repairs.get(repair_id)
+        if (alert_after_seconds is None and repair is not None
+                and repair["status"] not in {"COMPLETED", "FAILED", "BLOCKED"}):
+            continue  # Existing task/repair capacity diagnostics own this wait.
+        lane = lanes.get((row["project_id"], row["repository_id"], row["target_ref"]), {})
+        progress_at = max(row["updated_at"], repair["updated_at"] if repair else 0)
+        if lane.get("batch_id") == row["batch_id"]:
+            progress_at = max(progress_at, lane.get("progress_at", 0))
+        policy = IntegrationTrainPolicy.model_validate(
+            (row["hierarchical_integration_policy"] or {}).get("train") or {})
+        due_at = progress_at + (alert_after_seconds or policy.settling_cap_seconds)
+        if alert_after_seconds is None:
+            due_at = max(due_at, lane.get("deferred_until", 0) + 60)
+            if lane.get("running"):
+                due_at = max(due_at, lane.get("visit_started_at", 0)
+                             + train.visit_timeout_seconds + 60)
+        if now < due_at:
+            continue
+        findings.append({
+            "batch_id": row["batch_id"], "project_id": row["project_id"],
+            "repository_id": row["repository_id"], "target_ref": row["target_ref"],
+            "repair_task_id": repair_id, "repair_status": repair["status"] if repair else None,
+            "progress_at": progress_at, "due_at": due_at,
+            "age_seconds": now - progress_at, "observation": lane,
+            "detail": f"sealed batch {row['batch_id']} has no progress for "
+                      f"{int((now - progress_at) / 60)}m; inspect "
+                      f"aq integration status {row['project_id']} and its candidate checks",
+        })
+    return findings
+
+
+async def _check_train_batches_stalled(ctx: DoctorContext) -> CheckResult:
+    check_id = "integration.train_batches_stalled"
+    if ctx.db is None:
+        return _unavailable(check_id)
+    findings = await stalled_train_batches(ctx)
+    return CheckResult(check_id, Severity.WARN if findings else Severity.OK,
+                       "; ".join(row["detail"] for row in findings)
+                       or "no sealed train batch is past its progress deadline",
+                       data={"findings": findings})
+
+
 def integration_checks() -> list[DoctorCheck]:
     return [
         DoctorCheck(id=f"integration.{name}", run=run, fix=fix, timeout_s=timeout, owner=OWNER)
         for name, run, timeout, fix in (
             ("delivery_engine", _check_delivery_engine, 30.0, None),
+            ("branch_origins", _check_branch_origins, 300.0, _fix_branch_origins),
             ("legacy_deliveries", _check_legacy_deliveries, 300.0, None),
             ("completed_undelivered", _check_completed_undelivered, 300.0, None),
             ("finished_branch_owners", _check_finished_branch_owners,
@@ -596,7 +744,9 @@ def integration_checks() -> list[DoctorCheck]:
             ("promotion_flow", _check_promotion_flow, 60.0, None),
             ("continuous_promotion_lag", _check_continuous_promotion_lag, 60.0, None),
             ("promotion_stranded", _check_promotion_stranded, 30.0, None),
+            ("train_batches_stalled", _check_train_batches_stalled, 30.0, None),
             ("ci_source", _check_ci_source, 30.0, None),
+            ("ci_producer", _check_ci_producer, 30.0, None),
         )
     ]
 

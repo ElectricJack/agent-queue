@@ -85,6 +85,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`integration_checkpoint_parent`](integration_checkpoint_parent.md) | Checkpoint integration parent | Pin the parent head and generation before waiting for child deliveries. |
 | [`integration_ci_evidence`](integration_ci_evidence.md) | Observe exact root candidate CI | Observe exact root candidate CI |
 | [`integration_cleanup`](integration_cleanup.md) | Advance integration cleanup | Materialize and advance bounded cleanup for one terminal root batch. |
+| [`integration_clear_retained_recovery`](integration_clear_retained_recovery.md) | Integration Clear Retained Recovery | Authenticated hierarchical integration operational control. |
 | [`integration_close_delivered_pr`](integration_close_delivered_pr.md) | Integration Close Delivered Pr | Authenticated hierarchical integration operational control. |
 | [`integration_complete_parent`](integration_complete_parent.md) | Integration Complete Parent | Complete a verified parent task at its exact verified generation and head. |
 | [`integration_cutover`](integration_cutover.md) | Integration Cutover | Authenticated hierarchical integration operational control. |
@@ -95,6 +96,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`integration_file_children`](integration_file_children.md) | File isolated child tasks | Reserve child origins and advance the parent integration generation atomically. |
 | [`integration_migrate_provenance_refs`](integration_migrate_provenance_refs.md) | Move Git provenance out of branches | Local operator copies and verifies immutable provenance refs before deleting legacy heads. |
 | [`integration_mutate_hierarchy`](integration_mutate_hierarchy.md) | Mutate integration hierarchy | Apply a guarded hierarchy change and invalidate affected parent generations. |
+| [`integration_off`](integration_off.md) | Disable automatic integration | Local operator applies an exact preview while preserving sources and frozen work. |
 | [`integration_parent_verify`](integration_parent_verify.md) | Integration Parent Verify | Record one parent verification against its exact checkpoint head and evidence. |
 | [`integration_pause_batch`](integration_pause_batch.md) | Integration Pause Batch | Authenticated hierarchical integration operational control. |
 | [`integration_promotion_notes_input`](integration_promotion_notes_input.md) | Integration Promotion Notes Input | Assemble immutable promotion notes from full Git history. |
@@ -106,6 +108,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`integration_record_noop`](integration_record_noop.md) | Record verified no-code child disposition | Bind a child's current no-op completion and exact Git head to its parent receipt. |
 | [`integration_record_repair`](integration_record_repair.md) | Integration Record Repair | Record one exact repair check attempt against the current stage budget. |
 | [`integration_record_root_noop`](integration_record_root_noop.md) | Record verified no-code root completion | Preview or complete an unheld root with exact no-artifact Git provenance. |
+| [`integration_recover_completed_container`](integration_recover_completed_container.md) | Recover a completed container checkpoint | Prove accepted published pass provenance and CAS only its checkpoint; delivery gates remain. |
 | [`integration_redrive_child`](integration_redrive_child.md) | Integration Redrive Child | Authenticated hierarchical integration operational control. |
 | [`integration_redrive_root`](integration_redrive_root.md) | Integration Redrive Root | Authenticated hierarchical integration operational control. |
 | [`integration_reevaluate_repair`](integration_reevaluate_repair.md) | Integration Reevaluate Repair | Authenticated hierarchical integration operational control. |
@@ -120,11 +123,15 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`integration_repair_start`](integration_repair_start.md) | Integration Repair Start | Activate or durably continue one operation's bounded repair stage. |
 | [`integration_repair_timeout`](integration_repair_timeout.md) | Integration Repair Timeout | Expire the current repair stage once its absolute deadline has passed. |
 | [`integration_reserve_owner`](integration_reserve_owner.md) | Integration Reserve Owner | Authenticated hierarchical integration operational control. |
+| [`integration_restore_task_origin`](integration_restore_task_origin.md) | Integration Restore Task Origin | Authenticated hierarchical integration operational control. |
 | [`integration_resume_batch`](integration_resume_batch.md) | Integration Resume Batch | Authenticated hierarchical integration operational control. |
 | [`integration_retire_legacy_park`](integration_retire_legacy_park.md) | Retire a historical parked operation | Local operator abandons every explicitly selected source under an exact journal fence. |
 | [`integration_retire_origin`](integration_retire_origin.md) | Integration Retire Origin | Authenticated hierarchical integration operational control. |
+| [`integration_reverify_epic`](integration_reverify_epic.md) | Integration Reverify Epic | Authenticated hierarchical integration operational control. |
 | [`integration_seal_now`](integration_seal_now.md) | Integration Seal Now | Authenticated hierarchical integration operational control. |
+| [`integration_settle_batch`](integration_settle_batch.md) | Integration Settle Batch | Authenticated hierarchical integration operational control. |
 | [`integration_status`](integration_status.md) | Integration Status | Authenticated hierarchical integration operational control. |
+| [`integration_supersede_completion`](integration_supersede_completion.md) | Supersede one retained completion | Operator or owning supervisor retires an exact stopped Subject with original verified human evidence. |
 | [`integration_train_tick`](integration_train_tick.md) | Integration Train Tick | Start one level-triggered visit per idle target (git_first: active). |
 | [`integration_transfer_owner`](integration_transfer_owner.md) | Transfer integration branch owner | Stop and detach the current branch writer before granting a fresh fence. |
 | [`integration_trust_manifest`](integration_trust_manifest.md) | Integration Trust Manifest | Render the App-mode trust manifest from a full or hosted-check policy, the authenticated binding and the daemon's App, and compare the default-branch copy. |
@@ -138,9 +145,28 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`agent_message`](agent_message.md) | Agent Message | Queue supervisor guidance for one live worker or every live worker. |
 | [`append_note`](append_note.md) | Append Note | Execute the append_note command. |
 | [`approve_pull_request`](approve_pull_request.md) | Approve Pull Request | Approve a pinned PR using the host's human gh login, never the App. |
+| [`approved_spec_packet`](approved_spec_packet.md) | Approved Spec Packet | Execute the approved_spec_packet command. |
 | [`archive_settings`](archive_settings.md) | Archive Settings | Return the current auto-archive configuration. |
 | [`archive_task`](archive_task.md) | Archive Task | Archive tasks — single task by ID or bulk by project. |
 | [`artifact_verify`](artifact_verify.md) | Artifact Verify | Resolve a durable artifact URI and re-hash the bytes it names. |
+| [`ask_apply_input`](ask_apply_input.md) | Ask Apply Input | Scoped human request communication and decision evidence. |
+| [`ask_button`](ask_button.md) | Ask Button | Scoped human request communication and decision evidence. |
+| [`ask_cutover`](ask_cutover.md) | Ask Cutover | Scoped human request communication and decision evidence. |
+| [`ask_cutover_status`](ask_cutover_status.md) | Ask Cutover Status | Scoped human request communication and decision evidence. |
+| [`ask_decide`](ask_decide.md) | Ask Decide | Scoped human request communication and decision evidence. |
+| [`ask_discussion_reply`](ask_discussion_reply.md) | Ask Discussion Reply | Scoped human request communication and decision evidence. |
+| [`ask_history`](ask_history.md) | Ask History | Scoped human request communication and decision evidence. |
+| [`ask_intake`](ask_intake.md) | Ask Intake | Scoped human request communication and decision evidence. |
+| [`ask_legacy_reset`](ask_legacy_reset.md) | Ask Legacy Reset | Preview or discard legacy asks and start fresh. |
+| [`ask_list`](ask_list.md) | Ask List | Scoped human request communication and decision evidence. |
+| [`ask_prepare_decision`](ask_prepare_decision.md) | Ask Prepare Decision | Scoped human request communication and decision evidence. |
+| [`ask_reconcile`](ask_reconcile.md) | Ask Reconcile | Scoped human request communication and decision evidence. |
+| [`ask_repair_delivery`](ask_repair_delivery.md) | Ask Repair Delivery | Scoped human request communication and decision evidence. |
+| [`ask_reply`](ask_reply.md) | Ask Reply | Scoped human request communication and decision evidence. |
+| [`ask_retry_operation`](ask_retry_operation.md) | Ask Retry Operation | Scoped human request communication and decision evidence. |
+| [`ask_show`](ask_show.md) | Ask Show | Scoped human request communication and decision evidence. |
+| [`ask_update_context`](ask_update_context.md) | Ask Update Context | Scoped human request communication and decision evidence. |
+| [`batch_reconcile`](batch_reconcile.md) | Batch Reconcile | Repair one bounded page of batch wakeups without releasing any holds. |
 | [`benchmark_stage_record`](benchmark_stage_record.md) | Benchmark Stage Record | Append one measured monotonic stage for the held task. |
 | [`bind_project_repository`](bind_project_repository.md) | Bind Project Repository | Authorize an initialized project's first repository, never a reassignment. |
 | [`browse_project_root`](browse_project_root.md) | Browse Project Root | List the child directories of a root-relative path. |
@@ -148,6 +174,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`check_profile`](check_profile.md) | Check Profile | Execute the check_profile command. |
 | [`checkout_branch`](checkout_branch.md) | Checkout Branch | Execute the checkout_branch command. |
 | [`ci_baseline_status`](ci_baseline_status.md) | Read the default branch's CI verdict | Judge the head commit's check runs, name the failing checks and tests, and derive the repair task keyed by their failure signature. |
+| [`ci_completed_status`](ci_completed_status.md) | Audit completed task CI | List completed sources with failing required checks and unresolved CI evidence. |
 | [`ci_repair_adopt`](ci_repair_adopt.md) | Adopt a task as the CI repair | Key a live task as the repair for a red branch and record the failing tests it owns, so the CI sentinel reuses it instead of filing another. |
 | [`claude_usage`](claude_usage.md) | Claude Usage | Get Claude Code usage stats from live session data. |
 | [`collaboration_accept`](collaboration_accept.md) | Collaboration Accept | Join a collaboration thread for the held task's live claim. |
@@ -190,6 +217,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`digest_preview`](digest_preview.md) | Digest Preview | Dry-run the current digest window. Sends nothing, reserves nothing. |
 | [`digest_request`](digest_request.md) | Digest Request | Queue one supervisor author turn per reserved digest window, releasing held windows when supervisor authoring is off. |
 | [`digest_status`](digest_status.md) | Digest Status | Configured schedule, next evaluation and delivery health. |
+| [`discard_pause_checkpoint`](discard_pause_checkpoint.md) | Discard Pause Checkpoint | Execute the discard_pause_checkpoint command. |
 | [`discord_purge_channel`](discord_purge_channel.md) | Discord Purge Channel | Delete messages from a Discord channel. |
 | [`doctor`](doctor.md) | Doctor | Run the health-check catalog and summarise the result. |
 | [`doctor_catalog`](doctor_catalog.md) | Doctor Catalog | List doctor observation audits, identity schemas, scope and coverage contracts. |
@@ -202,6 +230,8 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`edit_profile`](edit_profile.md) | Edit Profile | Execute the edit_profile command. |
 | [`edit_project`](edit_project.md) | Edit Project | Execute the edit_project command. |
 | [`edit_workspace`](edit_workspace.md) | Edit Workspace | Edit a workspace's path / source_type / name / enabled state. |
+| [`ensure_fidelity_review`](ensure_fidelity_review.md) | Ensure fidelity review | Create or recover the one fidelity-reviewer role task for a held batch. |
+| [`ensure_spec_ingest`](ensure_spec_ingest.md) | Ensure approved spec ingestion | Create or recover the role task receipt for an immutable approved decision. |
 | [`explain_task`](explain_task.md) | Explain Task | Return the ordered list of reasons *task_id* isn't running. |
 | [`export_portable_config`](export_portable_config.md) | Export Portable Config | Export the curated preview as a versioned ``.aqbundle`` archive. |
 | [`export_profile`](export_profile.md) | Export Profile | Execute the export_profile command. |
@@ -211,6 +241,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`formula_list`](formula_list.md) | Formula List | Execute the formula_list command. |
 | [`formula_show`](formula_show.md) | Formula Show | Execute the formula_show command. |
 | [`gate_list`](gate_list.md) | Gate List | List gates, optionally filtered by project/status/type/task. |
+| [`gate_reopen`](gate_reopen.md) | Gate Reopen | Execute the gate_reopen command. |
 | [`gate_show`](gate_show.md) | Gate Show | Return one gate + its waiter task ids. |
 | [`generate_readme`](generate_readme.md) | Generate Readme | Execute the generate_readme command. |
 | [`get_agent`](get_agent.md) | Get Agent | Execute the get_agent command. |
@@ -317,7 +348,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`list_prompts`](list_prompts.md) | List Prompts | List all prompt templates for a project, optionally filtered. |
 | [`list_workflows`](list_workflows.md) | List Workflows | List workflows with optional filters. |
 | [`list_workspace_kinds`](list_workspace_kinds.md) | List Workspace Kinds | List workspace kinds visible to a project (system + project overrides). |
-| [`list_workspaces`](list_workspaces.md) | List Workspaces | List workspaces with lock status. |
+| [`list_workspaces`](list_workspaces.md) | List Workspaces | List workspaces with lock status, owner identity and bounded diagnostics. |
 | [`load_tools`](load_tools.md) | Load Tools | Load tools by category or individual name. |
 | [`merge_branch`](merge_branch.md) | Merge Branch | Execute the merge_branch command. |
 | [`message_inbox`](message_inbox.md) | Message Inbox | List a recipient's pending messages, optionally marking them delivered. |
@@ -356,6 +387,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`playbook_pending_events`](playbook_pending_events.md) | Playbook Pending Events | List events held because no artifact could run them. |
 | [`playbook_run_overlay`](playbook_run_overlay.md) | Playbook Run Overlay | Return one run's execution overlay, pinned to the artifact it ran. |
 | [`playbook_script_run`](playbook_script_run.md) | Playbook Script Run | Submit/rejoin a pinned ScriptStep. Inputs are resolved data only. |
+| [`playbook_source_resync`](playbook_source_resync.md) | Playbook Source Resync | Restore a system source from its pinned active artifact, keeping a backup. |
 | [`playbook_state_delete`](playbook_state_delete.md) | Playbook State Delete | Create a versioned KV tombstone with replay-safe CAS. |
 | [`playbook_state_get`](playbook_state_get.md) | Playbook State Get | Read an invocation-owned typed key, including its retained revision. |
 | [`playbook_state_inspect`](playbook_state_inspect.md) | Playbook State Inspect | Inspect an explicit namespace only under independent operator authority. |
@@ -446,6 +478,8 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`remove_workspace`](remove_workspace.md) | Remove Workspace | Delete a workspace by ID or name. |
 | [`render_prompt`](render_prompt.md) | Render a prompt | Render a bundled or project prompt with explicit variables. |
 | [`reopen_with_feedback`](reopen_with_feedback.md) | Reopen With Feedback | Reopen a completed/failed task with feedback appended to its description. |
+| [`repair_repository_checkout`](repair_repository_checkout.md) | Repair Repository Checkout | Repoint stale path fields without deleting a repository's identity. |
+| [`repair_workspace_checkout`](repair_workspace_checkout.md) | Repair Workspace Checkout | Execute the repair_workspace_checkout command. |
 | [`reparent_task`](reparent_task.md) | Reparent Task | Move a task under another container, or to root.  Backs ``aq task reparent``. |
 | [`report_brief`](report_brief.md) | Report Brief | Read a bounded, paged report brief and its CAS version. |
 | [`report_get`](report_get.md) | Report Get | Read a stored morning report in project scope. |
@@ -463,6 +497,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`review_decide`](review_decide.md) | Review Decide | Execute the review_decide command. |
 | [`review_delegate`](review_delegate.md) | Review Delegate | Execute the review_delegate command. |
 | [`review_dispatch`](review_dispatch.md) | Review Dispatch | File *count* adversarial reviewer tasks for one review revision. |
+| [`review_feedback_complete`](review_feedback_complete.md) | Review Feedback Complete | Record evidence for one filed obligation; this never approves a review. |
 | [`review_import_edits`](review_import_edits.md) | Review Import Edits | Execute the review_import_edits command. |
 | [`review_list`](review_list.md) | Review List | Execute the review_list command. |
 | [`review_reopen`](review_reopen.md) | Review Reopen | Execute the review_reopen command. |
@@ -497,6 +532,8 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`show_playbook_graph`](show_playbook_graph.md) | Show Playbook Graph | Execute the show_playbook_graph command. |
 | [`skip_task`](skip_task.md) | Skip Task | Skip a BLOCKED/FAILED task to unblock its dependency chain. |
 | [`spec_approve`](spec_approve.md) | Spec Approve | Execute the spec_approve command. |
+| [`spec_ingest_legacy_inventory`](spec_ingest_legacy_inventory.md) | Spec Ingest Legacy Inventory | Execute the spec_ingest_legacy_inventory command. |
+| [`spec_ingest_reconcile`](spec_ingest_reconcile.md) | Spec Ingest Reconcile | Execute the spec_ingest_reconcile command. |
 | [`start_agent_terminal`](start_agent_terminal.md) | Start Agent Terminal | Execute the start_agent_terminal command. |
 | [`subagent_event`](subagent_event.md) | Subagent Event | Record one ``SubagentStart`` / ``SubagentStop`` from a harness hook. |
 | [`supervisor_inbox_history`](supervisor_inbox_history.md) | Supervisor Inbox History | Page conversations by update time or one conversation's inputs by receipt time. |
@@ -506,9 +543,11 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`supervisor_restart`](supervisor_restart.md) | Supervisor Restart | Execute the supervisor_restart command. |
 | [`task_batch_discard`](task_batch_discard.md) | Task Batch Discard | Execute the task_batch_discard command. |
 | [`task_batch_propose`](task_batch_propose.md) | Task Batch Propose | Execute the task_batch_propose command. |
+| [`task_batch_review_record`](task_batch_review_record.md) | Record a batch fidelity review | Attest every mapped section and whole-batch intent on the exact held graph. |
 | [`task_batch_update`](task_batch_update.md) | Task Batch Update | Execute the task_batch_update command. |
+| [`task_batch_validate`](task_batch_validate.md) | Check a task batch | Run the deterministic ingestion-batch checks against the live graph and report hard, retryable and advisory findings without writing anything. |
 | [`task_children`](task_children.md) | Task Children | Direct or recursive children of a task.  Backs ``aq task children``. |
-| [`task_claim`](task_claim.md) | Task Claim | Claim a ready task for the calling session (``aq task claim``). |
+| [`task_claim`](task_claim.md) | Task Claim | Execute the task_claim command. |
 | [`task_close`](task_close.md) | Task Close | Close a task with an outcome.  Backs ``aq task close``. |
 | [`task_comment`](task_comment.md) | Task Comment | Execute the task_comment command. |
 | [`task_comment_delete`](task_comment_delete.md) | Task Comment Delete | Execute the task_comment_delete command. |
@@ -549,8 +588,11 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`wait_list`](wait_list.md) | Wait List | List wait history for the current task or supervisor project. |
 | [`wait_register`](wait_register.md) | Wait Register | Register one bounded typed wait and end the turn. |
 | [`workflow_pipeline_view`](workflow_pipeline_view.md) | Workflow Pipeline View | Return structured pipeline view data for dashboard rendering of a workflow. |
+| [`workspace_clear_sentinel`](workspace_clear_sentinel.md) | Workspace Clear Sentinel | Clear a slot sentinel that still names a terminal task. |
+| [`workspace_cutover`](workspace_cutover.md) | Workspace Cutover | Execute the workspace_cutover command. |
 | [`workspace_doctor`](workspace_doctor.md) | Workspace Doctor | Diagnose workspace inventory.  Read-only unless ``fix`` is set. |
 | [`workspace_reap`](workspace_reap.md) | Workspace Reap | Explicit reap of retired slots.  Refuses live slots. |
+| [`workspace_retire_claim`](workspace_retire_claim.md) | Workspace Retire Claim | Retire a slot's leftover ``.aq/claim.json`` when its holder let go. |
 | [`write_file`](write_file.md) | Write File | Execute the write_file command. |
 | [`write_note`](write_note.md) | Write Note | Execute the write_note command. |
 

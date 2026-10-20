@@ -26,6 +26,7 @@ from src.database.tables import (
     tasks,
 )
 from src.database.queries.blocked_state import obsolete_marker
+from src.database.queries.ingest_hold import not_ingest_held
 from src.models import TaskStatus
 
 
@@ -229,6 +230,8 @@ class IntegrationTrainQueriesMixin:
                 tasks.c.pr_url.is_not(None),
                 func.trim(tasks.c.pr_url) != "",
                 ~held,
+                # A held ingestion container is never a train root.
+                not_ingest_held(),
                 ~unresolved_gate,
                 ~active_membership,
                 ~delivered_to_root,

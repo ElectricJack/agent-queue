@@ -480,7 +480,11 @@ async def test_tmux_probe_failure_does_not_authorize_restore(monkeypatch, error)
 async def test_restore_older_schema_removes_newer_tables_and_resets_stamp(fixture_db, tmp_path):
     from alembic.config import Config
     from alembic.script import ScriptDirectory
+    from sqlalchemy import Column, MetaData, Table, Text
+
+    from migrations.versions.a00000000096_human_ask_decisions import ADDITIONS
     from src.database.engine import _ALEMBIC_INI
+    from src.database.tables import metadata
 
     engine, config = fixture_db
     script = ScriptDirectory.from_config(Config(str(_ALEMBIC_INI)))
@@ -499,6 +503,34 @@ async def test_restore_older_schema_removes_newer_tables_and_resets_stamp(fixtur
             await conn.run_sync(lambda bind, table=table: table.create(bind, checkfirst=True))
         # Migration a00000000085 adds promotion_flow to this restored table.
         await conn.execute(text("CREATE TABLE projects (id text PRIMARY KEY)"))
+        # Human ask revisions require the existing review, escalation, input and outbox
+        # ledgers. Recreate those dependencies without their later additions.
+        restored_metadata = MetaData()
+        Table("projects", restored_metadata, Column("id", Text, primary_key=True))
+        Table("messages", restored_metadata, Column("id", Text, primary_key=True))
+        for name in (
+            "task_proposals",
+            "doc_reviews", "doc_review_revisions", "doc_review_comments",
+            "escalations", "escalation_messages", "escalation_actions",
+            "supervisor_conversations", "conversation_inputs", "outbound_deliveries",
+        ):
+            absent = {column.name for column in ADDITIONS.get(name, ())}
+            if name == "conversation_inputs":
+                absent |= {
+                    "ask_id", "project_id", "routing_state", "routing_evidence", "receipt",
+                    "guild_id", "reference_message_id", "external_thread_id", "source_version",
+                    "retention_entry_id",
+                }
+            if name == "outbound_deliveries":
+                absent |= {
+                    "ask_id", "binding_id", "project_id", "decision_generation", "display_version",
+                    "mode_generation", "root_generation", "send_kind", "write_started_at",
+                    "attempt_token",
+                }
+            Table(name, restored_metadata, *(
+                column._copy() for column in metadata.tables[name].c if column.name not in absent
+            ))
+        await conn.run_sync(restored_metadata.create_all)
     dump = tmp_path / "older.dump"
     assert (await invoke("db", "backup", str(dump))).exit_code == 0
     clients = await backup.postgres_clients(config.database.url)
@@ -545,6 +577,8 @@ async def test_restore_older_schema_removes_newer_tables_and_resets_stamp(fixtur
             "WHERE table_name='projects' AND column_name='default_branch_cutover'"
         )) == 1
         assert await conn.scalar(text("SELECT to_regclass('public.agent_cron')")) == "agent_cron"
+        assert await conn.scalar(text("SELECT to_regclass('public.ask_decisions')")) == "ask_decisions"
+        assert await conn.scalar(text("SELECT to_regclass('public.ingest_batches')")) == "ingest_batches"
         assert await conn.scalar(text("SELECT id FROM tasks")) == "original"
 
 

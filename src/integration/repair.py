@@ -59,7 +59,13 @@ from src.integration.green_continuation import (
     enqueue_green_continuation_on,
     promotion_fingerprint,
 )
-from src.integration.models import BranchKey, Fence, HierarchicalIntegrationPolicy, RepairPolicy
+from src.integration.models import (
+    INTEGRATION_REPAIR_PRIORITY,
+    BranchKey,
+    Fence,
+    HierarchicalIntegrationPolicy,
+    RepairPolicy,
+)
 from src.integration.outbox import enqueue_integration_event
 from src.integration.ownership import BranchBusy, BranchOwnership, StaleFence
 from src.integration.owner_guards import parent_engine_guard, parent_stage_at_entry
@@ -105,7 +111,7 @@ class OrdinaryRepairService:
     async def allocate(
         self, batch_id: str, *, target_ref: str, head_sha: str,
         green_sha: str | None = None, held: bool = False, review_rejected: bool = False,
-        intelligence_class: str | None = None, priority: int = 100,
+        intelligence_class: str | None = None, priority: int = INTEGRATION_REPAIR_PRIORITY,
         policy: RepairPolicy | None = None,
         brief: str = "", ttl_seconds: float = 480,
         authorize: Callable[[], Awaitable[bool]] | None = None,
@@ -313,6 +319,16 @@ class OrdinaryRepairService:
         decision = (f"Choose eject for a member of batch {batch_id}, or abort-batch for the "
                     "whole batch. The train still observes the candidate and clears this "
                     "escalation if it becomes green.")
+        choices = ["eject", "abort-batch"]
+        if batch_id.startswith("train-epic-refresh-"):
+            decision = (
+                f"Repair epic refresh candidate {head_sha} for batch {batch_id}, retaining "
+                "its frozen default-branch input, or abandon the refresh with "
+                f"aq integration abort-batch {batch_id} --apply --reason REASON. "
+                "Publication requires trusted checks and attestation on the exact candidate; "
+                "the train clears this escalation when the candidate becomes green."
+            )
+            choices = ["repair", "abort-batch"]
         incident, created = await self.db.create_escalation(conn=conn,
             id=incident_id, project_id=batch["project_id"], source_kind="integration_repair",
             source_identity=batch_id, incident_key=f"repair-exhausted:{batch_id}",
@@ -321,7 +337,7 @@ class OrdinaryRepairService:
             investigation=(f"{batch['repair_attempt_count']} ordinary repairs were filed "
                            f"({policy.primary_attempts} primary, {policy.debug_attempts} debug). "
                            f"Candidate: {head_sha}; target: {batch['target_ref']}."),
-            decision_requested=decision, choices=["eject", "abort-batch"], severity="high",
+            decision_requested=decision, choices=choices, severity="high",
             now=now,
         )
         if not created:
@@ -388,6 +404,66 @@ class OrdinaryRepairService:
         if ordinary_repair_id(value["batch_id"], value["attempt"]) != task_id:
             raise ValueError("ordinary repair input does not match filing identity")
         return value
+
+    async def resume_completed(
+        self, task_id: str, *, batch_id: str | None = None, attempt: int | None = None,
+    ) -> dict | None:
+        """Reseal a completed allocation for a fresh visit, never authorize delivery.
+
+        The completion timestamp makes replay idempotent, including a restart
+        between normal task completion and this handoff. A stale allocation or
+        an explicit pause/abort cannot change the batch.
+        """
+        from src.integration.batches import candidate_ref
+
+        original = await self.input(task_id)
+        archived_input = original is None
+        if archived_input and (batch_id is None or attempt is None
+                               or ordinary_repair_id(batch_id, attempt) != task_id):
+            return None
+        if archived_input:
+            # Archive removes task_context; ordinary filing identity and the
+            # archive's immutable origin/branch still bind this scheduling hint.
+            original = {"batch_id": batch_id, "attempt": attempt}
+        async with self.db.immediate() as conn:
+            batch = (await conn.execute(select(integration_batches).where(
+                integration_batches.c.id == original["batch_id"],
+            ).with_for_update())).mappings().one_or_none()
+            if (batch is None or batch["intent"] != "open"
+                    or batch["lifecycle"] in {"promoted", "aborted", "failed", "empty"}
+                    or batch["repair_attempt_count"] != original["attempt"]
+                    or (not archived_input and batch["repository_id"] != original["repository_id"])
+                    or (not archived_input and original["target_ref"] not in {
+                        candidate_ref(batch["id"]), batch["target_ref"]})):
+                return None
+            completed = None
+            for table in ((archived_tasks,) if archived_input else (tasks, archived_tasks)):
+                completed = (await conn.execute(select(
+                    table.c.status, table.c.updated_at, table.c.branch_name,
+                    table.c.created_by_kind, table.c.created_by_id, table.c.dedup_key,
+                ).where(table.c.id == task_id, table.c.project_id == batch["project_id"],
+                        table.c.repo_id == batch["repository_id"]))).mappings().one_or_none()
+                if completed is not None:
+                    break
+            if (completed is None or completed["status"] != "COMPLETED"
+                    or completed["updated_at"] <= batch["updated_at"]):
+                return None
+            if archived_input and (
+                completed["created_by_kind"] != "system"
+                or completed["created_by_id"] != batch["id"]
+                or completed["dedup_key"] not in {
+                    f"repair:{batch['id']}:{original['attempt']}",
+                    f"repair:{batch['id']}:sync-default-branch"}
+                or completed["branch_name"] not in {
+                    ref.removeprefix("refs/heads/") for ref in (
+                        candidate_ref(batch["id"]), batch["target_ref"]) if ref}
+            ):
+                return None
+            await conn.execute(update(integration_batches).where(
+                integration_batches.c.id == batch["id"],
+            ).values(lifecycle="sealed", updated_at=completed["updated_at"]))
+            return {"batch_id": batch["id"], "project_id": batch["project_id"],
+                    "repository_id": batch["repository_id"], "target_ref": batch["target_ref"]}
 
     @staticmethod
     def progress(start_sha: str | None, head_sha: str | None, *, green: bool) -> bool:
@@ -2672,6 +2748,7 @@ class RepairService:
                             conn, operation, repair_stage
                         ),
                         status=TaskStatus.PAUSED,
+                        priority=INTEGRATION_REPAIR_PRIORITY,
                         parent_task_id=None,
                         repo_id=target.repository_id,
                         branch_name=target.branch,

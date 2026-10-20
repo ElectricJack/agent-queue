@@ -19,7 +19,6 @@ import pytest
 
 from src.commands.handler import CommandHandler
 from src.config import AppConfig, DatabaseConfig, DiscordConfig
-from src.database import Database
 from src.intelligence_classes import IntelligenceClass
 from src.models import AgentProfile, Project, RepoSourceType, Task, TaskStatus, Workspace
 from src.orchestrator import Orchestrator
@@ -268,9 +267,8 @@ POOL_PROJECT = "proj"
 
 
 @pytest.fixture
-async def pool_db(tmp_path):
-    database = Database(lease_dsn("pool.db"))
-    await database.initialize()
+async def pool_db(tmp_path, reuse_database):
+    database = await reuse_database("pool.db")
     kind = await database.resolve_workspace_kind("__system__", "project-repo")
     await database.upsert_workspace_kind(replace(kind, mode="exclusive-clone"))
     await database.create_project(Project(id=POOL_PROJECT, name="p"))
@@ -299,7 +297,6 @@ async def pool_db(tmp_path):
             )
         )
     yield database
-    await database.close()
 
 
 @pytest.fixture

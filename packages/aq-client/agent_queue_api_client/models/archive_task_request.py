@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any, TypeVar, cast
+from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
 from ..types import UNSET, Unset
+
+if TYPE_CHECKING:
+    from ..models.archive_task_request_rewire_type_0 import ArchiveTaskRequestRewireType0
+
 
 T = TypeVar("T", bound="ArchiveTaskRequest")
 
@@ -25,6 +29,11 @@ class ArchiveTaskRequest:
             default branch. deliver keeps the task for the train and reports what its delivery waits on; obsolete (reason is
             the note) and retire archive it, retiring its branches after a backup bundle.
         reason (None | str | Unset): Required to archive PAUSED/DEFINED/READY or abandon undelivered work.
+        replacement (None | str | Unset): Obsolete only: replacement leaf; atomically redirects dependents.
+        satisfied_by (None | str | Unset): Obsolete only: evidence the requirement is met; dependent edges must be
+            explicitly removed or replaced through rewire. Never records a pass.
+        rewire (ArchiveTaskRequestRewireType0 | None | Unset): Obsolete edge plan, validated and committed with
+            retirement. Uses task change-set edges/remove_edges objects (from, to, dep_type).
     """
 
     task_id: None | str | Unset = UNSET
@@ -33,9 +42,14 @@ class ArchiveTaskRequest:
     abandon_undelivered: bool | Unset = False
     disposition: None | str | Unset = UNSET
     reason: None | str | Unset = UNSET
+    replacement: None | str | Unset = UNSET
+    satisfied_by: None | str | Unset = UNSET
+    rewire: ArchiveTaskRequestRewireType0 | None | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
+        from ..models.archive_task_request_rewire_type_0 import ArchiveTaskRequestRewireType0
+
         task_id: None | str | Unset
         if isinstance(self.task_id, Unset):
             task_id = UNSET
@@ -68,6 +82,26 @@ class ArchiveTaskRequest:
         else:
             reason = self.reason
 
+        replacement: None | str | Unset
+        if isinstance(self.replacement, Unset):
+            replacement = UNSET
+        else:
+            replacement = self.replacement
+
+        satisfied_by: None | str | Unset
+        if isinstance(self.satisfied_by, Unset):
+            satisfied_by = UNSET
+        else:
+            satisfied_by = self.satisfied_by
+
+        rewire: dict[str, Any] | None | Unset
+        if isinstance(self.rewire, Unset):
+            rewire = UNSET
+        elif isinstance(self.rewire, ArchiveTaskRequestRewireType0):
+            rewire = self.rewire.to_dict()
+        else:
+            rewire = self.rewire
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update({})
@@ -83,11 +117,19 @@ class ArchiveTaskRequest:
             field_dict["disposition"] = disposition
         if reason is not UNSET:
             field_dict["reason"] = reason
+        if replacement is not UNSET:
+            field_dict["replacement"] = replacement
+        if satisfied_by is not UNSET:
+            field_dict["satisfied_by"] = satisfied_by
+        if rewire is not UNSET:
+            field_dict["rewire"] = rewire
 
         return field_dict
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
+        from ..models.archive_task_request_rewire_type_0 import ArchiveTaskRequestRewireType0
+
         d = dict(src_dict)
 
         def _parse_task_id(data: object) -> None | str | Unset:
@@ -137,6 +179,41 @@ class ArchiveTaskRequest:
 
         reason = _parse_reason(d.pop("reason", UNSET))
 
+        def _parse_replacement(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        replacement = _parse_replacement(d.pop("replacement", UNSET))
+
+        def _parse_satisfied_by(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        satisfied_by = _parse_satisfied_by(d.pop("satisfied_by", UNSET))
+
+        def _parse_rewire(data: object) -> ArchiveTaskRequestRewireType0 | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                rewire_type_0 = ArchiveTaskRequestRewireType0.from_dict(data)
+
+                return rewire_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(ArchiveTaskRequestRewireType0 | None | Unset, data)
+
+        rewire = _parse_rewire(d.pop("rewire", UNSET))
+
         archive_task_request = cls(
             task_id=task_id,
             project_id=project_id,
@@ -144,6 +221,9 @@ class ArchiveTaskRequest:
             abandon_undelivered=abandon_undelivered,
             disposition=disposition,
             reason=reason,
+            replacement=replacement,
+            satisfied_by=satisfied_by,
+            rewire=rewire,
         )
 
         archive_task_request.additional_properties = d

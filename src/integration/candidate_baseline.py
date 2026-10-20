@@ -34,13 +34,17 @@ Comparison is a property of the checks provider and the exact target's evidence,
 not of the batch: hosted checks can compare targets that ran the required checks,
 while local validation jobs only ever exist for candidates. A lane whose provider
 cannot compare a target keeps filing repairs exactly as before.
+
+Epic refreshes use their frozen default-branch input as the baseline. The epic
+head can already contain regressions and cannot prove a failure pre-existed on
+the default branch.
 """
 
 from __future__ import annotations
 
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from sqlalchemy import select, update
@@ -93,6 +97,7 @@ class Baseline:
     unproven: tuple[str, ...]
     unavailable: bool = False
     missing_target_checks: tuple[str, ...] = ()
+    target_ref: str | None = None
 
     @property
     def state(self) -> str:
@@ -118,6 +123,7 @@ class Baseline:
                 "state": self.state,
                 "target_sha": self.target_sha,
                 "target_checks": self.target_state,
+                **({"target_ref": self.target_ref} if self.target_ref else {}),
                 "repairable_checks": list(self.repairable),
                 "pre_existing_checks": list(self.pre_existing),
                 "unproven_checks": list(self.unproven),
@@ -184,32 +190,37 @@ def candidate_head(batch, candidate_sha: str) -> HeadIdentity:
     )
 
 
-def target_head(batch, target_sha: str) -> HeadIdentity:
-    """The exact target commit a candidate was built on, in the candidate's lane."""
+def target_head(batch, target_sha: str, *, target_ref: str | None = None) -> HeadIdentity:
+    """The exact baseline commit, with a default-ref override for epic refreshes."""
     return HeadIdentity(
         repository_id=batch.repository_id,
-        ref=batch.target_ref,
+        ref=target_ref or batch.target_ref,
         sha=target_sha,
         generation=batch.repair_attempt_count,
     )
 
 
 async def target_baseline(
-    batch, *, candidate: ChecksResult, target_sha: str | None, checks: ExactChecks | None
+    batch, *, candidate: ChecksResult, target_sha: str | None, checks: ExactChecks | None,
+    target_ref: str | None = None,
 ) -> Baseline:
     """The target's own verdict for its exact sha, obtained once when undecided."""
     red = failing(candidate)
     if not target_sha or checks is None or not checks.compares_targets:
         return Baseline(None, "unavailable", red, (), (), unavailable=True)
-    head = target_head(batch, target_sha)
-    result = await checks.read(head)
-    if result.state not in (ChecksState.GREEN, ChecksState.RED):
+    head = target_head(batch, target_sha, target_ref=target_ref)
+    cached = await checks.read(head)
+    if cached.state not in (ChecksState.GREEN, ChecksState.RED):
         # The target has no verdict for this sha yet: ask for one run and observe
         # it, exactly as a candidate's own checks are obtained. Provider I/O stays
         # outside every lock.
         await checks.request(head)
-        result = await checks.refresh(head)
-    return compare(candidate, result)
+    # Final evidence can be superseded by a rerun on the same SHA. In
+    # particular, an old red must not suppress repair of a candidate after
+    # the target's own checks have turned green. Observe before classifying,
+    # just as we do for the candidate and the publication proof.
+    result = await checks.refresh(head)
+    return replace(compare(candidate, result), target_ref=target_ref)
 
 
 class UnrecordedBaseline:
@@ -221,7 +232,7 @@ class UnrecordedBaseline:
 
     async def verdict(
         self, batch, *, candidate: ChecksResult, target_sha: str | None,
-        checks: ExactChecks | None,
+        checks: ExactChecks | None, target_ref: str | None = None,
     ) -> Baseline:
         return Baseline(None, "unavailable", failing(candidate), (), (), unavailable=True)
 
@@ -253,10 +264,10 @@ class CandidateBaselineService:
 
     async def verdict(
         self, batch, *, candidate: ChecksResult, target_sha: str | None,
-        checks: ExactChecks | None,
+        checks: ExactChecks | None, target_ref: str | None = None,
     ) -> Baseline:
         return await target_baseline(
-            batch, candidate=candidate, target_sha=target_sha, checks=checks
+            batch, candidate=candidate, target_sha=target_sha, checks=checks, target_ref=target_ref,
         )
 
     async def re_request(

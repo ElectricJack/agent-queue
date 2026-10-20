@@ -14,7 +14,7 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/generated.py`](../../../src/commands/contracts/generated.py) |
-| Contract fingerprint | `sha256:a0ba00bbece36f550ee2435d3238f60beb4163fd30132e07f194f6ad8565215f` |
+| Contract fingerprint | `sha256:2198dd1aadff70aa1d61725cb7ce9f31785dba942f1e5204258c12c3108dd00f` |
 
 ## Parameters
 
@@ -26,6 +26,9 @@
 | `abandon_undelivered` | `boolean` | no | `false` | Single-task archive only: explicitly abandon completed work that has not reached the default branch. Requires disposition, reason and an elevated/operator caller. |
 | `disposition` | `"deliver" \| "obsolete" \| "retire"` | no | — | Single-task only: what happens to completed work that has not reached the default branch. deliver keeps the task for the train and reports what its delivery waits on; obsolete (reason is the note) and retire archive it, retiring its branches after a backup bundle. |
 | `reason` | `string` | no | — | Required to archive PAUSED/DEFINED/READY or abandon undelivered work. |
+| `replacement` | `string` | no | — | Obsolete only: replacement leaf; atomically redirects dependents. |
+| `satisfied_by` | `string` | no | — | Obsolete only: evidence the requirement is met; dependent edges must be explicitly removed or replaced through rewire. Never records a pass. |
+| `rewire` | `object` | no | — | Obsolete edge plan, validated and committed with retirement. Uses task change-set edges/remove_edges objects (from, to, dep_type). |
 
 This generated contract exposes the **playbook** input-schema view. MCP/CLI/API retain their legacy **transport** view.
 Schema source: `explicit_tool`; quality: `declared`; coarse effect: `destructive`.
@@ -50,7 +53,7 @@ This command declares no effect clause, so the playbook graph falls back to its 
 
 | Effect | Subject | Condition |
 |---|---|---|
-| Composite using task_id, project_id, include_failed, abandon_undelivered, disposition, reason | — | always |
+| Composite using task_id, project_id, include_failed, abandon_undelivered, disposition, reason, replacement, satisfied_by, rewire | — | always |
 
 <!-- aq:generated:end -->
 

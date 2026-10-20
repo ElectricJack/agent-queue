@@ -272,7 +272,7 @@ class IntegrationStatusService:
     async def control_status(self, project_id: str) -> dict[str, Any] | None:
         """Current project inputs and subject schedules, without remote I/O."""
         if self.git_first == "active":
-            return await self.train_status(project_id)
+            return await self.train_status(project_id, observe=False)
         async with self._consistent_snapshot() as conn:
             return await self._control_status_on(conn, project_id)
 
@@ -640,8 +640,37 @@ class IntegrationStatusService:
 
     # -- git_first: active ---------------------------------------------------
 
-    async def train_status(self, project_id: str) -> dict[str, Any] | None:
-        """The train's targets and open batches, from Git, checks, reviews and intent."""
+    async def _paused_project_candidates_on(self, conn, project) -> list[str]:
+        from src.integration.train_sources import TRAIN_MODES, _pending_tasks
+
+        if (project is None or project["status"] != "PAUSED"
+                or project["hierarchical_integration_mode"] not in TRAIN_MODES
+                or not project["integration_repository_id"]):
+            return []
+        return await _pending_tasks(
+            conn, project["id"], project["integration_repository_id"], limit=None,
+        )
+
+    async def train_status(
+        self, project_id: str, *, observe: bool = True
+    ) -> dict[str, Any] | None:
+        """The train's targets and open batches, from Git, checks, reviews and intent.
+
+        ``observe=False`` is the control-only read: the durable batches, the last
+        visits and their cached evidence, with no default-branch fetch and no epic
+        distance, so ``epics`` is omitted rather than reported empty.
+        """
+        # Gather Git evidence outside the consistent database snapshot. Control
+        # reads use only cached evidence and never fetch a paused project's refs.
+        async with self.db._engine.connect() as conn:
+            inputs = await self._one(conn, select(projects).where(projects.c.id == project_id))
+            candidates = await self._paused_project_candidates_on(conn, inputs)
+        delivery = None
+        if candidates and self.delivery is not None:
+            delivery = await self.delivery.observe(
+                candidates, max_age=getattr(self.delivery, "READ_MAX_AGE", 0.0),
+                cached_only=self.cached_only or not observe,
+            )
         async with self._consistent_snapshot() as conn:
             project = await self._one(
                 conn, select(projects).where(projects.c.id == project_id)
@@ -657,7 +686,26 @@ class IntegrationStatusService:
 
             decisions = await history_on(conn, project_id)
             promotion_flow = await self._promotion_flow_on(conn, project)
+            candidates = await self._paused_project_candidates_on(conn, project)
+            verified = await delivery.verified_on(conn, candidates) if delivery else {}
+            pending, unknown = [], []
+            for task_id in candidates:
+                proof = verified.get(task_id)
+                if proof is not None and proof.satisfied:
+                    continue
+                if proof is not None and proof.state is DeliveryState.PENDING:
+                    pending.append(task_id)
+                else:
+                    unknown.append(task_id)
         blockers: list[dict[str, Any]] = []
+        if pending or unknown:
+            blockers.append(_blocker(
+                "project_paused",
+                "project paused; the integration train skips this project; "
+                f"{len(pending)} completed sources await delivery and "
+                f"{len(unknown)} await delivery proof; inspect the pause before resuming",
+                project_id, pending=pending, unknown=unknown,
+            ))
         for batch in batches:
             blockers.extend(self._train_batch_blockers(batch, visits))
         blockers.extend(self._train_source_blockers(visits))
@@ -666,20 +714,30 @@ class IntegrationStatusService:
         from src.integration.train_sources import project_snapshot
 
         epics = []
-        repository = await self.db.get_repo(project["integration_repository_id"]) if project[
-            "integration_repository_id"] else None
+        repository = await self.db.get_repo(project["integration_repository_id"]) if (
+            observe and project["integration_repository_id"]) else None
         if repository is not None:
             default = "refs/heads/" + repository.default_branch.removeprefix("refs/heads/")
             observed = await project_snapshot(self.db, TrainTarget(
                 project_id, repository.id, default))
             async with self.db._engine.connect() as conn:
                 child = tasks.alias("status_epic_child")
-                ids = (await conn.execute(select(tasks.c.id).where(
+                epics_on = (await conn.execute(select(
+                    tasks.c.id, tasks.c.status, tasks.c.branch_name,
+                ).where(
                     tasks.c.project_id == project_id, tasks.c.repo_id == repository.id,
                     tasks.c.branch_name.is_not(None),
                     select(child.c.id).where(child.c.parent_task_id == tasks.c.id).exists(),
-                ).order_by(tasks.c.id))).scalars().all()
-            for task_id in ids:
+                ).order_by(tasks.c.id))).all()
+            retired = getattr(getattr(self.train, "targets", None), "retired_targets", ())
+            open_refs = {batch["target_ref"] for batch in batches}
+            for task_id, task_status, branch in epics_on:
+                ref = "refs/heads/" + branch.removeprefix("refs/heads/")
+                absent = (observed is not None and
+                          observed.for_target(ref).error == "target_ref_missing")
+                if (task_status == "COMPLETED" and ref not in open_refs and
+                        (absent or (project_id, repository.id, ref) in retired)):
+                    continue
                 try:
                     if observed is None:
                         raise ValueError("default branch cannot be observed")
@@ -700,7 +758,7 @@ class IntegrationStatusService:
             "operator_decisions": decisions,
             "targets": [{**visit, **evidence.get(key, {})} for key, visit in visits.items()],
             "batches": batches,
-            "epics": epics,
+            **({"epics": epics} if observe else {}),
             "blockers": _sorted_blockers(blockers),
             "promotion_flow": promotion_flow,
             # Which runner produces each target kind's required checks.
@@ -977,6 +1035,12 @@ class IntegrationStatusService:
             blockers.append(_blocker(
                 detail["blocker"], detail["reason"], ref,
                 candidate_sha=visit.get("candidate_sha"), evidence=detail,
+            ))
+        if detail.get("blocker") == "epic_refresh_checks_failed":
+            blockers.append(_blocker(
+                detail["blocker"], detail["reason"], ref,
+                candidate_sha=visit.get("candidate_sha"), evidence=detail,
+                supervisor_action=detail["supervisor_action"],
             ))
         if visit["state"] == "testing":
             code = "checks_red" if visit.get("checks") == "red" else "checks_pending"

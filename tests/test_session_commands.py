@@ -18,7 +18,6 @@ import pytest
 
 from src.commands.handler import CommandHandler
 from src.config import AppConfig
-from src.database import Database
 from src.database.tables import (
     integration_check_evidence,
     playbook_artifacts,
@@ -57,7 +56,6 @@ from src.sessions.harness_registry import HarnessRegistry, load_from_vault
 from src.sessions.reconciler import DRAIN_ACK_KEY, SessionReconciler
 from src.sessions.spec import SessionSpecBuilder
 from src.sessions.provider import SessionHandle
-from tests.db_fixtures import lease_dsn
 
 
 class _Bus:
@@ -258,12 +256,10 @@ def config(tmp_path):
 
 
 @pytest.fixture
-async def db(tmp_path):
-    database = Database(lease_dsn("t.db"))
-    await database.initialize()
+async def db(tmp_path, reuse_database):
+    database = await reuse_database("t.db")
     await database.create_project(Project(id="p1", name="P1"))
     yield database
-    await database.close()
 
 
 @pytest.fixture
@@ -651,6 +647,7 @@ class TestDesiredStateCommands:
         assert not await provider.is_running(SessionHandle(row.name, row.provider, row.instance_token))
 
     async def test_wake_marks_a_named_session_wanted(self, handler, db, provider):
+        await db.update_project("p1", supervisor_enabled=True)
         await _make_session(
             db,
             provider,
@@ -682,6 +679,132 @@ class TestDesiredStateCommands:
         await handler.execute("session_sleep", {"session_id": "sess-1"})
         entry = (await handler.execute("session_list", {}))["sessions"][0]
         assert entry["state"] == "running" and entry["desired_state"] == "sleeping"
+
+
+@pytest.mark.parametrize("blocker", [
+    "live", "provider_unavailable", "probe_failed", "process_probe_failed", "marked_process",
+    "missing_token",
+    "task", "claim", "preparation", "running_intent",
+])
+async def test_stopped_pool_sleep_preserves_unproven_history(
+    handler, db, provider, monkeypatch, blocker,
+):
+    from unittest.mock import AsyncMock
+
+    from src.sessions.proctable import ProcEntry
+
+    await _make_task(db)
+    row = await _make_session(
+        db, provider, task_id=None, lifecycle="pool", state="stopped", desired_state="sleeping",
+    )
+    if blocker != "live":
+        await provider.stop(SessionHandle(row.name, row.provider, row.instance_token))
+    if blocker == "provider_unavailable":
+        monkeypatch.setattr(handler, "_provider_for_session", lambda _: None)
+    elif blocker == "probe_failed":
+        monkeypatch.setattr(
+            provider, "confirm_instance_stopped", AsyncMock(side_effect=RuntimeError("partial probe")),
+        )
+    elif blocker == "marked_process":
+        monkeypatch.setattr("src.sessions.proctable.scan_by_env_marker", AsyncMock(return_value=[
+            ProcEntry(42, 1, "codex", 1, row.instance_token),
+        ]))
+    elif blocker == "process_probe_failed":
+        monkeypatch.setattr("src.sessions.proctable.scan_by_env_marker", AsyncMock(
+            side_effect=RuntimeError("incomplete process scan"),
+        ))
+    fields = {
+        "missing_token": {"instance_token": ""},
+        "task": {"task_id": "t1"},
+        "claim": {"claim_phase": "preparing"},
+        "preparation": {"failed_preparation": {"reason": "preserve evidence"}},
+        "running_intent": {"desired_state": "running"},
+    }.get(blocker, {})
+    if fields:
+        await db.update_session(row.id, **fields)
+    before = await db.get_session(row.id)
+    stop = AsyncMock(side_effect=AssertionError("sleep must not signal"))
+    monkeypatch.setattr(provider, "stop", stop)
+
+    result = await handler.execute("session_sleep", {"session_id": row.id})
+
+    assert "error" in result, result
+    assert await db.get_session(row.id) == before
+    assert (await db.get_task("t1")).status is TaskStatus.IN_PROGRESS
+    stop.assert_not_awaited()
+
+
+@pytest.mark.parametrize("change", [
+    {"instance_token": "revived-token"}, {"provider": "tmux"}, {"name": "successor"},
+    {"started_at": 200.0}, {"last_claim_epoch": 2}, {"claim_phase": "active"},
+    {"task_id": "t1"}, {"failed_preparation": {"reason": "retained"}},
+    {"desired_state": "running"}, {"state": "running"},
+], ids=[
+    "instance", "provider", "name", "generation", "epoch", "claim", "task", "prepare", "intent",
+    "revived",
+])
+async def test_stopped_pool_sleep_rechecks_identity_and_work_after_provider_proof(
+    handler, db, provider, monkeypatch, change,
+):
+    from unittest.mock import AsyncMock
+
+    await _make_task(db)
+    row = await _make_session(
+        db, provider, task_id=None, lifecycle="pool", state="stopped", desired_state="sleeping",
+    )
+    await provider.stop(SessionHandle(row.name, row.provider, row.instance_token))
+
+    async def confirm_then_change(_handle):
+        if "state" in change:
+            # Supported transitions never revive stopped rows. Fail closed
+            # even if legacy/corrupt metadata changes during provider proof.
+            from sqlalchemy import update
+
+            from src.database.tables import sessions
+
+            async with db.immediate() as conn:
+                await conn.execute(update(sessions).where(sessions.c.id == row.id).values(**change))
+        else:
+            await db.update_session(row.id, **change)
+        return True
+
+    monkeypatch.setattr(provider, "confirm_instance_stopped", confirm_then_change)
+    monkeypatch.setattr("src.sessions.proctable.scan_by_env_marker", AsyncMock(return_value=[]))
+
+    result = await handler.execute("session_sleep", {"session_id": row.id})
+
+    assert "error" in result, result
+    current = await db.get_session(row.id)
+    for key, value in change.items():
+        assert getattr(current, key) == value
+    assert current.desired_state == change.get("desired_state", "sleeping")
+
+
+async def test_live_pool_sleep_racing_completed_teardown_preserves_stopped_intent(
+    handler, db, provider, monkeypatch,
+):
+    row = await _make_session(db, provider, task_id=None, lifecycle="pool")
+    request_sleep = db.request_session_sleep
+
+    async def stop_then_sleep(observed, **kwargs):
+        await provider.stop(SessionHandle(row.name, row.provider, row.instance_token))
+        await db.update_session(row.id, state="stopped", desired_state="stopped")
+        return await request_sleep(observed, **kwargs)
+
+    monkeypatch.setattr(db, "request_session_sleep", stop_then_sleep)
+    result = await handler.execute("session_sleep", {"session_id": row.id})
+
+    assert result["success"], result
+    assert (result["state"], result["desired_state"]) == ("stopped", "stopped")
+
+
+@pytest.mark.parametrize("state", ["starting", "running", "draining"])
+async def test_pool_sleep_keeps_live_session_attached(handler, db, provider, state):
+    row = await _make_session(db, provider, task_id=None, lifecycle="pool", state=state)
+    result = await handler.execute("session_sleep", {"session_id": row.id})
+    assert result["success"], result
+    assert (result["state"], result["desired_state"]) == (state, "sleeping")
+    assert await provider.is_running(SessionHandle(row.name, row.provider, row.instance_token))
 
 
 class TestDrainAckCommand:
@@ -2294,6 +2417,23 @@ class TestEndToEndOnFakeProvider:
         await real_orch._execute_task(action)
         return wd
 
+    async def _setup_task_publication(self, db, real_orch, tmp_path, wd, *, publish=True):
+        """Give a successful live close a real task branch and a local bare origin."""
+        from src.git.manager import GitManager
+
+        git = real_orch.git = GitManager()
+        remote = str(tmp_path / "origin.git")
+        await git._arun(["init", "--bare", remote], cwd=str(tmp_path))
+        await git._arun(["init", "-b", "aq/t1"], cwd=wd)
+        await git._arun(["config", "user.name", "Tester"], cwd=wd)
+        await git._arun(["config", "user.email", "test@example.com"], cwd=wd)
+        await git._arun(["commit", "--allow-empty", "-m", "task work"], cwd=wd)
+        await git._arun(["remote", "add", "origin", remote], cwd=wd)
+        await db.update_task("t1", branch_name="aq/t1")
+        if publish:
+            await git.apush_branch(wd, "aq/t1")
+        return git
+
     async def test_routing_rule_needs_both_flag_and_harness(self, real_orch, config):
         profile = AgentProfile(id="x", name="x", harness="claude")
         assert real_orch._is_session_routed(profile) is True
@@ -2348,6 +2488,7 @@ class TestEndToEndOnFakeProvider:
         #    ``platform = None``, workspace prep, then return immediately
         #    with no stream to block on.
         wd = await self._launch_via_execute_task(db, real_orch, monkeypatch, tmp_path)
+        await self._setup_task_publication(db, real_orch, tmp_path, wd)
 
         # A session-routed task must never construct a runtime adapter --
         # that is what ``platform = None`` is for, and an adapter registered
@@ -2497,8 +2638,9 @@ class TestEndToEndOnFakeProvider:
         """
         import asyncio
 
-        await self._launch_via_execute_task(db, real_orch, monkeypatch, tmp_path)
+        wd = await self._launch_via_execute_task(db, real_orch, monkeypatch, tmp_path)
         session = await db.get_session_for_task("t1")
+        git = await self._setup_task_publication(db, real_orch, tmp_path, wd, publish=False)
 
         async def _stop_with_feedback(ctx):
             assert ctx.close_session_live is True, "the live session must be visible here"
@@ -2535,13 +2677,15 @@ class TestEndToEndOnFakeProvider:
         await real_orch.session_reconciler.tick(now=time.time())
         assert (await db.get_session(session.id)).state == "running"
 
-        # Second close, after the agent fixed the git state, completes.
+        # Second close, after the agent published the exact branch, completes.
+        await git.apush_branch(wd, "aq/t1")
+
         async def _ok(ctx):
             return "https://github.com/org/repo/pull/7", True
 
         monkeypatch.setattr(real_orch, "_run_completion_pipeline", _ok)
         again = await asyncio.wait_for(real_handler.execute("task_close", args), timeout=2)
-        assert again["success"] is True and again["status"] == "COMPLETED"
+        assert again["success"] is True and again["status"] == "COMPLETED", again
 
     async def test_escalated_verification_refusal_does_not_blame_the_workspace(
         self, db, real_orch, real_handler, provider, tmp_path, monkeypatch
@@ -2640,7 +2784,8 @@ class TestEndToEndOnFakeProvider:
         increments ``retry_count`` and re-queues.  Sending it straight to
         FAILED made a session-run flake terminal where a legacy one retries.
         """
-        await self._launch_via_execute_task(db, real_orch, monkeypatch, tmp_path)
+        wd = await self._launch_via_execute_task(db, real_orch, monkeypatch, tmp_path)
+        await self._setup_task_publication(db, real_orch, tmp_path, wd)
         session = await db.get_session_for_task("t1")
 
         close = await real_handler.execute(
@@ -2667,7 +2812,8 @@ class TestEndToEndOnFakeProvider:
     async def test_hard_failure_blocks_and_does_not_retry(
         self, db, real_orch, real_handler, provider, tmp_path, monkeypatch
     ):
-        await self._launch_via_execute_task(db, real_orch, monkeypatch, tmp_path)
+        wd = await self._launch_via_execute_task(db, real_orch, monkeypatch, tmp_path)
+        await self._setup_task_publication(db, real_orch, tmp_path, wd)
         session = await db.get_session_for_task("t1")
         close = await real_handler.execute(
             "task_close",
@@ -2686,7 +2832,8 @@ class TestEndToEndOnFakeProvider:
     async def test_transient_failure_blocks_once_retries_are_spent(
         self, db, real_orch, real_handler, provider, tmp_path, monkeypatch
     ):
-        await self._launch_via_execute_task(db, real_orch, monkeypatch, tmp_path)
+        wd = await self._launch_via_execute_task(db, real_orch, monkeypatch, tmp_path)
+        await self._setup_task_publication(db, real_orch, tmp_path, wd)
         session = await db.get_session_for_task("t1")
         task = await db.get_task("t1")
         await db.update_task(task.id, retry_count=task.max_retries - 1)
@@ -2726,7 +2873,8 @@ class TestEndToEndOnFakeProvider:
         class _Restart(BaseException):
             pass
 
-        await self._launch_via_execute_task(db, real_orch, monkeypatch, tmp_path)
+        wd = await self._launch_via_execute_task(db, real_orch, monkeypatch, tmp_path)
+        await self._setup_task_publication(db, real_orch, tmp_path, wd)
         session = await db.get_session_for_task("t1")
         real_orch.pipeline_result = (None, pipeline_ok)
         seen: list = []
@@ -2847,7 +2995,8 @@ class TestEndToEndOnFakeProvider:
     async def test_retry_can_reassign_only_after_old_session_is_stopped(
         self, db, real_orch, real_handler, provider, tmp_path, monkeypatch
     ):
-        await self._launch_via_execute_task(db, real_orch, monkeypatch, tmp_path)
+        wd = await self._launch_via_execute_task(db, real_orch, monkeypatch, tmp_path)
+        await self._setup_task_publication(db, real_orch, tmp_path, wd)
         old = await db.get_session_for_task("t1")
         await real_handler.execute("task_close", {
             "task_id": "t1", "session_id": old.id, "outcome": "fail",
@@ -3299,6 +3448,103 @@ class TestEndToEndOnFakeProvider:
         assert (await db.get_task("t1")).pr_url == pr_url
         real_orch._phase_integrate.assert_not_awaited()
 
+    async def test_train_leaf_root_close_does_not_wait_on_a_slow_pull_request(
+        self, db, real_orch, real_handler, provider, tmp_path, monkeypatch
+    ):
+        """Regression for amber-flare-10: the root PR open gated the whole close.
+
+        It reads the project-wide delivery observation, which a busy project
+        held for minutes; the record and claim release waited behind it while
+        the caller timed out.  Past the bound the close finishes and the open
+        lands detached, once.
+        """
+        import asyncio
+        from unittest.mock import AsyncMock
+
+        from sqlalchemy import update
+
+        from src.database.tables import repos
+        from src.git.manager import RemoteRefState
+        from src.orchestrator import execution
+
+        wd = await self._setup(db, tmp_path)
+        await self._enable_hierarchy_launch(db, tmp_path)
+        await db.update_project("p1", hierarchical_integration_mode="train")
+        async with db.immediate() as conn:
+            await conn.execute(
+                update(repos).where(repos.c.id == "repo").values(
+                    url="https://github.com/o/r.git", default_branch="main"
+                )
+            )
+        task = await db.get_task("t1")
+        await real_orch._launch_session_for_task(
+            AssignAction("a1", "t1", "p1"),
+            task,
+            await db.get_profile("claude-opus"),
+            wd,
+        )
+        session = await db.get_session_for_task("t1")
+        head = "b" * 40
+        monkeypatch.setattr(real_orch, "_phase_integrate", AsyncMock(), raising=False)
+        monkeypatch.setattr(execution, "CLOSE_PUBLICATION_TIMEOUT_SECONDS", 0.05)
+        record_completion = AsyncMock(return_value=head)
+        monkeypatch.setattr("src.integration.provenance.record_worker_completion", record_completion)
+
+        async def git_run(args, *, cwd):
+            if args == ["status", "--porcelain"]:
+                return ""
+            if args == ["rev-parse", "HEAD"]:
+                return head
+            raise AssertionError(f"unexpected producer Git command: {args!r}")
+
+        pr_url = "https://github.com/o/r/pull/9"
+        github = asyncio.Event()
+
+        async def slow_create_pr(*args, **kwargs):
+            await github.wait()
+            return pr_url
+
+        real_orch.git = SimpleNamespace(
+            avalidate_checkout=AsyncMock(return_value=True),
+            ahas_remote=AsyncMock(return_value=True),
+            aget_current_branch=AsyncMock(return_value="aq/t1"),
+            als_remote_ref=AsyncMock(
+                return_value=SimpleNamespace(state=RemoteRefState.PRESENT, oid=head)
+            ),
+            areserved_paths_in_diff=AsyncMock(return_value=[]),
+            afind_open_pr=AsyncMock(),
+            arev_parse=AsyncMock(return_value=head),
+            bind_github_repository=AsyncMock(return_value="binding"),
+            acommits_ahead_of_base=AsyncMock(return_value=1),
+            acreate_pr=AsyncMock(side_effect=slow_create_pr),
+            _arun=git_run,
+        )
+        close = await asyncio.wait_for(
+            real_handler.execute(
+                "task_close",
+                {
+                    "task_id": "t1",
+                    "session_id": session.id,
+                    "outcome": "pass",
+                    "work_outcome": "shipped",
+                    "summary": "leaf root complete",
+                },
+            ),
+            10,
+        )
+
+        assert close["success"] is True
+        assert close["status"] == "COMPLETED"
+        assert len(await db.get_task_completions("t1")) == 1
+        (detached,) = execution._DETACHED_CLOSE_PUBLICATIONS
+        assert (await db.get_task("t1")).pr_url is None
+
+        github.set()
+        assert (await asyncio.wait_for(detached, 10))["pr_url"] == pr_url
+        real_orch.git.acreate_pr.assert_awaited_once()
+        assert (await db.get_task("t1")).pr_url == pr_url
+        assert len(await db.get_task_completions("t1")) == 1
+
     async def test_train_leaf_root_close_survives_a_pull_request_failure(
         self, db, real_orch, real_handler, provider, tmp_path, monkeypatch
     ):
@@ -3623,11 +3869,11 @@ class TestEndToEndOnFakeProvider:
             pass
 
         verifier_id, session, head = await self._aggregate_failure_session(db, provider, tmp_path)
+        # Failure-close needs actual preservation proof before testing its
+        # transition/crash behavior. Keep the later ref lookup misleading.
+        await self._setup_task_publication(db, real_orch, tmp_path, str(tmp_path / "wd"))
         # A later local ref lookup cannot replace the original verification subject.
-        real_orch.git = SimpleNamespace(
-            arev_parse=AsyncMock(return_value="b" * 40),
-            avalidate_checkout=AsyncMock(return_value=False),
-        )
+        monkeypatch.setattr(real_orch.git, "arev_parse", AsyncMock(return_value="b" * 40))
         save = db.save_task_completion
 
         async def die(*_args, **_kwargs):
@@ -4327,7 +4573,8 @@ class TestEndToEndOnFakeProvider:
         # The 120-second backstop catches hangs; PostgreSQL latency belongs to the
         # separate perf_strict budget test, not the default CI shard.
 
-        await self._launch_via_execute_task(db, real_orch, monkeypatch, tmp_path)
+        wd = await self._launch_via_execute_task(db, real_orch, monkeypatch, tmp_path)
+        await self._setup_task_publication(db, real_orch, tmp_path, wd)
         session = await db.get_session_for_task("t1")
         seen: dict = {}
 

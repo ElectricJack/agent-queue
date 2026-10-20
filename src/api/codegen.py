@@ -24,6 +24,7 @@ from pydantic import BaseModel, Field, create_model
 
 from src.api.auth import LOCAL_SCOPE, RequestScope
 from src.api.dependencies import get_command_handler
+from src.api.models.ask import ASK_ARGS, AskErrorResponse
 from src.api.models import get_all_request_models, get_all_response_models
 from src.api.models.dashboard import (
     DashboardStateConflictResponse,
@@ -54,6 +55,7 @@ logger = logging.getLogger(__name__)
 # route is generated, and in ``/api/execute`` (``src/api/execute.py``), which
 # would otherwise reach the same commands through the back door.
 API_EXCLUDED = {
+    "ask_intake", "ask_button",
     "reconcile_agent_cron",
     "cron_delivery_begin",
     "cron_delivery_finish",
@@ -178,6 +180,7 @@ DETAILED_ERROR_COMMANDS: frozenset[str] = (
         }
     )
     | DASHBOARD_STATE_COMMANDS
+    | frozenset(ASK_ARGS)
 )
 
 #: The subset of :data:`DETAILED_ERROR_COMMANDS` that documents its 422 body
@@ -620,7 +623,9 @@ def build_category_routers() -> list[APIRouter]:
                         422: {
                             "description": "Command error",
                             **(
-                                {"model": DashboardStateErrorResponse}
+                                {"model": AskErrorResponse}
+                                if cmd_name in ASK_ARGS
+                                else {"model": DashboardStateErrorResponse}
                                 if cmd_name in DASHBOARD_STATE_COMMANDS
                                 else {"model": JobErrorResponse}
                                 if cmd_name.startswith("job_")

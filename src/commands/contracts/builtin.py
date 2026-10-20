@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any
+from typing import Any, Literal
 
-from pydantic import Field, ValidationError
+from pydantic import Field, ValidationError, model_validator
 
 from src.commands.contracts.models import (
     ClausePredicate,
@@ -127,6 +127,18 @@ class EnsureTaskArgs(CommandArgs):
     discovered_from: str | None = None
 
 
+class EnsureSpecIngestArgs(CommandArgs):
+    project_id: str
+    decision_id: str
+    packet_sha256: str
+
+
+class EnsureFidelityReviewArgs(CommandArgs):
+    project_id: str
+    batch_id: str
+    structure_revision: int
+
+
 class EnsureTaskValue(CommandValue):
     task_id: str
     created: bool
@@ -212,6 +224,7 @@ class AddDependencyValue(CommandValue):
 
 
 class GateCreateArgs(CommandArgs):
+    human_request: dict[str, Any] | None = None
     project_id: str
     gate_type: str
     title: str
@@ -231,8 +244,13 @@ class GateCreateValue(CommandValue):
 
 
 class GateResolveArgs(CommandArgs):
+    expected: dict[str, Any] | None = None
+    preview_id: str | None = None
+    idempotency_key: str | None = None
+    option_key: str | None = None
+    overall_note: str | None = None
     gate_id: str
-    resolved_by: str
+    resolved_by: str | None = None
     resolution: str | None = None
 
 
@@ -410,6 +428,42 @@ class GetDownstreamTasksValue(CommandValue):
     tasks: list[dict[str, str]]
 
 
+class HeldBatchOperation(CommandArgs):
+    """Scoped operation. The command checks kind-specific fields and live membership."""
+
+    kind: Literal["rewrite", "split", "combine", "reparent", "rewire", "add_leaf",
+                  "move_to_root", "retire"]
+    task_id: str | None = None
+    task_ids: list[str] | None = None
+    changes: dict[str, Any] | None = None
+    task: dict[str, Any] | None = None
+    tasks: list[dict[str, Any]] | None = None
+    parent_id: str | None = None
+    delivery_targets: list[str] | None = None
+    edges: list[dict[str, Any]] | None = None
+    remove_edges: list[dict[str, Any]] | None = None
+    reason: str | None = None
+    replacement_task_id: str | None = None
+    satisfied_by: str | None = None
+    rewire: dict[str, list[dict[str, Any]]] | None = None
+
+
+class TaskBatchUpdateArgs(CommandArgs):
+    proposal_id: str
+    project_id: str | None = None
+    payload: dict[str, Any] | None = None
+    expected_revision: int | None = Field(default=None, ge=1, strict=True)
+    operations: list[HeldBatchOperation] | None = Field(default=None, min_length=1)
+
+    @model_validator(mode="after")
+    def update_shape(self):
+        if (self.payload is None) == (self.operations is None):
+            raise ValueError("Supply payload or operations")
+        if self.operations is not None and self.expected_revision is None:
+            raise ValueError("Held operations require expected_revision")
+        return self
+
+
 class TaskBatchCommitArgs(CommandArgs):
     proposal_id: str
     #: The human gate whose resolution approves this proposal.  Omitted, the
@@ -421,6 +475,56 @@ class TaskBatchCommitArgs(CommandArgs):
 
 class TaskBatchCommitValue(CommandValue):
     task_ids: list[str]
+
+
+class TaskBatchValidateArgs(CommandArgs):
+    """A change set, or a stored batch revision, for the L1.3 automatic checks."""
+
+    project_id: str
+    #: The proposal source the caller claims; checked against a stored batch's.
+    source: str | None = None
+    tasks: list[dict[str, Any]] = Field(default_factory=list)
+    edges: list[dict[str, Any]] = Field(default_factory=list)
+    edits: list[dict[str, Any]] = Field(default_factory=list)
+    remove_edges: list[dict[str, Any]] = Field(default_factory=list)
+    comments: list[dict[str, Any]] = Field(default_factory=list)
+    #: A held batch whose members the change set may edit.
+    batch_id: str | None = None
+    #: The structure revision the caller read; a mismatch is ``stale_revision``.
+    expected_revision: int | None = None
+
+
+class TaskBatchValidateValue(CommandValue):
+    project_id: str | None = None
+    batch_id: str | None = None
+    passed: bool = False
+    retryable: bool = False
+    hard: list[dict[str, Any]] = Field(default_factory=list)
+    advisory: list[dict[str, Any]] = Field(default_factory=list)
+    gaps: list[dict[str, Any]] = Field(default_factory=list)
+
+
+FidelityVerdict = Literal["faithful", "fixed", "scope_question"]
+
+
+class TaskBatchReviewRecordArgs(CommandArgs):
+    batch_id: str = Field(min_length=1)
+    expected_revision: int = Field(strict=True, ge=1)
+    expected_digest: str = Field(min_length=1)
+    section_verdicts: dict[str, FidelityVerdict]
+    reverse_coverage_verdict: FidelityVerdict
+    walkthrough_verdict: FidelityVerdict
+    structural_findings: list[dict[str, Any]]
+    project_id: str | None = None
+
+
+class TaskBatchReviewRecordValue(CommandValue):
+    batch_id: str
+    state: str
+    passing: bool
+    receipt: dict[str, Any]
+    replayed: bool
+    ask_id: str | None = None
 
 
 class TaskRoutePlanArgs(CommandArgs):
@@ -497,6 +601,17 @@ class TaskRouteApplyValue(CommandValue):
     planned_profile_id: str | None = None
     adjusted_at_apply: bool = False
     resolved_gate_ids: list[str] = Field(default_factory=list)
+
+
+class CiCompletedStatusArgs(CommandArgs):
+    project_id: str
+
+
+class CiCompletedStatusValue(CommandValue):
+    project_id: str
+    checked: int = 0
+    failing: list[dict[str, Any]] = Field(default_factory=list)
+    unresolved: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class CiBaselineStatusArgs(CommandArgs):
@@ -865,10 +980,12 @@ def _outcome_of(name: str, raw: dict[str, Any]) -> str:
         if state == "red" and raw.get("escalated"):
             return "red_escalated"
         return state if state in {"green", "red", "pending", "unknown"} else "unknown"
+    if name == "ci_completed_status":
+        return "listed"
     if name == "ci_repair_adopt":
         outcome = str(raw.get("outcome") or "")
         return outcome if outcome in {"adopted", "recorded", "unchanged"} else "rejected"
-    if name == "ensure_task":
+    if name in {"ensure_task", "ensure_spec_ingest", "ensure_fidelity_review"}:
         return "created" if raw.get("created") else "reused"
     if name == "github_issue_triage":
         return "swept"
@@ -878,6 +995,12 @@ def _outcome_of(name: str, raw: dict[str, Any]) -> str:
     if name == "github_issue_rejection":
         outcome = str(raw.get("outcome") or "")
         return outcome if outcome in {"closed", "ignored"} else "rejected"
+    if name == "task_batch_validate":
+        if not raw.get("passed"):
+            return "retryable" if raw.get("retryable") else "failed"
+        return "passed"
+    if name == "task_batch_review_record":
+        return "recorded" if raw.get("passing") else "needs_scope"
     if name == "task_route_plan":
         outcome = str(raw.get("outcome") or "")
         return outcome if outcome in _ROUTE_PLAN_OUTCOMES else "rejected"
@@ -1159,6 +1282,24 @@ PRESENTATIONS: dict[str, CommandPresentation] = {
         result_labels={"task_id": "Task", "created": "Was created"},
         subject_labels={"task": "a task"},
     ),
+    "ensure_spec_ingest": CommandPresentation(
+        title="Ensure approved spec ingestion",
+        summary="Create or recover the role task receipt for an immutable approved decision.",
+        arg_labels={"project_id": "Project", "decision_id": "Decision",
+                    "packet_sha256": "Approved packet hash"},
+        outcome_labels={"created": "Created", "reused": "Reused", "rejected": "Rejected"},
+        result_labels={"task_id": "Task", "created": "Was created"},
+        subject_labels={"task": "an approved spec ingestion task"},
+    ),
+    "ensure_fidelity_review": CommandPresentation(
+        title="Ensure fidelity review",
+        summary="Create or recover the one fidelity-reviewer role task for a held batch.",
+        arg_labels={"project_id": "Project", "batch_id": "Batch",
+                    "structure_revision": "Structure revision"},
+        outcome_labels={"created": "Created", "reused": "Reused", "rejected": "Rejected"},
+        result_labels={"task_id": "Task", "created": "Was created"},
+        subject_labels={"task": "a fidelity review task"},
+    ),
     "github_issue_triage": CommandPresentation(
         title="Triage GitHub issues",
         summary="File bounded investigations and label the corresponding issues.",
@@ -1308,6 +1449,53 @@ PRESENTATIONS: dict[str, CommandPresentation] = {
         result_labels={"task_ids": "Created tasks"},
         subject_labels={"task_graph": "the proposed task graph"},
     ),
+    "task_batch_review_record": CommandPresentation(
+        title="Record a batch fidelity review",
+        summary="Attest every mapped section and whole-batch intent on the exact held graph.",
+        arg_labels={
+            "batch_id": "Held batch", "expected_revision": "Expected structure revision",
+            "expected_digest": "Expected structure digest", "section_verdicts": "Section verdicts",
+            "reverse_coverage_verdict": "Reverse coverage", "walkthrough_verdict": "Walkthrough",
+            "structural_findings": "Findings and dispositions", "project_id": "Project",
+        },
+        outcome_labels={"recorded": "Recorded", "needs_scope": "Needs scope answer",
+                        "rejected": "Rejected"},
+        result_labels={"batch_id": "Batch", "state": "State", "passing": "Passing",
+                       "receipt": "Receipt", "replayed": "Replayed", "ask_id": "Scope ask"},
+        subject_labels={"task_graph": "the held task graph"},
+    ),
+    "task_batch_validate": CommandPresentation(
+        title="Check a task batch",
+        summary=(
+            "Run the deterministic ingestion-batch checks against the live graph and "
+            "report hard, retryable and advisory findings without writing anything."
+        ),
+        arg_labels={
+            "project_id": "Project",
+            "source": "Proposal source",
+            "tasks": "Tasks",
+            "edges": "Edges",
+            "edits": "Edits",
+            "remove_edges": "Removed edges",
+            "comments": "Comments",
+            "batch_id": "Held batch",
+            "expected_revision": "Expected structure revision",
+        },
+        outcome_labels={
+            "passed": "Passed",
+            "failed": "Failed a hard check",
+            "retryable": "Retry once the live graph settles",
+            "rejected": "Rejected",
+        },
+        result_labels={
+            "passed": "Passed",
+            "retryable": "Retryable",
+            "hard": "Hard findings",
+            "advisory": "Advisory findings",
+            "gaps": "Metadata gaps",
+        },
+        subject_labels={},
+    ),
     "stop_task": CommandPresentation(
         title="Stop a running task",
         summary="Stop the agent working on a task and leave the task blocked.",
@@ -1319,6 +1507,15 @@ PRESENTATIONS: dict[str, CommandPresentation] = {
         },
         result_labels={"stopped": "Stopped task"},
         subject_labels={"task_execution": "the task's execution"},
+    ),
+    "ci_completed_status": CommandPresentation(
+        title="Audit completed task CI",
+        summary="List completed sources with failing required checks and unresolved CI evidence.",
+        arg_labels={"project_id": "Project"},
+        outcome_labels={"listed": "Listed", "rejected": "Rejected"},
+        result_labels={"checked": "Sources checked", "failing": "Failing sources",
+                       "unresolved": "Unresolved sources"},
+        subject_labels={},
     ),
     "ci_baseline_status": CommandPresentation(
         title="Read the default branch's CI verdict",
@@ -1714,71 +1911,54 @@ def register_builtin_contracts(registry: ContractRegistry) -> None:
             SideEffectClass.READ, (), IdempotencySpec(mode="natural"), True,
         ),
         (
-            "create_task",
-            CreateTaskArgs,
-            CreateTaskValue,
-            _outcomes("created"),
+            "create_task", CreateTaskArgs, CreateTaskValue, _outcomes("created"),
             SideEffectClass.CREATE,
             (CreateClause(subject=EffectSubject.TASK),),
-            IdempotencySpec(mode="none"),
-            False,
+            IdempotencySpec(mode="none"), False,
         ),
         (
-            "ensure_task",
-            EnsureTaskArgs,
-            EnsureTaskValue,
-            _outcomes("created", "reused"),
+            "ensure_task", EnsureTaskArgs, EnsureTaskValue, _outcomes("created", "reused"),
             SideEffectClass.CREATE,
             (CreateOrReuseClause(subject=EffectSubject.TASK, key_arg="dedup_key"),),
-            IdempotencySpec(mode="keyed", key_field="dedup_key"),
-            True,
+            IdempotencySpec(mode="keyed", key_field="dedup_key"), True,
         ),
         (
-            "github_issue_triage",
-            GitHubIssueTriageArgs,
-            GitHubIssueTriageValue,
-            _outcomes("swept"),
-            SideEffectClass.COMPOSITE,
+            "ensure_spec_ingest", EnsureSpecIngestArgs, EnsureTaskValue,
+            _outcomes("created", "reused"), SideEffectClass.CREATE,
+            (CreateOrReuseClause(subject=EffectSubject.TASK, key_arg="decision_id"),),
+            IdempotencySpec(mode="keyed", key_field="decision_id"), True,
+        ),
+        (
+            "ensure_fidelity_review", EnsureFidelityReviewArgs, EnsureTaskValue,
+            _outcomes("created", "reused"), SideEffectClass.CREATE,
+            (CreateOrReuseClause(subject=EffectSubject.TASK, key_arg="batch_id"),),
+            IdempotencySpec(mode="keyed", key_field="batch_id"), True,
+        ),
+        (
+            "github_issue_triage", GitHubIssueTriageArgs, GitHubIssueTriageValue,
+            _outcomes("swept"), SideEffectClass.COMPOSITE,
             (CreateClause(subject=EffectSubject.TASK),),
-            IdempotencySpec(mode="natural"),
-            True,
+            IdempotencySpec(mode="natural"), True,
         ),
         (
-            "github_issue_fix_approved",
-            GitHubIssueFixApprovedArgs,
-            GitHubIssueFixApprovedValue,
-            _outcomes("created", "reused", "ignored"),
-            SideEffectClass.CREATE,
+            "github_issue_fix_approved", GitHubIssueFixApprovedArgs, GitHubIssueFixApprovedValue,
+            _outcomes("created", "reused", "ignored"), SideEffectClass.CREATE,
             (CreateClause(subject=EffectSubject.TASK),),
-            IdempotencySpec(mode="natural"),
-            True,
+            IdempotencySpec(mode="natural"), True,
         ),
         (
-            "github_issue_rejection",
-            GitHubIssueRejectionArgs,
-            GitHubIssueRejectionValue,
-            _outcomes("closed", "ignored"),
-            SideEffectClass.COMPOSITE,
-            (),
-            IdempotencySpec(mode="natural"),
-            True,
+            "github_issue_rejection", GitHubIssueRejectionArgs, GitHubIssueRejectionValue,
+            _outcomes("closed", "ignored"), SideEffectClass.COMPOSITE, (),
+            IdempotencySpec(mode="natural"), True,
         ),
         (
-            "edit_task",
-            EditTaskArgs,
-            EditTaskValue,
-            _outcomes("updated"),
-            SideEffectClass.UPDATE,
+            "edit_task", EditTaskArgs, EditTaskValue, _outcomes("updated"), SideEffectClass.UPDATE,
             (UpdateClause(subject=EffectSubject.TASK),),
-            IdempotencySpec(mode="natural"),
-            True,
+            IdempotencySpec(mode="natural"), True,
         ),
         (
-            "add_dependency",
-            AddDependencyArgs,
-            AddDependencyValue,
-            _outcomes("linked", "already_linked"),
-            SideEffectClass.LINK,
+            "add_dependency", AddDependencyArgs, AddDependencyValue,
+            _outcomes("linked", "already_linked"), SideEffectClass.LINK,
             (
                 LinkClause(
                     subject=EffectSubject.DEPENDENCY_EDGE,
@@ -1787,15 +1967,11 @@ def register_builtin_contracts(registry: ContractRegistry) -> None:
                     relation_arg="dep_type",
                 ),
             ),
-            IdempotencySpec(mode="natural"),
-            True,
+            IdempotencySpec(mode="natural"), True,
         ),
         (
-            "gate_create",
-            GateCreateArgs,
-            GateCreateValue,
-            _outcomes("created", "reused", "skipped"),
-            SideEffectClass.CREATE,
+            "gate_create", GateCreateArgs, GateCreateValue,
+            _outcomes("created", "reused", "skipped"), SideEffectClass.CREATE,
             (
                 CreateClause(subject=EffectSubject.GATE),
                 LinkClause(
@@ -1805,8 +1981,7 @@ def register_builtin_contracts(registry: ContractRegistry) -> None:
                     when=ClausePredicate(arg_present="waiter_task_ids"),
                 ),
             ),
-            IdempotencySpec(mode="keyed", key_field="await_id"),
-            False,
+            IdempotencySpec(mode="keyed", key_field="await_id"), False,
         ),
         (
             "gate_resolve",
@@ -1854,6 +2029,22 @@ def register_builtin_contracts(registry: ContractRegistry) -> None:
             False,
         ),
         (
+            "task_batch_validate",
+            TaskBatchValidateArgs,
+            TaskBatchValidateValue,
+            _outcomes("passed", "failed", "retryable"),
+            SideEffectClass.READ,
+            (),
+            IdempotencySpec(mode="natural"),
+            True,
+        ),
+        (
+            "task_batch_review_record", TaskBatchReviewRecordArgs, TaskBatchReviewRecordValue,
+            _outcomes("recorded", "needs_scope"), SideEffectClass.COMPOSITE,
+            (UpdateClause(subject=EffectSubject.TASK_GRAPH),),
+            IdempotencySpec(mode="natural"), True,
+        ),
+        (
             "task_route_plan",
             TaskRoutePlanArgs,
             TaskRoutePlanValue,
@@ -1877,6 +2068,11 @@ def register_builtin_contracts(registry: ContractRegistry) -> None:
             ),
             IdempotencySpec(mode="natural"),
             True,
+        ),
+        (
+            "ci_completed_status", CiCompletedStatusArgs, CiCompletedStatusValue,
+            _outcomes("listed"), SideEffectClass.READ, (),
+            IdempotencySpec(mode="natural"), True,
         ),
         (
             "ci_baseline_status",
@@ -2094,3 +2290,6 @@ def register_builtin_contracts(registry: ContractRegistry) -> None:
     from src.commands.contracts.inventory import register_inventory_contracts
 
     register_inventory_contracts(registry)
+
+    from src.commands.contracts.ask import register_ask_contracts
+    register_ask_contracts(registry)

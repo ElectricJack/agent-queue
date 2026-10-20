@@ -28,7 +28,8 @@ PROJECT_LIMIT = 100
 
 
 async def read_morning_snapshot(
-    engine: Any, *, since: float, until: float, project_ids: tuple[str, ...] | None
+    engine: Any, *, since: float, until: float, project_ids: tuple[str, ...] | None,
+    channel_id: str | None = None
 ) -> dict[str, Any]:
     """Savepoints isolate a failed source without losing the shared snapshot.
 
@@ -77,6 +78,23 @@ async def read_morning_snapshot(
                     # Diagnostics are stable and never echo SQL, paths or credentials.
                     output["sources"][name] = []
                     output["gaps"].append({"source": name, "reason": "read_failed"})
+
+            from src.database.queries.ask_queries import AskQueriesMixin
+
+            try:
+                async with conn.begin_nested():
+                    asks = await AskQueriesMixin().list_asks_snapshot(
+                        conn=conn, project_ids=selected_ids, public=True, channel_id=channel_id, limit=100,
+                    )
+                output["sources"]["asks"] = asks["items"]
+                # A read clock is not new report evidence; preserve stable preview hashes.
+                output["needs_you"] = {k: v for k, v in asks.items()
+                                       if k not in {"items", "snapshot_at"}}
+                if asks["next_cursor"] or asks["source_health"] != "healthy":
+                    output["gaps"].append({"source": "asks", "reason": "refreshing_or_truncated"})
+            except Exception:
+                output["needs_you"] = {"count": None, "source_health": "degraded"}
+                output["gaps"].append({"source": "asks", "reason": "read_failed"})
 
             completion_at = task_completion_records.c.completed_at
             await read(

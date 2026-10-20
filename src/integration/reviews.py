@@ -39,6 +39,7 @@ from src.git.github_contracts import GitHubAccessError
 from src.git.manager import RemoteRefState, is_valid_git_oid
 from src.integration.git_truth import GitTruthSnapshot
 from src.integration.models import HierarchicalIntegrationPolicy
+from src.integration.row_query import select_row
 from src.integration.root_authorization import POLICY_KINDS, exact_root_authorization_on
 from src.integration.source_ancestry import (
     ANCESTRY_DECISION_PATH,
@@ -503,16 +504,8 @@ class ReviewEvidenceProducer:
                 )
             )
             evidence_id = f"review-{uuid.uuid5(_EVIDENCE_NAMESPACE, identity)}"
-            existing = (
-                (
-                    await conn.execute(
-                        select(integration_review_evidence).where(
-                            integration_review_evidence.c.id == evidence_id
-                        )
-                    )
-                )
-                .mappings()
-                .one_or_none()
+            existing = await select_row(
+                conn, integration_review_evidence, integration_review_evidence.c.id == evidence_id
             )
             if existing is not None:
                 return dict(existing)
@@ -606,13 +599,9 @@ class ReviewEvidenceProducer:
         if observation.reason not in PROVEN_REASONS:
             raise ValueError(f"unproven source ancestry reason: {observation.reason}")
         evidence_id = rejection_evidence_id(observation)
-        existing = (
-            await conn.execute(
-                select(integration_review_evidence).where(
-                    integration_review_evidence.c.id == evidence_id
-                )
-            )
-        ).mappings().one_or_none()
+        existing = await select_row(
+            conn, integration_review_evidence, integration_review_evidence.c.id == evidence_id
+        )
         if existing is not None:
             return dict(existing)
         task_id, repository_id, base, head, generation = observation.identity()
@@ -977,22 +966,16 @@ class ReviewEvidenceProducer:
         )
 
     async def _append_on(self, conn, evidence: dict) -> None:
-        existing = (
-            await conn.execute(
-                select(integration_review_evidence).where(
-                    integration_review_evidence.c.id == evidence["id"]
-                )
-            )
-        ).mappings().one_or_none()
+        existing = await select_row(
+            conn, integration_review_evidence, integration_review_evidence.c.id == evidence["id"]
+        )
         if existing is None:
             await conn.execute(insert(integration_review_evidence).values(**evidence))
         elif any(existing[key] != value for key, value in evidence.items() if key != "created_at"):
             raise HierarchyError("invariant_error", "review evidence identity changed")
 
     async def _revalidate_on(self, conn, review_task_id: str, evidence: dict) -> None:
-        review = (
-            await conn.execute(select(tasks).where(tasks.c.id == review_task_id))
-        ).mappings().one_or_none()
+        review = await select_row(conn, tasks, tasks.c.id == review_task_id)
         if review is None:
             raise HierarchyError("stale_head", "review task disappeared before verdict commit")
         await self.db.lock_hierarchy_project(conn, review["project_id"])
@@ -1017,19 +1000,13 @@ class ReviewEvidenceProducer:
                 )
             )
         ).first()
-        checkpoint = (
-            await conn.execute(
-                select(task_integration_checkpoints).where(
-                    task_integration_checkpoints.c.task_id == evidence["source_task_id"],
-                    task_integration_checkpoints.c.generation == evidence["generation"],
-                )
-            )
-        ).mappings().one_or_none()
-        source = (
-            await conn.execute(
-                select(tasks.c.status).where(tasks.c.id == evidence["source_task_id"])
-            )
-        ).mappings().one_or_none()
+        checkpoint = await select_row(
+            conn,
+            task_integration_checkpoints,
+            task_integration_checkpoints.c.task_id == evidence["source_task_id"],
+            task_integration_checkpoints.c.generation == evidence["generation"],
+        )
+        source = await select_row(conn, tasks.c.status, tasks.c.id == evidence["source_task_id"])
         latest_evidence_id = (
             await conn.execute(
                 select(integration_review_evidence.c.id)

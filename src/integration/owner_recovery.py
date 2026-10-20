@@ -18,8 +18,11 @@ never from the task row or its status:
 2. **The branch is safe.**  After ``git fetch origin`` in the repository's
    base checkout, every worktree holding the branch (or the row's own
    checkout, detached) is inspected.  One a live session works in refuses
-   with ``checkout_in_use``.  Uncommitted work is snapshotted through a
-   temporary index -- the working tree and the live index are never touched
+   with ``checkout_in_use``. On a ``worker`` row only work proved against the
+   recorded task origin, claim time and matching slot sentinel is eligible for
+   preservation; integration rows rely on their fenced writer binding. A missing
+   local task ref never borrows a detached slot's HEAD. Uncommitted work is
+   snapshotted through a temporary index -- the working tree and the live index are never touched
    -- and anything origin does not already carry (a dirty tree, a HEAD or a
    local branch ahead of or diverged from origin and not on the default
    branch) is pushed, never forced, to the task branch itself. Only a
@@ -30,7 +33,8 @@ never from the task row or its status:
 3. **Release in one transaction.**  A compare-and-swap on
    ``(id, fence_token, handoff_state)`` (``stale_fence`` when it misses)
    releases the row with a fresh fence, unlocks the row's workspace
-   (disabling it when dirty, so allocation cannot recycle it) and releases
+   (disabling it when dirty or retaining an unproven detached checkout, so
+   allocation cannot recycle it) and releases
    the gone writer's claim, then writes the audit row and
    ``integration.owner_recovered``.
 
@@ -39,7 +43,9 @@ emit ``integration.owner_recovery_refused``; a refusal repeating the latest
 recorded reason within :data:`REFUSAL_THROTTLE_SECONDS` is not recorded again,
 and the task hears about each refusal reason once.  A dry run pushes,
 detaches and records nothing and lists what it would do in
-``evidence["planned"]``.
+``evidence["planned"]``.  ``no_push`` releases without publishing: nothing is
+proved, snapshotted or pushed, every unpublished source stays where it is
+(listed in ``evidence["unpublished"]``) and the row's checkout is retained.
 
 There is no force: a row the check refuses stays refused, with its reason.
 
@@ -67,10 +73,13 @@ from src.database.queries.integration_state_queries import session_attached_clau
 from src.database.tables import (
     archived_tasks,
     integration_branch_owners,
+    integration_candidate_ref_mutations,
     integration_owner_recoveries,
     projects,
     repos,
     sessions,
+    task_branch_origins,
+    task_session_attempts,
     tasks,
     workspaces,
 )
@@ -94,6 +103,11 @@ RECOVERABLE_STATES: tuple[str, ...] = ("attached", "handoff_pending")
 #: A ``collector`` row's owner is an integration operation, not a writer.
 COLLECTOR_ROLE = "collector"
 
+#: Roles whose branch authority comes from the owner task's recorded origin.
+#: Repair, verifier and collector rows lease a shared integration branch that
+#: successive writers extend; their fenced writer binding is the identity proof.
+ORIGIN_PROVEN_ROLES: tuple[str, ...] = ("worker",)
+
 RELEASED = "released"
 PRESERVED_AND_RELEASED = "preserved_and_released"
 NOT_ELIGIBLE = "not_eligible"
@@ -104,6 +118,7 @@ ORIGIN_UNREACHABLE = "origin_unreachable"
 STALE_FENCE = "stale_fence"
 NOT_FOUND = "not_found"
 NOT_RECOVERABLE_STATE = "not_recoverable_state"
+UNPROVEN_TASK_WORK = "unproven_task_work"
 
 RECOVERED_EVENT = "integration.owner_recovered"
 REFUSED_EVENT = "integration.owner_recovery_refused"
@@ -272,6 +287,7 @@ class _Plan:
 
     preserved: bool
     workspace_clean: bool
+    retain_checkout: bool = False
 
 
 class OwnerRecovery:
@@ -298,9 +314,13 @@ class OwnerRecovery:
     # -- public ---------------------------------------------------------------
 
     async def recover(
-        self, owner_row_id: str, *, principal: str, dry_run: bool = False
+        self, owner_row_id: str, *, principal: str, dry_run: bool = False, no_push: bool = False,
     ) -> RecoveryOutcome:
-        """Run the check on one owner row and release it when it passes."""
+        """Run the check on one owner row and release it when it passes.
+
+        *no_push* releases without publishing: every unpublished source is
+        left where it is and listed in ``evidence["unpublished"]``.
+        """
         row = await self._load(owner_row_id)
         if row is None:
             return RecoveryOutcome(
@@ -329,7 +349,9 @@ class OwnerRecovery:
             session = await self._prove_writer_gone(row, evidence)
             # Preservation commits carry the owning project's identity.
             with commit_identity(await self._row_identity(row)):
-                plan = await self._secure_branch(row, evidence, dry_run=dry_run)
+                plan = await self._secure_branch(
+                    row, evidence, dry_run=dry_run, no_push=no_push,
+                )
             outcome = PRESERVED_AND_RELEASED if plan.preserved else RELEASED
             if dry_run:
                 return RecoveryOutcome(row["id"], outcome, None, evidence, True)
@@ -342,7 +364,8 @@ class OwnerRecovery:
             return result
 
     async def recover_many(
-        self, owner_row_ids: list[str], *, principal: str, dry_run: bool = False
+        self, owner_row_ids: list[str], *, principal: str, dry_run: bool = False,
+        no_push: bool = False,
     ) -> list[RecoveryOutcome]:
         """:meth:`recover` each row in turn.
 
@@ -353,11 +376,140 @@ class OwnerRecovery:
         for owner_row_id in owner_row_ids:
             try:
                 results.append(
-                    await self.recover(owner_row_id, principal=principal, dry_run=dry_run)
+                    await self.recover(
+                        owner_row_id, principal=principal, dry_run=dry_run, no_push=no_push,
+                    )
                 )
             except Exception:
                 logger.warning("Owner recovery of %s failed", owner_row_id, exc_info=True)
         return results
+
+    async def restore_task_origin(self, request, *, principal: str) -> dict:
+        """Restore only persisted provenance, with an exact fence and remote lease.
+
+        The project lock excludes new claims; the locked owner row excludes
+        acquisition throughout publication. No checkout/index is rewritten.
+        """
+        from src.integration.lock import BranchLock
+        from src.integration.models import BranchKey
+        from src.integration.ownership import BranchBusy
+
+        task = await self.db.get_task(request.task_id)
+        if task is None:
+            return {"outcome": "not_found", "reason": "task does not exist"}
+        async with self.db.immediate() as conn:
+            await self.db.lock_hierarchy_project(conn, task.project_id)
+            current = (await conn.execute(select(tasks).where(
+                tasks.c.id == task.id,
+            ).with_for_update())).mappings().one_or_none()
+            if current is None or current["project_id"] != task.project_id:
+                return {"outcome": "not_eligible", "reason": "task changed"}
+            origin = (await conn.execute(select(task_branch_origins).where(
+                task_branch_origins.c.task_id == task.id,
+                task_branch_origins.c.repository_id == current["repo_id"],
+                task_branch_origins.c.retired_at.is_(None),
+            ).with_for_update())).mappings().one_or_none()
+            branch = current["branch_name"]
+            if (origin is None or not branch or origin["branch_name"] != branch
+                or not origin["materialized"] or not branch.startswith("aq/")):
+                return {"outcome": "not_eligible", "reason": "task origin/ref binding is unproved"}
+            try:
+                # Share advisory-before-row locking with every managed publisher
+                # and acquirer, including aliases and first insertion.
+                row = await BranchLock(self.db).lock_on(conn, BranchKey(
+                    repository_id=origin["repository_id"], branch=branch,
+                ))
+            except BranchBusy as exc:
+                return {"outcome": "not_eligible", "reason": str(exc)}
+            if (row is None or row["owner_id"] != task.id
+                or row["handoff_state"] != "released" or row["holder"]
+                or row["session_id"] or row["workspace_id"]):
+                return {"outcome": "not_eligible", "reason": "branch needs a released owner"}
+            if ((request.origin_id is not None and request.origin_id != origin["id"])
+                or (request.expected_fence_token is not None
+                    and request.expected_fence_token != row["fence_token"])):
+                return {"outcome": "not_eligible", "reason": "origin or owner fence changed"}
+            live = await _live_task_session(conn, task.id)
+            locked = await conn.scalar(select(workspaces.c.id).where(
+                workspaces.c.locked_by_task_id == task.id,
+            ).limit(1))
+            if live or locked or current["assigned_agent_id"]:
+                return {"outcome": "not_eligible", "reason": "task still has a writer/workspace"}
+            reserved = await conn.scalar(select(integration_candidate_ref_mutations.c.id).where(
+                integration_candidate_ref_mutations.c.repository_id == origin["repository_id"],
+                integration_candidate_ref_mutations.c.branch == branch,
+                integration_candidate_ref_mutations.c.state == "reserved",
+            ).limit(1))
+            if reserved:
+                return {"outcome": "not_eligible", "reason": "branch has a reserved publication"}
+            checkout, default, _, url = await self._checkout_for(row)
+            if checkout is None or branch == default:
+                return {"outcome": "not_eligible", "reason": "no safe repository checkout"}
+            async with self._mutex(checkout):
+                try:
+                    await self.git.afetch_origin(checkout, repository_url=url, lock_held=True)
+                    remote = await self.git.als_remote_ref(checkout, branch)
+                    if remote.state is not RemoteRefState.PRESENT:
+                        return {"outcome": "not_eligible", "reason": "remote branch is unavailable"}
+                    if (request.expected_remote_oid is not None
+                        and request.expected_remote_oid != remote.oid):
+                        return {"outcome": "not_eligible", "reason": "remote head changed"}
+                    for entry in await self.git.aworktree_list(checkout):
+                        if entry.get("branch") == branch:
+                            return {"outcome": "not_eligible", "reason": "branch is checked out"}
+                    base = await self.git.arev_parse(checkout, origin["base_sha"] + "^{commit}")
+                    if base != origin["base_sha"]:
+                        return {"outcome": "not_eligible", "reason": "origin commit is unavailable"}
+                    local = await self.git.arev_parse(checkout, "refs/heads/" + branch)
+                    if local is not None and local not in (remote.oid, base):
+                        return {"outcome": "not_eligible", "reason": "local branch has other work"}
+                    backup = f"aq/origin-restore/{origin['id']}/{remote.oid}"
+                    evidence = {
+                        "task_id": task.id, "origin_id": origin["id"],
+                        "repository_id": origin["repository_id"], "branch": branch,
+                        "owner_row_id": row["id"], "fence_token": row["fence_token"],
+                        "before_sha": remote.oid, "after_sha": base, "backup_ref": backup,
+                        "local_before_sha": local,
+                        "principal": principal, "reason": request.reason,
+                    }
+                    if request.dry_run:
+                        return {"outcome": "preview", "evidence": evidence}
+                    # Durable intent survives an ambiguous push or DB rollback.
+                    await self.db.log_event(
+                        "integration.task_origin_restore_started", project_id=task.project_id,
+                        task_id=task.id, payload=json.dumps(evidence, sort_keys=True),
+                    )
+                    if remote.oid != base:
+                        saved = await self.git.als_remote_ref(checkout, backup)
+                        if saved.state is RemoteRefState.ABSENT:
+                            await self.git.apush_validated_ref(
+                                checkout, remote.oid, backup, expected_old_oid="0" * 40,
+                            )
+                        elif saved.state is not RemoteRefState.PRESENT or saved.oid != remote.oid:
+                            return {"outcome": "not_eligible", "reason": "backup ref changed"}
+                        await self.git.apush_validated_ref(
+                            checkout, base, branch, force_with_lease=True,
+                            expected_old_oid=request.expected_remote_oid,
+                        )
+                    if local and local != base:
+                        await self.git._arun(
+                            ["update-ref", "refs/heads/" + branch, base, local], cwd=checkout,
+                        )
+                    await conn.execute(update(integration_branch_owners).where(
+                        integration_branch_owners.c.id == row["id"],
+                    ).values(
+                        fence_token=row["fence_token"] + 1,
+                        fence=row["fence"] + 1 if row["fence"] is not None else None,
+                        updated_at=self.clock(),
+                    ))
+                    evidence["released_fence_token"] = row["fence_token"] + 1
+                    await self.db.log_event(
+                        "integration.task_origin_restored", project_id=task.project_id,
+                        task_id=task.id, payload=json.dumps(evidence, sort_keys=True), conn=conn,
+                    )
+                    return {"outcome": "restored", "evidence": evidence}
+                except (GitError, GitHubAccessError) as exc:
+                    return {"outcome": "not_eligible", "reason": str(exc)}
 
     async def candidates(
         self, *, quiet_seconds: float = DEFAULT_QUIET_SECONDS, limit: int = 50
@@ -452,7 +604,8 @@ class OwnerRecovery:
     # -- step 3: the branch is safe -------------------------------------------
 
     async def _secure_branch(
-        self, row: dict[str, Any], evidence: dict[str, Any], *, dry_run: bool
+        self, row: dict[str, Any], evidence: dict[str, Any], *, dry_run: bool,
+        no_push: bool = False,
     ) -> _Plan:
         branch = row["ref"].removeprefix("refs/heads/")
         checkout, default_branch, row_path, repository_url = await self._checkout_for(row)
@@ -471,10 +624,15 @@ class OwnerRecovery:
                 "the branch cannot be compared with origin",
             )
         live_dirs = await self._live_work_dirs()
+        base_paths = await self._base_paths()
+        if row_path is not None and os.path.realpath(row_path) in base_paths:
+            evidence["ignored_base_workspace"] = row["workspace_id"]
+            row_path = None
         planned: list[dict[str, Any]] = []
         preserve: list[tuple[str, str | None, str]] = []  # (kind, worktree, sha)
         detach: list[str] = []
         workspace_clean = True
+        retain_checkout = False
         row_inspected = False
         async with self._mutex(checkout):
             try:
@@ -492,6 +650,10 @@ class OwnerRecovery:
             origin_sha = remote.oid if remote.state is RemoteRefState.PRESENT else None
             local_sha = await self.git.arev_parse(checkout, f"refs/heads/{branch}")
             evidence.update(origin_sha=origin_sha, local_sha=local_sha)
+            evidence["planned"] = planned
+            if local_sha is None:
+                planned.append({"action": "skip_preserve", "reason": "missing_local_ref",
+                                "ref": branch})
             pending = await self._pending_publication(row)
             if pending:
                 prior = pending["evidence"]
@@ -508,6 +670,10 @@ class OwnerRecovery:
                 )
                 if not (holds or own_detached):
                     continue
+                if os.path.realpath(path) in base_paths:
+                    raise _Refusal(
+                        CHECKOUT_IN_USE, f"{branch} is checked out in shared base {path}",
+                    )
                 if not os.path.isdir(path):
                     evidence.setdefault("missing_worktrees", []).append(path)
                     continue
@@ -529,6 +695,25 @@ class OwnerRecovery:
                 dirty = await self._dirty(path)
                 if row_path is not None and _same_path(path, row_path):
                     workspace_clean, row_inspected = not dirty, True
+                sentinel_matches = (
+                    not own_detached or self._matching_sentinel(path, row, branch) is not None
+                )
+                if own_detached and (not sentinel_matches or local_sha is None):
+                    # Skipping publication must also keep allocation from resetting
+                    # unknown detached commits, even when the checkout is clean.
+                    retain_checkout = True
+                    planned.append({
+                        "action": "retain_checkout", "worktree": path,
+                        "reason": "missing_local_ref" if sentinel_matches else "sentinel_mismatch",
+                        "disable_workspace": True,
+                    })
+                if not sentinel_matches:
+                    evidence.setdefault("skipped_worktrees", []).append(path)
+                    planned.append({"action": "skip_preserve", "reason": "sentinel_mismatch",
+                                    "worktree": path})
+                    continue
+                if local_sha is None:
+                    continue
                 if dirty:
                     preserve.append(("snapshot", path, head))
                 elif head and not await self._on_origin(checkout, head, origin_sha, default_branch):
@@ -554,6 +739,36 @@ class OwnerRecovery:
             ):
                 preserve.append(("commit", None, local_sha))
 
+            if preserve and no_push:
+                # The caller declined publication, so no source needs proving:
+                # nothing is snapshotted or pushed, and the row's checkout is
+                # retained so allocation cannot reset what stays behind.
+                evidence["unpublished"] = []
+                for kind, path, sha in preserve:
+                    # A dirty checkout's sha is its HEAD; the changes stay on disk.
+                    item = {"source": _source_label(kind, path, branch), "sha": sha}
+                    evidence["unpublished"].append(item)
+                    planned.append({"action": "skip_preserve", "reason": "no_push", **item})
+                    if path is not None and row_path is not None and _same_path(path, row_path):
+                        if not retain_checkout:
+                            planned.append({
+                                "action": "retain_checkout", "worktree": path,
+                                "reason": "no_push", "disable_workspace": True,
+                            })
+                        retain_checkout = True
+                preserve = []
+
+            # Prove every source before taking a snapshot, pushing or detaching.
+            # Slot reuse must never lend another task's HEAD to this branch.
+            if preserve and row["owner_role"] in ORIGIN_PROVEN_ROLES:
+                try:
+                    await self._prove_task_work(
+                        row, checkout, branch, local_sha, origin_sha, default_branch,
+                        preserve, evidence,
+                    )
+                except GitError as exc:
+                    raise _Refusal(UNPROVEN_TASK_WORK, f"task work cannot be proved: {exc}") from exc
+
             if preserve and dry_run:
                 for kind, path, sha in preserve:
                     diverged = bool(origin_sha and not await self.git.ais_ancestor(
@@ -563,13 +778,7 @@ class OwnerRecovery:
                         {
                             "action": "push",
                             "ref": (f"{RECOVERY_PREFIX}{row['id']}/{sha}" if diverged else branch),
-                            "source": (
-                                f"snapshot of {path}"
-                                if kind == "snapshot"
-                                else f"HEAD of {path}"
-                                if path
-                                else f"local branch {branch}"
-                            ),
+                            "source": _source_label(kind, path, branch),
                             "sha": None if kind == "snapshot" else sha,
                         }
                     )
@@ -638,7 +847,78 @@ class OwnerRecovery:
                     evidence.setdefault("detached", []).append(path)
         if dry_run:
             evidence["planned"] = planned
-        return _Plan(preserved=bool(preserve or pending), workspace_clean=workspace_clean)
+        return _Plan(
+            preserved=bool(preserve or pending), workspace_clean=workspace_clean,
+            retain_checkout=retain_checkout,
+        )
+
+    def _matching_sentinel(self, path: str, row: dict, branch: str):
+        from src.orchestrator.worktree_manager import WorktreeSlotManager
+
+        sentinel = WorktreeSlotManager.read_sentinel(path)
+        if (sentinel is None or sentinel.task_id != row["owner_id"]
+            or sentinel.branch != branch or sentinel.workspace_id != row["workspace_id"]):
+            return None
+        return sentinel
+
+    async def _prove_task_work(
+        self, row, checkout, branch, local_sha, origin_sha, default_branch, preserve, evidence,
+    ) -> None:
+        async with self.db._engine.connect() as conn:
+            origin = (await conn.execute(select(task_branch_origins).where(
+                task_branch_origins.c.task_id == row["owner_id"],
+                task_branch_origins.c.repository_id == row["repository_id"],
+                task_branch_origins.c.retired_at.is_(None),
+            ))).mappings().one_or_none()
+            session = (await conn.execute(select(sessions).where(
+                sessions.c.id == row["session_id"],
+            ))).mappings().one_or_none() if row["session_id"] else None
+            workspace = (await conn.execute(select(workspaces).where(
+                workspaces.c.id == row["workspace_id"],
+            ))).mappings().one_or_none() if row["workspace_id"] else None
+            attempt_at = await conn.scalar(select(task_session_attempts.c.started_at).where(
+                task_session_attempts.c.task_id == row["owner_id"],
+                task_session_attempts.c.session_id == row["session_id"],
+                task_session_attempts.c.session_started_at == session["started_at"],
+            ).order_by(task_session_attempts.c.started_at.desc()).limit(1)) if session else None
+        claim_at = None
+        if session is not None:
+            # claim_phase_at is advanced on activation, after slot assignment.
+            # The attempt records the original claim before provisioning.
+            claim_at = attempt_at if attempt_at is not None else session["claim_phase_at"]
+            if claim_at is None and session["lifecycle"] == "task":
+                claim_at = session["started_at"]
+        if (local_sha is None or origin is None or origin["branch_name"] != branch
+            or not origin["materialized"] or not origin["reserved"]
+            or claim_at is None):
+            raise _Refusal(UNPROVEN_TASK_WORK, "preservation needs a local task ref, "
+                           "matching recorded origin and writer claim time")
+        evidence["task_work_proof"] = {
+            "origin_id": origin["id"], "base_sha": origin["base_sha"], "claim_at": claim_at,
+        }
+        for _kind, path, sha in preserve:
+            if path:
+                sentinel = self._matching_sentinel(path, row, branch)
+                if (sentinel is None or workspace is None
+                    or not _same_path(path, workspace["workspace_path"])
+                    or sentinel.project_id != workspace["project_id"]
+                    or sentinel.base_workspace_id != (workspace["base_workspace_id"] or "")
+                    or sentinel.assigned_at is None or sentinel.assigned_at < claim_at
+                    or sha != local_sha):
+                    raise _Refusal(UNPROVEN_TASK_WORK,
+                                   f"checkout {path} lacks this task's claim/sentinel/ref proof")
+            if not await self.git.ais_ancestor(checkout, origin["base_sha"], sha, strict=True):
+                raise _Refusal(UNPROVEN_TASK_WORK, "candidate does not descend from task origin")
+            # Published ancestry is already safe. Date every commit that would
+            # newly be preserved, including side parents of a merge.
+            exclusions = [origin["base_sha"], f"refs/remotes/origin/{default_branch}"]
+            if origin_sha:
+                exclusions.append(origin_sha)
+            stamps = await self.git._arun(
+                ["log", "--format=%ct", sha, "--not", *exclusions], cwd=checkout,
+            )
+            if any(int(stamp) < int(claim_at) for stamp in stamps.splitlines()):
+                raise _Refusal(UNPROVEN_TASK_WORK, "candidate contains commits made before claim")
 
     async def _checkout_for(self, row: dict[str, Any]) -> tuple[str | None, str, str | None, str]:
         """Base checkout, default branch, row checkout, authorized repository URL.
@@ -715,6 +995,15 @@ class OwnerRecovery:
         if self.git_mutex is None:
             return contextlib.nullcontext()
         return self.git_mutex(checkout)
+
+    async def _base_paths(self) -> set[str]:
+        """Shared repository stores are never a stopped writer's checkout."""
+        slot = workspaces.alias("recovery_slot")
+        async with self.db._engine.connect() as conn:
+            paths = await conn.scalars(select(workspaces.c.workspace_path).where(
+                select(slot.c.id).where(slot.c.base_workspace_id == workspaces.c.id).exists(),
+            ))
+            return {os.path.realpath(path) for path in paths}
 
     async def _dirty(self, path: str) -> bool:
         status = await self.git._arun(
@@ -814,7 +1103,9 @@ class OwnerRecovery:
                     fence_token=row["fence_token"] + 1,
                     session_id=None,
                     workspace_id=None,
-                    confirmed_workspace_id=row["workspace_id"],
+                    confirmed_workspace_id=(
+                        None if evidence.get("ignored_base_workspace") else row["workspace_id"]
+                    ),
                     updated_at=now,
                 )
             )
@@ -858,7 +1149,17 @@ class OwnerRecovery:
     ) -> None:
         if not row["workspace_id"]:
             return
+        if evidence.get("ignored_base_workspace"):
+            evidence["workspace_unlocked"] = False
+            return
         holders = [workspaces.c.locked_by_task_id == row["owner_id"]]
+        if plan.retain_checkout:
+            # Failed preparation may already have dropped the workspace lock.
+            # Retain an idle slot too, without touching a successor's lock.
+            holders.append(and_(
+                workspaces.c.locked_by_task_id.is_(None),
+                workspaces.c.locked_by_agent_id.is_(None),
+            ))
         agent_id = session["agent_id"] if session is not None else None
         if agent_id and not await _agent_live_elsewhere(conn, agent_id, session["id"]):
             holders.append(workspaces.c.locked_by_agent_id == agent_id)
@@ -868,8 +1169,9 @@ class OwnerRecovery:
             "locked_at": None,
             "lock_mode": None,
         }
-        if not plan.workspace_clean:
-            # A dirty checkout must not be recycled by allocation.
+        disable_workspace = not plan.workspace_clean or plan.retain_checkout
+        if disable_workspace:
+            # Dirty data and unproven detached commits must survive allocation.
             values["enabled"] = False
         unlocked = await conn.execute(
             update(workspaces)
@@ -877,7 +1179,7 @@ class OwnerRecovery:
             .values(**values)
         )
         evidence["workspace_unlocked"] = unlocked.rowcount == 1
-        if unlocked.rowcount == 1 and not plan.workspace_clean:
+        if unlocked.rowcount == 1 and disable_workspace:
             evidence["workspace_disabled"] = True
 
     async def _release_claim(
@@ -1114,11 +1416,25 @@ async def _project_for(conn, row: dict[str, Any]) -> str | None:
     return integrating[0] if len(integrating) == 1 else None
 
 
+def _source_label(kind: str, path: str | None, branch: str) -> str:
+    if kind == "snapshot":
+        return f"snapshot of {path}"
+    return f"HEAD of {path}" if path else f"local branch {branch}"
+
+
 def _same_path(a: str, b: str) -> bool:
     return os.path.realpath(a) == os.path.realpath(b)
 
 
 def _release_comment(row: dict[str, Any], result: RecoveryOutcome, principal: str) -> str:
+    unpublished = result.evidence.get("unpublished")
+    if unpublished:
+        sources = ", ".join(f"{item['source']} (`{item['sha']}`)" for item in unpublished)
+        return (
+            f"Integration owner `{row['id']}` of `{row['ref']}` was released by owner recovery "
+            f"({principal}) without publishing (no push): {result.outcome}. Its writer is "
+            f"gone; unpublished work was left in place: {sources}."
+        )
     body = (
         f"Integration owner `{row['id']}` of `{row['ref']}` was released by owner recovery "
         f"({principal}): {result.outcome}. Its writer is gone and the branch is safe on origin"

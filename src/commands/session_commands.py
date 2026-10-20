@@ -61,6 +61,9 @@ VALID_WORK_OUTCOMES = ("shipped", "no-op", "blocked", "abandoned")
 #: landed; refusing that would make the protocol racy for no benefit.
 _CLOSEABLE = (TaskStatus.IN_PROGRESS, TaskStatus.ASSIGNED)
 
+#: Strong references to ordinary closes running past a cancelled caller.
+_CLOSE_ATTEMPTS: set[asyncio.Future] = set()
+
 
 class SessionCommandsMixin:
     """Session command methods mixed into CommandHandler."""
@@ -196,6 +199,7 @@ class SessionCommandsMixin:
             "claim_failure_count": session.claim_failure_count,
             "claim_failure_reason": session.claim_failure_reason,
             "claim_failure_at": session.claim_failure_at,
+            "failed_preparation": session.failed_preparation,
             "quarantined_at": session.quarantined_at,
             "sleep_reason": session.sleep_reason,
             "epoch": session.epoch,
@@ -740,9 +744,47 @@ class SessionCommandsMixin:
 
         This cancels the instance's cron schedules with the intent write.
         The reconciler stops named sessions on the next tick, independently
-        of idle timeout. Pool sessions drain through their claim lifecycle.
+        of idle timeout. Pool sessions drain through their claim lifecycle;
+        stopped pool history stays stopped. Legacy stopped/sleeping pools
+        can normalize only after fresh proof that their exact instance is gone.
         """
-        return await self._set_desired_state(args, "sleeping")
+        session, err = await self._resolve_session(args)
+        if err:
+            return err
+        if (denied := self._session_project_scope_error(session)) is not None:
+            return denied
+        stopped_confirmed = False
+        if (session.lifecycle == "pool" and session.state == "stopped"
+                and session.desired_state == "sleeping"):
+            if (not session.instance_token or session.task_id is not None
+                    or session.claim_phase is not None or session.failed_preparation is not None):
+                return {"error": "Stopped pool session retains work or lacks an instance token"}
+            provider = self._provider_for_session(session)
+            if provider is None:
+                return {"error": "Provider unavailable; cannot confirm pool instance is inactive"}
+            try:
+                if not await provider.confirm_instance_stopped(self._session_handle(session)):
+                    return {"error": "Pool instance is still live; sleep intent was not changed"}
+                from src.sessions.proctable import scan_by_env_marker
+
+                if any(process.marker == session.instance_token
+                       for process in await scan_by_env_marker("AQ_INSTANCE_TOKEN")):
+                    return {"error": "Pool instance still has live marked processes"}
+                stopped_confirmed = True
+            except Exception:
+                return {"error": "Could not verify pool instance is inactive"}
+        try:
+            current = await self.db.request_session_sleep(
+                session, stopped_confirmed=stopped_confirmed,
+            )
+        except ValueError as exc:
+            return {"error": str(exc)}
+        return {
+            "success": True,
+            "session_id": current.id,
+            "desired_state": current.desired_state,
+            "state": current.state,
+        }
 
     async def _cmd_session_wake(self, args: dict) -> dict:
         """Mark a sleeping named session as wanted again.
@@ -763,6 +805,21 @@ class SessionCommandsMixin:
                 ),
                 "session_id": session.id,
             }
+        if session.project_id is not None and session.name == (
+            "n-supervisor--" + session.project_id
+        ):
+            project = await self.db.get_project(session.project_id)
+            if project is not None and not project.supervisor_enabled:
+                # supervisor_enabled is the authority: its messages route to
+                # supervisor-global and nothing may mark its session wanted.
+                return {
+                    "success": False,
+                    "error": (
+                        f"project '{session.project_id}' has its supervisor disabled; enable "
+                        f"it with `aq project set {session.project_id} supervisor-enabled true`"
+                    ),
+                    "session_id": session.id,
+                }
         # Clear the restart budget: it counts *consecutive* failed starts,
         # and an operator asking for a wake is a fresh intent, not a retry
         # of the one that failed.
@@ -775,18 +832,6 @@ class SessionCommandsMixin:
             "desired_state": "running",
             "state": session.state,
             "note": "the next reconciler tick starts it",
-        }
-
-    async def _set_desired_state(self, args: dict, desired: str) -> dict:
-        session, err = await self._resolve_session(args)
-        if err:
-            return err
-        await self.db.update_session(session.id, desired_state=desired)
-        return {
-            "success": True,
-            "session_id": session.id,
-            "desired_state": desired,
-            "state": session.state,
         }
 
     async def _cmd_session_drain_ack(self, args: dict) -> dict:
@@ -871,34 +916,41 @@ class SessionCommandsMixin:
         session = await self.db.get_session(str(session_id))
         return session.task_id if session is not None else None
 
-    async def _close_task_obsolete(self, args: dict) -> dict:
-        """``aq task close <id> --obsolete --reason``: retire superseded work.
+    async def _close_task_obsolete(self, args: dict, disposition: str = "obsolete") -> dict:
+        """``aq task close <id> --obsolete|--no-change|--done --reason``: one-shot close.
 
         An operator or supervisor decision (``integration_operator``), never a
-        worker's: it releases the task's branch owners and drops it from parked
-        development batches (:mod:`src.sessions.obsolete`).  No
-        completion pipeline runs and nothing is published.
+        worker's.  From any state, in one call: a live writer is stopped
+        through the operator pause (the task goes PAUSED, never READY, so no
+        pool worker can claim it in between), then the close clears the stale
+        claim, workspace locks and agent binding, records the disposition and
+        marks the task COMPLETED, and the cleanup releases its branch owners
+        (:mod:`src.sessions.obsolete`).  No completion pipeline runs and
+        nothing is published.
         """
         from src.commands.supervisor_authority import integration_operator
         from src.database.queries.hierarchy_queries import HierarchyError
         from src.sessions.obsolete import (
+            DISPOSITIONS,
             ObsoleteClose,
             ObsoleteCloseRefused,
             obsolete_owner_release_for,
         )
 
+        flag = "--" + disposition.replace("_", "-")
+        label = DISPOSITIONS[disposition][2]
         task_id = str(args.get("task_id") or "").strip()
         if not task_id:
             return {
                 "success": False,
                 "code": "obsolete.task_required",
-                "error": "--obsolete needs the id of the task to close",
+                "error": f"{flag} needs the id of the task to close",
             }
         if args.get("outcome"):
             return {
                 "success": False,
                 "code": "obsolete.outcome_conflict",
-                "error": "--obsolete is its own outcome; drop --outcome",
+                "error": f"{flag} is its own outcome; drop --outcome",
             }
         task = await self.db.get_task(task_id)
         if task is None:
@@ -909,18 +961,30 @@ class SessionCommandsMixin:
                 "success": False,
                 "code": "obsolete.not_authorized",
                 "error": (
-                    f"closing a task as obsolete is an operator or supervisor decision: {refusal}. "
-                    "A worker closes its own task with --outcome and names the superseding "
-                    "work in its summary."
+                    f"closing a task as {label} is an operator or supervisor decision: "
+                    f"{refusal}. A worker closes its own task with --outcome and names the "
+                    "superseding work in its summary."
                 ),
             }
+        if not str(args.get("reason") or "").strip():
+            return {
+                "success": False,
+                "code": "obsolete.reason_required",
+                "error": f"{flag} requires --reason",
+            }
+        stopped = await self._stop_writer_for_operator_close(task_id)
+        if isinstance(stopped, dict):
+            return stopped
         service = ObsoleteClose(
             self.db, release_owner=obsolete_owner_release_for(self.orchestrator),
             git_manager=self.orchestrator.git,
         )
         try:
             result = await service.close(
-                task_id, reason=str(args.get("reason") or ""), principal=principal
+                task_id,
+                reason=str(args.get("reason") or ""),
+                principal=principal,
+                disposition=disposition,
             )
         except ObsoleteCloseRefused as exc:
             return {"success": False, "code": exc.code, "error": exc.detail}
@@ -930,10 +994,11 @@ class SessionCommandsMixin:
                 "code": f"hierarchy.{exc.code}",
                 "error": f"hierarchy.{exc.code}: {exc.detail}",
             }
+        result["stopped_writer"] = stopped
         cleanup = result["cleanup"]
         if result["outcome"] == "closed":
             body = (
-                f"Closed as obsolete by {principal} (was {result['previous_status']}): "
+                f"Closed as {label} by {principal} (was {result['previous_status']}): "
                 f"{result['reason']}"
             )
             try:
@@ -944,7 +1009,7 @@ class SessionCommandsMixin:
                     author_id=principal,
                 )
             except Exception:
-                logger.warning("Could not comment on obsolete task %s", task_id, exc_info=True)
+                logger.warning("Could not comment on closed task %s", task_id, exc_info=True)
             refreshed = await self.db.get_task(task_id)
             if refreshed is not None:
                 await self._emit_task_graph_change("task.updated", refreshed)
@@ -955,6 +1020,50 @@ class SessionCommandsMixin:
                 "the lifecycle sweep retries them"
             )
         return {"success": True, **result}
+
+    async def _stop_writer_for_operator_close(self, task_id: str) -> bool | dict:
+        """Stop whatever still writes for *task_id* before the operator close.
+
+        The operator pause is the supported stop: it moves the task to PAUSED
+        (which no claim can take), stops the exact captured sessions, revokes
+        their tokens, checkpoints the workspace and releases the agent.
+        Returns whether a stop ran, or a refusal result when it failed.
+        """
+        from sqlalchemy import select
+
+        from src.database.queries.hierarchy_queries import LIVE_SESSION_STATES
+        from src.database.tables import sessions, workspaces
+
+        task = await self.db.get_task(task_id)
+        if task is None or task.status in (TaskStatus.COMPLETED, TaskStatus.FAILED):
+            return False
+        async with self.db._engine.connect() as conn:
+            live = await conn.scalar(
+                select(sessions.c.id)
+                .where(sessions.c.task_id == task_id, sessions.c.state.in_(LIVE_SESSION_STATES))
+                .limit(1)
+            )
+            locked = await conn.scalar(
+                select(workspaces.c.id).where(workspaces.c.locked_by_task_id == task_id).limit(1)
+            )
+        in_flight = bool(task.assigned_agent_id) and task.status in (
+            TaskStatus.ASSIGNED,
+            TaskStatus.IN_PROGRESS,
+        )
+        if not (live or locked or in_flight):
+            return False
+        pause = getattr(self.orchestrator, "pause_task", None)
+        if pause is None:
+            return False  # The close's own refusal names what is still held.
+        try:
+            await pause(task_id)
+        except ValueError as exc:
+            return {
+                "success": False,
+                "code": "obsolete.stop_failed",
+                "error": f"could not stop the writer of {task_id}: {exc}",
+            }
+        return True
 
     async def _cmd_task_close(self, args: dict) -> dict:
         """Close a task with an outcome.  Backs ``aq task close``.
@@ -969,8 +1078,37 @@ class SessionCommandsMixin:
         that is either a bug or an agent that wandered, and both should be
         loud rather than silently accepted.
         """
-        if args.get("obsolete"):
-            return await self._close_task_obsolete(args)
+        dispositions = [
+            name for name in ("obsolete", "no_change", "done") if args.get(name)
+        ]
+        if len(dispositions) > 1:
+            return {
+                "success": False,
+                "code": "obsolete.disposition_conflict",
+                "error": "choose one of --obsolete, --no-change or --done",
+            }
+        if dispositions:
+            return await self._close_task_obsolete(args, dispositions[0])
+        # Once started, an ordinary close runs to its end whatever happens to
+        # its caller.  Its terminal transition can commit before the slow
+        # tail (record, writer handoff, claim release) runs, and an HTTP
+        # client that gives up already leaves the request running; a
+        # cancelled in-process caller (embedded MCP, a test harness) must
+        # not instead strand an accepted close half-finished, holding its
+        # claim until a daemon restart (amber-flare-10).  ``--claim-next``
+        # stays outside: a caller that is gone must not be handed a task.
+        attempt = asyncio.ensure_future(self._close_task_ordinary(args))
+        _CLOSE_ATTEMPTS.add(attempt)
+        attempt.add_done_callback(_CLOSE_ATTEMPTS.discard)
+        response = await asyncio.shield(attempt)
+        if response.get("success") and args.get("claim_next"):
+            response["next"] = await self._cmd_task_claim(
+                {"next": True, "wait": int(args.get("wait") or 0)}
+            )
+        return response
+
+    async def _close_task_ordinary(self, args: dict) -> dict:
+        """The body of ``task close`` without a disposition or ``--claim-next``."""
         task_id = args.get("task_id") or await self._scoped_held_task_id()
         if not task_id:
             return {
@@ -1126,18 +1264,30 @@ class SessionCommandsMixin:
                     ),
                 }
 
-        # Deliverables are a worker contract, not a best-effort review hint.
-        # Refuse before any metadata, hierarchy, or pipeline side effect so
-        # the same claim can add evidence or make a visible exception and
-        # retry the close.
-        # A research or design task's document is a ``review`` item even
-        # when nobody declared one (``effective_deliverables``).
+        # Refuse unmet deliverables before metadata, hierarchy or pipeline writes
+        # so this claim can add evidence or an explicit exception and retry.
+        # effective_deliverables includes an implicit review for research/design.
         from src.deliverables import (
             evaluate_deliverables,
             parse_unmet_reasons,
             resolve_task_deliverables,
+            review_revision_guidance,
             review_submit_guidance,
         )
+
+        if outcome == "pass":
+            response = await self.db.get_task_meta(task.id, "review_response")
+            if response and not await self.db.has_review_response_submission(
+                task.id, response["review_id"], response["revision"]
+            ):
+                return {
+                    "success": False,
+                    "code": "reviews.revision_unpublished",
+                    "review_id": response["review_id"],
+                    "after_revision": response["revision"],
+                    "error": "close refused: the assigned review revision is unpublished. "
+                    + review_revision_guidance(response),
+                }
 
         def _string_list(value) -> list[str]:
             if value is None:
@@ -1184,22 +1334,16 @@ class SessionCommandsMixin:
                 "error": error,
             }
 
-        # A worker's own subtasks are a checklist contract, not the deliverables
-        # gate: refuse before any side effect (same reasoning as the deliverables
-        # check above) so the same claim can settle them and retry. Only outcomes
-        # that complete the task (``pass``) are gated — a failing close must never
-        # be blocked on housekeeping.
-        #
-        # The *refusal* belongs here, before any side effect. The *flip* the
-        # override performs does not: it is a write, and several refusals
-        # still lie between here and the close (open children, live or
-        # manually paused descendants, review evidence, a stale claim, git
-        # verification). Committing it here left a refused close with every
-        # row ``skipped`` and its note overwritten, so the retry had nothing
-        # to settle. Only the decision is taken here; the write happens after
-        # the last refusal point (see ``skip_open_subtasks_at_close`` below).
+        # Gate passing closes on the worker's subtask checklist before writes;
+        # failing closes must not be blocked on housekeeping. Decide here whether
+        # to skip open subtasks, but write only after the final refusal point
+        # (children, descendants, review evidence, claim and git verification).
+        # Skipping earlier erased notes even when close was refused; see
+        # skip_open_subtasks_at_close below for the deferred write.
         skip_open_subtasks_at_close = False
         if outcome == "pass":
+            if feedback_error := await self._review_feedback_close_error(task_id):
+                return feedback_error
             subtasks = await self.db.list_task_subtasks(task_id)
             open_subtasks = [item for item in subtasks if item["status"] in OPEN_SUBTASK_STATUSES]
             if open_subtasks:
@@ -1258,6 +1402,25 @@ class SessionCommandsMixin:
             in {"hierarchy", "train"}
             and await self.db.get_children(task_id, limit=1)
         )
+        if outcome == "pass":
+            from src.integration.completion_ci import (
+                describe_completion_ci,
+                verify_completion_ci,
+            )
+
+            ci = await verify_completion_ci(
+                self.db, getattr(self.orchestrator, "git", None), self.config, task, project,
+                commit=args.get("commit"),
+            )
+            if ci is not None and ci["state"] != "green":
+                return {
+                    "success": False, "result": "verification_failed",
+                    "code": "completion.required_ci", "ci": ci,
+                    "error": (
+                        f"{describe_completion_ci(ci)} Keep this claim, resolve the named "
+                        "stage or checks or wait for CI, then retry close."
+                    ),
+                }
         abandoned: list[str] = []
         if open_children and not managed_parent_close:
             if not args.get("abandon_children"):
@@ -1537,7 +1700,9 @@ class SessionCommandsMixin:
                 )
             else:
                 lead = (
-                    "close refused: this workspace holds commits no remote branch has"
+                    "close refused: workspace commit preservation could not be proved"
+                    if (result.get("unmerged") or {}).get("status") == "unknown"
+                    else "close refused: this workspace holds commits no remote branch has"
                     if result.get("unmerged")
                     else "close refused: git verification found issues you can still "
                     "fix from this workspace"
@@ -1555,6 +1720,8 @@ class SessionCommandsMixin:
                 "issues": issues,
                 "feedback": result.get("feedback") or "",
                 "unmerged": result.get("unmerged"),
+                **({"code": "completion.required_ci", "ci": result["ci"]}
+                   if result.get("ci") is not None else {}),
                 **({"retired": retired, "next_step": "aq session drain-ack"} if retired else {}),
                 "error": f"{lead}:\n{bullets}\n{tail}",
             }
@@ -1702,6 +1869,19 @@ class SessionCommandsMixin:
             )
             if release.released:
                 remove_claim_file_if_matches(session.work_dir, task_id, expect_claim_epoch)
+                # A detached, published slot no longer belongs to this task;
+                # a sentinel still naming it refuses the next preparation once
+                # its branch is deleted (amber-bridge-75).
+                try:
+                    slot = await self.orchestrator._slot_workspace_at(session.work_dir)
+                    if slot is not None:
+                        await self.orchestrator._worktree_slots().release_task_sentinel(
+                            slot, task_id
+                        )
+                except Exception:
+                    logger.warning(
+                        "Could not release slot sentinel for %s", task_id, exc_info=True
+                    )
             else:
                 # ``_release_claim_on`` declines silently in two very
                 # different situations, and only one of them is a problem.
@@ -1753,10 +1933,6 @@ class SessionCommandsMixin:
         if claim_release_declined:
             response["claim_released"] = False
             response["needs_attention"] = "claim_release_declined"
-        if args.get("claim_next"):
-            response["next"] = await self._cmd_task_claim(
-                {"next": True, "wait": int(args.get("wait") or 0)}
-            )
         return response
 
     async def _cmd_task_heartbeat(self, args: dict) -> dict:

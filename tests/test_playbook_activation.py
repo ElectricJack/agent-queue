@@ -5,10 +5,8 @@ from __future__ import annotations
 import pytest
 from sqlalchemy import select
 
-from src.database import Database
 from src.database.tables import playbook_activations
 from tests.pg_dsn import ensure_worker_postgres_dsn
-from tests.db_fixtures import lease_dsn
 
 #: Re-activation writes an INSERT that can violate
 #: ``uq_playbook_activations_scope``.  On PostgreSQL a constraint violation
@@ -20,11 +18,9 @@ POSTGRES_TEST_DSN = ensure_worker_postgres_dsn()
 
 
 @pytest.fixture
-async def db(request, tmp_path):
-    database = Database(lease_dsn("playbook-activation.db"))
-    await database.initialize()
+async def db(reuse_database):
+    database = await reuse_database("playbook-activation.db")
     yield database
-    await database.close()
 
 
 def _artifact(digest_char: str = "a"):
@@ -918,11 +914,10 @@ async def _activate_the_shipped_pipeline(db, tmp_path):
 async def test_the_shipped_pipeline_stales_when_a_delegated_profile_widens(db, tmp_path):
     """`solid-harbor.54`, end to end on the artifact the fleet runs.
 
-    `default-pipeline` has no AI step: `reviewer`, `final-reviewer` and
-    `spec-ingest` reach it only as literal `profile_id` arguments to
-    `ensure_task`.  While `compiled_against.profiles` was empty, widening any
-    of them left this activation `ready` forever, because health can only
-    compare what the artifact recorded.
+    `default-pipeline` has no AI step: `ensure_spec_ingest` creates its
+    server-owned `spec-ingest` role. An empty `compiled_against.profiles`
+    would leave activation `ready` after widening that role, because health
+    can only compare what the artifact recorded.
     """
     from src.playbooks.activation import ActivationHealth, load_activation_health
     from src.playbooks.validation import RegistryContractLookup

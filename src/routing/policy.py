@@ -47,7 +47,7 @@ import hashlib
 import json
 import re
 from collections.abc import Iterable
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Literal
 
 import yaml
 from pydantic import (
@@ -289,10 +289,19 @@ class Balance(_Strict):
     """``balance``: the weights of the load score (§6.4 step 5)."""
 
     harness_weights: dict[str, float] = Field(default_factory=dict)
+    usage_mode: Literal["soft_limit", "headroom"] = "soft_limit"
     usage_soft_percent: float = Field(default=80.0, ge=0, lt=100)
     usage_floor_factor: float = Field(default=0.1, gt=0, le=1)
     degraded_factor: float = Field(default=0.5, gt=0, le=1)
     tie_order: tuple[str, ...] = ()
+
+    @model_serializer(mode="wrap")
+    def _omit_unused(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        data = handler(self)
+        # Adding an opt-in mode must not invalidate existing reviewed digests.
+        if self.usage_mode == "soft_limit":
+            data.pop("usage_mode", None)
+        return data
 
     @model_validator(mode="after")
     def _weights(self) -> Balance:

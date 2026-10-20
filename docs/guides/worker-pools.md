@@ -318,7 +318,44 @@ usage-limit screen ends with reason `usage_limit_screen` instead and records a
 rate-limit exit against the provider, so two such workers trip it and pool
 sizing stops relaunching into the limit (provider-failover D13).
 
+**A worker holding a claim must keep working or close it.** Supervisors must not
+park holders on source mapping, integration controls or delivery paperwork.
+With the train off, its controls are not worker publication/close prerequisites;
+the supervisor handles actual refusals through the owning surface. A necessary
+execution question uses concrete guidance or one bounded durable wait.
+
+For Claude and Codex, an explicit completion of the current claim's turn opens
+the stall ladder even if tmux keeps repainting. After
+`sessions.idle_claim_timeout_seconds` of quiet (default 900, 0 disables this
+additional bound), the backstop stops the exact worker and releases its claim
+through guarded pool teardown. New input, tools and turns invalidate the
+completion evidence; unreadable evidence is not a reason to release. Task
+heartbeats, questions and durable waits retain their grace/exemptions. Attached
+integration ownership remains fenced, and repeated failures use the existing
+bounded recovery budget instead of relaunching forever.
+
 ### Repeated claim preparation refusals
+
+Failed claim responses include `session.failed_preparation`, also visible in
+`aq session show`. It retains the last selected task, designated repository/ref,
+origin generation, checkpoint version/generation, observed owner fences, session
+instance, preparation start, claim epoch and failure time/reason after the task
+binding is released. It is bounded and scrubbed; missing evidence stays null.
+Successful activation clears it. `task: null` and `claim_epoch: null` still mean
+there is no active claim: this old observation never authorizes work on the task.
+
+A canonical producer refusal (`canonical branch is not reserved by this task`)
+requires checking the exact current origin, checkpoint and owner, rather than
+assuming ordinary sync-repair allocation failed. An owning project supervisor
+can reserve a detached READY/BLOCKED producer with
+`aq integration reserve-owner --task-id TASK`. An attached or unresolved owner
+requires the provider-backed, work-preserving `release-owner` preview and proof
+described in [integration recovery](hierarchical-integration-trains.md).
+Live or unknown writers, held workspaces, foreign/successor fences and changed
+source/ref evidence remain refused. Never use the historical snapshot as the
+proof or restart the unchanged reporting worker. If an older stopped session
+has no snapshot, the failed task identity remains unresolved until independent
+original evidence identifies it; a null response cannot identify a task.
 
 The session cooldown guard (§4) drains idle workers on their second identical
 blocker and leaves their workspace enabled. This path does not reach the
@@ -334,6 +371,25 @@ re-enabling it; do not delete Git locks or discard a retained branch.
 `aq doctor --check stall.sweep` and the supervisor's stall sweep flag workers
 that have activated no claim after 15 minutes despite matching READY work or
 preparation refusals, even if their claim loop keeps reporting activity.
+
+### Retained workspace after a task status change
+
+An administrative change to BLOCKED or FAILED does not prove the workspace's
+writer stopped. The existing recovery owner can run `aq task stop <id>` to
+finish cleanup of an exactly identified managed slot without changing that
+status or its retry counters. Stop checks the acquisition generation, claim and
+session instance, source repository and branch, job and integration ownership,
+and fresh provider/process termination evidence. It captures a full checkpoint
+of HEAD, staged, unstaged and untracked work before releasing the reservation.
+The worktree and its registration remain available for later qualified reuse.
+
+For a pending manual pause, repeat `aq task pause <id>`. Its
+`manual_pause.cleanup_pending` receipt and checkpoint context describe unfinished
+cleanup. Managed slots stay held if a full checkpoint cannot be written, even
+after automatic retries end. Resolve the reported proof through the existing
+recovery owner, then retry the same control. Resume, deleting a claim or lock,
+or clearing pause/preparation metadata is not a cleanup procedure. A changed
+session or generation never inherits the old cleanup's authority.
 
 ### Interactive prompts on idle workers
 
@@ -379,6 +435,17 @@ elsewhere: reconciliation detaches the stale pointer without changing the new
 holder's task. An active claim or attached integration writer still retains its
 ownership fence until release completes.
 
+`aq session sleep <session-id>` drains a live pool worker through that same
+claim lifecycle. Sleeping an already stopped pool leaves its intent `stopped`:
+pool history cannot wake, and must not fence a checkout as though it could
+still write. For a legacy `stopped`/`sleeping` row, this control can normalize
+the intent without signalling a process. It requires fresh provider and process
+proof for the exact instance, no task, claim phase or retained preparation, and
+rechecks the instance and claim generation under a database lock. Ambiguous
+rows remain fenced. Owner recovery still needs its own preview and guarded
+release; sleep never releases claims, integration owners or workspace locks.
+Named sessions retain their sleep/wake behavior.
+
 `aq pool scale --now` is the exception: it terminates idle sessions above the
 new effective max immediately, oldest first, skipping the grace window.
 
@@ -401,12 +468,13 @@ fails is the blocking reason reported on a starvation:
 Eligible projects are then ordered, re-sorting after every single start so a
 budget of two does not pile onto whichever project sorts first:
 
-1. projects below their `min_per_project` warm floor, largest shortfall first;
-2. then by unserved deficit `ready - (idle + starting)`, largest first;
-3. then by fewest live workers — spread rather than concentrate;
-4. then `project_id` ascending, so the outcome is deterministic.
+1. projects with unserved active train repair delegates;
+2. projects below their `min_per_project` warm floor, largest shortfall first;
+3. then by fewest live workers among projects with unserved demand;
+4. then by unserved deficit `ready - (idle + starting)`, largest first;
+5. then `project_id` ascending, so the outcome is deterministic.
 
-The winner's reason (`warm_floor` / `deficit` / `spread`) is carried on the
+The winner's reason (`train_repair` / `warm_floor` / `deficit` / `spread`) is carried on the
 `pool.scaled` event as `placement_reason`, which is the answer to "why *there*?".
 
 **Drains invert it.** A project at or below its warm floor is excluded
@@ -416,8 +484,11 @@ session in the chosen project goes. That is what stops a quiet project's one
 warm worker from being reaped first simply for being idle and old.
 
 When global supply already matches demand but idle workers are in another
-project, the pool waits the scale-down grace period and drains only idle
-surplus above that project's warm floor. A destination must have unserved
+project, the pool waits the scale-down grace period and drains idle workers above
+that project's warm floor. Ordinary queued demand can yield idle capacity to
+a project with a smaller share (more than one worker behind), or to an unserved
+train repair. Capacity serving the donor's train repairs stays protected.
+A destination must have unserved
 ready work, workspace capacity and room under its project cap. The next
 normal sizing pass replaces the retired capacity; rebalancing never grants
 extra starts or raises the configured limits.
@@ -427,6 +498,15 @@ eligible, the start is not silently dropped: it comes back as a starvation,
 logged once per condition (not per tick), persisted as
 `pool.placement_starved` with the blocking reason per project, and reported by
 `aq doctor --check pools.placement_starved` once it has held for five minutes.
+
+Train repairs receive priority from the current active batch repair stage's
+binding, independent of titles and ordinary task priority. Unserved repairs
+also precede ordinary profiles when competing for box-wide start headroom.
+Claims prefer eligible repair delegates before ordinary priority/affinity
+ordering. `aq doctor --check stall.sweep` reports a distinct
+`train_repair_capacity_wait` after a READY repair waits on compatible worker
+capacity longer than 30 minutes, naming its task, batch, operation and profile.
+All-busy pools wait for held work to finish; no claim is interrupted.
 
 Over-subscribing per-project caps is still the intended arrangement: six
 profiles capped at 3+2+2+2+1+1 = 11 against a project cap of 8 does not mean 11
@@ -588,16 +668,17 @@ the design, not defects:
   *somewhere*, not everywhere. A project that is quiet when the floor is
   placed pays a cold launch for its next task. `min_per_project` buys it back
   where you want it, at the cost of fleet slots (§2).
-- **Warmth follows demand.** Deficit-ordered placement concentrates workers in
-  the busiest project. Above `min_per_project`, nothing keeps a worker warm in
+- **Warmth follows demand.** Placement shares workers among projects with
+  unserved demand, favoring the smaller live share before backlog size. Above
+  `min_per_project`, nothing keeps a worker warm in
   a project with no work — nor should it.
 - **Cross-project isolation is weaker.** A 500-task backlog in project A used
   to be unable to touch project B's pool, because B had one of its own. Under
-  one fleet, A absorbs capacity up to `max_active`.
-  `projects.max_concurrent_agents` still ceilings A's share and
-  `min_per_project` still floors B's, but there is no proportional fair-share
-  between projects — a project that needs a guaranteed share needs its own
-  profile.
+  one fleet, A can absorb capacity up to `max_active` when no other project
+  has unserved demand. New starts favor smaller project shares. Idle workers
+  can be redistributed after the scale-down grace, but busy claims finish
+  first. `projects.max_concurrent_agents` still ceilings A's share and
+  `min_per_project` still floors B's.
 - **Slower cold ramp under burst.** `max_starts_per_tick` is 2 per profile in
   total now (§3.1), so a ramp is a few ticks rather than N projects' worth of
   starts in parallel.
@@ -611,7 +692,7 @@ the design, not defects:
 `pool status` shows the current shape, never the fact that it changed. Four
 pool events are written to the event table; `pool.scaled` is the answer to
 "why did a worker appear at 03:14?" and its `placement_reason`
-(`warm_floor` / `deficit` / `spread`) is the answer to "why *there*?":
+(`train_repair` / `warm_floor` / `deficit` / `spread`) is the answer to "why *there*?":
 
 ```bash
 aq system get-recent-events --event-type 'pool.*' --since 1h
@@ -693,6 +774,17 @@ a slot, preventing two workers from provisioning the same next slot. Shutdown ca
 and confirms their processes have stopped before releasing resources; sessions
 that already have durable rows remain owned by normal session reconciliation.
 
+A watchdog checks pool progress every 30 seconds independently of the main
+scheduling cycle. If placement could accept claimable work but three consecutive
+checks see no successful start and no launch in flight, it logs and records
+`pool.scaler_stalled` with the profile, desired/live/ready counts and tick count,
+then retries normal reconciliation. It reports once until progress resumes or
+eligible demand disappears. It respects the same fleet/project caps, provider
+availability and quarantine as ordinary sizing; a capacity shortage stays a
+placement condition. Reconciliation itself times out after 30 seconds so a
+stuck read can be retried. The watchdog preserves live workers and background
+launch reservations and does not restart the daemon.
+
 Pool workers keep their claim loop alive during daemon restarts. `aq task claim
 --next --wait 60` retries connection failures within its wait window; if the
 daemon remains unavailable, it exits with code 3 and the worker retries the
@@ -709,6 +801,78 @@ and park for the requested `--wait` window. Successful activation or a changed
 admission reason resets the streak. On a second identical failure an idle session
 is marked for drain and receives `drain_requested`, stopping even older workers'
 claim loops. A retained preparation is never released by this guard.
+
+A slot still bound to another task (a foreign `.aq/claim.json`, typically left by a
+paused holder, or a slot lock naming another task) is a workspace fault, not the
+claimant's. Preparation releases the task to `READY` with no `slot_reset_failed`
+ladder attempt, backoff or `needs_attention`, so the next session prepares it in a
+free slot. The refused session receives `drain_requested`, and its workspace is
+disabled under `claim_failures` (restored by the slot reconciler after the cooldown).
+The foreign claim file stays on disk as the holder's evidence.
+
+Pause retires its own claim file before it frees the slot, so a paused holder does
+not leave that foreign marker behind. After Pause has stopped the exact captured
+session and captured the workspace checkpoint, and while the slot is still locked to
+the paused task, it removes `.aq/claim.json` only if all of these hold
+(`retire_paused_slot_claim` in `src/orchestrator/workspace_claim_recovery.py`):
+
+- the slot belongs to the task's project, is locked to the task and its pool agent, and
+  no live session uses its path;
+- the marker names the task, the pre-pause claim epoch (the task's epoch has since moved
+  past it) and one of the captured sessions;
+- that session is stopped and desired stopped, with the captured instance token, no task,
+  `manually_paused`, the same epoch and work_dir, and an ended attempt for this task;
+- the file is the same inode and content read before the checks.
+
+Only then does the pause unlock the slot and announce capacity. If any proof fails, or
+the pause converged without a checkpoint, the marker stays and the foreign-claim
+handling above applies. Retirement removes only the marker. Workspace bytes, the pause
+checkpoint, branches and holder fences are untouched, and the successor's ordinary slot
+reset still salvages dirty work before it checks out.
+
+A marker whose holder has let go is retired at preparation instead of refused
+(`retire_stale_slot_claim`). In matter-engine-cpp, slots that kept the markers of a
+COMPLETED and a PAUSED task blocked reuse for five days. Before raising the foreign
+claim, preparation re-checks under row locks that:
+
+- the workspace is a slot, unlocked or locked only by the claimant's task;
+- the holder task is gone, its claim epoch has moved past the marker's, or its status
+  holds no claim (`COMPLETED`, `FAILED`, `PAUSED`, `BLOCKED`, `READY`, `DEFINED`);
+- the marker's session no longer holds that task at that epoch, and no other live
+  session works in the slot;
+- the file is the same inode and content read before the checks.
+
+If every check passes, the marker is removed and `worktree.stale_claim_retired` is
+emitted. Preparation then continues, and the slot reset salvages any dirty or unpushed
+work under the holder's name. A holder that may still hold its claim is refused as
+above.
+
+`aq project workspace-doctor` reports an unlocked slot that still has a claim file as
+`unlocked_slot_claim`. The supervisor's control is
+`aq project workspace-retire-claim --workspace-id SLOT`. It applies the same checks
+and either retires the marker or refuses, naming the holder to examine.
+
+#### A sentinel that still names a finished task
+
+A slot's `.aq-worktree.json` names the task that last held it. A pool close returns it
+to the free form once HEAD is detached, clean and published, but integration closes,
+abandons, repair ends and drains can leave it naming the finished task. The next claim
+reconciles it: preparation accepts the slot when the named task is terminal
+(`COMPLETED`, `FAILED`, `BLOCKED`), the tree is clean, and no integration owner or job
+pin retains the slot. The claimant's own integration owner row, which preparation
+attaches to the slot before the reset re-checks the slot, does not count. Before
+bold-torrent-46 it did, so every successor of a finished task was refused with
+`branch disagrees with its source sentinel`, and the half-prepared claim left a
+`handoff_pending` owner row that turned the next attempt into `BranchBusy` (ME slots 0
+and 1, AQ slot 4, 2026-10-19).
+
+The supervisor's control for a slot that still refuses is
+`aq project workspace-clear-sentinel --workspace-id SLOT --if-task-terminal`. It frees
+the sentinel only when the named task is terminal or gone, the workspace row holds no
+task lock, no claim file or live claiming session is in the slot, no integration owner
+or job pin retains it, and the tree is clean with HEAD contained in a remote ref. It
+emits `worktree.sentinel_cleared`. Otherwise it refuses and names the holder and the
+reason.
 
 Workers report a repeated blocker once to the project supervisor. Idle workers
 drain-ack and exit; workers with retained preparation end their turn awaiting the
@@ -750,12 +914,34 @@ Zero measured workspace capacity prevents placement without a backoff. If
 capacity was advertised but acquisition fails, the key backs off for 60 seconds
 so another project can use the next launch opportunity. Disabled worktree slots
 occupy their indices but provide no capacity; they never count as free slots or
-prevent growth into an unused index below the project cap. Preserved slots stay
-disabled until explicitly recovered. Inspect the inventory with:
+prevent growth into an unused index below the project cap — but the index they
+hold is a pool agent the project cannot run, so N disabled slots inside the cap
+silently hold the project N agents below `max_concurrent_agents`.
+
+Every writer that disables a slot records why in `workspaces.disabled_reason`
+(`<code>: <detail>`) and `disabled_at`: `operator` (disabled with
+`aq project edit-workspace`), `claim_failures` (three identical claim refusals), and
+`worktree_removed` (deleting a task removed the worktree). A row disabled before
+the column existed reads `unrecorded`. The worktree reaper's pass (every five
+minutes) then runs the slot reconciler (`src/orchestrator/slot_restore.py`) over
+each project's disabled, unlocked slots inside the cap:
+
+| Slot state | Reconciler action |
+|---|---|
+| `operator` reason | left alone — an operator decision is never overridden |
+| `claim_failures`, disabled < 15 min ago | left alone (cooldown) |
+| a live process uses it, or liveness is unknowable | left alone |
+| worktree directory missing or empty | re-created in place (same row id) and re-enabled; `worktree.restored` |
+| checkout clean | re-enabled; `worktree.restored` |
+| checkout dirty, or `git status` failed | kept disabled as `quarantined_dirty`; `worktree.quarantined` and one message to `supervisor-<project>` naming the paths. Re-enabled on a later pass once clean |
+
+`aq doctor --check worktrees.capacity` and the stall sweep (`slot_capacity_short`)
+report any project whose enabled in-cap slots are fewer than its cap, naming each
+disabled slot and its reason. Inspect the inventory with:
 
 ```bash
 aq project list-workspaces --project-id agent-queue   # who holds what
-aq doctor --check worktrees.orphans --check workspaces.base_sessions
+aq doctor --check worktrees.capacity --check worktrees.orphans --check workspaces.base_sessions
 ```
 
 Every failure path rolls back completely: the workspace lock is released, the
@@ -1292,10 +1478,10 @@ and pass the vault artifact SHA with `aq task close --commit <vault-commit-sha>`
 The shipped profiles that read their own mailbox (`worker-claude`,
 `worker-codex`, `planner`, `reviewer`, `final-reviewer`, `spec-ingest`,
 `triage`, `playbook-compiler`) also grant `message_status`. The idle-session
-nudge types ``Handle `aq message status <id> --json`.``, and it marks the
-message delivered, so `aq message inbox` no longer lists it. On a vault copy
-without the grant, a worker that follows the nudge is denied and the message
-goes unhandled. Apply the grants-only repair to each profile that drift names
+nudge types ``Handle `aq message status <id> --json` (running it marks the
+message read).``; the message stays pending, and the nudge repeats, until the
+recipient runs it. On a vault copy without the grant, a worker that follows the
+nudge is denied and the message goes unhandled. Apply the grants-only repair to each profile that drift names
 as missing `message_status`, for example
 `aq agent profile-reseed --profile-id worker-claude --grants-only`.
 

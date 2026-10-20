@@ -518,6 +518,30 @@ async def test_every_item_is_ok_with_the_anchors_in_place(protected):
     assert all(f"?ref={SHA}" in path for path in client.paths if "/contents/" in path)
 
 
+async def test_app_verify_and_preflight_block_missing_origins_without_writing(protected, reuse_database):
+    from sqlalchemy import select
+    from src.database.tables import task_branch_origins
+    from src.models import Project, RepoConfig, RepoSourceType, Task, TaskStatus
+
+    db = await reuse_database("app-origin-readiness")
+    await db.create_project(Project(id="agent-queue", name="Queue"))
+    await db.create_repo(RepoConfig(id="agent-queue2", project_id="agent-queue", default_branch="main",
+                                    source_type=RepoSourceType.CLONE))
+    await db.create_task(Task(id="legacy", project_id="agent-queue", title="legacy", description="",
+                              status=TaskStatus.READY))
+    handler = _handler(FakeGitHub())
+    handler.db._engine = db._engine
+    verified = await handler._cmd_integration_app_verify({"project_id": "agent-queue"})
+    preflight = await daemon_functional_preflight(handler.orchestrator, "agent-queue", "agent-queue2")
+    assert verified["ready"] is False
+    assert verified["blockers"] == list(preflight) == ["branch_origins_missing"]
+    item = next(item for item in verified["items"] if item["id"] == "branch_origins")
+    assert item["observed"] == {"task_ids": ["legacy"]}
+    assert item["fix"] == "aq doctor --check integration.branch_origins --fix"
+    async with db._engine.connect() as conn:
+        assert (await conn.execute(select(task_branch_origins))).all() == []
+
+
 @pytest.mark.parametrize("drift", [None, "missing", "another-attestation"])
 async def test_verify_and_preflight_compare_bound_promotion_identities(protected, monkeypatch, drift):
     steps = [

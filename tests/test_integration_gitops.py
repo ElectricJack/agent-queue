@@ -10,7 +10,6 @@ from unittest.mock import AsyncMock
 import pytest
 from sqlalchemy import insert, update
 
-from src.database import Database
 from src.database.tables import (
     integration_branch_owners,
     integration_subjects,
@@ -50,7 +49,7 @@ from src.integration.runtime_contracts import (
     WriterStatus,
 )
 from src.models import Project, RepoConfig, RepoSourceType
-from tests.db_fixtures import lease_dsn
+from tests.git_seed_helpers import clone_seed, init_bare_seed
 
 ARTIFACT = "sha256:" + "1" * 64
 NOW = 1700000000.0
@@ -198,18 +197,24 @@ class LocalGit(GitManager):
 
 
 @pytest.fixture
-async def setup(tmp_path):
+def git_history_template(tmp_path):
+    """Build fresh repositories and history for this scenario."""
     remote = tmp_path / "remote.git"
-    git(tmp_path, "init", "--bare", "--initial-branch=main", str(remote))
+    init_bare_seed(remote)
     store = tmp_path / "retained"
-    git(tmp_path, "clone", str(remote), str(store))
+    clone_seed(remote, store)
     git(store, "config", "user.name", "Tester")
     git(store, "config", "user.email", "tester@example.test")
     base = commit(store, {"base.txt": "base\n"})
     git(store, "push", "origin", "HEAD:main")
     head = commit(store, {"new.txt": "new\n"})
-    db = Database(lease_dsn("gitops"))
-    await db.initialize()
+    return remote, store, base, head
+
+
+@pytest.fixture
+async def setup(tmp_path, reuse_database, git_history_template):
+    remote, store, base, head = git_history_template
+    db = await reuse_database("gitops")
     async with db._engine.begin() as conn:
         await conn.execute(
             insert(playbook_artifacts).values(
@@ -266,7 +271,6 @@ async def setup(tmp_path):
         authority=SubjectGitAuthority(db, trusted_green=trusted_green),
     )
     yield db, ops, subject, fence, repo, base, head, green
-    await db.close()
 
 
 def merge_args(subject, base, *heads):
@@ -861,7 +865,8 @@ async def test_cleanup_retention_expected_old_ambiguous_delete_and_replay(setup)
     assert ops.git.deletes == 1
 
 
-async def test_subject_cleanup_keeps_default_and_every_flow_target(setup):
+@pytest.mark.parametrize("mode", ["development", "disabled"])
+async def test_subject_cleanup_keeps_default_and_every_flow_target(setup, mode):
     db, ops, s, _, repo, _, head, _ = setup
     await db.create_project(Project(id="p", name="Promotion cleanup"))
     await db.create_repo(RepoConfig(
@@ -871,6 +876,7 @@ async def test_subject_cleanup_keeps_default_and_every_flow_target(setup):
     async with db.immediate() as conn:
         await conn.execute(update(projects).where(projects.c.id == "p").values(
             promotion_flow=[{"target": "staging"}, {"target": "aq/release"}],
+            hierarchical_integration_mode=mode, integration_repository_id="r",
         ))
     protected = ("dev", "staging", "aq/release", "gh-pages")
     items = []
@@ -887,10 +893,12 @@ async def test_subject_cleanup_keeps_default_and_every_flow_target(setup):
         return False
 
     result = await SubjectCleanup(ops, inventory=inventory, held=held)(s, CleanupArgs())
-    assert result.outcome == "clean", result
+    assert result.outcome == ("clean" if mode == "development" else "pending"), result
     assert result.detail["retained"] == [f"refs/heads/{branch}" for branch in protected]
-    assert result.detail["deleted"] == ["refs/heads/aq/ordinary"]
-    assert ops.git.deletes == 1
+    assert result.detail["deleted"] == (["refs/heads/aq/ordinary"] if mode == "development" else [])
+    assert ops.git.deletes == (1 if mode == "development" else 0)
+    if mode == "disabled":
+        assert await ops.git.aremote_branch_head(repository=repo.binding, branch="aq/ordinary") == head
     for branch in protected:
         assert await ops.git.aremote_branch_head(repository=repo.binding, branch=branch) == head
 

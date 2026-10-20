@@ -3,7 +3,7 @@
 
 # `task_claim`
 
-**Task Claim.** Claim a ready task for the calling session (``aq task claim``).
+**Task Claim.** Execute the task_claim command.
 
 | Property | Value |
 |---|---|

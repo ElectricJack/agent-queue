@@ -178,11 +178,22 @@ to four workers with `--dist loadfile`. The eight groups are disjoint and
 together select the complete default suite. New test IDs use the average
 stored duration; removed IDs do not affect selection.
 
-The target is at most 4.5 minutes per default shard job, leaving headroom below
-the five-minute CI job goal. Stored test seconds are summed across workers;
-they are a balancing input, not a wall-clock guarantee. Check the actual job
-times after changing the shard count or refreshing the map. The separately
-selected integration and migration suites retain their own commands.
+The test step has a 15-minute deadline. Run `39368476563`, job `118450643210`,
+reported 3,985 passing tests in 594.60 seconds on `default-8/8`, then hit the
+former 10-minute deadline during shutdown. The new deadline puts that observed
+runtime at 66% of its budget, below the 70% target, with room for reporting and
+worker teardown. The job allows 30 minutes: 12 for a cold dependency install,
+15 for tests, and three for setup and cleanup.
+
+After every started test step, including failures, `Check test runtime budget`
+measures elapsed wall time and emits an Actions warning above 80% of the step
+budget (12 minutes). The annotation names the suite and elapsed/budget seconds;
+it does not change the test result. Investigate these warnings and refresh the
+timing map from a complete passing hosted run before rebalancing shards.
+Stored test seconds are summed across workers; they are a balancing input,
+not a wall-clock guarantee. Check actual step times after changing the shard
+count or refreshing the map. The separately selected integration and migration
+suites retain their own commands.
 
 The initial map comes from the 2026-09-26 local default profile with eight
 workers (`local-default-n8.txt` in the task's CI profiling data). It sums the

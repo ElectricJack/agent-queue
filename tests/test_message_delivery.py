@@ -22,13 +22,11 @@ from sqlalchemy import insert
 from sqlalchemy import update as sa_update
 
 from src.config import MessagesConfig
-from src.database import Database
 from src.database.tables import messages
 from src.event_bus import EventBus
 from src.messages.delivery import PARK_AFTER_SECONDS, MessageDeliveryEngine
 from src.messages.service import MessageDeliveryService
 from src.models import Project, SessionRecord, Task, TaskStatus
-from tests.db_fixtures import lease_dsn
 
 # --------------------------------------------------------------------------
 # Fixtures / fakes
@@ -36,12 +34,10 @@ from tests.db_fixtures import lease_dsn
 
 
 @pytest.fixture
-async def db(tmp_path):
-    database = Database(lease_dsn("delivery.db"))
-    await database.initialize()
+async def db(reuse_database):
+    database = await reuse_database("delivery.db")
     await database.create_project(Project(id="p1", name="p1", supervisor_enabled=True))
     yield database
-    await database.close()
 
 
 @dataclass
@@ -228,8 +224,10 @@ class TestDeliveryPolicy:
         assert len(sessions.nudges) == 1
         text = sessions.nudges[0][3]
         assert "msg-" in text and msg.id in text
-        assert text == f"Handle `aq message status {msg.id} --json`."
-        assert "\n" not in text and len(text) < 78
+        assert text == (
+            f"Handle `aq message status {msg.id} --json` (running it marks the message read)."
+        )
+        assert "\n" not in text and len(text) < 120
         stored = await db.get_message(msg.id)
         assert stored.body == "world"
         assert stored.delivered_at is None
@@ -268,7 +266,7 @@ class TestDeliveryPolicy:
 
         assert result["delivered"] == 0
         assert sessions.nudges == [
-            ("task", "task-1", "p1", f"Handle `aq message status {message.id} --json`.")
+            ("task", "task-1", "p1", f"Handle `aq message status {message.id} --json` (running it marks the message read).")
         ]
         stored = await db.get_message(message.id)
         assert stored.body == body  # the durable body is untouched
@@ -691,18 +689,11 @@ class TestReplyTimeouts:
         assert await engine.check_reply_timeouts() == 0
         assert len(await db.list_messages(project_id="p1", to_kind="user")) == 1
 
-    async def test_tail_reply_to_session_sender_is_not_fanned_out_as_platform_message(self, db):
-        """Redesign of the approved plan's item 7: the requested
-        "profile-originated timed-out message" cannot exist — ``messages.
-        from_kind`` is CHECK-constrained (``ck_messages_from_kind``) to
-        ``{session, user, system}``, so ``from_kind="profile"`` is
-        unrepresentable.  The contract the item was after is the general
-        one: a transcript-tail reply addressed back to a *non-user*
-        sender must emit ``message.replied`` only — ``message.sent`` is
-        the platform fan-out envelope and firing it here would make
-        Discord render an agent-to-agent reply as if it were addressed
-        to the user.
-        """
+    async def test_agent_sender_never_receives_a_transcript_tail_reply(self, db):
+        """A reply addressed to an agent satisfies its durable message wait
+        and reads as an answer, so the fallback never fabricates one: the
+        2026-10-12 supervisor's progress about another task cleared a
+        worker's wait. Agents are answered explicitly."""
         sessions = FakeSessionManager(tail_map={("task", "review", "p1"): "worker tail reply"})
         bus = RecordingBus()
         engine = make_engine(db, sessions, bus=bus)
@@ -717,19 +708,11 @@ class TestReplyTimeouts:
         await db.mark_delivered(original.id, via="prime")
         await _age_delivery(db, [original.id])
 
-        assert await engine.check_reply_timeouts() == 1
+        assert await engine.check_reply_timeouts() == 0
 
-        replies = await db.list_messages(project_id="p1", to_kind="session")
-        assert len(replies) == 1
-        reply = replies[0]
-        assert reply.reply_to_id == original.id
-        assert reply.to_kind == "session"
-        assert reply.to_id == "s-owner"
-        assert reply.via == "transcript_tail"
-        # message.replied only — never the platform message.sent envelope.
-        assert [e.event for e in bus.events] == ["message.replied"]
-        assert bus.events[0].payload["reply_id"] == reply.id
-        assert await db.list_messages(project_id="p1", to_kind="user") == []
+        assert await db.list_messages(project_id="p1", to_kind="session") == []
+        assert bus.events == []
+        assert sessions.tail_windows == []  # the transcript is not even read
 
     async def test_transcript_tail_creates_reply(self, db):
         sessions = FakeSessionManager()
@@ -938,12 +921,8 @@ class TestTranscriptTailDeduplication:
         replies = await db.list_messages(to_kind="user")
         assert {r.reply_to_id for r in replies} == {first.id, later.id}
 
-    @pytest.mark.parametrize("different", [
-        {"from_id": "discord:2"}, {"thread_id": "discord:other"},
-        {"to_id": "other-worker"}, {"project_id": "p2"},
-    ])
-    async def test_fallback_does_not_suppress_other_conversations(self, db, different):
-        await db.create_project(Project(id="p2", name="p2", supervisor_enabled=True))
+    @pytest.mark.parametrize("different", [{"to_id": "other-worker"}, {"to_kind": "session"}])
+    async def test_fallback_does_not_suppress_other_recipients(self, db, different):
         sessions = FakeSessionManager()
         first = await _send(db, to_kind="task", to_id="review", thread_id="discord:channel")
         other = await _send(db, **({"to_kind": "task", "to_id": "review",
@@ -954,6 +933,152 @@ class TestTranscriptTailDeduplication:
         assert await make_engine(db, sessions).check_reply_timeouts() == 2
         replies = await db.list_messages(to_kind="user")
         assert {r.reply_to_id for r in replies} == {first.id, other.id}
+
+    @pytest.mark.parametrize("different", [
+        {"from_id": "discord:2"}, {"thread_id": "discord:other"}, {"project_id": "p2"},
+    ])
+    async def test_one_turn_is_never_replayed_to_two_conversations(self, db, different):
+        """Two conversations in flight on one recipient: its transcript turn
+        names neither, so neither gets it (fail closed, no fan-out)."""
+        await db.create_project(Project(id="p2", name="p2", supervisor_enabled=True))
+        sessions = FakeSessionManager()
+        bus = RecordingBus()
+        first = await _send(db, to_kind="task", to_id="review", thread_id="discord:channel")
+        other = await _send(db, **({"to_kind": "task", "to_id": "review",
+                                   "thread_id": "discord:channel"} | different))
+        await _age_delivery(db, [first.id, other.id], seconds=121.0)
+        for msg in [first, other]:
+            sessions.tail_map[(msg.to_kind, msg.to_id, msg.project_id)] = "Same reply text."
+        for _ in range(2):
+            assert await make_engine(db, sessions, bus=bus).check_reply_timeouts() == 0
+        assert await db.list_messages(to_kind="user") == []
+        assert bus.events == []
+
+
+class TestTranscriptTailCausalBinding:
+    """2026-10-12: a supervisor's general progress about another task was
+    materialised as the transcript-tail reply to two workers' requests and
+    satisfied one worker's durable message wait. A transcript turn names no
+    message, so the fallback binds a turn only when nothing else could have
+    prompted it."""
+
+    SUPERVISOR = ("session", "supervisor-p1", "p1")
+
+    async def test_two_worker_requests_get_no_reply_from_general_progress(self, db):
+        sessions = FakeSessionManager(
+            tail_map={self.SUPERVISOR: "Progress: clear-stone merged; patrol continues."}
+        )
+        bus = RecordingBus()
+        requests = [
+            await _send(db, from_kind="session", from_id=session, thread_id=thread,
+                        body="Blocked: which schema?")
+            for session, thread in (("s-smart", "smart-journey"), ("s-keen", "keen-thread"))
+        ]
+        for msg in requests:
+            await db.mark_delivered(msg.id, via="read")
+        await _age_delivery(db, [m.id for m in requests])
+
+        for _ in range(2):
+            assert await make_engine(db, sessions, bus=bus).check_reply_timeouts() == 0
+        assert await db.list_messages(to_kind="session", to_id="s-smart") == []
+        assert await db.list_messages(to_kind="session", to_id="s-keen") == []
+        assert bus.events == []
+        for msg in requests:
+            assert not await db.has_reply_covering_message(await db.get_message(msg.id))
+
+    @pytest.mark.parametrize("other", [
+        {"from_kind": "session", "from_id": "s-keen", "thread_id": "keen-thread"},
+        {"from_kind": "system", "from_id": "task-notices", "thread_id": None},
+        {"from_kind": "user", "from_id": "discord:2", "thread_id": "discord:t2"},
+    ])
+    @pytest.mark.parametrize("other_offset", [-200.0, 0.0, 200.0])
+    async def test_other_delivery_inside_the_window_leaves_chat_unanswered(
+        self, db, other, other_offset,
+    ):
+        """Whatever reached the supervisor around the chat — a worker request,
+        an engine notice, another human — may be what its next turn is
+        about, before or after the chat's own delivery."""
+        sessions = FakeSessionManager(tail_map={self.SUPERVISOR: "Status update."})
+        chat = await _send(db, thread_id="discord:t1")
+        competing = await _send(db, **other)
+        await db.mark_delivered(chat.id, via="read")
+        await db.mark_delivered(competing.id, via="read")
+        await _age_delivery(db, [chat.id], seconds=200.0)
+        await _age_delivery(db, [competing.id], seconds=200.0 - other_offset)
+
+        assert await make_engine(db, sessions).check_reply_timeouts() == 0
+        assert await db.list_messages(to_kind="user") == []
+
+    async def test_chat_is_answered_when_other_traffic_is_outside_its_window(self, db):
+        """The intended fallback survives: a human chat on a supervisor whose
+        other mail arrived more than one reply window earlier."""
+        sessions = FakeSessionManager(tail_map={self.SUPERVISOR: "Yes, proceed."})
+        old = await _send(db, from_kind="session", from_id="s-keen", thread_id="keen-thread")
+        chat = await _send(db, thread_id="discord:t1")
+        await db.mark_delivered(old.id, via="read")
+        await db.mark_delivered(chat.id, via="read")
+        await _age_delivery(db, [chat.id])
+        await _age_delivery(db, [old.id], seconds=121.0 + 360.0 + 1.0)
+
+        assert await make_engine(db, sessions).check_reply_timeouts() == 1
+        (reply,) = await db.list_messages(to_kind="user")
+        assert (reply.reply_to_id, reply.to_id, reply.thread_id) == (
+            chat.id, "discord:1", "discord:t1",
+        )
+        assert reply.delivered_at is not None and reply.via == "transcript_tail"
+        assert await db.list_messages(to_kind="session", to_id="s-keen") == []
+
+    async def test_concurrent_sweeps_create_one_reply(self, db):
+        sessions = FakeSessionManager(tail_map={self.SUPERVISOR: "Done."})
+        chat = await _send(db, thread_id="discord:t1")
+        await db.mark_delivered(chat.id, via="read")
+        await _age_delivery(db, [chat.id])
+        engines = [make_engine(db, sessions) for _ in range(4)]
+
+        counts = await asyncio.gather(*(e.check_reply_timeouts() for e in engines))
+
+        assert sum(counts) == 1
+        assert len(await db.list_messages(to_kind="user")) == 1
+
+    async def test_tail_insert_waits_for_an_in_flight_native_reply(self, db):
+        """A native reply holding the request's lock commits first; the tail
+        insert, blocked on that lock, then sees it and inserts nothing."""
+        chat = await _send(db, thread_id="discord:t1")
+        await db.mark_delivered(chat.id, via="read")
+        chat = await db.get_message(chat.id)
+        async with db._engine.connect() as conn:
+            txn = await conn.begin()
+            await conn.execute(
+                messages.select().where(messages.c.id == chat.id).with_for_update()
+            )
+            pending = asyncio.ensure_future(
+                db.create_transcript_tail_reply(chat, body="tail", attribution_window=360.0)
+            )
+            await asyncio.sleep(0.3)
+            assert not pending.done()
+            await conn.execute(insert(messages).values(
+                id="msg-native", project_id="p1", from_kind="session",
+                from_id="supervisor-p1", to_kind="user", to_id="discord:1",
+                thread_id="discord:t1", body="native", priority=100,
+                created_at=time.time(), archive_after_inject=0, reply_to_id=chat.id,
+            ))
+            await txn.commit()
+        assert await pending is None
+        assert [r.id for r in await db.list_messages(to_kind="user")] == ["msg-native"]
+
+    @pytest.mark.parametrize("change", ["archived", "redelivered"])
+    async def test_request_changed_since_the_sweep_read_it_is_not_answered(self, db, change):
+        chat = await _send(db, thread_id="discord:t1")
+        await db.mark_delivered(chat.id, via="read")
+        seen = await db.get_message(chat.id)
+        if change == "archived":
+            await db.archive_messages([chat.id])
+        else:
+            await _age_delivery(db, [chat.id], seconds=5.0)
+        assert await db.create_transcript_tail_reply(
+            seen, body="tail", attribution_window=360.0,
+        ) is None
+        assert await db.list_messages(to_kind="user", include_archived=True) == []
 
 
 class TestTranscriptTailFanout:
@@ -996,38 +1121,32 @@ class TestTranscriptTailFanout:
         replies = await db.list_messages(project_id="p1", to_kind="user")
         assert p["message_id"] == replies[0].id
 
-    async def test_tail_reply_no_message_sent_when_cas_loses(self, db, monkeypatch):
+    async def test_native_reply_racing_the_sweep_leaves_no_tail_row(self, db, monkeypatch):
+        """The native reply commits after the sweep's pre-check: the guarded
+        insert re-checks under the request's lock, so no fabricated row and
+        no event survive (the old CAS left the reply row behind)."""
         sessions = FakeSessionManager()
         bus = RecordingBus()
         engine = make_engine(db, sessions, bus=bus)
-        msg = await _send(
-            db,
-            from_kind="user",
-            from_id="discord:1",
-            to_kind="session",
-            to_id="supervisor-p1",
-            thread_id="t-x",
-        )
-        sessions.activity_map[("session", "supervisor-p1", "p1")] = "idle"
-        await engine.run_delivery_pass()
+        msg = await _send(db, thread_id="t-x")
+        await db.mark_delivered(msg.id, via="read")
         await _age_delivery(db, [msg.id])
         sessions.tail_map[("session", "supervisor-p1", "p1")] = "tail body"
-        bus.events.clear()
 
-        # Force the CAS on the newly-created reply to lose.
-        original_mark = db.mark_delivered
+        async def tail_then_native_reply(**kwargs):
+            await db.create_message(
+                project_id="p1", from_kind="session", from_id="supervisor-p1",
+                to_kind="user", to_id="discord:1", body="native answer",
+                thread_id="t-x", reply_to_id=msg.id,
+            )
+            return "tail body"
 
-        async def losing_mark(message_id, via):
-            if via == "transcript_tail":
-                return False
-            return await original_mark(message_id, via=via)
+        monkeypatch.setattr(sessions, "tail_assistant_turn", tail_then_native_reply)
 
-        monkeypatch.setattr(db, "mark_delivered", losing_mark)
-
-        resolved = await engine.check_reply_timeouts()
-
-        assert resolved == 0
-        assert [e.event for e in bus.events] == []  # no replied, no sent
+        assert await engine.check_reply_timeouts() == 0
+        replies = await db.list_messages(project_id="p1", to_kind="user")
+        assert [r.body for r in replies] == ["native answer"]
+        assert bus.events == []
 
     async def test_tail_dedupe_key_distinguishes_projects(self, db):
         # Two projects, same thread_id — both tails should be recovered.
@@ -1564,6 +1683,67 @@ async def test_recipient_read_racing_notification_does_not_requeue_or_escalate(d
     assert await db.get_pending_messages("session", "supervisor-p1") == []
 
 
+@pytest.mark.parametrize("activity", ["idle", "sleeping"])
+async def test_read_message_is_never_renudged(db, monkeypatch, activity):
+    """A recipient read (``aq message status`` stamps delivered via read, then
+    read) ends the retries for good: later passes past every backoff never
+    point at the message again, whatever the session's activity."""
+    clock = [time.time()]
+    monkeypatch.setattr("src.messages.delivery.time", SimpleNamespace(time=lambda: clock[0]))
+    msg = await _send(db, from_kind="session", from_id="supervisor-agent-queue")
+    manager = FakeSessionManager(activity_map={("session", "supervisor-p1", "p1"): "idle"})
+    await make_engine(db, manager).run_delivery_pass()
+    assert [nudge[3] for nudge in manager.nudges] == [
+        f"Handle `aq message status {msg.id} --json` (running it marks the message read)."
+    ]
+    await db.mark_delivered(msg.id, via="read")
+    await db.mark_read(msg.id)
+    manager.activity_map[("session", "supervisor-p1", "p1")] = activity
+    for _ in range(6):
+        clock[0] += 600
+        await make_engine(db, manager).run_delivery_pass()
+    assert len(manager.nudges) == 1
+    assert manager.ensure_started_calls == []
+    stored = await db.get_message(msg.id)
+    assert stored.notification_attempts == 1
+    assert await db.get_pending_messages("session", "supervisor-global") == []
+
+
+async def test_message_read_after_selection_is_not_nudged(db, monkeypatch):
+    """A read landing between the pending query and the notification claim
+    loses the claim, so the stale selection never reaches the session."""
+    msg = await _send(db)
+    manager = FakeSessionManager(activity_map={("session", "supervisor-p1", "p1"): "idle"})
+    select = db.get_pending_messages
+
+    async def read_after_select(*args, **kwargs):
+        pending = await select(*args, **kwargs)
+        await db.mark_delivered(msg.id, via="read")
+        await db.mark_read(msg.id)
+        return pending
+
+    monkeypatch.setattr(db, "get_pending_messages", read_after_select)
+    await make_engine(db, manager).run_delivery_pass()
+    assert manager.nudges == []
+    assert (await db.get_message(msg.id)).notification_attempts == 0
+
+
+async def test_unread_retry_pointer_names_status_as_the_acknowledgment(db, monkeypatch):
+    """The pointer says running it is the read; a retry repeats it verbatim so a
+    pasted-but-unsubmitted copy is only submitted, never doubled."""
+    clock = [time.time()]
+    monkeypatch.setattr("src.messages.delivery.time", SimpleNamespace(time=lambda: clock[0]))
+    msg = await _send(db)
+    manager = FakeSessionManager(activity_map={("session", "supervisor-p1", "p1"): "idle"})
+    await make_engine(db, manager).run_delivery_pass()
+    clock[0] += 60
+    await make_engine(db, manager).run_delivery_pass()
+    first, retry = (nudge[3] for nudge in manager.nudges)
+    assert first == retry == (
+        f"Handle `aq message status {msg.id} --json` (running it marks the message read)."
+    )
+
+
 async def test_unread_message_backoff_does_not_starve_later_messages(db):
     first = await _send(db)
     second = await _send(db)
@@ -1592,8 +1772,8 @@ async def test_delivery_alert_nudges_global_supervisor_with_short_retrievable_po
     [alert] = await db.get_pending_messages("session", "supervisor-global")
     [nudge] = manager.nudges
     assert nudge[:3] == ("session", "supervisor-global", "p1")
-    assert nudge[3] == f"Handle `aq message status {alert.id} --json`."
-    assert len(nudge[3]) < 78 and "\n" not in nudge[3]
+    assert nudge[3] == f"Handle `aq message status {alert.id} --json` (running it marks the message read)."
+    assert len(nudge[3]) < 120 and "\n" not in nudge[3]
     assert alert.delivered_at is None and alert.notification_attempts == 1
     assert await db.escalate_unread_message(original.id) is None
     assert await db.escalate_unread_message(alert.id) is None
@@ -1699,3 +1879,143 @@ async def test_global_backlog_alert_counts_unread_across_aliases_and_survives_re
     assert "51 unread" in alert.body
     assert alert.project_id is None
     assert all([(await db.get_message(msg.id)).read_at is None for msg in sent])
+
+
+async def _supervisor_delivery_incident(db, *, task_id=None):
+    incident, _ = await db.create_escalation(
+        id="notice-incident", project_id="p1", task_id=task_id,
+        source_kind="supervisor_delivery", source_identity="task_recovery:notice-source",
+        incident_key="supervisor-unavailable:notice-source",
+        supervisor_owner="supervisor-p1", summary="Supervisor unavailable",
+        investigation="A recovery notice could not be delivered",
+        decision_requested="Inspect delivery", severity="low",
+        supervisor_delivery_body_kind="task_recovery",
+    )
+    return incident
+
+
+@pytest.mark.parametrize("state", ["resolved", "cancelled", "stale"])
+@pytest.mark.parametrize("kind", ["supervisor_delivery", "escalation_reply",
+                                  "escalation_owner_reminder"])
+async def test_terminal_escalation_notice_is_never_redelivered(db, monkeypatch, state, kind):
+    incident = await _supervisor_delivery_incident(db)
+    if kind == "supervisor_delivery":
+        notice = await db.get_message("msg-" + incident["id"])
+    else:
+        await db.archive_messages(["msg-" + incident["id"]])
+        notice = await _send(db, body_kind=kind, thread_id=incident["id"])
+    # Notify the live incident once; restart delivery after it settles.
+    monkeypatch.setattr("src.messages.delivery.NOTIFICATION_RETRY_SECONDS", 0)
+    first_manager = FakeSessionManager(
+        activity_map={("session", "supervisor-p1", "p1"): "idle"},
+    )
+    await make_engine(db, first_manager).run_delivery_pass()
+    assert len(first_manager.nudges) == 1 and notice.id in first_manager.nudges[0][3]
+    unrelated = await _send(db, thread_id=incident["id"], body="Keep this user conversation")
+    if state == "resolved":
+        closed = await db.resolve_escalation_on_recovery(
+            incident["id"], expected_revision=0, source_kind="supervisor_delivery",
+            terminal_outcome="Delivery recovered", terminal_evidence={"pending": 0},
+        )
+    else:
+        closed = await db.transition_escalation(
+            incident["id"], expected_revision=0, new_state=state,
+            terminal_outcome="No further action needed",
+        )
+    assert closed["state"] == state
+    # Queries and CAS must refuse even before the expiry sweep runs.
+    assert notice.id not in {msg.id for msg in await db.get_pending_messages(
+        "session", "supervisor-p1",
+    )}
+    assert not await db.claim_message_notification(notice.id, now=time.time(), retry_delay=0)
+    assert await db.escalate_unread_message(notice.id) is None
+    manager = FakeSessionManager(activity_map={("session", "supervisor-p1", "p1"): "sleeping"})
+    for _ in range(2):
+        await make_engine(db, manager).run_delivery_pass()
+    stored = await db.get_message(notice.id)
+    assert stored.archived_at is not None and stored.via == "expired-source-notice"
+    assert stored.read_at is None and stored.delivered_at is None
+    assert stored.notification_attempts == 1
+    assert all(notice.id not in nudge[3] for nudge in manager.nudges)
+    assert (await db.get_message(unrelated.id)).archived_at is None
+
+
+@pytest.mark.parametrize("status", [TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.BLOCKED])
+async def test_escalation_notice_expires_with_completed_source_task(db, status):
+    await db.create_task(Task(id="source-task", project_id="p1", title="Source", description="Work", status=status))
+    incident = await _supervisor_delivery_incident(db, task_id="source-task")
+    manager = FakeSessionManager(activity_map={("session", "supervisor-p1", "p1"): "sleeping"})
+    await make_engine(db, manager).run_delivery_pass()
+    stored = await db.get_message("msg-" + incident["id"])
+    assert (stored.archived_at is not None) == (status == TaskStatus.COMPLETED)
+    assert bool(manager.ensure_started_calls) == (status != TaskStatus.COMPLETED)
+    assert (await db.get_escalation(incident["id"]))["state"] == "needs_human"
+
+
+@pytest.mark.parametrize("settlement", ["read", "resolved"])
+@pytest.mark.parametrize("stage", ["selection", "startup"])
+async def test_notice_settled_after_selection_cannot_cold_start_supervisor(db, settlement, stage):
+    incident = await _supervisor_delivery_incident(db)
+    notice_id = "msg-" + incident["id"]
+    manager = FakeSessionManager()
+
+    async def settle(**kwargs):
+        if settlement == "read":
+            await db.mark_read(notice_id)
+        else:
+            await db.resolve_escalation_on_recovery(
+                incident["id"], expected_revision=0, source_kind="supervisor_delivery",
+                terminal_outcome="Recovered during selection", terminal_evidence={},
+            )
+        return "sleeping"
+
+    if stage == "selection":
+        manager.activity = settle
+    else:
+        manager.activity_map[("session", "supervisor-p1", "p1")] = "sleeping"
+
+        async def start(**kwargs):
+            manager.ensure_started_calls.append(kwargs)
+            await settle()
+            return True
+
+        manager.ensure_started = start
+    await make_engine(db, manager).run_delivery_pass()
+    assert bool(manager.ensure_started_calls) == (stage == "startup")
+    assert manager.nudges == []
+    assert (await db.get_message(notice_id)).notification_attempts == (stage == "startup")
+
+
+@pytest.mark.parametrize("state,status,expired", [
+    ("supervisor", TaskStatus.IN_PROGRESS, False),
+    ("supervisor", TaskStatus.COMPLETED, True),
+    ("answered", TaskStatus.IN_PROGRESS, True),
+    ("resolved", TaskStatus.IN_PROGRESS, True),
+])
+async def test_worker_question_notice_skips_settled_question_or_task(db, state, status, expired):
+    await db.create_task(Task(id="question-task", project_id="p1", title="Source", description="Work", status=status))
+    await db.create_agent_question(
+        id="question-notice", session_id="worker", session_name="worker",
+        instance_token="token", task_id="question-task", project_id="p1", agent_id="agent",
+        claim_epoch=1, turn_id="turn", question="May I proceed?", requires_human=False,
+        state="supervisor", created_at=1, updated_at=1, source_ts=1,
+    )
+    await db.queue_agent_question_supervisor("question-notice", "May I proceed?", "supervisor-p1", 1)
+    if state != "supervisor":
+        await db.transition_agent_question("question-notice", ("supervisor",), state=state)
+    manager = FakeSessionManager(activity_map={("session", "supervisor-p1", "p1"): "sleeping"})
+    await make_engine(db, manager).run_delivery_pass()
+    assert bool(manager.ensure_started_calls) == (not expired)
+    assert (await db.get_message("msg-question-notice")).read_at is None
+
+
+async def test_legacy_acknowledged_undelivered_message_never_wakes(db):
+    notice = await _send(db)
+    async with db._engine.begin() as conn:
+        await conn.execute(sa_update(messages).where(messages.c.id == notice.id)
+                           .values(read_at=time.time()))
+    manager = FakeSessionManager(activity_map={("session", "supervisor-p1", "p1"): "sleeping"})
+    assert await db.get_pending_recipients() == []
+    assert await db.get_pending_messages("session", "supervisor-p1") == []
+    await make_engine(db, manager).run_delivery_pass()
+    assert manager.ensure_started_calls == [] and manager.nudges == []

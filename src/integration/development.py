@@ -441,14 +441,20 @@ class DevelopmentPrimitives:
 
 
     async def store(self, repo, *, fetch=True):
+        from src.integration.repository_recovery import (
+            fetch_retained_origin, harden_retained_repository,
+        )
+
         path = self._store_path(repo)
         path.parent.mkdir(parents=True, exist_ok=True)
         if not (path / ".git").exists():
             await self.git.acreate_checkout(repo.url, str(path), no_checkout=True)
         if await self.run_git(path, "remote", "get-url", "origin") != repo.url:
             raise ValueError("retained repository URL differs from configured repository")
+        await harden_retained_repository(self.git, path)
         if fetch:
-            await self.git.afetch_origin(str(path), repository_url=repo.url, all_heads=True)
+            await fetch_retained_origin(self.git, path, repository_url=repo.url,
+                                        project_id=repo.project_id, repository_id=repo.id)
         return path
 
 
@@ -973,6 +979,7 @@ class DevelopmentPrimitives:
         parent-child edge plus this required reverse edge would be a blocking
         cycle.
         """
+        from src.integration.models import INTEGRATION_REPAIR_PRIORITY
         from src.models import DepType, Task, TaskType
         from src.task_names import MAX_STRUCTURAL_DEPTH
 
@@ -1075,6 +1082,7 @@ class DevelopmentPrimitives:
                 branch_name="aq/" + identity,
                 status=TaskStatus.READY,
                 task_type=TaskType.BUGFIX,
+                priority=INTEGRATION_REPAIR_PRIORITY,
                 max_retries=3,
                 # The routing policy names this origin
                 # (``origins.development_repair``) instead of matching the

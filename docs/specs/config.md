@@ -203,9 +203,11 @@ inside the 600-character digest budget and appends the needs-you link to. A
 window with no new facts and nothing waiting on Jack is skipped; after
 `quiet_line_after_skips` such windows one line is posted per local day, so
 silence stays distinguishable from a dead bot. Authoring also requires the
-`supervisor-digest` playbook, whose disabled reviewed bundle is available for
-explicit operator import and activation; its retired source is no longer copied
-into `vault/system/playbooks/` at startup. Without it every window falls back.
+`supervisor-digest` playbook, whose historical reviewed bundle remains available
+for explicit operator import and activation; without it every window falls back.
+Its retired source is no longer seeded into `system/playbooks`, nor are
+`supervisor-hourly-report` and `blocked-task-escalation`. Startup preserves existing
+operator copies and does not recreate deleted sources.
 `escalation.mention_user_ids`, `mention_role_ids`, and `channel_id` use
 numeric Discord IDs.
 
@@ -734,6 +736,32 @@ decision, not a repair).
 See `docs/guides/worker-pools.md` for the operational guide — turning a
 profile into a pool, setting bounds, reading quarantine, the `pools.*` doctor
 checks, and rolling back to `lifecycle: task`.
+
+### `worktrees` — slot reset Git budgets and lock recovery
+
+Local Git commands during `reset_slot_for_task`, including checkpoint restoration,
+abort, reset, clean, switch and child-branch merge, use
+`worktrees.slot_reset_git_timeout_seconds` (positive integer, default `600`).
+`worktrees.slot_reset_git_timeouts` is a mapping of project IDs to positive integer
+overrides; for example `{matter-engine-cpp: 1800}` gives that project's repository
+30 minutes per local command. An explicit command timeout still wins. The budget
+is scoped to the reset coroutine and restored on success, failure or cancellation;
+concurrent resets and other Git operations keep their own budgets. Authenticated
+network operations retain their transport deadlines. The reconciler's
+`swarm.prepare_timeout` applies to abandoned preparations, and does not release
+an exact preparation still running in the daemon.
+
+Git timeout errors report the command and elapsed budget, without attributing
+the timeout to a credential prompt without evidence.
+
+Before aborting interrupted Git operations, recovery resolves both the worktree
+Git directory and its common directory. It considers worktree `index.lock` and
+common `index.lock`, `shallow.lock`, `refs/heads.lock` and `objects/maintenance.lock`.
+It removes a lock only after checking local process ownership, and only if the
+file still matches the inspected inode and timestamps. Inspectable open lock files
+and live Git processes that could own repository locks prevent removal; unknown
+Git-process liveness or unavailable Git-process inspection also preserves the locks. Inspection
+runs off the event loop. A lock's age alone is never proof that its owner died.
 
 ### 4.11a `resources` Section
 

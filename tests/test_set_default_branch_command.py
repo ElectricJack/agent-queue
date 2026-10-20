@@ -15,7 +15,6 @@ import pytest
 
 from src.commands.handler import CommandHandler
 from src.config import DatabaseConfig, AppConfig, DiscordConfig
-from src.database import Database
 from src.git.manager import GitError, RemoteRefResult, RemoteRefState
 from src.models import Project, RepoSourceType, Workspace
 from src.orchestrator import Orchestrator
@@ -25,16 +24,14 @@ WS = "/tmp/p1"
 
 
 @pytest.fixture
-async def db(tmp_path):
-    d = Database(lease_dsn("sdb.db"))
-    await d.initialize()
+async def db(reuse_database):
+    d = await reuse_database("sdb.db")
     await d.create_project(Project(id="p1", name="P1", repo_default_branch="main"))
     await d.create_project(Project(id="p2", name="P2", repo_default_branch="main"))
     await d.create_workspace(
         Workspace(id="w1", project_id="p1", workspace_path=WS, source_type=RepoSourceType.CLONE)
     )
     yield d
-    await d.close()
 
 
 @pytest.fixture

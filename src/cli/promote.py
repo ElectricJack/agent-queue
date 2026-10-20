@@ -110,10 +110,13 @@ def promote_prepare(ctx, project_id, step_id, bump, version, from_task):
 )
 @click.option("--version", help="Version at the pinned source commit.")
 @click.option("--notes-reviewed", is_flag=True)
+@click.option("--allow-breaking-migration", is_flag=True,
+              help="Operator only: accept unproven migrations and disable rollback across this release.")
 @click.option("--from-task", help="Completed hotfix task whose exact source to promote.")
 @click.pass_context
 @_handle_errors
-def promote_request(ctx, project_id, step_id, source_sha, version, notes_reviewed, from_task):
+def promote_request(ctx, project_id, step_id, source_sha, version, notes_reviewed,
+                    allow_breaking_migration, from_task):
     """Open a pinned step PR and an idempotent promotion intent."""
     _execute_intent(
         ctx,
@@ -124,6 +127,7 @@ def promote_request(ctx, project_id, step_id, source_sha, version, notes_reviewe
             "source_sha": source_sha,
             "version": version,
             "notes_reviewed": notes_reviewed,
+            **({"allow_breaking_migration": True} if allow_breaking_migration else {}),
             **({"from_task": from_task} if from_task else {}),
         },
     )

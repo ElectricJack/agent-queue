@@ -32,7 +32,7 @@ The steps, as the spec numbers them:
    a narrow lane's flags (and its ``max_risk``), and the risk when a ``risk``
    rule could raise the class or remove a candidate's harness.
 5. **Load score** — ``pressure = (load + 1) / (slots × weight × usage ×
-   availability)``; ``load = busy + eligible backlog``.  Blocked, unclaimable
+   usage_headroom × availability)``; ``load = busy + eligible backlog``. Blocked, unclaimable
    routed work (dependency, hold, origin, container, gate, already-assigned)
    is evidenced but never load: a worker cannot run it, so it must not
    consume a slot.
@@ -48,7 +48,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, field, replace
 from typing import Any
 
-from src.models import TaskType
+from src.models import TaskStatus, TaskType
 from src.profiles.catalog import worker_route
 from src.routing.policy import (
     CLASSIFICATION_FLAGS,
@@ -249,6 +249,8 @@ class Score:
     load: int
     usage_percent: float | None
     usage_factor: float
+    usage_headroom_factor: float
+    usage_binding_window: dict[str, Any] | None
     usage_soft_limited: bool
     avail_factor: float
     weight: float
@@ -453,6 +455,22 @@ class _Rule:
 #: The risk a policy that reads risks applies when the classifier answered
 #: without one, or failed: not knowing is not evidence the change is safe.
 ASSUMED_RISK = "medium"
+#: Journaled reasons that are rework after a passing attempt, not a verdict on
+#: the class's ability: they never count toward ``escalate.after_failures``.
+REWORK_REASONS = frozenset({"reopen_with_feedback"})
+
+
+def counts_toward_escalation(attempt: Mapping[str, Any]) -> bool:
+    """Whether a journaled attempt is a capability failure for escalation.
+
+    Review feedback on a COMPLETED task reworks a passing attempt; it is not a
+    failure of the class that produced it.  Rows journaled before the journal
+    stopped recording rework are excluded here too.
+    """
+    return (
+        attempt.get("reason") not in REWORK_REASONS
+        and attempt.get("previous_status") != TaskStatus.COMPLETED.value
+    )
 
 
 def _effective_risk(
@@ -531,6 +549,7 @@ def _rule(
         failures = [
             dict(attempt) for attempt in task.failed_attempts
             if attempt.get("intelligence_class") == class_id
+            and counts_toward_escalation(attempt)
         ]
         chosen = class_id
         raised_from = raised_for_risk = None
@@ -897,13 +916,31 @@ def score(candidate: Candidate, snapshot: Snapshot, balance: Balance) -> Score |
     else:
         usage = facts.usage_percent
         usage_factor = _usage_factor(usage, balance)
+    headroom_factor = 1.0
+    binding = None
+    if balance.usage_mode == "headroom":
+        # Freshness is computed against the snapshot clock, including resets.
+        # A bare percentage has no freshness evidence and stays neutral here.
+        binding = max(
+            (q for q in facts.quota if q["freshness"] == "fresh"),
+            key=lambda q: float(q["used_percent"]), default=None,
+        )
+        if binding is not None:
+            usage = float(binding["used_percent"])
+            if usage <= balance.usage_soft_percent:
+                headroom_factor = 1.0 - max(0.0, usage) / 100.0
     avail_factor = balance.degraded_factor if facts.state == "degraded" else 1.0
     weight = balance.weight(candidate.harness)
-    pressure = (busy + backlog + 1) / (slots * weight * usage_factor * avail_factor)
+    pressure = (busy + backlog + 1) / (
+        slots * weight * usage_factor * headroom_factor * avail_factor
+    )
     return Score(
         profile_id=candidate.profile_id, intelligence_class=candidate.intelligence_class,
         tier=candidate.tier, slots=slots, busy=busy, backlog=backlog, blocked=blocked, load=busy + backlog,
         usage_percent=usage, usage_factor=round(usage_factor, 4),
+        usage_headroom_factor=round(headroom_factor, 4),
+        usage_binding_window={key: binding.get(key) for key in ("window", "scope", "resets_at")}
+        if binding is not None else None,
         usage_soft_limited=usage is not None and usage > balance.usage_soft_percent,
         avail_factor=avail_factor, weight=weight, pressure=round(pressure, 4),
         effective_headroom=snapshot.headroom.get(candidate.profile_id),
@@ -1009,6 +1046,8 @@ def selection_evidence(
             "effective_headroom": snapshot.headroom.get(candidate.profile_id),
             "usage_percent": result.usage_percent if result else None,
             "usage_factor": result.usage_factor if result else None,
+            "usage_headroom_factor": result.usage_headroom_factor if result else None,
+            "usage_binding_window": result.usage_binding_window if result else None,
             "usage_soft_limited": result.usage_soft_limited if result else None,
             "quota_status": "observed" if facts.quota else "unknown",
             "quota": list(facts.quota[:8]), "preference_bypassed": bypass,
@@ -1047,10 +1086,17 @@ def selection_reason(evidence: Mapping[str, Any]) -> str:
     ) or (f"own usage {chosen['usage_percent']:g}% (window/age unknown)"
           if chosen["usage_percent"] is not None else "quota unknown")
     age = evidence["snapshot_age_seconds"]
+    binding = chosen.get("usage_binding_window")
+    usage_headroom = f"usage headroom factor {chosen.get('usage_headroom_factor', 1):g}"
+    if binding:
+        usage_headroom += (
+            f" (binding {binding['window']}({binding['scope']}), "
+            f"resets at {binding['resets_at'] if binding['resets_at'] is not None else 'unknown'})"
+        )
     reason = (
         f"{evidence['mode']}: {evidence['profile_id']}/{evidence['provider']} "
         f"class {evidence['class']}, {chosen['state']}, load {chosen['load']}/{chosen['slots']}, "
-        f"headroom {headroom if headroom is not None else 'unknown'}; {windows}; "
+        f"headroom {headroom if headroom is not None else 'unknown'}; {usage_headroom}; {windows}; "
         f"snapshot age {f'{age:g}s' if age is not None else 'unknown'}"
     )
     bypassed = [f"{c['profile_id']}: {c['preference_bypassed']}"
