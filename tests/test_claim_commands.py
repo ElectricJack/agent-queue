@@ -30,6 +30,7 @@ from src.database.tables import (
     tasks,
 )
 from src.integration.models import BranchKey
+from src.integration.lock import BranchLockTimeout
 from src.integration.ownership import BranchOwnership
 from src.intelligence_classes import IntelligenceClass
 from src.models import (
@@ -674,6 +675,67 @@ async def test_repair_prepare_contention_is_bounded_and_resumes_same_claim(
     assert (resumed["result"], resumed["claim_epoch"]) == ("claimed", 1)
     assert (await env.locks.get(env.target)).fence == env.lease.fence
     assert (await env.store.get("repair-batch")).repair_attempt_count == 1
+
+
+async def test_repair_start_allows_git_import_beyond_publication_bound(
+    handler, db, tmp_path, monkeypatch,
+):
+    from src.integration import lock as lock_module
+
+    env = await ordinary_pool_repair(handler, db, tmp_path)
+    # Scale both bounds: startup survives a slow import which would exceed
+    # the normal publication fence, without a wall-clock performance budget.
+    monkeypatch.setattr(lock_module, "CRITICAL_SECTION_SECONDS", 1)
+    monkeypatch.setattr(lock_module, "REPAIR_START_SECONDS", 10)
+
+    async def import_objects(*args, **kwargs):
+        await asyncio.sleep(1.1)
+        return "b" * 40
+
+    handler.orchestrator._hierarchy_repair_start.side_effect = import_objects
+    result = await settled_claim(env.handler, {"next": True})
+    assert result["result"] == "claimed", result
+    handler.orchestrator._hierarchy_repair_start.assert_awaited_once()
+    assert (await env.store.get("repair-batch")).repair_attempt_count == 1
+
+
+@pytest.mark.parametrize("stage", ["repair_start", "slot_reset"])
+async def test_repair_fence_timeout_retains_claim_and_allocation_after_bounded_retries(
+    handler, db, tmp_path, stage,
+):
+    env = await ordinary_pool_repair(handler, db, tmp_path)
+    operation = (handler.orchestrator._hierarchy_repair_start if stage == "repair_start"
+                 else handler.orchestrator._worktree_slots.return_value.reset_slot_for_task)
+    operation.side_effect = BranchLockTimeout(env.target, 150)
+    result = await settled_claim(env.handler, {"next": True})
+    assert result["result"] == "no_ready_work", result
+    assert operation.await_count == 3
+    held = await db.get_session(env.sid)
+    assert (held.claim_phase, held.last_claim_epoch, held.claims) == ("preparing", 1, 0)
+    task = await db.get_task(env.task_id)
+    assert task.status is TaskStatus.IN_PROGRESS
+    assert task.retry_count == 0
+    lease = await env.locks.get(env.target)
+    assert (lease.holder, lease.fence) == (env.task_id, env.lease.fence)
+    assert held.claim_failure_count == 0
+    assert (await env.store.get("repair-batch")).repair_attempt_count == 1
+    for key in ("needs_attention", "slot_reset_failure", "prepare_failure"):
+        assert await db.get_task_meta(env.task_id, key) is None
+    assert "pool.prepare_failed" not in handler.orchestrator.bus.seen_event_types
+    assert not (env.wd / ".aq" / "claim.json").exists()
+
+    operation.side_effect = None
+    resumed = await settled_claim(env.handler, {"next": True})
+    assert (resumed["result"], resumed["claim_epoch"]) == ("claimed", 1)
+    assert (await env.locks.get(env.target)).fence == env.lease.fence
+    assert (await env.store.get("repair-batch")).repair_attempt_count == 1
+
+
+@pytest.mark.parametrize("error", [TimeoutError("git import timeout"), RuntimeError("broken")])
+def test_other_preparation_timeouts_are_not_transient(error):
+    from src.commands.claim_commands import _retryable_preparation_error
+
+    assert not _retryable_preparation_error(error)
 
 
 async def test_conflict_after_activation_does_not_retry_preparation(handler, db, tmp_path):
