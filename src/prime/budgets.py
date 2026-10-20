@@ -25,13 +25,13 @@ def text_preview(text: str, limit: int, task_id: str, field: str) -> str:
 
 def field_page(info: dict, field: str, offset: int, limit: int) -> dict:
     if field not in info:
-        return {"error": f"Unknown task field: {field}"}
+        return {"success": False, "error": f"Unknown task field: {field}"}
     if offset < 0 or not 1 <= limit <= PAGE_CHARS:
-        return {"error": f"offset must be >= 0 and limit between 1 and {PAGE_CHARS}"}
+        return {"success": False, "error": f"offset must be >= 0 and limit between 1 and {PAGE_CHARS}"}
     value = info[field]
     text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, indent=2)
     end = min(len(text), offset + limit)
-    return {"id": info["id"], "field": field, "content": text[offset:end],
+    return {"success": True, "id": info["id"], "field": field, "content": text[offset:end],
             "offset": offset, "next_offset": end if end < len(text) else None,
             "total_chars": len(text)}
 
@@ -72,7 +72,7 @@ def task_preview(info: dict) -> dict:
         if len(json.dumps(preview, ensure_ascii=False).encode("utf-8")) <= TASK_SHOW_BYTES:
             return preview
     # This is unreachable with the current fixed top-level task_show schema.
-    return {"id": info["id"], "status": info["status"], "preview": {
+    return {"success": True, "id": info["id"], "status": info["status"], "preview": {
         "omitted_fields": list(info),
         "read": f"aq task show {info['id']} --field FIELD --offset 0 --limit {PAGE_CHARS}",
         "instruction": "Read omitted requirements before acting; follow next_offset.",

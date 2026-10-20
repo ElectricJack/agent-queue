@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -82,7 +83,8 @@ def context(
         step_id=step_id,
         principal=principal,
         scope=ResolutionScope(),
-        services=EngineServices(contracts=registry, clock=lambda: 100.0),
+        services=EngineServices(contracts=registry, clock=lambda: 100.0,
+                                private_values=AsyncMock()),
         mode=mode,
         attempt=attempt,
         iteration_index=iteration_index,

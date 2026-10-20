@@ -3051,7 +3051,7 @@ class TestClaim:
 
         result = await handler._cmd_pause_task({"task_id": "t1"})
 
-        assert result == {"task_id": "t1", "status": "PAUSED"}
+        assert result == {"success": True, "task_id": "t1", "status": "PAUSED"}
         assert provider.stop.call_args.args[0].instance_token == "t"
         assert at_unlock == [(None, "t1")]  # retired before capacity was announced
         slot = await db.get_workspace("ws-agent-1")

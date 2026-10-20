@@ -22,7 +22,7 @@ class FlockCommandsMixin:
     async def _cmd_list_agents(self, args: dict) -> dict:
         project_id = args.get("project_id")
         if project_id and await self.db.get_project(project_id) is None:
-            return {"error": f"Project '{project_id}' not found"}
+            return {"success": False, "error": f"Project '{project_id}' not found"}
         agents = await self.db.list_agents()
         records = await self.db.list_sessions()
         active_tasks = await self.db.list_tasks(statuses={
@@ -49,6 +49,7 @@ class FlockCommandsMixin:
         )
         rollup = flock_rollup(rows)
         return {
+            "success": True,
             "agents": rows,
             "sessions": sessions,
             "session_count": len(sessions),
@@ -64,12 +65,12 @@ class FlockCommandsMixin:
     async def _cmd_get_agent(self, args: dict) -> dict:
         agent_id = args.get("agent_id")
         if not agent_id:
-            return {"error": "agent_id is required"}
+            return {"success": False, "error": "agent_id is required"}
         rows = await list_agent_flock(self.orchestrator, project_id=args.get("project_id"))
         for row in rows:
             if row["id"] == agent_id:
-                return row
-        return {"error": f"Agent '{agent_id}' not found in this scope"}
+                return {**row, "success": True}
+        return {"success": False, "error": f"Agent '{agent_id}' not found in this scope"}
 
     async def _validate_agent_settings(self, args: dict, current=None) -> tuple[dict, str | None]:
         fields = {}
@@ -126,10 +127,10 @@ class FlockCommandsMixin:
 
     async def _cmd_create_agent(self, args: dict) -> dict:
         if error := self._agent_settings_scope_error():
-            return {"error": error}
+            return {"success": False, "error": error}
         fields, error = await self._validate_agent_settings(args)
         if error:
-            return {"error": error}
+            return {"success": False, "error": error}
         agent = Agent(id=f"agent-{uuid4().hex[:12]}", **fields)
         await self.db.create_agent(agent)
         await self.orchestrator.bus.emit("agent.created", {
@@ -139,16 +140,16 @@ class FlockCommandsMixin:
 
     async def _cmd_edit_agent(self, args: dict) -> dict:
         if error := self._agent_settings_scope_error():
-            return {"error": error}
+            return {"success": False, "error": error}
         agent_id = args.get("agent_id")
         if not agent_id:
-            return {"error": "agent_id is required"}
+            return {"success": False, "error": "agent_id is required"}
         agent = await self.db.get_agent(agent_id)
         if agent is None or agent.deleted_at is not None:
-            return {"error": f"Agent '{agent_id}' not found"}
+            return {"success": False, "error": f"Agent '{agent_id}' not found"}
         fields, error = await self._validate_agent_settings(args, agent)
         if error:
-            return {"error": error}
+            return {"success": False, "error": error}
         if fields:
             await self.db.update_agent(agent.id, **fields)
             await self.orchestrator.bus.emit("agent.updated", {
@@ -158,40 +159,41 @@ class FlockCommandsMixin:
 
     async def _cmd_delete_agent(self, args: dict) -> dict:
         if error := self._agent_settings_scope_error():
-            return {"error": error}
+            return {"success": False, "error": error}
         agent_id = args.get("agent_id")
         if not agent_id:
-            return {"error": "agent_id is required"}
+            return {"success": False, "error": "agent_id is required"}
         agent = await self.db.get_agent(agent_id)
         if agent is None or agent.deleted_at is not None:
-            return {"error": f"Agent '{agent_id}' not found"}
+            return {"success": False, "error": f"Agent '{agent_id}' not found"}
         if agent.id == SUPERVISOR_AGENT_ID or agent.role == "supervisor":
-            return {"error": "The global supervisor cannot be deleted"}
+            return {"success": False, "error": "The global supervisor cannot be deleted"}
         if not await self.db.soft_delete_agent(agent.id):
             return {
+                "success": False,
                 "error": "Agent must be idle with no active task, live session, "
                 "or held workspace before deletion."
             }
         await self.orchestrator.bus.emit("agent.deleted", {
             "event_type": "agent.deleted", "agent_id": agent.id,
         })
-        return {"deleted": agent.id, "name": agent.name}
+        return {"success": True, "deleted": agent.id, "name": agent.name}
 
     async def _cmd_start_agent_terminal(self, args: dict) -> dict:
         from src.agents.terminals import TerminalStartError, start_agent_terminal
 
         if error := self._agent_settings_scope_error():
-            return {"error": error}
+            return {"success": False, "error": error}
         agent_id = args.get("agent_id")
         if not isinstance(agent_id, str) or not agent_id:
-            return {"error": "agent_id is required"}
+            return {"success": False, "error": "agent_id is required"}
         project_id = args.get("project_id")
         if project_id is not None and (not isinstance(project_id, str) or not project_id):
-            return {"error": "project_id must be a non-empty string"}
+            return {"success": False, "error": "project_id must be a non-empty string"}
         try:
             await start_agent_terminal(
                 self.orchestrator, agent_id, config=self.config, project_id=project_id
             )
         except TerminalStartError as exc:
-            return {"error": str(exc)}
+            return {"success": False, "error": str(exc)}
         return await self._cmd_get_agent({"agent_id": agent_id})

@@ -500,7 +500,7 @@ async def test_delete_removes_idle_agent_from_flock_but_retains_identity(handler
     delete = getattr(handler, "_cmd_delete_agent", None)
     assert delete is not None, "the flock needs an explicit delete command"
     result = await delete({"agent_id": "a"})
-    assert result == {"deleted": "a", "name": "Ada"}
+    assert result == {"success": True, "deleted": "a", "name": "Ada"}
     assert (await handler.db.get_agent("a")).deleted_at is not None
     assert (await handler._cmd_list_agents({}))["agents"] == []
     assert "error" in await handler._cmd_get_agent({"agent_id": "a"})
