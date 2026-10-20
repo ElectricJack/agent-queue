@@ -439,10 +439,13 @@ def integration_reevaluate_repair(ctx, operation_id, apply, head, episode, gener
 @click.option("--owner-row-id")
 @click.option("--dry-run", is_flag=True)
 @click.option("--apply", is_flag=True, help="Preserve work and release the proved stopped owner.")
+@click.option("--self-owned", is_flag=True,
+              help="Resume the live session's own failed, unactivated preparation handoff.")
 @click.pass_context
 @_handle_errors
 def integration_release_owner(
-    ctx: click.Context, task_id: str | None, owner_row_id: str | None, dry_run: bool, apply: bool
+    ctx: click.Context, task_id: str | None, owner_row_id: str | None, dry_run: bool, apply: bool,
+    self_owned: bool,
 ) -> None:
     """Preview a stranded owner's recovery; use --apply to preserve and release."""
     if (task_id is None) == (owner_row_id is None):
@@ -450,6 +453,8 @@ def integration_release_owner(
     if dry_run and apply:
         raise click.UsageError("--dry-run and --apply are mutually exclusive")
     args: dict[str, Any] = {"dry_run": not apply}
+    if self_owned:
+        args["self_owned"] = True
     if task_id is not None:
         args["task_id"] = task_id
     else:

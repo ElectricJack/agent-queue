@@ -5472,6 +5472,7 @@
           "--owner-row-id",
           "--dry-run",
           "--apply",
+          "--self-owned",
           "--json",
           "--brief",
           "--save-output",

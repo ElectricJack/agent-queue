@@ -14669,6 +14669,11 @@
             "default": true,
             "title": "Dry Run",
             "type": "boolean"
+          },
+          "self_owned": {
+            "default": false,
+            "title": "Self Owned",
+            "type": "boolean"
           }
         },
         "title": "IntegrationReleaseOwnerArgs",

@@ -8932,7 +8932,7 @@
         "integration-ownership"
       ],
       "default_arm": true,
-      "digest": "sha256:98d0bc5c4c78575999e17bf295f27580b263fa6db0b215cafcee4cebc89de99e",
+      "digest": "sha256:3140d7c1fa684bdd7f9d374848113d0ae39f32a02f1131dc4816e1e80aaf424a",
       "imports": [
         "src.api.auth",
         "src.claim_file",
@@ -8941,6 +8941,7 @@
         "src.database.queries.claim_queries",
         "src.database.tables",
         "src.git.manager",
+        "src.git.process",
         "src.integration.delegate_release",
         "src.integration.models",
         "src.integration.owner_recovery",

@@ -1989,6 +1989,25 @@ class ClaimCommandsMixin:
             from src.preparation_failure import describe_preparation_failure
 
             failure = describe_preparation_failure(exc, stage)
+            if hierarchy_enabled and stage == "integration_origin":
+                # A retained self-handoff predates this retry's attach step.
+                # Preserve its holder proof when retry still cannot detach;
+                # the generic BranchBusy ladder must not release that claim.
+                from sqlalchemy import select
+
+                from src.database.tables import integration_branch_owners
+
+                async with self.db._engine.connect() as conn:
+                    hierarchy_attached = bool(await conn.scalar(
+                        select(integration_branch_owners.c.id).where(
+                            integration_branch_owners.c.owner_id == task.id,
+                            integration_branch_owners.c.session_id == session.id,
+                            integration_branch_owners.c.workspace_id == slot.id,
+                            integration_branch_owners.c.handoff_state.in_(
+                                ("attached", "handoff_pending"),
+                            ),
+                        ).limit(1)
+                    ))
             await self.db.record_failed_preparation(
                 session.id, instance_token=session.instance_token, task_id=task.id,
                 claim_epoch=epoch, preparation_started_at=row.claim_phase_at,
@@ -2109,10 +2128,13 @@ class ClaimCommandsMixin:
                 # checkout restores this task's reserved fence and then the
                 # normal failed-prepare release is safe; an unprovable one
                 # intentionally retains every binding for later recovery.
-                released = await self.orchestrator.arelease_integration_writer_for_retry(
-                    task,
-                    reason="integration_prepare_failed",
-                    pool=True,
+                # Origin recovery already tried the stricter unactivated
+                # self-handoff proof. Do not fall back to an ordinary pool
+                # close proof after an epoch/receipt/phase mismatch.
+                released = stage != "integration_origin" and await (
+                    self.orchestrator.arelease_integration_writer_for_retry(
+                        task, reason="integration_prepare_failed", pool=True,
+                    )
                 )
                 if released:
                     await self.db.release_claim(

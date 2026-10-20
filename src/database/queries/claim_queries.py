@@ -1265,16 +1265,21 @@ class ClaimQueryMixin:
         self, conn, session_id, task_id, *, epoch: int,
         instance_token: str | None = None, expected_workspace: Workspace | None = None,
         lock_task_status: bool = True,
+        allow_retained_preparation: bool = False,
     ) -> ClaimWorkspaceProof | None:
         """Lock session, task, then workspace and prove the exact holder receipt.
 
         Reset holds a task key-share lock so dependency/status changes remain
         possible. Activation upgrades it and rechecks admission and metadata.
         Session and workspace identity stay locked throughout filesystem work.
+        Retained-handoff recovery may prove a drained session's disabled slot;
+        this opt-in preserves every receipt check and does not admit activation.
         """
         holder = (await conn.execute(select(sessions).where(
             sessions.c.id == session_id, sessions.c.task_id == task_id,
-            sessions.c.claim_phase == "preparing", sessions.c.desired_state == "running",
+            sessions.c.claim_phase == "preparing",
+            sessions.c.desired_state.in_(("running", "stopped"))
+            if allow_retained_preparation else sessions.c.desired_state == "running",
             sessions.c.state == "running", sessions.c.last_claim_epoch == epoch,
         ).with_for_update())).mappings().one_or_none()
         if (holder is None or not holder["agent_id"] or not holder["work_dir"]
@@ -1301,7 +1306,8 @@ class ClaimQueryMixin:
             workspaces.c.workspace_path == holder["work_dir"],
         ).order_by(workspaces.c.id).with_for_update())).mappings().all()
         candidates = [row for row in rows if (
-            row["project_id"] == holder["project_id"] and row["enabled"]
+            row["project_id"] == holder["project_id"]
+            and (row["enabled"] or allow_retained_preparation)
             and row["locked_by_agent_id"] == holder["agent_id"]
             and row["locked_by_task_id"] == task_id
         )]
