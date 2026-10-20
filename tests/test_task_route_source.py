@@ -80,7 +80,9 @@ def test_the_value_set_matches_the_check_constraint():
     assert str(check.sqltext) == (
         "route_source IN (" + ",".join(f"'{s}'" for s in ROUTE_SOURCES) + ")"
     )
-    assert ROLE_PROFILE_IDS == {"triage", "spec-ingest", "reviewer", "final-reviewer"}
+    assert ROLE_PROFILE_IDS == {
+        "triage", "spec-ingest", "reviewer", "final-reviewer", "fidelity-reviewer",
+    }
 
 
 @pytest.mark.parametrize(

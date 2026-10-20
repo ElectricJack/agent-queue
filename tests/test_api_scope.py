@@ -39,6 +39,9 @@ EXPECTED_AGENT_COMMANDS = {
     "wait_get",
     "wait_list",
     "wait_cancel",
+    "wait_explain",
+    "wait_checkpoint",
+    "wait_ack",
     # Recurring prompts derive their session owner and fence worker claims.
     "cron_register",
     "cron_get",
@@ -116,6 +119,8 @@ EXPECTED_AGENT_COMMANDS = {
     "review_withdraw",
     "review_reopen",
     "review_comment",
+    # Workers record completion evidence for feedback on their held task.
+    "review_feedback_complete",
     "review_attachment_add",
     "review_attachment_list",
     "report_get",
@@ -480,15 +485,17 @@ def test_supervisor_inbox_post_is_internal_for_every_nonlocal_scope():
     assert check_command_scope("supervisor_inbox_post", {}, LOCAL_SCOPE) is None
 
 
-def test_supervisor_inbox_reply_requires_local_or_global_elevated_scope():
+def test_supervisor_inbox_reply_allows_supervisors_subject_to_stored_recipient_check():
     assert check_command_scope("supervisor_inbox_reply", {}, LOCAL_SCOPE) is None
     assert check_command_scope("supervisor_inbox_reply", {}, RequestScope(
         kind="session", session_id="sup", elevated=True
     )) is None
-    for scope in (SESSION, RequestScope(kind="session", elevated=True, project_id="p1"),
-                  RequestScope(kind="session", project_id=None)):
+    assert check_command_scope("supervisor_inbox_reply", {}, RequestScope(
+        kind="session", session_id="sup", elevated=True, project_id="p1"
+    )) is None
+    for scope in (SESSION, RequestScope(kind="session", project_id=None)):
         assert check_command_scope("supervisor_inbox_reply", {}, scope) == (
-            "out of scope: conversation replies require local operator or global supervisor"
+            "out of scope: conversation replies require local operator or supervisor"
         )
 
 
@@ -515,3 +522,29 @@ def test_test_selection_promotion_is_local_only():
     assert check_command_scope("test_selection_list", {}, SESSION) == (
         "out of scope: test_selection_list"
     )
+
+
+def test_scoped_global_report_keeps_project_fence_and_never_admits_inbox():
+    supervisor = RequestScope(
+        kind="session", session_id="own-uuid", project_id="p1", elevated=True,
+    )
+    target = {"to_kind": "session", "to_id": "supervisor-global"}
+    args = dict(target)
+    # Handler verification of the named launch/capability is still required.
+    assert check_command_scope("message_send", args, supervisor) is None
+    assert args["project_id"] == "p1"
+    assert "project_id mismatch" in check_command_scope(
+        "message_send", {**target, "project_id": "p2"}, supervisor,
+    )
+    for command, args in (
+        ("message_send", target),
+        ("message_send", {**target, "system_only": True}),
+        ("message_inbox", target),
+    ):
+        assert "global admin" in check_command_scope(command, dict(args), SESSION)
+    for command, args in (
+        ("message_send", {**target, "system_only": True}),
+        ("message_inbox", target),
+        ("message_list", {"system_only": True}),
+    ):
+        assert "global admin" in check_command_scope(command, dict(args), supervisor)

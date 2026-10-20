@@ -74,6 +74,9 @@ somehow declares none.
     "NotebookEdit"
   ],
   "aq_commands": [
+    "wait_explain",
+    "wait_graph",
+    "wait_lift",
     "artifact_verify",
     "benchmark_stage_record",
     "collaboration_accept",
@@ -93,6 +96,7 @@ somehow declares none.
     "get_task",
     "github_issue_close_rejected",
     "integration_abort_batch",
+    "integration_settle_batch",
     "integration_app_verify",
     "integration_cutover",
     "integration_cutover_plan",

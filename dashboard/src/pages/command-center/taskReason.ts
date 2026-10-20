@@ -1,4 +1,5 @@
 import type { EpicDelivery } from "../../components/epicDeliveryFormat";
+import type { ClaimReadiness } from "@aq/ts-client";
 
 /** One run of the reason sentence; `strong` runs are the noun a glance needs. */
 export interface ReasonSegment {
@@ -39,6 +40,7 @@ export interface ReasonInput {
   openGateTypes?: readonly string[];
   prUrl?: string | null;
   delivery?: EpicDelivery | null;
+  claimReadiness?: ClaimReadiness | null;
 }
 
 /** The statuses whose `is_blocked` flag reads as the blocked row; mirrors
@@ -50,6 +52,7 @@ const OPEN = new Set(["READY", "ASSIGNED", "IN_PROGRESS", "WAITING_INPUT", "PAUS
  *  say returns `null`; the card omits the line rather than inventing one. */
 export function taskReason(input: ReasonInput): Reason | null {
   if ((input.childCount ?? 0) > 0) return epicCountReason(input);
+  if (input.claimReadiness && !input.claimReadiness.claimable) return reason(input.claimReadiness.reason || input.claimReadiness.label);
   const blocked = input.status === "BLOCKED" || !!input.reviewWait
     || (!!input.isBlocked && OPEN.has(input.status));
   if (blocked) return blockedReason(input);
@@ -65,6 +68,12 @@ export function taskReason(input: ReasonInput): Reason | null {
       return reason(input.profileId ? `Starting · ${input.profileId}` : "Starting");
     case "IN_PROGRESS":
       return inProgressReason(input);
+    case "WAITING":
+      return reason("Waiting on a condition");
+    case "HIBERNATED":
+      return reason("Sleeping until the condition resolves");
+    case "RESUME_PENDING":
+      return reason("Waiting for capacity to resume");
     case "WAITING_INPUT":
       return deliveryReason(input.delivery) ?? reason("Waiting on ", strong("your answer"));
     case "PAUSED":

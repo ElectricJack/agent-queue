@@ -27,6 +27,7 @@ areas:
       - tests/test_stall_watch.py
       - tests/test_lifecycle_cleanup.py
       - tests/test_state_machine.py
+      - tests/test_task_lifecycle_properties.py
       - tests/test_ensure_task.py
       - tests/test_task_context.py
       - tests/test_task_controls.py
@@ -36,6 +37,7 @@ areas:
       - tests/test_task_command_authorization.py
       - tests/test_task_close_summary_enforcement.py
       - tests/test_task_close_completion_recovery.py
+      - tests/test_task_close_accepted_tail.py
       - tests/test_reopen_with_feedback.py
       - tests/test_task_failed_event.py
       - tests/test_task_ready_event.py
@@ -49,7 +51,7 @@ areas:
     description: "Task archiving: moving finished tasks and subtrees to the archive, archive sweeps, reads that span live and archived tasks, and refusals for undelivered work."
     match: [tests/test_archive.py, tests/test_hierarchy_archive_delete.py, tests/test_task_removal.py, tests/test_cli_task_remove.py]
   - id: task-dependencies
-    description: "Task dependencies: idempotent dependency edges, downstream and stuck-task queries, and batch propose/commit/discard of task graphs with cycle detection."
+    description: "Task dependencies: idempotent dependency edges, downstream and stuck-task queries, and batch propose/commit/discard of task graphs with cycle detection, and held ingestion batch rows, receipts, fidelity reviewer dispatch and release."
     match:
       - tests/test_task_deps_command.py
       - tests/test_dependency_queries.py
@@ -57,6 +59,8 @@ areas:
       - tests/test_get_stuck_tasks_command.py
       - tests/test_task_batch_commands.py
       - tests/test_cli_task_change_sets.py
+      - tests/test_ingest_batch_queries.py
+      - tests/test_fidelity_review.py
   - id: work-graph
     description: "Work graph: typed edges and labels, the persisted is_blocked projection, gates, the promotion cascade, the ready frontier and explain, outcomes, hierarchical ids and event replay."
     match:
@@ -82,6 +86,8 @@ areas:
   - id: task-graph-creation
     description: "Task-graph documents: the aq-graph parser, validator and creator, create_task_graph, dotted ids and parents in the creator, live graph events after commands, and containers' display activity rolled up from their descendants."
     match:
+      - tests/test_batch_digest.py
+      - tests/test_batch_checks.py
       - tests/test_task_graph.py
       - tests/test_create_task_graph_command.py
       - tests/test_hierarchy_graph_creator.py
@@ -121,10 +127,12 @@ areas:
 
   # ----------------------------------------------------------- claims and pools
   - id: claims
-    description: "Task claims: claim-file parsing, claim epochs and the stale-claim fence, claim-next on close, restart-tolerant claims and claim statement budgets."
+    description: "Task claims: claim-file parsing, claim epochs and the stale-claim fence, claim-next on close, restart-tolerant claims, claim statement budgets and the ingestion-hold admission ratchet."
     match:
       - tests/test_claim_*.py
+      - tests/test_ingest_hold_admission.py
       - tests/test_cli_claim_restart.py
+      - tests/test_preparation_failure.py
       - tests/perf/test_claim_statements.py
       - tests/test_import_cycles.py
   - id: worker-pools
@@ -143,7 +151,7 @@ areas:
     match: [tests/test_collaboration*.py]
   - id: agent-waits
     description: "Durable typed agent waits: ownership and claim fencing, producer snapshots, deadlines, CAS results, outbox retries and wait commands."
-    match: [tests/test_agent_waits.py, tests/test_agent_wait_queries.py, tests/test_agent_wait_commands.py]
+    match: [tests/test_agent_waits.py, tests/test_agent_wait_queries.py, tests/test_agent_wait_commands.py, tests/test_waits.py, tests/test_wait_*.py]
   - id: agent-cron
     description: "Session-owned recurring prompts: recurrence, durable delivery, scope, lifecycle and CLI."
     match: [tests/test_agent_cron.py]
@@ -271,6 +279,7 @@ areas:
     description: "Agent messages: message commands and queries, the delivery engine with per-recipient policy, nudges and parking, the session lens, and message CLI and chat relay API."
     match:
       - tests/test_message_commands.py
+      - tests/test_message_sender_identity.py
       - tests/test_message_delivery.py
       - tests/test_message_queries.py
       - tests/test_session_lens.py
@@ -383,12 +392,14 @@ areas:
       - tests/test_integration_properties.py
       - tests/test_integration_root_noop.py
       - tests/test_integration_record_delivered.py
+      - tests/test_integration_superseded_completion.py
       - tests/test_integration_operator_decisions.py
       - tests/test_integration_cli_controls_present.py
       - tests/test_integration_train.py
       - tests/test_integration_train_sources.py
       - tests/perf/test_train_selection.py
       - tests/test_integration_stacked_branches.py
+      - tests/test_integration_container_completion.py
       - tests/test_integration_candidate_baseline.py
       - tests/test_integration_cutover.py
       - tests/test_integration_settling.py
@@ -417,6 +428,7 @@ areas:
       - tests/test_integration_hierarchy.py
       - tests/test_integration_resume_metadata.py
       - tests/test_integration_completion_recovery.py
+      - tests/test_integration_completed_container_recovery.py
       - tests/test_integration_attestation.py
       - tests/test_integration_ci.py
       - tests/test_integration_ci_producers.py
@@ -477,6 +489,7 @@ areas:
   - id: integration-controls
     description: "Integration operator controls: rollout and operational controls, supervisor authority over them, the integration CLI, integration doctor alarms and the troubleshooting guide."
     match:
+      - tests/test_integration_manual_control.py
       - tests/test_integration_legacy_park_retirement.py
       - tests/test_integration_controls.py
       - tests/test_integration_operational_controls.py
@@ -522,6 +535,7 @@ areas:
       - tests/test_git_manager_async.py
       - tests/test_git_events.py
       - tests/test_git_mutex.py
+      - tests/test_git_seed_helpers.py
       - tests/test_git_command_handlers.py
       - tests/test_sync_and_merge.py
       - tests/test_force_with_lease.py
@@ -814,6 +828,7 @@ areas:
     match:
       - tests/test_project_onboarding_*.py
       - tests/test_project_repository_binding.py
+      - tests/test_repository_checkout_repair.py
       - tests/test_project_supervisors.py
       - tests/test_onboarding_queries.py
       - tests/test_project_roots_config.py
@@ -823,6 +838,7 @@ areas:
   - id: document-reviews
     description: "Document reviews: the review service, schema and queries, revision block diffs, vault review files, review gates on downstream tasks, the reopen cascade, dedup keys, the review notifier, commands, doctor checks and spec approval."
     match:
+      - tests/test_ask_*.py
       - tests/test_review_*.py
       - tests/test_spec_approve_command.py
       - tests/test_reviewer_api_scope.py

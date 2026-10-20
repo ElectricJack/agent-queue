@@ -72,6 +72,7 @@ class TestRegistry:
         assert reg.unregister("x.y") is False
 
     def test_default_registry_has_all_builtins(self):
+        from src.doctor.ask_checks import ask_checks
         from src.doctor.capability_checks import capability_checks
         from src.doctor.dashboard_server_checks import dashboard_server_checks
         from src.doctor.dashboard_state_checks import dashboard_state_checks
@@ -103,6 +104,7 @@ class TestRegistry:
         reg = default_registry()
         expected = (
             {c.id for c in builtin_checks()}
+            | {c.id for c in ask_checks()}
             | {c.id for c in hierarchy_checks()}
             | {c.id for c in pool_checks()}
             | {c.id for c in task_checks()}

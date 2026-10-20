@@ -16,6 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field, StrictInt
 OPERATOR_CLASSES = frozenset({"standard-high", "deep-high"})
 OPERATOR_HARNESSES = frozenset({"claude", "codex"})
 OPERATOR_FORBIDDEN = frozenset({
+    "ask_prepare_decision", "ask_decide", "ask_retry_operation",
     "review_decide", "review_delegate", "decision_record", "promote_approve",
     "promote_prepare", "promote_request", "promote_hotfix", "delivery_promote",
     "integration_promote_main", "pr_merge", "git_merge", "integration_app_setup",
@@ -23,14 +24,18 @@ OPERATOR_FORBIDDEN = frozenset({
 OPERATOR_READS = frozenset({
     "integration_status", "integration_trust_manifest", "integration_app_verify",
     "integration_cutover_plan", "provider_status", "policy_diff",
+    "wait_graph",
 })
 OPERATOR_WRITES = frozenset({
-    "edit_project", "integration_cutover", "integration_abort_batch", "integration_eject",
+    "workspace_cutover", "edit_project", "integration_cutover", "integration_abort_batch",
+    "integration_eject", "integration_settle_batch",
     "integration_retire_origin", "integration_release_owner", "playbook_v2_import",
     "playbook_activate", "set_playbook_enabled", "playbook_delete", "policy_apply",
+    "wait_lift",
 })
 HUMAN_DECISION_COMMANDS = frozenset({
     "edit_project", "integration_cutover", "integration_abort_batch", "integration_eject",
+    "integration_settle_batch",
     "integration_retire_origin", "integration_release_owner", "playbook_delete",
 })
 PROJECT_SETUP_FIELDS = frozenset({

@@ -43,6 +43,7 @@ def frozen(name):
 
 def snapshot():
     return {
+        "needs_you": {"count": 0, "source_health": "healthy", "identity_hash": "empty"},
         "projects": [{"id": "p", "name": "Project P", "repo_default_branch": "main"}],
         "sources": {
             name: frozen(name)
@@ -528,7 +529,7 @@ async def test_db_frozen_sources_use_one_read_only_snapshot_and_half_open_bounds
     assert statements[0] == "SET TRANSACTION READ ONLY"
     assert len(connections) == 1
     assert all(
-        sql.startswith(("SELECT", "SET TRANSACTION", "SAVEPOINT", "RELEASE SAVEPOINT"))
+        sql.startswith(("SELECT", "WITH", "SET TRANSACTION", "SAVEPOINT", "RELEASE SAVEPOINT"))
         for sql in statements
     )
     for source in ("completions", "deliveries", "incidents", "escalations", "attempts", "reroutes"):
@@ -2199,3 +2200,20 @@ async def test_the_orchestrator_cycle_emits_morning_due_from_the_live_config(tmp
         assert [event["local_date"] for event in events] == ["2026-09-27"]
     finally:
         await orch.shutdown()
+
+
+async def test_morning_human_reminders_survive_empty_days_and_fit_the_brief():
+    data = snapshot()
+    data["waiting_on_you"] = [
+        dict(wait_id=f"w-{i}", task_id="human-owner", project_id="p", subject="task_comment",
+             title="Question", created_at=1000 + i, age_seconds=200000)
+        for i in range(12)
+    ]
+    for key in data["sources"]:
+        if key not in {"repos", "workspaces"}:
+            data["sources"][key] = []
+    result, _, _ = await build(data, observed={**frozen("git")[0], "commits": []})
+    reminder = result["brief"]["waiting_on_you"]
+    assert reminder["count"] == 12 and reminder["more"] == 2 and len(reminder["items"]) == 10
+    assert not result["would_suppress"]
+    assert len(json.dumps(result["brief"], ensure_ascii=False).encode()) <= MAX_BRIEF_BYTES

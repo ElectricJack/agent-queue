@@ -188,7 +188,9 @@ def _carried_sources(repair_id, contracts):
 #: A repair in one of these is still being worked on (or will be).
 OPEN_REPAIR_STATUSES = frozenset({
     TaskStatus.DEFINED.value, TaskStatus.READY.value, TaskStatus.ASSIGNED.value,
-    TaskStatus.IN_PROGRESS.value, TaskStatus.WAITING_INPUT.value, TaskStatus.PAUSED.value,
+    TaskStatus.IN_PROGRESS.value, TaskStatus.WAITING_INPUT.value,
+    TaskStatus.WAITING.value, TaskStatus.HIBERNATED.value,
+    TaskStatus.RESUME_PENDING.value, TaskStatus.PAUSED.value,
 })
 #: Links followed through repairs of repairs.  The generation budget keeps a
 #: real chain at three; a longer one is a loop in the journal.
@@ -441,14 +443,20 @@ class DevelopmentPrimitives:
 
 
     async def store(self, repo, *, fetch=True):
+        from src.integration.repository_recovery import (
+            fetch_retained_origin, harden_retained_repository,
+        )
+
         path = self._store_path(repo)
         path.parent.mkdir(parents=True, exist_ok=True)
         if not (path / ".git").exists():
             await self.git.acreate_checkout(repo.url, str(path), no_checkout=True)
         if await self.run_git(path, "remote", "get-url", "origin") != repo.url:
             raise ValueError("retained repository URL differs from configured repository")
+        await harden_retained_repository(self.git, path)
         if fetch:
-            await self.git.afetch_origin(str(path), repository_url=repo.url, all_heads=True)
+            await fetch_retained_origin(self.git, path, repository_url=repo.url,
+                                        project_id=repo.project_id, repository_id=repo.id)
         return path
 
 

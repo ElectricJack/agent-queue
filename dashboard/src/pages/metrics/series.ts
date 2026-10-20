@@ -182,7 +182,52 @@ export function buildCharts(samples: MetricsSample[]): ChartDef[] {
         ["tasks.IN_PROGRESS", "IN_PROGRESS", PALETTE[1]],
         ["tasks.ASSIGNED", "ASSIGNED", PALETTE[4]],
         ["tasks.PAUSED", "PAUSED", PALETTE[2]],
+        ["tasks.WAITING", "WAITING", PALETTE[4]],
+        ["tasks.HIBERNATED", "HIBERNATED", PALETTE[5]],
+        ["tasks.RESUME_PENDING", "RESUME_PENDING", PALETTE[6]],
         ["tasks.BLOCKED", "BLOCKED", PALETTE[3]],
+      ]),
+    },
+    {
+      id: "waits",
+      title: "Pending waits",
+      unit: "waits",
+      series: fixed([
+        ["waits.pending_in_place", "in place", PALETTE[0]],
+        ["waits.pending_hibernated", "hibernated", PALETTE[1]],
+        ["waits.pending_human", "human", PALETTE[2]],
+        ["waits.escalated", "escalated", PALETTE[3]],
+      ]),
+    },
+    {
+      id: "wait-slot-time",
+      title: "Wait slot time (trailing hour)",
+      unit: "slot-seconds",
+      series: fixed([
+        ["waits.in_place_slot_seconds_1h", "held in place", PALETTE[0]],
+        ["waits.released_slot_seconds_1h.condition", "released: condition", PALETTE[1]],
+        ["waits.released_slot_seconds_1h.capacity", "released: capacity", PALETTE[2]],
+      ]),
+    },
+    {
+      id: "wait-wakes",
+      title: "Wait wakes (trailing hour)",
+      unit: "wakes",
+      series: fixed([
+        ["waits.wakes_1h.outcome", "outcome", PALETTE[0]],
+        ["waits.wakes_1h.decision", "supervisor decision", PALETTE[1]],
+        ["waits.wakes_1h.lift", "lift", PALETTE[2]],
+        ["waits.wakes_1h.launch_failed", "failed launch", PALETTE[5]],
+        ["waits.wakes_1h.other", "other (defect)", PALETTE[3]],
+      ]),
+    },
+    {
+      id: "wait-resume-cost",
+      title: "Measured resume cost",
+      unit: "seconds",
+      series: fixed([
+        ["waits.resume_cost_p50", "median", PALETTE[0]],
+        ["waits.resume_cost_p95", "p95", PALETTE[2]],
       ]),
     },
     {

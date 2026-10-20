@@ -72,6 +72,11 @@ class SurfaceCommandsMixin:
         if "error" in info:
             return info
 
+        # The reviewer projection is complete: expanding ordinary detail here
+        # would disclose unrelated parents, children and provenance.
+        if "batch_member" in info:
+            return info
+
         from src.operator_decisions import OperatorDecisions
 
         info["operator_decisions"] = await OperatorDecisions(self.db).history("task", task_id)
@@ -272,6 +277,8 @@ class SurfaceCommandsMixin:
 
         if any(str(key).startswith("manual_pause") for key in (args.get("meta") or {})):
             return {"error": "manual_pause is reserved; use pause_task/resume_task."}
+        if "retained_workspace_stop" in (args.get("meta") or {}):
+            return {"error": "retained_workspace_stop is reserved; use stop_task."}
 
         if {"notes_input", "promotion_prepare", "promotion_hotfix", "backmerge",
             "backmerge_result", "promotion_intent", "promotion_result",
@@ -448,6 +455,11 @@ class SurfaceCommandsMixin:
         except ValueError as exc:
             return {"error": str(exc)}
 
+        if any(section.key == "wait_outcome" for section in doc.sections):
+            await self._record_continuation_prime_delivery(
+                scope.get("session_id") or args.get("session_id"),
+            )
+
         from src.commands.principal import current_principal
         from src.knowledge.context import (
             ACCESS_REFUSAL_CODES,
@@ -471,7 +483,39 @@ class SurfaceCommandsMixin:
                 doc = renderer.with_context(doc, bundle)
             except RecordError as exc:
                 if exc.code not in ACCESS_REFUSAL_CODES:
-                    return exc.result()
+                    result = exc.result()
+                    if exc.code == "context.required_over_budget":
+                        from src.knowledge.budget import ContextBudget
+
+                        # Counts and configured limits only; do not expose the
+                        # undelivered instruction bodies through diagnostics.
+                        accounting = (
+                            bundle.budget if bundle is not None
+                            else ContextBudget.from_config(self.config).account(doc.to_markdown())
+                        )
+                        section_bytes = {
+                            s.key: len(s.body.encode("utf-8")) for s in doc.sections
+                        }
+                        largest = sorted(section_bytes.items(), key=lambda item: -item[1])[:3]
+                        requested = accounting["requested"]
+                        available = max(0, requested["input_tokens"]
+                                        - requested["output_tokens"] - requested["wrapper_tokens"])
+                        result["error"] = (
+                            f"{exc.code}: required body {len(doc.to_markdown().encode('utf-8'))} "
+                            f"bytes exceeds {available} available "
+                            f"(input ceiling {requested['input_tokens']}, "
+                            f"output/wrapper reserve "
+                            f"{requested['output_tokens'] + requested['wrapper_tokens']}); "
+                            "largest required sections (UTF-8 bytes, excluding headings): "
+                            + ", ".join(f"{key}={size}" for key, size in largest)
+                        )
+                        result.update(
+                            context_budget=accounting,
+                            required_body_bytes=len(doc.to_markdown().encode("utf-8")),
+                            required_section_bytes=section_bytes,
+                            source=doc.source,
+                        )
+                    return result
                 # Context is an enrichment, so a refused or unavailable scope
                 # degrades: prime still delivers its full ordinary body, with a
                 # code-only note in place of the context section. The grant

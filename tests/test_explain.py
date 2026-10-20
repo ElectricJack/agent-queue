@@ -13,6 +13,7 @@ Covers docs/specs/implementation/work-graph.md §6.3 and §11:
 
 from __future__ import annotations
 
+import asyncio
 import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -608,6 +609,31 @@ class TestExplainCommand:
         d = next(r for r in res["reasons"] if r["code"] == "blocked_dependency")
         assert "proj-other" in d["detail"]
 
+    async def test_delivery_of_reason_names_the_target_and_failure(self, handler, db):
+        from sqlalchemy import insert
+
+        from src.database.tables import task_delivery_receipts
+
+        await mktask(db, "leaf", status=TaskStatus.COMPLETED)
+        await mktask(db, "root", status=TaskStatus.READY)
+        await db.add_dependency("root", "leaf", DepType.DELIVERY_OF.value)
+
+        async def detail():
+            res = await handler._cmd_explain_task({"task_id": "root"})
+            return next(
+                r["detail"] for r in res["reasons"] if r["code"] == "blocked_dependency"
+            )
+
+        assert await detail() == "waiting_for: delivery-of leaf"
+        async with db._engine.begin() as conn:
+            await conn.execute(insert(task_delivery_receipts).values(
+                id="failed-receipt", domain_key="failed-receipt", source_task_id="leaf",
+                repository_id="repo", target_branch="main", disposition="failed",
+                resolution_evidence={"reason": "squash conflict"}, created_at=time.time(),
+            ))
+        assert await detail() == "waiting_for: delivery-of leaf (delivery failed: squash conflict)"
+        assert (await db.get_task("root")).is_blocked
+
     async def test_typed_dependency_reasons_match_the_blocked_projection(self, handler, db):
         """Explain reports only the exact typed edges that currently block.
 
@@ -956,6 +982,54 @@ class TestExplainAfterATerminalClose:
         assert "restart or reopen" in details["blocked_terminal"]
 
 
+class TestExplainABlockedTaskNothingHolds:
+    """A BLOCKED row with no attention, mark or graph blocker is never requeued.
+
+    Pools count only READY, so explain must name the status itself rather
+    than answer with route and pool waits (swift-crest-94).
+    """
+
+    async def test_unheld_blocked_names_the_requeue(self, handler, db):
+        await mktask(db, "parked", status=TaskStatus.BLOCKED)
+
+        res = await handler._cmd_explain_task({"task_id": "parked"})
+
+        details = {r["code"]: r["detail"] for r in res["reasons"]}
+        assert "no recorded blocker" in details["blocked_unheld"]
+        assert "set-status --task-id parked --status READY" in details["blocked_unheld"]
+
+    async def test_failed_slot_reset_names_resume(self, handler, db):
+        await mktask(db, "parked", status=TaskStatus.BLOCKED)
+        await db.set_task_meta("parked", "slot_reset_failure", {
+            "reason": "worktree dirty", "attempt": 5, "retry": "manual",
+        })
+
+        res = await handler._cmd_explain_task({"task_id": "parked"})
+
+        details = {r["code"]: r["detail"] for r in res["reasons"]}
+        assert "worktree dirty (attempt 5)" in details["blocked_unheld"]
+        assert "aq task resume --task-id parked" in details["blocked_unheld"]
+
+    @pytest.mark.parametrize("held_by", ["attention", "terminal", "dependency"])
+    async def test_held_blocked_is_not_unheld(self, handler, db, held_by):
+        await mktask(db, "parked", status=TaskStatus.IN_PROGRESS)
+        if held_by == "terminal":
+            await db.transition_task(
+                "parked", TaskStatus.BLOCKED, context="session_close_hard_failure",
+            )
+        else:
+            await db.transition_task("parked", TaskStatus.BLOCKED, context="test")
+        if held_by == "attention":
+            await db.set_task_meta("parked", "needs_attention", "slot_reset_failed")
+        elif held_by == "dependency":
+            await mktask(db, "upstream")
+            await db.add_dependency("parked", "upstream")
+
+        res = await handler._cmd_explain_task({"task_id": "parked"})
+
+        assert "blocked_unheld" not in res["reason_codes"]
+
+
 async def test_explain_includes_shared_operator_decision(handler, db):
     from src.operator_decisions import OperatorDecisions
 
@@ -969,3 +1043,64 @@ async def test_explain_includes_shared_operator_decision(handler, db):
     assert result["success"], result
     assert "operator_decision_hold" in result["reason_codes"]
     assert result["operator_decisions"][0]["id"] == row["id"]
+
+
+async def test_explain_returns_persisted_and_live_claim_timing(handler, db):
+    from src.claim_timing import ClaimTiming
+
+    await mktask(db, "timed", status=TaskStatus.IN_PROGRESS)
+    persisted = ClaimTiming("session", task_id="timed", claim_epoch=1)
+    persisted.finish("claimed")
+    await db.set_task_meta("timed", "claim_timing", persisted.snapshot())
+    result = await handler._cmd_explain_task({"task_id": "timed"})
+    assert result["claim_timing"] == persisted.snapshot()
+    live = ClaimTiming("new-session", task_id="timed", claim_epoch=2)
+    live.running.append(("fetch", time.monotonic()))
+    handler.orchestrator.claim_timings["timed"] = live
+    result = await handler._cmd_explain_task({"task_id": "timed"})
+    assert result["claim_timing"]["current_phase"] == "fetch"
+    assert result["claim_timing"]["claim_epoch"] == 2
+
+
+@pytest.mark.parametrize("stage", ["frontier", "admission", "integration"])
+async def test_cancelled_explanation_does_not_imply_failed_independent_reads(
+    handler, db, monkeypatch, stage,
+):
+    """Successful controls do not turn an incomplete explanation into evidence."""
+    await mktask(db, "slow-explain", status=TaskStatus.READY, profile_id="worker")
+    entered, cancelled = asyncio.Event(), asyncio.Event()
+
+    async def stalled(*args, **kwargs):
+        entered.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+
+    with monkeypatch.context() as fault:
+        if stage == "frontier":
+            fault.setattr(db, "claim_frontier_exclusions", stalled)
+        elif stage == "admission":
+            fault.setattr("src.integration.admission.observe_admission", stalled)
+        else:
+            fault.setattr("src.integration.status.IntegrationStatusService.task_blockers", stalled)
+        request = asyncio.create_task(handler._cmd_explain_task({"task_id": "slow-explain"}))
+        try:
+            await asyncio.wait_for(entered.wait(), 10)
+            shown = await handler._cmd_get_task({"task_id": "slow-explain"})
+            assert shown["id"] == "slow-explain"
+            assert shown["status"] == "READY"
+            assert not request.done()
+            request.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await request
+            assert cancelled.is_set()
+        finally:
+            request.cancel()
+            await asyncio.gather(request, return_exceptions=True)
+    # The later successful reads establish their own results only. No empty
+    # reason list was produced or persisted for the cancelled request.
+    assert (await handler._cmd_get_task({"task_id": "slow-explain"}))["status"] == "READY"
+    complete = await handler._cmd_explain_task({"task_id": "slow-explain"})
+    assert complete["success"]
+    assert complete["reasons"]

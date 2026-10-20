@@ -54,7 +54,7 @@ def codex_compact_override(args: tuple[str, ...] | list[str], config) -> list[st
 
 def context_from_tail(path: Path, harness: str, *, now: float) -> dict:
     result = {"input_tokens": None, "source": "unknown", "observed_at": None,
-              "transcript_path": str(path)}
+              "transcript_path": str(path), "model_context_window": None}
     with path.open("rb") as stream:
         stream.seek(0, 2)
         start = max(0, stream.tell() - CONTEXT_TAIL_BYTES)
@@ -104,7 +104,13 @@ def context_from_tail(path: Path, harness: str, *, now: float) -> dict:
             ts = parse_iso_ts(raw.get("timestamp"))
             if not ts or not 0 <= now - ts <= CONTEXT_MAX_AGE_SECONDS:
                 return result
-            return {**result, "input_tokens": sum(values), "source": source, "observed_at": ts}
+            # Codex reports its actual model window alongside request usage.
+            # Other harnesses remain unknown rather than inferring it from spend.
+            window = info.get("model_context_window") if harness == "codex" else None
+            if type(window) is not int or window <= 0:
+                window = None
+            return {**result, "input_tokens": sum(values), "source": source, "observed_at": ts,
+                    "model_context_window": window}
         except (ValueError, TypeError):
             continue
     return result
@@ -112,7 +118,7 @@ def context_from_tail(path: Path, harness: str, *, now: float) -> dict:
 
 async def read_context(session, *, base_dir: Path | None = None, now: float | None = None) -> dict:
     unknown = {"input_tokens": None, "source": "unknown", "observed_at": None,
-               "transcript_path": None}
+               "transcript_path": None, "model_context_window": None}
     if session is None or not getattr(session, "session_key", None):
         return unknown
     from src.sessions.transcripts import resolve_reader
@@ -245,6 +251,65 @@ def store_lower_bound(session) -> float:
         getattr(session, "started_at", 0.0) or 0.0,
         getattr(session, "claim_phase_at", 0.0) or 0.0,
     )
+
+
+async def completed_turn_at(session, *, base_dir: Path | None = None) -> float | None:
+    """Positive end-of-turn evidence, never an inactivity heuristic.
+
+    A new user message, tool call or turn invalidates an older completion.
+    Unknown, partial and pre-claim transcripts cannot authorize recovery.
+    The file's mtime also gives newly appended records a full quiet interval.
+    """
+    if session.harness not in MEASURED_HARNESSES or not session.session_key:
+        return None
+    from src.sessions.transcripts import resolve_reader
+
+    def read():
+        reader = resolve_reader(session.harness, base_dir=base_dir)
+        path = reader.resolve_session(session) if reader else None
+        if path is None:
+            return None
+        with path.open("rb") as stream:
+            stream.seek(0, 2)
+            start = max(0, stream.tell() - CONTEXT_TAIL_BYTES)
+            stream.seek(start)
+            data = stream.read(CONTEXT_TAIL_BYTES)
+        if not data.endswith(b"\n"):
+            return None
+        lines = data.splitlines()
+        if start:
+            lines.pop(0)
+        for line in reversed(lines):
+            raw = json.loads(line)
+            if not isinstance(raw, dict):
+                return None
+            kind = raw.get("type")
+            if session.harness == "claude":
+                if kind not in {"user", "assistant"}:
+                    continue
+                message = raw.get("message") or {}
+                if kind != "assistant" or message.get("stop_reason") != "end_turn":
+                    return None
+            else:
+                payload = raw.get("payload") or {}
+                if kind == "event_msg" and payload.get("type") == "task_complete":
+                    pass
+                elif kind in {"response_item", "turn_context"} or (
+                    kind == "event_msg" and payload.get("type") not in {"token_count"}
+                ):
+                    return None
+                else:
+                    continue
+            at = parse_iso_ts(raw.get("timestamp"))
+            if not at or at < store_lower_bound(session):
+                return None
+            return max(at, path.stat().st_mtime)
+        return None
+
+    try:
+        return await asyncio.to_thread(read)
+    except (OSError, ValueError, TypeError, AttributeError):
+        return None
 
 
 def context_guidance(config, session=None, observation: dict | None = None) -> str:

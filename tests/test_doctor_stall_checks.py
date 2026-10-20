@@ -213,7 +213,24 @@ def context(tmp_path, monkeypatch):
     from unittest.mock import AsyncMock
 
     monkeypatch.setattr(module, "_waiting_train_repairs", AsyncMock(return_value={}))
+    monkeypatch.setattr(import_module("src.doctor.integration_checks"),
+                        "stalled_train_batches", AsyncMock(return_value=[]))
     return DoctorContext(config=AppConfig(data_dir=str(tmp_path)), db=DB(), handler=Handler({}))
+
+
+async def test_sealed_batch_stall_reaches_sweep(context, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    checks = import_module("src.doctor.integration_checks")
+    read = AsyncMock(return_value=[{
+        "project_id": "one", "batch_id": "train-stuck", "detail": "repair completed 411m ago",
+        "repair_task_id": "repair-done", "repair_status": "COMPLETED", "due_at": NOW - 3600,
+    }])
+    monkeypatch.setattr(checks, "stalled_train_batches", read)
+    [finding] = await module._train_batch_findings(context, {"one"}, NOW)
+    read.assert_awaited_once_with(context, project_ids={"one"}, now=NOW)
+    assert finding["kind"] == "train_batch_stalled"
+    assert finding["repair_status"] == "COMPLETED"
 
 
 async def test_auth_failure_reaches_sweep_without_active_projects(context, monkeypatch):
@@ -744,3 +761,16 @@ async def test_disabled_worktree_slots_inside_the_cap_reach_stall_sweep(tmp_path
     [disabled] = finding["disabled_slots"]
     assert disabled["reason"] == "operator: maintenance"
     assert disabled["reason_code"] == "operator"
+
+
+async def test_delivery_held_ready_work_is_not_reported_as_unclaimed(context):
+    context.handler = Handler({"child": [{
+        "code": "frontier_sibling_prerequisite_not_delivered", "ref": "child",
+        "detail": "Land source.6 on aq/epic", "blocking_task_ids": ["source.6"],
+    }]})
+    [finding] = await module._work_findings(
+        context, [task("child")], NOW, module._Explains(context),
+    )
+    assert finding["kind"] == "WAITING-ON-DELIVERY"
+    assert finding["blockers"] == ["source.6"]
+    assert "aq/epic" in finding["detail"]

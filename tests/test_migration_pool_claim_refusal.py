@@ -17,8 +17,12 @@ from tests.db_fixtures import lease_dsn
 pytestmark = pytest.mark.migration
 
 
-async def test_upgrade_downgrade_preserve_sessions_and_replay():
-    revision = importlib.import_module("migrations.versions.a00000000093_pool_claim_refusal")
+@pytest.mark.parametrize("revision_name,column_name", [
+    ("a00000000093_pool_claim_refusal", "claim_refusal"),
+    ("a00000000099_failed_preparation_identity", "failed_preparation"),
+])
+async def test_upgrade_downgrade_preserve_sessions_and_replay(revision_name, column_name):
+    revision = importlib.import_module(f"migrations.versions.{revision_name}")
     db = Database(lease_dsn("pool_claim_refusal_migration"))
     await db.initialize()
     try:
@@ -29,7 +33,7 @@ async def test_upgrade_downgrade_preserve_sessions_and_replay():
             instance_token="token", started_at=100,
         ))
         async with db.immediate() as conn:
-            await conn.exec_driver_sql("ALTER TABLE sessions DROP COLUMN claim_refusal")
+            await conn.exec_driver_sql(f"ALTER TABLE sessions DROP COLUMN {column_name}")
 
             def verify(bind):
                 with Operations.context(MigrationContext.configure(bind)):
@@ -37,16 +41,16 @@ async def test_upgrade_downgrade_preserve_sessions_and_replay():
                         revision.upgrade()
                         revision.upgrade()
                         column = next(col for col in sa.inspect(bind).get_columns("sessions")
-                                      if col["name"] == "claim_refusal")
+                                      if col["name"] == column_name)
                         assert column["nullable"]
                         assert isinstance(column["type"], JSONB)
                         assert bind.execute(sa.text(
-                            "SELECT id, instance_token, claim_refusal FROM sessions"
+                            f"SELECT id, instance_token, {column_name} FROM sessions"
                         )).one() == ("worker", "token", None)
                         assert not compare_metadata(MigrationContext.configure(bind), metadata)
                         revision.downgrade()
                         revision.downgrade()
-                        assert "claim_refusal" not in {
+                        assert column_name not in {
                             col["name"] for col in sa.inspect(bind).get_columns("sessions")
                         }
                         assert bind.execute(sa.text(
@@ -55,6 +59,6 @@ async def test_upgrade_downgrade_preserve_sessions_and_replay():
                     revision.upgrade()
 
             await conn.run_sync(verify)
-        assert (await db.get_session("worker")).claim_refusal is None
+        assert getattr(await db.get_session("worker"), column_name) is None
     finally:
         await db.close()

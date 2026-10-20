@@ -70,7 +70,8 @@ ready_report() {
 
 cmd_start() {
     if pid="$(running_pid)"; then
-        if ready_ok; then
+        if python3 "$REPO_ROOT/scripts/e2e/probe.py" --url "$AQ_E2E_API_URL" \
+            --quiet --timeout 10 --wait 15; then
             echo "already running (pid $pid) at $AQ_E2E_API_URL"
             return 0
         fi

@@ -18,6 +18,16 @@ session instance and explicit scopes. Acknowledgement requires the persisted
 live session. Global supervisors default to no private corpus; an operator
 can select at most eight project IDs or explicitly enable global summaries.
 
+Core knowledge operations use the same pool task binding: a pool bearer with
+no fixed task resolves its held task from the authenticated live session.
+The resolved task also governs task-record visibility and authorship. An idle
+pool session, a mismatched fixed task, a foreign project, or a stale write claim
+remains refused. Profile grants are still required for each operation.
+The read-only `records.pool_access` doctor check samples active pool claims,
+checks their list/show/create/cite grants, and probes ordinary knowledge listing
+with a task-less pool scope. It reports no knowledge bodies or instance tokens;
+disabled knowledge or no active claims is informational, not proof of access.
+
 Pins are exact revisions and precede lexical discovery. No query produces no
 discovery. Discovery excludes stale, future, retired and disputed evidence;
 explicit pins retain their labels. Each read uses core scope, source, revision,
@@ -30,12 +40,48 @@ transaction, preserving identity-only citations and receipts.
 The conservative `upper_bound_bytes` method counts UTF-8 bytes as an input
 token upper bound, including required instructions, tools, separators and
 knowledge. It also reserves wrapper and output allowances. The defaults are
-32768 total tokens, 4096 output reserve, 256 wrapper reserve, 4096 knowledge
+an automatic input ceiling, 4096 output reserve, 256 wrapper reserve, 4096 knowledge
 tokens/16384 bytes and eight discovered items/1000 discovery tokens. Knowledge
 uses the minimum of its hard cap, `memory.context_max_tokens` and remaining
 input allowance. Whole items are dropped with omission reasons. Required
 content overflow stores an empty diagnostic bundle and refuses delivery with
 `context.required_over_budget`; authoritative instructions are never cut.
+
+`knowledge.context.input_max_tokens` defaults to null (automatic). The ceiling
+uses the claiming session's model context window when its bounded, fresh
+transcript observation reports one (currently Codex's `model_context_window`).
+Without that telemetry, including a fresh launch or an unmeasured harness, the
+fallback is 131072. An explicit nonnegative integer remains an operator cap;
+a known smaller model window and any remaining allowance can only lower it.
+Preview fitting, context selection and delivery rechecks use the same rule.
+Accounting stays conservative: bytes are counted as a token upper bound;
+no characters/4 estimate is used to authorize delivery. An existing explicit
+32768 setting retains its meaning until the operator changes or removes it.
+
+For pilot worker prime, the renderer fits pageable prose to that same configured
+budget before knowledge selection. It reduces ordinary task-context excerpts,
+then the task description, then historical handoff assertions, retaining an
+explicit task/field paging command and the handoff context row ID. Full reads use
+`aq task show TASK --field FIELD --offset 0 --limit 4096`, with `description`,
+`prime_context` or `context`, and follow `next_offset` until null before acting on
+shortened material. Stored sources are unchanged. Profile Role/Rules, all complete
+task comments, current repair fences, pending messages, result/wait pointers,
+current facts and completion instructions stay inline. Override expansion
+(including repeated slots) and the project pause notice count toward the final
+body. If inline content plus continuation commands cannot fit, delivery still
+fails with the hard diagnostic.
+
+An over-budget prime refusal includes `context_budget` (the configured
+allowances and byte accounting), `required_body_bytes`,
+`required_section_bytes` and renderer `source`. These diagnostics expose no
+instruction bodies and do not imply delivery; section counts exclude heading
+wrappers and cannot stand in for the final override body's measured size.
+`aq prime --json` preserves these details in the error envelope. Use retained
+failure diagnostics to distinguish an oversized required section from changed
+runtime limits; a task checkout SHA is not deployed daemon provenance.
+The ordinary refusal also names the available input allowance, output/wrapper
+reserves and the three largest required sections with their UTF-8 byte counts,
+so diagnostics are visible without JSON or access to instruction bodies.
 
 `prime` returns `context_bundle` and `context_state: prepared`. A read refused
 on access grounds — `record.forbidden`, `knowledge.disabled` — degrades instead

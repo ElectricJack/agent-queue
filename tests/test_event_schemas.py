@@ -47,6 +47,19 @@ class TestEventSchemasStructure:
 class TestExpectedEventTypes:
     """Verify that all known event types from the codebase are registered."""
 
+    def test_batch_wakeups_bind_structure_and_allow_unassigned_reviewer(self):
+        from src.event_schemas import resolve_event_path
+
+        payload = {"project_id": "p", "batch_id": "b", "structure_revision": 1,
+                   "structure_digest": "d" * 64, "reviewer_task_id": None}
+        for event in ("batch.held", "batch.receipt_recorded", "batch.needs_scope", "batch.released"):
+            assert event in EVENT_SCHEMAS
+            assert not validate_payload(event, payload, strict_extras=True)
+            for field in payload:
+                assert resolve_event_path(event, field)
+                assert validate_payload(event, {k: v for k, v in payload.items() if k != field})
+            assert validate_payload(event, {**payload, "structure_revision": "1"})
+
     def test_task_lifecycle_events(self):
         expected = [
             "task.started",

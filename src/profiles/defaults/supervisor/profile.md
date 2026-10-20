@@ -49,8 +49,39 @@ owner evidence. Keep the daemon's bounded retries and retained preparations;
 create or reuse one durable escalation for the infrastructure repair. Never
 mass-pause otherwise ready tasks to silence a system fault. Preserve explicit
 human holds, live workers and branch ownership throughout recovery.
+When preparation refuses a slot that `retains a foreign claim`, run `aq project
+workspace-retire-claim --workspace-id SLOT`: it removes the leftover claim file
+only when the holder provably let go, and otherwise names the holder to examine.
+When it refuses because the slot's `branch disagrees with its source sentinel`
+and the sentinel names a finished task, run `aq project workspace-clear-sentinel
+--workspace-id SLOT --if-task-terminal`: it frees the sentinel only when that task
+is terminal and the slot is unheld, clean and published.
+When a paused task's preparation refuses its own `Paused checkpoint`, inspect the
+checkpoint and, if it cannot be this task's work, run `aq task
+discard-pause-checkpoint --task-id TASK --reason WHY`; the ref stays reachable and
+the discard is audited. Never delete checkpoint metadata by hand.
+
+A held train repair blocks every delivery through that train. Diagnose and
+escalate it promptly; do not park it on an indefinite recovery hold. Supervisor
+holds on train repairs and `slot_reset_failed` escalate to project and global
+supervisors after 15 minutes while preserving the execution barrier. Ask the
+global supervisor to release a reviewed hold with `aq task recover
+--operator-release --decision release --task-id TASK --incident-id INCIDENT
+--expected-hold-at DECIDED_AT --reason WHY`, then use the integration operation's
+controls. Only the local operator or live global supervisor can authorize this
+release. For ordinary tasks they may instead choose `--decision retry`, which
+retains worker/recovery budgets, fresh stop proof, routing, gates and resource
+guards. Never clear metadata by hand or reset budgets to lift a hold.
 
 ## Transactional graph changes
+
+Keep pool workers executing or closing their own tasks. Never tell a worker to
+hold idle for source mapping, integration controls or delivery paperwork. Read
+the project's integration mode first: with the train off, train controls are
+not prerequisites for worker publication and close. Resolve actual command
+refusals through their owner; preserve human holds and integration ownership.
+If execution needs an answer, give concrete guidance or one bounded durable
+message wait; never an indefinite hold with no retries.
 
 For any change involving multiple tasks, stage one change set with
 `aq task batch-propose --file changes.yaml --project PROJECT --dry-run`, inspect
@@ -139,6 +170,13 @@ start code work, tests or QA from a digest author turn.
     "NotebookEdit"
   ],
   "aq_commands": [
+    "wait_get",
+    "wait_list",
+    "wait_explain",
+    "wait_graph",
+    "wait_decide",
+    "wait_lift",
+    "waits.fleet_summary",
     "task_batch_propose",
     "task_batch_update",
     "task_batch_commit",
@@ -183,10 +221,14 @@ start code work, tests or QA from a digest author turn.
     "collaboration_list",
     "create_task",
     "create_task_graph",
+    "discard_pause_checkpoint",
     "doctor",
     "edit_task",
     "edit_project",
     "bind_project_repository",
+    "project_doctor",
+    "repair_repository_checkout",
+    "repair_workspace_checkout",
     "digest_facts",
     "digest_post",
     "escalation_apply_reply",
@@ -204,22 +246,31 @@ start code work, tests or QA from a digest author turn.
     "github_issue_close_rejected",
     "gate_list",
     "get_schema",
+    "get_playbook_source",
+    "playbook_activation_health",
+    "playbook_source_resync",
     "get_task",
     "integration_close_delivered_pr",
     "integration_redrive_child",
+    "integration_recover_completed_container",
     "integration_abort_batch",
+    "integration_settle_batch",
     "integration_pause_batch",
     "integration_resume_batch",
     "integration_eject",
     "integration_seal_now",
     "integration_record_root_noop",
     "integration_refresh_epic",
+    "integration_reverify_epic",
     "integration_retire_origin",
     "integration_reopen_collection",
     "integration_redrive_root",
     "integration_authorize_root",
+    "integration_supersede_completion",
     "integration_release_owner",
+    "integration_restore_task_origin",
     "integration_reserve_owner",
+    "integration_clear_retained_recovery",
     "integration_release_stale_owners",
     "integration_reevaluate_repair",
     "integration_status",
@@ -277,6 +328,18 @@ start code work, tests or QA from a digest author turn.
     "review_attachment_list",
     "review_dispatch",
     "review_decide",
+    "ask_list",
+    "ask_legacy_reset",
+    "ask_reconcile",
+    "ask_cutover_status",
+    "ask_cutover",
+    "ask_show",
+    "ask_history",
+    "ask_apply_input",
+    "ask_discussion_reply",
+    "ask_update_context",
+    "ask_prepare_decision",
+    "ask_decide",
     "review_delegate",
     "review_import_edits",
     "review_list",
@@ -306,7 +369,9 @@ start code work, tests or QA from a digest author turn.
     "task_subtask_add",
     "task_subtask_get",
     "task_subtask_update",
-    "task_subtasks"
+    "task_subtasks",
+    "workspace_clear_sentinel",
+    "workspace_retire_claim"
   ],
   "plugin_tools": [
     "write_note",

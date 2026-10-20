@@ -47,7 +47,7 @@ from src.config import (
     ReportQuietHoursConfig,
     ReportsConfig,
 )
-from src.database.tables import doc_reviews, escalations, messages, tasks
+from src.database.tables import doc_reviews, escalations, human_asks, messages, tasks
 from src.digest import DigestScheduleService, schedule_for
 from src.digest.supervisor import (
     QUIET_LINE,
@@ -58,6 +58,7 @@ from src.digest.supervisor import (
     bounded_facts,
     decide_window,
     facts_hash,
+    fallback_text,
     quiet_at,
     quiet_line,
     render_authored_digest,
@@ -215,6 +216,25 @@ async def open_review(db, review_id="rev-1", *, project_id="p", created=None, de
                 updated_at=created,
             )
         )
+    await project_ask(db, review_id, decider=decider)
+
+
+async def project_ask(db, source_key, *, kind="review", decider="user", state="pending", next_actor="human"):
+    # Durable projection is the digest input; aliases/diagnostic incidents are not decisions.
+    async with db._engine.begin() as conn:
+        await conn.execute(insert(human_asks).values(
+            id=f"ask-{source_key}", project_id="p", source_kind=kind, source_key=source_key,
+            source_identity={"key": source_key}, source_fingerprint="f", generation_fingerprint="g",
+            audience={"project_id": "p"}, logical_owner="supervisor-p",
+            decider={"review_decider": decider} if kind == "review" else {"kind": "human"},
+            next_actor=next_actor, decision_state=state, application_state="not_started",
+            context_state="complete", severity="medium", context={"title": source_key, "why": "Decision needed",
+            "waiting_effect": "Work waits", "requested_by": {"label": "AQ", "origin": "test"},
+            "blocked_work": [], "blocked_work_note": "No waiters",
+            "choices": [{"key": "approve", "label": "Approve", "effect": "Continue"}],
+            "links": [{"label": "Source", "url": "/source"}]},
+            created_at=live_anchor() + 30, updated_at=live_anchor() + 30,
+        ))
 
 
 async def windows(db, **kwargs):
@@ -318,8 +338,7 @@ def _idle_brief(**overrides):
     values = {
         "landed": [],
         "stuck": [],
-        "escalations": [],
-        "reviews": [],
+        "asks": {"items": [], "count": 0, "source_health": "healthy", "identity_hash": "empty"},
         "sessions_working": 4,
         "sessions_total": 9,
         "active_tasks": 4,
@@ -374,7 +393,7 @@ def test_quiet_hours_are_not_a_skip_and_spend_no_streak():
 @pytest.mark.parametrize("unchanged", [False, True])
 def test_something_waiting_on_jack_outranks_the_unchanged_fleet(unchanged):
     idle = _idle_brief()
-    waiting = _idle_brief(reviews=[{"id": "rev-1"}])
+    waiting = _idle_brief(asks={"items": [{"id": "ask-1"}], "count": 1, "source_health": "healthy", "identity_hash": "ask-1"})
     decision = _decide(
         waiting,
         previous_facts_hash=facts_hash(waiting if unchanged else idle),
@@ -458,12 +477,12 @@ async def test_needs_you_excludes_internal_object_reviews(db):
     transport = SinkTransport()
     await make_service(db, transport).tick()
     request = await digest_request(db, await only_window(db))
-    reviews = request["brief"]["needs_you"]["reviews"]["items"]
-    assert {row["id"] for row in reviews} == {"rev-result", "rev-delegated"}
+    reviews = request["brief"]["needs_you"]["items"]
+    assert {row["source_key"] for row in reviews} == {"rev-result", "rev-delegated"}
     assert request["brief"]["counts"]["needs_you"] == 2
 
 
-async def test_needs_you_excludes_delivery_incidents_and_answered_escalations(db):
+async def test_needs_you_counts_pending_sources_during_discussion_not_diagnostic_incidents(db):
     for state in ("needs_human", "stale", "reply_received", "resolving", "resolved", "cancelled"):
         row, _ = await db.create_escalation(
             id=f"esc-{state}",
@@ -521,11 +540,17 @@ async def test_needs_you_excludes_delivery_incidents_and_answered_escalations(db
         severity="low",
         now=live_anchor() + 30,
     )
+    # Discussion/reply keeps the source pending; revision and terminal states do not.
+    for key, state, actor in [("needs_human", "pending", "human"),
+                              ("reply_received", "pending", "human"),
+                              ("resolving", "changes_requested", "agent"),
+                              ("resolved", "answered", "none")]:
+        await project_ask(db, key, kind="question", state=state, next_actor=actor)
     transport = SinkTransport()
     await make_service(db, transport).tick()
     request = await digest_request(db, await only_window(db))
-    needed = request["brief"]["needs_you"]["escalations"]["items"]
-    assert {item["id"] for item in needed} == {"esc-needs_human", "esc-stale"}
+    needed = request["brief"]["needs_you"]["items"]
+    assert {item["source_key"] for item in needed} == {"needs_human", "reply_received"}
     assert request["brief"]["counts"]["needs_you"] == 2
     assert not transport.messages
 
@@ -771,3 +796,80 @@ async def test_turning_the_flag_off_releases_a_held_window_to_the_fallback(db, e
     with principal_context(service_principal()):
         released = await handler.execute("digest_request", {})
     assert released["success"] is True
+
+
+def test_incomplete_asks_never_announce_a_false_zero():
+    brief = _idle_brief(asks={"items": [], "count": 0, "source_health": "degraded"})
+    assert _decide(brief, consecutive_skips=100).action == "hold"
+    assert "nothing needs you" not in fallback_text("No activity", brief).lower()
+
+
+def test_digest_hash_includes_the_full_pending_set_not_the_visible_cap():
+    items = [{"id": f"ask-{i}"} for i in range(100)]
+    before = _idle_brief(asks={"items": items, "count": 101, "identity_hash": "set-one", "source_health": "healthy"})
+    after = _idle_brief(asks={"items": items, "count": 101, "identity_hash": "set-two", "source_health": "healthy"})
+    assert len(before["needs_you"]["items"]) == 5
+    assert before["needs_you"]["omitted"] == 96
+    assert facts_hash(before) != facts_hash(after)
+
+
+def human_reminders(count=12):
+    return [dict(wait_id=f"w-{i:02}", project_id="p", task_id=f"task-{i}", title="Question",
+                 subject="task_comment", age_seconds=86400 * (20 - i), created_at=BASE + i)
+            for i in reversed(range(count))]
+
+
+def test_human_reminders_are_capped_oldest_first_without_hourly_wake_or_age_churn():
+    brief = _idle_brief(waiting_on_you=human_reminders())
+    reminders = brief["waiting_on_you"]
+    assert reminders["count"] == 12 and reminders["more"] == 2
+    assert [row["wait_id"] for row in reminders["items"]] == [f"w-{i:02}" for i in range(10)]
+    assert brief["counts"]["needs_you"] == 0
+    identity = facts_hash(brief)
+    for row in reminders["items"]:
+        row["age_seconds"] += 86400 * 3
+    assert facts_hash(brief) == identity
+    assert _decide(brief, previous_facts_hash=identity).action == SKIP_UNCHANGED
+    assert _decide(brief, previous_facts_hash=None).action == SKIP_UNCHANGED
+
+
+def test_authored_and_fallback_digest_keep_daily_human_reminder_within_budget():
+    brief = _idle_brief(waiting_on_you=human_reminders())
+    authored = render_authored_digest("Needs you: no new approvals.\n" + "x" * 900,
+                                      base_url=BASE_URL, facts=brief)
+    assert "Waiting on you (12)" in authored
+    assert authored.index("Needs you") < authored.index("Waiting on you")
+    assert len(authored) <= 600 and authored.endswith(f"<{BASE_URL}/focus/inbox>")
+    deterministic = f"📊 Work completed.\nNeeds you: nothing new.\n<{BASE_URL}/focus/inbox>"
+    fallback = fallback_text(deterministic, brief)
+    assert "Waiting on you (12)" in fallback
+    assert fallback.endswith(f"<{BASE_URL}/focus/inbox>") and len(fallback) <= 600
+    assert "Waiting on you (12)" in fallback_text("", brief)
+
+
+def test_authored_digest_receives_delivery_waits_as_separate_facts():
+    waiting = [{"task_id": "consumer.4", "project_id": "p", "reason": "Land source.6 on dev"}]
+    facts = _idle_brief(waiting_on_delivery=waiting)
+    assert facts["counts"]["waiting_on_delivery"] == 1
+    assert facts["waiting_on_delivery"]["items"] == waiting
+    assert facts["stuck"]["items"] == []
+
+
+def test_empty_activity_fallback_names_frozen_delivery_wait():
+    facts = _idle_brief(waiting_on_delivery=[{
+        "task_id": "consumer.4", "reason": "Land source.6 on dev; refresh aq/epic",
+    }])
+    text = fallback_text("", facts)
+    assert "Waiting on delivery" in text
+    assert "source.6 on dev" in text and "aq/epic" in text
+
+
+def test_empty_fallback_keeps_delivery_wait_and_daily_human_reminder_together():
+    facts = _idle_brief(
+        waiting_on_you=human_reminders(),
+        waiting_on_delivery=[{"task_id": "consumer.4", "reason": "Land source.6 on dev"}],
+    )
+    text = fallback_text("", facts)
+    assert "Waiting on delivery: consumer.4: Land source.6 on dev" in text
+    assert "Waiting on you (12)" in text
+    assert len(text) <= 600

@@ -1,0 +1,15 @@
+{
+  "pending_in_place": 1,
+  "pending_hibernated": 0,
+  "human_pending": 0,
+  "released_slot_seconds_1h": { "condition": 2985, "capacity": 600 },
+  "released_slot_seconds_24h": { "condition": 7080, "capacity": 600 },
+  "resume_cost_p50": 135,
+  "wait_seconds_1h": 2985,
+  "overhead_tokens_1h": 18,
+  "tokens_saved_counterfactual": {
+    "tokens": 9932,
+    "cohort": "synthetic-fault-matrix",
+    "window": "disposable-fixture:0..7200"
+  }
+}

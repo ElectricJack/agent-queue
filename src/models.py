@@ -28,20 +28,32 @@ class TaskStatus(Enum):
     through these states based on events like dependency resolution, agent
     completion, rate limiting, and human approval.
 
-    Note: transitions are not enforced by the state machine in production —
-    the orchestrator writes directly via db.update_task(). The state machine
-    module is used only for validation logging. See specs/models-and-state-machine.md.
+    Database lifecycle writes validate VALID_TASK_TRANSITIONS. Invalid moves
+    involving suspended work are always refused; the configured enforcement flag
+    controls legacy transitions. Administrative controls use guarded overrides.
     """
 
     DEFINED = "DEFINED"
     READY = "READY"
     ASSIGNED = "ASSIGNED"
     IN_PROGRESS = "IN_PROGRESS"
+    WAITING = "WAITING"
+    HIBERNATED = "HIBERNATED"
+    RESUME_PENDING = "RESUME_PENDING"
     WAITING_INPUT = "WAITING_INPUT"
     PAUSED = "PAUSED"
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
     BLOCKED = "BLOCKED"
+
+
+# Suspended work remains open but never enters the READY claim frontier.
+SUSPENDED_TASK_STATUSES = frozenset({
+    TaskStatus.WAITING, TaskStatus.HIBERNATED, TaskStatus.RESUME_PENDING,
+})
+OPEN_TASK_STATUSES = frozenset(TaskStatus) - {
+    TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.BLOCKED,
+}
 
 
 class TaskEvent(Enum):
@@ -67,6 +79,15 @@ class TaskEvent(Enum):
     HUMAN_REPLIED = "HUMAN_REPLIED"
     INPUT_TIMEOUT = "INPUT_TIMEOUT"
     RESUME_TIMER = "RESUME_TIMER"
+    WAIT_REGISTERED = "WAIT_REGISTERED"
+    WAIT_ACKNOWLEDGED = "WAIT_ACKNOWLEDGED"
+    HIBERNATION_COMMITTED = "HIBERNATION_COMMITTED"
+    WAIT_RESOLVED = "WAIT_RESOLVED"
+    RESUME_HELD = "RESUME_HELD"
+    MANUAL_PAUSE = "MANUAL_PAUSE"
+    UNPAUSE_RESUME = "UNPAUSE_RESUME"
+    UNPAUSE_HIBERNATE = "UNPAUSE_HIBERNATE"
+    WAIT_REROUTED = "WAIT_REROUTED"
     RETRY = "RETRY"
     MAX_RETRIES = "MAX_RETRIES"
     MERGE_FAILED = "MERGE_FAILED"
@@ -239,7 +260,7 @@ WORKSPACE_MODE_VALUES = frozenset(m.value for m in WorkspaceMode)
 class DepType(Enum):
     """Typed dependency edge kinds on ``task_dependencies.dep_type``.
 
-    See docs/specs/design/work-graph.md §3.  The first four are *blocking*
+    See docs/specs/design/work-graph.md §3.  The first five are *blocking*
     edges — they feed the ``tasks.is_blocked`` projection, each with its own
     satisfaction rule.  The rest are provenance/association only and never
     affect readiness.
@@ -258,12 +279,16 @@ class DepType(Enum):
     ``CONDITIONAL_BLOCKS``
         satisfied only on *terminal* failure of the dependency: status
         BLOCKED, or FAILED with ``retry_count >= max_retries``.
+    ``DELIVERY_OF``
+        satisfied by a verified landed delivery receipt for the code leaf,
+        independently of task completion (held-ingestion design §3.1).
     """
 
     BLOCKS = "blocks"
     PARENT_CHILD = "parent-child"
     WAITS_FOR = "waits-for"
     CONDITIONAL_BLOCKS = "conditional-blocks"
+    DELIVERY_OF = "delivery-of"
     DISCOVERED_FROM = "discovered-from"
     RELATED = "related"
     DUPLICATES = "duplicates"
@@ -279,6 +304,7 @@ BLOCKING_DEP_TYPES = frozenset(
         DepType.PARENT_CHILD.value,
         DepType.WAITS_FOR.value,
         DepType.CONDITIONAL_BLOCKS.value,
+        DepType.DELIVERY_OF.value,
     }
 )
 """Edge kinds that gate readiness — everything else is informational."""
@@ -686,6 +712,7 @@ class Workspace:
     locked_at: float | None = None
     lock_mode: WorkspaceMode | None = None  # lock mode used for current lock (None = unlocked)
     enabled: bool = True  # disabled workspaces are skipped by acquire_workspace
+    generation: int = 0  # incremented on acquisition; fences preparation against reassignment
     # ``"<code>: <detail>"`` and timestamp of the last disable (src/workspace_disable.py).
     disabled_reason: str | None = None
     disabled_at: float | None = None
@@ -750,6 +777,8 @@ class WorkspaceKind:
     # Shell commands run once inside a freshly created slot, and again when
     # the list changes (worktree-execution §3.6).  Operator-authored config.
     worktree_setup: list[str] = field(default_factory=list)
+    # Optional per-kind bound; the project concurrency limit still applies.
+    max_slots: int | None = None
     created_at: float = 0.0
     updated_at: float = 0.0
 
@@ -1486,6 +1515,8 @@ class SessionRecord:
     claim_failure_count: int = 0
     claim_failure_reason: str | None = None
     claim_failure_at: float | None = None
+    #: Bounded last preparation observation; survives release, grants no authority.
+    failed_preparation: dict | None = None
     #: Persisted pool refusal result/reason/count/retry_at; survives daemon restarts.
     claim_refusal: dict | None = None
 

@@ -480,10 +480,10 @@ class OpsCommandsMixin:
                     )
                     service_tier = codex_service_tier_for(profile, class_config)
 
+            from src.scheduler import project_pool_candidates
+
             projects = []
-            for cand in sorted(
-                measurement.candidates.get(key, []), key=lambda c: c.project_id
-            ):
+            for cand in project_pool_candidates(measurement.candidates.get(key, [])):
                 if view is not None and cand.project_id != view:
                     continue
                 local = sup.by_project.get(cand.project_id) or PoolProjectSupply()
@@ -496,6 +496,7 @@ class OpsCommandsMixin:
                         "ready": cand.ready,
                         "running_idle": local.running_idle,
                         "running_busy": local.running_busy,
+                        "evictable": local.evictable,
                         "starting": local.starting,
                         "draining": local.draining,
                         "max_concurrent_agents": cand.project_cap,
@@ -556,6 +557,7 @@ class OpsCommandsMixin:
                     "desired": desired,
                     "running_idle": sup.running_idle,
                     "running_busy": sup.running_busy,
+                    "evictable": sup.evictable,
                     "starting": sup.starting,
                     "draining": sup.draining,
                     "ready": ready,

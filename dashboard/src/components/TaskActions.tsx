@@ -118,7 +118,7 @@ export default function TaskActions({ task, returnTo, onDeleted, onOpenTerminal 
       icon: <PauseIcon className="h-3.5 w-3.5" />,
       onClick: () => { resumeTask.reset(); pauseTask.mutate({ task_id: task.id }); },
       variant: "primary",
-      show: ["DEFINED", "READY", "ASSIGNED", "IN_PROGRESS", "BLOCKED", "WAITING_INPUT"].includes(s),
+      show: ["DEFINED", "READY", "ASSIGNED", "IN_PROGRESS", "BLOCKED", "WAITING_INPUT", "WAITING", "HIBERNATED", "RESUME_PENDING"].includes(s),
     },
     {
       label: resumeTask.isPending ? "Resuming…" : "Resume",

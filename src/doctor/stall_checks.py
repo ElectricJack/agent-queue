@@ -129,6 +129,18 @@ async def _work_findings(ctx: DoctorContext, tasks: list, now: float, explains: 
     completions: dict[str, float | None] = {}
     for task, why in zip(candidates, explanations):
         reasons = why.get("reasons") or []
+        from src.task_graph.readiness import DELIVERY_CODES, readiness_from_reasons
+
+        if any(r.get("code") in DELIVERY_CODES for r in reasons):
+            readiness = readiness_from_reasons(reasons)
+            findings.append(_finding(
+                "WAITING-ON-DELIVERY", task.project_id,
+                f"{task.id}: {readiness['reason']}", task_id=task.id,
+                blockers=sorted({ref for r in reasons if r.get("code") in DELIVERY_CODES
+                                 for ref in r.get("blocking_task_ids", [r.get("ref")])
+                                 if ref and ref != task.id}), reasons=reasons,
+            ))
+            continue
         deps = [r for r in reasons if r.get("code") == "blocked_dependency"]
         completed = [r for r in deps if "status=COMPLETED" in r.get("detail", "")]
         # An unfinished dependency is normal queued work.  If a completed
@@ -597,6 +609,7 @@ async def _check_sweep(ctx: DoctorContext) -> CheckResult:
         _continuous_promotion_findings(ctx, active, now),
         _escalation_delivery_findings(ctx, active, now),
         _slot_capacity_findings(ctx, active),
+        _train_batch_findings(ctx, active, now),
     )
     findings = [item for group in groups for item in group]
     findings.extend(_route_findings(tasks) + flock_findings + conversation + delivery_engines)
@@ -636,6 +649,15 @@ async def _slot_capacity_findings(ctx: DoctorContext, active: set[str]) -> list[
         for entry in await find_capacity_shortfalls(ctx.db)
         if entry["project_id"] in active
     ]
+
+
+async def _train_batch_findings(ctx, active, now):
+    from src.doctor.integration_checks import stalled_train_batches
+
+    return [_finding("train_batch_stalled", item["project_id"], item["detail"],
+                     **{key: value for key, value in item.items()
+                        if key not in {"project_id", "detail"}})
+            for item in await stalled_train_batches(ctx, project_ids=active, now=now)]
 
 
 async def _escalation_delivery_findings(ctx, active, now):

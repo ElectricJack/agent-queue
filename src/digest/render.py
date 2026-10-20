@@ -106,6 +106,7 @@ def render_digest(
     open_escalations: int = 0,
     max_chars: int = MAX_CHARS,
     max_highlights: int = MAX_HIGHLIGHTS,
+    waiting_on_delivery: tuple[dict, ...] = (),
 ) -> str:
     """Render the message for an eligible window.
 
@@ -133,13 +134,15 @@ def render_digest(
     if started:
         counts.append(f"{started} started")
     counts.append(f"{eligibility.active_count} active")
+    if waiting_on_delivery:
+        counts.append(f"{len(waiting_on_delivery)} waiting on delivery")
     if open_escalations > 0:
         word = "escalation" if open_escalations == 1 else "escalations"
         counts.append(f"{open_escalations} open {word}")
     ordered = list(eligibility.facts)
     ordered.sort(key=lambda f: (f.rank, names.get(f.project_id, f.project_id), -f.at, f.key))
 
-    shown = ordered[: max(0, max_highlights)]
+    shown = ordered[: max(0, max_highlights - bool(waiting_on_delivery))]
     overflow = len(ordered) - len(shown)
     if overflow > 0:
         # The count belongs with the other counts: when the window is too full
@@ -159,5 +162,7 @@ def render_digest(
     # grouping by project keeps one project's lines together without
     # reordering the ranking between groups.  Overflow is taken from the end:
     # the least informative highlight goes before the counts ever do.
-    text = assemble([_highlight_line(fact, names) for fact in shown])
+    waits = ["• " + sanitise(f"{item['task_id']}: {item['reason']}")
+             for item in waiting_on_delivery[:1]]
+    text = assemble([*waits, *[_highlight_line(fact, names) for fact in shown]])
     return text

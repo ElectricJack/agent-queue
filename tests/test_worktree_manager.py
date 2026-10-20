@@ -13,13 +13,14 @@ Every git-touching test runs against a real repo with a real bare
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import shutil
 import subprocess
 import sys
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -27,7 +28,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from src.config import WorktreesConfig
-from src.git.manager import GitError, GitManager
+from src.git.manager import ForeignSlotClaim, GitError, GitManager
 from src.models import (
     KIND_MODE_WORKTREE,
     RepoSourceType,
@@ -46,6 +47,7 @@ from src.orchestrator.worktree_manager import (
 )
 from src.orchestrator.execution import ExecutionMixin
 from src.orchestrator.workspace_attachments import detach_slot_for_integration_handoff
+from tests.git_seed_helpers import clone_seed, init_bare_seed
 
 
 # ───────────────────────────────── fixtures ──────────────────────────────
@@ -62,20 +64,12 @@ def _git(args: list[str], cwd: str | Path) -> str:
     return r.stdout.strip()
 
 
-@pytest.fixture(scope="session")
-def _base_repo_seed(tmp_path_factory) -> Path:
+def _create_base_repo(tmp_path: Path) -> Path:
     """A clone of a bare origin, with one commit on ``main``."""
-    tmp_path = tmp_path_factory.mktemp("worktree-seed")
     origin = tmp_path / "origin.git"
-    subprocess.run(
-        ["git", "init", "--bare", "--initial-branch=main", str(origin)],
-        check=True,
-        capture_output=True,
-    )
+    init_bare_seed(str(origin))
     base = tmp_path / "base"
-    subprocess.run(
-        ["git", "clone", str(origin), str(base)], check=True, capture_output=True
-    )
+    clone_seed(str(origin), str(base))
     (base / "README.md").write_text("init\n")
     (base / ".gitignore").write_text("node_modules/\n")
     _git(["add", "-A"], cwd=base)
@@ -85,14 +79,34 @@ def _base_repo_seed(tmp_path_factory) -> Path:
 
 
 @pytest.fixture
-def base_repo(tmp_path: Path, _base_repo_seed: Path) -> Path:
-    """Each test owns a copy of the prepared clone and its bare origin."""
+def base_repo(tmp_path: Path) -> Path:
+    """Build a fresh clone and bare origin for this test's worktrees."""
+    return _create_base_repo(tmp_path)
+
+
+def test_fresh_repos_do_not_launch_auto_maintenance(tmp_path, monkeypatch):
+    trace = tmp_path / "git-trace.json"
+    config = tmp_path / "empty-git-config"
+    config.touch()
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(config))
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    monkeypatch.setenv("GIT_TRACE2_EVENT", str(trace))
+    seed_root = tmp_path / "seed"
+    seed_root.mkdir()
+    seed = _create_base_repo(seed_root)
+    seed_head = _git(["rev-parse", "HEAD"], cwd=seed)
     origin = tmp_path / "origin.git"
-    base = tmp_path / "base"
-    shutil.copytree(_base_repo_seed.parent / "origin.git", origin)
-    shutil.copytree(_base_repo_seed, base)
-    _git(["config", "remote.origin.url", str(origin)], cwd=base)
-    return base
+    base = _create_base_repo(tmp_path)
+    _git(["commit", "--allow-empty", "-m", "private work"], cwd=base)
+    _git(["push", "origin", "main"], cwd=base)
+    _git(["fetch", "origin"], cwd=base)
+    assert _git(["rev-parse", "main"], cwd=seed_root / "origin.git") == seed_head
+    assert _git(["rev-parse", "main"], cwd=origin) != seed_head
+    commands = [json.loads(line).get("argv", []) for line in trace.read_text().splitlines()]
+    assert not [
+        args for args in commands
+        if "--auto" in args and ("maintenance" in args or "gc" in args)
+    ]
 
 
 class FakeDB:
@@ -105,6 +119,9 @@ class FakeDB:
 
     async def get_task_meta(self, task_id, key):
         return self.meta.get((task_id, key))
+
+    async def get_task(self, task_id):
+        return FakeTask(id=task_id)
 
     async def set_task_meta(self, task_id, key, value) -> None:
         self.meta[(task_id, key)] = value
@@ -477,7 +494,243 @@ class TestCreateSlot:
         assert Path(slot.workspace_path).is_dir()
 
 
+class TestAbandonedMergeRecovery:
+    async def _merge(self, mgr, base_ws, kind, *, conflicted=False):
+        slot = await mgr.create_slot(base_ws, kind, 0)
+        await mgr.reset_slot_for_task(slot, FakeTask(id="tsk-prev"))
+        path = Path(slot.workspace_path)
+        _git(["switch", "-c", "merge-input"], path)
+        (path / "README.md").write_text("incoming merge edit\n")
+        (path / "binary.bin").write_bytes(b"\x00merge\xff\n")
+        _git(["add", "-A"], path)
+        _git(["commit", "-m", "merge input"], path)
+        _git(["switch", "aq/tsk-prev"], path)
+        if conflicted:
+            (path / "README.md").write_text("predecessor edit\n")
+            _git(["add", "README.md"], path)
+            _git(["commit", "-m", "predecessor"], path)
+        result = await mgr.git._arun_subprocess(
+            ["git", "merge", "--no-ff", "--no-commit", "merge-input"], cwd=str(path),
+        )
+        assert result.returncode == (1 if conflicted else 0), result.stderr
+        merge_path = Path(await mgr.git.aget_git_path(str(path), "MERGE_HEAD"))
+        assert merge_path.exists()
+        return slot, path, merge_path
+
+    @pytest.mark.parametrize("conflicted", [False, True])
+    async def test_preparation_archives_merge_before_abort(
+        self, mgr, base_ws, kind, db, conflicted,
+    ):
+        slot, path, merge_path = await self._merge(mgr, base_ws, kind, conflicted=conflicted)
+        # Diagnostics are mandatory even when normal dirty salvage is off.
+        mgr.config.salvage_dirty = False
+        original_head = _git(["rev-parse", "HEAD"], path)
+        await mgr.ensure_slot_checkout(slot, FakeTask(id="tsk-next"))
+        assert not merge_path.exists()
+        assert _git(["rev-parse", "HEAD"], path) == original_head
+        diagnostic = db.contexts[-1]
+        assert diagnostic["task_id"] == "tsk-prev"
+        assert diagnostic["type"] == "worktree_salvage"
+        assert "# MERGE_HEAD:" in diagnostic["content"]
+        assert "incoming merge edit" in diagnostic["content"]
+        assert "GIT binary patch" in diagnostic["content"]
+        assert ("# Unmerged:" in diagnostic["content"]) == conflicted
+        if conflicted:
+            assert "<<<<<<< HEAD" in diagnostic["content"]
+        applied = subprocess.run(
+            ["git", "apply", "--check", "-"], cwd=path, input=diagnostic["content"],
+            text=True, capture_output=True,
+        )
+        assert applied.returncode == 0, applied.stderr
+        await mgr.reset_slot_for_task(slot, FakeTask(id="tsk-next"))
+        assert _git(["status", "--porcelain"], path) == ""
+
+    async def test_stale_branch_holder_merge_is_archived_and_detached(
+        self, mgr, base_ws, kind, db, monkeypatch,
+    ):
+        holder, path, merge_path = await self._merge(mgr, base_ws, kind, conflicted=True)
+        destination = await mgr.create_slot(base_ws, kind, 1)
+        monkeypatch.setattr(mgr, "_slot_is_live", AsyncMock(return_value=False))
+        branch = await mgr.reset_slot_for_task(destination, FakeTask(id="tsk-prev"))
+        assert branch == "aq/tsk-prev"
+        assert not merge_path.exists()
+        assert _git(["branch", "--show-current"], path) == ""
+        assert "<<<<<<< HEAD" in db.contexts[-1]["content"]
+        assert db.contexts[-1]["task_id"] == "tsk-prev"
+
+    async def test_checkpoint_restore_clears_abandoned_merge(
+        self, mgr, base_ws, kind,
+    ):
+        from src.orchestrator.task_checkpoint import capture_checkpoint
+
+        slot = await mgr.create_slot(base_ws, kind, 0)
+        await mgr.reset_slot_for_task(slot, FakeTask(id="tsk-paused"))
+        path = Path(slot.workspace_path)
+        (path / "saved.txt").write_text("pause snapshot\n")
+        await capture_checkpoint(mgr.db, mgr.git, "tsk-paused", str(path))
+        _git(["clean", "-fd", "-e", WORKTREE_SENTINEL_NAME], path)
+        _git(["switch", "-c", "merge-input"], path)
+        (path / "merge.txt").write_text("abandoned merge\n")
+        _git(["add", "merge.txt"], path)
+        _git(["commit", "-m", "merge input"], path)
+        _git(["switch", "aq/tsk-paused"], path)
+        _git(["merge", "--no-ff", "--no-commit", "merge-input"], path)
+        await mgr.reset_slot_for_task(slot, FakeTask(id="tsk-paused"))
+        assert (path / "saved.txt").read_text() == "pause snapshot\n"
+        assert not (path / "merge.txt").exists()
+        assert not Path(await mgr.git.aget_git_path(str(path), "MERGE_HEAD")).exists()
+        assert "abandoned merge" in mgr.db.contexts[-1]["content"]
+
+    @pytest.mark.parametrize("fence", ["locked", "live", "claim", "retained", "process"])
+    async def test_stale_holder_fences_preserve_merge(
+        self, mgr, base_ws, kind, db, monkeypatch, fence,
+    ):
+        holder, path, merge_path = await self._merge(mgr, base_ws, kind, conflicted=True)
+        destination = await mgr.create_slot(base_ws, kind, 1)
+        index_path = Path(await mgr.git.aget_git_path(str(path), "index"))
+        before = index_path.read_bytes(), (path / "README.md").read_bytes(), merge_path.read_bytes()
+        if fence == "locked":
+            holder.locked_by_agent_id = "foreign-agent"
+        elif fence == "live":
+            monkeypatch.setattr(db, "list_sessions", AsyncMock(return_value=[
+                SimpleNamespace(work_dir=str(path)),
+            ]))
+        elif fence == "claim":
+            from src.claim_file import write_claim_file
+
+            write_claim_file(path, {"task_id": "foreign", "session_id": "foreign", "claim_epoch": 1})
+            monkeypatch.setattr(
+                "src.orchestrator.workspace_claim_recovery.retire_stopped_slot_claim",
+                AsyncMock(return_value=False),
+            )
+        elif fence == "retained":
+            monkeypatch.setattr(mgr, "_slot_has_retained_binding", AsyncMock(
+                side_effect=lambda workspace_id: workspace_id == holder.id,
+            ))
+        else:
+            monkeypatch.setattr(mgr, "_slot_is_live", AsyncMock(return_value=True))
+        with pytest.raises(GitError):
+            await mgr.reset_slot_for_task(destination, FakeTask(id="tsk-prev"))
+        assert before == (
+            index_path.read_bytes(), (path / "README.md").read_bytes(), merge_path.read_bytes(),
+        )
+        assert db.contexts == []
+
+    @pytest.mark.parametrize("live", [True, False])
+    async def test_acquired_slot_only_allows_its_preparing_session(
+        self, mgr, base_ws, kind, db, monkeypatch, live,
+    ):
+        slot, path, merge_path = await self._merge(mgr, base_ws, kind)
+        slot.locked_by_task_id = "tsk-next"
+        slot.locked_by_agent_id = "preparing-agent"
+        monkeypatch.setattr(db, "list_sessions", AsyncMock(return_value=[SimpleNamespace(
+            work_dir=str(path), task_id="tsk-next", agent_id="preparing-agent",
+            claim_phase="active" if live else "preparing",
+        )]))
+        if live:
+            with pytest.raises(GitError, match="live holder"):
+                await mgr.ensure_slot_checkout(slot, FakeTask(id="tsk-next"))
+            assert merge_path.exists()
+            assert db.contexts == []
+        else:
+            await mgr.ensure_slot_checkout(slot, FakeTask(id="tsk-next"))
+            assert not merge_path.exists()
+
+    async def test_acquired_slot_preserves_foreign_agent_lock(
+        self, mgr, base_ws, kind, db,
+    ):
+        slot, _, merge_path = await self._merge(mgr, base_ws, kind)
+        slot.locked_by_agent_id = "foreign-agent"
+        with pytest.raises(GitError, match="foreign agent lock"):
+            await mgr.ensure_slot_checkout(slot, FakeTask(id="tsk-next"))
+        assert merge_path.exists()
+        assert db.contexts == []
+
+    async def test_failed_archive_preserves_index_and_merge(
+        self, mgr, base_ws, kind, db, monkeypatch,
+    ):
+        slot, path, merge_path = await self._merge(mgr, base_ws, kind, conflicted=True)
+        index_path = Path(await mgr.git.aget_git_path(str(path), "index"))
+        before = index_path.read_bytes(), (path / "README.md").read_bytes(), merge_path.read_bytes()
+        monkeypatch.setattr(db, "add_task_context", AsyncMock(side_effect=RuntimeError("archive down")))
+        with pytest.raises(RuntimeError, match="archive down"):
+            await mgr.ensure_slot_checkout(slot, FakeTask(id="tsk-next"))
+        assert before == (
+            index_path.read_bytes(), (path / "README.md").read_bytes(), merge_path.read_bytes(),
+        )
+
+    async def test_operator_handoff_preserves_dirty_merge_destination(
+        self, mgr, base_ws, kind, db,
+    ):
+        slot, path, merge_path = await self._merge(mgr, base_ws, kind, conflicted=True)
+        index_path = Path(await mgr.git.aget_git_path(str(path), "index"))
+        before = index_path.read_bytes(), (path / "README.md").read_bytes(), merge_path.read_bytes()
+        with pytest.raises(GitError, match="dirty or unproved"):
+            await mgr.reset_slot_for_task(
+                slot, FakeTask(id="tsk-next"), operator_handoff=True,
+                base_branch=_git(["rev-parse", "HEAD"], path), target_branch="aq/tsk-next",
+            )
+        assert before == (
+            index_path.read_bytes(), (path / "README.md").read_bytes(), merge_path.read_bytes(),
+        )
+        assert db.contexts == []
+
+    @pytest.mark.parametrize("stale_holder", [False, True])
+    async def test_unknown_predecessor_diagnostic_belongs_to_incoming_task(
+        self, mgr, base_ws, kind, db, monkeypatch, stale_holder,
+    ):
+        slot, path, merge_path = await self._merge(mgr, base_ws, kind)
+        sentinel = mgr.read_sentinel(path)
+        sentinel.task_id = None
+        mgr.write_sentinel(path, sentinel)
+        if stale_holder:
+            destination = await mgr.create_slot(base_ws, kind, 1)
+            monkeypatch.setattr(mgr, "_slot_is_live", AsyncMock(return_value=False))
+            await mgr.reset_slot_for_task(destination, FakeTask(id="tsk-prev"))
+            incoming = "tsk-prev"
+        else:
+            await mgr.ensure_slot_checkout(slot, FakeTask(id="tsk-next"))
+            incoming = "tsk-next"
+        assert not merge_path.exists()
+        assert db.contexts[-1]["task_id"] == incoming
+
+    async def test_oversized_merge_records_explicit_diffstat_diagnostic(
+        self, mgr, base_ws, kind, db,
+    ):
+        slot, _, merge_path = await self._merge(mgr, base_ws, kind)
+        mgr.config.salvage_max_bytes = 1
+        await mgr.ensure_slot_checkout(slot, FakeTask(id="tsk-next"))
+        assert not merge_path.exists()
+        content = db.contexts[-1]["content"]
+        assert "working-tree contents were NOT archived" in content
+        assert "README.md" in content and "binary.bin" in content
+        assert "GIT binary patch" not in content
+
+    async def test_failed_abort_returns_error_with_archived_diagnostic(
+        self, mgr, base_ws, kind, db, monkeypatch,
+    ):
+        slot, _, merge_path = await self._merge(mgr, base_ws, kind)
+        run = mgr.git._arun_unlocked
+
+        async def fail_abort(args, cwd=None, timeout=None):
+            if args == ["merge", "--abort"]:
+                raise GitError("abort failed")
+            return await run(args, cwd, timeout)
+
+        monkeypatch.setattr(mgr.git, "_arun_unlocked", fail_abort)
+        with pytest.raises(GitError, match="abort failed"):
+            await mgr.ensure_slot_checkout(slot, FakeTask(id="tsk-next"))
+        assert merge_path.exists()
+        assert "incoming merge edit" in db.contexts[-1]["content"]
+
+
 class TestOperatorHandoffCheckpoint:
+    def _record_foreign_checkout(self, mgr, path):
+        # Model a previous user's registered checkout, retaining its source identity.
+        mgr.write_sentinel(path, replace(
+            mgr.read_sentinel(path), branch="aq/foreign", task_id="foreign",
+        ))
+
     async def _checkpoint(self, mgr, base_ws, kind, *, dirty=False):
         from src.orchestrator.task_checkpoint import CHECKPOINT_META, capture_checkpoint
 
@@ -508,6 +761,223 @@ class TestOperatorHandoffCheckpoint:
             slot, FakeTask(), base_branch=sha, target_branch="aq/tsk-1",
             operator_handoff=True, **kwargs,
         )
+
+    @pytest.mark.parametrize("owned_branch", ["aq/tsk-1", "aq/epic/owned"])
+    @pytest.mark.parametrize("preserve", [False, True])
+    @pytest.mark.parametrize("orphan", [False, True])
+    async def test_owned_checkpoint_ancestor_restores_from_foreign_checkout(
+        self, mgr, base_ws, kind, owned_branch, preserve, orphan,
+    ):
+        from src.orchestrator.task_checkpoint import CHECKPOINT_META
+
+        slot, path, saved = await self._checkpoint(mgr, base_ws, kind, dirty=True)
+        _git(["switch", "-C", owned_branch, saved["head"]], path)
+        (path / "owned.txt").write_text("owned progress\n")
+        _git(["add", "owned.txt"], path)
+        _git(["commit", "-m", "advance owned branch"], path)
+        tip = _git(["rev-parse", "HEAD"], path)
+        _git(["push", "origin", owned_branch], path)
+        _git(["switch", "--orphan", "aq/foreign"] if orphan else
+             ["switch", "-c", "aq/foreign", saved["head"]], path)
+        (path / "foreign.txt").write_text("other task\n")
+        _git(["add", "foreign.txt"], path)
+        _git(["commit", "-m", "foreign slot head"], path)
+        foreign = _git(["rev-parse", "HEAD"], path)
+        self._record_foreign_checkout(mgr, path)
+
+        branch = await mgr.reset_slot_for_task(
+            slot, FakeTask(), target_branch=owned_branch,
+            base_branch=saved["head"] if preserve else tip, preserve_branch=preserve,
+        )
+
+        assert branch == owned_branch
+        assert _git(["branch", "--show-current"], path) == owned_branch
+        assert _git(["rev-parse", "HEAD"], path) == tip
+        assert (path / "owned.txt").read_text() == "owned progress\n"
+        assert not (path / "foreign.txt").exists()
+        assert _git(["rev-parse", "aq/foreign"], path) == foreign
+        assert _git(["show", ":staged.txt"], path) == "saved stage"
+        assert (path / "staged.txt").read_text() == "saved unstaged\n"
+        assert (path / "binary.bin").read_bytes() == b"\x00saved\xff"
+        assert await mgr.db.get_task_meta("tsk-1", CHECKPOINT_META) == saved
+        assert _git(["rev-parse", saved["ref"]], path) == saved["commit"]
+
+    @pytest.mark.parametrize("advanced", [False, True])
+    @pytest.mark.parametrize("published", [False, True])
+    async def test_owned_checkpoint_restores_missing_local_ref_from_origin(
+        self, mgr, base_ws, kind, advanced, published,
+    ):
+        from src.orchestrator.task_checkpoint import CHECKPOINT_META
+
+        slot, path, saved = await self._checkpoint(mgr, base_ws, kind)
+        branch = "aq/epic/remote-owned"
+        _git(["switch", "-c", branch], path)
+        if advanced:
+            (path / "owned.txt").write_text("published progress\n")
+            _git(["add", "owned.txt"], path)
+            _git(["commit", "-m", "published owned progress"], path)
+        tip = _git(["rev-parse", "HEAD"], path)
+        _git(["push", "origin", branch], path)
+        _git(["switch", "-c", "aq/foreign", saved["head"]], path)
+        self._record_foreign_checkout(mgr, path)
+        _git(["branch", "-D", branch], path)
+        _git(["update-ref", "-d", f"refs/remotes/origin/{branch}"], path)
+        if not published:
+            _git(["push", "origin", "--delete", branch], path)
+            _git(["update-ref", f"refs/remotes/origin/{branch}", tip], path)
+        # The foreign branch is already merged into the preserved base.
+        task = FakeTask()
+        task.branch_name = None
+
+        if not published:
+            with pytest.raises(GitError, match="no proved continuation"):
+                await mgr.reset_slot_for_task(
+                    slot, task, target_branch=branch,
+                    base_branch=saved["head"], preserve_branch=True,
+                )
+            assert _git(["branch", "--show-current"], path) == "aq/foreign"
+            assert _git(["rev-parse", "HEAD"], path) == saved["head"]
+            assert await mgr.db.get_task_meta("tsk-1", CHECKPOINT_META) == saved
+            return
+
+        restored = await mgr.reset_slot_for_task(
+            slot, task, target_branch=branch, base_branch=saved["head"], preserve_branch=True,
+        )
+
+        assert restored == branch
+        assert _git(["branch", "--show-current"], path) == branch
+        assert _git(["rev-parse", "HEAD"], path) == tip
+        assert _git(["status", "--porcelain"], path) == ""
+        if advanced:
+            assert (path / "owned.txt").read_text() == "published progress\n"
+        assert await mgr.db.get_task_meta("tsk-1", CHECKPOINT_META) == saved
+
+    @pytest.mark.parametrize("unproved", [False, True])
+    @pytest.mark.parametrize("progress", ["published", "local", "paused", "diverged"])
+    async def test_pause_continuation_compares_existing_local_and_origin_before_reset(
+        self, mgr, base_ws, kind, monkeypatch, unproved, progress,
+    ):
+        from src.orchestrator.task_checkpoint import CHECKPOINT_META, capture_checkpoint
+
+        slot, path, saved = await self._checkpoint(mgr, base_ws, kind, dirty=True)
+        branch = "aq/tsk-1"
+        (path / "published.txt").write_text("published task work\n")
+        _git(["add", "published.txt"], path)
+        _git(["commit", "-m", "published progress"], path)
+        published = _git(["rev-parse", "HEAD"], path)
+        _git(["push", "origin", branch], path)
+        _git(["reset", "--hard", saved["head"]], path)
+        if progress in {"local", "paused", "diverged"}:
+            if progress in {"local", "paused"}:
+                _git(["reset", "--hard", published], path)
+            (path / "local.txt").write_text("preserved failed attempt\n")
+            _git(["add", "local.txt"], path)
+            _git(["commit", "-m", "preserved local progress"], path)
+        local = _git(["rev-parse", "HEAD"], path)
+        if progress == "paused":
+            # Committed pause progress is newer than both branch refs.
+            (path / "staged.txt").write_text("saved stage\n")
+            _git(["add", "staged.txt"], path)
+            (path / "staged.txt").write_text("saved unstaged\n")
+            await capture_checkpoint(mgr.db, mgr.git, "tsk-1", str(path))
+            saved = await mgr.db.get_task_meta("tsk-1", CHECKPOINT_META)
+            _git(["reset", "--hard", published], path)
+        _git(["switch", "-c", "aq/foreign", saved["head"]], path)
+        self._record_foreign_checkout(mgr, path)
+        switches = []
+        original = mgr.git._arun
+
+        async def record(args, **kwargs):
+            if args[:2] == ["switch", "-C"]:
+                switches.append(args)
+            return await original(args, **kwargs)
+
+        monkeypatch.setattr(mgr.git, "_arun", record)
+        if unproved:
+            monkeypatch.setattr(mgr.git, "ais_ancestor", AsyncMock(return_value=None))
+        if unproved or progress == "diverged":
+            with pytest.raises(GitError, match="diverged or are unproved"):
+                await mgr.reset_slot_for_task(
+                    slot, FakeTask(), target_branch=branch,
+                    base_branch=saved["head"], preserve_branch=True,
+                )
+            assert not switches
+            assert _git(["branch", "--show-current"], path) == "aq/foreign"
+            assert _git(["rev-parse", branch], path) == (
+                published if progress == "paused" else local
+            )
+        else:
+            await mgr.reset_slot_for_task(
+                slot, FakeTask(), target_branch=branch,
+                base_branch=saved["head"], preserve_branch=True,
+            )
+            expected = local if progress in {"local", "paused"} else published
+            assert switches == [["switch", "-C", branch, expected]]
+            assert _git(["rev-parse", "HEAD"], path) == expected
+            assert (path / "published.txt").read_text() == "published task work\n"
+            assert _git(["show", ":staged.txt"], path) == "saved stage"
+            assert (path / "staged.txt").read_text() == "saved unstaged\n"
+        assert await mgr.db.get_task_meta("tsk-1", CHECKPOINT_META) == saved
+
+    async def test_stale_restoration_plan_refuses_a_reset_below_origin(
+        self, mgr, base_ws, kind,
+    ):
+        from src.orchestrator.task_checkpoint import prepare_checkpoint, restore_checkpoint
+
+        _slot, path, saved = await self._checkpoint(mgr, base_ws, kind, dirty=True)
+        plan = await prepare_checkpoint(
+            mgr.db, mgr.git, "tsk-1", str(path), owned_branch="aq/tsk-1",
+            expected_branch="aq/tsk-1",
+        )
+        (path / "published.txt").write_text("later publication\n")
+        _git(["add", "published.txt"], path)
+        _git(["commit", "-m", "publication after planning"], path)
+        tip = _git(["rev-parse", "HEAD"], path)
+        _git(["push", "origin", "aq/tsk-1"], path)
+        before = _git(["status", "--porcelain"], path)
+
+        with pytest.raises(GitError, match="backwards from origin"):
+            await restore_checkpoint(
+                mgr.db, mgr.git, "tsk-1", str(path), saved=plan, expected_branch="aq/tsk-1",
+            )
+
+        assert _git(["rev-parse", "HEAD"], path) == tip
+        assert _git(["status", "--porcelain"], path) == before
+        assert _git(["rev-parse", saved["ref"]], path) == saved["commit"]
+
+    @pytest.mark.parametrize("unproved", [False, True])
+    async def test_owned_checkpoint_refusal_names_compared_heads_and_preserves_slot(
+        self, mgr, base_ws, kind, monkeypatch, unproved,
+    ):
+        from src.orchestrator.task_checkpoint import CHECKPOINT_META, capture_checkpoint
+
+        slot, path, saved = await self._checkpoint(mgr, base_ws, kind)
+        _git(["branch", "aq/owned", saved["head"]], path)
+        (path / "checkpoint-only.txt").write_text("checkpoint branch progress\n")
+        _git(["add", "checkpoint-only.txt"], path)
+        _git(["commit", "-m", "checkpoint branch diverges"], path)
+        await capture_checkpoint(mgr.db, mgr.git, "tsk-1", str(path))
+        saved = await mgr.db.get_task_meta("tsk-1", CHECKPOINT_META)
+        _git(["switch", "-c", "aq/foreign", "aq/owned"], path)
+        self._record_foreign_checkout(mgr, path)
+        slot_head = _git(["rev-parse", "HEAD"], path)
+        (path / "keep.txt").write_text("destination edits\n")
+        if unproved:
+            monkeypatch.setattr(mgr.git, "ais_ancestor", AsyncMock(return_value=None))
+        before = _git(["status", "--porcelain"], path)
+
+        with pytest.raises(GitError) as caught:
+            await mgr.reset_slot_for_task(
+                slot, FakeTask(), target_branch="aq/owned", base_branch=slot_head,
+            )
+
+        reason = str(caught.value)
+        for fact in (saved["head"], saved["commit"], "aq/owned", slot_head, "slot HEAD", "aq/foreign"):
+            assert fact in reason
+        assert _git(["status", "--porcelain"], path) == before
+        assert _git(["branch", "--show-current"], path) == "aq/foreign"
+        assert (path / "keep.txt").read_text() == "destination edits\n"
+        assert await mgr.db.get_task_meta("tsk-1", CHECKPOINT_META) == saved
 
     @pytest.mark.parametrize("dirty", [False, True])
     async def test_old_checkpoint_keeps_preserved_commit_and_saved_dirty_layers(
@@ -763,7 +1233,239 @@ class TestOperatorHandoffCheckpoint:
 # ─────────────────────────────── §3.2 reset ──────────────────────────────
 
 
+class TestMissingSentinelRecovery:
+    @pytest.mark.parametrize("detached", [False, True])
+    @pytest.mark.parametrize("matching_claim", [False, True])
+    async def test_deleted_predecessor_sentinel_is_reproved_without_changing_source(
+        self, mgr, base_ws, kind, detached, matching_claim,
+    ):
+        from src.claim_file import write_claim_file
+
+        slot = await mgr.create_slot(base_ws, kind, 0)
+        await mgr.reset_slot_for_task(slot, FakeTask(id="completed-repair"), kind=kind)
+        path = Path(slot.workspace_path)
+        if detached:
+            _git(["switch", "--detach"], path)
+        (path / WORKTREE_SENTINEL_NAME).unlink()
+        if matching_claim:
+            write_claim_file(path, {"task_id": "incoming"})
+        (path / "README.md").write_text("staged predecessor progress\n")
+        _git(["add", "README.md"], path)
+        (path / "untracked.txt").write_text("untracked predecessor progress\n")
+        head = _git(["rev-parse", "HEAD"], path)
+        index = _git(["write-tree"], path)
+        branch = _git(["rev-parse", "--abbrev-ref", "HEAD"], path)
+        claim_path = path / ".aq" / "claim.json"
+        claim_bytes = claim_path.read_bytes() if matching_claim else None
+
+        await mgr.ensure_slot_checkout(slot, FakeTask(id="incoming"))
+
+        restored = mgr.read_sentinel(path)
+        assert (restored.workspace_id, restored.base_workspace_id, restored.slot_index) == (
+            slot.id, base_ws.id, slot.slot_index,
+        )
+        assert restored.branch == branch
+        assert restored.task_id is None and restored.setup_hash == ""
+        assert _git(["rev-parse", "HEAD"], path) == head
+        assert _git(["write-tree"], path) == index
+        assert (path / "README.md").read_text() == "staged predecessor progress\n"
+        assert (path / "untracked.txt").read_text() == "untracked predecessor progress\n"
+        assert (claim_path.read_bytes() if matching_claim else None) == claim_bytes
+        proof = mgr.db.contexts[-1]
+        assert proof["task_id"] == "incoming"
+        assert '"predecessor_task_id": null' in proof["content"]
+        assert head in proof["content"]
+
+        await mgr.reset_slot_for_task(slot, FakeTask(id="incoming"), kind=kind)
+
+        assert mgr.read_sentinel(path).task_id == "incoming"
+        assert _git(["branch", "--show-current"], path) == "aq/incoming"
+        assert any("staged predecessor progress" in ctx["content"] for ctx in mgr.db.contexts)
+
+    async def test_predecessor_task_in_valid_sentinel_needs_no_repair(self, mgr, base_ws, kind):
+        slot = await mgr.create_slot(base_ws, kind, 0)
+        await mgr.reset_slot_for_task(slot, FakeTask(id="completed-repair"), kind=kind)
+        path = Path(slot.workspace_path)
+        before = (path / WORKTREE_SENTINEL_NAME).read_bytes()
+        await mgr.ensure_slot_checkout(slot, FakeTask(id="incoming"))
+        assert (path / WORKTREE_SENTINEL_NAME).read_bytes() == before
+        assert not mgr.db.contexts
+
+    async def test_detached_unpublished_commits_are_preserved_before_reconstruction(
+        self, mgr, base_ws, kind,
+    ):
+        slot = await mgr.create_slot(base_ws, kind, 0)
+        path = Path(slot.workspace_path)
+        (path / "private.txt").write_text("unpublished predecessor work\n")
+        _git(["add", "private.txt"], path)
+        _git(["commit", "-m", "unpublished work"], path)
+        head = _git(["rev-parse", "HEAD"], path)
+        (path / WORKTREE_SENTINEL_NAME).unlink()
+
+        await mgr.ensure_slot_checkout(slot, FakeTask(id="incoming"))
+        assert _git(["rev-parse", "origin/aq/incoming"], path) == head
+        assert mgr.read_sentinel(path).task_id is None
+        await mgr.reset_slot_for_task(slot, FakeTask(id="incoming"), kind=kind)
+        assert _git(["show", f"{head}:private.txt"], base_ws.workspace_path) == \
+            "unpublished predecessor work"
+        assert _git(["rev-parse", "origin/aq/incoming"], path) == head
+
+    @pytest.mark.parametrize("fault", [
+        "foreign_claim", "stale_claim", "unreadable_claim", "unreadable_sentinel",
+        "same_origin_other_clone", "base_project", "task_project", "duplicate",
+        "git_lock", "retained_owner", "foreign_session", "wrong_path",
+        "unpublished_push_failure", "unknown_commit_safety", "diagnostic_failure",
+        "unknown_repository", "other_slot_gitdir", "other_slot_gitdir_symlink",
+    ])
+    async def test_unproved_recovery_preserves_evidence(
+        self, mgr, base_ws, kind, monkeypatch, fault,
+    ):
+        from src.claim_file import write_claim_file
+
+        slot = await mgr.create_slot(base_ws, kind, 0)
+        path = Path(slot.workspace_path)
+        (path / WORKTREE_SENTINEL_NAME).unlink()
+        task = FakeTask(id="incoming")
+        if fault in {"foreign_claim", "stale_claim", "unreadable_claim"}:
+            write_claim_file(path, {"task_id": "incoming" if fault == "stale_claim" else "foreign",
+                                    "claim_epoch": 7})
+            if fault == "unreadable_claim":
+                (path / ".aq" / "claim.json").write_bytes(b"unreadable claim")
+        elif fault == "unreadable_sentinel":
+            (path / WORKTREE_SENTINEL_NAME).write_bytes(b"unreadable sentinel")
+        elif fault == "same_origin_other_clone":
+            other = path.parent / "other-clone"
+            _git(["clone", _git(["remote", "get-url", "origin"], path), str(other)], path.parent)
+            base_ws.workspace_path = str(other)
+        elif fault == "base_project":
+            base_ws.project_id = "foreign-project"
+        elif fault == "task_project":
+            task.project_id = "foreign-project"
+        elif fault == "duplicate":
+            mgr.db.workspaces["duplicate"] = replace(slot, id="duplicate", project_id="foreign")
+        elif fault == "git_lock":
+            _git(["worktree", "lock", str(path)], base_ws.workspace_path)
+        elif fault == "retained_owner":
+            monkeypatch.setattr(mgr, "_slot_has_retained_binding", AsyncMock(return_value=True))
+        elif fault == "foreign_session":
+            monkeypatch.setattr(mgr.db, "list_sessions", AsyncMock(return_value=[
+                SimpleNamespace(work_dir=str(path), task_id="foreign"),
+            ]))
+        elif fault == "wrong_path":
+            slot.slot_index = 9
+        elif fault == "unpublished_push_failure":
+            _git(["commit", "--allow-empty", "-m", "private work"], path)
+            monkeypatch.setattr(mgr, "salvage_unpushed", AsyncMock(return_value=None))
+        elif fault == "unknown_commit_safety":
+            monkeypatch.setattr(mgr.git, "acount_commits_not_on_any_remote",
+                                AsyncMock(return_value=None))
+        elif fault == "unknown_repository":
+            monkeypatch.setattr(mgr.git, "aworktree_base_path", AsyncMock(return_value=None))
+        elif fault in {"other_slot_gitdir", "other_slot_gitdir_symlink"}:
+            other = await mgr.create_slot(base_ws, kind, 1)
+            if fault == "other_slot_gitdir_symlink":
+                (path / ".git").unlink()
+                (path / ".git").symlink_to(Path(other.workspace_path) / ".git")
+            else:
+                (path / ".git").write_bytes((Path(other.workspace_path) / ".git").read_bytes())
+        else:
+            monkeypatch.setattr(mgr.db, "add_task_context", AsyncMock(side_effect=RuntimeError("db")))
+        (path / "README.md").write_bytes(b"staged source")
+        _git(["add", "README.md"], path)
+        (path / "untracked").write_bytes(b"untracked source")
+        head = _git(["rev-parse", "HEAD"], path)
+        index = _git(["write-tree"], path)
+        evidence = {p: p.read_bytes() for p in (
+            path / WORKTREE_SENTINEL_NAME, path / ".aq" / "claim.json", path / ".git",
+        ) if p.exists()}
+
+        with pytest.raises(RuntimeError if fault == "diagnostic_failure" else GitError):
+            await mgr.ensure_slot_checkout(slot, task)
+
+        assert _git(["rev-parse", "HEAD"], path) == head
+        assert _git(["write-tree"], path) == index
+        assert (path / "README.md").read_bytes() == b"staged source"
+        assert (path / "untracked").read_bytes() == b"untracked source"
+        assert not (path / WORKTREE_SENTINEL_NAME).exists() or \
+            (path / WORKTREE_SENTINEL_NAME) in evidence
+        assert all(p.read_bytes() == content for p, content in evidence.items())
+
+    async def test_missing_git_pointer_is_not_recreated(self, mgr, base_ws, kind):
+        slot = await mgr.create_slot(base_ws, kind, 0)
+        path = Path(slot.workspace_path)
+        (path / "README.md").write_bytes(b"staged source")
+        _git(["add", "README.md"], path)
+        admin = Path(_git(["rev-parse", "--absolute-git-dir"], path))
+        index = (admin / "index").read_bytes()
+        (path / WORKTREE_SENTINEL_NAME).unlink()
+        (path / ".git").unlink()
+
+        with pytest.raises(GitError):
+            await mgr.ensure_slot_checkout(slot, FakeTask())
+
+        assert not (path / WORKTREE_SENTINEL_NAME).exists()
+        assert not (path / ".git").exists()
+        assert (admin / "index").read_bytes() == index
+        assert (path / "README.md").read_bytes() == b"staged source"
+
+    async def test_concurrent_sentinel_is_not_overwritten(self, mgr, base_ws, kind, monkeypatch):
+        slot = await mgr.create_slot(base_ws, kind, 0)
+        path = Path(slot.workspace_path)
+        target = path / WORKTREE_SENTINEL_NAME
+        target.unlink()
+        save = mgr.db.add_task_context
+
+        async def race(*args, **kwargs):
+            await save(*args, **kwargs)
+            target.write_bytes(b"concurrent identity evidence")
+
+        monkeypatch.setattr(mgr.db, "add_task_context", race)
+        with pytest.raises(GitError, match="appeared during recovery"):
+            await mgr.ensure_slot_checkout(slot, FakeTask())
+        assert target.read_bytes() == b"concurrent identity evidence"
+        assert not list(path.glob(".aq-sentinel-recovery-*"))
+
+
 class TestResetSlot:
+    async def test_exact_worker_retry_preserves_published_tip_with_stale_local_branch(
+        self, mgr, base_ws, kind,
+    ):
+        slot = await mgr.create_slot(base_ws, kind, 0)
+        path = Path(slot.workspace_path)
+        await mgr.reset_slot_for_task(slot, FakeTask())
+        initial = _git(["rev-parse", "HEAD"], path)
+        (path / "published.txt").write_text("published before reopen\n")
+        _git(["add", "published.txt"], path)
+        _git(["commit", "-m", "published attempt"], path)
+        published = _git(["rev-parse", "HEAD"], path)
+        _git(["push", "origin", "aq/tsk-1"], path)
+        _git(["reset", "--hard", initial], path)
+
+        await mgr.reset_slot_for_task(
+            slot, FakeTask(), target_branch="aq/tsk-1", base_branch=initial,
+            preserve_branch=True,
+        )
+
+        assert _git(["rev-parse", "HEAD"], path) == published
+        assert (path / "published.txt").read_text() == "published before reopen\n"
+        assert _git(["status", "--porcelain"], path) == ""
+
+    @pytest.mark.parametrize("delete_predecessor_branch", [False, True])
+    async def test_reuses_published_slot_detached_at_default_tip(
+        self, mgr, base_ws, kind, delete_predecessor_branch,
+    ):
+        slot = await mgr.create_slot(base_ws, kind, 0)
+        path = Path(slot.workspace_path)
+        await mgr.reset_slot_for_task(slot, FakeTask())
+        _git(["commit", "--allow-empty", "-m", "published predecessor"], path)
+        _git(["push", "origin", "aq/tsk-1"], path)
+        await mgr.restore_slot_after_task(slot, task_id="tsk-1")
+        assert _git(["rev-parse", "--abbrev-ref", "HEAD"], path) == "HEAD"
+        assert _git(["rev-parse", "HEAD"], path) == _git(["rev-parse", "origin/main"], path)
+        if delete_predecessor_branch:
+            _git(["branch", "-D", "aq/tsk-1"], path)
+        assert await mgr.reset_slot_for_task(slot, FakeTask(id="tsk-2")) == "aq/tsk-2"
+
     async def test_exclusive_clone_can_be_prepared_again(self, mgr, base_ws, kind):
         await mgr.reset_slot_for_task(base_ws, FakeTask(), kind=kind)
 
@@ -773,64 +1475,43 @@ class TestResetSlot:
         assert mgr.read_sentinel(base_ws.workspace_path).base_workspace_id == ""
 
     @pytest.mark.parametrize("locked", [False, True])
-    async def test_missing_slot_is_recreated_with_the_same_identity(
+    async def test_missing_slot_retains_its_registration_for_investigation(
         self, mgr, base_ws, kind, locked,
     ):
         slot = await mgr.create_slot(base_ws, kind, 0)
         await mgr.reset_slot_for_task(slot, FakeTask(), kind=kind)
-        foreign = Path(base_ws.workspace_path).parent / "unmanaged"
-        _git(["worktree", "add", "--detach", str(foreign)], base_ws.workspace_path)
-        shutil.rmtree(foreign)
         if locked:
             _git(["worktree", "lock", slot.workspace_path], base_ws.workspace_path)
         shutil.rmtree(slot.workspace_path)
-
-        branch = await mgr.reset_slot_for_task(slot, FakeTask(), kind=kind)
-
-        assert branch == "aq/tsk-1"
-        sentinel = mgr.read_sentinel(slot.workspace_path)
-        assert sentinel.workspace_id == slot.id and sentinel.base_workspace_id == base_ws.id
+        registrations = _git(["worktree", "list", "--porcelain"], base_ws.workspace_path)
+        with pytest.raises(GitError, match="missing.*supervisor investigation"):
+            await mgr.reset_slot_for_task(slot, FakeTask(), kind=kind)
+        assert not Path(slot.workspace_path).exists()
         assert mgr.db.workspaces[slot.id] is slot
-        assert _git(["branch", "--show-current"], slot.workspace_path) == branch
-        assert _git(["status", "--porcelain"], slot.workspace_path) == ""
-        assert str(foreign) in _git(["worktree", "list", "--porcelain"], base_ws.workspace_path)
+        assert _git(["worktree", "list", "--porcelain"], base_ws.workspace_path) == registrations
 
-    async def test_missing_live_slot_is_preserved(self, mgr, base_ws, kind, monkeypatch):
-        slot = await mgr.create_slot(base_ws, kind, 0)
-        shutil.rmtree(slot.workspace_path)
-        monkeypatch.setattr(mgr.db, "list_sessions", AsyncMock(return_value=[
-            SimpleNamespace(work_dir=slot.workspace_path, task_id="foreign"),
-        ]))
-        with pytest.raises(GitError, match="live holder"):
-            await mgr.reset_slot_for_task(slot, FakeTask(), kind=kind)
-        assert not Path(slot.workspace_path).exists()
-
-    async def test_missing_slot_preflight_uses_project_git_budget(
-        self, mgr, base_ws, kind, monkeypatch,
+    @pytest.mark.parametrize("binding", ["claim_file", "task_lock"])
+    async def test_slot_bound_to_another_task_is_a_foreign_slot_claim(
+        self, mgr, base_ws, kind, binding,
     ):
+        """A typed refusal, so the claim path releases the task for another slot."""
+        from src.claim_file import read_claim_file, write_claim_file
+
         slot = await mgr.create_slot(base_ws, kind, 0)
-        shutil.rmtree(slot.workspace_path)
-        mgr.config.slot_reset_git_timeouts[slot.project_id] = 1800
-        reprovision = mgr.reprovision_slot
+        foreign = {"task_id": "paused-holder", "claim_epoch": 3, "session_id": "gone"}
+        if binding == "claim_file":
+            write_claim_file(slot.workspace_path, foreign)
+        else:
+            slot.locked_by_task_id = "paused-holder"
 
-        async def verify_budget(*args, **kwargs):
-            assert mgr.git._command_timeout() == 1800
-            await reprovision(*args, **kwargs)
-
-        monkeypatch.setattr(mgr, "reprovision_slot", verify_budget)
-        await mgr.ensure_slot_checkout(slot, FakeTask(), kind=kind)
-        assert mgr.git._command_timeout() == 120
-        assert Path(slot.workspace_path, ".git").is_file()
-
-    async def test_missing_slot_with_retained_binding_is_preserved(
-        self, mgr, base_ws, kind, monkeypatch,
-    ):
-        slot = await mgr.create_slot(base_ws, kind, 0)
-        shutil.rmtree(slot.workspace_path)
-        monkeypatch.setattr(mgr, "_slot_has_retained_binding", AsyncMock(return_value=True))
-        with pytest.raises(GitError, match="retains an owner or job pin"):
+        with pytest.raises(ForeignSlotClaim) as refused:
             await mgr.reset_slot_for_task(slot, FakeTask(), kind=kind)
-        assert not Path(slot.workspace_path).exists()
+
+        assert refused.value.holder_task_id == "paused-holder"
+        assert refused.value.workspace_id == slot.id
+        if binding == "claim_file":
+            assert read_claim_file(slot.workspace_path) == foreign
+
 
     @pytest.mark.parametrize("protection", ["unmanaged", "agent", "task", "owner"])
     async def test_protected_branch_holder_is_never_detached(
@@ -862,6 +1543,52 @@ class TestResetSlot:
         with pytest.raises(GitError, match="mismatched sentinel"):
             await mgr.reset_slot_for_task(slot, FakeTask(), kind=kind)
         assert (Path(slot.workspace_path) / "progress.txt").read_text() == "preserve me"
+
+    @pytest.mark.parametrize("disagreement", ["branch", "repository", "claim", "unreadable_claim", "sentinel"])
+    async def test_source_disagreement_preserves_index_and_worktree(
+        self, mgr, base_ws, kind, disagreement,
+    ):
+        slot = await mgr.create_slot(base_ws, kind, 0)
+        await mgr.reset_slot_for_task(slot, FakeTask(), kind=kind)
+        path = Path(slot.workspace_path)
+        if disagreement == "branch":
+            _git(["switch", "-c", "aq/foreign"], path)
+        elif disagreement == "repository":
+            other = path.parent / "other-repository"
+            _git(["clone", base_ws.workspace_path, str(other)], path.parent)
+            other_ws = Workspace(id="other-base", project_id=base_ws.project_id,
+                                 workspace_path=str(other), source_type=RepoSourceType.CLONE)
+            mgr.db.workspaces[other_ws.id] = other_ws
+            slot.base_workspace_id = other_ws.id
+            sentinel = mgr.read_sentinel(path)
+            sentinel.base_workspace_id = other_ws.id
+            mgr.write_sentinel(path, sentinel)
+        elif disagreement in {"claim", "unreadable_claim"}:
+            from src.claim_file import write_claim_file
+            write_claim_file(str(path), {"task_id": "foreign", "claim_epoch": 7})
+            if disagreement == "unreadable_claim":
+                (path / ".aq" / "claim.json").write_bytes(b"unreadable claim")
+        else:
+            sentinel = mgr.read_sentinel(path)
+            sentinel.workspace_id = "foreign"
+            mgr.write_sentinel(path, sentinel)
+        (path / "README.md").write_bytes(b"staged source")
+        _git(["add", "README.md"], path)
+        (path / "untracked").write_bytes(b"untracked source")
+        head = _git(["rev-parse", "HEAD"], path)
+        index = _git(["write-tree"], path)
+        branch = _git(["branch", "--show-current"], path)
+        sentinel = (path / WORKTREE_SENTINEL_NAME).read_bytes()
+
+        with pytest.raises(GitError):
+            await mgr.reset_slot_for_task(slot, FakeTask(), kind=kind)
+
+        assert _git(["rev-parse", "HEAD"], path) == head
+        assert _git(["write-tree"], path) == index
+        assert _git(["branch", "--show-current"], path) == branch
+        assert (path / "README.md").read_bytes() == b"staged source"
+        assert (path / "untracked").read_bytes() == b"untracked source"
+        assert (path / WORKTREE_SENTINEL_NAME).read_bytes() == sentinel
 
     def _make_slot(self, mgr, base_ws, kind):
         return asyncio.run(mgr.create_slot(base_ws, kind, 0))
@@ -1335,7 +2062,6 @@ class TestGitManagerWorktreePrimitives:
         assert asyncio.run(GitManager().aworktree_base_path(str(d))) is None
 
 
-
 # ────────────────────── §3.2 salvage: binaries and size ──────────────────
 
 
@@ -1453,7 +2179,10 @@ class TestRestoreSlotAfterTask:
         asyncio.run(mgr.restore_slot_after_task(slot, task_id="tsk-1"))
         assert _git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=d) == "aq/tsk-1"
 
-    def test_a_stale_index_lock_does_not_block_the_restore(self, mgr, base_ws, kind):
+    @pytest.mark.parametrize("owner", ["abandoned", "live", "unknown"])
+    def test_a_stale_index_lock_does_not_block_the_restore(
+        self, mgr, base_ws, kind, tmp_path, monkeypatch, owner,
+    ):
         """F14: a killed agent leaves ``.git/worktrees/<slot>/index.lock``,
         which is *not* under ``<slot>/.git`` — that is a file, not a dir."""
         slot, d, _c = self._dirty_slot(mgr, base_ws, kind)
@@ -1461,10 +2190,38 @@ class TestRestoreSlotAfterTask:
         assert git_dir.is_dir() and git_dir != d / ".git"
         (git_dir / "index.lock").write_text("")
 
+        # Exercise real ownership inspection against explicit process evidence.
+        # Ambient Git processes can legitimately veto cleanup on a shared runner.
+        from src.git import locks
+
+        proc_root = tmp_path / "proc"
+        process = proc_root / "123"
+        process.mkdir(parents=True)
+        name = "editor" if owner == "abandoned" else "git"
+        (process / "comm").write_text(name)
+        (process / "stat").write_text(f"123 ({name}) S 1 2 3")
+        (process / "cmdline").write_bytes(name.encode() + b"\0status\0")
+        (process / "environ").write_bytes(b"")
+        (process / "fd").mkdir()
+        if owner != "unknown":
+            (process / "cwd").symlink_to(d, target_is_directory=True)
+        inspect_owner = locks._live_lock_owner
+
+        def controlled_processes(common, identities):
+            assert common == git_dir.parent.parent.resolve()
+            info = (git_dir / "index.lock").stat()
+            assert (info.st_dev, info.st_ino) in identities
+            return inspect_owner(common, identities, proc_root=proc_root)
+
+        monkeypatch.setattr(locks, "_live_lock_owner", controlled_processes)
         asyncio.run(mgr.restore_slot_after_task(slot, task_id="tsk-1"))
 
-        assert not (git_dir / "index.lock").exists()
-        assert _git(["status", "--porcelain"], cwd=d) == ""
+        if owner == "abandoned":
+            assert not (git_dir / "index.lock").exists()
+            assert _git(["status", "--porcelain"], cwd=d) == ""
+        else:
+            assert (git_dir / "index.lock").exists()
+            assert (d / "README.md").read_text() == "unfinished"
 
     @pytest.mark.parametrize("dirty", [False, True])
     def test_failed_close_preserves_the_published_tip_until_handoff(
@@ -1502,6 +2259,154 @@ class TestRestoreSlotAfterTask:
         assert _git(["status", "--porcelain"], cwd=path) == ""
         if dirty:
             assert "unfinished" in db.contexts[-1]["content"]
+
+
+class TestFinishedTaskSentinel:
+    """amber-bridge-75: a finished task's sentinel must not refuse the slot.
+
+    A train repair closed, its slot was detached clean at the batch tip and
+    its sentinel kept naming ``aq/batches/...``.  Delivery deleted that
+    branch and ``origin/main`` moved on, so the next task's preparation could
+    prove neither predecessor shape and refused: "branch disagrees with its
+    source sentinel".
+    """
+
+    async def _finished_slot(self, mgr, base_ws, kind, base_repo):
+        """A detached, clean slot whose predecessor's branch is gone."""
+        slot = await mgr.create_slot(base_ws, kind, 0)
+        await mgr.reset_slot_for_task(slot, FakeTask(id="tsk-prev"))
+        path = Path(slot.workspace_path)
+        (path / "work.py").write_text("print(1)\n")
+        _git(["add", "work.py"], cwd=path)
+        _git(["commit", "-m", "repair"], cwd=path)
+        _git(["push", "origin", "aq/tsk-prev"], cwd=path)
+        _git(["switch", "--detach"], cwd=path)
+        _git(["branch", "-D", "aq/tsk-prev"], cwd=path)
+        # Delivery lands the branch on main, then deletes it.
+        _git(["fetch", "origin"], cwd=base_repo)
+        _git(["merge", "--no-ff", "-m", "deliver", "origin/aq/tsk-prev"], cwd=base_repo)
+        _git(["push", "origin", "main", ":aq/tsk-prev"], cwd=base_repo)
+        _git(["fetch", "--prune", "origin"], cwd=path)
+        assert mgr.read_sentinel(path).branch == "aq/tsk-prev"
+        return slot, path
+
+    @staticmethod
+    def _status(db, monkeypatch, status):
+        async def get_task(task_id):
+            return SimpleNamespace(id=task_id, status=status)
+
+        monkeypatch.setattr(db, "get_task", get_task)
+
+    async def test_a_terminal_predecessor_is_reclaimed(
+        self, mgr, base_ws, kind, base_repo, db, monkeypatch
+    ):
+        from src.models import TaskStatus
+
+        slot, path = await self._finished_slot(mgr, base_ws, kind, base_repo)
+        with pytest.raises(GitError, match="disagrees with its source sentinel"):
+            await mgr.ensure_slot_checkout(slot, FakeTask(id="tsk-next"))
+        self._status(db, monkeypatch, TaskStatus.COMPLETED)
+
+        assert await mgr.reset_slot_for_task(slot, FakeTask(id="tsk-next")) == "aq/tsk-next"
+
+        sentinel = mgr.read_sentinel(path)
+        assert (sentinel.task_id, sentinel.branch) == ("tsk-next", "aq/tsk-next")
+
+    @pytest.mark.parametrize("refusal", ["in_progress", "dirty", "retained"])
+    async def test_a_live_or_unproved_predecessor_still_refuses(
+        self, mgr, base_ws, kind, base_repo, db, monkeypatch, refusal
+    ):
+        from src.models import TaskStatus
+
+        slot, path = await self._finished_slot(mgr, base_ws, kind, base_repo)
+        self._status(
+            db, monkeypatch,
+            TaskStatus.IN_PROGRESS if refusal == "in_progress" else TaskStatus.COMPLETED,
+        )
+        if refusal == "dirty":
+            (path / "work.py").write_text("unfinished\n")
+        if refusal == "retained":
+            monkeypatch.setattr(mgr, "_slot_has_retained_binding", AsyncMock(return_value=True))
+
+        with pytest.raises(GitError, match="disagrees with its source sentinel"):
+            await mgr.ensure_slot_checkout(slot, FakeTask(id="tsk-next"))
+        assert mgr.read_sentinel(path).task_id == "tsk-prev"
+
+    @pytest.mark.parametrize("owner", ["tsk-next", "tsk-other"])
+    async def test_only_a_foreign_owner_row_retains_a_finished_slot(
+        self, mgr, base_ws, kind, base_repo, db, monkeypatch, owner
+    ):
+        """Claim preparation attaches the claimant's owner row before the reset.
+
+        The second preflight then saw that row as a retained binding and
+        refused the slot it had reclaimed moments earlier (bold-torrent-46:
+        brisk-quest-34 on AQ slot-4, nimble-rapids-30 on ME slot-1).
+        """
+        from src.models import TaskStatus
+
+        slot, path = await self._finished_slot(mgr, base_ws, kind, base_repo)
+        self._status(db, monkeypatch, TaskStatus.COMPLETED)
+
+        async def retained(workspace_id, *, excluding_owner=None):
+            return workspace_id == slot.id and owner != excluding_owner
+
+        monkeypatch.setattr(mgr, "_slot_has_retained_binding", retained)
+        if owner == "tsk-other":
+            with pytest.raises(GitError, match="disagrees with its source sentinel"):
+                await mgr.ensure_slot_checkout(slot, FakeTask(id="tsk-next"))
+            assert mgr.read_sentinel(path).task_id == "tsk-prev"
+            return
+        await mgr.ensure_slot_checkout(slot, FakeTask(id="tsk-next"))
+        assert await mgr.reset_slot_for_task(slot, FakeTask(id="tsk-next")) == "aq/tsk-next"
+        assert mgr.read_sentinel(path).task_id == "tsk-next"
+
+    async def test_completion_releases_a_detached_published_slot(
+        self, mgr, base_ws, kind, base_repo
+    ):
+        slot = await mgr.create_slot(base_ws, kind, 0)
+        await mgr.reset_slot_for_task(slot, FakeTask(id="tsk-prev"))
+        path = Path(slot.workspace_path)
+        (path / "work.py").write_text("print(1)\n")
+        _git(["add", "work.py"], cwd=path)
+        _git(["commit", "-m", "repair"], cwd=path)
+        _git(["push", "origin", "aq/tsk-prev"], cwd=path)
+        await mgr.restore_slot_after_task(slot, task_id="tsk-prev")
+        assert _git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=path) == "HEAD"
+
+        assert await mgr.release_task_sentinel(slot, "tsk-other") is False
+        assert await mgr.release_task_sentinel(slot, "tsk-prev") is True
+
+        sentinel = mgr.read_sentinel(path)
+        assert (sentinel.task_id, sentinel.branch, sentinel.assigned_at) == (None, None, None)
+        assert (sentinel.workspace_id, sentinel.project_id) == (slot.id, "p1")
+        # The incident: the branch goes away and main moves on.  A released
+        # slot prepares without consulting the predecessor at all.
+        _git(["push", "origin", ":aq/tsk-prev"], cwd=path)
+        _git(["commit", "--allow-empty", "-m", "later"], cwd=base_repo)
+        _git(["push", "origin", "main"], cwd=base_repo)
+        _git(["fetch", "--prune", "origin"], cwd=path)
+        _git(["branch", "-D", "aq/tsk-prev"], cwd=path)
+        assert await mgr.reset_slot_for_task(slot, FakeTask(id="tsk-next")) == "aq/tsk-next"
+
+    @pytest.mark.parametrize("shape", ["attached", "unpublished", "dirty"])
+    async def test_completion_keeps_the_sentinel_on_unreleased_work(
+        self, mgr, base_ws, kind, shape
+    ):
+        slot = await mgr.create_slot(base_ws, kind, 0)
+        await mgr.reset_slot_for_task(slot, FakeTask(id="tsk-prev"))
+        path = Path(slot.workspace_path)
+        (path / "work.py").write_text("print(1)\n")
+        _git(["add", "work.py"], cwd=path)
+        _git(["commit", "-m", "unpushed"], cwd=path)
+        if shape != "attached":
+            if shape == "dirty":
+                _git(["push", "origin", "aq/tsk-prev"], cwd=path)
+            _git(["switch", "--detach"], cwd=path)
+        if shape == "dirty":
+            (path / "work.py").write_text("unfinished\n")
+
+        assert await mgr.release_task_sentinel(slot, "tsk-prev") is False
+        assert mgr.read_sentinel(path).task_id == "tsk-prev"
 
 
 class TestSalvageUnpushedCommits:
@@ -1851,3 +2756,102 @@ class TestGitExcludeConcurrency:
 
         assert exclude.read_bytes() == original
         assert not list(exclude.parent.glob("exclude.*.tmp"))
+
+
+@pytest.mark.asyncio
+async def test_exact_available_origin_avoids_fetch(mgr, base_repo):
+    sha = _git(["rev-parse", "HEAD"], base_repo)
+    fetch = AsyncMock(side_effect=AssertionError("exact available commit needs no fetch"))
+    mgr.git.afetch_origin = fetch
+    assert await mgr._fetch_and_resolve_start_ref(
+        str(base_repo), sha, required=True,
+    ) == sha
+    fetch.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_missing_exact_origin_still_fetches(mgr, base_repo):
+    fetch = AsyncMock()
+    mgr.git.afetch_origin = fetch
+    with pytest.raises(GitError, match="cannot resolve"):
+        await mgr._fetch_and_resolve_start_ref(str(base_repo), "a" * 40, required=True)
+    fetch.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_unheld_branch_skips_peer_liveness_reads(mgr, base_ws, monkeypatch):
+    monkeypatch.setattr(mgr, "_base_of_slot_dir", AsyncMock(return_value=base_ws))
+    monkeypatch.setattr(mgr.git, "aworktree_list", AsyncMock(return_value=[{
+        "path": base_ws.workspace_path, "branch": "main",
+    }]))
+    monkeypatch.setattr(mgr.db, "list_sessions", AsyncMock(side_effect=AssertionError("no peer")))
+    monkeypatch.setattr(mgr.db, "list_workspaces", AsyncMock(side_effect=AssertionError("no peer")))
+    await mgr._detach_stale_branch_holders(Path(base_ws.workspace_path) / "slot", "aq/new")
+
+
+@pytest.mark.asyncio
+async def test_available_exact_origin_still_refreshes_mutable_child_refs(mgr, base_repo):
+    sha = _git(["rev-parse", "HEAD"], base_repo)
+    fetch = AsyncMock()
+    mgr.git.afetch_origin = fetch
+    assert await mgr._fetch_and_resolve_start_ref(
+        str(base_repo), sha, required=True, refresh_refs=True,
+    ) == sha
+    fetch.assert_awaited_once()
+
+
+@pytest.mark.parametrize("interruption", ["cancel", "timeout"])
+async def test_setup_cancellation_settles_children_before_return(tmp_path, interruption):
+    from src.git.process import _group_has_writer
+    import signal
+    import shlex
+
+    if os.name != "posix":
+        pytest.skip("POSIX process groups")
+    script = tmp_path / "setup.py"
+    script.write_text(
+        "import os,pathlib,subprocess,sys,time\n"
+        "p=subprocess.Popen([sys.executable,'-c','import time; time.sleep(60)'],"
+        "stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)\n"
+        "pathlib.Path('ready').write_text(str(os.getpgrp()))\n"
+        "p.wait()\n"
+    )
+    mgr = WorktreeSlotManager(
+        db=None, git=GitManager(), bus=None, git_mutex=lambda _: None,
+        config=WorktreesConfig(setup_timeout_seconds=1 if interruption == "timeout" else 60),
+    )
+    request = asyncio.create_task(mgr._run_setup(
+        tmp_path, [shlex.join([sys.executable, str(script)])],
+    ))
+    pgid = None
+    try:
+        async with asyncio.timeout(5):
+            while not (tmp_path / "ready").exists():
+                await asyncio.sleep(.01)
+        pgid = int((tmp_path / "ready").read_text())
+        if interruption == "cancel":
+            request.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(request, timeout=10)
+        else:
+            await asyncio.wait_for(request, timeout=10)
+        assert not _group_has_writer(pgid)
+    finally:
+        if pgid:
+            try:
+                os.killpg(pgid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        if not request.done():
+            request.cancel()
+        await asyncio.gather(request, return_exceptions=True)
+
+
+async def test_unknown_cleanup_cannot_be_swallowed_before_reset(mgr, base_repo, monkeypatch):
+    from src.git.process import ProcessCleanupError
+
+    monkeypatch.setattr(mgr.git, "aabort_in_progress_operations", AsyncMock(
+        side_effect=ProcessCleanupError("unproved child liveness"),
+    ))
+    with pytest.raises(ProcessCleanupError):
+        await mgr._abort_in_progress(base_repo)

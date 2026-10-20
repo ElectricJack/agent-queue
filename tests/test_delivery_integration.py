@@ -258,7 +258,7 @@ async def test_idle_opencode_sidebar_pointer_is_submitted_then_body_is_read(orch
         "body": "Grants restored; publish your held task branch and close it.",
     })
     message_id = result["message_id"]
-    pointer = f"Handle `aq message status {message_id} --json`."
+    pointer = f"Handle `aq message status {message_id} --json` (running it marks the message read)."
 
     await orch.message_delivery.run_delivery_pass()
     assert pane.submitted == [pointer]
@@ -336,7 +336,7 @@ class TestBackgroundDelivery:
             assert fake.sent_nudges == [
                 (
                     _supervisor_runtime_name(),
-                    f"Handle `aq message status {message_id} --json`.",
+                    f"Handle `aq message status {message_id} --json` (running it marks the message read).",
                 )
             ]
             stored = await orch.db.get_message(message_id)
@@ -396,7 +396,7 @@ class TestUserToSupervisorNudge:
         assert nudged_name == runtime_name
         # The nudge is a width-bounded pointer at the message, never its body
         # (src/messages/delivery.py ``_render_nudge``).
-        assert nudged_text == f"Handle `aq message status {message_id} --json`."
+        assert nudged_text == f"Handle `aq message status {message_id} --json` (running it marks the message read)."
         assert "what's the status?" not in nudged_text
 
         stored = await orch.db.get_message(message_id)

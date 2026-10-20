@@ -19,6 +19,7 @@ import pytest
 from src.api.scope import (
     AGENT_COMMAND_SET,
     _PLAYBOOK_COMPILER_COMMANDS,
+    _SPEC_INGEST_COMMANDS,
     _TRIAGE_COMMANDS,
 )
 from src.commands.operator_authority import OPERATOR_READS, OPERATOR_WRITES
@@ -54,7 +55,7 @@ EXPECTED_UNREACHABLE: dict[str, set[str]] = {
     "playbook-compiler": set(),
     "pr-merger": {"pr_merge"},
     "reviewer": {"reopen_with_feedback"},
-    "spec-ingest": {"get_downstream_tasks", "task_batch_commit", "task_batch_propose"},
+    "spec-ingest": set(),
     "supervisor": set(),
     "triage": {"edit_task"},
     "worker-claude": {"pr_merge"},
@@ -137,9 +138,12 @@ class TestShippedProfile:
         assert set(harness) <= HARNESS_TOOL_NAMES
 
     def test_every_aq_command_is_a_real_command(self, profile_id):
-        """No aspirational names: each one resolves to a dispatchable handler."""
+        """Every grant names a handler or an explicitly defined read scope."""
         parsed = _parsed(profile_id)
-        unknown = sorted(set(parsed.capabilities["aq_commands"]) - _builtin_command_names())
+        from src.profiles.capabilities import AQ_FEATURE_CAPABILITIES
+
+        unknown = sorted(set(parsed.capabilities["aq_commands"]) -
+                         (_builtin_command_names() | AQ_FEATURE_CAPABILITIES))
         assert unknown == []
 
     def test_policy_is_constructible_and_not_legacy(self, profile_id):
@@ -160,6 +164,9 @@ class TestShippedProfile:
         parsed = _parsed(profile_id)
         granted = set(parsed.capabilities["aq_commands"])
         reachable = OPERATOR_REACHABLE if "operator_execute" in granted else REACHABLE
+        if profile_id == "spec-ingest":
+            # These commands require the live server-owned ingestion role.
+            reachable = reachable | _SPEC_INGEST_COMMANDS
         unreachable = set() if profile_id == "supervisor" else granted - reachable
         assert unreachable == EXPECTED_UNREACHABLE[profile_id]
 
@@ -176,7 +183,14 @@ def test_supervisor_inbox_grants_exclude_internal_intake():
         "supervisor_inbox_status",
     } <= granted
     assert "supervisor_inbox_post" not in granted
-    assert granted <= _builtin_command_names()
+    from src.profiles.capabilities import AQ_FEATURE_CAPABILITIES
+
+    assert granted <= _builtin_command_names() | AQ_FEATURE_CAPABILITIES
+
+
+def test_supervisor_can_diagnose_and_repair_repository_checkouts():
+    granted = set(_parsed("supervisor").capabilities["aq_commands"])
+    assert {"project_doctor", "repair_repository_checkout", "repair_workspace_checkout"} <= granted
 
 
 # ---------------------------------------------------------------------------

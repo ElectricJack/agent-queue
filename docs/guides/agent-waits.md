@@ -4,6 +4,35 @@ tags: [guide, agents, waits]
 
 # Durable agent waits
 
+The Metrics page includes pending waits, observed slot time, wake causes and
+resume costs. Missing wait tables produce a null group and dashes in the UI;
+absent measurements stay null. Released slot time starts at the proven process
+stop and ends at the first resume reservation grant or report end. The pending
+reservation interval is reported separately as capacity delay. The 24-hour tile
+comes directly from these timestamps, independent of the selected chart range.
+`aq wait graph --costs` includes the same accounting projection. Resume-cost
+percentiles are in seconds, with configured defaults still labelled in minutes;
+cost and duration cohorts cover the preceding thirty days.
+Coarse chart samples average overlapping hourly snapshots, preserving fractional
+values and gaps instead of multiplying the same events or slot time.
+
+Avoided monitoring tokens are counterfactual. They are hidden by default. An
+operator can supply a historical cohort under `wait_policy.metrics`:
+
+```yaml
+wait_policy:
+  metrics:
+    pre_rollout_turn_rate: 2          # monitoring turns per minute of waiting
+    pre_rollout_tokens_per_turn: 100 # all tokens, including cache
+    cohort: "workers before rollout"
+    window: "2026-10-01/2026-10-07"
+```
+
+The estimate is baseline turns × observed wait minutes × baseline tokens per
+turn, minus measured summary and resume tokens. Incomplete overhead leaves the
+estimate null. The dashboard labels it counterfactual and shows its cohort and
+baseline window. No polling control arm or idle-terminal token assumption is used.
+
 A wait records one bounded condition for a task or a named supervisor. It
 keeps the task `IN_PROGRESS` and retains its claim, workspace and pool seat.
 Registration returns immediately. Job, task, message and timer adapters are available.
@@ -53,13 +82,13 @@ aq wait list --json
 aq wait cancel WAIT_ID
 ```
 
-To wait for a reply to a message you send, choose a thread ID and send as your
-session. The returned message ID identifies the message; it is not the thread ID.
+To wait for a reply to a message you send, choose a thread ID. Ordinary authenticated
+sends derive your live session UUID on the server; omit sender flags. The returned
+message ID identifies the message; it is not the thread ID.
 Use the sent message's `created_seq` as the exclusive cursor:
 
 ```bash
 aq message send --to user:dashboard --project "$AQ_PROJECT_ID" \
-  --from-kind session --from-id "$AQ_SESSION_ID" \
   --thread-id "request-$AQ_SESSION_ID" --body "Please reply here." --json
 # Read data.message.thread_id and data.message.created_seq from the response.
 aq wait register --kind message --ref "request-$AQ_SESSION_ID" \
@@ -69,8 +98,21 @@ aq wait register --kind message --ref "request-$AQ_SESSION_ID" \
 The reply must stay on that thread, for example through
 `aq message reply <message-id>` or
 `aq agent message <task-id> BODY --reply-to <message-id>`.
+A project supervisor's guidance is signed by its mailbox
+`session:supervisor-<project>`, so the worker's `aq message reply` to it
+returns there on the same thread and satisfies the supervisor's own message
+wait on that thread. Guidance from callers with no project-supervisor session
+(the operator CLI, automation, the global supervisor) stays
+`system:supervisor`, which `aq message reply` refuses.
 For a collaboration thread, use its `collab-*` ID and the last seen thread
 sequence instead. Omitting `--after-seq` is a usage error for message waits.
+
+Until the sender-default fix is deployed, explicitly add `--from-kind session
+--from-id <held-session-UUID>` to the send, using `.aq/claim.json` or prime as
+identity evidence. Pool sends and waits resolve the claim epoch from that file.
+A CLI environment variable cannot grant sender authority. A pre-existing
+`user:cli` message does not own a worker wait: send a new session-owned report
+on a new thread instead of retrying the authorization refusal or editing history.
 
 Job submission with `--wait` commits the job, workspace pin and blocking wait
 in one transaction. An existing active wait rejects the submission without
@@ -170,8 +212,8 @@ exhausted session; do not keep polling the closed task.
 Task-addressed results route to the session currently holding the task,
 including pool workers whose session names do not contain the task id.
 Plain messages to `task:<id>` or `session:<id>` use the same idle delivery:
-an idle holder has ``Handle `aq message status <id> --json`.`` typed into its
-terminal.
+an idle holder has ``Handle `aq message status <id> --json` (running it marks the
+message read).`` typed into its terminal.
 
 A message wait (`--kind message --ref <thread> --after-seq <n>`) resolves on
 the first later message on that thread addressed to the waiting session or its
@@ -301,3 +343,45 @@ edits:
 aq agent list-profiles
 aq agent profile-reseed --profile-id PROFILE_ID --grants-only
 ```
+
+## Legacy v2 migration
+
+`aq wait bridge` previews the `agent-waits` migration. `--apply` adopts active v1
+waits and legacy `WAITING_INPUT` tasks. `--mode project` projects question/gate
+escalations, open-author reviews, playbook suspensions and timed pauses (the
+persisted task field is `resume_after`). Both apply modes invoke the scheduler's
+first-pass audit. No bridge command enables runtime flags.
+
+Migration preserves the original v1 creation and expiry timestamps exactly,
+including already-due expiries. This is the approved correction to implementation
+§14.3(3): there is no `now + 60` grace. An overdue active wait escalates; expiry
+alone does not prove a source outcome. Already terminal v1 expiry/cancellation
+results retain their historical digest and map to a cancelled outcome.
+
+`wait_bridge_progress` records project/phase/object receipts separately from
+source and timer listener cursors. A phase completes only after its guarded pass
+and audit succeed without unresolved object receipts. A restart reuses adopted
+identities. Held rows and unavailable projections remain visible and prevent the
+phase completion marker. Downgrade retains migration evidence.
+
+Escalation projections observe the owning service's canonical resolved state.
+A received reply, external transport thread, or supervisor discussion is not a
+completed decision. The internal escalation binding is unavailable to public
+human registration and `wait_lift`. Projections never mutate their owner or wake
+a task, and incur no invented worker-seat measurements.
+
+Infrastructure holds use `source_kind=continuation`, bound to the live suspension
+intent and its task/project inside the wait transaction. Their incident identity
+includes the continuation ID and hold reason, so retries reuse the incident and
+each suspension generation remains distinct. These holds can follow a satisfied
+wait (for example, two failed resume launches); pending wait deadlines retain
+their separate `source_kind=wait` binding and `wait_decide` resolution protocol.
+
+Sessionless `WAITING_INPUT` adoption requires no live writer, claimant or locked
+workspace, plus an existing verified integration checkpoint and its exact
+published remote branch head. A server-owned migration receipt binds the task
+incarnation, claim epoch, continuation generation, branch, checkpoint version and
+head. The same proof is rechecked before queueing and reserving a fresh session;
+normal saved-branch verification and exact ACK still apply. Missing checkpoint
+or historical question evidence creates a visible migration hold. No stop time,
+claim cleanup, release time or published head is fabricated.

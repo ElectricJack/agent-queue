@@ -210,7 +210,14 @@ class HostedCIProducer:
             checks = {check.name: check.conclusion for check in observed.payload.checks}
             identity = observed.payload.external_id
             classification, state = "conclusive", CIState.GREEN
-            details = {"receipt": observed.payload.model_dump(mode="json")}
+            receipt = observed.payload.model_dump(mode="json")
+            details = {
+                "receipt": receipt,
+                "checks": [
+                    {**check, **observed.check_details.get(check["check_run_id"], {})}
+                    for check in receipt["checks"]
+                ],
+            }
         else:
             checks = {check["name"]: check["conclusion"] for check in observed.checks}
             details = {

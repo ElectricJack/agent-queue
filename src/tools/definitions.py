@@ -6,6 +6,8 @@ These are pure data — no logic.
 
 from __future__ import annotations
 
+from src.models import TaskStatus
+
 # Which category each tool belongs to.
 # Tools not listed here are "core" (always loaded).
 _TOOL_CATEGORIES: dict[str, str] = {
@@ -37,6 +39,8 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "list_projects": "project",
     "create_project": "project",
     "project_doctor": "project",
+    "repair_repository_checkout": "project",
+    "repair_workspace_checkout": "project",
     "pause_project": "project",
     "resume_project": "project",
     "set_project_constraint": "project",
@@ -56,6 +60,9 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "queue_sync_workspaces": "project",
     "workspace_doctor": "project",
     "workspace_reap": "project",
+    "workspace_cutover": "project",
+    "workspace_retire_claim": "project",
+    "workspace_clear_sentinel": "project",
     # project onboarding from the dashboard (design 2026-09-03 §5)
     "list_project_roots": "project",
     "browse_project_root": "project",
@@ -130,6 +137,11 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "review_withdraw": "review",
     "review_reopen": "review",
     "review_decide": "review",
+    "ask_prepare_decision": "review",
+    "ask_decide": "review",
+    "ask_retry_operation": "review",
+    "review_feedback_complete": "review",
+
     "approve_pull_request": "review",
     "review_comment": "review",
     "review_dispatch": "review",
@@ -153,6 +165,13 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "wait_get": "wait",
     "wait_list": "wait",
     "wait_cancel": "wait",
+    "wait_explain": "wait",
+    "wait_graph": "wait",
+    "wait_checkpoint": "wait",
+    "wait_ack": "wait",
+    "wait_decide": "wait",
+    "wait_lift": "wait",
+    "wait_legacy_bridge": "wait",
     "cron_register": "cron",
     "cron_get": "cron",
     "cron_list": "cron",
@@ -184,6 +203,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "stop_task": "task",
     "pause_task": "task",
     "resume_task": "task",
+    "discard_pause_checkpoint": "task",
     "restart_task": "task",
     "task_recover": "task",
     "reopen_with_feedback": "task",
@@ -236,6 +256,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "playbook_graph_layout_save": "playbook",
     "playbook_activation_health": "playbook",
     "playbook_activate": "playbook",
+    "playbook_source_resync": "playbook",
     "playbook_artifacts": "playbook",
     "playbook_artifact_diff": "playbook",
     "playbook_pending_events": "playbook",
@@ -372,6 +393,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "gate_create": "task",
     "gate_list": "task",
     "gate_show": "task",
+    "gate_reopen": "task",
     "gate_resolve": "task",
     # explain + ready frontier — work-graph WG-4.  The frontier is a
     # project-scoped query, so it belongs to the ``project`` group: that is
@@ -386,6 +408,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "task_batch_update": "task",
     "task_batch_commit": "task",
     "task_batch_discard": "task",
+    "task_batch_validate": "task",
     # playbook authoring — an agent writes the markdown, validates it, then
     # installs the compiled artifact (src/playbooks/validator_command.py).
     # control plane — dv2 phase 1
@@ -431,6 +454,12 @@ _TOOL_CATEGORIES: dict[str, str] = {
 # Commands that are intentionally uncategorized for the LLM (core tools)
 # but should appear in a specific CLI group.
 _CLI_CATEGORY_OVERRIDES: dict[str, str] = {
+    **{name: "ask" for name in (
+        "ask_list", "ask_show", "ask_reply", "ask_prepare_decision", "ask_decide", "ask_history",
+        "ask_apply_input", "ask_discussion_reply", "ask_update_context", "ask_reconcile",
+        "ask_cutover", "ask_cutover_status", "ask_retry_operation", "ask_repair_delivery",
+        "ask_legacy_reset",
+    )},
     "create_task": "task",
     "list_tasks": "task",
     "get_task": "task",
@@ -817,6 +846,48 @@ _ALL_TOOL_DEFINITIONS = [
         "name": "list_projects",
         "description": "List all projects in the system.",
         "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "repair_repository_checkout",
+        "description": (
+            "Preview or apply an audited replacement for a confirmed missing repository "
+            "checkout path. Preserves repository identity and verifies the replacement origin. "
+            "Requires local operator or global supervisor authority."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string"},
+                "repository_id": {"type": "string"},
+                "expected_path": {"type": "string"},
+                "replacement_path": {"type": "string"},
+                "reason": {"type": "string"},
+                "apply": {"type": "boolean", "default": False},
+            },
+            "required": ["project_id", "repository_id", "expected_path", "replacement_path",
+                         "reason"],
+        },
+    },
+    {
+        "name": "repair_workspace_checkout",
+        "description": (
+            "Preview or apply an audited base workspace path repair. Proves replacement "
+            "origin and shared Git object store with all existing slots; preserves slots and "
+            "claims. Apply requires expected_proof from preview. Local operator/global supervisor."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string"},
+                "workspace_id": {"type": "string"},
+                "expected_path": {"type": "string"},
+                "replacement_path": {"type": "string"},
+                "reason": {"type": "string"},
+                "expected_proof": {"type": "string"},
+                "apply": {"type": "boolean", "default": False},
+            },
+            "required": ["project_id", "workspace_id", "expected_path", "replacement_path", "reason"],
+        },
     },
     {
         "name": "project_doctor",
@@ -1888,6 +1959,7 @@ _ALL_TOOL_DEFINITIONS = [
                     "type": "string",
                     "description": "Workspace name (optional)",
                 },
+                "enabled": {"type": "boolean", "description": "Enable admission (default true). Register a cutover target with false."},
                 "kind_id": {
                     "type": "string",
                     "description": (
@@ -1902,13 +1974,34 @@ _ALL_TOOL_DEFINITIONS = [
     },
     {
         "name": "list_workspaces",
-        "description": "List workspaces, optionally filtered by project. Shows lock status (which agent/task holds each workspace).",
+        "description": (
+            "List workspaces, optionally filtered by project. Shows lock status and "
+            "owner identity (lock task, claim fence, live session) per workspace, "
+            "with bounded checkout diagnostics. Answers within deadline_seconds; "
+            "`diagnostics.complete` is false when any part is unknown or timed out. "
+            "A partial or failed diagnostic is not evidence that a lock is stale or "
+            "a workspace is free. Read-only."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "project_id": {
                     "type": "string",
                     "description": "Filter by project ID (optional)",
+                },
+                "git": {
+                    "type": "boolean",
+                    "description": (
+                        "Probe each checkout's branch and dirty state with git "
+                        "(default true). False returns lock and owner facts only."
+                    ),
+                },
+                "deadline_seconds": {
+                    "type": "number",
+                    "description": (
+                        "Overall time budget for diagnostics (default 10, clamped "
+                        "to 0.5-20). Unfinished probes report timeout/not_started."
+                    ),
                 },
             },
         },
@@ -2144,6 +2237,70 @@ _ALL_TOOL_DEFINITIONS = [
                     "description": "Project id to scope diagnosis (optional; active project when omitted).",
                 },
             },
+        },
+    },
+    {
+        "name": "workspace_cutover",
+        "description": "Preview or apply a source-preserving base switch. Apply requires the exact preview proof. Disables the old base and slots without moving or deleting any source or releasing writers.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string", "description": "Project owning both bases."},
+                "source_id": {"type": "string", "description": "Current enabled base."},
+                "target_id": {"type": "string", "description": "New disabled, idle base of the same kind."},
+                "apply": {"type": "boolean", "description": "Apply the preview (default false)."},
+                "expected_proof": {"type": "string", "description": "Exact SHA256 proof returned by preview."},
+            },
+            "required": ["project_id", "source_id", "target_id"],
+        },
+    },
+    {
+        "name": "workspace_retire_claim",
+        "description": (
+            "Remove a worktree slot's leftover .aq/claim.json when its holder "
+            "provably let go: the slot is unlocked, the holder task is completed, "
+            "paused, released or superseded, and no live session works there. "
+            "Refuses a claim that may still be live. Use when claim preparation "
+            "reports 'retains a foreign claim'."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "workspace_id": {
+                    "type": "string",
+                    "description": "Slot workspace id whose claim file to retire.",
+                },
+            },
+            "required": ["workspace_id"],
+        },
+    },
+    {
+        "name": "workspace_clear_sentinel",
+        "description": (
+            "Return a worktree slot's .aq-worktree.json sentinel to the free form "
+            "when the task it still names is completed, failed, blocked or gone. "
+            "Refuses unless the slot holds no task lock, claim file, live claiming "
+            "session, integration owner or job pin, and its tree is clean with HEAD "
+            "published under a remote ref. Use when claim preparation reports "
+            "'branch disagrees with its source sentinel' after the named task ended."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "workspace_id": {
+                    "type": "string",
+                    "description": "Slot workspace id whose sentinel to clear.",
+                },
+                "if_task_terminal": {
+                    "type": "boolean",
+                    "description": (
+                        "Clear only when the named task is terminal (default true; "
+                        "the only supported mode)."
+                    ),
+                    "default": True,
+                },
+            },
+            "required": ["workspace_id"],
         },
     },
     {
@@ -2483,8 +2640,10 @@ _ALL_TOOL_DEFINITIONS = [
                 },
                 "status": {
                     "type": "string",
-                    "enum": ["DEFINED", "READY", "IN_PROGRESS", "COMPLETED", "FAILED", "BLOCKED"],
-                    "description": "New status — admin override, bypasses state machine (optional)",
+                    "enum": [status.value for status in TaskStatus],
+                    "description": (
+                        "New lifecycle status (optional); suspended states require wait controls"
+                    ),
                 },
                 "max_retries": {"type": "integer", "description": "Max retry attempts (optional)"},
                 "verification_type": {
@@ -2566,8 +2725,33 @@ _ALL_TOOL_DEFINITIONS = [
         "description": "Resume a paused task, respecting its existing gates and approval state. Retries any unfinished session stop first.",
         "input_schema": {
             "type": "object",
-            "properties": {"task_id": {"type": "string", "description": "Task ID to resume"}},
+            "properties": {
+                "task_id": {"type": "string", "description": "Task ID to resume"},
+                "recover_stale_pause": {
+                    "type": "boolean",
+                    "description": (
+                        "Operator/supervisor recovery of a stale pause on an unchanged retained "
+                        "source; still requires writer stop proof and ordinary checkpoint cleanup."
+                    ),
+                },
+            },
             "required": ["task_id"],
+        },
+    },
+    {
+        "name": "discard_pause_checkpoint",
+        "description": (
+            "Discard a task's paused Git checkpoint so preparation stops restoring it, "
+            "e.g. one captured from another task's slot checkout. Its ref and commit stay "
+            "reachable and are recorded in a manual_pause_checkpoint_discarded audit entry."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "task_id": {"type": "string", "description": "Task whose checkpoint to discard"},
+                "reason": {"type": "string", "description": "Why the checkpoint is discarded (audited)"},
+            },
+            "required": ["task_id", "reason"],
         },
     },
     {
@@ -2583,7 +2767,7 @@ _ALL_TOOL_DEFINITIONS = [
     },
     {
         "name": "task_recover",
-        "description": "Decide a supervisor recovery incident: retry safely within existing budgets or hold with a recorded diagnosis. Never bypass a rejection using restart_task or status edits.",
+        "description": "Decide a supervisor recovery incident: retry safely within existing budgets, hold with a diagnosis, or explicitly release an exact hold with operator/global-supervisor authority. Never bypass a rejection using restart_task or status edits.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -2592,10 +2776,14 @@ _ALL_TOOL_DEFINITIONS = [
                     "type": "string",
                     "description": "Exact recovery incident ID from the supervisor notification",
                 },
-                "decision": {"type": "string", "enum": ["retry", "hold"]},
+                "decision": {"type": "string", "enum": ["retry", "hold", "release"]},
+                "operator_release": {
+                    "type": "boolean",
+                    "description": "Local operator or live global supervisor only: release the exact prior hold. With decision release, preserve task state and integration controls; with retry, authorize a reviewed nonautomatic failure while retaining all ownership, liveness, gate and budget guards. Requires expected_hold_at.",
+                },
                 "expected_hold_at": {
                     "type": "number",
-                    "description": "Release a cleared hold by retrying this incident; exact decided_at of the prior hold. All recovery guards and remaining budgets still apply.",
+                    "description": "Exact decided_at of the prior hold. Required for operator_release; normal retry releases retain automatic recovery guards and remaining budgets.",
                 },
                 "reason": {
                     "type": "string",
@@ -2739,6 +2927,29 @@ _ALL_TOOL_DEFINITIONS = [
                     "description": (
                         "Required to archive PAUSED/DEFINED/READY or abandon undelivered work."
                     ),
+                },
+                "replacement": {
+                    "type": "string",
+                    "description": "Obsolete only: replacement leaf; atomically redirects dependents.",
+                },
+                "satisfied_by": {
+                    "type": "string",
+                    "description": (
+                        "Obsolete only: evidence the requirement is met; dependent edges must "
+                        "be explicitly removed or replaced through rewire. Never records a pass."
+                    ),
+                },
+                "rewire": {
+                    "type": "object",
+                    "description": (
+                        "Obsolete edge plan, validated and committed with retirement. "
+                        "Uses task change-set edges/remove_edges objects (from, to, dep_type)."
+                    ),
+                    "properties": {
+                        "edges": {"type": "array", "items": {"type": "object"}},
+                        "remove_edges": {"type": "array", "items": {"type": "object"}},
+                    },
+                    "additionalProperties": False,
                 },
             },
         },
@@ -4162,6 +4373,10 @@ _ALL_TOOL_DEFINITIONS = [
         "input_schema": {
             "type": "object",
             "properties": {
+                "expected": {"type": "object"},
+                "preview_id": {"type": "string"},
+                "idempotency_key": {"type": "string"},
+                "overall_note": {"type": "string"},
                 "run_id": {
                     "type": "string",
                     "description": "The playbook run ID to resume",
@@ -4632,6 +4847,23 @@ _ALL_TOOL_DEFINITIONS = [
                 },
             },
             "required": ["playbook_id"],
+        },
+    },
+    {
+        "name": "playbook_source_resync",
+        "description": (
+            "Supervisor control: restore system Markdown from the digest-verified source "
+            "retained with its active reviewed artifact, preserving the old bytes in a backup. "
+            "Requires the active artifact hash and current source hash; never compiles or activates."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "playbook_id": {"type": "string"},
+                "artifact_sha256": {"type": "string"},
+                "expected_source_hash": {"type": "string"},
+            },
+            "required": ["playbook_id", "artifact_sha256", "expected_source_hash"],
         },
     },
     {
@@ -5620,7 +5852,9 @@ _ALL_TOOL_DEFINITIONS = [
         "description": (
             "Queue a message to a session, task, profile, or user.  Messages "
             "are the single transport for user<->agent and agent<->agent "
-            "traffic; delivery is asynchronous. For an accepted collaboration thread, "
+            "traffic; delivery is asynchronous. Omitted sender identity is derived from "
+            "the authenticated live session, or user:cli for local callers. "
+            "For an accepted collaboration thread, "
             "omit the recipient to send to every other member; sender identity is server-derived."
         ),
         "input_schema": {
@@ -5644,9 +5878,9 @@ _ALL_TOOL_DEFINITIONS = [
                 "from_kind": {
                     "type": "string",
                     "enum": ["session", "user", "system"],
-                    "description": "Sender kind (default: user)",
+                    "description": "Explicit sender kind; session callers must own the identity",
                 },
-                "from_id": {"type": "string", "description": "Sender id"},
+                "from_id": {"type": "string", "description": "Explicit authorized sender id"},
                 "thread_id": {
                     "type": "string",
                     "description": "Conversation grouping key (Discord channel, chat id)",
@@ -6621,17 +6855,18 @@ _ALL_TOOL_DEFINITIONS = [
         "name": "task_batch_propose",
         "description": (
             "Propose a transactional change set of creates, edits, edge changes and comments as one "
-            "reviewable graph, without creating anything live. Tasks are "
+            "reviewable graph. Ordinary proposals stage changes for human approval. Tasks are "
             "identified by caller-chosen ``tempId``s that edges reference; "
             "edges may also point at existing task ids. The proposal is "
             "rejected up front if the shape is wrong, if it references tasks "
             "that do not exist, or if it would introduce a dependency cycle "
             "against the project's current graph. Returns a proposal_id for "
             "task_batch_update / _commit / _discard. A live spec-ingest role "
-            "holding the matching approved vault path needs no approval step: "
-            "that batch is applied live in the same call and returns its "
-            "task_ids, and a later task_batch_commit is an idempotent replay. "
-            "Those batches require epics with children and leaf dependency edges."
+            "holding the matching approved document materializes the implementation graph held "
+            "for fidelity review and returns batch_id, revision, digest and members. "
+            "task_batch_commit refuses held batches; authorized release is separate. "
+            "Design approval creates an already released epic and authoring leaf. "
+            "Ingest tasks require section_anchor; leaves also require primary_outcome and acceptance."
         ),
         "input_schema": {
             "type": "object",
@@ -6661,6 +6896,17 @@ _ALL_TOOL_DEFINITIONS = [
                             "task_id": {"type": "string"},
                             "title": {"type": "string"},
                             "description": {"type": "string"},
+                            "section_anchor": {"type": "string"},
+                            "primary_outcome": {"type": "string"},
+                            "acceptance": {
+                                "description": "Required leaf acceptance criteria or validation commands.",
+                                "anyOf": [{"type": "string"}, {"type": "array", "items": {"type": "string"}}],
+                            },
+                            "constraints": {"type": "array", "items": {"type": "string"}},
+                            "owned_modules": {"type": "array", "items": {"type": "string"}},
+                            "size": {"type": "string", "enum": ["s", "m", "l"]},
+                            "placement": {"type": "string", "enum": ["child", "operational_root"]},
+                            "delivery_targets": {"type": "array", "items": {"type": "string"}},
                             "priority": {"type": "integer"},
                             "intelligence_class": {"type": ["string", "null"]},
                             "task_type": {"type": ["string", "null"]},
@@ -6800,26 +7046,12 @@ _ALL_TOOL_DEFINITIONS = [
     {
         "name": "task_batch_update",
         "description": (
-            "Replace a pending change set, re-running final graph and state "
-            "checks as task_batch_propose. Only "
-            "proposals still in ``draft`` or ``ready`` can be updated — a "
-            "committed or discarded one is history."
+            "Update an ungated pending proposal with payload, or edit a held ingestion batch "
+            "with expected_revision and scoped operations. Only the live assigned fidelity "
+            "reviewer or project supervisor may edit held members. Atomic hard checks roll "
+            "back invalid edits; structural changes supersede old receipts. No edit releases work."
         ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "proposal_id": {"type": "string", "description": "Proposal to replace."},
-                "payload": {
-                    "type": "object",
-                    "description": (
-                        "The complete replacement change set (tasks, edits, edges, "
-                        "remove_edges, comments), in the same shape "
-                        "task_batch_propose takes."
-                    ),
-                },
-            },
-            "required": ["proposal_id", "payload"],
-        },
+        "input_schema": {},  # Replaced below by TaskBatchUpdateArgs' canonical schema.
     },
     {
         "name": "task_batch_commit",
@@ -6858,6 +7090,70 @@ _ALL_TOOL_DEFINITIONS = [
                 },
             },
             "required": ["proposal_id"],
+        },
+    },
+    {
+        "name": "task_batch_validate",
+        "description": (
+            "Run the ingestion-batch automatic checks (design §5.1) against the live "
+            "graph and write nothing. Takes the change set task_batch_propose takes, "
+            "with the ingestion fields (section_anchor, primary_outcome, acceptance, "
+            "size, owned_modules, placement, delivery_targets). Hard findings (authority, "
+            "membership, parent_not_unique, cross_project, depth_exceeded, cycle, "
+            "container_endpoint, external_target_invalid, dependency_on_ancestor, "
+            "post_landing_inside_delivery_epic, delivery_condition_cycle, "
+            "section_anchor_missing, primary_outcome_missing, acceptance_missing, "
+            "profile_pinned) fail the batch; stale_revision, active_claim and "
+            "integration_owned fail it with retryable: true. Advisory findings "
+            "(large_leaf, mixed_outcomes, broad_command, duplicate_title, redundant_edge, "
+            "unexplained_serialization, concentrated_ownership) never fail it; gaps name "
+            "advisory checks that lacked declared metadata. Checks are deterministic: no "
+            "score and no model judgement."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string", "description": "Project the batch is for."},
+                "source": {
+                    "type": "string",
+                    "description": "Proposal source; checked against a stored batch's.",
+                },
+                "tasks": {
+                    "type": "array",
+                    "items": {"type": "object"},
+                    "description": "Task specs keyed by tempId, as task_batch_propose takes.",
+                },
+                "edges": {
+                    "type": "array",
+                    "items": {"type": "object"},
+                    "description": "Edges {from, to, dep_type, reason}; from depends on to.",
+                },
+                "edits": {
+                    "type": "array",
+                    "items": {"type": "object"},
+                    "description": "Edits of existing batch members, keyed by task_id.",
+                },
+                "remove_edges": {
+                    "type": "array",
+                    "items": {"type": "object"},
+                    "description": "Edges {from, to, dep_type} the change set removes.",
+                },
+                "comments": {
+                    "type": "array",
+                    "items": {"type": "object"},
+                    "description": "Comments {task_id, body} on batch members.",
+                },
+                "batch_id": {
+                    "type": "string",
+                    "description": "Held batch whose members the change set may edit.",
+                },
+                "expected_revision": {
+                    "type": "integer",
+                    "description": "Structure revision the caller read; a mismatch is "
+                    "stale_revision.",
+                },
+            },
+            "required": ["project_id"],
         },
     },
     {
@@ -7338,16 +7634,86 @@ _ALL_TOOL_DEFINITIONS.extend(
                 "additionalProperties": False,
             },
         },
+        {"name": "gate_reopen", "description": "Operator reopens a declined approval as a new generation.",
+         "input_schema": {"type": "object", "properties": {
+             "gate_id": {"type": "string"}, "expected": {"type": "object"}},
+             "required": ["gate_id", "expected"], "additionalProperties": False}},
+        {'name': 'ask_prepare_decision',
+         'description': 'Prepare a ten-minute source decision packet preview without applying its decision.',
+         'input_schema': {'type': 'object',
+                          'properties': {'ask_id': {'type': 'string'},
+                                         'expected': {'type': 'object',
+                                                      'properties': {'decision_generation': {'type': 'integer',
+                                                                                             'minimum': 1},
+                                                                     'feedback_version': {'type': 'integer',
+                                                                                          'minimum': 0},
+                                                                     'source_fingerprint': {'type': 'string'}},
+                                                      'required': ['decision_generation',
+                                                                   'feedback_version',
+                                                                   'source_fingerprint'],
+                                                      'additionalProperties': False},
+                                         'option_key': {'type': 'string'},
+                                         'overall_note': {'type': 'string'},
+                                         'dispositions': {'type': 'array', 'items': {'type': 'object'}},
+                                         'responder_class': {'type': 'string'}},
+                          'required': ['ask_id', 'expected', 'option_key'],
+                          'additionalProperties': False}},
+        {'name': 'ask_decide',
+         'description': 'Accept the exact prepared source packet and report durable application state.',
+         'input_schema': {'type': 'object',
+                          'properties': {'ask_id': {'type': 'string'},
+                                         'expected': {'type': 'object',
+                                                      'properties': {'decision_generation': {'type': 'integer',
+                                                                                             'minimum': 1},
+                                                                     'feedback_version': {'type': 'integer',
+                                                                                          'minimum': 0},
+                                                                     'source_fingerprint': {'type': 'string'}},
+                                                      'required': ['decision_generation',
+                                                                   'feedback_version',
+                                                                   'source_fingerprint'],
+                                                      'additionalProperties': False},
+                                         'option_key': {'type': 'string'},
+                                         'overall_note': {'type': 'string'},
+                                         'dispositions': {'type': 'array', 'items': {'type': 'object'}},
+                                         'responder_class': {'type': 'string'},
+                                         'preview_id': {'type': 'string'},
+                                         'idempotency_key': {'type': 'string'}},
+                          'required': ['ask_id',
+                                       'expected',
+                                       'option_key',
+                                       'preview_id',
+                                       'idempotency_key'],
+                          'additionalProperties': False}},
+        {'name': 'ask_retry_operation',
+         'description': 'Operator reconciliation of an already accepted decision; never creates '
+                        'approval.',
+         'input_schema': {'type': 'object',
+                          'properties': {'decision_id': {'type': 'string'}},
+                          'required': ['decision_id'],
+                          'additionalProperties': False}},
+        {'name': 'review_feedback_complete',
+         'description': 'Record per-comment evidence on the held feedback task; does not approve a '
+                        'review.',
+         'input_schema': {'type': 'object',
+                          'properties': {'task_id': {'type': 'string'},
+                                         'obligation_id': {'type': 'string'},
+                                         'evidence': {'type': 'string'}},
+                          'required': ['task_id', 'obligation_id', 'evidence'],
+                          'additionalProperties': False}},
         {
             "name": "review_decide",
-            "description": "Approve, request changes, or reject a current review revision.",
+            "description": "Decide on a current review using its feedback preview. Reject retains legacy reject-and-revise behavior; decline holds work without creating a revision task.",
             "input_schema": {
                 "type": "object",
                 "properties": {
                     "review_id": {"type": "string"},
                     "revision": {"type": "integer", "minimum": 1},
-                    "decision": {"type": "string", "enum": ["approve", "request_changes", "reject"]},
+                    "decision": {"type": "string", "enum": ["approve", "request_changes", "reject", "decline", "fold_in"]},
                     "note": {"type": "string"},
+                    "preview_id": {"type": "string"},
+                    "expected": {"type": "object"},
+                    "idempotency_key": {"type": "string"},
+                    "dispositions": {"type": "array", "items": {"type": "object"}},
                     "responder_class": {"type": "string", "description": "After request_changes or reject: intelligence-class hint for the new revision task, which the project's router routes. A responder profile is not accepted."},
                 },
                 "required": ["review_id", "revision", "decision"],
@@ -7374,6 +7740,7 @@ _ALL_TOOL_DEFINITIONS.extend(
                 "type": "object",
                 "properties": {
                     "review_id": {"type": "string"},
+                    "source_discussion_id": {"type": "string"},
                     "revision": {"type": "integer", "minimum": 1},
                     "quote": {"type": "string"},
                     "heading_path": {"type": "array", "items": {"type": "string"}},
@@ -7713,6 +8080,10 @@ _ALL_TOOL_DEFINITIONS.extend(
             "input_schema": {
                 "type": "object",
                 "properties": {
+                    "expected": {"type": "object", "additionalProperties": True},
+                    "preview_id": {"type": "string"},
+                    "option_key": {"type": "string"},
+                    "prepare": {"type": "boolean"},
                     "escalation_id": {"type": "string"},
                     "reply_id": {"type": "string"},
                     "expected_revision": {"type": "integer", "minimum": 0},
@@ -8949,3 +9320,86 @@ _ALL_TOOL_DEFINITIONS.extend([
      "description": "Check all planned operator inputs and report every blocker together before mutations.",
      "input_schema": _OperatorPreflightArgs.model_json_schema()},
 ])
+
+# Wait v2 uses one closed request schema across all public surfaces.
+from src.commands.contracts.wait import (  # noqa: E402
+    WaitRegisterArgs as _WaitRegisterArgs, WaitGetArgs as _WaitGetArgs,
+    WaitListArgs as _WaitListArgs, WaitCancelArgs as _WaitCancelArgs,
+)
+from src.commands.contracts.wait_v2 import (  # noqa: E402
+    PUBLIC_WAIT_V2_COMMANDS as _PUBLIC_WAIT_V2_COMMANDS, WAIT_V2_ARGS as _WAIT_V2_ARGS,
+)
+
+_WAIT_ARGS = {
+    "wait_register": _WaitRegisterArgs, "wait_get": _WaitGetArgs,
+    "wait_list": _WaitListArgs, "wait_cancel": _WaitCancelArgs,
+}
+for _definition in _ALL_TOOL_DEFINITIONS:
+    if _definition["name"] in _WAIT_ARGS:
+        _definition["input_schema"] = _WAIT_ARGS[_definition["name"]].model_json_schema()
+_WAIT_V2_DESCRIPTIONS = {
+    "wait_explain": "Explain a verified wait's condition, evidence and outcome.",
+    "wait_graph": "Inspect the dependency graph of verified waits.",
+    "wait_checkpoint": "Save a continuation checkpoint for the held claim's verified wait.",
+    "wait_ack": "Acknowledge a verified wait outcome for the held claim.",
+    "wait_decide": "Record a supervisor decision for a verified wait.",
+    "wait_lift": "Lift an escalated verified wait with an authorized decision.",
+}
+_ALL_TOOL_DEFINITIONS.extend([
+    {"name": name, "description": _WAIT_V2_DESCRIPTIONS[name],
+     "input_schema": _WAIT_V2_ARGS[name].model_json_schema()}
+    for name in sorted(_PUBLIC_WAIT_V2_COMMANDS)
+])
+
+
+from src.commands.contracts.builtin import (  # noqa: E402
+    TaskBatchUpdateArgs as _TaskBatchUpdateArgs,
+    EnsureFidelityReviewArgs as _EnsureFidelityReviewArgs,
+)
+from src.commands.contracts.builtin import EnsureSpecIngestArgs as _EnsureSpecIngestArgs  # noqa: E402
+
+for _definition in _ALL_TOOL_DEFINITIONS:
+    if _definition["name"] == "task_batch_update":
+        _definition["input_schema"] = _TaskBatchUpdateArgs.model_json_schema()
+
+_TOOL_CATEGORIES.update({
+    "ensure_spec_ingest": "task", "approved_spec_packet": "task",
+    "spec_ingest_reconcile": "task", "spec_ingest_legacy_inventory": "task",
+    "batch_reconcile": "task", "ensure_fidelity_review": "task",
+})
+_ALL_TOOL_DEFINITIONS.extend([
+    {"name": "ensure_spec_ingest",
+     "description": "Ensure one role task per applied approval decision, including archived receipts.",
+     "input_schema": _EnsureSpecIngestArgs.model_json_schema()},
+    {"name": "ensure_fidelity_review",
+     "description": "Ensure one fidelity-reviewer role task per held batch; service/operator only.",
+     "input_schema": _EnsureFidelityReviewArgs.model_json_schema()},
+    {"name": "approved_spec_packet",
+     "description": "Read the immutable document and feedback of the live held ingestion role.",
+     "input_schema": _EnsureSpecIngestArgs.model_json_schema()},
+    {"name": "spec_ingest_reconcile",
+     "description": "Replay at most twenty pending approved-spec dispatches; operator/service only.",
+     "input_schema": {"type": "object", "properties": {}, "additionalProperties": False}},
+    {"name": "batch_reconcile",
+     "description": "Repair at most twenty held-batch dispatch, receipt and release wakeups; operator/service only.",
+     "input_schema": {"type": "object", "properties": {}, "additionalProperties": False}},
+    {"name": "spec_ingest_legacy_inventory",
+     "description": "Inventory path-only ingestion assignments for explicit operator reconciliation.",
+     "input_schema": {"type": "object", "additionalProperties": False,
+                      "properties": {"project_id": {"type": "string"},
+                                     "after_id": {"type": "string"}},
+                      "required": ["project_id"]}},
+])
+
+
+from src.api.models.ask import ASK_ARGS as _ASK_ARGS  # noqa: E402
+
+for _name, _args in _ASK_ARGS.items():
+    _TOOL_CATEGORIES[_name] = "review"
+    _existing = next((d for d in _ALL_TOOL_DEFINITIONS if d["name"] == _name), None)
+    if _existing is not None:
+        _existing["input_schema"] = _args.model_json_schema()
+    else:
+        _ALL_TOOL_DEFINITIONS.append({"name": _name,
+            "description": "Scoped human request communication and decision evidence.",
+            "input_schema": _args.model_json_schema()})

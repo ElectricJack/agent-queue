@@ -9,7 +9,10 @@ import { BrowserHistoryContext } from "./shell/historyState";
 import { PANE_REGISTRY } from "./panes/registry";
 import { preloadWorkspaceViews } from "./routeChunks";
 import { prefetchInitialRoute } from "./routeData";
+import { installDraftNavigationGuard } from "./components/asks/useDraftWarning";
 import "./index.css";
+
+installDraftNavigationGuard();
 
 const queryClient = new QueryClient({
   defaultOptions: {

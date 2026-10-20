@@ -631,8 +631,8 @@ def test_e2e_groups_cover_every_scenario_once_and_keep_claim_dependencies_togeth
 @pytest.mark.parametrize(
     ('job', 'run_step', 'run_seconds'),
     [
-        # The slowest passing default shard in the 40 runs up to 36831813696.
-        ('test', 'Run tests', 332),
+        # Run 39368476563 default-8 passed, then timed out during shutdown.
+        ('test', 'Run tests', 595),
         # tests/test_e2e_cli_stateful.py gives each item its own limit; let it
         # fire first, with a minute for its diagnostics and runner overhead.
         ('e2e-cli', 'Run scenario group', E2E_TEST_TIMEOUT_SECONDS + 59),
@@ -649,9 +649,55 @@ def test_a_slow_cache_miss_install_cannot_spend_the_run_budget(job, run_step, ru
     run = int(steps[run_step]['timeout-minutes'])
     assert install * 60 > 600
     assert run * 60 > run_seconds
+    if job == 'test':
+        assert run_seconds <= run * 60 * 0.7
     # Checkout, PostgreSQL, interpreter, cache restore and save, the editable
     # refresh, migrations and artifact upload take well under three minutes.
     assert int(spec['timeout-minutes']) >= install + run + 3
+
+
+@pytest.mark.parametrize('elapsed', [595, 719, 720, 721, 900])
+def test_runtime_warning_uses_wall_time_and_warns_only_above_80_percent(tmp_path, elapsed):
+    steps = workflow()['jobs']['test']['steps']
+    run = next(step for step in steps if step['name'] == 'Run tests')
+    check = next(step for step in steps if step['name'] == 'Check test runtime budget')
+    assert steps.index(check) == steps.index(run) + 1
+    assert check['if'] == "${{ always() && steps.tests.outputs.started_at != '' }}"
+    assert check['env']['TEST_STARTED_AT'] == '${{ steps.tests.outputs.started_at }}'
+    assert check['env']['TEST_SUITE'] == '${{ matrix.suite.name }}'
+    budget = int(check['env']['TEST_BUDGET_SECONDS'])
+    assert budget == int(run['timeout-minutes']) * 60
+
+    # Execute the actual workflow shell, with a deterministic clock rather than sleeping.
+    date = tmp_path / 'date'
+    date.write_text(f'#!/bin/sh\necho {1000 + elapsed}\n')
+    date.chmod(0o755)
+    result = subprocess.run(
+        ['bash', '-e', '-o', 'pipefail', '-c', check['run']],
+        env={**os.environ, 'PATH': f'{tmp_path}:{os.environ["PATH"]}',
+             'TEST_STARTED_AT': '1000', 'TEST_SUITE': 'default-8/8',
+             'TEST_BUDGET_SECONDS': str(budget)},
+        capture_output=True, text=True, timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
+    assert f'default-8/8 took {elapsed}s' in result.stdout
+    assert ('::warning' in result.stdout) == (elapsed > budget * 0.8)
+
+
+@pytest.mark.parametrize('test_status', [0, 7])
+def test_run_step_records_start_and_preserves_test_exit_status(tmp_path, test_status):
+    run = next(step for step in workflow()['jobs']['test']['steps']
+               if step['name'] == 'Run tests')
+    script = run['run'].replace('${{ matrix.suite.command }}',
+                                f"bash -c 'exit {test_status}' --")
+    output = tmp_path / 'output'
+    result = subprocess.run(
+        ['bash', '-e', '-o', 'pipefail', '-c', script],
+        env={**os.environ, 'GITHUB_OUTPUT': str(output)},
+        capture_output=True, text=True, timeout=10,
+    )
+    assert result.returncode == test_status, result.stderr
+    assert re.fullmatch(r'started_at=\d+\n', output.read_text())
 
 
 def _install_steps():

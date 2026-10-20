@@ -21,6 +21,9 @@ class TaskMetrics:
         paused (float | Unset):  Default: 0.0.
         blocked (float | Unset):  Default: 0.0.
         waiting_input (float | Unset):  Default: 0.0.
+        waiting (float | Unset):  Default: 0.0.
+        hibernated (float | Unset):  Default: 0.0.
+        resume_pending (float | Unset):  Default: 0.0.
         other (float | Unset):  Default: 0.0.
         total (float | Unset):  Default: 0.0.
     """
@@ -31,6 +34,9 @@ class TaskMetrics:
     paused: float | Unset = 0.0
     blocked: float | Unset = 0.0
     waiting_input: float | Unset = 0.0
+    waiting: float | Unset = 0.0
+    hibernated: float | Unset = 0.0
+    resume_pending: float | Unset = 0.0
     other: float | Unset = 0.0
     total: float | Unset = 0.0
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
@@ -47,6 +53,12 @@ class TaskMetrics:
         blocked = self.blocked
 
         waiting_input = self.waiting_input
+
+        waiting = self.waiting
+
+        hibernated = self.hibernated
+
+        resume_pending = self.resume_pending
 
         other = self.other
 
@@ -67,6 +79,12 @@ class TaskMetrics:
             field_dict["BLOCKED"] = blocked
         if waiting_input is not UNSET:
             field_dict["WAITING_INPUT"] = waiting_input
+        if waiting is not UNSET:
+            field_dict["WAITING"] = waiting
+        if hibernated is not UNSET:
+            field_dict["HIBERNATED"] = hibernated
+        if resume_pending is not UNSET:
+            field_dict["RESUME_PENDING"] = resume_pending
         if other is not UNSET:
             field_dict["other"] = other
         if total is not UNSET:
@@ -89,6 +107,12 @@ class TaskMetrics:
 
         waiting_input = d.pop("WAITING_INPUT", UNSET)
 
+        waiting = d.pop("WAITING", UNSET)
+
+        hibernated = d.pop("HIBERNATED", UNSET)
+
+        resume_pending = d.pop("RESUME_PENDING", UNSET)
+
         other = d.pop("other", UNSET)
 
         total = d.pop("total", UNSET)
@@ -100,6 +124,9 @@ class TaskMetrics:
             paused=paused,
             blocked=blocked,
             waiting_input=waiting_input,
+            waiting=waiting,
+            hibernated=hibernated,
+            resume_pending=resume_pending,
             other=other,
             total=total,
         )

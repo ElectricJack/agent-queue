@@ -21,6 +21,9 @@ from typing import Any
 from sqlalchemy import and_, delete, func, insert, or_, select, tuple_, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
+from src.waits.adapters.legacy_escalation import execute_mutation as execute_escalation_mutation
+from src.waits.sources import execute_batch_mutation
+from src.waits.sources import insert_message_with_source_event
 from src.task_templates import render_task_template
 from src.database.tables import (
     agents,
@@ -306,7 +309,7 @@ class OrdinaryRepairService:
                 id=task_id, task_id=task_id, type="snippet", label="Repair input",
                 content=json.dumps(repair_input, sort_keys=True), created_at=self.clock(),
             ))
-            await conn.execute(update(integration_batches).where(
+            await execute_batch_mutation(conn, update(integration_batches).where(
                 integration_batches.c.id == batch_id,
             ).values(repair_attempt_count=attempt, updated_at=self.clock()))
             return answer("filed", task_id=task_id, fence=fence.model_dump(mode="json"))
@@ -332,7 +335,7 @@ class OrdinaryRepairService:
         )
         if not created:
             return incident
-        await conn.execute(pg_insert(messages).values(
+        await insert_message_with_source_event(conn, pg_insert(messages).values(
             id="msg-" + incident_id, project_id=batch["project_id"],
             from_kind="system", from_id="integration-train", to_kind="session",
             to_id=incident["supervisor_owner"], subject=summary,
@@ -347,7 +350,7 @@ class OrdinaryRepairService:
         from src.database.queries.escalation_queries import OPEN_ESCALATION_STATES
 
         now = self.clock()
-        await conn.execute(update(escalations).where(
+        await execute_escalation_mutation(conn, update(escalations).where(
             escalations.c.id == "escalation-" + ordinary_repair_id(batch_id, 1),
             escalations.c.source_kind == "integration_repair",
             escalations.c.state.in_(tuple(OPEN_ESCALATION_STATES)),
@@ -394,6 +397,66 @@ class OrdinaryRepairService:
         if ordinary_repair_id(value["batch_id"], value["attempt"]) != task_id:
             raise ValueError("ordinary repair input does not match filing identity")
         return value
+
+    async def resume_completed(
+        self, task_id: str, *, batch_id: str | None = None, attempt: int | None = None,
+    ) -> dict | None:
+        """Reseal a completed allocation for a fresh visit, never authorize delivery.
+
+        The completion timestamp makes replay idempotent, including a restart
+        between normal task completion and this handoff. A stale allocation or
+        an explicit pause/abort cannot change the batch.
+        """
+        from src.integration.batches import candidate_ref
+
+        original = await self.input(task_id)
+        archived_input = original is None
+        if archived_input and (batch_id is None or attempt is None
+                               or ordinary_repair_id(batch_id, attempt) != task_id):
+            return None
+        if archived_input:
+            # Archive removes task_context; ordinary filing identity and the
+            # archive's immutable origin/branch still bind this scheduling hint.
+            original = {"batch_id": batch_id, "attempt": attempt}
+        async with self.db.immediate() as conn:
+            batch = (await conn.execute(select(integration_batches).where(
+                integration_batches.c.id == original["batch_id"],
+            ).with_for_update())).mappings().one_or_none()
+            if (batch is None or batch["intent"] != "open"
+                    or batch["lifecycle"] in {"promoted", "aborted", "failed", "empty"}
+                    or batch["repair_attempt_count"] != original["attempt"]
+                    or (not archived_input and batch["repository_id"] != original["repository_id"])
+                    or (not archived_input and original["target_ref"] not in {
+                        candidate_ref(batch["id"]), batch["target_ref"]})):
+                return None
+            completed = None
+            for table in ((archived_tasks,) if archived_input else (tasks, archived_tasks)):
+                completed = (await conn.execute(select(
+                    table.c.status, table.c.updated_at, table.c.branch_name,
+                    table.c.created_by_kind, table.c.created_by_id, table.c.dedup_key,
+                ).where(table.c.id == task_id, table.c.project_id == batch["project_id"],
+                        table.c.repo_id == batch["repository_id"]))).mappings().one_or_none()
+                if completed is not None:
+                    break
+            if (completed is None or completed["status"] != "COMPLETED"
+                    or completed["updated_at"] <= batch["updated_at"]):
+                return None
+            if archived_input and (
+                completed["created_by_kind"] != "system"
+                or completed["created_by_id"] != batch["id"]
+                or completed["dedup_key"] not in {
+                    f"repair:{batch['id']}:{original['attempt']}",
+                    f"repair:{batch['id']}:sync-default-branch"}
+                or completed["branch_name"] not in {
+                    ref.removeprefix("refs/heads/") for ref in (
+                        candidate_ref(batch["id"]), batch["target_ref"]) if ref}
+            ):
+                return None
+            await conn.execute(update(integration_batches).where(
+                integration_batches.c.id == batch["id"],
+            ).values(lifecycle="sealed", updated_at=completed["updated_at"]))
+            return {"batch_id": batch["id"], "project_id": batch["project_id"],
+                    "repository_id": batch["repository_id"], "target_ref": batch["target_ref"]}
 
     @staticmethod
     def progress(start_sha: str | None, head_sha: str | None, *, green: bool) -> bool:
@@ -1820,7 +1883,7 @@ class RepairService:
         if parent is None:
             return
         head = evidence["parent_head_sha"]
-        await conn.execute(
+        await insert_message_with_source_event(conn,
             pg_insert(messages)
             .values(
                 id=f"msg-parent-red-{operation['id']}-{evidence['id']}",
@@ -4204,7 +4267,7 @@ class RepairService:
         """One supervisor message per *key*, however often the condition recurs."""
         if project_id is None:
             project_id = await self._operation_project_id_on(conn, operation)
-        await conn.execute(pg_insert(messages).values(
+        await insert_message_with_source_event(conn, pg_insert(messages).values(
             id=f"msg-{key}", project_id=project_id,
             from_kind="system", from_id="integration-repair", to_kind="session",
             to_id=f"supervisor-{project_id}", subject=subject, body=body,
@@ -4760,7 +4823,7 @@ class RepairService:
                     }
                 )
             )
-        await conn.execute(
+        await execute_batch_mutation(conn,
             update(integration_batches)
             .where(
                 integration_batches.c.id == batch["id"],
@@ -5034,7 +5097,7 @@ class RepairService:
                 dossier=dossier,
             )
         )
-        await conn.execute(
+        await execute_batch_mutation(conn,
             update(integration_batches)
             .where(
                 integration_batches.c.id == batch["id"],
@@ -6498,7 +6561,7 @@ class RepairService:
                 integration_branch_owners.c.handoff_state != "released",
             )
         )).mappings()]
-        await conn.execute(pg_insert(messages).values(
+        await insert_message_with_source_event(conn, pg_insert(messages).values(
             id=f"msg-{incident_id}", project_id=project_id,
             from_kind="system", from_id="integration-repair", to_kind="session",
             to_id=f"supervisor-{project_id}",
@@ -6566,7 +6629,7 @@ class RepairService:
                 _manual_pause_control=True,
             )
         else:
-            await conn.execute(
+            await execute_batch_mutation(conn,
                 update(integration_batches)
                 .where(integration_batches.c.id == operation["batch_id"])
                 .values(lifecycle="human_blocked", updated_at=now)
