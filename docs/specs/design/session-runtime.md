@@ -330,6 +330,33 @@ holds, pinned jobs and integration-owned delegates are not automatically requeue
 the same preservation and release. Command callers must pass `dry_run: false` to
 apply. Preview performs no publication, detach, release or audit writes.
 
+Preservation requires a local task ref and its live, materialized
+`task_branch_origins` record. Each candidate must descend from the recorded filing
+base; every unpublished
+commit must have a committer timestamp at or after the writer's task-session
+attempt start (falling back to `claim_phase_at`, or `started_at` for a task
+session, when no attempt exists). A slot snapshot or HEAD additionally requires
+its sentinel to match task, branch, project and workspace, with an assignment
+at or after that claim. A missing local task ref
+is reported as `skip_preserve` in preview and never replaced with a slot HEAD.
+Unproven unpublished work refuses release as `unproven_task_work`, without
+snapshotting, publishing or detaching; an unrelated detached slot is skipped.
+
+`aq integration restore-task-origin` is an operator/live project supervisor
+control for a contaminated task branch. Preview is the default. Apply requires
+the exact task origin id, released owner fence token, expected remote head and
+a reason. Under the project admission lock and repository mutex, revalidate the
+task/origin/ref binding and released fence, exclude live task writers, locked
+workspaces, checked-out branches and reserved publications, then restore only the
+recorded base SHA with an exact remote lease. Never accept a caller-supplied
+destination or replacement commit. Retain the displaced remote head on an
+immutable recovery ref before rewriting; audit the principal, reason, origin,
+before/after OIDs and fresh fence.
+An existing local ref must equal the observed remote or the origin; repair it
+with an exact compare-and-swap so a retry cannot republish the contamination.
+Do not reset or clean any checkout. A moved remote, origin or fence refuses the
+write; preview leaves refs, fence and audit unchanged.
+
 Claim release also clears the exact old assignment when the task has already
 returned to READY: it matches the releasing session's agent and claim epoch,
 leaving a successor's assignment untouched. An attached integration owner still

@@ -105,7 +105,8 @@ async def test_fleet_diagnostics_allow_more_than_default_read_budget(command):
 
 
 @pytest.mark.parametrize("dry_run", [False, True])
-async def test_release_owner_allows_provider_and_git_verification_read_budget(dry_run):
+@pytest.mark.parametrize("command", ["integration_release_owner", "integration_restore_task_origin"])
+async def test_release_owner_allows_provider_and_git_verification_read_budget(dry_run, command):
     calls = []
 
     def handler(request):
@@ -119,7 +120,7 @@ async def test_release_owner_allows_provider_and_git_verification_read_budget(dr
     ) as transport:
         client._http = transport
         assert await client.execute(
-            "integration_release_owner", {"owner_row_id": "owner", "dry_run": dry_run}
+            command, {"task_id": "task", "dry_run": dry_run}
         ) == {"success": True}
     assert len(calls) == 1
 

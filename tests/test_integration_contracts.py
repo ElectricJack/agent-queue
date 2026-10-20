@@ -13,6 +13,7 @@ from src.commands.contracts.integration import (
     IntegrationRecordRootNoopArgs,
     IntegrationReevaluateRepairArgs,
     IntegrationReverifyEpicArgs,
+    IntegrationRestoreTaskOriginArgs,
     register_integration_contracts,
 )
 from src.commands.contracts.models import EffectSubject, OutcomeClass
@@ -45,6 +46,41 @@ DESIGN_EVENTS = {
     "task.integration_configuration_blocked",
     "integration.repair_delegate_closed",
 }
+
+
+@pytest.mark.parametrize("missing", [
+    "origin_id", "expected_remote_oid", "expected_fence_token", "reason",
+])
+def test_origin_restore_contract_requires_exact_apply_fences(missing):
+    args = dict(task_id="task", dry_run=False, origin_id="origin",
+                expected_remote_oid="a" * 40, expected_fence_token=3, reason="repair")
+    args.pop(missing)
+    with pytest.raises(ValidationError):
+        IntegrationRestoreTaskOriginArgs(**args)
+    assert IntegrationRestoreTaskOriginArgs(task_id="task").dry_run is True
+
+
+async def test_origin_restore_adapter_retains_the_reviewable_preview():
+    evidence = {"origin_id": "origin", "before_sha": "a" * 40, "after_sha": "b" * 40,
+                "fence_token": 3, "backup_ref": "aq/origin-restore/origin/old"}
+
+    class Handler:
+        async def execute(self, name, payload):
+            assert name == "integration_restore_task_origin"
+            assert payload["dry_run"] is True
+            return {"success": True, "outcome": "preview", "evidence": evidence}
+
+    registry = ContractRegistry()
+    register_integration_contracts(registry)
+    set_handler_provider(Handler)
+    try:
+        result = await registry.require("integration_restore_task_origin").invoke(
+            IntegrationRestoreTaskOriginArgs(task_id="task"), None,
+        )
+    finally:
+        set_handler_provider(None)
+    assert result.outcome == "preview"
+    assert result.value.evidence == evidence
 
 
 @pytest.mark.parametrize("payload", [

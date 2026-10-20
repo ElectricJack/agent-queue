@@ -47,6 +47,32 @@ def test_release_owner_refuses_conflicting_preview_and_apply_flags():
     client.execute.assert_not_awaited()
 
 
+def test_restore_task_origin_previews_and_requires_exact_apply_fences():
+    from src.cli.app import cli
+
+    client = _client({"success": True, "outcome": "preview"})
+    argv = ["integration", "restore-task-origin", "--task-id", "task"]
+    with patch("src.cli.integration._get_client", return_value=client):
+        result = CliRunner().invoke(cli, argv)
+        assert result.exit_code == 0, result.output
+        assert client.execute.call_args.args == ("integration_restore_task_origin", {
+            "task_id": "task", "dry_run": True, "reason": "",
+        })
+        client.reset_mock()
+        result = CliRunner().invoke(cli, argv + ["--apply"])
+        assert result.exit_code == 2
+        client.execute.assert_not_awaited()
+        result = CliRunner().invoke(cli, argv + ["--apply", "--origin-id", "origin",
+            "--expected-remote-oid", "a" * 40, "--expected-fence-token", "5",
+            "--reason", "remove contamination"])
+        assert result.exit_code == 0, result.output
+        assert client.execute.call_args.args[1] == {
+            "task_id": "task", "dry_run": False, "origin_id": "origin",
+            "expected_remote_oid": "a" * 40, "expected_fence_token": 5,
+            "reason": "remove contamination",
+        }
+
+
 @pytest.mark.parametrize("apply", [False, True])
 def test_provenance_namespace_migration_defaults_to_preview(tmp_path, apply):
     from src.cli.app import cli
