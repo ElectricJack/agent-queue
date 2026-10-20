@@ -91,6 +91,22 @@ def test_restore_task_origin_previews_and_requires_exact_apply_fences():
 
 
 @pytest.mark.parametrize("apply", [False, True])
+def test_release_owner_self_owned_is_explicit_and_keeps_preview_default(apply):
+    from src.cli.app import cli
+
+    client = _client({"success": True, "outcome": "released"})
+    with patch("src.cli.integration._get_client", return_value=client):
+        result = CliRunner().invoke(cli, [
+            "integration", "release-owner", "--task-id", "task", "--self-owned",
+            *(["--apply"] if apply else []),
+        ])
+    assert result.exit_code == 0, result.output
+    assert client.execute.call_args.args == ("integration_release_owner", {
+        "task_id": "task", "self_owned": True, "dry_run": not apply,
+    })
+
+
+@pytest.mark.parametrize("apply", [False, True])
 def test_provenance_namespace_migration_defaults_to_preview(tmp_path, apply):
     from src.cli.app import cli
 

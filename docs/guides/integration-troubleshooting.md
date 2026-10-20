@@ -224,6 +224,23 @@ as the recovery result. Dry runs do not write an audit row.
 | `not_found` | The owner row id is wrong, or the row was already released by the time the command ran. | Preview the current task with `aq integration release-owner --task-id TASK_ID --dry-run`. |
 | `not_recoverable_state` | The row's `owner_role` is `collector`, or its `handoff_state` is `released`. Only `worker`/`repair` rows in `attached` or `handoff_pending` are recoverable. | Do nothing — the row is in a correct state. |
 
+**A live worker blocked on its own failed preparation.** A retry automatically
+rechecks a self-owned pending handoff using the exact unactivated pool claim and
+clean, published checkout proof. If it remains fenced, the operator or project
+supervisor can preview and restore that reservation without killing the session:
+
+```bash
+aq integration release-owner --task-id TASK_ID --self-owned --dry-run
+aq integration release-owner --task-id TASK_ID --self-owned --apply
+```
+
+This requires a retained failure record for the same session instance, claim epoch
+and workspace generation. It retains the claim and workspace locks for retry, even
+if repeated failures requested drain and disabled the workspace. It refuses active
+claims, incomplete child cleanup, changed bindings, dirty or unpublished work.
+An apply writes `integration.preparation_handoff_restored` and a task comment.
+Without `--self-owned`, the ordinary stopped-writer proof still applies.
+
 **A worker still bound to a closed task.** A daemon restart during
 `aq task close` can commit the terminal transition and lose everything after
 it: the branch handoff, the completion record and the claim release. The task

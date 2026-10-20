@@ -1797,16 +1797,25 @@ class IntegrationCommandsMixin:
         if refusal is not None:
             return _failure("unauthorized", refusal)
 
-        recovery = owner_recovery_for(self.orchestrator)
-        if recovery is None:
-            return _failure("runtime_error", "owner recovery is unavailable")
-        owner_row_ids = [row["id"] for row in rows]
-        if request.owner_row_id is not None and not owner_row_ids:
-            owner_row_ids = [request.owner_row_id]
-        outcomes = await recovery.recover_many(
-            owner_row_ids, principal=principal, dry_run=request.dry_run,
-            no_push=request.no_push,
-        )
+        if request.self_owned:
+            from src.integration.preparation_handoff import recover_preparation_handoffs
+
+            if self.orchestrator is None:
+                return _failure("runtime_error", "preparation recovery is unavailable")
+            outcomes = await recover_preparation_handoffs(
+                self.orchestrator, rows, principal=principal, dry_run=request.dry_run,
+            )
+        else:
+            recovery = owner_recovery_for(self.orchestrator)
+            if recovery is None:
+                return _failure("runtime_error", "owner recovery is unavailable")
+            owner_row_ids = [row["id"] for row in rows]
+            if request.owner_row_id is not None and not owner_row_ids:
+                owner_row_ids = [request.owner_row_id]
+            outcomes = await recovery.recover_many(
+                owner_row_ids, principal=principal, dry_run=request.dry_run,
+                no_push=request.no_push,
+            )
         serialized = [outcome.to_dict() for outcome in outcomes]
         if not serialized:
             outcome = "not_found"

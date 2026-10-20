@@ -341,6 +341,7 @@ class IntegrationReleaseOwnerArgs(CommandArgs):
     owner_row_id: str | None = Field(default=None, min_length=1)
     dry_run: bool = True
     no_push: bool = False
+    self_owned: bool = False
 
     @model_validator(mode="after")
     def exactly_one_target(self) -> "IntegrationReleaseOwnerArgs":

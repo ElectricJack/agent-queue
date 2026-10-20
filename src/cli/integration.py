@@ -443,11 +443,13 @@ def integration_reevaluate_repair(ctx, operation_id, apply, head, episode, gener
     "--no-push", is_flag=True,
     help="Release without publishing; unpublished work stays in its retained checkout.",
 )
+@click.option("--self-owned", is_flag=True,
+              help="Resume the live session's own failed, unactivated preparation handoff.")
 @click.pass_context
 @_handle_errors
 def integration_release_owner(
     ctx: click.Context, task_id: str | None, owner_row_id: str | None, dry_run: bool,
-    apply: bool, no_push: bool,
+    apply: bool, no_push: bool, self_owned: bool,
 ) -> None:
     """Preview a stranded owner's recovery; use --apply to preserve and release."""
     if (task_id is None) == (owner_row_id is None):
@@ -457,6 +459,8 @@ def integration_release_owner(
     args: dict[str, Any] = {"dry_run": not apply}
     if no_push:
         args["no_push"] = True
+    if self_owned:
+        args["self_owned"] = True
     if task_id is not None:
         args["task_id"] = task_id
     else:
