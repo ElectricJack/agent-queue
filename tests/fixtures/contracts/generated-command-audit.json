@@ -8452,7 +8452,7 @@
   "integration_redrive_child": {
     "mode": "typed",
     "producer": "src/commands/integration_commands.py:IntegrationCommandsMixin._cmd_integration_redrive_child",
-    "source_digest": "sha256:1fbac9db6864c3e39f46d2f48711e24604c557910b485ddd1a38960c91abe002",
+    "source_digest": "sha256:bff27dfd9309ae4ecf3f00f8114d77d61613203942cb238c8809a817a7df9bae",
     "input_schema_source": "typed_contract",
     "schema_quality": "typed",
     "argument_reads_diagnostic_only": [],
@@ -8481,7 +8481,11 @@
     "tests": [
       "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
       "tests/test_generated_command_contracts.py::test_generic_result_protocol",
-      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_integration_child_delivery.py::test_source_adoption_command_forwards_explicit_opt_in",
+      "tests/test_integration_child_delivery.py::test_git_first_redrive_adopts_missing_source_without_claiming_delivery",
+      "tests/test_integration_child_delivery.py::test_source_adoption_refuses_unproven_or_live_bindings",
+      "tests/test_command_descriptors.py::test_dev_redrive_contract_only_adds_explicit_source_adoption"
     ]
   },
   "integration_redrive_root": {

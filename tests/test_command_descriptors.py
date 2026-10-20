@@ -35,6 +35,7 @@ GOLDEN = ROOT / "tests/fixtures/contracts/legacy-command-descriptors.json"
 C2_CHANGES = ROOT / "tests/fixtures/contracts/observation-contract-changes.json"
 SCRIPT_CHANGES = ROOT / "tests/fixtures/contracts/script-contract-changes.json"
 MAIN_CHANGES = ROOT / "tests/fixtures/contracts/main-refresh-contract-changes.json"
+DEV_CHANGES = ROOT / "tests/fixtures/contracts/dev-refresh-contract-changes.json"
 WATCH_CHANGES = ROOT / "tests/fixtures/contracts/watch-contract-changes.json"
 
 
@@ -108,6 +109,14 @@ def _main_changes():
     return changes
 
 
+def _dev_changes():
+    changes = json.loads(DEV_CHANGES.read_text())
+    assert changes["source_base"] == "b17f5d8adb9bc2c15ddeaef8260812f281ee055b"
+    assert set(changes["contracts"]) == {"integration_redrive_child"}
+    assert set(changes["transport_definitions"]) == {"integration_redrive_child"}
+    return changes
+
+
 def _watch_changes():
     changes = json.loads(WATCH_CHANGES.read_text())
     assert set(changes["playbook_fixtures"]) == {
@@ -133,7 +142,7 @@ def _snapshot(*, handlers=(), explicit=(), fallback=None, typed=None, plugins=()
 def test_legacy_execution_documents_and_fingerprints():
     fixture = json.loads(GOLDEN.read_text())
     changes = {**_observation_changes()["contracts"], **_script_changes()["contracts"],
-               **_main_changes()["contracts"]}
+               **_main_changes()["contracts"], **_dev_changes()["contracts"]}
     for name, old in fixture["legacy_contracts"].items():
         expected = changes.get(name, old)
         if name in changes:
@@ -158,6 +167,7 @@ def test_transport_views_and_cli_serialization_preserve_golden_evidence():
     changes = _observation_changes()
     scripts = _script_changes()
     main = _main_changes()
+    dev = _dev_changes()
     contracts = {**changes["contracts"], **scripts["contracts"]}
     snapshot = command_snapshot()
     for name, digest in fixture["transport_definitions"].items():
@@ -169,17 +179,36 @@ def test_transport_views_and_cli_serialization_preserve_golden_evidence():
             approved = main["transport_definitions"][name]
             assert approved["previous_sha256"] == digest
             digest = approved["sha256"]
+        if name in dev["transport_definitions"]:
+            approved = dev["transport_definitions"][name]
+            assert approved["previous_sha256"] == digest
+            digest = approved["sha256"]
         assert _digest(snapshot.commands[name].tool_definition()) == digest, name
     actual = hashlib.sha256(render_command_catalogue().encode()).hexdigest()
     assert changes["previous_cli_catalogue_sha256"] == fixture["cli_catalogue_sha256"]
     assert scripts["previous_cli_catalogue_sha256"] == changes["cli_catalogue_sha256"]
     assert main["previous_cli_catalogue_sha256"] == scripts["cli_catalogue_sha256"]
-    assert actual == main["cli_catalogue_sha256"]
+    assert dev["previous_cli_catalogue_sha256"] == main["cli_catalogue_sha256"]
+    assert actual == dev["cli_catalogue_sha256"]
     definitions = {d["name"]: d for d in effective_tool_definitions()}
     for name, definition in _discover_all_commands().items():
         assert definition == snapshot.commands[name].tool_definition()
         if name in definitions:
             assert definition == definitions[name]
+
+
+def test_dev_redrive_contract_only_adds_explicit_source_adoption():
+    old = json.loads(GOLDEN.read_text())["legacy_contracts"]["integration_redrive_child"][
+        "execution"
+    ]
+    old["args_schema"]["properties"]["adopt_source"] = {
+        "default": False, "type": "boolean",
+    }
+    old["result_schema"]["properties"]["completion_id"] = {
+        "anyOf": [{"type": "string"}, {"type": "null"}], "default": None,
+    }
+    old["receipt_projection"].insert(old["receipt_projection"].index("collection"), "completion_id")
+    assert _dev_changes()["contracts"]["integration_redrive_child"]["execution"] == old
 
 
 def test_legacy_playbook_fixtures_are_unchanged():
