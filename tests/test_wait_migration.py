@@ -32,6 +32,7 @@ TABLES = (
     "admission_reservations",
     "wait_measurements",
     "wait_priority_projection",
+    "wait_bridge_progress",
 )
 CLAIM_INDEXES = (
     "idx_tasks_claim_frontier",
@@ -44,6 +45,7 @@ JSONB_COLUMNS = {
     "continuations": {"facts"},
     "admission_reservations": {"scope"},
     "wait_priority_projection": {"donor_path"},
+    "wait_bridge_progress": {"evidence"},
 }
 
 

@@ -7560,3 +7560,19 @@ ask_action_tokens = Table(
 # Fresh metadata must enforce the same append-only audit boundary as Alembic.
 
 register_ask_schema_events(metadata)
+
+# Migration progress is independent of source/timer listener leases. Per-object
+# receipts survive partial passes; identity '*' is the guarded phase completion.
+wait_bridge_progress = Table(
+    'wait_bridge_progress', metadata,
+    Column('project_id', Text, ForeignKey('projects.id'), primary_key=True),
+    Column('phase', Text, primary_key=True),
+    Column('identity', Text, primary_key=True),
+    Column('state', Text, nullable=False),
+    Column('evidence', JSONB, nullable=False),
+    Column('updated_at', Float, nullable=False),
+    CheckConstraint("phase IN ('project','agent-waits','audit','sessionless')",
+                    name='ck_wait_bridge_progress_phase'),
+    CheckConstraint("state IN ('pending','complete','held')",
+                    name='ck_wait_bridge_progress_state'),
+)

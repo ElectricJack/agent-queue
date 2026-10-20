@@ -360,3 +360,59 @@ async def test_released_branch_owner_retracts_scheduler_priority_donation(env):
         ).values(handoff_state="released"))
     await sync(env, NOW + 1)
     assert next(r["effective_priority"] for r in await rows(env, tasks) if r["id"] == "holder") == 100
+
+
+@pytest.mark.parametrize('status', ['READY', 'DEFINED', 'PAUSED'])
+async def test_initial_audit_unknown_age_is_due_without_admitting_paused_tasks(env, status):
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == 'holder').values(status=status))
+    await env.service.sync({'project_id': 'p', 'cycle_id': 'bridge', 'blockers': [],
+                            'initial_audit': True, 'now': NOW}, principal=SERVICE)
+    records = await rows(env, wait_records)
+    assert records and all(row['decision_inputs']['age_unknown'] for row in records)
+    deadlines = await rows(env, wait_deadlines)
+    assert all(row['due_at'] <= NOW for row in deadlines if row['deadline_type'] == 'reservation')
+    if status != 'READY':
+        assert not deadlines
+        holds = [row for row in records if row['condition']['blocker'] == 'policy_hold']
+        assert holds
+    async with env.db._engine.connect() as conn:
+        assert await conn.scalar(select(tasks.c.status).where(tasks.c.id == 'holder')) == status
+        if status != 'READY':
+            assert await env.service.reader.observe_task(conn, 'holder') is None
+
+
+async def test_bridge_project_pass_records_completed_audit_and_replays(env):
+    from src.commands.principal import TRUSTED_LOCAL
+    from src.database.tables import wait_bridge_progress
+    from src.wait_runtime.service import WaitService
+
+    service = WaitService(env.o, clock=lambda: NOW)
+    args = {'project_id': 'p', 'mode': 'project', 'apply': True}
+    first = await service.legacy_bridge.run(args, principal=TRUSTED_LOCAL)
+    assert first['result']['projects']['p']['state'] == 'complete'
+    deadlines = await rows(env, wait_deadlines)
+    await service.legacy_bridge.run(args, principal=TRUSTED_LOCAL)
+    assert await rows(env, wait_deadlines) == deadlines
+    marker = await rows(env, wait_bridge_progress)
+    assert len(marker) == 1 and marker[0]['state'] == 'complete'
+
+
+async def test_startup_bridge_runs_once_and_restart_honours_durable_marker(env):
+    from src.commands.principal import TRUSTED_LOCAL
+    from src.database.tables import wait_bridge_progress
+    from src.wait_runtime.service import WaitService
+
+    service = WaitService(env.o, clock=lambda: NOW)
+    async def command(name, args):
+        assert name == 'wait_legacy_bridge'
+        return await service.legacy_bridge.run(args, principal=TRUSTED_LOCAL)
+    service.command = AsyncMock(side_effect=command)
+    await service.startup_bridge()
+    await service.startup_bridge()
+    assert service.command.await_count == 1
+    assert any(r['phase'] == 'agent-waits' and r['identity'] == '*' and r['state'] == 'complete'
+               for r in await rows(env, wait_bridge_progress))
+    service._bridge_started = False
+    await service.startup_bridge()
+    assert service.command.await_count == 1

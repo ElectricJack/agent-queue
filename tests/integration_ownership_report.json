@@ -10428,6 +10428,24 @@
         100,
         107
       ]
+    },
+    "src/wait_runtime/legacy_parking.py::checkpoint_proof": {
+      "reason": "Migration admission checks canonical integration checkpoint evidence without modifying delivery authority."
+    },
+    "src/wait_runtime/legacy_parking.py::current_proof": {
+      "reason": "Migration admission checks canonical integration checkpoint evidence without modifying delivery authority."
+    },
+    "src/wait_runtime/legacy_parking.py::import from src.database.tables import agents, sessions, task_integration_checkpoints, wait_bridge_progress, workspaces": {
+      "reason": "Migration admission checks canonical integration checkpoint evidence without modifying delivery authority."
+    },
+    "src/wait_runtime/legacy_parking.py::legacy_parked": {
+      "reason": "Migration admission checks canonical integration checkpoint evidence without modifying delivery authority."
+    },
+    "src/wait_runtime/legacy_parking.py::parked": {
+      "reason": "Migration admission checks canonical integration checkpoint evidence without modifying delivery authority."
+    },
+    "src/waits/admission.py::import from src.database.tables import continuations, integration_batch_members, integration_batches, integration_branch_owners, integration_repair_stages, projects, sessions, tasks, token_ledger, wait_records": {
+      "reason": "Admission reads canonical integration ownership and repair blockers; integration source authority remains charged."
     }
   },
   "shared_state": {
@@ -10807,7 +10825,7 @@
     "src/database/queries/agent_cron_queries.py::AgentCronQueriesMixin.reconcile_agent_cron": "Recurring prompt coalescing and message transport diagnostics; last_delivery_status describes terminal submission, not code integration.",
     "src/database/tables.py::agent_cron": "Session-owned recurring prompts and message delivery diagnostics introduced by revision 86; no integration state, ref mutations or replay journal.",
     "src/database/tables.py::agent_cron['last_delivery_status']": "Recurring prompt terminal delivery status, unrelated to code delivery.",
-    "src/prime/sections.py::_build_task_context_body": "Ordinary task context, recovery observations, comments and attachments, including reuse of the shared provider handoff formatter. No integration assignment, lifecycle or authority is read or rendered here; the live fenced parent-conflict snapshot remains in the independently charged build_task_context_section adapter, and the shared handoff formatter remains charged.",
+    "src/prime/sections.py::_build_task_context_preview": "Ordinary task context, recovery observations, comments and attachments, including reuse of the shared provider handoff formatter. No integration assignment, lifecycle or authority is read or rendered here; the live fenced parent-conflict snapshot remains in the independently charged build_task_context_section adapter, and the shared handoff formatter remains charged.",
     "src/commands/operator_authority.py::OPERATOR_FORBIDDEN": "Operator-worker denylist of human gate and delivery command names; it only refuses dispatch. The named commands keep their own charged handlers; no integration storage, lifecycle or ref authority.",
     "src/commands/operator_authority.py::OPERATOR_READS": "Operator-worker command-name allowlist; it grants nothing itself. Every named integration command keeps its own charged handler, authorization and storage; no integration storage, lifecycle or ref authority.",
     "src/commands/operator_authority.py::OPERATOR_WRITES": "Operator-worker command-name allowlist; it grants nothing itself. Every named integration command keeps its own charged handler, authorization and storage; no integration storage, lifecycle or ref authority.",
@@ -10990,7 +11008,7 @@
       "src/sessions/worker_recovery.py::STREAK_KEY": "Generic consecutive worker-failure metadata key; no integration lifecycle or replay authority."
     },
     "ordinary_context_boundary": {
-      "src/prime/sections.py::_build_task_context_body": "Ordinary task context, recovery observations, comments and attachments, including reuse of the shared provider handoff formatter. No integration assignment, lifecycle or authority is read or rendered here; the live fenced parent-conflict snapshot remains in the independently charged build_task_context_section adapter, and the shared handoff formatter remains charged."
+      "src/prime/sections.py::_build_task_context_preview": "Ordinary task context, recovery observations, comments and attachments, including reuse of the shared provider handoff formatter. No integration assignment, lifecycle or authority is read or rendered here; the live fenced parent-conflict snapshot remains in the independently charged build_task_context_section adapter, and the shared handoff formatter remains charged."
     },
     "storage_sinks": {
       "src/commands/task_commands.py::TaskCommandsMixin._restart_repair_delegate::422567dd28fcecb1a80d03028773f3ba177b912a1b2e264195e8ad9a0e83101f": {

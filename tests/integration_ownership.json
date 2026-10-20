@@ -9357,6 +9357,24 @@
         100,
         107
       ]
+    },
+    "src/wait_runtime/legacy_parking.py::checkpoint_proof": {
+      "reason": "Migration admission checks canonical integration checkpoint evidence without modifying delivery authority."
+    },
+    "src/wait_runtime/legacy_parking.py::current_proof": {
+      "reason": "Migration admission checks canonical integration checkpoint evidence without modifying delivery authority."
+    },
+    "src/wait_runtime/legacy_parking.py::import from src.database.tables import agents, sessions, task_integration_checkpoints, wait_bridge_progress, workspaces": {
+      "reason": "Migration admission checks canonical integration checkpoint evidence without modifying delivery authority."
+    },
+    "src/wait_runtime/legacy_parking.py::legacy_parked": {
+      "reason": "Migration admission checks canonical integration checkpoint evidence without modifying delivery authority."
+    },
+    "src/wait_runtime/legacy_parking.py::parked": {
+      "reason": "Migration admission checks canonical integration checkpoint evidence without modifying delivery authority."
+    },
+    "src/waits/admission.py::import from src.database.tables import continuations, integration_batch_members, integration_batches, integration_branch_owners, integration_repair_stages, projects, sessions, tasks, token_ledger, wait_records": {
+      "reason": "Admission reads canonical integration ownership and repair blockers; integration source authority remains charged."
     }
   },
   "exclusions": {
@@ -9446,7 +9464,6 @@
     "src/database/queries/agent_cron_queries.py::AgentCronQueriesMixin.reconcile_agent_cron": "Recurring prompt coalescing and message transport diagnostics; last_delivery_status describes terminal submission, not code integration.",
     "src/database/tables.py::agent_cron": "Session-owned recurring prompts and message delivery diagnostics introduced by revision 86; no integration state, ref mutations or replay journal.",
     "src/database/tables.py::agent_cron['last_delivery_status']": "Recurring prompt terminal delivery status, unrelated to code delivery.",
-    "src/prime/sections.py::_build_task_context_preview": "Ordinary task context, recovery observations, comments and attachments, including reuse of the shared provider handoff formatter. No integration assignment, lifecycle or authority is read or rendered here; the live fenced parent-conflict snapshot remains in the independently charged build_task_context_section adapter, and the shared handoff formatter remains charged.",
     "src/commands/operator_authority.py::OPERATOR_FORBIDDEN": "Operator-worker denylist of human gate and delivery command names; it only refuses dispatch. The named commands keep their own charged handlers; no integration storage, lifecycle or ref authority.",
     "src/commands/operator_authority.py::OPERATOR_READS": "Operator-worker command-name allowlist; it grants nothing itself. Every named integration command keeps its own charged handler, authorization and storage; no integration storage, lifecycle or ref authority.",
     "src/commands/operator_authority.py::OPERATOR_WRITES": "Operator-worker command-name allowlist; it grants nothing itself. Every named integration command keeps its own charged handler, authorization and storage; no integration storage, lifecycle or ref authority.",
@@ -9487,7 +9504,20 @@
     "src/asks/source_operations.py::apply": "Generic human-source operation leasing, pause gating and reconciliation, dispatching through the registered source adapter. No integration branch, subject, gate or policy state is interpreted or written here; IntegrationAdapter and authorize_source retain the charged integration authority and receipts.",
     "src/asks/source_operations.py::import from src.asks.sources import authorize_source, finish_on": "Generic human-source authorization and completion imports; the integration branch of authorize_source remains independently charged, and finish_on only updates ask operations/projections.",
     "src/wait_runtime/scheduler.py::enabled": "Generic verified-wait lifecycle/configuration or ordinary routing helper; no integration ref mutation or duplicate lifecycle storage.",
-    "src/database/tables.py::wait_measurements": "Generic wait duration and continuation cost samples; no integration lifecycle or reference replay authority."
+    "src/database/tables.py::wait_measurements": "Generic wait duration and continuation cost samples; no integration lifecycle or reference replay authority.",
+    "src/prime/sections.py::_build_task_context_preview": "Ordinary task context, recovery observations, comments and attachments, including reuse of the shared provider handoff formatter. No integration assignment, lifecycle or authority is read or rendered here; the live fenced parent-conflict snapshot remains in the independently charged build_task_context_section adapter, and the shared handoff formatter remains charged.",
+    "src/database/tables.py::wait_bridge_progress": "Verified-wait migration provenance and read-only source projections. Owns no integration delivery lifecycle or Git ref mutation; canonical integration sources remain independently charged.",
+    "src/wait_runtime/legacy_audit.py::audit_scheduler_age": "Verified-wait migration provenance and read-only source projections. Owns no integration delivery lifecycle or Git ref mutation; canonical integration sources remain independently charged.",
+    "src/wait_runtime/legacy_bridge.py::LegacyWaitBridge.adopt_agent_wait": "Verified-wait migration provenance and read-only source projections. Owns no integration delivery lifecycle or Git ref mutation; canonical integration sources remain independently charged.",
+    "src/wait_runtime/legacy_bridge.py::import from src.wait_runtime.hibernate import begin_suspension": "Verified-wait migration provenance and read-only source projections. Owns no integration delivery lifecycle or Git ref mutation; canonical integration sources remain independently charged.",
+    "src/wait_runtime/legacy_human.py::adopt_waiting_input": "Verified-wait migration provenance and read-only source projections. Owns no integration delivery lifecycle or Git ref mutation; canonical integration sources remain independently charged.",
+    "src/wait_runtime/legacy_human.py::import from src.wait_runtime.hibernate import begin_suspension": "Verified-wait migration provenance and read-only source projections. Owns no integration delivery lifecycle or Git ref mutation; canonical integration sources remain independently charged.",
+    "src/wait_runtime/legacy_pass.py::receipt": "Verified-wait migration provenance and read-only source projections. Owns no integration delivery lifecycle or Git ref mutation; canonical integration sources remain independently charged.",
+    "src/wait_runtime/legacy_projection.py::project_condition": "Verified-wait migration provenance and read-only source projections. Owns no integration delivery lifecycle or Git ref mutation; canonical integration sources remain independently charged.",
+    "src/wait_runtime/legacy_projection.py::project_escalation": "Verified-wait migration provenance and read-only source projections. Owns no integration delivery lifecycle or Git ref mutation; canonical integration sources remain independently charged.",
+    "src/waits/adapters/legacy_escalation.py::authorise": "Verified-wait migration provenance and read-only source projections. Owns no integration delivery lifecycle or Git ref mutation; canonical integration sources remain independently charged.",
+    "src/waits/adapters/legacy_escalation.py::bind": "Verified-wait migration provenance and read-only source projections. Owns no integration delivery lifecycle or Git ref mutation; canonical integration sources remain independently charged.",
+    "src/waits/adapters/legacy_escalation.py::execute_mutation": "Verified-wait migration provenance and read-only source projections. Owns no integration delivery lifecycle or Git ref mutation; canonical integration sources remain independently charged."
   },
   "owned_fingerprints": [
     "0003870bf7ecea2ab9a41288b28bfe85be663baca1c9855bae4671222bd7c9ab",
@@ -17387,6 +17417,9 @@
     "src/database/tables.py::ask_reconciliation_cases": "Generic source/transport evidence conflicts and explicit repair receipts for every ask source; no integration subject journal or ref replay authority.",
     "src/database/tables.py::ask_source_aliases": "Generic human request source identity and alias reconciliation shared by every source kind; integration source interpretation remains independently charged.",
     "src/database/tables.py::review_feedback_obligations": "Generic accepted review feedback, ownership and completion evidence; no integration branch, publication state or ref replay authority.",
+    "src/database/tables.py::ingest_batches": "Generic specification-ingestion approval state and held task structure. Reconciliation uses shared outbox transport, but this table stores no integration branch, code publication or ref replay authority; the outbox adapter remains independently charged.",
+    "src/database/tables.py::ingest_batch_members": "Generic specification-ingestion task membership, section coverage and structure revision history. It records neither integration candidate membership nor code delivery, publication or ref replay authority; shared outbox transport remains independently charged.",
+    "src/database/tables.py::ingest_batch_receipts": "Generic specification-to-task fidelity review evidence, fenced by batch structure revision, digest and assigned reviewer. It grants ingestion admission only, not integration delivery, code publication or ref replay authority; shared outbox transport remains independently charged.",
     "src/doctor/ask_checks.py::ask_checks": "Generic registration of a report-only human request cleanup diagnostic; integration checks and source-specific authority remain independently charged.",
     "src/wait_runtime/scheduler.py::enabled": "Generic verified-wait lifecycle/configuration or ordinary routing helper; no integration ref mutation or duplicate lifecycle storage.",
     "src/database/tables.py::wait_measurements": "Generic wait duration and continuation cost samples; no integration lifecycle or reference replay authority.",
@@ -17659,10 +17692,7 @@
     "src/waits/sources.py::import from src.waits.source_sql import _SEQUENCE_LOCK": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
     "src/orchestrator/workspace_attachments.py::__all__['SYSTEM_KIND_SCOPE']": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
     "src/waits/checkpoint.py::import from src.handoffs import collect_facts": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
-    "src/waits/graph.py::GRAPH_LOCK": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
-    "src/database/tables.py::ingest_batches": "Generic specification-ingestion approval state and held task structure. Reconciliation uses shared outbox transport, but this table stores no integration branch, code publication or ref replay authority; the outbox adapter remains independently charged.",
-    "src/database/tables.py::ingest_batch_members": "Generic specification-ingestion task membership, section coverage and structure revision history. It records neither integration candidate membership nor code delivery, publication or ref replay authority; shared outbox transport remains independently charged.",
-    "src/database/tables.py::ingest_batch_receipts": "Generic specification-to-task fidelity review evidence, fenced by batch structure revision, digest and assigned reviewer. It grants ingestion admission only, not integration delivery, code publication or ref replay authority; shared outbox transport remains independently charged."
+    "src/waits/graph.py::GRAPH_LOCK": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged."
   },
   "exclusion_policy": {
     "tests": "Fixtures and tests do not ship as production mechanisms.",

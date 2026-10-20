@@ -32,6 +32,8 @@ class HumanWaits:
             if candidate["condition_kind"] != "human":
                 raise WaitError("wait.not_human", "only human waits can be lifted")
             cond = Condition.from_record(candidate["condition"])
+            if cond.parameters['subject'] == 'legacy_escalation':
+                raise WaitError('wait.not_human', 'legacy projections follow their owning service')
             endpoints = (await conn.execute(select(
                 wait_edges.c.waiter_key, wait_edges.c.blocker_key,
             ).where(wait_edges.c.wait_id == candidate["id"],

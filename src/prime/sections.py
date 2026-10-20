@@ -373,10 +373,9 @@ def _render_spec_ref(config: Any, row: dict) -> str:
 
 
 async def _build_task_context_preview(
-    db: Any, config: Any, task: Any, *,
-    continuation: dict | None = None,
+    db: Any, config: Any, task: Any, *, continuation: dict | None = None,
 ) -> PrimePreview:
-    """Keep pageable context separate from complete inline comment history.
+    """Keep pageable context separate from inline ordinary or continuation comments.
 
     Handoff context rows render separately in the messages section.
     """
@@ -464,13 +463,11 @@ async def _build_task_context_preview(
         blocks.append("**attachments:**\n" + "\n".join(f"- {p}" for p in attachments))
 
     body = "\n\n".join(b for b in blocks if b).strip()
-    from src.prime.budgets import CONTEXT_BYTES
-
     if continuation is not None:
-        return PrimePreview(
-            "", body, "\n\n" + await _continuation_comments(db, task),
-            "prime_context", CONTEXT_BYTES,
-        )
+        from src.prime.budgets import CONTEXT_BYTES
+
+        continuation_history = await _continuation_comments(db, task)
+        return PrimePreview("", body, "\n\n" + continuation_history, "prime_context", CONTEXT_BYTES)
 
     history: list[str] = []
     list_comments = getattr(db, "list_task_comments", None)
@@ -495,6 +492,8 @@ async def _build_task_context_preview(
             offset += len(comments)
             if offset >= page["total"]:
                 break
+    from src.prime.budgets import CONTEXT_BYTES
+
     # Comments are required in full, outside both the section preview and the
     # aggregate fitting pass. Only the ordinary context body can be paged.
     return PrimePreview("", body, "\n\n" + "\n\n".join(history) if history else "",

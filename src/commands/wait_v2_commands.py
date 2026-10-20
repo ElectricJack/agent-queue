@@ -230,11 +230,12 @@ class WaitV2CommandsMixin:
 
     async def _wait_v2_get(self, values, args):
         await self._wait_v2_authorize_target(args)
+        canonical_row = await self._wait_v2_row(values.wait_id)
         if values.consume:
             acknowledgement = await self._wait_v2_command(
                 "wait_ack",
                 {
-                    "wait_id": values.wait_id,
+                    "wait_id": canonical_row["id"] if canonical_row else values.wait_id,
                     **{
                         k: v
                         for k, v in args.items()

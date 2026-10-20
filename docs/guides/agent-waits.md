@@ -314,3 +314,38 @@ edits:
 aq agent list-profiles
 aq agent profile-reseed --profile-id PROFILE_ID --grants-only
 ```
+
+## Legacy v2 migration
+
+`aq wait bridge` previews the `agent-waits` migration. `--apply` adopts active v1
+waits and legacy `WAITING_INPUT` tasks. `--mode project` projects question/gate
+escalations, open-author reviews, playbook suspensions and timed pauses (the
+persisted task field is `resume_after`). Both apply modes invoke the scheduler's
+first-pass audit. No bridge command enables runtime flags.
+
+Migration preserves the original v1 creation and expiry timestamps exactly,
+including already-due expiries. This is the approved correction to implementation
+§14.3(3): there is no `now + 60` grace. An overdue active wait escalates; expiry
+alone does not prove a source outcome. Already terminal v1 expiry/cancellation
+results retain their historical digest and map to a cancelled outcome.
+
+`wait_bridge_progress` records project/phase/object receipts separately from
+source and timer listener cursors. A phase completes only after its guarded pass
+and audit succeed without unresolved object receipts. A restart reuses adopted
+identities. Held rows and unavailable projections remain visible and prevent the
+phase completion marker. Downgrade retains migration evidence.
+
+Escalation projections observe the owning service's canonical resolved state.
+A received reply, external transport thread, or supervisor discussion is not a
+completed decision. The internal escalation binding is unavailable to public
+human registration and `wait_lift`. Projections never mutate their owner or wake
+a task, and incur no invented worker-seat measurements.
+
+Sessionless `WAITING_INPUT` adoption requires no live writer, claimant or locked
+workspace, plus an existing verified integration checkpoint and its exact
+published remote branch head. A server-owned migration receipt binds the task
+incarnation, claim epoch, continuation generation, branch, checkpoint version and
+head. The same proof is rechecked before queueing and reserving a fresh session;
+normal saved-branch verification and exact ACK still apply. Missing checkpoint
+or historical question evidence creates a visible migration hold. No stop time,
+claim cleanup, release time or published head is fabricated.

@@ -17,6 +17,7 @@ from typing import Any
 from sqlalchemy import and_, delete, exists, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
+from src.waits.adapters.legacy_escalation import execute_mutation as execute_escalation_mutation
 from src.waits.sources import insert_message_with_source_event
 from src.dashboard_paths import escalation_path
 from src.database.tables import (
@@ -304,7 +305,7 @@ class EscalationQueriesMixin:
                 # The old gate migrator supplied provenance in place of
                 # decision context. Repair that known snapshot before its
                 # missing root becomes visible, without changing other replays.
-                repaired = (await conn.execute(update(escalations).where(
+                repaired = (await execute_escalation_mutation(conn, update(escalations).where(
                     escalations.c.id == existing["id"],
                     escalations.c.revision == existing["revision"],
                     escalations.c.state.in_(tuple(OPEN_ESCALATION_STATES)),
@@ -510,7 +511,7 @@ class EscalationQueriesMixin:
         async with self.immediate() as conn:
             row = (
                 (
-                    await conn.execute(
+                    await execute_escalation_mutation(conn,
                         update(escalations)
                         .where(
                             escalations.c.id == escalation_id,
@@ -682,7 +683,7 @@ class EscalationQueriesMixin:
                 next_revision = int(incident["revision"]) + 1
                 changed = (
                     (
-                        await conn.execute(
+                        await execute_escalation_mutation(conn,
                             update(escalations)
                             .where(
                                 escalations.c.id == escalation_id,
@@ -827,7 +828,7 @@ class EscalationQueriesMixin:
         async with (self.immediate() if conn is None else nullcontext(conn)) as conn:
             row = (
                 (
-                    await conn.execute(
+                    await execute_escalation_mutation(conn,
                         update(escalations)
                         .where(
                             escalations.c.id == escalation_id,
@@ -894,7 +895,7 @@ class EscalationQueriesMixin:
         async with self.immediate() as conn:
             row = (
                 (
-                    await conn.execute(
+                    await execute_escalation_mutation(conn,
                         update(escalations)
                         .where(
                             escalations.c.id == escalation_id,
@@ -935,7 +936,7 @@ class EscalationQueriesMixin:
         async with self.immediate() as conn:
             row = (
                 (
-                    await conn.execute(
+                    await execute_escalation_mutation(conn,
                         update(escalations)
                         .where(
                             escalations.c.id == escalation_id,
@@ -1158,7 +1159,7 @@ class EscalationQueriesMixin:
             next_revision = expected_revision + 1
             changed = (
                 (
-                    await conn.execute(
+                    await execute_escalation_mutation(conn,
                         update(escalations)
                         .where(
                             escalations.c.id == escalation_id,
@@ -1301,7 +1302,7 @@ class EscalationQueriesMixin:
                     )
                 incident = (
                     (
-                        await conn.execute(
+                        await execute_escalation_mutation(conn,
                             update(escalations)
                             .where(
                                 escalations.c.id == action["escalation_id"],

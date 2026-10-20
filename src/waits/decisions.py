@@ -13,6 +13,7 @@ import uuid
 
 from sqlalchemy import delete, func, insert, select, update
 
+from src.waits.adapters.legacy_escalation import execute_mutation as execute_escalation_mutation
 from src.database.queries.wait_queries import wait_explain
 from src.database.tables import (
     admission_reservations, continuations, escalation_deliveries, escalations, events,
@@ -103,7 +104,7 @@ class WaitDecisions:
             return {"success": True}
         evidence = {"wait_id": escalation["wait_id"], "source_seq": event.get("seq"),
                     "decision": event.get("decision"), "note": event.get("note")}
-        await conn.execute(update(escalations).where(
+        await execute_escalation_mutation(conn, update(escalations).where(
             escalations.c.id == incident["id"], escalations.c.revision == incident["revision"],
         ).values(state="cancelled", revision=incident["revision"] + 1,
                  terminal_outcome="source_satisfied" if outcome == "satisfied" else outcome,
@@ -352,7 +353,7 @@ class WaitDecisions:
             ceiling_anchor_at=None, sleep_decision="hibernate", decision_reason="human",
             decision_inputs=inputs, version=wait["version"] + 1,
         ))
-        await conn.execute(update(escalations).where(escalations.c.id == incident["id"]).values(
+        await execute_escalation_mutation(conn, update(escalations).where(escalations.c.id == incident["id"]).values(
             severity="high", decision_requested=detail["note"],
             revision=incident["revision"] + 1, updated_at=now,
         ))

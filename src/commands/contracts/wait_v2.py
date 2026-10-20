@@ -186,6 +186,7 @@ class WaitEvictArgs(WaitSleepDecideArgs):
 
 
 class SchedulerWaitSyncArgs(CommandArgs):
+    initial_audit: bool = False
     project_id: str = Field(min_length=1)
     blockers: list[dict[str, Any]]
     cycle_id: str = Field(min_length=1)
@@ -193,6 +194,7 @@ class SchedulerWaitSyncArgs(CommandArgs):
 
 
 class WaitLegacyBridgeArgs(CommandArgs):
+    mode: Literal["project", "agent-waits"] = "agent-waits"
     project_id: str | None = None
     apply: bool = False
 

@@ -21,6 +21,7 @@ from typing import Any
 from sqlalchemy import and_, delete, func, insert, or_, select, tuple_, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
+from src.waits.adapters.legacy_escalation import execute_mutation as execute_escalation_mutation
 from src.waits.sources import execute_batch_mutation
 from src.waits.sources import insert_message_with_source_event
 from src.task_templates import render_task_template
@@ -349,7 +350,7 @@ class OrdinaryRepairService:
         from src.database.queries.escalation_queries import OPEN_ESCALATION_STATES
 
         now = self.clock()
-        await conn.execute(update(escalations).where(
+        await execute_escalation_mutation(conn, update(escalations).where(
             escalations.c.id == "escalation-" + ordinary_repair_id(batch_id, 1),
             escalations.c.source_kind == "integration_repair",
             escalations.c.state.in_(tuple(OPEN_ESCALATION_STATES)),

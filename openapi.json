@@ -81584,6 +81584,15 @@
       },
       "WaitLegacyBridgeArgs": {
         "properties": {
+          "mode": {
+            "type": "string",
+            "enum": [
+              "project",
+              "agent-waits"
+            ],
+            "title": "Mode",
+            "default": "agent-waits"
+          },
           "project_id": {
             "anyOf": [
               {

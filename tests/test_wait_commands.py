@@ -360,21 +360,30 @@ async def test_checkpoint_requires_current_holder_before_runtime_mutation(comman
     assert result["success"] and callback.await_args.kwargs["scope"] == env.scope
 
 
-async def test_show_consume_uses_ack_and_forwards_claim_fence(commands, env):
+@pytest.mark.parametrize("legacy_alias", [False, True])
+async def test_show_consume_uses_ack_and_forwards_claim_fence(commands, env, legacy_alias):
     receipt = await register(env)
+    read_id = receipt["wait_id"]
+    if legacy_alias:
+        read_id = "legacy-wait"
+        async with env.db._engine.begin() as conn:
+            await conn.execute(update(wait_records).where(
+                wait_records.c.id == receipt["wait_id"],
+            ).values(legacy_kind="agent_wait", legacy_id=read_id))
     callback = AsyncMock(
         return_value={"success": True, "wait_id": receipt["wait_id"], "acknowledged": True}
     )
     commands.orchestrator.wait_v2_handlers["wait_ack"] = callback
     result = await execute(
-        commands, "wait_get", dict(wait_id=receipt["wait_id"], consume=True, claim_epoch=1)
+        commands, "wait_get", dict(wait_id=read_id, consume=True, claim_epoch=1)
     )
     assert result["success"] and result["next_step"] == "continue"
     assert callback.await_args.args[0]["claim_epoch"] == 1
+    assert callback.await_args.args[0]["wait_id"] == receipt["wait_id"]
     callback.return_value = dict(success=False, error_code="continuation.stale_generation")
     assert (
         await execute(
-            commands, "wait_get", dict(wait_id=receipt["wait_id"], consume=True, claim_epoch=1)
+            commands, "wait_get", dict(wait_id=read_id, consume=True, claim_epoch=1)
         )
     )["error_code"] == "continuation.stale_generation"
 

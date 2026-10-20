@@ -20720,6 +20720,7 @@
       "parameters": {
         "required": [],
         "optional": [
+          "--mode",
           "--project",
           "--apply",
           "--json",

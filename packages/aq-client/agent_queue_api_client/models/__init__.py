@@ -2043,6 +2043,7 @@ from .wait_graph_response import WaitGraphResponse
 from .wait_graph_response_422 import WaitGraphResponse422
 from .wait_graph_response_graph import WaitGraphResponseGraph
 from .wait_legacy_bridge_args import WaitLegacyBridgeArgs
+from .wait_legacy_bridge_args_mode import WaitLegacyBridgeArgsMode
 from .wait_legacy_bridge_response_422 import WaitLegacyBridgeResponse422
 from .wait_lift_args import WaitLiftArgs
 from .wait_lift_response_422 import WaitLiftResponse422
@@ -4113,6 +4114,7 @@ __all__ = (
     "WaitGraphResponse422",
     "WaitGraphResponseGraph",
     "WaitLegacyBridgeArgs",
+    "WaitLegacyBridgeArgsMode",
     "WaitLegacyBridgeResponse422",
     "WaitLiftArgs",
     "WaitLiftResponse422",

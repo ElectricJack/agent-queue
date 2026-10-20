@@ -198,13 +198,21 @@ class WaitLifecycle:
         if not getattr(self.orch.config.wait_policy, 'hibernation_enabled', False):
             return
         async with self.db._engine.connect() as conn:
-            ids = list((await conn.execute(select(continuations.c.wait_id).where(
+            ids = list((await conn.execute(select(continuations.c.wait_id).join(
+                wait_records, wait_records.c.id == continuations.c.wait_id,
+            ).where(
+                # Sessionless legacy adoption has no writer to stop or checkout
+                # to release. Its server receipt is checked by resume admission.
+                wait_records.c.session_id.is_not(None),
                 continuations.c.resume_state.in_(("sleeping", "queued")),
                 continuations.c.facts["workspace_released_at"].astext.is_(None),
             ))).scalars())
             # First-turn accounting can arrive after ACK. Retry only recent
             # continuations missing measured usage, at most once per 30 seconds.
-            ids.extend((await conn.execute(select(continuations.c.wait_id).where(
+            ids.extend((await conn.execute(select(continuations.c.wait_id).join(
+                wait_records, wait_records.c.id == continuations.c.wait_id,
+            ).where(
+                wait_records.c.session_id.is_not(None),
                 continuations.c.resume_state == 'acknowledged',
                 continuations.c.created_at >= self.clock() - 86400,
                 continuations.c.facts['costs']['resume_tokens'].astext.is_(None),
