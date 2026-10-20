@@ -20164,6 +20164,7 @@
           "--task-id"
         ],
         "optional": [
+          "--recover-stale-pause",
           "--json",
           "--brief",
           "--save-output",

@@ -1097,11 +1097,21 @@ class Orchestrator(
             snapshot = await self.db.pause_task(task_id)
             await self._finish_manual_pause(task_id, snapshot)
 
-    async def resume_task(self, task_id: str):
+    async def resume_task(
+        self, task_id: str, *, recover_stale_pause: bool = False, actor: str = "local-operator"
+    ):
         async with self._task_control_lock(task_id):
             snapshot = await self.db.get_task_meta(task_id, "manual_pause")
             if snapshot:
-                await self._finish_manual_pause(task_id, snapshot)
+                from src.database.queries.task_queries import PauseFenceError
+
+                try:
+                    await self._finish_manual_pause(task_id, snapshot)
+                except PauseFenceError:
+                    snapshot = await self._recover_stale_pause(
+                        task_id, snapshot, retained=recover_stale_pause, actor=actor,
+                    )
+                    await self._finish_manual_pause(task_id, snapshot)
             task = await self.db.get_task(task_id)
             if (
                 task is not None
@@ -1132,6 +1142,51 @@ class Orchestrator(
                     stopped_sessions.append(session)
                 return await self.db.resume_task(task_id, stopped_sessions=stopped_sessions)
             return await self.db.resume_task(task_id)
+
+    async def _recover_stale_pause(self, task_id, snapshot, *, retained, actor):
+        """Prove the captured writers gone before rebinding obsolete pause identities."""
+        from src.database.queries.task_queries import (
+            PauseFenceError, _PAUSE_RECOVERY_SESSION_FIELDS,
+        )
+        from src.sessions.provider import SessionHandle
+
+        execution = self._running_tasks.get(task_id)
+        agent_id = snapshot.get("agent_id")
+        agent = await self.db.get_agent(agent_id) if agent_id else None
+        if (execution is not None and not execution.done()
+                or any(key[1] == task_id and not preparation.done()
+                       for key, preparation in self.claim_preparations.items())
+                or agent is not None and agent.current_task_id == task_id
+                and agent.id in self._adapters):
+            raise PauseFenceError("Paused execution or preparation is still attached; repeat Pause")
+        observed = {}
+        for identity in snapshot.get("sessions", []):
+            session = await self.db.get_session(identity["id"])
+            observed[identity["id"]] = (
+                {field: getattr(session, field) for field in _PAUSE_RECOVERY_SESSION_FIELDS}
+                if session is not None else None
+            )
+            handles = [identity]
+            if session is not None and session.task_id == task_id and any(
+                getattr(session, field) != identity[field]
+                for field in ("name", "provider", "instance_token")
+            ):
+                handles.append(observed[identity["id"]])
+            for handle in handles:
+                try:
+                    provider = self.session_providers.create(handle["provider"], self.config)
+                    stopped = await asyncio.wait_for(provider.confirm_stopped(SessionHandle(
+                        handle["name"], handle["provider"], handle["instance_token"],
+                    )), timeout=10)
+                except Exception as exc:
+                    raise PauseFenceError(
+                        "Stale pause writer termination is unproved; retain resources"
+                    ) from exc
+                if stopped is not True:
+                    raise PauseFenceError("Stale pause writer is still live; repeat Pause")
+        return await self.db.recover_stale_task_pause(
+            task_id, snapshot, observed, retained=retained, actor=actor,
+        )
 
     async def retry_manual_pause_cleanup(self, task_id: str) -> None:
         """Cascade-driven retry of a pause whose stop cleanup has not finished.
@@ -1207,6 +1262,10 @@ class Orchestrator(
         await self.db.validate_task_pause(task_id, snapshot)
         agent_id = snapshot.get("agent_id")
         for identity in snapshot["sessions"]:
+            if identity["id"] in snapshot.get("recovered_sessions", {}):
+                # Recovery proved the original handle stopped. Its row may now
+                # represent another claim; never stop or update that replacement.
+                continue
             async with self._pool_teardown_lock(identity["id"]):
                 session = await self.db.get_session(identity["id"])
                 if (
