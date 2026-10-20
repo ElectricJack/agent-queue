@@ -7,6 +7,7 @@
  * persistence boundary lives in useNavOrganization, not in browser storage.
  */
 
+import { randomUUID } from "../randomUUID";
 import type {
   NavFolder as ApiNavFolder,
   NavOrganization as ApiNavOrganization,
@@ -116,13 +117,8 @@ export function navTree<P extends NavProject>(
   return { folders, loose };
 }
 
-let folderCounter = 0;
-
 function newFolderId(): string {
-  const crypto = typeof globalThis === "undefined" ? undefined : globalThis.crypto;
-  if (crypto && typeof crypto.randomUUID === "function") return `f-${crypto.randomUUID()}`;
-  folderCounter += 1;
-  return `f-${Date.now().toString(36)}-${folderCounter}`;
+  return `f-${randomUUID()}`;
 }
 
 export function createFolder(
