@@ -1773,8 +1773,32 @@ class WorktreeSlotManager:
                 await self._recover_abandoned_merge(holder, incoming_task_id=incoming_task_id)
                 await self.git._arun_unlocked(["switch", "--detach"], cwd=path)
 
+    @guard_workspace("slot_ws")
+    async def detach_idle_slot_branch(self, slot_ws: Workspace) -> bool:
+        """Free a stopped pool's clean branch without moving or discarding its tip.
+
+        Teardown calls this after releasing ownership and recording process
+        exit. Recheck acquisition fences under the repository mutex: a new
+        holder wins over this best-effort cleanup. Local branch refs retain
+        unpublished commits, and the sentinel retains their attribution.
+        """
+        if not slot_ws.is_slot:
+            return False
+        base = await self._base_of(slot_ws)
+        if base is None:
+            return False
+        async with self._git_mutex(base.workspace_path):
+            async with self._idle_branch_holder(slot_ws, allow_disabled=True):
+                path = slot_ws.workspace_path
+                if await self.git.ahas_uncommitted_changes(path, strict=True) is not False:
+                    return False
+                if await self.git.aget_current_branch(path) == "HEAD":
+                    return False
+                await self.git._arun_unlocked(["switch", "--detach"], cwd=path)
+        return True
+
     @contextlib.asynccontextmanager
-    async def _idle_branch_holder(self, holder):
+    async def _idle_branch_holder(self, holder, *, allow_disabled=False):
         """Fence branch detachment against concurrent registered acquisition."""
         if not hasattr(self.db, "_engine"):
             yield  # lightweight doubles have no concurrent row mutation
@@ -1788,7 +1812,7 @@ class WorktreeSlotManager:
             row = (await conn.execute(select(workspaces).where(
                 workspaces.c.id == holder.id,
             ).with_for_update(nowait=True))).mappings().one_or_none()
-            if (row is None or not row["enabled"]
+            if (row is None or (not row["enabled"] and not allow_disabled)
                     or row["locked_by_agent_id"] or row["locked_by_task_id"]
                     or row["generation"] != holder.generation
                     or row["workspace_path"] != holder.workspace_path

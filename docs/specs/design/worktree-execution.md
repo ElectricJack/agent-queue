@@ -301,6 +301,12 @@ allowing another slot to retry automatically. The first two attempts do not set
 `needs_attention=slot_reset_failed` or request supervisor recovery; the third
 exhausts the existing preparation budget. Ownership and cleanup refusals retain
 their existing fences and are never treated as transient reset errors.
+After a pool process has stopped and released its ownership, teardown detaches
+a clean idle slot at its current HEAD under the acquisition fences. The local
+branch and sentinel preserve unpublished progress and attribution; dirty trees,
+new holders, retained owners and job pins prevent this best-effort cleanup.
+Root branch merge conflicts without a stack origin use ordinary preparation
+feedback rather than attempting a stacked-child repair reservation.
 Legacy clones retain their existing branch-cleanup behavior.
 
 Retirement re-reads and locks the registered workspace instead of trusting the

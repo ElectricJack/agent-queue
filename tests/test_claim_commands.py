@@ -1483,6 +1483,33 @@ class TestClaim:
         assert not await db.get_task_meta("t1", "slot_reset_failure")
         assert not await db.get_task_meta("t1", "claim_prepare_backoff_attempts")
 
+    async def test_root_merge_conflict_without_stack_origin_returns_plain_feedback(
+        self, handler, db, tmp_path,
+    ):
+        from src.git.manager import ChildPreparationConflict
+
+        await mktask(db, "t1", profile_id="worker", branch_name="aq/t1")
+        sid, _ = await pool_session(db, tmp_path)
+        reset = handler.orchestrator._worktree_slots.return_value.reset_slot_for_task
+        reset.side_effect = ChildPreparationConflict(
+            "a" * 40, "b" * 40, "c" * 40, ["inventory.py"], "merge main conflicts in inventory.py",
+        )
+        events = spy_events(handler)
+
+        result = await settled_claim(scoped(handler, sid), {"next": True})
+
+        assert result["result"] == "prepare_failed"
+        assert "merge main conflicts in inventory.py" in result["reason"]
+        assert_one_reason(
+            result, await db.get_session(sid), await db.get_task_meta("t1", "prepare_failure"),
+            events, stage="slot_reset", error_type="ChildPreparationConflict",
+        )
+        assert await db.get_task_meta("t1", "stack_prerequisites_conflict") is None
+        assert (await db.get_task("t1")).status == TaskStatus.READY
+        reset.side_effect = None
+        await expire_claim_refusal(db, sid, "t1")
+        assert (await settled_claim(scoped(handler, sid), {"next": True}))["result"] == "claimed"
+
     @pytest.mark.parametrize("protection", [None, "task", "session", "claim", "other_project"])
     async def test_claim_preserves_misplaced_workspace_locks(
         self, handler, db, tmp_path, protection,

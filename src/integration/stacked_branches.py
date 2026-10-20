@@ -501,6 +501,10 @@ class StackedBranches:
     async def reserve_child_conflict(self, task_id, conflict, workspace):
         """Retain a checkout's exact inputs after abort, then reserve one repair."""
         task = await self.db.get_task(task_id)
+        # Root branches also merge their updated default during preparation.
+        # Their ordinary conflict feedback has no stack origin to repair.
+        if task is None or task.parent_task_id is None:
+            return None
         view = await observe_stacks(
             self.observer, task.project_id, task_id=task_id, require_snapshot=True,
         )
@@ -508,6 +512,8 @@ class StackedBranches:
         async with self.db._engine.connect() as conn:
             proofs = await view.verified_on(conn, ids)
             origin = await self._origin(task_id, conn)
+        if origin is None:
+            return None
         if set(proofs) != ids or not view.snapshot or not await view.fresh():
             raise StackPreparationChanged("child preparation proof changed before repair reservation")
         child_ref = task.branch_name.removeprefix("refs/heads/")
