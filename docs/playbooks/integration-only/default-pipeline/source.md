@@ -34,7 +34,8 @@ Trigger: `spec.approved`. No guard.
    metadata and dedup key `spec-ingest:decision:<id>`. `spec_path` is a display
    mirror only. Callers cannot supply a role, description, or approval stamp.
    `created` and `reused` end the rule `completed`. Replays return the same
-   task receipt even after archive. A durable dispatch operation retries until
+   task receipt after completion, closure as obsolete, or archive; settling the
+   ingest task never commissions another ingest for that decision. A durable dispatch operation retries until
    this task receipt exists; bus delivery alone does not complete ingestion.
    The role reads the approved packet and preserves all feedback obligations
    and existing follow-up links. Design approvals create only an epic and an
