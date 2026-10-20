@@ -57,6 +57,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "workspace_doctor": "project",
     "workspace_reap": "project",
     "workspace_cutover": "project",
+    "workspace_retire_claim": "project",
     # project onboarding from the dashboard (design 2026-09-03 §5)
     "list_project_roots": "project",
     "browse_project_root": "project",
@@ -2196,6 +2197,26 @@ _ALL_TOOL_DEFINITIONS = [
                 "expected_proof": {"type": "string", "description": "Exact SHA256 proof returned by preview."},
             },
             "required": ["project_id", "source_id", "target_id"],
+        },
+    },
+    {
+        "name": "workspace_retire_claim",
+        "description": (
+            "Remove a worktree slot's leftover .aq/claim.json when its holder "
+            "provably let go: the slot is unlocked, the holder task is completed, "
+            "paused, released or superseded, and no live session works there. "
+            "Refuses a claim that may still be live. Use when claim preparation "
+            "reports 'retains a foreign claim'."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "workspace_id": {
+                    "type": "string",
+                    "description": "Slot workspace id whose claim file to retire.",
+                },
+            },
+            "required": ["workspace_id"],
         },
     },
     {

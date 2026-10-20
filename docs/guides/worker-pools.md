@@ -830,6 +830,28 @@ handling above applies. Retirement removes only the marker. Workspace bytes, the
 checkpoint, branches and holder fences are untouched, and the successor's ordinary slot
 reset still salvages dirty work before it checks out.
 
+A marker whose holder has let go is retired at preparation instead of refused
+(`retire_stale_slot_claim`). In matter-engine-cpp, slots that kept the markers of a
+COMPLETED and a PAUSED task blocked reuse for five days. Before raising the foreign
+claim, preparation re-checks under row locks that:
+
+- the workspace is a slot, unlocked or locked only by the claimant's task;
+- the holder task is gone, its claim epoch has moved past the marker's, or its status
+  holds no claim (`COMPLETED`, `FAILED`, `PAUSED`, `BLOCKED`, `READY`, `DEFINED`);
+- the marker's session no longer holds that task at that epoch, and no other live
+  session works in the slot;
+- the file is the same inode and content read before the checks.
+
+If every check passes, the marker is removed and `worktree.stale_claim_retired` is
+emitted. Preparation then continues, and the slot reset salvages any dirty or unpushed
+work under the holder's name. A holder that may still hold its claim is refused as
+above.
+
+`aq project workspace-doctor` reports an unlocked slot that still has a claim file as
+`unlocked_slot_claim`. The supervisor's control is
+`aq project workspace-retire-claim --workspace-id SLOT`. It applies the same checks
+and either retires the marker or refuses, naming the holder to examine.
+
 Workers report a repeated blocker once to the project supervisor. Idle workers
 drain-ack and exit; workers with retained preparation end their turn awaiting the
 supervisor's inbox delivery (durable waits require an active claim). Workers with

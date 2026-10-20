@@ -1505,6 +1505,39 @@ class ClaimCommandsMixin:
             fresh, cap,
         )
 
+    async def _retire_stale_slot_claim(
+        self, slot, path, *, claimant_task_id=None, claimant_session_id=None, actor="claim", conn=None,
+    ) -> dict | None:
+        """Retire a slot's leftover claim marker when its holder provably let go.
+
+        The proofs live in :func:`retire_stale_slot_claim`; this records the
+        retired marker (its task, epoch and session) in the log and on the bus,
+        since the file itself -- the holder's evidence -- is gone afterwards.
+        """
+        from src.orchestrator.workspace_claim_recovery import retire_stale_slot_claim
+
+        retired = await retire_stale_slot_claim(
+            self.db, slot.id, path,
+            claimant_task_id=claimant_task_id, claimant_session_id=claimant_session_id,
+            conn=conn,
+        )
+        if retired is None:
+            return None
+        logger.warning(
+            "Retired stale claim of task %s (epoch %s, session %s) in workspace %s at %s: %s",
+            retired.get("task_id"), retired.get("claim_epoch"), retired.get("session_id"),
+            slot.id, path, retired["reason"],
+        )
+        await self.orchestrator.bus.emit("worktree.stale_claim_retired", {
+            "project_id": slot.project_id, "workspace_id": slot.id, "path": path,
+            "holder_task_id": retired.get("task_id"),
+            "holder_claim_epoch": retired.get("claim_epoch"),
+            "holder_session_id": retired.get("session_id"),
+            "reason": retired["reason"], "actor": actor,
+            "claimant_task_id": claimant_task_id,
+        })
+        return retired
+
     async def _record_prepare_failure(
         self, task, failure, *, session, slot, epoch, disposition, attempt=None,
         cleanup_unproved=False,
@@ -1600,7 +1633,7 @@ class ClaimCommandsMixin:
                 "train",
             }
 
-            async def check_checkout():
+            async def check_checkout(*, conn=None):
                 nonlocal stage
                 stage = "claim_file_check"
                 on_disk = read_claim_file(row.work_dir)
@@ -1613,6 +1646,14 @@ class ClaimCommandsMixin:
                     # This session has atomically acquired a newer epoch of the
                     # same task. Retire its own superseded marker, never a peer's.
                     remove_claim_file_if_matches(row.work_dir, task.id, on_disk["claim_epoch"])
+                    on_disk = read_claim_file(row.work_dir)
+                if on_disk is not None and (
+                    on_disk.get("task_id") != task.id or on_disk.get("claim_epoch") != epoch
+                    or on_disk.get("session_id") != session.id
+                ) and await self._retire_stale_slot_claim(
+                    slot, row.work_dir, claimant_task_id=task.id,
+                    claimant_session_id=session.id, conn=conn,
+                ):
                     on_disk = read_claim_file(row.work_dir)
                 if on_disk is not None and (
                     on_disk.get("task_id") != task.id or on_disk.get("claim_epoch") != epoch
@@ -1679,7 +1720,7 @@ class ClaimCommandsMixin:
                     raise RuntimeError("workspace binding mismatch before reset; checkout left unchanged")
                 slot = proof.workspace
                 if not hierarchy_enabled:
-                    await check_checkout()
+                    await check_checkout(conn=conn)
                 stage = "stack_fetch"
                 reset_kwargs = {"base_branch": base_branch} if base_branch else {}
                 if target_branch is not None:

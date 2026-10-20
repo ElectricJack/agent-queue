@@ -13186,6 +13186,53 @@
         }
       }
     },
+    "/api/project/workspace-retire-claim": {
+      "post": {
+        "tags": [
+          "project"
+        ],
+        "summary": "Remove a worktree slot's leftover .aq/claim.json when its holder provably let go: the slot is unlocked, the holder task is completed, paused, released or superseded, and no live session works there. Refuses a claim that may still be live. Use when claim preparation reports 'retains a foreign claim'.",
+        "description": "Remove a worktree slot's leftover .aq/claim.json when its holder provably let go: the slot is unlocked, the holder task is completed, paused, released or superseded, and no live session works there. Refuses a claim that may still be live. Use when claim preparation reports 'retains a foreign claim'.",
+        "operationId": "workspace_retire_claim",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WorkspaceRetireClaimRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkspaceRetireClaimResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/provider/allocation-apply": {
       "post": {
         "tags": [
@@ -82193,6 +82240,93 @@
         },
         "type": "object",
         "title": "WorkspaceReapRequest"
+      },
+      "WorkspaceRetireClaimRequest": {
+        "properties": {
+          "workspace_id": {
+            "type": "string",
+            "title": "Workspace Id",
+            "description": "Slot workspace id whose claim file to retire."
+          }
+        },
+        "type": "object",
+        "required": [
+          "workspace_id"
+        ],
+        "title": "WorkspaceRetireClaimRequest"
+      },
+      "WorkspaceRetireClaimResponse": {
+        "properties": {
+          "workspace_id": {
+            "type": "string",
+            "title": "Workspace Id"
+          },
+          "retired": {
+            "type": "boolean",
+            "title": "Retired",
+            "default": false
+          },
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detail"
+          },
+          "holder_task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Holder Task Id"
+          },
+          "holder_claim_epoch": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Holder Claim Epoch"
+          },
+          "holder_session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Holder Session Id"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          }
+        },
+        "type": "object",
+        "required": [
+          "workspace_id"
+        ],
+        "title": "WorkspaceRetireClaimResponse"
       },
       "WorkspaceSummary": {
         "properties": {

@@ -3159,9 +3159,15 @@ class TestClaim:
         slot = await db.get_workspace("ws-agent-1")
         assert (slot.locked_by_task_id, slot.locked_by_agent_id) == ("t1", "agent-1")
 
+    @pytest.mark.parametrize("holder", ["PAUSED", "COMPLETED", "superseded", "IN_PROGRESS"])
     async def test_successor_marker_check_precedes_checkout_and_stopped_retirement(
-        self, handler, db, tmp_path,
+        self, handler, db, tmp_path, holder,
     ):
+        """wise-quest-93 (matter-engine-cpp slot-4/slot-5, 2026-10-14): a slot
+        whose lock was released kept a COMPLETED or PAUSED task's marker and
+        refused every successor as a foreign claim for five days.  The check
+        still runs before checkout; a released holder's marker is retired
+        there, and only a holder that may still hold its claim is refused."""
         from src.claim_file import read_claim_file
         from src.orchestrator.workspace_claim_recovery import retire_stopped_slot_claim
 
@@ -3179,6 +3185,12 @@ class TestClaim:
             release_workspace_lock=True,
         )
         await db.update_session(sid, state="stopped", desired_state="stopped")
+        async with db.immediate() as conn:
+            if holder == "superseded":
+                await conn.execute(update(tasks).where(tasks.c.id == "old").values(
+                    status="IN_PROGRESS", claim_epoch=marker["claim_epoch"] + 1))
+            elif holder != "PAUSED":
+                await conn.execute(update(tasks).where(tasks.c.id == "old").values(status=holder))
         protected = wd / "protected-source.txt"
         protected.write_text("old source\n")
         successor, _ = await pool_session(db, tmp_path, sid="s2", agent_id="agent-2")
@@ -3188,23 +3200,88 @@ class TestClaim:
         await mktask(db, "new", profile_id="worker")
         manager = handler.orchestrator._worktree_slots.return_value
         manager.reset_slot_for_task.reset_mock()
-        manager.ensure_slot_checkout = AsyncMock()
+        markers_at_checkout = []
+        manager.ensure_slot_checkout = AsyncMock(
+            side_effect=lambda *_a, **_k: markers_at_checkout.append(read_claim_file(wd)))
+        assert not await retire_stopped_slot_claim(db, str(wd))
+        retired = spy_events(handler, "worktree.stale_claim_retired")
 
         result = await settled_claim(scoped(handler, successor), {"next": True})
 
-        assert result["result"] == "drain_requested", result
-        assert "foreign claim" in result["reason"]
-        manager.ensure_slot_checkout.assert_not_awaited()
-        manager.reset_slot_for_task.assert_not_awaited()
-        assert not await retire_stopped_slot_claim(db, str(wd))
-        assert read_claim_file(wd) == marker
         assert protected.read_text() == "old source\n"
-        fresh = await db.get_session(successor)
-        assert fresh.last_claim_epoch == (await db.get_task("new")).claim_epoch == 1
-        failure = await db.get_task_meta("new", "prepare_failure")
-        assert failure["session_id"] == successor
-        assert failure["claim_epoch"] == fresh.last_claim_epoch
-        assert fresh.last_claim_result == "prepare_failed"
+        if holder == "IN_PROGRESS":
+            assert result["result"] == "drain_requested", result
+            assert "foreign claim" in result["reason"]
+            manager.ensure_slot_checkout.assert_not_awaited()
+            manager.reset_slot_for_task.assert_not_awaited()
+            assert read_claim_file(wd) == marker
+            assert retired == []
+            fresh = await db.get_session(successor)
+            assert fresh.last_claim_epoch == (await db.get_task("new")).claim_epoch == 1
+            failure = await db.get_task_meta("new", "prepare_failure")
+            assert failure["session_id"] == successor
+            assert failure["claim_epoch"] == fresh.last_claim_epoch
+            assert fresh.last_claim_result == "prepare_failed"
+            return
+        assert result["result"] == "claimed", result
+        assert result["task"]["id"] == "new"
+        assert markers_at_checkout in ([], [None])  # retired before any checkout
+        manager.reset_slot_for_task.assert_awaited_once()  # salvages the old work
+        assert (read_claim_file(wd)["task_id"], read_claim_file(wd)["session_id"]) == (
+            "new", successor)
+        assert [(e["holder_task_id"], e["holder_session_id"], e["actor"],
+                 e["claimant_task_id"]) for e in retired] == [("old", sid, "claim", "new")]
+        assert retired[0]["reason"] == (
+            f"claim epoch {marker['claim_epoch']} superseded by {marker['claim_epoch'] + 1}"
+            if holder == "superseded" else f"holder task is {holder}")
+        assert (await db.get_workspace("ws-agent-1")).enabled
+        assert not await db.get_task_meta("new", "prepare_failure")
+
+    @pytest.mark.parametrize(
+        "obstacle", [None, "live_holder", "live_other", "locked", "not_slot"])
+    async def test_stale_marker_retirement_requires_a_released_unworked_slot(
+        self, handler, db, tmp_path, obstacle,
+    ):
+        """Retirement re-proves, under row locks, that nobody may still use the
+        marker: a holder session that still holds it, another live session in
+        the slot, a lock held by another task, or a non-slot checkout keeps it."""
+        from src.claim_file import read_claim_file
+        from src.orchestrator.workspace_claim_recovery import retire_stale_slot_claim
+
+        await mktask(db, "old", profile_id="worker")
+        sid, wd = await pool_session(db, tmp_path)
+        await db.create_workspace(Workspace(
+            id="base", project_id=PROJECT_ID, workspace_path=str(tmp_path),
+            source_type=RepoSourceType.LINK,
+        ))
+        if obstacle != "not_slot":
+            await db.update_workspace("ws-agent-1", base_workspace_id="base")
+        assert (await settled_claim(scoped(handler, sid), {"next": True}))["result"] == "claimed"
+        marker = read_claim_file(wd)
+        await db.release_claim(
+            sid, task_status=TaskStatus.COMPLETED, context="test", now=time.time(),
+            release_workspace_lock=True,
+        )
+        if obstacle == "live_holder":
+            await db.update_session(sid, task_id="old", last_claim_epoch=marker["claim_epoch"])
+        else:
+            await db.update_session(sid, state="stopped", desired_state="stopped")
+        if obstacle == "live_other":
+            other, _ = await pool_session(db, tmp_path, sid="s2", agent_id="agent-2")
+            await db.update_session(other, work_dir=str(wd))
+        if obstacle == "locked":
+            await mktask(db, "holder-2", profile_id="worker")
+            await db.update_workspace("ws-agent-1", locked_by_task_id="holder-2")
+
+        retired = await retire_stale_slot_claim(db, "ws-agent-1", str(wd))
+
+        if obstacle is None:  # the control: nothing else keeps the marker
+            assert retired == {**marker, "workspace_id": "ws-agent-1", "path": str(wd),
+                               "reason": "holder task is COMPLETED"}
+            assert read_claim_file(wd) is None
+            return
+        assert retired is None
+        assert read_claim_file(wd) == marker
 
     async def test_slot_reset_retry_preserves_unrelated_attention(self, db):
         await mktask(db, "t1", profile_id="worker")
