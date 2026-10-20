@@ -10,6 +10,7 @@ from ..models.item_type import ItemType
 
 if TYPE_CHECKING:
     from ..models.ci_test_policy import CITestPolicy
+    from ..models.integration_settings import IntegrationSettings
     from ..models.intelligence_class_policy import IntelligenceClassPolicy
     from ..models.playbook_policy import PlaybookPolicy
     from ..models.policy_agent_settings import PolicyAgentSettings
@@ -32,8 +33,8 @@ class Item:
         type_ (ItemType):
         original_scope (ItemOriginalScope):
         checksum (str):
-        payload (CITestPolicy | IntelligenceClassPolicy | PlaybookPolicy | PolicyAgentSettings | PoolPolicy |
-            ProjectPolicy | PromotionPolicy | RoutingPreferences | TemplatePolicy):
+        payload (CITestPolicy | IntegrationSettings | IntelligenceClassPolicy | PlaybookPolicy | PolicyAgentSettings |
+            PoolPolicy | ProjectPolicy | PromotionPolicy | RoutingPreferences | TemplatePolicy):
     """
 
     id: str
@@ -43,6 +44,7 @@ class Item:
     checksum: str
     payload: (
         CITestPolicy
+        | IntegrationSettings
         | IntelligenceClassPolicy
         | PlaybookPolicy
         | PolicyAgentSettings
@@ -59,6 +61,7 @@ class Item:
         from ..models.playbook_policy import PlaybookPolicy
         from ..models.policy_agent_settings import PolicyAgentSettings
         from ..models.pool_policy import PoolPolicy
+        from ..models.project_policy import ProjectPolicy
         from ..models.promotion_policy import PromotionPolicy
         from ..models.routing_preferences import RoutingPreferences
         from ..models.template_policy import TemplatePolicy
@@ -90,6 +93,8 @@ class Item:
             payload = self.payload.to_dict()
         elif isinstance(self.payload, PoolPolicy):
             payload = self.payload.to_dict()
+        elif isinstance(self.payload, ProjectPolicy):
+            payload = self.payload.to_dict()
         else:
             payload = self.payload.to_dict()
 
@@ -111,6 +116,7 @@ class Item:
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         from ..models.ci_test_policy import CITestPolicy
+        from ..models.integration_settings import IntegrationSettings
         from ..models.intelligence_class_policy import IntelligenceClassPolicy
         from ..models.playbook_policy import PlaybookPolicy
         from ..models.policy_agent_settings import PolicyAgentSettings
@@ -135,6 +141,7 @@ class Item:
             data: object,
         ) -> (
             CITestPolicy
+            | IntegrationSettings
             | IntelligenceClassPolicy
             | PlaybookPolicy
             | PolicyAgentSettings
@@ -208,11 +215,19 @@ class Item:
                 return payload_type_7
             except (TypeError, ValueError, AttributeError, KeyError):
                 pass
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                payload_type_8 = ProjectPolicy.from_dict(data)
+
+                return payload_type_8
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
             if not isinstance(data, dict):
                 raise TypeError()
-            payload_type_8 = ProjectPolicy.from_dict(data)
+            payload_type_9 = IntegrationSettings.from_dict(data)
 
-            return payload_type_8
+            return payload_type_9
 
         payload = _parse_payload(d.pop("payload"))
 

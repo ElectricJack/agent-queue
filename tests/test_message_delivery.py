@@ -224,8 +224,10 @@ class TestDeliveryPolicy:
         assert len(sessions.nudges) == 1
         text = sessions.nudges[0][3]
         assert "msg-" in text and msg.id in text
-        assert text == f"Handle `aq message status {msg.id} --json`."
-        assert "\n" not in text and len(text) < 78
+        assert text == (
+            f"Handle `aq message status {msg.id} --json` (running it marks the message read)."
+        )
+        assert "\n" not in text and len(text) < 120
         stored = await db.get_message(msg.id)
         assert stored.body == "world"
         assert stored.delivered_at is None
@@ -264,7 +266,7 @@ class TestDeliveryPolicy:
 
         assert result["delivered"] == 0
         assert sessions.nudges == [
-            ("task", "task-1", "p1", f"Handle `aq message status {message.id} --json`.")
+            ("task", "task-1", "p1", f"Handle `aq message status {message.id} --json` (running it marks the message read).")
         ]
         stored = await db.get_message(message.id)
         assert stored.body == body  # the durable body is untouched
@@ -1681,6 +1683,67 @@ async def test_recipient_read_racing_notification_does_not_requeue_or_escalate(d
     assert await db.get_pending_messages("session", "supervisor-p1") == []
 
 
+@pytest.mark.parametrize("activity", ["idle", "sleeping"])
+async def test_read_message_is_never_renudged(db, monkeypatch, activity):
+    """A recipient read (``aq message status`` stamps delivered via read, then
+    read) ends the retries for good: later passes past every backoff never
+    point at the message again, whatever the session's activity."""
+    clock = [time.time()]
+    monkeypatch.setattr("src.messages.delivery.time", SimpleNamespace(time=lambda: clock[0]))
+    msg = await _send(db, from_kind="session", from_id="supervisor-agent-queue")
+    manager = FakeSessionManager(activity_map={("session", "supervisor-p1", "p1"): "idle"})
+    await make_engine(db, manager).run_delivery_pass()
+    assert [nudge[3] for nudge in manager.nudges] == [
+        f"Handle `aq message status {msg.id} --json` (running it marks the message read)."
+    ]
+    await db.mark_delivered(msg.id, via="read")
+    await db.mark_read(msg.id)
+    manager.activity_map[("session", "supervisor-p1", "p1")] = activity
+    for _ in range(6):
+        clock[0] += 600
+        await make_engine(db, manager).run_delivery_pass()
+    assert len(manager.nudges) == 1
+    assert manager.ensure_started_calls == []
+    stored = await db.get_message(msg.id)
+    assert stored.notification_attempts == 1
+    assert await db.get_pending_messages("session", "supervisor-global") == []
+
+
+async def test_message_read_after_selection_is_not_nudged(db, monkeypatch):
+    """A read landing between the pending query and the notification claim
+    loses the claim, so the stale selection never reaches the session."""
+    msg = await _send(db)
+    manager = FakeSessionManager(activity_map={("session", "supervisor-p1", "p1"): "idle"})
+    select = db.get_pending_messages
+
+    async def read_after_select(*args, **kwargs):
+        pending = await select(*args, **kwargs)
+        await db.mark_delivered(msg.id, via="read")
+        await db.mark_read(msg.id)
+        return pending
+
+    monkeypatch.setattr(db, "get_pending_messages", read_after_select)
+    await make_engine(db, manager).run_delivery_pass()
+    assert manager.nudges == []
+    assert (await db.get_message(msg.id)).notification_attempts == 0
+
+
+async def test_unread_retry_pointer_names_status_as_the_acknowledgment(db, monkeypatch):
+    """The pointer says running it is the read; a retry repeats it verbatim so a
+    pasted-but-unsubmitted copy is only submitted, never doubled."""
+    clock = [time.time()]
+    monkeypatch.setattr("src.messages.delivery.time", SimpleNamespace(time=lambda: clock[0]))
+    msg = await _send(db)
+    manager = FakeSessionManager(activity_map={("session", "supervisor-p1", "p1"): "idle"})
+    await make_engine(db, manager).run_delivery_pass()
+    clock[0] += 60
+    await make_engine(db, manager).run_delivery_pass()
+    first, retry = (nudge[3] for nudge in manager.nudges)
+    assert first == retry == (
+        f"Handle `aq message status {msg.id} --json` (running it marks the message read)."
+    )
+
+
 async def test_unread_message_backoff_does_not_starve_later_messages(db):
     first = await _send(db)
     second = await _send(db)
@@ -1709,8 +1772,8 @@ async def test_delivery_alert_nudges_global_supervisor_with_short_retrievable_po
     [alert] = await db.get_pending_messages("session", "supervisor-global")
     [nudge] = manager.nudges
     assert nudge[:3] == ("session", "supervisor-global", "p1")
-    assert nudge[3] == f"Handle `aq message status {alert.id} --json`."
-    assert len(nudge[3]) < 78 and "\n" not in nudge[3]
+    assert nudge[3] == f"Handle `aq message status {alert.id} --json` (running it marks the message read)."
+    assert len(nudge[3]) < 120 and "\n" not in nudge[3]
     assert alert.delivered_at is None and alert.notification_attempts == 1
     assert await db.escalate_unread_message(original.id) is None
     assert await db.escalate_unread_message(alert.id) is None

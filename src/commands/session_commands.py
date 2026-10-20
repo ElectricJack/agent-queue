@@ -1705,7 +1705,9 @@ class SessionCommandsMixin:
                 )
             else:
                 lead = (
-                    "close refused: this workspace holds commits no remote branch has"
+                    "close refused: workspace commit preservation could not be proved"
+                    if (result.get("unmerged") or {}).get("status") == "unknown"
+                    else "close refused: this workspace holds commits no remote branch has"
                     if result.get("unmerged")
                     else "close refused: git verification found issues you can still "
                     "fix from this workspace"
@@ -1872,6 +1874,19 @@ class SessionCommandsMixin:
             )
             if release.released:
                 remove_claim_file_if_matches(session.work_dir, task_id, expect_claim_epoch)
+                # A detached, published slot no longer belongs to this task;
+                # a sentinel still naming it refuses the next preparation once
+                # its branch is deleted (amber-bridge-75).
+                try:
+                    slot = await self.orchestrator._slot_workspace_at(session.work_dir)
+                    if slot is not None:
+                        await self.orchestrator._worktree_slots().release_task_sentinel(
+                            slot, task_id
+                        )
+                except Exception:
+                    logger.warning(
+                        "Could not release slot sentinel for %s", task_id, exc_info=True
+                    )
             else:
                 # ``_release_claim_on`` declines silently in two very
                 # different situations, and only one of them is a problem.

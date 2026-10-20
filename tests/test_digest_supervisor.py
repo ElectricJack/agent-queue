@@ -845,3 +845,31 @@ def test_authored_and_fallback_digest_keep_daily_human_reminder_within_budget():
     assert "Waiting on you (12)" in fallback
     assert fallback.endswith(f"<{BASE_URL}/focus/inbox>") and len(fallback) <= 600
     assert "Waiting on you (12)" in fallback_text("", brief)
+
+
+def test_authored_digest_receives_delivery_waits_as_separate_facts():
+    waiting = [{"task_id": "consumer.4", "project_id": "p", "reason": "Land source.6 on dev"}]
+    facts = _idle_brief(waiting_on_delivery=waiting)
+    assert facts["counts"]["waiting_on_delivery"] == 1
+    assert facts["waiting_on_delivery"]["items"] == waiting
+    assert facts["stuck"]["items"] == []
+
+
+def test_empty_activity_fallback_names_frozen_delivery_wait():
+    facts = _idle_brief(waiting_on_delivery=[{
+        "task_id": "consumer.4", "reason": "Land source.6 on dev; refresh aq/epic",
+    }])
+    text = fallback_text("", facts)
+    assert "Waiting on delivery" in text
+    assert "source.6 on dev" in text and "aq/epic" in text
+
+
+def test_empty_fallback_keeps_delivery_wait_and_daily_human_reminder_together():
+    facts = _idle_brief(
+        waiting_on_you=human_reminders(),
+        waiting_on_delivery=[{"task_id": "consumer.4", "reason": "Land source.6 on dev"}],
+    )
+    text = fallback_text("", facts)
+    assert "Waiting on delivery: consumer.4: Land source.6 on dev" in text
+    assert "Waiting on you (12)" in text
+    assert len(text) <= 600

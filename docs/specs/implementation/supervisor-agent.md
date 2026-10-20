@@ -330,6 +330,18 @@ Existing command capability checks and invocation auditing still apply. Explicit
 `system_only`, global inbox/history, unrelated projectless replies, ordinary
 workers and user/local behavior retain their existing authority requirements.
 Source validation of this contract does not establish loaded daemon acceptance.
+
+A pool worker whose claim is still `preparing` may report to its own project
+supervisor before `.aq/claim.json` exists. The authenticated live session instance,
+project/profile, persisted preparation epoch, IN_PROGRESS task and BUSY agent must
+still agree; a supplied epoch must match too. Only the canonical own-supervisor
+addresses or its persisted named session UUID are admitted by this exception.
+The sender remains the authenticated worker UUID and replies use its session inbox.
+This permits a blocker report while preparation retains ownership; it does not
+admit ordinary messaging to peers or users, task mutations, or a report after the
+preparation binding has been released. Active pool messaging still requires an
+explicit claim epoch.
+
 `agent_message --reply-to` still threads only onto the target worker's own
 project's messages; a readable row from another project is refused with the
 `aq message reply <id>` that answers it, and an unreadable one stays

@@ -12861,6 +12861,100 @@
         }
       }
     },
+    "/api/project/repair-repository-checkout": {
+      "post": {
+        "tags": [
+          "project"
+        ],
+        "summary": "Preview or apply an audited replacement for a confirmed missing repository checkout path. Preserves repository identity and verifies the replacement origin. Requires local operator or global supervisor authority.",
+        "description": "Preview or apply an audited replacement for a confirmed missing repository checkout path. Preserves repository identity and verifies the replacement origin. Requires local operator or global supervisor authority.",
+        "operationId": "repair_repository_checkout",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RepairRepositoryCheckoutRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RepairRepositoryCheckoutResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/project/repair-workspace-checkout": {
+      "post": {
+        "tags": [
+          "project"
+        ],
+        "summary": "Preview or apply an audited base workspace path repair. Proves replacement origin and shared Git object store with all existing slots; preserves slots and claims. Apply requires expected_proof from preview. Local operator/global supervisor.",
+        "description": "Preview or apply an audited base workspace path repair. Proves replacement origin and shared Git object store with all existing slots; preserves slots and claims. Apply requires expected_proof from preview. Local operator/global supervisor.",
+        "operationId": "repair_workspace_checkout",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RepairWorkspaceCheckoutRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RepairWorkspaceCheckoutResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/project/resume": {
       "post": {
         "tags": [
@@ -13049,6 +13143,100 @@
         }
       }
     },
+    "/api/project/workspace-clear-sentinel": {
+      "post": {
+        "tags": [
+          "project"
+        ],
+        "summary": "Return a worktree slot's .aq-worktree.json sentinel to the free form when the task it still names is completed, failed, blocked or gone. Refuses unless the slot holds no task lock, claim file, live claiming session, integration owner or job pin, and its tree is clean with HEAD published under a remote ref. Use when claim preparation reports 'branch disagrees with its source sentinel' after the named task ended.",
+        "description": "Return a worktree slot's .aq-worktree.json sentinel to the free form when the task it still names is completed, failed, blocked or gone. Refuses unless the slot holds no task lock, claim file, live claiming session, integration owner or job pin, and its tree is clean with HEAD published under a remote ref. Use when claim preparation reports 'branch disagrees with its source sentinel' after the named task ended.",
+        "operationId": "workspace_clear_sentinel",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WorkspaceClearSentinelRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkspaceClearSentinelResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/project/workspace-cutover": {
+      "post": {
+        "tags": [
+          "project"
+        ],
+        "summary": "Preview or apply a source-preserving base switch. Apply requires the exact preview proof. Disables the old base and slots without moving or deleting any source or releasing writers.",
+        "description": "Preview or apply a source-preserving base switch. Apply requires the exact preview proof. Disables the old base and slots without moving or deleting any source or releasing writers.",
+        "operationId": "workspace_cutover",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WorkspaceCutoverRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkspaceCutoverResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/project/workspace-doctor": {
       "post": {
         "tags": [
@@ -13118,6 +13306,53 @@
             "content": {
               "application/json": {
                 "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/project/workspace-retire-claim": {
+      "post": {
+        "tags": [
+          "project"
+        ],
+        "summary": "Remove a worktree slot's leftover .aq/claim.json when its holder provably let go: the slot is unlocked, the holder task is completed, paused, released or superseded, and no live session works there. Refuses a claim that may still be live. Use when claim preparation reports 'retains a foreign claim'.",
+        "description": "Remove a worktree slot's leftover .aq/claim.json when its holder provably let go: the slot is unlocked, the holder task is completed, paused, released or superseded, and no live session works there. Refuses a claim that may still be live. Use when claim preparation reports 'retains a foreign claim'.",
+        "operationId": "workspace_retire_claim",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WorkspaceRetireClaimRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkspaceRetireClaimResponse"
+                }
               }
             }
           },
@@ -14596,6 +14831,48 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/AskHistoryResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AskErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/review/ask-legacy-reset": {
+      "post": {
+        "tags": [
+          "review"
+        ],
+        "summary": "Scoped human request communication and decision evidence.",
+        "description": "Scoped human request communication and decision evidence.",
+        "operationId": "ask_legacy_reset",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AskLegacyResetRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AskControlResponse"
                 }
               }
             }
@@ -18418,6 +18695,53 @@
         }
       }
     },
+    "/api/task/discard-pause-checkpoint": {
+      "post": {
+        "tags": [
+          "task"
+        ],
+        "summary": "Discard a task's paused Git checkpoint so preparation stops restoring it, e.g. one captured from another task's slot checkout. Its ref and commit stay reachable and are recorded in a manual_pause_checkpoint_discarded audit entry.",
+        "description": "Discard a task's paused Git checkpoint so preparation stops restoring it, e.g. one captured from another task's slot checkout. Its ref and commit stay reachable and are recorded in a manual_pause_checkpoint_discarded audit entry.",
+        "operationId": "discard_pause_checkpoint",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DiscardPauseCheckpointRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DiscardPauseCheckpointResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/task/edit": {
       "post": {
         "tags": [
@@ -18443,6 +18767,53 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/EditTaskResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/task/ensure-fidelity-review": {
+      "post": {
+        "tags": [
+          "task"
+        ],
+        "summary": "Ensure one fidelity-reviewer role task per held batch; service/operator only.",
+        "description": "Ensure one fidelity-reviewer role task per held batch; service/operator only.",
+        "operationId": "ensure_fidelity_review",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EnsureFidelityReviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EnsureTaskResponse"
                 }
               }
             }
@@ -20345,8 +20716,8 @@
         "tags": [
           "task"
         ],
-        "summary": "Replace a pending change set, re-running final graph and state checks as task_batch_propose. Only proposals still in ``draft`` or ``ready`` can be updated \u2014 a committed or discarded one is history.",
-        "description": "Replace a pending change set, re-running final graph and state checks as task_batch_propose. Only proposals still in ``draft`` or ``ready`` can be updated \u2014 a committed or discarded one is history.",
+        "summary": "Update an ungated pending proposal with payload, or edit a held ingestion batch with expected_revision and scoped operations. Only the live assigned fidelity reviewer or project supervisor may edit held members. Atomic hard checks roll back invalid edits; structural changes supersede old receipts. No edit releases work.",
+        "description": "Update an ungated pending proposal with payload, or edit a held ingestion batch with expected_revision and scoped operations. Only the live assigned fidelity reviewer or project supervisor may edit held members. Atomic hard checks roll back invalid edits; structural changes supersede old receipts. No edit releases work.",
         "operationId": "task_batch_update",
         "requestBody": {
           "content": {
@@ -22730,6 +23101,18 @@
             "title": "Name",
             "description": "Workspace name (optional)"
           },
+          "enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Enabled",
+            "description": "Enable admission (default true). Register a cutover target with false."
+          },
           "kind_id": {
             "anyOf": [
               {
@@ -24323,6 +24706,18 @@
             },
             "type": "array",
             "title": "Feedback"
+          },
+          "design": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Design"
           }
         },
         "type": "object",
@@ -24462,6 +24857,43 @@
             ],
             "title": "Reason",
             "description": "Required to archive PAUSED/DEFINED/READY or abandon undelivered work."
+          },
+          "replacement": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Replacement",
+            "description": "Obsolete only: replacement leaf; atomically redirects dependents."
+          },
+          "satisfied_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Satisfied By",
+            "description": "Obsolete only: evidence the requirement is met; dependent edges must be explicitly removed or replaced through rewire. Never records a pass."
+          },
+          "rewire": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rewire",
+            "description": "Obsolete edge plan, validated and committed with retirement. Uses task change-set edges/remove_edges objects (from, to, dep_type)."
           }
         },
         "type": "object",
@@ -25247,6 +25679,44 @@
           "receipt"
         ],
         "title": "AskInputResponse"
+      },
+      "AskLegacyResetRequest": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "title": "Project Id",
+            "description": ""
+          },
+          "apply": {
+            "type": "boolean",
+            "title": "Apply",
+            "description": "",
+            "default": false
+          },
+          "max_rows": {
+            "type": "integer",
+            "title": "Max Rows",
+            "description": "",
+            "default": 10000
+          },
+          "evidence_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evidence Sha256",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "project_id"
+        ],
+        "title": "AskLegacyResetRequest"
       },
       "AskListRequest": {
         "properties": {
@@ -27333,6 +27803,137 @@
         },
         "type": "object",
         "title": "CiRepairAdoptResponse"
+      },
+      "ClaimReadiness": {
+        "properties": {
+          "state": {
+            "type": "string",
+            "enum": [
+              "claimable",
+              "waiting_on_delivery",
+              "withheld",
+              "unknown"
+            ],
+            "title": "State"
+          },
+          "claimable": {
+            "type": "boolean",
+            "title": "Claimable"
+          },
+          "label": {
+            "type": "string",
+            "title": "Label"
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason",
+            "default": ""
+          },
+          "reasons": {
+            "items": {
+              "$ref": "#/components/schemas/ClaimReadinessReason"
+            },
+            "type": "array",
+            "title": "Reasons"
+          }
+        },
+        "type": "object",
+        "required": [
+          "state",
+          "claimable",
+          "label"
+        ],
+        "title": "ClaimReadiness"
+      },
+      "ClaimReadinessReason": {
+        "properties": {
+          "code": {
+            "type": "string",
+            "title": "Code"
+          },
+          "detail": {
+            "type": "string",
+            "title": "Detail"
+          },
+          "ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ref"
+          },
+          "batch_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Batch Id"
+          },
+          "batch_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Batch Ids"
+          },
+          "epic_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Epic Id"
+          },
+          "action": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Action"
+          },
+          "blocking_task_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Blocking Task Ids"
+          }
+        },
+        "type": "object",
+        "required": [
+          "code",
+          "detail"
+        ],
+        "title": "ClaimReadinessReason"
       },
       "ClaimSessionSummary": {
         "properties": {
@@ -32705,7 +33306,8 @@
               "template",
               "intelligence_class",
               "pool",
-              "project_settings"
+              "project_settings",
+              "integration_settings"
             ],
             "title": "Type"
           },
@@ -32773,7 +33375,8 @@
               "copy",
               "pending review",
               "pending configuration",
-              "system template"
+              "system template",
+              "configure integration"
             ],
             "title": "State",
             "default": "copy"
@@ -33402,6 +34005,77 @@
           "config_generation"
         ],
         "title": "DigestWindowRecord"
+      },
+      "DiscardPauseCheckpointRequest": {
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "title": "Task Id",
+            "description": "Task whose checkpoint to discard"
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason",
+            "description": "Why the checkpoint is discarded (audited)"
+          }
+        },
+        "type": "object",
+        "required": [
+          "task_id",
+          "reason"
+        ],
+        "title": "DiscardPauseCheckpointRequest"
+      },
+      "DiscardPauseCheckpointResponse": {
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "title": "Task Id"
+          },
+          "discarded": {
+            "type": "boolean",
+            "title": "Discarded"
+          },
+          "branch": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Branch"
+          },
+          "ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ref"
+          },
+          "commit": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Commit"
+          }
+        },
+        "type": "object",
+        "required": [
+          "task_id",
+          "discarded"
+        ],
+        "title": "DiscardPauseCheckpointResponse"
       },
       "DiscordCutoverStatus": {
         "properties": {
@@ -35085,6 +35759,32 @@
         ],
         "title": "EffectiveGitIdentity",
         "description": "The identity a project's AQ-authored commits use, and where it came from.\n\n``source`` is ``project`` (its override), ``installation`` (the\n``git_identity`` default) or ``fallback`` (no default chosen yet;\n``configured`` is then false)."
+      },
+      "EnsureFidelityReviewRequest": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "title": "Project Id",
+            "description": ""
+          },
+          "batch_id": {
+            "type": "string",
+            "title": "Batch Id",
+            "description": ""
+          },
+          "structure_revision": {
+            "type": "integer",
+            "title": "Structure Revision",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "project_id",
+          "batch_id",
+          "structure_revision"
+        ],
+        "title": "EnsureFidelityReviewRequest"
       },
       "EnsureSpecIngestRequest": {
         "properties": {
@@ -40398,6 +41098,16 @@
             ],
             "title": "Descendant State Counts"
           },
+          "claim_readiness": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ClaimReadiness"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "id": {
             "type": "string",
             "title": "Id"
@@ -43071,6 +43781,16 @@
             ],
             "title": "Descendant State Counts"
           },
+          "claim_readiness": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ClaimReadiness"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "id": {
             "type": "string",
             "title": "Id"
@@ -43999,6 +44719,97 @@
         ],
         "title": "InstallProfileResponse"
       },
+      "IntegrationSettings": {
+        "properties": {
+          "type": {
+            "type": "string",
+            "const": "integration_settings",
+            "title": "Type",
+            "default": "integration_settings"
+          },
+          "version": {
+            "type": "integer",
+            "const": 1,
+            "title": "Version",
+            "default": 1
+          },
+          "engine": {
+            "type": "string",
+            "enum": [
+              "shadow",
+              "active"
+            ],
+            "title": "Engine"
+          },
+          "integration_mode": {
+            "type": "string",
+            "const": "pull_request",
+            "title": "Integration Mode",
+            "default": "pull_request"
+          },
+          "hierarchical_integration_mode": {
+            "type": "string",
+            "enum": [
+              "disabled",
+              "observe",
+              "hierarchy",
+              "train"
+            ],
+            "title": "Hierarchical Integration Mode"
+          },
+          "integration_repository_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Integration Repository Id"
+          },
+          "default_branch": {
+            "type": "string",
+            "title": "Default Branch"
+          },
+          "policy": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Policy"
+          },
+          "promotion_flow": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Promotion Flow"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "engine",
+          "hierarchical_integration_mode",
+          "default_branch"
+        ],
+        "title": "IntegrationSettings",
+        "description": "Portable inputs, never a source installation's activation identities."
+      },
       "IntelligenceClassModel": {
         "properties": {
           "id": {
@@ -44188,7 +44999,8 @@
               "template",
               "intelligence_class",
               "pool",
-              "project_settings"
+              "project_settings",
+              "integration_settings"
             ],
             "title": "Type"
           },
@@ -44233,6 +45045,9 @@
               },
               {
                 "$ref": "#/components/schemas/ProjectPolicy"
+              },
+              {
+                "$ref": "#/components/schemas/IntegrationSettings"
               }
             ],
             "title": "Payload",
@@ -44241,6 +45056,7 @@
               "mapping": {
                 "agent_settings": "#/components/schemas/PolicyAgentSettings",
                 "ci_test": "#/components/schemas/CITestPolicy",
+                "integration_settings": "#/components/schemas/IntegrationSettings",
                 "intelligence_class": "#/components/schemas/IntelligenceClassPolicy",
                 "playbook": "#/components/schemas/PlaybookPolicy",
                 "pool": "#/components/schemas/PoolPolicy",
@@ -48118,6 +48934,16 @@
               }
             ],
             "title": "Descendant State Counts"
+          },
+          "claim_readiness": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ClaimReadiness"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "id": {
             "type": "string",
@@ -57890,6 +58716,14 @@
             "title": "Pending Configuration",
             "default": []
           },
+          "configured_integration": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Configured Integration",
+            "default": []
+          },
           "activated": {
             "type": "boolean",
             "title": "Activated",
@@ -58015,7 +58849,14 @@
             "title": "Item Id"
           },
           "playbook_id": {
-            "type": "string",
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Playbook Id"
           },
           "message": {
@@ -58026,7 +58867,6 @@
         "type": "object",
         "required": [
           "item_id",
-          "playbook_id",
           "message"
         ],
         "title": "PolicyExportWarning"
@@ -66953,6 +67793,254 @@
         ],
         "title": "ReopenWithFeedbackResponse"
       },
+      "RepairRepositoryCheckoutRequest": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "title": "Project Id",
+            "description": ""
+          },
+          "repository_id": {
+            "type": "string",
+            "title": "Repository Id",
+            "description": ""
+          },
+          "expected_path": {
+            "type": "string",
+            "title": "Expected Path",
+            "description": ""
+          },
+          "replacement_path": {
+            "type": "string",
+            "title": "Replacement Path",
+            "description": ""
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason",
+            "description": ""
+          },
+          "apply": {
+            "type": "boolean",
+            "title": "Apply",
+            "description": "",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "project_id",
+          "repository_id",
+          "expected_path",
+          "replacement_path",
+          "reason"
+        ],
+        "title": "RepairRepositoryCheckoutRequest"
+      },
+      "RepairRepositoryCheckoutResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "project_id": {
+            "type": "string",
+            "title": "Project Id"
+          },
+          "repository_id": {
+            "type": "string",
+            "title": "Repository Id"
+          },
+          "changed": {
+            "type": "boolean",
+            "title": "Changed",
+            "default": false
+          },
+          "preview": {
+            "type": "boolean",
+            "title": "Preview",
+            "default": true
+          },
+          "before": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Before"
+          },
+          "after": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "After"
+          },
+          "event_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Event Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "project_id",
+          "repository_id",
+          "before",
+          "after"
+        ],
+        "title": "RepairRepositoryCheckoutResponse"
+      },
+      "RepairWorkspaceCheckoutRequest": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "title": "Project Id",
+            "description": ""
+          },
+          "workspace_id": {
+            "type": "string",
+            "title": "Workspace Id",
+            "description": ""
+          },
+          "expected_path": {
+            "type": "string",
+            "title": "Expected Path",
+            "description": ""
+          },
+          "replacement_path": {
+            "type": "string",
+            "title": "Replacement Path",
+            "description": ""
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason",
+            "description": ""
+          },
+          "expected_proof": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Proof",
+            "description": ""
+          },
+          "apply": {
+            "type": "boolean",
+            "title": "Apply",
+            "description": "",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "project_id",
+          "workspace_id",
+          "expected_path",
+          "replacement_path",
+          "reason"
+        ],
+        "title": "RepairWorkspaceCheckoutRequest"
+      },
+      "RepairWorkspaceCheckoutResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "project_id": {
+            "type": "string",
+            "title": "Project Id"
+          },
+          "workspace_id": {
+            "type": "string",
+            "title": "Workspace Id"
+          },
+          "changed": {
+            "type": "boolean",
+            "title": "Changed",
+            "default": false
+          },
+          "preview": {
+            "type": "boolean",
+            "title": "Preview",
+            "default": true
+          },
+          "proof": {
+            "type": "string",
+            "title": "Proof"
+          },
+          "before": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Before"
+          },
+          "after": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "After"
+          },
+          "slots": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Slots"
+          },
+          "identity": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Identity"
+          },
+          "authorized_origin": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Authorized Origin"
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason"
+          },
+          "event_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Event Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "project_id",
+          "workspace_id",
+          "proof",
+          "before",
+          "after",
+          "slots",
+          "identity",
+          "reason"
+        ],
+        "title": "RepairWorkspaceCheckoutResponse"
+      },
       "ReparentTaskRequest": {
         "properties": {
           "task_id": {
@@ -68032,6 +69120,18 @@
             "type": "string",
             "title": "Task Id",
             "description": "Task ID to resume"
+          },
+          "recover_stale_pause": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Recover Stale Pause",
+            "description": "Operator/supervisor recovery of a stale pause on an unchanged retained source; still requires writer stop proof and ordinary checkpoint cleanup."
           }
         },
         "type": "object",
@@ -74706,11 +75806,151 @@
               }
             ],
             "title": "Diff"
+          },
+          "proposal_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Proposal Id"
+          },
+          "batch_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Batch Id"
+          },
+          "state": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "State"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status"
+          },
+          "structure_revision": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Structure Revision"
+          },
+          "structure_digest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Structure Digest"
+          },
+          "members": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Members"
+          },
+          "task_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Ids"
+          },
+          "replayed": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Replayed"
+          },
+          "lineage": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lineage"
+          },
+          "release_receipt": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Release Receipt"
+          },
+          "reviewer_task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reviewer Task Id"
           }
         },
         "type": "object",
         "title": "TaskBatchAckResponse",
-        "description": "``task_batch_update`` / ``task_batch_discard`` \u2014 bare acknowledgement."
+        "description": "Acknowledgement, including the current held graph after a scoped update."
       },
       "TaskBatchCommitRequest": {
         "properties": {
@@ -74978,19 +76218,62 @@
           "proposal_id": {
             "type": "string",
             "title": "Proposal Id",
-            "description": "Proposal to replace."
+            "description": ""
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id",
+            "description": ""
           },
           "payload": {
-            "additionalProperties": true,
-            "type": "object",
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Payload",
-            "description": "The complete replacement change set (tasks, edits, edges, remove_edges, comments), in the same shape task_batch_propose takes."
+            "description": ""
+          },
+          "expected_revision": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Revision",
+            "description": ""
+          },
+          "operations": {
+            "anyOf": [
+              {
+                "items": {},
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Operations",
+            "description": ""
           }
         },
         "type": "object",
         "required": [
-          "proposal_id",
-          "payload"
+          "proposal_id"
         ],
         "title": "TaskBatchUpdateRequest"
       },
@@ -76155,6 +77438,16 @@
             ],
             "title": "Descendant State Counts"
           },
+          "claim_readiness": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ClaimReadiness"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "id": {
             "type": "string",
             "title": "Id"
@@ -76731,6 +78024,16 @@
               }
             ],
             "title": "Descendant State Counts"
+          },
+          "claim_readiness": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ClaimReadiness"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "success": {
             "type": "boolean",
@@ -77787,6 +79090,16 @@
             ],
             "title": "Descendant State Counts"
           },
+          "claim_readiness": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ClaimReadiness"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "id": {
             "type": "string",
             "title": "Id"
@@ -78188,6 +79501,30 @@
                 "type": "null"
               }
             ]
+          },
+          "batch_member": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Batch Member"
+          },
+          "fidelity": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fidelity"
           },
           "fields_changed": {
             "items": {
@@ -78301,6 +79638,16 @@
             ],
             "title": "Descendant State Counts"
           },
+          "claim_readiness": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ClaimReadiness"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "id": {
             "type": "string",
             "title": "Id"
@@ -78702,6 +80049,30 @@
                 "type": "null"
               }
             ]
+          },
+          "batch_member": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Batch Member"
+          },
+          "fidelity": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fidelity"
           }
         },
         "type": "object",
@@ -82753,6 +84124,272 @@
         ],
         "title": "WithheldTask"
       },
+      "WorkspaceClearSentinelRequest": {
+        "properties": {
+          "workspace_id": {
+            "type": "string",
+            "title": "Workspace Id",
+            "description": "Slot workspace id whose sentinel to clear."
+          },
+          "if_task_terminal": {
+            "type": "boolean",
+            "title": "If Task Terminal",
+            "description": "Clear only when the named task is terminal (default true; the only supported mode).",
+            "default": true
+          }
+        },
+        "type": "object",
+        "required": [
+          "workspace_id"
+        ],
+        "title": "WorkspaceClearSentinelRequest"
+      },
+      "WorkspaceClearSentinelResponse": {
+        "properties": {
+          "workspace_id": {
+            "type": "string",
+            "title": "Workspace Id"
+          },
+          "cleared": {
+            "type": "boolean",
+            "title": "Cleared",
+            "default": false
+          },
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detail"
+          },
+          "holder_task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Holder Task Id"
+          },
+          "branch": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Branch"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          }
+        },
+        "type": "object",
+        "required": [
+          "workspace_id"
+        ],
+        "title": "WorkspaceClearSentinelResponse"
+      },
+      "WorkspaceCutoverRequest": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "title": "Project Id",
+            "description": "Project owning both bases."
+          },
+          "source_id": {
+            "type": "string",
+            "title": "Source Id",
+            "description": "Current enabled base."
+          },
+          "target_id": {
+            "type": "string",
+            "title": "Target Id",
+            "description": "New disabled, idle base of the same kind."
+          },
+          "apply": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Apply",
+            "description": "Apply the preview (default false)."
+          },
+          "expected_proof": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Proof",
+            "description": "Exact SHA256 proof returned by preview."
+          }
+        },
+        "type": "object",
+        "required": [
+          "project_id",
+          "source_id",
+          "target_id"
+        ],
+        "title": "WorkspaceCutoverRequest"
+      },
+      "WorkspaceCutoverResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "applied": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Applied"
+          },
+          "proof": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Proof"
+          },
+          "snapshot": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WorkspaceCutoverSnapshot"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "retained": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Retained",
+            "default": []
+          },
+          "retirement": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Retirement"
+          }
+        },
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "title": "WorkspaceCutoverResponse"
+      },
+      "WorkspaceCutoverSnapshot": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "title": "Project Id"
+          },
+          "source_id": {
+            "type": "string",
+            "title": "Source Id"
+          },
+          "target_id": {
+            "type": "string",
+            "title": "Target Id"
+          },
+          "workspaces": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Workspaces"
+          },
+          "sessions": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Sessions"
+          },
+          "owners": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Owners"
+          },
+          "source": {
+            "additionalProperties": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "object",
+            "title": "Source"
+          }
+        },
+        "type": "object",
+        "required": [
+          "project_id",
+          "source_id",
+          "target_id",
+          "workspaces",
+          "sessions",
+          "owners",
+          "source"
+        ],
+        "title": "WorkspaceCutoverSnapshot"
+      },
       "WorkspaceDoctorRequest": {
         "properties": {
           "project_id": {
@@ -83148,6 +84785,93 @@
         },
         "type": "object",
         "title": "WorkspaceReapRequest"
+      },
+      "WorkspaceRetireClaimRequest": {
+        "properties": {
+          "workspace_id": {
+            "type": "string",
+            "title": "Workspace Id",
+            "description": "Slot workspace id whose claim file to retire."
+          }
+        },
+        "type": "object",
+        "required": [
+          "workspace_id"
+        ],
+        "title": "WorkspaceRetireClaimRequest"
+      },
+      "WorkspaceRetireClaimResponse": {
+        "properties": {
+          "workspace_id": {
+            "type": "string",
+            "title": "Workspace Id"
+          },
+          "retired": {
+            "type": "boolean",
+            "title": "Retired",
+            "default": false
+          },
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detail"
+          },
+          "holder_task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Holder Task Id"
+          },
+          "holder_claim_epoch": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Holder Claim Epoch"
+          },
+          "holder_session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Holder Session Id"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          }
+        },
+        "type": "object",
+        "required": [
+          "workspace_id"
+        ],
+        "title": "WorkspaceRetireClaimResponse"
       },
       "WorkspaceSummary": {
         "properties": {

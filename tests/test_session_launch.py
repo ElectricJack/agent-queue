@@ -362,9 +362,10 @@ _PROCESS_SITES = {
     ("src/git/github_cli.py", "GhRunner.run", "create_subprocess_exec"): 1,
     # Whole-source proof pipes git diff into git patch-id; neither starts an agent.
     ("src/git/manager.py", "GitManager.apatch_id", "create_subprocess_exec"): 2,
-    ("src/git/manager.py", "GitManager._arun_subprocess", "create_subprocess_exec"): 1,
-    # Local runners (_arun_unlocked and _arun_git_result_unlocked), authenticated
-    # acquisition, push and credential-free import share this cancellation-safe Git spawn.
+    # Git and workspace setup now share bounded process-group cleanup. This
+    # primitive owns command writers; provider agent launches stay above.
+    ("src/git/process.py", "run_owned_process", "create_subprocess_exec"): 1,
+    # Authenticated acquisition, push and credential-free import share this Git-only spawn.
     ("src/git/manager.py", "GitManager._spawn_isolated_git", "create_subprocess_exec"): 1,
     ("src/integration/regeneration.py", "_run", "create_subprocess_exec"): 1,
     ("src/jobs/e2e.py", "main", "create_subprocess_exec"): 1,
@@ -374,7 +375,6 @@ _PROCESS_SITES = {
     ("src/jobs/service.py", "JobService.launch", "create_subprocess_exec"): 1,
     ("src/jobs/windows_owner.py", "run", "spawn"): 1,
     ("src/llm/cli.py", "ask_cli", "create_subprocess_exec"): 1,
-    ("src/orchestrator/worktree_manager.py", "WorktreeSlotManager._run_setup", "create_subprocess_exec"): 1,
     ("src/plugins/internal/files.py", "_run_subprocess", "create_subprocess_exec"): 1,
     ("src/plugins/internal/vibecop.py", "VibeCopRunner._run", "create_subprocess_exec"): 1,
     ("src/plugins/internal/vibecop.py", "VibeCopRunner.status", "create_subprocess_exec"): 3,

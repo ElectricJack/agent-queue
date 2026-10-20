@@ -1014,6 +1014,47 @@ async def test_concurrent_routine_routes_fill_codex_headroom_then_fall_back(hand
     assert [r["provider"] for r in routes].count("claude") == 1
 
 
+async def test_headroom_mode_refreshes_usage_at_apply_and_explains_the_factor(handler, orch):
+    from src.providers import ProviderUsageSnapshot
+
+    await _workspace(orch)
+    await _create(orch.db, "routine", task_type=TaskType.FEATURE, class_hint="standard-high")
+    # Routine policy with equal harness weights and no hosted preference.
+    policy, _digest = routine_policy()
+    policy_data = json.loads(policy.canonical_json())
+    for rule in policy_data["kinds"].values():
+        rule.pop("prefer_harnesses", None)
+    policy_data["balance"]["usage_mode"] = "headroom"
+
+    async def usage(claude, codex):
+        now = time.time()
+        await orch.db.record_provider_usage([
+            ProviderUsageSnapshot(provider=key, window="weekly", used_percent=used,
+                                  observed_at=now, resets_at=now + 3600, source="probe")
+            for key, used in (("claude", claude), ("codex", codex))
+        ])
+
+    await usage(70, 20)
+    plan = await handler.execute("task_route_plan", {
+        "task_id": "routine", "policy": json.dumps(policy_data),
+        "classification": ROUTINE_MEDIUM,
+    })
+    assert plan["provider"] == "codex"
+    await usage(20, 70)
+    with _as_playbook():
+        result = await handler.execute("task_route_apply", {"task_id": "routine", "plan": plan})
+    assert result["outcome"] == "routed"
+    assert result["provider"] == "claude"
+    assert result["adjusted_at_apply"]
+    route = (await orch.db.get_task("routine")).route
+    chosen = route["decision"]["candidates"][0]
+    assert chosen["usage_headroom_factor"] == 0.8
+    assert chosen["usage_binding_window"]["window"] == "weekly"
+    assert "usage headroom factor 0.8 (binding weekly(account), resets at" in route["reason"]
+    explained = await handler.execute("explain_task", {"task_id": "routine"})
+    assert explained["assignment_route"]["reason"] == route["reason"]
+
+
 # -- task.route_needed carries the router and the class hint ------------------------------
 
 

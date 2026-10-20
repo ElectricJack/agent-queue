@@ -1798,17 +1798,28 @@ async def check_source_green(client, trust, required, source):
         observer = AuthenticatedGitHubObserver(
             client, expected_event="push", ignore_cancelled_batches=True,
         )
-        observed = await observer.observe(selected, source)
         # Delivery-branch fallback CI is a reusable workflow whose check names
         # include the caller job. Only source admission may use its explicitly
         # trusted full names; canonical candidate/attestation names stay exact.
         audit_names = tuple(f"unattested-ci / {name}" for name in required.names)
         configured = trust.check_sets.get("promotion-source-audit", ())
+        audit_configured = set(audit_names).issubset(configured)
+        try:
+            observed = await observer.observe(selected, source)
+        except CIObservationDeferred as exc:
+            # An unrequired queued job cannot delay a complete configured audit.
+            # Any canonical check present still owns the source verdict.
+            if (not audit_configured or
+                    tuple(exc.details.get("missing_required_checks", ())) != required.names):
+                raise
+            observed = None
         if (
-            isinstance(observed, FailedCIObservation)
-            and observed.checks
-            and all(check["conclusion"] == "missing" for check in observed.checks)
-            and set(audit_names).issubset(configured)
+            audit_configured
+            and (observed is None or (
+                isinstance(observed, FailedCIObservation)
+                and observed.checks
+                and all(check["conclusion"] == "missing" for check in observed.checks)
+            ))
         ):
             audit_required = RequiredChecksManifest(version=required.version, names=audit_names)
             observed = await observer.observe(

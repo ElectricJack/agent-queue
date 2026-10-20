@@ -2209,3 +2209,50 @@ request ID. Completed requests replay without repeated side effects.
 `integration_app_verify(repository_access_only=true)` verifies access without
 requiring an integration policy or enabling integration. `project_doctor` reports
 a primary local repository missing authorization and offers `bind-repository`.
+
+### Stale repository checkout registrations
+
+`repair_repository_checkout` (`aq project repair-repository-checkout`) repoints a
+confirmed missing checkout path in a project's repository registration. It takes
+`project_id`, `repository_id`, `expected_path`, `replacement_path`, and an audit
+`reason`. The default is a read-only preview with complete `before`/`after`
+repository configuration; `apply=true` performs the same validation and commits
+the path change and an attributed `project.repository_checkout_repaired` event
+atomically. Only the local operator or a live global supervisor may invoke it.
+The supervisor template grants this command and the read-only `project_doctor`.
+
+Only `source_path` and `checkout_base_path` equal to `expected_path` change.
+Require an absolute, confirmed missing old path, an existing replacement Git
+checkout whose origin matches the registered nonempty URL, and unchanged repository
+configuration at commit time. Refuse stale expectations, inaccessible or existing
+old paths, unknown repository identity, mismatched origins, and cross-project IDs.
+Preserve repository IDs, URLs, source types, workspaces, locks, tasks, integration
+records and all filesystem contents. The command does not remove repository rows.
+
+The daily branch sweep skips absent source and checkout-base registrations and
+reports one actionable warning per repository/path. Persist the warning state
+only after accepted report delivery; suppress it across days/restarts until the
+path is restored or repointed. No Git probe runs against an absent directory.
+
+### Base registration points to a different clone
+
+`repair_workspace_checkout` (`aq project repair-workspace-checkout`) repairs a
+base workspace registration whose existing slots belong to another local clone.
+It requires local operator or live global supervisor authority, `project_id`,
+`workspace_id`, `expected_path`, `replacement_path`, and an audit `reason`.
+Preview returns full base `before`/`after`, family and Git identity evidence, and
+a proof digest. Apply requires that digest as `expected_proof`, repeats validation
+under workspace row locks, and atomically changes only the base's path with an
+attributed `project.workspace_checkout_repaired` event. Stale paths or proof refuse.
+
+The replacement must be a real base checkout, have the same origin as the old
+checkout (or the authorized project/kind URL if the old path is confirmed missing),
+and share the resolved Git common directory and objects directory identity with
+every registered slot. Check each slot's project/base/workspace sentinel identity.
+An independent clone with the same origin is insufficient. Require at least one
+slot and a compatible worktree kind. Refuse an occupied replacement registration,
+an active/pinned/claimed base or integration writer, and unverifiable identity.
+Slot locks and retained claims are permitted and preserved because this repair
+only corrects the base's metadata; it moves no source and changes no slot, writer,
+generation, checkpoint, claim, sentinel, branch or filesystem content. The regular
+slot identity preflight remains enforced and must pass after the repair.

@@ -10,7 +10,7 @@ import uuid
 from collections.abc import Iterable, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Literal
 from urllib.parse import quote
 
@@ -282,7 +282,12 @@ class AttestedWorkflowRun(BaseModel):
     run_attempt: StrictInt = Field(gt=0)
     check_suite_id: StrictInt = Field(gt=0)
     head_sha: str = Field(pattern=_SHA_PATTERN)
-    conclusion: Literal["success"]
+    # Workflow aggregates include jobs outside the required set. Their real
+    # conclusion is metadata; only the selected check runs establish green.
+    conclusion: Literal[
+        "success", "failure", "cancelled", "skipped", "neutral", "timed_out",
+        "action_required", "startup_failure", "stale",
+    ] | None
 
 
 class AttestationPayload(BaseModel):
@@ -497,6 +502,7 @@ def select_trusted_attestation(
 class TrustedCIObservation:
     payload: AttestationPayload | CIReceiptPayload
     workflow_ids: dict[int, int]
+    check_details: dict[int, dict[str, Any]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -1255,8 +1261,11 @@ class AuthenticatedGitHubObserver:
                     classification="none" if missing_push else (
                         "pending" if workflow_records or selected else "none"
                     ),
-                    details=({"missing_push_run": True} if missing_push else
-                             {"missing_pr_run": True} if missing_pr else {}),
+                    details={
+                        "missing_required_checks": tuple(missing),
+                        **({"missing_push_run": True} if missing_push else
+                           {"missing_pr_run": True} if missing_pr else {}),
+                    },
                 )
             for record in expected_runs:
                 suite_id = _strict_int(record.get("check_suite_id"))
@@ -1316,17 +1325,6 @@ class AuthenticatedGitHubObserver:
             workflow_run_id = _strict_int(record.get("id"))
             workflow_id = _strict_int(record.get("workflow_id"))
             run_attempt = _strict_int(record.get("run_attempt"))
-            if record.get("head_sha") == head_sha:
-                if record.get("status") is not None and record["status"] != "completed":
-                    raise CIObservationDeferred(
-                        "workflow attempt is not conclusive", classification="pending"
-                    )
-                if record.get("conclusion") in {
-                    "timed_out", "action_required", "startup_failure", "stale"
-                }:
-                    raise CIObservationDeferred(
-                        "workflow attempt could not validate", classification="infra"
-                    )
             if (
                 workflow_run_id is None
                 or workflow_run_id <= 0
@@ -1336,10 +1334,19 @@ class AuthenticatedGitHubObserver:
                 or run_attempt <= 0
                 or record.get("head_sha") != head_sha
                 or record.get("conclusion")
-                not in {"success", "failure", "cancelled", "skipped", "neutral"}
+                not in {None, "success", "failure", "cancelled", "skipped", "neutral",
+                        "timed_out", "action_required", "startup_failure", "stale"}
             ):
-                raise AttestationError("workflow attempt is not conclusive")
+                raise AttestationError("workflow attempt identity is malformed")
             if isinstance(trust, IntegrationCITrust):
+                _require_workflow_repository(record, trust)
+            # Completed successful App attestations retain their established
+            # validation path. A partial/unsuccessful aggregate needs explicit
+            # latest-attempt job proof in either credential mode.
+            if (isinstance(trust, IntegrationCITrust)
+                    or (all(check["conclusion"] == "success" for check in selected)
+                        and (record.get("status") not in {None, "completed"}
+                             or record.get("conclusion") != "success"))):
                 _require_workflow_repository(record, trust)
                 jobs = await self.client.paged_items(
                     f"/repos/{owner}/{repository}/actions/runs/{workflow_run_id}"
@@ -1358,7 +1365,10 @@ class AuthenticatedGitHubObserver:
                     head_sha=head_sha,
                     full_name=trust.full_name,
                 )
-                jobs_by_name = {job["name"]: job for job in jobs}
+                required_names = {check["name"] for check in selected}
+                jobs_by_name = {job["name"]: job for job in jobs
+                                if isinstance(job.get("name"), str)
+                                and job["name"] in required_names}
                 for check in selected:
                     if check["check_suite_id"] == suite_id:
                         job = jobs_by_name[check["name"]]
@@ -1382,9 +1392,7 @@ class AuthenticatedGitHubObserver:
                 {"name": name, "check_suite_id": missing_suite_id, "conclusion": "missing"}
                 for name in missing
             )
-        if any(check["conclusion"] != "success" for check in selected) or any(
-            workflow["conclusion"] != "success" for workflow in workflow_rows
-        ):
+        if any(check["conclusion"] != "success" for check in selected):
             verdict = failed_run_verdict(selected, workflow_rows)
             return FailedCIObservation(
                 # Diagnostics are repair evidence, outside the canonical green receipt.
@@ -1419,7 +1427,9 @@ class AuthenticatedGitHubObserver:
                 checks=tuple(CIReceiptCheck.model_validate(check) for check in selected),
                 **common,
             )
-        return TrustedCIObservation(payload=payload, workflow_ids=workflow_ids)
+        return TrustedCIObservation(
+            payload=payload, workflow_ids=workflow_ids, check_details=diagnostics,
+        )
 
     async def publish(
         self, trust: IntegrationTrustManifest,
@@ -1573,12 +1583,13 @@ def _producer_matches(
     return isinstance(slug, str) and slug == expected
 
 
-def _require_workflow_repository(record: dict[str, Any], trust: IntegrationCITrust) -> None:
+def _require_workflow_repository(
+    record: dict[str, Any], trust: IntegrationCITrust | IntegrationTrustManifest,
+) -> None:
     repository = record.get("repository")
     head_repository = record.get("head_repository")
     if (
-        record.get("status") != "completed"
-        or not isinstance(repository, dict)
+        not isinstance(repository, dict)
         or not isinstance(head_repository, dict)
         or _strict_int(repository.get("id")) != trust.repository_id
         or repository.get("full_name") != trust.full_name
@@ -1617,8 +1628,11 @@ def _require_latest_attempt_jobs(
     full_name: str,
 ) -> None:
     by_name: dict[str, dict[str, Any]] = {}
+    required_names = {check["name"] for check in checks}
     for job in jobs:
         name = job.get("name")
+        if not isinstance(name, str) or name not in required_names:
+            continue
         job_id = _strict_int(job.get("id"))
         if not isinstance(name, str) or not name or job_id is None or job_id <= 0:
             raise AttestationError("latest workflow attempt job identity is malformed")

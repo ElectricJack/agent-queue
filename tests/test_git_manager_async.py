@@ -2607,3 +2607,256 @@ async def test_delivery_resolution_distinguishes_unknown_probes_from_ambiguous_w
 
     assert resolution.error
     assert resolution.infrastructure_failure is infrastructure
+
+
+@pytest.mark.parametrize("api", ["arun", "result", "subprocess"])
+@pytest.mark.parametrize("interruption", ["cancel", "timeout", "startup"])
+async def test_git_cancellation_stops_hook_children_before_successor(
+    mgr, clone, tmp_path, monkeypatch, api, interruption,
+):
+    """A real post-checkout hook cannot write after a newer checkout starts."""
+    import os
+    import signal
+    import sys
+
+    if os.name != "posix":
+        pytest.skip("POSIX process groups")
+    from src.git.process import _group_has_writer
+
+    root = pathlib.Path(clone)
+    ready, go = tmp_path / "ready", tmp_path / "go"
+    writer = tmp_path / "writer.py"
+    writer.write_text(
+        "import os,pathlib,subprocess,time\n"
+        f"r=pathlib.Path({str(ready)!r}); g=pathlib.Path({str(go)!r})\n"
+        "r.write_text(str(os.getpid()))\n"
+        "while not g.exists(): time.sleep(.01)\n"
+        "subprocess.run(['git','checkout','--detach','HEAD'],check=True)\n"
+        "pathlib.Path('late-write').write_text('old epoch')\n"
+    )
+    hook = root / ".git/hooks/post-checkout"
+    hook.write_text(
+        f"#!{sys.executable}\nimport subprocess,sys\n"
+        f"p=subprocess.Popen([sys.executable,{str(writer)!r}],"
+        "stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)\n"
+        "p.wait()\n"
+    )
+    hook.chmod(0o700)
+    created, return_handle = asyncio.Event(), asyncio.Event()
+    processes = []
+    spawn = asyncio.create_subprocess_exec
+
+    async def intercepted(*args, **kwargs):
+        process = await spawn(*args, **kwargs)
+        processes.append(process)
+        created.set()
+        if interruption == "startup":
+            await return_handle.wait()
+        return process
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", intercepted)
+    deadline = asyncio.timeout(None)
+
+    async def operation():
+        async with deadline:
+            if api == "arun":
+                return await mgr._arun(["checkout", "-b", "aq/old"], cwd=clone)
+            if api == "result":
+                return await mgr.arun_git_result(["checkout", "-b", "aq/old"], cwd=clone)
+            return await mgr._arun_subprocess(["git", "checkout", "-b", "aq/old"], cwd=clone)
+
+    request = asyncio.create_task(operation())
+    try:
+        async with asyncio.timeout(5):
+            while not ready.exists():
+                await asyncio.sleep(.01)
+        await created.wait()
+        if interruption == "timeout":
+            deadline.reschedule(asyncio.get_running_loop().time())
+        else:
+            request.cancel()
+        if interruption == "startup":
+            await asyncio.sleep(0)
+            request.cancel()  # A second cancellation cannot abandon the handle.
+            return_handle.set()
+        with pytest.raises(TimeoutError if interruption == "timeout" else asyncio.CancelledError):
+            await asyncio.wait_for(request, timeout=10)
+        assert all(p.returncode is not None for p in processes)
+        assert not any(_group_has_writer(p.pid) for p in processes)
+        hook.unlink()
+        _git(["checkout", "-b", "aq/successor"], cwd=clone)
+        claim = root / ".aq/claim.json"
+        claim.parent.mkdir(exist_ok=True)
+        claim.write_text('{"task_id":"successor","claim_epoch":2}')
+        (root / "README.md").write_text("staged successor")
+        _git(["add", "README.md"], cwd=clone)
+        (root / "untracked").write_text("successor work")
+        before = (_git(["rev-parse", "HEAD"], cwd=clone),
+                  _git(["diff", "--cached", "--binary"], cwd=clone),
+                  _git(["show-ref"], cwd=clone), claim.read_bytes())
+        go.touch()
+        # Quiescence was proved before opening the barrier; no time-based
+        # assertion that a leaked child merely has not written *yet*.
+        assert not (root / "late-write").exists()
+        assert _git(["branch", "--show-current"], cwd=clone) == "aq/successor"
+        assert before == (_git(["rev-parse", "HEAD"], cwd=clone),
+                          _git(["diff", "--cached", "--binary"], cwd=clone),
+                          _git(["show-ref"], cwd=clone), claim.read_bytes())
+        assert (root / "untracked").read_text() == "successor work"
+    finally:
+        return_handle.set()
+        for process in processes:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        if not request.done():
+            request.cancel()
+        await asyncio.gather(request, return_exceptions=True)
+
+
+async def test_cancel_during_checkout_preserves_partial_source_and_git_lock(mgr, clone, tmp_path):
+    import os
+    import shlex
+    import sys
+
+    if os.name != "posix":
+        pytest.skip("POSIX process groups")
+    from src.git.process import _group_has_writer
+
+    root = pathlib.Path(clone)
+    _commit_file(clone, ".gitattributes", "payload filter=barrier\n", "filter")
+    _git(["checkout", "-b", "aq/target"], cwd=clone)
+    _commit_file(clone, "payload", "target content\n", "target")
+    _git(["checkout", "main"], cwd=clone)
+    ready, go = tmp_path / "ready", tmp_path / "go"
+    filter_script = tmp_path / "filter.py"
+    filter_script.write_text(
+        "import os,pathlib,sys,time\n"
+        f"pathlib.Path({str(ready)!r}).write_text(str(os.getpgrp()))\n"
+        f"while not pathlib.Path({str(go)!r}).exists(): time.sleep(.01)\n"
+        "sys.stdout.write(sys.stdin.read())\n"
+        "pathlib.Path('late-filter-write').write_text('old writer')\n"
+    )
+    _git(["config", "filter.barrier.smudge", shlex.join([sys.executable, str(filter_script)])],
+         cwd=clone)
+    (root / "untracked").write_text("source evidence")
+    claim = root / ".aq/claim.json"
+    claim.parent.mkdir()
+    claim.write_text('{"task_id":"old","claim_epoch":1}')
+    request = asyncio.create_task(mgr._arun(["checkout", "aq/target"], cwd=clone))
+    async with asyncio.timeout(5):
+        while not ready.exists():
+            await asyncio.sleep(.01)
+    request.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(request, timeout=10)
+    assert not _group_has_writer(int(ready.read_text()))
+    assert (root / ".git/index.lock").exists()
+
+    def snapshot():
+        return (
+            _git(["rev-parse", "HEAD"], cwd=clone), _git(["show-ref"], cwd=clone),
+            (root / ".git/index").read_bytes(), (root / ".git/index.lock").read_bytes(),
+            (root / "untracked").read_bytes(), claim.read_bytes(),
+        )
+
+    before = snapshot()
+    go.touch()
+    with pytest.raises(GitError, match="index.lock"):
+        await mgr._arun(["checkout", "-b", "aq/successor", "aq/target"], cwd=clone)
+    assert snapshot() == before
+    assert not (root / "late-filter-write").exists()
+
+
+async def test_group_cleanup_failure_is_not_an_ordinary_git_failure(mgr, clone, monkeypatch):
+    from src.git import process
+
+    def unknown(pgid):
+        raise PermissionError("process inventory unavailable")
+
+    monkeypatch.setattr(process, "_group_has_writer", unknown)
+    with pytest.raises(process.ProcessCleanupError, match="cleanup unproved") as raised:
+        await mgr._arun(["rev-parse", "HEAD"], cwd=clone)
+    assert isinstance(raised.value.__cause__, PermissionError)
+
+
+@pytest.mark.parametrize("state, writing", [("S", True), ("Z", False)])
+def test_group_scan_skips_a_process_that_exits_mid_read(monkeypatch, state, writing):
+    """ESRCH from an unrelated vanished pid is not unknown group state (solid-pinnacle-38)."""
+    import types
+
+    from src.git import process
+
+    class Entry:
+        def __init__(self, name, stat):
+            self.name, self._stat = name, stat
+
+        def __truediv__(self, child):
+            return self
+
+        def read_text(self):
+            if isinstance(self._stat, BaseException):
+                raise self._stat
+            return self._stat
+
+    entries = [
+        Entry("101", ProcessLookupError(3, "No such process")),
+        Entry("102", FileNotFoundError(2, "No such file or directory")),
+        Entry("4242", f"4242 (git) {state} 1 4242 4242 0"),
+    ]
+    monkeypatch.setattr(process, "Path", lambda _: types.SimpleNamespace(iterdir=lambda: entries))
+    monkeypatch.setattr(process.os, "killpg", lambda pgid, sig: None)
+    assert process._group_has_writer(4242) is writing
+
+
+async def test_local_git_disables_detached_maintenance_without_losing_config(mgr, clone):
+    mgr._SUBPROCESS_ENV = {
+        **mgr._SUBPROCESS_ENV,
+        "GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "aq.caller", "GIT_CONFIG_VALUE_0": "yes",
+    }
+    result = await mgr.arun_git_result(["config", "--get", "maintenance.auto"], cwd=clone)
+    assert result.stdout.strip() == "false"
+    env = mgr._foreground_git_env({
+        "GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "aq.caller", "GIT_CONFIG_VALUE_0": "yes",
+    })
+    assert env["GIT_CONFIG_KEY_0"] == "aq.caller" and env["GIT_CONFIG_VALUE_0"] == "yes"
+
+
+async def test_unknown_cleanup_survives_best_effort_git_probe(mgr, clone, monkeypatch):
+    from src.git import process
+
+    def unknown(pgid):
+        raise PermissionError("process inventory unavailable")
+
+    monkeypatch.setattr(process, "_group_has_writer", unknown)
+    with pytest.raises(process.ProcessCleanupError):
+        await mgr.ahas_remote(clone)
+
+
+async def test_unsettled_startup_is_bounded_and_late_handle_remains_owned(mgr, clone, monkeypatch):
+    from src.git import process
+
+    release = asyncio.Event()
+    original = asyncio.create_subprocess_exec
+    created = []
+
+    async def delayed(*args, **kwargs):
+        await release.wait()
+        child = await original(*args, **kwargs)
+        created.append(child)
+        return child
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", delayed)
+    monkeypatch.setattr(process, "CLEANUP_SECONDS", .05)
+    try:
+        with pytest.raises(process.ProcessCleanupError, match="did not settle"):
+            await asyncio.wait_for(mgr._arun(["status"], cwd=clone, timeout=.01), timeout=5)
+        pending = tuple(process._pending)
+        assert pending
+    finally:
+        monkeypatch.setattr(process, "CLEANUP_SECONDS", 5)
+        release.set()
+        await asyncio.wait_for(asyncio.gather(*process._pending), timeout=10)
+    assert created and all(child.returncode is not None for child in created)
+    assert not any(process._group_has_writer(child.pid) for child in created)

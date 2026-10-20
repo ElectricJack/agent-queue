@@ -133,6 +133,21 @@ class IntegrationCommandsMixin:
             return _failure("refused", str(exc))
         return {"success": True, **result}
 
+    async def _cmd_integration_off(self, args: dict) -> dict:
+        from src.commands.contracts.integration import IntegrationOffArgs
+        from src.integration.manual_control import ManualIntegration
+
+        principal = current_principal()
+        if principal is None or principal.kind is not PrincipalKind.LOCAL:
+            return _failure("refused", "manual integration controls require the local operator")
+        request = IntegrationOffArgs.model_validate(args)
+        try:
+            result = await ManualIntegration(self.db).run(
+                request, operator_id="human:local-operator")
+        except (ValueError, HierarchyError, GitError, BranchBusy, TimeoutError) as exc:
+            return _failure("refused", str(exc))
+        return {"success": True, **result}
+
     async def _cmd_integration_migrate_provenance_refs(self, args: dict) -> dict:
         from src.commands.contracts.integration import IntegrationMigrateProvenanceRefsArgs
         from src.integration.provenance_migration import ProvenanceMigration
@@ -353,6 +368,26 @@ class IntegrationCommandsMixin:
             return _failure("refused", str(exc))
         return {"success": True, **result}
 
+    async def _cmd_integration_reverify_epic(self, args: dict) -> dict:
+        """Request ordinary aggregate verification without reopening a completed epic."""
+        from src.commands.contracts.integration import IntegrationReverifyEpicArgs
+        from src.integration.train_controls import TrainControls
+
+        request = IntegrationReverifyEpicArgs.model_validate(args)
+        task = await self.db.get_task(request.task_id)
+        operator, refusal = await integration_operator(self.db, task.project_id if task else None)
+        if refusal:
+            return _failure("unauthorized", refusal)
+        try:
+            result = await TrainControls(self.db, train=getattr(
+                self.orchestrator, "integration_train", None)).reverify_epic(
+                    request.task_id, dry_run=request.dry_run, operator_id=operator,
+                    expected_head_sha=request.expected_head_sha, reason=request.reason,
+                    expected_project_id=task.project_id if task else None)
+        except (ValueError, GitError, OSError) as exc:
+            return _failure("refused", str(exc))
+        return {"success": result["outcome"] != "changed", **result}
+
     async def _cmd_integration_promotion_publish(self, args: dict) -> dict:
         """Mechanism entry for one admitted promotion; no worker can publish a target."""
         from sqlalchemy import select
@@ -398,6 +433,29 @@ class IntegrationCommandsMixin:
         return {"success": True, "outcome": observation.state, "batch_id": batch.id,
                 "source_sha": observation.candidate_sha, "target_sha": observation.target_sha,
                 "detail": observation.detail}
+
+    async def _cmd_integration_settle_batch(self, args: dict) -> dict:
+        """Preview or settle an ordinary batch already proven on its target."""
+        from src.commands.contracts.integration import IntegrationSettleBatchArgs
+        from src.integration.batches import BatchStore
+        from src.integration.train_controls import TrainControlError, TrainControls
+
+        request = IntegrationSettleBatchArgs.model_validate(args)
+        batch = await BatchStore(self.db).get(request.batch_id)
+        operator, refusal = await integration_operator(self.db, batch.project_id if batch else None)
+        if refusal:
+            return _failure("unauthorized", refusal)
+        try:
+            result = await TrainControls(self.db, train=getattr(
+                self.orchestrator, "integration_train", None,
+            )).settle_batch(request.batch_id, dry_run=request.dry_run,
+                expected_target_sha=request.expected_target_sha, operator_id=operator,
+                reason=request.reason)
+        except TrainControlError as exc:
+            return _failure(exc.outcome, str(exc))
+        except (ValueError, GitError, OSError) as exc:
+            return _failure("refused", str(exc))
+        return {"success": True, **result}
 
     async def _cmd_integration_abort_batch(self, args: dict) -> dict:
         """Preview or abort an unpromoted Git-first batch."""
@@ -1740,15 +1798,25 @@ class IntegrationCommandsMixin:
         if refusal is not None:
             return _failure("unauthorized", refusal)
 
-        recovery = owner_recovery_for(self.orchestrator)
-        if recovery is None:
-            return _failure("runtime_error", "owner recovery is unavailable")
-        owner_row_ids = [row["id"] for row in rows]
-        if request.owner_row_id is not None and not owner_row_ids:
-            owner_row_ids = [request.owner_row_id]
-        outcomes = await recovery.recover_many(
-            owner_row_ids, principal=principal, dry_run=request.dry_run
-        )
+        if request.self_owned:
+            from src.integration.preparation_handoff import recover_preparation_handoffs
+
+            if self.orchestrator is None:
+                return _failure("runtime_error", "preparation recovery is unavailable")
+            outcomes = await recover_preparation_handoffs(
+                self.orchestrator, rows, principal=principal, dry_run=request.dry_run,
+            )
+        else:
+            recovery = owner_recovery_for(self.orchestrator)
+            if recovery is None:
+                return _failure("runtime_error", "owner recovery is unavailable")
+            owner_row_ids = [row["id"] for row in rows]
+            if request.owner_row_id is not None and not owner_row_ids:
+                owner_row_ids = [request.owner_row_id]
+            outcomes = await recovery.recover_many(
+                owner_row_ids, principal=principal, dry_run=request.dry_run,
+                no_push=request.no_push,
+            )
         serialized = [outcome.to_dict() for outcome in outcomes]
         if not serialized:
             outcome = "not_found"
@@ -1761,6 +1829,29 @@ class IntegrationCommandsMixin:
         else:
             outcome = "not_eligible"
         return {"success": True, "outcome": outcome, "outcomes": serialized}
+
+    async def _cmd_integration_restore_task_origin(self, args: dict) -> dict:
+        """Preview/apply restoration of a task's branch to its recorded origin."""
+        from pydantic import ValidationError
+
+        from src.commands.contracts.integration import IntegrationRestoreTaskOriginArgs
+        from src.integration.owner_recovery import owner_recovery_for
+
+        try:
+            request = IntegrationRestoreTaskOriginArgs.model_validate(args)
+        except ValidationError as exc:
+            return _failure("not_eligible", f"invalid origin restore request: {exc}")
+        task = await self.db.get_task(request.task_id)
+        if task is None:
+            return _failure("not_found", "task does not exist")
+        principal, refusal = await integration_operator(self.db, task.project_id)
+        if refusal is not None:
+            return _failure("unauthorized", refusal)
+        recovery = owner_recovery_for(self.orchestrator)
+        if recovery is None:
+            return _failure("not_eligible", "owner recovery is unavailable")
+        result = await recovery.restore_task_origin(request, principal=principal)
+        return _with_reason(result["outcome"] in {"preview", "restored"}, result)
 
     async def _cmd_integration_reserve_owner(self, args: dict) -> dict:
         """Restore one stopped producer's missing canonical branch reservation."""

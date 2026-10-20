@@ -278,6 +278,7 @@ class AgentCommandsMixin(FlockCommandsMixin):
             source_type=source_type,
             name=name,
             kind_id=kind_id,
+            enabled=bool(args.get("enabled", True)),
         )
         await self.db.create_workspace(workspace)
 
@@ -415,6 +416,8 @@ class AgentCommandsMixin(FlockCommandsMixin):
                     "repo_url": k.repo_url,
                     "default_lock_mode": k.default_lock_mode,
                     "auto_attach": k.auto_attach,
+                    "mode": k.mode,
+                    "max_slots": k.max_slots,
                 }
                 for k in kinds
             ],
@@ -546,6 +549,9 @@ class AgentCommandsMixin(FlockCommandsMixin):
                 }
             candidate = os.path.realpath(requested)
             if candidate != ws.workspace_path:
+                if ws.is_slot or await self.db.list_slots_for_base(ws.id):
+                    return {"error": "Register a new base and use workspace_cutover; "
+                                     "linked slot paths cannot be relocated in place"}
                 if not force and not os.path.isdir(candidate):
                     return {
                         "error": (
@@ -580,7 +586,13 @@ class AgentCommandsMixin(FlockCommandsMixin):
                 "enabled": ws.enabled,
             }
 
-        await self.db.update_workspace(ws.id, **updates)
+        relocated = "workspace_path" in updates or "source_type" in updates
+        changed = await self.db.update_workspace(
+            ws.id, expected_generation=ws.generation if relocated else None,
+            require_unlocked=relocated, **updates,
+        )
+        if not changed:
+            return {"error": "Workspace binding changed or is locked; edit was not applied"}
         return {
             "updated": ws.id,
             "fields": changed_fields,

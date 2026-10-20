@@ -68,6 +68,21 @@ def integration_supersede_completion(ctx, task_id, project_id, subject_id, expec
     })
 
 
+@integration.command("off")
+@click.argument("project_id")
+@click.option("--reason", required=True)
+@click.option("--apply/--dry-run", default=False)
+@click.option("--expected-plan-digest")
+@click.pass_context
+@_handle_errors
+def integration_off(ctx, project_id, reason, apply, expected_plan_digest):
+    """Preview manual mode while preserving frozen work and sources."""
+    if apply and not expected_plan_digest:
+        raise click.UsageError("--apply requires --expected-plan-digest from preview")
+    _execute(ctx, "integration_off", {"project_id": project_id, "reason": reason,
+             "dry_run": not apply, "expected_plan_digest": expected_plan_digest})
+
+
 @integration.command("migrate-provenance-refs")
 @click.argument("project_id")
 @click.option("--apply/--dry-run", default=False, help="Copy verified refs, then delete old heads.")
@@ -235,6 +250,23 @@ def integration_abort_batch(ctx, batch_id, reason, apply):
     })
 
 
+@integration.command("settle-batch")
+@click.argument("batch_id")
+@click.option("--target-sha", "expected_target_sha", help="Exact target SHA returned by preview.")
+@click.option("--reason", default="", help="Required explanation when settling.")
+@click.option("--apply", is_flag=True, help="Settle proven delivery; default is preview.")
+@click.pass_context
+@_handle_errors
+def integration_settle_batch(ctx, batch_id, expected_target_sha, reason, apply):
+    """Preview or settle BATCH_ID whose frozen inputs already reached its target."""
+    if apply and (not expected_target_sha or not reason.strip()):
+        raise click.UsageError("--apply requires --target-sha and --reason")
+    _execute(ctx, "integration_settle_batch", {
+        "batch_id": batch_id, "expected_target_sha": expected_target_sha,
+        "reason": reason, "dry_run": not apply,
+    })
+
+
 @integration.command("refresh-epic")
 @click.option("--task", "task_id", required=True, help="Epic whose branch needs the default branch.")
 @click.option("--apply", is_flag=True, help="Start or advance the attested refresh; default is preview.")
@@ -243,6 +275,23 @@ def integration_abort_batch(ctx, batch_id, reason, apply):
 def integration_refresh_epic(ctx, task_id, apply):
     """Preview or refresh an epic; pending checks/repairs continue through the train."""
     _execute(ctx, "integration_refresh_epic", {"task_id": task_id, "dry_run": not apply})
+
+
+@integration.command("reverify-epic")
+@click.argument("task_id")
+@click.option("--head", "expected_head_sha", default=None, help="Exact head returned by preview.")
+@click.option("--reason", default="", help="Reason for requesting aggregate verification.")
+@click.option("--apply", is_flag=True, help="Request a bounded train visit; default is preview.")
+@click.pass_context
+@_handle_errors
+def integration_reverify_epic(ctx, task_id, expected_head_sha, reason, apply):
+    """Preview or re-trigger a completed epic's guarded aggregate verification."""
+    if apply and (not expected_head_sha or not reason.strip()):
+        raise click.UsageError("--apply requires --head and --reason")
+    _execute(ctx, "integration_reverify_epic", {
+        "task_id": task_id, "expected_head_sha": expected_head_sha,
+        "reason": reason, "dry_run": not apply,
+    })
 
 
 @integration.command("retire-origin")
@@ -390,10 +439,17 @@ def integration_reevaluate_repair(ctx, operation_id, apply, head, episode, gener
 @click.option("--owner-row-id")
 @click.option("--dry-run", is_flag=True)
 @click.option("--apply", is_flag=True, help="Preserve work and release the proved stopped owner.")
+@click.option(
+    "--no-push", is_flag=True,
+    help="Release without publishing; unpublished work stays in its retained checkout.",
+)
+@click.option("--self-owned", is_flag=True,
+              help="Resume the live session's own failed, unactivated preparation handoff.")
 @click.pass_context
 @_handle_errors
 def integration_release_owner(
-    ctx: click.Context, task_id: str | None, owner_row_id: str | None, dry_run: bool, apply: bool
+    ctx: click.Context, task_id: str | None, owner_row_id: str | None, dry_run: bool,
+    apply: bool, no_push: bool, self_owned: bool,
 ) -> None:
     """Preview a stranded owner's recovery; use --apply to preserve and release."""
     if (task_id is None) == (owner_row_id is None):
@@ -401,11 +457,40 @@ def integration_release_owner(
     if dry_run and apply:
         raise click.UsageError("--dry-run and --apply are mutually exclusive")
     args: dict[str, Any] = {"dry_run": not apply}
+    if no_push:
+        args["no_push"] = True
+    if self_owned:
+        args["self_owned"] = True
     if task_id is not None:
         args["task_id"] = task_id
     else:
         args["owner_row_id"] = owner_row_id
     _execute(ctx, "integration_release_owner", args)
+
+
+@integration.command("restore-task-origin")
+@click.option("--task-id", required=True)
+@click.option("--origin-id")
+@click.option("--expected-remote-oid")
+@click.option("--expected-fence-token", type=int)
+@click.option("--reason", default="")
+@click.option("--apply", is_flag=True)
+@click.pass_context
+@_handle_errors
+def integration_restore_task_origin(
+    ctx, task_id, origin_id, expected_remote_oid, expected_fence_token, reason, apply,
+):
+    """Preview restoration to the recorded origin; apply with the preview's fences."""
+    if apply and (not origin_id or not expected_remote_oid
+                  or expected_fence_token is None or not reason.strip()):
+        raise click.UsageError("--apply requires --origin-id, --expected-remote-oid, "
+                               "--expected-fence-token and --reason")
+    args = {"task_id": task_id, "dry_run": not apply, "reason": reason}
+    for key, value in (("origin_id", origin_id), ("expected_remote_oid", expected_remote_oid),
+                       ("expected_fence_token", expected_fence_token)):
+        if value is not None:
+            args[key] = value
+    _execute(ctx, "integration_restore_task_origin", args)
 
 
 @integration.command("reserve-owner")

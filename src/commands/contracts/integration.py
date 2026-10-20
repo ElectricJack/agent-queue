@@ -39,6 +39,9 @@ DESIGN_INTEGRATION_COMMANDS = frozenset(
         "integration_record_delivered",
         "integration_quiesce",
         "integration_supersede_completion",
+
+
+        "integration_off",
         "integration_retire_legacy_park",
         "integration_migrate_provenance_refs",
         "integration_reconcile_expired_mutation",
@@ -60,16 +63,19 @@ DESIGN_INTEGRATION_COMMANDS = frozenset(
         "integration_cutover_plan",
         "integration_cutover",
         "integration_abort_batch",
+        "integration_settle_batch",
         "integration_pause_batch",
         "integration_resume_batch",
         "integration_seal_now",
         "integration_retire_origin",
         "integration_refresh_epic",
+        "integration_reverify_epic",
         "integration_trust_manifest",
         "integration_app_verify",
         "integration_eject",
         "integration_reevaluate_repair",
         "integration_release_owner",
+        "integration_restore_task_origin",
         "integration_reserve_owner",
         "integration_clear_retained_recovery",
         "integration_release_stale_owners",
@@ -163,6 +169,18 @@ class IntegrationAbortBatchArgs(CommandArgs):
     dry_run: bool = True
 
 
+class IntegrationSettleBatchArgs(IntegrationAbortBatchArgs):
+    expected_target_sha: str | None = None
+
+    @model_validator(mode="after")
+    def require_preview_target(self):
+        if not self.dry_run and (
+            not is_valid_git_oid(self.expected_target_sha or "") or not self.reason.strip()
+        ):
+            raise ValueError("apply requires the previewed target SHA and a nonblank reason")
+        return self
+
+
 class IntegrationCutoverArgs(CommandArgs):
     project_id: str = Field(min_length=1)
     flow: Any = None
@@ -200,6 +218,19 @@ class IntegrationRefreshEpicArgs(CommandArgs):
     dry_run: bool = True
 
 
+class IntegrationReverifyEpicArgs(IntegrationRefreshEpicArgs):
+    expected_head_sha: str | None = None
+    reason: str = ""
+
+    @model_validator(mode="after")
+    def require_preview_source(self):
+        if not self.dry_run and (
+            not is_valid_git_oid(self.expected_head_sha or "") or not self.reason.strip()
+        ):
+            raise ValueError("apply requires the preview head and a nonblank reason")
+        return self
+
+
 class IntegrationSealNowArgs(CommandArgs):
     project_id: str = Field(min_length=1)
     dry_run: bool = True
@@ -225,6 +256,14 @@ class IntegrationRefreshEpicValue(IntegrationTrainControlValue):
     default_sha: str | None = None
     ahead: int | None = None
     behind: int | None = None
+    state: str | None = None
+    detail: dict[str, Any] | None = None
+
+
+class IntegrationReverifyEpicValue(IntegrationTrainControlValue):
+    head_sha: str | None = None
+    completion_id: str | None = None
+    previous_completion_id: str | None = None
     state: str | None = None
     detail: dict[str, Any] | None = None
 
@@ -301,6 +340,8 @@ class IntegrationReleaseOwnerArgs(CommandArgs):
     task_id: str | None = Field(default=None, min_length=1)
     owner_row_id: str | None = Field(default=None, min_length=1)
     dry_run: bool = True
+    no_push: bool = False
+    self_owned: bool = False
 
     @model_validator(mode="after")
     def exactly_one_target(self) -> "IntegrationReleaseOwnerArgs":
@@ -311,6 +352,25 @@ class IntegrationReleaseOwnerArgs(CommandArgs):
 
 class IntegrationReserveOwnerArgs(CommandArgs):
     task_id: str = Field(min_length=1)
+
+
+class IntegrationRestoreTaskOriginArgs(CommandArgs):
+    task_id: str = Field(min_length=1)
+    dry_run: bool = True
+    origin_id: str | None = Field(default=None, min_length=1)
+    expected_remote_oid: str | None = None
+    expected_fence_token: StrictInt | None = Field(default=None, ge=0)
+    reason: str = ""
+
+    @model_validator(mode="after")
+    def require_exact_restore(self):
+        if not self.dry_run and (
+            not self.origin_id or not is_valid_git_oid(self.expected_remote_oid or "")
+            or self.expected_fence_token is None or not self.reason.strip()
+        ):
+            raise ValueError("apply requires origin_id, expected_remote_oid, "
+                             "expected_fence_token and a nonblank reason")
+        return self
 
 
 class IntegrationClearRetainedRecoveryArgs(CommandArgs):
@@ -944,6 +1004,28 @@ class IntegrationSupersedeCompletionValue(CommandValue):
     dry_run: bool = True
 
 
+class IntegrationOffArgs(CommandArgs):
+    project_id: str = Field(min_length=1)
+    reason: str = Field(min_length=1)
+    dry_run: bool = True
+    expected_plan_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+
+    @model_validator(mode="after")
+    def exact_control(self):
+        if not self.reason.strip():
+            raise ValueError("reason must be nonblank")
+        if not self.dry_run and self.expected_plan_digest is None:
+            raise ValueError("apply requires the exact preview plan digest")
+        return self
+
+
+class IntegrationManualValue(CommandValue):
+    project_id: str | None = None
+    dry_run: bool = True
+    plan: dict[str, Any] | None = None
+    plan_digest: str | None = None
+
+
 class IntegrationQuiesceArgs(CommandArgs):
     project_id: str = Field(min_length=1)
     expected_generation: StrictInt = Field(ge=0)
@@ -1384,6 +1466,15 @@ INTEGRATION_RESERVE_OWNER = _operational_contract(
     ("acquired", "already_reserved", "not_eligible", "not_found"),
     successes=frozenset({"acquired", "already_reserved"}),
     side_effect=SideEffectClass.UPDATE,
+)
+
+INTEGRATION_RESTORE_TASK_ORIGIN = _operational_contract(
+    "integration_restore_task_origin",
+    IntegrationRestoreTaskOriginArgs,
+    ("preview", "restored", "not_eligible", "not_found"),
+    successes=frozenset({"preview", "restored"}),
+    side_effect=SideEffectClass.COMPOSITE,
+    supports_preview=True,
 )
 
 CLEAR_RETAINED_RECOVERY_OUTCOMES = ("cleared", "not_clean", "unavailable", "not_found")
@@ -2245,6 +2336,13 @@ async def _reserve_owner_adapter(args: IntegrationReserveOwnerArgs, ctx: Command
     )
 
 
+async def _restore_task_origin_adapter(args: IntegrationRestoreTaskOriginArgs, ctx):
+    return await _hierarchy_adapter(
+        "integration_restore_task_origin", args, ctx, IntegrationOperationalValue,
+        {"preview", "restored", "not_eligible", "not_found"},
+    )
+
+
 async def _clear_retained_recovery_adapter(
     args: IntegrationClearRetainedRecoveryArgs, ctx: CommandContext | None
 ):
@@ -2348,6 +2446,7 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
         registry.register(CommandRegistration(
             name, contract, cutover_control, None if read_only else cutover_preview))
     for name, args_model, applied, value_model in (
+        ("integration_off", IntegrationOffArgs, "disabled", IntegrationManualValue),
         ("integration_migrate_provenance_refs", IntegrationMigrateProvenanceRefsArgs, "migrated",
          IntegrationMigrateProvenanceRefsValue),
         ("integration_retire_legacy_park", IntegrationRetireLegacyParkArgs, "retired",
@@ -2360,11 +2459,14 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
         ("integration_record_root_noop", IntegrationRecordRootNoopArgs, "recorded",
          IntegrationRecordRootNoopValue),
         ("integration_abort_batch", IntegrationAbortBatchArgs, "aborted", IntegrationTrainControlValue),
+        ("integration_settle_batch", IntegrationSettleBatchArgs, "settled", IntegrationTrainControlValue),
         ("integration_pause_batch", IntegrationAbortBatchArgs, "paused", IntegrationTrainControlValue),
         ("integration_resume_batch", IntegrationAbortBatchArgs, "resumed", IntegrationTrainControlValue),
         ("integration_seal_now", IntegrationSealNowArgs, "sealed", IntegrationTrainControlValue),
         ("integration_retire_origin", IntegrationRetireOriginArgs, "retired", IntegrationTrainControlValue),
         ("integration_refresh_epic", IntegrationRefreshEpicArgs, "refreshed", IntegrationRefreshEpicValue),
+        ("integration_reverify_epic", IntegrationReverifyEpicArgs, "visited",
+         IntegrationReverifyEpicValue),
     ):
         if registry.get(name) is not None:
             continue
@@ -2378,14 +2480,32 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
         if name == "integration_seal_now":
             outcomes += ("no_ready_work", "existing_batch")
             successes.update({"no_ready_work", "existing_batch"})
+        elif name == "integration_settle_batch":
+            outcomes += ("unknown_batch", "target_not_settled")
         elif name == "integration_refresh_epic":
             outcomes += ("pending", "current")
             successes.update({"pending", "current"})
+        elif name == "integration_reverify_epic":
+            outcomes += ("pending", "changed")
+            successes.add("pending")
         contract = _operational_contract(
             name, args_model, outcomes, successes=frozenset(successes),
             side_effect=SideEffectClass.COMPOSITE, result_model=value_model,
             supports_preview=True,
         )
+        if name == "integration_off":
+            subject = EffectSubject.INTEGRATION_OPERATION
+            contract = contract.model_copy(update={
+                "execution": contract.execution.model_copy(update={"effects": (
+                    ReadClause(subject=subject),
+                    UpdateClause(subject=subject,
+                                 when=ClausePredicate(arg_equals=("dry_run", False))),
+                )}),
+                "presentation": CommandPresentation(
+                    title="Disable automatic integration",
+                    summary="Local operator applies an exact preview while preserving sources and frozen work.",
+                ),
+            })
         if name == "integration_migrate_provenance_refs":
             contract = contract.model_copy(update={
                 "execution": contract.execution.model_copy(update={"effects": (
@@ -2596,6 +2716,7 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
         (INTEGRATION_EJECT, _eject_adapter),
         (INTEGRATION_REEVALUATE_REPAIR, _reevaluate_repair_adapter),
         (INTEGRATION_RELEASE_OWNER, _release_owner_adapter),
+        (INTEGRATION_RESTORE_TASK_ORIGIN, _restore_task_origin_adapter),
         (INTEGRATION_RESERVE_OWNER, _reserve_owner_adapter),
         (INTEGRATION_CLEAR_RETAINED_RECOVERY, _clear_retained_recovery_adapter),
         (INTEGRATION_RELEASE_STALE_OWNERS, _release_stale_owners_adapter),

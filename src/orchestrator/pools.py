@@ -124,6 +124,7 @@ class PoolLaunch:
     handle: object | None = None
     token_attempted: bool = False
     workspace_acquired: bool = False
+    workspace_kind: str = "project-repo"
 
 
 @dataclass
@@ -315,6 +316,11 @@ class PoolsMixin:
             if session.project_id is not None:
                 sessions_by_project.setdefault(session.project_id, []).append(session)
 
+        # One ordered workspace inventory and one kind catalogue per tick.
+        # These are capacity observations; launch/claim still recheck ownership.
+        workspace_snapshot = await self.db.list_workspaces()
+        kind_snapshot = await self.db.list_all_workspace_kinds()
+        system_kinds = {k.id: k for k in kind_snapshot if k.project_id == "__system__"}
         for project in await self.db.list_projects(include_admission=True):
             if project.status != ProjectStatus.ACTIVE:
                 continue
@@ -341,102 +347,90 @@ class PoolsMixin:
                 allowed_task_ids=allowed,
                 router_ready=project.id in ready_projects,
                 hierarchy_mode=hierarchy_modes.get(project.id) or ProjectIntegrationMode.of(project),
-                pool_profiles=pool_profiles, include_repair_counts=True,
+                pool_profiles=pool_profiles, include_repair_counts=True, by_workspace_kind=True,
             )
-            workspace_capacity = await self.db.count_available_workspaces(
-                project.id,
-                kind_id="project-repo",
-                worktree_slot_cap=(
-                    self._project_slot_cap(project) if worktrees_enabled else None
-                ),
-            )
+            workspaces = [w for w in workspace_snapshot if w.project_id == project.id]
+            kinds_by_path = {w.workspace_path: w.kind_id or "project-repo" for w in workspaces}
             sessions = sessions_by_project.get(project.id, [])
             session_ids = {s.id for s in sessions}
             pending = [launch for launch in pending_launches
                        if launch.project_id == project.id and launch.session_id not in session_ids]
-            # Once acquired, the DB already subtracts the workspace. Snapshot
-            # the flags before querying capacity: a concurrent acquisition may
-            # be counted twice for this tick, never missed or double-counted
-            # throughout a slow provider startup.
-            workspace_capacity = max(0, workspace_capacity - sum(
-                launch.session_id in unacquired for launch in pending
-            ))
-            sessions_by_profile: dict[str, list] = {}
-            for s in sessions:
-                sessions_by_profile.setdefault(s.profile_id, []).append(s)
-
-            # Every live pool session in this project, whatever profile it
-            # belongs to: the project cap bounds the project, not one pool.
-            # Draining rows are excluded, matching what counts as supply.
+            project_kinds = system_kinds | {
+                k.id: k for k in kind_snapshot if k.project_id == project.id
+            }
+            execution_kinds = {k.id for k in project_kinds.values()
+                               if k.writable and k.lockable and k.is_git_repo
+                               and k.mode in ("worktree", "exclusive-clone")}
+            kind_ids = execution_kinds | {"project-repo"} | {
+                kinds_by_path.get(s.work_dir, "") for s in sessions
+            } | {launch.workspace_kind for launch in pending}
+            capacities = {}
+            for kind_id in kind_ids:
+                capacity = await self.db.count_available_workspaces(
+                    project.id, kind_id=kind_id,
+                    workspace_snapshot=workspaces, kind_snapshot=project_kinds,
+                    worktree_slot_cap=(self._project_slot_cap(project) if worktrees_enabled else None),
+                ) if kind_id in execution_kinds else 0
+                capacities[kind_id] = max(0, capacity - sum(
+                    launch.session_id in unacquired and launch.workspace_kind == kind_id
+                    for launch in pending
+                ))
             project_live_total = sum(
-                1
-                for s in sessions
+                1 for s in sessions
                 if s.state in ("starting", "running") and s.desired_state != "stopped"
             ) + len(pending) + sum(n for (pid, _), n in reserved.items() if pid == project.id)
 
             for profile_id, profile in pool_profiles.items():
                 key = PoolKey(profile_id)
                 measurement.profiles[key] = profile
-                ready, repair_ready = demand_by_profile.get(profile_id, (0, 0))
-                measurement.demand[key] = measurement.demand.get(key, 0) + ready
-
-                local = PoolProjectSupply(running_busy=reserved.get((project.id, profile_id), 0))
-                local.starting = sum(launch.profile_id == profile_id for launch in pending)
-                rows = sorted(
-                    sessions_by_profile.get(profile_id, []),
-                    key=lambda s: s.started_at or 0.0,
-                )
-                for s in rows:
-                    if s.state not in _LIVE_STATES:
-                        continue
-                    if s.state == "starting":
-                        local.starting += 1
-                    elif s.state == "draining" or s.desired_state == "stopped":
-                        local.draining += 1
-                    elif s.task_id or s.claim_phase:
-                        local.running_busy += 1
-                        local.evictable += s.id in evictable
-                    elif idle_pool_claim_loop_stalled(s, now=now, stall_seconds=stall_seconds):
-                        # Nothing has claimed from it for two long-poll
-                        # windows — a harness parked on a usage-limit or
-                        # login screen looks exactly like this.  Counting it
-                        # as idle would let it absorb the demand a working
-                        # session should be started for.
-                        local.unresponsive += 1
-                    else:
-                        local.running_idle += 1
-                        local.idle_session_ids.append(s.id)
-                        idle_ages.setdefault(key, []).append((s.started_at or 0.0, s.id))
-
+                measurement.demand.setdefault(key, 0)
                 sup = measurement.supply.setdefault(key, PoolSupply())
-                sup.running_idle += local.running_idle
-                sup.running_busy += local.running_busy
-                sup.evictable += local.evictable
-                sup.starting += local.starting
-                sup.draining += local.draining
-                sup.unresponsive += local.unresponsive
-                sup.idle_session_ids.extend(local.idle_session_ids)
-                sup.by_project[project.id] = local
-
+                project_supply = PoolProjectSupply()
+                sup.by_project[project.id] = project_supply
                 until, _reason = self._pool_quarantine_state(project.id, profile_id, now)
-                measurement.candidates.setdefault(key, []).append(
-                    PlacementCandidate(
-                        project_id=project.id,
-                        ready=ready,
-                        live=local.running_idle + local.running_busy + local.starting,
-                        project_live_total=project_live_total,
-                        project_cap=project.max_concurrent_agents,
-                        workspace_capacity=workspace_capacity,
-                        quarantined=until is not None,
-                        # Read defensively: ``min_per_project`` is a Phase 2
-                        # profile field and defaults to "no reservation".
-                        warm_floor=getattr(profile, "min_per_project", 0) or 0,
+                for kind_id in sorted(kind_ids):
+                    ready, repair_ready = demand_by_profile.get((profile_id, kind_id), (0, 0))
+                    measurement.demand[key] += ready
+                    local = PoolProjectSupply(running_busy=(
+                        reserved.get((project.id, profile_id), 0) if kind_id == "project-repo" else 0
+                    ))
+                    local.starting = sum(launch.profile_id == profile_id
+                                         and launch.workspace_kind == kind_id for launch in pending)
+                    rows = sorted((s for s in sessions if s.profile_id == profile_id
+                                   and kinds_by_path.get(s.work_dir, "") == kind_id),
+                                  key=lambda s: s.started_at or 0.0)
+                    for s in rows:
+                        if s.state not in _LIVE_STATES:
+                            continue
+                        if s.state == "starting":
+                            local.starting += 1
+                        elif s.state == "draining" or s.desired_state == "stopped":
+                            local.draining += 1
+                        elif s.task_id or s.claim_phase:
+                            local.running_busy += 1
+                            local.evictable += s.id in evictable
+                        elif idle_pool_claim_loop_stalled(s, now=now, stall_seconds=stall_seconds):
+                            local.unresponsive += 1
+                        else:
+                            local.running_idle += 1
+                            local.idle_session_ids.append(s.id)
+                            idle_ages.setdefault(key, []).append((s.started_at or 0.0, s.id))
+                    for destination in (sup, project_supply):
+                        for attr in ("running_idle", "running_busy", "evictable", "starting", "draining",
+                                     "unresponsive"):
+                            setattr(destination, attr, getattr(destination, attr) + getattr(local, attr))
+                        destination.idle_session_ids.extend(local.idle_session_ids)
+                    measurement.candidates.setdefault(key, []).append(PlacementCandidate(
+                        project_id=project.id, workspace_kind=kind_id,
+                        ready=ready, live=local.running_idle + local.running_busy + local.starting,
+                        project_live_total=project_live_total, project_cap=project.max_concurrent_agents,
+                        workspace_capacity=capacities[kind_id], quarantined=until is not None,
+                        warm_floor=(getattr(profile, "min_per_project", 0) or 0)
+                                   if kind_id == "project-repo" else 0,
                         idle_session_ids=tuple(local.idle_session_ids),
-                        starting=local.starting,
-                        repair_ready=repair_ready,
+                        starting=local.starting, repair_ready=repair_ready,
                         evictable=local.evictable,
-                    )
-                )
+                    ))
 
         for key, sup in measurement.supply.items():
             # ``size_pools`` reports the fleet's oldest idle sessions on a
@@ -564,6 +558,7 @@ class PoolsMixin:
             start.key for start in starts
             if start.reason != 'evict' and any(
                 candidate.project_id == start.project_id
+                and candidate.workspace_kind == start.workspace_kind
                 and candidate.ready > len(candidate.idle_session_ids) + candidate.starting
                 for candidate in measurement.candidates[start.key]
             )
@@ -627,10 +622,14 @@ class PoolsMixin:
         from src.waits.sources import record_pool_observations
 
         await record_pool_observations(self.db, measurement, now)
-        self._wait_slot_pressure = {
-            (c.project_id, key.profile_id): c.ready - len(c.idle_session_ids) - c.starting
-            for key, candidates in measurement.candidates.items() for c in candidates
-        }
+        self._wait_slot_pressure = {}
+        for key, candidates in measurement.candidates.items():
+            for candidate in candidates:
+                pressure_key = (candidate.project_id, key.profile_id)
+                self._wait_slot_pressure[pressure_key] = (
+                    self._wait_slot_pressure.get(pressure_key, 0)
+                    + candidate.ready - len(candidate.idle_session_ids) - candidate.starting
+                )
         starts, drains, starvations = place_pool_actions(
             actions=actions, candidates=measurement.candidates
         )
@@ -762,7 +761,8 @@ class PoolsMixin:
                     launches.pop(launch.session_id, None)
 
         for _ in range(start.count):
-            launch = PoolLaunch(start.project_id, measurement.profiles[start.key].id)
+            launch = PoolLaunch(start.project_id, measurement.profiles[start.key].id,
+                                workspace_kind=start.workspace_kind)
             launches[launch.session_id] = launch
             launch.task = asyncio.create_task(run(launch), name=f"pool-launch:{launch.session_id}")
 
@@ -913,7 +913,7 @@ class PoolsMixin:
         for key, profile in sorted(measurement.profiles.items(), key=lambda kv: kv[0].profile_id):
             if key.profile_id in announced:
                 continue
-            eligible = len(measurement.candidates.get(key, ()))
+            eligible = len({c.project_id for c in measurement.candidates.get(key, ())})
             max_active = profile.max_active
             min_active = profile.min_active or 0
             payload = {
@@ -1040,7 +1040,7 @@ class PoolsMixin:
         # could be acquired. Worktree slots still count as lazy capacity.
         available = await self.db.count_available_workspaces(
             project.id,
-            kind_id="project-repo",
+            kind_id=launch.workspace_kind,
             worktree_slot_cap=(self._project_slot_cap(project) if self._worktrees_enabled() else None),
         )
         if not available:
@@ -1183,9 +1183,10 @@ class PoolsMixin:
                 self._quarantine_pool(project.id, profile.id, reason)
 
         try:
-            kind = await self.db.resolve_workspace_kind(project.id, "project-repo")
-            if kind is None:
-                await _rollback("starved: no project-repo workspace kind", quarantine=True)
+            kind = await self.db.resolve_workspace_kind(project.id, launch.workspace_kind)
+            if (kind is None or not (kind.writable and kind.lockable and kind.is_git_repo)
+                    or kind.mode not in ("worktree", "exclusive-clone")):
+                await _rollback("starved: incompatible workspace kind", quarantine=True)
                 return None
 
             worktrees_enabled = self._worktrees_enabled()

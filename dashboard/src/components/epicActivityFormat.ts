@@ -1,7 +1,7 @@
 import type { GraphTaskNode } from "@aq/ts-client";
 
 /** A container's displayed activity, rolled up from its descendants on the server. */
-export type EpicActivity = Partial<Pick<GraphTaskNode, "display_state" | "display_reason" | "child_state_counts" | "descendant_state_counts">>;
+export type EpicActivity = Partial<Pick<GraphTaskNode, "display_state" | "display_reason" | "child_state_counts" | "descendant_state_counts" | "claim_readiness">>;
 export type DisplayState = NonNullable<GraphTaskNode["display_state"]>;
 
 /** The card tone (a TaskNode status key) each displayed state reads as. */
@@ -30,6 +30,9 @@ export function childCountText(counts: EpicActivity["child_state_counts"]): stri
 /** Filter activity using the same projection as the pills. Leaf lifecycle
  * filters remain unchanged; waiting epics do not inflate the running count. */
 export function displayedTaskStatus(task: EpicActivity & { status?: string | null }): string {
+  if (task.status === "READY" && !task.child_state_counts && task.claim_readiness && !task.claim_readiness.claimable) {
+    return task.claim_readiness.state === "waiting_on_delivery" ? "WAITING_ON_DELIVERY" : "WITHHELD";
+  }
   return task.display_state ? DISPLAY_STATUS[task.display_state] : (task.status ?? "").toUpperCase();
 }
 

@@ -551,6 +551,12 @@ def _render_nudge(batch: list[Message]) -> str:
     to ``[Pasted text #N +M lines]``, and taller than the composer's row window
     it shows only its last rows.  Unconfirmable, it sat unsubmitted and every
     later nudge to the worker deferred behind it (2026-10-01).
+
+    A message pointer says that running it is the acknowledgment.  Bare, a
+    supervisor that had peeked at the bodies with ``aq message inbox``
+    answered each retry from memory, never ran status, and was re-nudged
+    until it did (2026-10-20).  The text is the same on every attempt: a
+    retry that matches a pasted-but-unsubmitted pointer only submits it.
     """
     if batch[0].body_kind == "schedule_prompt":
         schedule_id = batch[0].id.split(":")[1]
@@ -565,4 +571,5 @@ def _render_nudge(batch: list[Message]) -> str:
         return f"Handle `aq job result {shlex.quote(job_id)} --json`."
     if batch[0].body_kind in COLLABORATION_BODY_KINDS:
         return f"Handle `aq collaboration show {shlex.quote(batch[0].thread_id)} --json`."
-    return f"Handle `aq message status {shlex.quote(batch[0].id)} --json`."
+    return (f"Handle `aq message status {shlex.quote(batch[0].id)} --json` "
+            "(running it marks the message read).")

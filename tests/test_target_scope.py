@@ -506,6 +506,8 @@ _FOREIGN_TARGETS = [
     ("integration_reevaluate_repair", {"operation_id": "op-other"}),
     ("integration_release", {"batch_id": "batch-other"}),
     ("integration_release_owner", {"owner_row_id": "owner-other"}),
+    ("integration_restore_task_origin", {"task_id": "foreign"}),
+    ("integration_restore_task_origin", {"task_id": "own", "origin_id": "origin-foreign"}),
     ("integration_eject", {"batch_id": "batch-other", "task_id": "foreign", "reason": "x"}),
     ("integration_release_held_gate", {"subject_id": "subject-other", "gate_id": "gate-p"}),
     ("integration_release_held_gate", {"subject_id": "subject-p", "gate_id": "gate-other"}),
@@ -518,6 +520,7 @@ _OWN_TARGETS = [
     ("integration_reevaluate_repair", {"operation_id": "op-p"}),
     ("integration_release", {"batch_id": "batch-p"}),
     ("integration_release_owner", {"owner_row_id": "owner-p"}),
+    ("integration_restore_task_origin", {"task_id": "own", "origin_id": "origin-own"}),
     ("integration_eject", {"batch_id": "batch-p", "task_id": "own", "reason": "x"}),
     ("integration_release_held_gate", {"subject_id": "subject-p", "gate_id": "gate-p"}),
 ]
@@ -620,6 +623,10 @@ async def test_an_owned_ask_does_not_admit_an_unowned_input(asks_db):
     ("integration_abort_batch", {"batch_id": "batch-p", "dry_run": False,
                                  "reason": "duplicate"}, "aborted", "abort_batch"),
     ("integration_retire_origin", {"task_id": "own"}, "preview", "retire_origin"),
+    ("integration_reverify_epic", {"task_id": "own"}, "preview", "reverify_epic"),
+    ("integration_reverify_epic", {"task_id": "own", "dry_run": False,
+                                   "expected_head_sha": "a" * 40, "reason": "retry"},
+     "visited", "reverify_epic"),
     ("integration_retire_origin", {"task_id": "own", "origin_id": "origin-own",
                                    "dry_run": False, "reason": "delivered"},
      "retired", "retire_origin"),
@@ -643,11 +650,14 @@ async def test_supervisor_train_controls_dispatch_through_the_contract(
     assert result["success"], result
     control.assert_awaited_once()
     assert control.call_args.kwargs["operator_id"] == f"supervisor session:{SUPERVISOR}"
+    if method == "reverify_epic":
+        assert control.call_args.kwargs["expected_project_id"] == "p"
 
 
 @pytest.mark.parametrize("command,args", [
     ("integration_abort_batch", {"batch_id": "batch-p"}),
     ("integration_retire_origin", {"task_id": "own"}),
+    ("integration_reverify_epic", {"task_id": "own"}),
 ])
 async def test_plain_session_cannot_reach_train_controls(db, command, args):
     assert check_command_scope(command, dict(args), _scope("p", elevated=False)) is not None

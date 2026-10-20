@@ -96,6 +96,7 @@ somehow declares none.
     "get_task",
     "github_issue_close_rejected",
     "integration_abort_batch",
+    "integration_settle_batch",
     "integration_app_verify",
     "integration_cutover",
     "integration_cutover_plan",

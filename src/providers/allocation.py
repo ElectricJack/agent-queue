@@ -293,7 +293,9 @@ async def build_allocation_snapshot(orchestrator: Any, *, now: float | None = No
             "draining": supply.draining,
             "unresponsive": supply.unresponsive,
         }
-        for candidate in sorted(measurement.candidates.get(key, []), key=lambda c: c.project_id):
+        from src.scheduler import project_pool_candidates
+
+        for candidate in project_pool_candidates(measurement.candidates.get(key, [])):
             local = supply.by_project.get(candidate.project_id)
             row["projects"].append(
                 {

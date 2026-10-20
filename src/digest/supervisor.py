@@ -280,7 +280,11 @@ def fallback_text(deterministic: str, facts: dict[str, Any]) -> str:
         line = f"{GLYPH_DIGEST} Needs you: {needs} waiting {noun}; {working} sessions working."
     else:
         line = f"{GLYPH_DIGEST} {working} sessions working."
-    return render_authored_digest(line, facts=facts)
+    waits = (facts.get("waiting_on_delivery") or {}).get("items", [])
+    lines = [line]
+    if waits:
+        lines.append(f"Waiting on delivery: {waits[0]['task_id']}: {waits[0]['reason']}")
+    return render_authored_digest("\n".join(lines), facts=facts)
 
 
 def waiting_on_you_text(facts: dict[str, Any]) -> str:
@@ -311,6 +315,7 @@ def bounded_facts(
     previous_facts_hash: str | None = None,
     deadline: float | None = None,
     waiting_on_you: list[dict[str, Any]] | None = None,
+    waiting_on_delivery: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """The frozen brief for one window: counts exact, lists capped and counted."""
     return {
@@ -322,6 +327,7 @@ def bounded_facts(
         "counts": {
             "landed": len(landed),
             "stuck": len(stuck),
+            "waiting_on_delivery": len(waiting_on_delivery or []),
             "needs_you": asks["count"],
             "sessions_working": int(sessions_working),
             "active_tasks": int(active_tasks),
@@ -330,6 +336,7 @@ def bounded_facts(
         },
         "landed": _capped(landed, MAX_LANDED),
         "stuck": _capped(stuck, MAX_STUCK),
+        "waiting_on_delivery": _capped(waiting_on_delivery or [], MAX_STUCK),
         "needs_you": {
             **asks,
             "items": asks["items"][:MAX_NEEDS_YOU],

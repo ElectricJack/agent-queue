@@ -285,7 +285,9 @@ class PrimeRenderer:
                 from src.knowledge.budget import ContextBudget
 
                 doc = _fit_worker_previews(
-                    doc, ContextBudget.from_config(self.config), override_template, project,
+                    doc, ContextBudget.from_config(
+                        self.config, model_context_window=observation.get("model_context_window"),
+                    ), override_template, project,
                 )
         return doc
 

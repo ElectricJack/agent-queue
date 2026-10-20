@@ -74,6 +74,7 @@ from src.integration.epics import EpicGraphReader, EpicPolicy, EpicReadinessEval
 from src.integration.git_truth import GitTruth, GitTruthSnapshot
 from src.integration.gitops import GitOperations, RetainedRepository, SubjectGitAuthority
 from src.integration.lock import BranchLock
+from src.integration.manual_control import train_write
 from src.integration.models import (
     BranchKey, IntegrationTrainPolicy, RepairPolicy, integration_ci_policy,
 )
@@ -743,6 +744,16 @@ class DatabaseBatches:
                     "incident_ids": [item["id"] for item in incidents],
                 },))
         frozen_members = await service.store.members(current.id) if current is not None else ()
+        if (current is not None and frozen_members
+                and not (current.epic_sync or current.epic_refresh)
+                and target.kind != "promotion"
+                and not snapshot.error and snapshot.target_oid
+                and all([await snapshot.contains_source(m.task_id, m.source_sha, m.base_sha)
+                         is True for m in frozen_members])):
+            # Historical delivery precedes fresh source admission: a PR may
+            # now be closed, its branch removed or its check policy changed.
+            # The service still checks holds and the exact frozen membership.
+            return BatchSelection(current, frozen_members, existing=True)
         # A frozen batch already owns this target. New candidates must not delay
         # its checks or its existing repair; publication revalidates its members.
         candidates = ([member.task_id for member in frozen_members] if current is not None else
@@ -1783,40 +1794,45 @@ class DatabaseBatches:
         return True
 
     async def settle(self, batch: Batch, observation: BatchObservation) -> None:
-        async with self.db._engine.connect() as conn:
-            trigger = await conn.scalar(select(integration_batches.c.trigger).where(
-                integration_batches.c.id == batch.id,
-            ))
         async with self.db.immediate() as conn:
-            if trigger == "promotion":
-                from src.integration.promotion_steps import settle_promotion
+            await self.settle_on(conn, batch, observation)
+        await self.cleanup_settled(batch)
 
-                await settle_promotion(self.db, batch, observation, clock=self.clock, conn=conn)
-            await execute_batch_mutation(conn,
-                update(integration_batches)
-                .where(integration_batches.c.id == batch.id,
-                       integration_batches.c.target_ref.is_not(None),
-                       integration_batches.c.lifecycle != "promoted")
-                .values(lifecycle="promoted", final_main_sha=observation.target_sha,
-                        tested_candidate_sha=observation.candidate_sha,
-                        updated_at=self.clock())
-            )
-            from src.integration.promotion_steps import promotion_policy_event
+    async def settle_on(self, conn, batch: Batch, observation: BatchObservation) -> None:
+        trigger = await conn.scalar(select(integration_batches.c.trigger).where(
+            integration_batches.c.id == batch.id,
+        ))
+        if trigger == "promotion":
+            from src.integration.promotion_steps import settle_promotion
 
-            flow = await conn.scalar(select(projects.c.promotion_flow).where(
-                projects.c.id == batch.project_id))
-            for step in flow or []:
-                if "refs/heads/" + step["source"] == batch.target_ref:
-                    await promotion_policy_event(conn, project_id=batch.project_id, step_id=step["id"],
-                        kind="source_settled", identity=batch.id, now=self.clock(),
-                        source_sha=observation.target_sha)
-            if trigger == "promotion":
-                row = await conn.scalar(select(integration_batches.c.policy_snapshot).where(
-                    integration_batches.c.id == batch.id))
-                step = row["promotion_step"]
+            await settle_promotion(self.db, batch, observation, clock=self.clock, conn=conn)
+        await execute_batch_mutation(conn,
+            update(integration_batches)
+            .where(integration_batches.c.id == batch.id,
+                   integration_batches.c.target_ref.is_not(None),
+                   integration_batches.c.lifecycle != "promoted")
+            .values(lifecycle="promoted", final_main_sha=observation.target_sha,
+                    tested_candidate_sha=observation.candidate_sha,
+                    updated_at=self.clock())
+        )
+        from src.integration.promotion_steps import promotion_policy_event
+
+        flow = await conn.scalar(select(projects.c.promotion_flow).where(
+            projects.c.id == batch.project_id))
+        for step in flow or []:
+            if "refs/heads/" + step["source"] == batch.target_ref:
                 await promotion_policy_event(conn, project_id=batch.project_id, step_id=step["id"],
-                    kind="delivered", identity=batch.id, now=self.clock(), batch_id=batch.id,
+                    kind="source_settled", identity=batch.id, now=self.clock(),
                     source_sha=observation.target_sha)
+        if trigger == "promotion":
+            row = await conn.scalar(select(integration_batches.c.policy_snapshot).where(
+                integration_batches.c.id == batch.id))
+            step = row["promotion_step"]
+            await promotion_policy_event(conn, project_id=batch.project_id, step_id=step["id"],
+                kind="delivered", identity=batch.id, now=self.clock(), batch_id=batch.id,
+                source_sha=observation.target_sha)
+
+    async def cleanup_settled(self, batch: Batch) -> None:
         if self.cleanup is not None:
             # External identity resolution is outside the settlement transaction;
             # maintenance recovers a failure between commit and materialization.
@@ -2015,6 +2031,7 @@ class LeasedPublish:
         self.holder, self.ttl_seconds = holder, ttl_seconds
         self.clock = clock
 
+    @train_write
     async def __call__(
         self, repo: RetainedRepository, ref: str, *, expected_old_oid: str, new_oid: str,
         authorize: Callable[[], Awaitable[bool]],
@@ -2031,6 +2048,7 @@ class LeasedPublish:
         finally:
             await self.locks.release(fence)
 
+    @train_write
     async def qualified(self, repo, target_ref, ref, *, expected_old_oid, new_oid, authorize):
         """An immutable tag write shares the promotion target's branch fence."""
         from src.integration.lock import CRITICAL_SECTION_SECONDS, PublishWithdrawn
@@ -2053,6 +2071,7 @@ class LeasedPublish:
         finally:
             await self.locks.release(fence)
 
+    @train_write
     async def delete(self, repo, ref, *, expected_old_oid, authorize):
         """Cleanup of a private promotion head shares the managed-ref fence."""
         from src.integration.lock import CRITICAL_SECTION_SECONDS, PublishWithdrawn
@@ -2130,7 +2149,7 @@ class DaemonLanes:
         self.orchestrator, self.batches, self.clock = orchestrator, batches, clock
         self.db, self.git = orchestrator.db, orchestrator.git
         self.truth = GitTruth(orchestrator.git, share_fetches=True)
-        self.store = BatchStore(self.db, clock=clock)
+        self.store = BatchStore(self.db, clock=clock, require_enabled=True)
         self.publish = LeasedPublish(self.db, self.git, clock=clock)
         if self.batches is not None and self.batches.pr_gate is None:
             from src.integration.github_review_poll import RootPullRequestGate

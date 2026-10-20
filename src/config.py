@@ -776,7 +776,8 @@ class KnowledgeGenerationConfig(KnowledgeFeatureConfig):
 
 @dataclass
 class KnowledgeContextConfig(KnowledgeFeatureConfig):
-    input_max_tokens: int = 32768
+    # None derives the ceiling from the live model window; integers are operator caps.
+    input_max_tokens: int | None = None
     output_reserve_tokens: int = 4096
     wrapper_reserve_tokens: int = 256
     max_tokens: int = 4096
@@ -858,6 +859,8 @@ class KnowledgeConfig:
             "bundle_ttl_seconds",
         ):
             value = getattr(self.context, name, None)
+            if name == "input_max_tokens" and value is None:
+                continue
             if type(value) is not int or value < 0:
                 errors.append(ConfigError("knowledge", f"context.{name}", "must be nonnegative"))
         item_limit = getattr(self.context, "discovery_max_items", None)

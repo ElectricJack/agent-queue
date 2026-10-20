@@ -12,6 +12,11 @@ async def test_pause_resume_http_operator_scope(api):  # noqa: F811
         for caller in ("worker", "pinned", "unassigned"):
             ok, _ = await api.post(command, {"task_id": "t"}, caller=caller)
             assert not ok
+            if command == "resume_task":
+                ok, _ = await api.post(
+                    command, {"task_id": "t", "recover_stale_pause": True}, caller=caller,
+                )
+                assert not ok
     ok, data = await api.post("pause_task", {"task_id": "t"}, caller="supervisor")
     assert ok, data
     assert data["status"] == "PAUSED"

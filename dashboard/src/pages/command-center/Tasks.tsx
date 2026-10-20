@@ -92,7 +92,8 @@ export default function CommandCenterTasks({ selection }: {
           ["IN_PROGRESS", "text-blue-300"], ["BLOCKED", "text-orange-300"],
           ["WAITING_INPUT", "text-cyan-300"], ["WAITING", "text-cyan-300"],
           ["HIBERNATED", "text-gray-300"], ["RESUME_PENDING", "text-indigo-300"], ["FAILED", "text-red-300"],
-          ["WAITING", "text-slate-300"],
+          ["READY", "text-green-300"],
+          ["WAITING_ON_DELIVERY", "text-amber-300"], ["WITHHELD", "text-slate-300"],
         ] as const).map(([status, tone]) => <button key={status} type="button" data-primary-control
           aria-pressed={filters.status === status}
           aria-label={`${taskStatusLabel(status)}: ${statusCounts[status] ?? 0} ${statusCounts[status] === 1 ? "task" : "tasks"}`}

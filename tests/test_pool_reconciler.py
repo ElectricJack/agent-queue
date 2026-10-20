@@ -2083,3 +2083,29 @@ async def test_suspended_status_pool_supply_and_frontier(orch, db, status, expec
     supply = measurement.supply[PoolKey("worker")]
     assert supply.running_busy == expected_busy
     assert supply.running_idle == 0
+
+
+async def test_native_demand_launches_matching_workspace_and_counts_supply_once(orch, db, tmp_path):
+    from src.scheduler import PoolKey, project_pool_candidates
+
+    kind = await db.resolve_workspace_kind(PROJECT_ID, "project-repo")
+    await db.upsert_workspace_kind(replace(kind, id="native", project_id=PROJECT_ID))
+    await db.create_workspace(Workspace(id="native", project_id=PROJECT_ID,
+                                       workspace_path=str(tmp_path / "native"),
+                                       source_type=RepoSourceType.LINK, kind_id="native"))
+    await ready(db, "native-task")
+    await db.add_task_workspace_requirements("native-task", [("native", None)])
+    await orch._reconcile_pools()
+    await orch.wait_for_pool_launches()
+    rows = await db.list_sessions(lifecycle="pool")
+    assert len(rows) == 1
+    assert rows[0].work_dir == str(tmp_path / "native")
+    measurement = await orch._measure_pools()
+    key = PoolKey("worker")
+    assert measurement.supply[key].running_idle == 1
+    assert measurement.supply[key].by_project[PROJECT_ID].running_idle == 1
+    native = next(c for c in measurement.candidates[key] if c.workspace_kind == "native")
+    ordinary = next(c for c in measurement.candidates[key] if c.workspace_kind == "project-repo")
+    assert (native.ready, len(native.idle_session_ids)) == (1, 1)
+    assert (ordinary.ready, len(ordinary.idle_session_ids)) == (0, 0)
+    assert len(project_pool_candidates(measurement.candidates[key])) == 1
