@@ -315,6 +315,34 @@ async def batch_of_task(conn, task_id: str) -> dict[str, Any] | None:
     ))).mappings().first())
 
 
+async def task_batch_summary(conn, task_id: str) -> dict[str, Any] | None:
+    """Read-only task detail projection, retaining membership after release."""
+    row = (await conn.execute(
+        select(ingest_batches, task_proposals.c.source)
+        .join(ingest_batch_members,
+              ingest_batch_members.c.batch_id == ingest_batches.c.batch_id)
+        .join(task_proposals, task_proposals.c.id == ingest_batches.c.batch_id)
+        .where(ingest_batch_members.c.task_id == task_id,
+               ingest_batch_members.c.state == "active")
+        .order_by(ingest_batches.c.state.in_(HELD_STATES).desc(),
+                  ingest_batches.c.created_at.desc(), ingest_batches.c.batch_id)
+        .limit(1)
+    )).mappings().one_or_none()
+    return batch_summary(row) if row is not None else None
+
+
+def batch_summary(batch: Mapping[str, Any]) -> dict[str, Any]:
+    """Common task/batch read shape; source is the proposal's source label."""
+    return {
+        **{key: batch[key] for key in (
+            "batch_id", "state", "structure_revision", "reviewer_task_id", "source",
+        )},
+        "lineage": {key: batch[key] for key in (
+            "lineage_kind", "design_review_id", "design_revision", "design_content_sha256",
+        )},
+    }
+
+
 async def set_member_fidelity(conn, task_id: str, **fields: Any) -> None:
     """Merge acceptance/constraints/size into the task's fidelity metadata."""
     unknown = set(fields) - set(FIDELITY_FIELDS)

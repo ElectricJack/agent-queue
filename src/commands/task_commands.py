@@ -3712,6 +3712,10 @@ class TaskCommandsMixin:
 
         info["needs_attention"] = await self.db.get_task_meta(task.id, "needs_attention")
         info["reroute"], info["provider_hold"] = await self._task_provider_view(task, project)
+        from src.database.queries.ingest_batch_queries import task_batch_summary
+
+        async with self.db._engine.connect() as conn:
+            info["held_batch"] = await task_batch_summary(conn, task.id)
         completion = await self.db.get_task_completion(task.id)
         info["completion"] = asdict(completion) if completion else None
 
