@@ -621,11 +621,15 @@ class WorktreeSlotManager:
             sentinel = self.read_sentinel(slot_dir)
             if slot_ws.is_slot:
                 base_ws = await self._base_of(slot_ws)
-                if (sentinel is None or base_ws is None
+                slot_repository = await self.git.aworktree_base_path(str(slot_dir))
+                base_repository = (await self.git.aworktree_base_path(base_ws.workspace_path)
+                                   if base_ws is not None else None)
+                if (base_ws is None or not slot_repository or not base_repository
                         or base_ws.project_id != slot_ws.project_id
-                        or await self.git.aworktree_base_path(str(slot_dir))
-                        != await self.git.aworktree_base_path(base_ws.workspace_path)):
+                        or Path(slot_repository).resolve() != Path(base_repository).resolve()):
                     raise GitError(f"slot {slot_ws.id} at {slot_dir} has unproved repository identity")
+                if sentinel is None:
+                    sentinel = await self._recover_missing_sentinel(slot_ws, base_ws, task)
             if sentinel is not None and (
                 sentinel.workspace_id not in ("", slot_ws.id)
                 or sentinel.base_workspace_id != (slot_ws.base_workspace_id or "")
@@ -663,6 +667,113 @@ class WorktreeSlotManager:
             f"managed slot {slot_ws.id} at {slot_dir} is missing; "
             "registered source retained for supervisor investigation"
         )
+
+    async def _recover_missing_sentinel(
+        self, slot_ws: Workspace, base_ws: Workspace, task,
+    ) -> WorktreeSentinel:
+        """Reconstruct absent metadata after proving the registered Git worktree.
+
+        The caller holds the preparation workspace fence and has checked the
+        claim and common repository. A prior task's authorship cannot be inferred
+        from a branch name; record unknown provenance before preserving its work.
+        """
+        checkout = Path(slot_ws.workspace_path).resolve()
+        target = checkout / WORKTREE_SENTINEL_NAME
+        if os.path.lexists(target):
+            raise GitError(f"slot {slot_ws.id} retains an unreadable sentinel")
+        if (not slot_ws.enabled or not base_ws.enabled or base_ws.is_slot
+                or task.project_id != slot_ws.project_id
+                or slot_ws.slot_index is None or slot_ws.slot_index < 0
+                or checkout != slot_path(base_ws.workspace_path, slot_ws.slot_index).resolve()):
+            raise GitError(f"slot {slot_ws.id} has unproved registered slot identity")
+        for workspace in await self.db.list_workspaces():
+            if workspace.id != slot_ws.id and Path(workspace.workspace_path).resolve() == checkout:
+                raise GitError(f"slot {slot_ws.id} has duplicate workspace registrations")
+        if await self._slot_has_retained_binding(slot_ws.id):
+            raise GitError(f"slot {slot_ws.id} retains an owner or job pin")
+        preparing_holder = False
+        for session in await self.db.list_sessions(live_only=True):
+            if not session.work_dir or Path(session.work_dir).resolve() != checkout:
+                continue
+            if (getattr(session, "task_id", None) != task.id
+                    or getattr(session, "claim_phase", None) != "preparing"
+                    or getattr(session, "agent_id", None) != slot_ws.locked_by_agent_id):
+                raise GitError(f"slot {slot_ws.id} has a foreign live holder")
+            preparing_holder = True
+        if (slot_ws.locked_by_agent_id and not preparing_holder
+                and slot_ws.locked_by_agent_id != getattr(task, "assigned_agent", None)):
+            raise GitError(f"slot {slot_ws.id} has a foreign agent lock")
+        root = await self.git._arun_unlocked(["rev-parse", "--show-toplevel"], cwd=str(checkout))
+        base_root = await self.git._arun_unlocked(
+            ["rev-parse", "--show-toplevel"], cwd=base_ws.workspace_path,
+        )
+        if (Path(root).resolve() != checkout
+                or Path(base_root).resolve() != Path(base_ws.workspace_path).resolve()):
+            raise GitError(f"slot {slot_ws.id} is not an exact registered Git checkout")
+        git_dir = Path(await self.git._arun_unlocked(
+            ["rev-parse", "--absolute-git-dir"], cwd=str(checkout),
+        ))
+        if (checkout / ".git").is_symlink() or not (checkout / ".git").is_file():
+            raise GitError(f"slot {slot_ws.id} has unproved Git administrative identity")
+        try:
+            registered_pointer = Path((git_dir / "gitdir").read_text().strip())
+            if registered_pointer.resolve(strict=True) != (checkout / ".git").resolve(strict=True):
+                raise GitError(f"slot {slot_ws.id} has a foreign Git administrative directory")
+        except (OSError, UnicodeError) as exc:
+            raise GitError(f"slot {slot_ws.id} has unproved Git administrative identity") from exc
+        entries = [entry for entry in await self.git.aworktree_list(base_ws.workspace_path)
+                   if Path(entry["path"]).resolve() == checkout]
+        if len(entries) != 1 or any(key in entries[0] for key in ("locked", "prunable", "bare")):
+            raise GitError(f"slot {slot_ws.id} has unproved Git worktree registration")
+        head = await self.git.arev_parse(str(checkout), "HEAD")
+        branch = await self.git.aget_current_branch(str(checkout))
+        if entries[0].get("head") != head or entries[0].get("branch", "HEAD") != branch:
+            raise GitError(f"slot {slot_ws.id} Git worktree registration changed")
+        proof = {
+            "workspace_id": slot_ws.id, "base_workspace_id": base_ws.id,
+            "project_id": slot_ws.project_id, "path": str(checkout),
+            "base_path": base_ws.workspace_path, "generation": slot_ws.generation,
+            "git_dir": str(git_dir), "claim_epoch": getattr(task, "claim_epoch", None),
+            "slot_index": slot_ws.slot_index, "head": head, "branch": branch,
+            "predecessor_task_id": None,
+        }
+        # A failed diagnostic or salvage must leave the original source intact.
+        await self.db.add_task_context(
+            task.id, type="worktree_salvage",
+            label=f"Missing slot sentinel identity proof for {slot_ws.id}",
+            content="Predecessor authorship is unknown; recovery is recorded on the incoming task.\n"
+                    + json.dumps(proof, indent=2, sort_keys=True),
+        )
+        unpublished = await self.git.acount_commits_not_on_any_remote(str(checkout))
+        if unpublished is None:
+            raise GitError(f"slot {slot_ws.id} cannot prove unpublished commit safety")
+        if unpublished:
+            saved = await self.salvage_unpushed(slot_ws, task.id)
+            if saved is None or saved.status != "pushed" or saved.commit != head:
+                raise GitError(f"slot {slot_ws.id} could not preserve unpublished commits")
+        if (await self.git.arev_parse(str(checkout), "HEAD") != head
+                or await self.git.aget_current_branch(str(checkout)) != branch):
+            raise GitError(f"slot {slot_ws.id} source changed during sentinel recovery")
+        sentinel = WorktreeSentinel(
+            slot=slot_name(slot_ws.slot_index), slot_index=slot_ws.slot_index,
+            base_workspace_id=base_ws.id, project_id=slot_ws.project_id,
+            workspace_id=slot_ws.id, branch=branch, created_at=time.time(),
+            daemon_epoch=self.daemon_epoch,
+        )
+        # Publish a complete file atomically, without replacing concurrent evidence.
+        fd, temporary = tempfile.mkstemp(prefix=".aq-sentinel-recovery-", dir=checkout)
+        try:
+            with os.fdopen(fd, "w") as output:
+                output.write(json.dumps(sentinel.to_dict(), indent=2, sort_keys=True) + "\n")
+                output.flush()
+                os.fsync(output.fileno())
+            try:
+                os.link(temporary, target)
+            except FileExistsError as exc:
+                raise GitError(f"slot {slot_ws.id} sentinel appeared during recovery") from exc
+        finally:
+            Path(temporary).unlink(missing_ok=True)
+        return sentinel
 
     @guard_workspace("slot_ws")
     async def _recover_abandoned_merge(

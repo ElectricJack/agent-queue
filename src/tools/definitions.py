@@ -37,6 +37,8 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "list_projects": "project",
     "create_project": "project",
     "project_doctor": "project",
+    "repair_repository_checkout": "project",
+    "repair_workspace_checkout": "project",
     "pause_project": "project",
     "resume_project": "project",
     "set_project_constraint": "project",
@@ -831,6 +833,48 @@ _ALL_TOOL_DEFINITIONS = [
         "name": "list_projects",
         "description": "List all projects in the system.",
         "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "repair_repository_checkout",
+        "description": (
+            "Preview or apply an audited replacement for a confirmed missing repository "
+            "checkout path. Preserves repository identity and verifies the replacement origin. "
+            "Requires local operator or global supervisor authority."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string"},
+                "repository_id": {"type": "string"},
+                "expected_path": {"type": "string"},
+                "replacement_path": {"type": "string"},
+                "reason": {"type": "string"},
+                "apply": {"type": "boolean", "default": False},
+            },
+            "required": ["project_id", "repository_id", "expected_path", "replacement_path",
+                         "reason"],
+        },
+    },
+    {
+        "name": "repair_workspace_checkout",
+        "description": (
+            "Preview or apply an audited base workspace path repair. Proves replacement "
+            "origin and shared Git object store with all existing slots; preserves slots and "
+            "claims. Apply requires expected_proof from preview. Local operator/global supervisor."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string"},
+                "workspace_id": {"type": "string"},
+                "expected_path": {"type": "string"},
+                "replacement_path": {"type": "string"},
+                "reason": {"type": "string"},
+                "expected_proof": {"type": "string"},
+                "apply": {"type": "boolean", "default": False},
+            },
+            "required": ["project_id", "workspace_id", "expected_path", "replacement_path", "reason"],
+        },
     },
     {
         "name": "project_doctor",

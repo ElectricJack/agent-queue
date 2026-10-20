@@ -935,6 +935,56 @@ async def settled_claim(handler, args):
     return result
 
 
+@pytest.mark.parametrize("claim_marker", ["missing", "superseded_own"])
+async def test_pool_claim_recovers_deleted_slot_sentinel_and_activates(
+    handler, db, tmp_path, claim_marker,
+):
+    from pathlib import Path
+
+    from src.claim_file import read_claim_file, write_claim_file
+    from src.git.manager import GitManager
+    from src.models import WORKTREE_SENTINEL_NAME, WorkspaceKind
+    from src.orchestrator.worktree_manager import WorktreeSlotManager
+    from tests.test_worktree_manager import _create_base_repo
+
+    base_path = _create_base_repo(tmp_path)
+    await db.update_project(PROJECT_ID, repo_url=str(tmp_path / "origin.git"))
+    base = Workspace(id="base", project_id=PROJECT_ID, workspace_path=str(base_path),
+                     source_type=RepoSourceType.CLONE, kind_id="project-repo")
+    await db.create_workspace(base)
+    transport = GitManager()
+    handler.orchestrator.git = transport
+    manager = WorktreeSlotManager(
+        db=db, git=transport, bus=handler.orchestrator.bus,
+        config=handler.config.worktrees, git_mutex=handler.orchestrator._git_mutex,
+    )
+    handler.orchestrator._worktree_slots = MagicMock(return_value=manager)
+    slot = await manager.create_slot(base, WorkspaceKind(
+        id="project-repo", project_id="__system__", is_git_repo=True, mode="worktree",
+    ), 0)
+    path = Path(slot.workspace_path)
+    (path / WORKTREE_SENTINEL_NAME).unlink()
+    sid, _ = await pool_session(db, tmp_path)
+    await db.delete_workspace("ws-agent-1")
+    await db.update_session(sid, work_dir=str(path))
+    await db.update_workspace(slot.id, locked_by_agent_id="agent-1")
+    await mktask(db, "incoming", profile_id="worker")
+    if claim_marker == "superseded_own":
+        await db.update_task("incoming", claim_epoch=1)
+        write_claim_file(path, {"task_id": "incoming", "session_id": sid, "claim_epoch": 1})
+
+    result = await settled_claim(scoped(handler, sid), {"next": True})
+
+    assert result["result"] == "claimed", result
+    assert result["task"]["id"] == "incoming"
+    assert (await db.get_task("incoming")).status == TaskStatus.IN_PROGRESS
+    assert read_claim_file(path)["claim_epoch"] == result["claim_epoch"]
+    assert read_claim_file(path)["session_id"] == sid
+    assert manager.read_sentinel(path).task_id == "incoming"
+    assert manager.read_sentinel(path).workspace_id == slot.id
+    assert await transport.aget_current_branch(str(path)) == "aq/incoming"
+
+
 class _CheckpointGit:
     """Just enough Git for ``resolve_workspace_checkpoint``: clean, pushed."""
 
@@ -7586,7 +7636,7 @@ async def test_disabled_workspace_keeps_held_claim_but_drains_before_next(handle
     await mktask(db, "kind-task", profile_id="worker")
     sid, _ = await pool_session(db, tmp_path)
     worker = scoped(handler, sid)
-    assert (await worker._cmd_task_claim({"next": True}))["result"] == "claimed"
+    assert (await settled_claim(worker, {"next": True}))["result"] == "claimed"
     await db.update_workspace("ws-agent-1", enabled=False)
     assert (await worker._cmd_task_claim({"next": True}))["result"] == "claimed"
     assert (await db.get_workspace("ws-agent-1")).locked_by_task_id == "kind-task"

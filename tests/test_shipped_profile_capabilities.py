@@ -183,6 +183,11 @@ def test_supervisor_inbox_grants_exclude_internal_intake():
     assert granted <= _builtin_command_names()
 
 
+def test_supervisor_can_diagnose_and_repair_repository_checkouts():
+    granted = set(_parsed("supervisor").capabilities["aq_commands"])
+    assert {"project_doctor", "repair_repository_checkout", "repair_workspace_checkout"} <= granted
+
+
 # ---------------------------------------------------------------------------
 # Emergent-work prime section vs. the profile-owned capability gate
 # ---------------------------------------------------------------------------

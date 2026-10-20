@@ -12861,6 +12861,100 @@
         }
       }
     },
+    "/api/project/repair-repository-checkout": {
+      "post": {
+        "tags": [
+          "project"
+        ],
+        "summary": "Preview or apply an audited replacement for a confirmed missing repository checkout path. Preserves repository identity and verifies the replacement origin. Requires local operator or global supervisor authority.",
+        "description": "Preview or apply an audited replacement for a confirmed missing repository checkout path. Preserves repository identity and verifies the replacement origin. Requires local operator or global supervisor authority.",
+        "operationId": "repair_repository_checkout",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RepairRepositoryCheckoutRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RepairRepositoryCheckoutResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/project/repair-workspace-checkout": {
+      "post": {
+        "tags": [
+          "project"
+        ],
+        "summary": "Preview or apply an audited base workspace path repair. Proves replacement origin and shared Git object store with all existing slots; preserves slots and claims. Apply requires expected_proof from preview. Local operator/global supervisor.",
+        "description": "Preview or apply an audited base workspace path repair. Proves replacement origin and shared Git object store with all existing slots; preserves slots and claims. Apply requires expected_proof from preview. Local operator/global supervisor.",
+        "operationId": "repair_workspace_checkout",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RepairWorkspaceCheckoutRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RepairWorkspaceCheckoutResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/project/resume": {
       "post": {
         "tags": [
@@ -66747,6 +66841,254 @@
           "title"
         ],
         "title": "ReopenWithFeedbackResponse"
+      },
+      "RepairRepositoryCheckoutRequest": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "title": "Project Id",
+            "description": ""
+          },
+          "repository_id": {
+            "type": "string",
+            "title": "Repository Id",
+            "description": ""
+          },
+          "expected_path": {
+            "type": "string",
+            "title": "Expected Path",
+            "description": ""
+          },
+          "replacement_path": {
+            "type": "string",
+            "title": "Replacement Path",
+            "description": ""
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason",
+            "description": ""
+          },
+          "apply": {
+            "type": "boolean",
+            "title": "Apply",
+            "description": "",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "project_id",
+          "repository_id",
+          "expected_path",
+          "replacement_path",
+          "reason"
+        ],
+        "title": "RepairRepositoryCheckoutRequest"
+      },
+      "RepairRepositoryCheckoutResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "project_id": {
+            "type": "string",
+            "title": "Project Id"
+          },
+          "repository_id": {
+            "type": "string",
+            "title": "Repository Id"
+          },
+          "changed": {
+            "type": "boolean",
+            "title": "Changed",
+            "default": false
+          },
+          "preview": {
+            "type": "boolean",
+            "title": "Preview",
+            "default": true
+          },
+          "before": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Before"
+          },
+          "after": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "After"
+          },
+          "event_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Event Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "project_id",
+          "repository_id",
+          "before",
+          "after"
+        ],
+        "title": "RepairRepositoryCheckoutResponse"
+      },
+      "RepairWorkspaceCheckoutRequest": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "title": "Project Id",
+            "description": ""
+          },
+          "workspace_id": {
+            "type": "string",
+            "title": "Workspace Id",
+            "description": ""
+          },
+          "expected_path": {
+            "type": "string",
+            "title": "Expected Path",
+            "description": ""
+          },
+          "replacement_path": {
+            "type": "string",
+            "title": "Replacement Path",
+            "description": ""
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason",
+            "description": ""
+          },
+          "expected_proof": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Proof",
+            "description": ""
+          },
+          "apply": {
+            "type": "boolean",
+            "title": "Apply",
+            "description": "",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "project_id",
+          "workspace_id",
+          "expected_path",
+          "replacement_path",
+          "reason"
+        ],
+        "title": "RepairWorkspaceCheckoutRequest"
+      },
+      "RepairWorkspaceCheckoutResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "project_id": {
+            "type": "string",
+            "title": "Project Id"
+          },
+          "workspace_id": {
+            "type": "string",
+            "title": "Workspace Id"
+          },
+          "changed": {
+            "type": "boolean",
+            "title": "Changed",
+            "default": false
+          },
+          "preview": {
+            "type": "boolean",
+            "title": "Preview",
+            "default": true
+          },
+          "proof": {
+            "type": "string",
+            "title": "Proof"
+          },
+          "before": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Before"
+          },
+          "after": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "After"
+          },
+          "slots": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Slots"
+          },
+          "identity": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Identity"
+          },
+          "authorized_origin": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Authorized Origin"
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason"
+          },
+          "event_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Event Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "project_id",
+          "workspace_id",
+          "proof",
+          "before",
+          "after",
+          "slots",
+          "identity",
+          "reason"
+        ],
+        "title": "RepairWorkspaceCheckoutResponse"
       },
       "ReparentTaskRequest": {
         "properties": {
