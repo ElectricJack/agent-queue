@@ -1,0 +1,63 @@
+{
+  "blocked-task-escalation": [
+    "tests/fixtures/playbooks/v2/blocked-task-escalation",
+    "src/prompts/reviewed_playbooks/blocked-task-escalation"
+  ],
+  "ci-main-sentinel": [
+    "tests/fixtures/playbooks/v2/ci-main-sentinel",
+    "src/prompts/reviewed_playbooks/ci-main-sentinel"
+  ],
+  "default-assignment-routing": [
+    "tests/fixtures/playbooks/v2/default-assignment-routing",
+    "src/prompts/reviewed_playbooks/default-assignment-routing"
+  ],
+  "default-pipeline": [
+    "tests/fixtures/playbooks/v2/default-pipeline",
+    "src/prompts/reviewed_playbooks/default-pipeline",
+    "docs/playbooks/integration-only/default-pipeline"
+  ],
+  "github-issue-triage": [
+    "tests/fixtures/playbooks/v2/github-issue-triage",
+    "src/prompts/reviewed_playbooks/github-issue-triage"
+  ],
+  "morning-report": [
+    "tests/fixtures/playbooks/v2/morning-report",
+    "src/prompts/reviewed_playbooks/morning-report"
+  ],
+  "object-loop": [
+    "tests/fixtures/playbooks/v2/object-loop",
+    "src/prompts/reviewed_playbooks/object-loop"
+  ],
+  "promotion-continuous": [
+    "tests/fixtures/playbooks/v2/promotion-continuous",
+    "src/prompts/reviewed_playbooks/promotion-continuous"
+  ],
+  "promotion-request": [
+    "tests/fixtures/playbooks/v2/promotion-request",
+    "src/prompts/reviewed_playbooks/promotion-request"
+  ],
+  "provider-failover": [
+    "tests/fixtures/playbooks/v2/provider-failover",
+    "src/prompts/reviewed_playbooks/provider-failover"
+  ],
+  "provider-usage-probe": [
+    "tests/fixtures/playbooks/v2/provider-usage-probe",
+    "src/prompts/reviewed_playbooks/provider-usage-probe"
+  ],
+  "stuck-task-watch": [
+    "tests/fixtures/playbooks/v2/stuck-task-watch",
+    "src/prompts/reviewed_playbooks/stuck-task-watch"
+  ],
+  "supervisor-digest": [
+    "tests/fixtures/playbooks/v2/supervisor-digest",
+    "src/prompts/reviewed_playbooks/supervisor-digest"
+  ],
+  "supervisor-failure-triage": [
+    "tests/fixtures/playbooks/v2/supervisor-failure-triage",
+    "src/prompts/reviewed_playbooks/supervisor-failure-triage"
+  ],
+  "supervisor-hourly-report": [
+    "tests/fixtures/playbooks/v2/supervisor-hourly-report",
+    "src/prompts/reviewed_playbooks/supervisor-hourly-report"
+  ]
+}

@@ -451,16 +451,17 @@ def catalogue_repository(origin: Origin) -> None:
     git(clone, "push", "-q", "origin", "main")
 
 
-def catalogue_branch(origin: Origin, tid: str, module: str) -> str:
-    """One task branch that adds a test module and regenerates the catalogue."""
+def catalogue_branch(origin: Origin, tid: str, module: str, *, regenerate=True) -> str:
+    """One task branch that adds a test module, optionally rebuilding its output."""
     clone = origin.clone
     git(clone, "fetch", "-q", "origin")
     git(clone, "checkout", "-q", "-B", f"aq/{tid}", "origin/main")
     (clone / "tests" / f"test_{module}.py").write_text(f"def test_{module}():\n    pass\n")
-    subprocess.run(
-        [sys.executable, str(clone / "scripts" / "generate-selection-catalogue.py")],
-        cwd=clone, capture_output=True, text=True, check=True,
-    )
+    if regenerate:
+        subprocess.run(
+            [sys.executable, str(clone / "scripts" / "generate-selection-catalogue.py")],
+            cwd=clone, capture_output=True, text=True, check=True,
+        )
     git(clone, "add", "-A")
     git(clone, "commit", "-qm", f"{tid} adds {module}")
     git(clone, "push", "-q", "origin", f"aq/{tid}")
@@ -3983,14 +3984,20 @@ async def test_cross_epic_refresh_precedes_sibling_stack_and_child_checkout(worl
         git(origin.clone, "merge-base", "--is-ancestor", source, "HEAD")
 
 
-async def test_generated_catalogue_members_rebuild_once_after_combined_merge(world, monkeypatch):
+@pytest.mark.parametrize("regenerated_members", [frozenset("abc"), frozenset("a"), frozenset()])
+async def test_generated_catalogue_members_rebuild_once_after_combined_merge(
+    world, monkeypatch, regenerated_members,
+):
     from src.integration.regeneration import regenerated_tree
 
     origin = world.origin
     catalogue_repository(origin)
-    a = await completed(world, "a", head=catalogue_branch(origin, "a", "alpha"))
-    b = await completed(world, "b", head=catalogue_branch(origin, "b", "beta"))
-    c = await completed(world, "c", head=catalogue_branch(origin, "c", "gamma"))
+    sources = [
+        await completed(world, tid, head=catalogue_branch(
+            origin, tid, module, regenerate=tid in regenerated_members,
+        ))
+        for tid, module in zip(("a", "b", "c"), ("alpha", "beta", "gamma"), strict=True)
+    ]
     rebuild = AsyncMock(wraps=regenerated_tree)
     monkeypatch.setattr("src.integration.gitops.regenerated_tree", rebuild)
     train, github, _ = await hosted_train(world)
@@ -4004,7 +4011,7 @@ async def test_generated_catalogue_members_rebuild_once_after_combined_merge(wor
     modules = set(json.loads(git(origin.url, "show", f"{candidate}:{Catalogue.CATALOGUE_PATH}"))[
         "modules"])
     assert modules == {f"tests/test_{module}.py" for module in ("alpha", "base", "beta", "gamma")}
-    for source in (a, b, c):
+    for source in sources:
         git(origin.url, "merge-base", "--is-ancestor", source, candidate)
 
     github.runs[testing.candidate_sha] = "success"

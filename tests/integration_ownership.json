@@ -8675,12 +8675,6 @@
     "src/sessions/obsolete.py::import from src.database.tables import agents, integration_batch_members, integration_batches, integration_branch_owners, integration_subjects, projects, sessions, task_completion_records, task_metadata, tasks, workspaces": {
       "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing; widened for the operator one-shot close (amber-quest-41): agent binding, workspace locks, completion record and open-batch refusal for a train root."
     },
-    "src/database/queries/workspace_queries.py::WorkspaceQueryMixin.read_workspace_owner_facts": {
-      "reason": "Read-only list_workspaces owner readback: reads the claimed-by-session task metadata key (an owned claim primitive) to report the claim holder beside the workspace lock; writes nothing and adds no delivery state or authority."
-    },
-    "src/database/queries/workspace_queries.py::import from src.database.queries.claim_queries import CLAIMED_BY_SESSION_KEY": {
-      "reason": "Read-only list_workspaces owner readback: reads the claimed-by-session task metadata key (an owned claim primitive) to report the claim holder beside the workspace lock; writes nothing and adds no delivery state or authority."
-    },
     "src/database/queries/claim_queries.py::ClaimQueryMixin._repair_pool_workspace_lock": {
       "reason": "Claim preparation moves only an idle misplaced workspace lock to the session checkout. Reads attached/pending integration ownership and job pins to refuse retained bindings before updating ordinary workspace locks; no integration state or Git ref mutation.",
       "landing_span": [
@@ -8704,6 +8698,24 @@
         648
       ],
       "baseline_span": null
+    },
+    "src/api/codegen.py::API_EXCLUDED['integration_reconcile_git_truth']": {
+      "reason": "Daemon-only Git-truth reconciliation command registration or transport exclusion."
+    },
+    "src/cli/auto_commands.py::EXCLUDED['integration_reconcile_git_truth']": {
+      "reason": "Daemon-only Git-truth reconciliation command registration or transport exclusion."
+    },
+    "src/mcp_registration.py::DEFAULT_EXCLUDED_COMMANDS['integration_reconcile_git_truth']": {
+      "reason": "Daemon-only Git-truth reconciliation command registration or transport exclusion."
+    },
+    "src/tools/definitions.py::_FALLBACK_INPUT_SCHEMAS['integration_reconcile_git_truth']": {
+      "reason": "Daemon-only Git-truth reconciliation command registration or transport exclusion."
+    },
+    "src/database/queries/workspace_queries.py::WorkspaceQueryMixin.read_workspace_owner_facts": {
+      "reason": "Read-only list_workspaces owner readback: reads the claimed-by-session task metadata key (an owned claim primitive) to report the claim holder beside the workspace lock; writes nothing and adds no delivery state or authority."
+    },
+    "src/database/queries/workspace_queries.py::import from src.database.queries.claim_queries import CLAIMED_BY_SESSION_KEY": {
+      "reason": "Read-only list_workspaces owner readback: reads the claimed-by-session task metadata key (an owned claim primitive) to report the claim holder beside the workspace lock; writes nothing and adds no delivery state or authority."
     },
     "src/commands/supervisor_authority.py::operator_or_global_supervisor": {
       "reason": "Authority gate for audited recovery-hold release, including train delegates; checks local operator or live global supervisor identity without granting publication authority."
@@ -13134,6 +13146,15 @@
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: REPAIR_RECORD_META"
     },
+    "src/commands/claim_commands.py::ClaimCommandsMixin._prepare_and_activate_locked::2142606549fbb7fc55f12062ec13ac7e0c300036166e68b70a945ed44a752050": {
+      "line": 1376,
+      "owner": "ClaimCommandsMixin._prepare_and_activate_locked",
+      "call": "set_task_meta",
+      "owner_fingerprint": "b03aa7987a94e3a91020bda2a0abef11329b4e2aa7df4119cf56409a8141dfd6",
+      "integration_signal": true,
+      "disposition": "ordinary",
+      "reason": "Ordinary slot-reset failure diagnostics after non-transient preparation errors; PostgreSQL contention bypasses this write. Metadata key: 'slot_reset_failure'; contains no remote OIDs, publication intent or ref replay authority."
+    },
     "src/commands/claim_commands.py::ClaimCommandsMixin._prepare_and_activate_locked::6a228f11c57cb47938f52d2fd7326591678f2c7af3ca331ebf2cb0fd60c52b3a": {
       "line": 1581,
       "owner": "ClaimCommandsMixin._prepare_and_activate_locked",
@@ -13160,6 +13181,15 @@
       "integration_signal": false,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'needs_attention'"
+    },
+    "src/commands/claim_commands.py::ClaimCommandsMixin._branch_fenced_prepare_failed::064f8fcc1a52d145e4f7ee9a86a696a94b43a48b4533d10ca7ad822f1aac750d": {
+      "line": 1036,
+      "owner": "ClaimCommandsMixin._branch_fenced_prepare_failed",
+      "call": "set_task_meta",
+      "owner_fingerprint": "6dc53e72699f31ce9c89c26eb979120a8729c29f5bbffaa2564b2727e3337b27",
+      "integration_signal": true,
+      "disposition": "ordinary",
+      "reason": "Branch-fence refusal diagnostics (reason, branch, repository, workspace, session, failed_at) written in the same command as the release_claim to READY that follows; cleared by the next successful activation. Metadata key: branch_fenced_prepare_failed; a claim preparation marker with no remote OIDs, publication intent or ref replay authority."
     },
     "src/commands/dashboard_state_commands.py::DashboardStateCommandsMixin._dashboard_mutate::7082de1161d61e4a5bb9e39c7bafb5ade15fe812419227082e188dc17f7e77ae": {
       "line": 225,
@@ -15510,6 +15540,51 @@
       "disposition": "ordinary",
       "reason": "Ordinary slot-reset failure reason, attempt count and automatic/manual retry guidance after non-transient preparation errors; PostgreSQL contention bypasses this write. Metadata key: slot_reset_failure; no publication intent, authoritative ref OIDs or replay authority."
     },
+    "src/integration/truth_reconciler.py::GitTruthReconciler._orphan::9dcc303d75bc5b64cf208634a4e96271af50926149b91fc159644d778adcc19b": {
+      "line": 269,
+      "owner": "GitTruthReconciler._orphan",
+      "call": "log_event",
+      "owner_fingerprint": "b40353876b585379d9ec753fb93e427c1c6945cd3e5a5fe71b110cdb40de1765",
+      "integration_signal": true,
+      "disposition": "ordinary",
+      "reason": "Historical Git observation and projection-repair audit; never ref replay or delivery authority."
+    },
+    "src/integration/truth_reconciler.py::GitTruthReconciler._origin::3e1c213c95196f0b763409bebe531c1742e930b424cbfa80ea6980f493b3fd45": {
+      "line": 357,
+      "owner": "GitTruthReconciler._origin",
+      "call": "log_event",
+      "owner_fingerprint": "a74676fc6b9abcc952c4c75c473f8425d82bbb5a528c45d2467330bd0bf7039b",
+      "integration_signal": true,
+      "disposition": "ordinary",
+      "reason": "Historical Git observation and projection-repair audit; never ref replay or delivery authority."
+    },
+    "src/integration/truth_reconciler.py::GitTruthReconciler._orphan_origin::431de7bb4037d686883e0794d699b97a9633443d58041ce76c21b97c43463ecb": {
+      "line": 403,
+      "owner": "GitTruthReconciler._orphan_origin",
+      "call": "log_event",
+      "owner_fingerprint": "0fbfc713cd103180ce85ef65f0ae784a61af9be8617d89ee5b80818b64e9241c",
+      "integration_signal": true,
+      "disposition": "ordinary",
+      "reason": "Historical Git observation and projection-repair audit; never ref replay or delivery authority."
+    },
+    "src/integration/truth_reconciler.py::GitTruthReconciler._sentinel::80e04954cb572f9f5c211f0d2cf231e2d3a76edd5706d1f1865ed1a9c846a317": {
+      "line": 546,
+      "owner": "GitTruthReconciler._sentinel",
+      "call": "log_event",
+      "owner_fingerprint": "83c5d758cb83177b7fbf043e74a47dbe112c13199ba2a2fd13d6bb16c4eb41dd",
+      "integration_signal": true,
+      "disposition": "ordinary",
+      "reason": "Historical Git observation and projection-repair audit; never ref replay or delivery authority."
+    },
+    "src/integration/truth_reconciler.py::GitTruthReconciler._repair::a4cf1925e74dcbb03f64cb1f5b2924ca7db671048443cfe9c38e013d1257bcaa": {
+      "line": 194,
+      "owner": "GitTruthReconciler._repair",
+      "call": "log_event",
+      "owner_fingerprint": "cfb10bd1641e9abbdbe2fbea6b7f006f3fa8597289cde26ecf881995f12e36c4",
+      "integration_signal": true,
+      "disposition": "ordinary",
+      "reason": "Historical Git observation and projection-repair audit; never ref replay or delivery authority."
+    },
     "src/commands/claim_commands.py::ClaimCommandsMixin._prepare_and_activate_locked::a013c7a46d34c2c833b5b1129a77bc31978b9ed19c44d76097646187d4fe028d": {
       "line": 1615,
       "owner": "ClaimCommandsMixin._prepare_and_activate_locked",
@@ -15611,7 +15686,6 @@
     }
   },
   "generic_dependencies": {
-    "src/database/queries/ingest_hold.py::not_ingest_held": "Generic ingestion admission predicate over tasks.held_batch_id, shared by claim demand and execution admission. It performs no integration delivery, publication or lifecycle mutation.",
     "src/agent_waits.py::AgentWaitReconciler": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/agents/configuration.py::apply_agent_overrides": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/agents/configuration.py::ensure_supervisor_agent": "Generic dependency; integration-specific definitions in this file are charged independently.",
@@ -16486,6 +16560,7 @@
     "src/task_templates.py::bind_task_templates": "Generic context-local binding of editable task instruction templates to the configured vault; no integration state, branch ownership or delivery authority.",
     "src/task_templates.py::render_task_template": "Generic read-only Markdown template renderer shared by repair, issue, review, object and promotion task producers. Performs one-pass literal substitution, with no integration policy, storage or execution authority; integration-specific callers remain charged independently.",
     "src/task_templates.py::task_template_scope": "Generic context manager for temporarily binding task instruction templates in embedded callers and tests; no integration state, ref identity or lifecycle authority.",
+    "src/database/queries/ingest_hold.py::not_ingest_held": "Generic ingestion admission predicate over tasks.held_batch_id, shared by claim demand and execution admission. It performs no integration delivery, publication or lifecycle mutation.",
     "src/preparation_failure.py::describe_preparation_failure": "Generic dependency: pure description of a preparation exception (stage, type, scrubbed bounded message, cause chain); no storage, fence or publication authority.",
     "src/projects/github.py::scrub_secrets": "Generic credential scrubber shared by GitHub clients, authentication diagnostics and Git transport; contains no integration policy or state.",
     "src/main.py::_bind_report_outbox": "Generic startup binding of human request, conversation and report notification services to their transport; no integration subject, branch, publication state or ref authority. Integration orchestration in run remains independently charged.",
