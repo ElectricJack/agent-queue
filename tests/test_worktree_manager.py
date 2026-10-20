@@ -2312,6 +2312,92 @@ class TestFinishedTaskSentinel:
         sentinel = mgr.read_sentinel(path)
         assert (sentinel.task_id, sentinel.branch) == ("tsk-next", "aq/tsk-next")
 
+    @pytest.mark.parametrize("gone", [False, True])
+    @pytest.mark.parametrize("holder", ["none", "preparing", "assigned"])
+    async def test_attached_stale_terminal_sentinel_is_reclaimed_without_source_changes(
+        self, mgr, base_ws, kind, base_repo, db, monkeypatch, gone, holder,
+    ):
+        slot, path = await self._finished_slot(mgr, base_ws, kind, base_repo)
+        _git(["switch", "-c", "aq/tsk-next"], path)
+        _git(["commit", "--allow-empty", "-m", "unpublished incoming progress"], path)
+        head = _git(["rev-parse", "HEAD"], path)
+        before = (path / WORKTREE_SENTINEL_NAME).read_bytes()
+        monkeypatch.setattr(db, "get_task", AsyncMock(return_value=(
+            None if gone else SimpleNamespace(status="COMPLETED")
+        )))
+        task = FakeTask(id="tsk-next")
+        if holder != "none":
+            slot.locked_by_agent_id = "incoming-agent"
+        if holder == "assigned":
+            task.assigned_agent_id = "incoming-agent"
+        elif holder == "preparing":
+            monkeypatch.setattr(db, "list_sessions", AsyncMock(return_value=[SimpleNamespace(
+                work_dir=str(path), task_id=task.id, claim_phase="preparing", agent_id="incoming-agent",
+            )]))
+
+        await mgr.ensure_slot_checkout(slot, task)
+
+        assert _git(["rev-parse", "HEAD"], path) == head
+        assert _git(["branch", "--show-current"], path) == "aq/tsk-next"
+        assert (path / WORKTREE_SENTINEL_NAME).read_bytes() == before
+        await mgr.reset_slot_for_task(slot, task)
+        _git(["merge-base", "--is-ancestor", head, "HEAD"], path)
+        assert mgr.read_sentinel(path).task_id == "tsk-next"
+        assert _git(["rev-parse", "origin/aq/tsk-prev"], path) == head
+
+    @pytest.mark.parametrize("fence", ["dirty", "retained", "live", "agent", "predecessor"])
+    async def test_attached_mismatch_keeps_unproved_source(
+        self, mgr, base_ws, kind, base_repo, db, monkeypatch, fence,
+    ):
+        slot, path = await self._finished_slot(mgr, base_ws, kind, base_repo)
+        _git(["switch", "-c", "aq/tsk-next"], path)
+        self._status(db, monkeypatch, "IN_PROGRESS" if fence == "predecessor" else "COMPLETED")
+        if fence == "dirty":
+            (path / "private.txt").write_text("private progress\n")
+        elif fence == "retained":
+            monkeypatch.setattr(mgr, "_slot_has_retained_binding", AsyncMock(return_value=True))
+        elif fence == "live":
+            monkeypatch.setattr(db, "list_sessions", AsyncMock(return_value=[SimpleNamespace(
+                work_dir=str(path), task_id="foreign", claim_phase="active", agent_id="foreign",
+            )]))
+        elif fence == "agent":
+            slot.locked_by_agent_id = "foreign"
+        before = (path / WORKTREE_SENTINEL_NAME).read_bytes()
+        head, index = _git(["rev-parse", "HEAD"], path), _git(["write-tree"], path)
+        with pytest.raises(GitError, match="disagrees with its source sentinel"):
+            await mgr.ensure_slot_checkout(slot, FakeTask(id="tsk-next"))
+        assert (path / WORKTREE_SENTINEL_NAME).read_bytes() == before
+        assert _git(["rev-parse", "HEAD"], path) == head
+        assert _git(["write-tree"], path) == index
+
+    @pytest.mark.parametrize("stage", ["branch", "setup"])
+    async def test_interrupted_assignment_records_the_branch_before_retry(
+        self, mgr, base_ws, kind, monkeypatch, stage,
+    ):
+        slot = await mgr.create_slot(base_ws, kind, 0)
+        await mgr.reset_slot_for_task(slot, FakeTask(id="tsk-prev"))
+        path = Path(slot.workspace_path)
+        if stage == "branch":
+            prepare = mgr.git.aprepare_child_branch
+
+            async def fail_after_switch(*args, **kwargs):
+                await prepare(*args, **kwargs)
+                raise GitError("interrupted after branch switch")
+
+            monkeypatch.setattr(mgr.git, "aprepare_child_branch", fail_after_switch)
+        else:
+            kind.worktree_setup = ["changed setup"]
+            monkeypatch.setattr(mgr, "_run_setup", AsyncMock(side_effect=TimeoutError()))
+        with pytest.raises((GitError, TimeoutError)):
+            await mgr.reset_slot_for_task(slot, FakeTask(id="tsk-next"), kind=kind)
+        assert _git(["branch", "--show-current"], path) == "aq/tsk-next"
+        sentinel = mgr.read_sentinel(path)
+        assert (sentinel.task_id, sentinel.branch) == ("tsk-next", "aq/tsk-next")
+        assert sentinel.setup_hash != worktree_setup_hash(kind.worktree_setup) or stage == "branch"
+        monkeypatch.undo()
+        await mgr.reset_slot_for_task(slot, FakeTask(id="tsk-next"), kind=kind)
+        assert mgr.read_sentinel(path).task_id == "tsk-next"
+
     @pytest.mark.parametrize("refusal", ["in_progress", "dirty", "retained"])
     async def test_a_live_or_unproved_predecessor_still_refuses(
         self, mgr, base_ws, kind, base_repo, db, monkeypatch, refusal

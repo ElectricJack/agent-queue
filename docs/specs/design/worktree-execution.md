@@ -286,7 +286,21 @@ preparation attaches to the slot between the preflight and the reset.
 reconcile: it frees a sentinel naming a terminal or missing task when the slot
 holds no task lock, claim file, live claiming session, owner or job pin, and its
 clean HEAD is contained in a remote ref, then emits `worktree.sentinel_cleared`.
-Attached branch disagreement still refuses reset.
+Clean attached slots use the same terminal-or-missing predecessor proof; the
+sentinel remains available for salvage attribution until reset records the new
+assignment. Live sessions, foreign agent locks, owners, pins, dirty trees and
+nonterminal predecessors still refuse branch disagreement. Branch preparation
+records the observed incoming branch before setup, including a contained failure
+after Git switched branches, so retries do not inherit the previous task's sentinel.
+Unproved process cleanup and cancellation retain the existing evidence.
+The explicit CLI control is `aq project workspace-clear-sentinel --workspace-id <id>`.
+
+Contained reset/preflight timeouts and temporary OS contention release the task
+with preparation backoff, quarantine the failing workspace and drain its session,
+allowing another slot to retry automatically. The first two attempts do not set
+`needs_attention=slot_reset_failed` or request supervisor recovery; the third
+exhausts the existing preparation budget. Ownership and cleanup refusals retain
+their existing fences and are never treated as transient reset errors.
 Legacy clones retain their existing branch-cleanup behavior.
 
 Retirement re-reads and locks the registered workspace instead of trusting the

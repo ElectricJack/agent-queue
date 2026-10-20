@@ -1378,7 +1378,12 @@ class TestClaim:
         assert await db.get_task_meta("t1", "claim_preparation_failure") is None
         assert (await db.get_task_meta("t1", "slot_reset_failure"))["reason"] == reason
         session = await db.get_session(sid)
-        assert session.claim_failure_reason == session.claim_refusal["reason"] == reason
+        assert session.claim_failure_reason == reason
+        if isinstance(error, TimeoutError):
+            assert result["result"] == "drain_requested"
+            assert session.claim_refusal is None  # a new slot replaces this session
+        else:
+            assert session.claim_refusal["reason"] == reason
         payloads = [c.args[1] for c in emit.call_args_list if c.args[0] == "pool.prepare_failed"]
         assert payloads[0]["reason"] == reason
 
@@ -1419,13 +1424,64 @@ class TestClaim:
 
         result = await settled_claim(scoped(handler, sid), {"next": True})
 
-        assert result["result"] == "prepare_failed"
+        assert result["result"] == "drain_requested"
         assert_one_reason(
             result, await db.get_session(sid), await db.get_task_meta("t1", "prepare_failure"),
             events, stage="ensure_slot_checkout", error_type="TimeoutError",
         )
         slots.ensure_slot_checkout.assert_awaited_once()
         slots.reset_slot_for_task.assert_not_awaited()
+
+    @pytest.mark.parametrize("prior", [0, 2])
+    @pytest.mark.parametrize("failure_kind", ["timeout", "wrapped", "busy"])
+    async def test_contained_reset_error_retries_in_another_slot_until_budget_exhausted(
+        self, handler, db, tmp_path, prior, failure_kind,
+    ):
+        import errno
+
+        from src.git.manager import GitError
+
+        await mktask(db, "t1", profile_id="worker")
+        sid, wd = await pool_session(db, tmp_path)
+        next_sid, _ = await pool_session(db, tmp_path, sid="s2", agent_id="agent-2")
+        if prior:
+            await db.set_task_meta("t1", "claim_prepare_backoff_attempts", prior)
+        error = TimeoutError("contained reset deadline")
+        if failure_kind == "busy":
+            error = OSError(errno.EBUSY, "checkout busy")
+        elif failure_kind == "wrapped":
+            outer = GitError("git reset timed out")
+            outer.__cause__ = error
+            error = outer
+        slots = handler.orchestrator._worktree_slots.return_value
+        slots.reset_slot_for_task.side_effect = error
+
+        refused = await settled_claim(scoped(handler, sid), {"next": True})
+
+        assert refused["result"] == "drain_requested"
+        assert "quarantined" in refused["instructions"]
+        assert (await db.get_session(sid)).desired_state == "stopped"
+        assert not (await db.get_workspace("ws-agent-1")).enabled
+        assert (await db.get_task_meta("t1", "prepare_failure"))["reason"] == refused["reason"]
+        assert not (wd / ".aq" / "claim.json").exists()
+        assert await db.get_task_meta("t1", "claim_prepare_backoff_attempts") == prior + 1
+        if prior == 2:
+            assert (await db.get_task("t1")).status == TaskStatus.BLOCKED
+            assert await db.get_task_meta("t1", "needs_attention") == "slot_reset_failed"
+            return
+        assert (await db.get_task("t1")).status == TaskStatus.READY
+        assert not await db.get_task_meta("t1", "needs_attention")
+        assert not await db.get_task_meta("t1", "supervisor_recovery_incident")
+        assert (await db.get_task_meta("t1", "slot_reset_failure"))["retry"] == "automatic_fresh_slot"
+        await db.set_task_meta("t1", "claim_prepare_backoff_until", time.time() - 1)
+        slots.reset_slot_for_task.side_effect = None
+
+        claimed = await settled_claim(scoped(handler, next_sid), {"next": True})
+
+        assert claimed["result"] == "claimed"
+        assert claimed["task"]["id"] == "t1"
+        assert not await db.get_task_meta("t1", "slot_reset_failure")
+        assert not await db.get_task_meta("t1", "claim_prepare_backoff_attempts")
 
     @pytest.mark.parametrize("protection", [None, "task", "session", "claim", "other_project"])
     async def test_claim_preserves_misplaced_workspace_locks(
@@ -3586,7 +3642,7 @@ class TestClaim:
             caplog.clear()
             with caplog.at_level("WARNING", logger="src.commands.claim_commands"):
                 result = await settled_claim(scoped(handler, sid), {"next": True})
-            assert result["result"] == "prepare_failed"
+            assert result["result"] == "drain_requested"
             ladder = await db.get_task_meta("t1", "slot_reset_failure")
             record = await db.get_task_meta("t1", "prepare_failure")
             reason = assert_one_reason(
@@ -3602,7 +3658,7 @@ class TestClaim:
             assert any(reason in r.getMessage() for r in caplog.records)
             # Budgets are untouched: the same three-step ladder, then BLOCKED.
             assert ladder["attempt"] == record["attempt"] == attempt
-            assert ladder["retry"] == ("manual" if attempt == 3 else "automatic")
+            assert ladder["retry"] == ("manual" if attempt == 3 else "automatic_fresh_slot")
             assert record["disposition"] == ("blocked" if attempt == 3 else "released")
             assert (record["session_id"], record["claim_epoch"]) == (sid, attempt)
             await db.set_task_meta("t1", "claim_prepare_backoff_until", time.time() - 1)
