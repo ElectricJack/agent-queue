@@ -34,6 +34,7 @@ ROOT = Path(__file__).resolve().parents[1]
 GOLDEN = ROOT / "tests/fixtures/contracts/legacy-command-descriptors.json"
 C2_CHANGES = ROOT / "tests/fixtures/contracts/observation-contract-changes.json"
 SCRIPT_CHANGES = ROOT / "tests/fixtures/contracts/script-contract-changes.json"
+MAIN_CHANGES = ROOT / "tests/fixtures/contracts/main-refresh-contract-changes.json"
 
 
 @pytest.fixture(autouse=True)
@@ -68,6 +69,44 @@ def _digest(value):
     ).encode()).hexdigest()
 
 
+def _main_changes():
+    changes = json.loads(MAIN_CHANGES.read_text())
+    assert changes["source_base"] == "c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb"
+    assert set(changes["contracts"]) == {
+        "gate_create", "gate_resolve", "integration_backmerge_source",
+        "integration_promotion_notes_input", "integration_promotion_policy_input",
+        "integration_release_owner", "promote_approve", "promote_cancel", "promote_hotfix",
+        "promote_list", "promote_prepare", "promote_repair", "promote_request", "promote_status",
+    }
+    assert set(changes["transport_definitions"]) == {
+        "add_workspace", "archive_task", "escalation_apply_reply", "gate_create", "gate_resolve",
+        "integration_promotion_policy_input", "integration_release_owner", "list_workspaces",
+        "message_send", "promote_request", "resume_playbook", "resume_task", "review_comment",
+        "review_decide", "task_batch_propose", "task_batch_update", "task_close", "task_recover",
+    }
+    active = {
+        "ci-main-sentinel/artifact.json", "default-assignment-routing/artifact.json",
+        "default-pipeline/artifact.json", "github-issue-triage/artifact.json",
+        "morning-report/artifact.json", "object-loop/artifact.json",
+        "promotion-continuous/artifact.json", "promotion-request/artifact.json",
+        "provider-failover/artifact.json", "provider-usage-probe/artifact.json",
+        "review-pipeline.artifact.json", "review-pipeline.receipts.json",
+        "review-pipeline.v6.artifact.json", "stuck-task-watch/artifact.json",
+        "supervisor-failure-triage/artifact.json",
+    }
+    retired = {f"{bundle}/{name}.json" for bundle in (
+        "agent-queue-parent-integration", "agent-queue-root-train", "parent-integration", "root-train",
+    ) for name in ("artifact", "diagnostics")}
+    assert set(changes["playbook_fixtures"]) == {
+        "tests/fixtures/playbooks/v2/" + path for path in active | retired
+    }
+    for path, evidence in changes["playbook_fixtures"].items():
+        suffix = path.removeprefix("tests/fixtures/playbooks/v2/")
+        expected = path.replace("/v2/", "/historical-v2/") if suffix in retired else path
+        assert evidence["path"] == expected
+    return changes
+
+
 def _snapshot(*, handlers=(), explicit=(), fallback=None, typed=None, plugins=()):
     return build_descriptor_snapshot(
         handlers=handlers, explicit_definitions=explicit, fallback_schemas=fallback or {},
@@ -77,7 +116,8 @@ def _snapshot(*, handlers=(), explicit=(), fallback=None, typed=None, plugins=()
 
 def test_legacy_execution_documents_and_fingerprints():
     fixture = json.loads(GOLDEN.read_text())
-    changes = {**_observation_changes()["contracts"], **_script_changes()["contracts"]}
+    changes = {**_observation_changes()["contracts"], **_script_changes()["contracts"],
+               **_main_changes()["contracts"]}
     for name, old in fixture["legacy_contracts"].items():
         expected = changes.get(name, old)
         if name in changes:
@@ -101,6 +141,7 @@ def test_transport_views_and_cli_serialization_preserve_golden_evidence():
     fixture = json.loads(GOLDEN.read_text())
     changes = _observation_changes()
     scripts = _script_changes()
+    main = _main_changes()
     contracts = {**changes["contracts"], **scripts["contracts"]}
     snapshot = command_snapshot()
     for name, digest in fixture["transport_definitions"].items():
@@ -108,11 +149,16 @@ def test_transport_views_and_cli_serialization_preserve_golden_evidence():
             approved = contracts[name]
             assert approved["previous_transport_sha256"] == digest
             digest = approved["transport_sha256"]
+        if name in main["transport_definitions"]:
+            approved = main["transport_definitions"][name]
+            assert approved["previous_sha256"] == digest
+            digest = approved["sha256"]
         assert _digest(snapshot.commands[name].tool_definition()) == digest, name
     actual = hashlib.sha256(render_command_catalogue().encode()).hexdigest()
     assert changes["previous_cli_catalogue_sha256"] == fixture["cli_catalogue_sha256"]
     assert scripts["previous_cli_catalogue_sha256"] == changes["cli_catalogue_sha256"]
-    assert actual == scripts["cli_catalogue_sha256"]
+    assert main["previous_cli_catalogue_sha256"] == scripts["cli_catalogue_sha256"]
+    assert actual == main["cli_catalogue_sha256"]
     definitions = {d["name"]: d for d in effective_tool_definitions()}
     for name, definition in _discover_all_commands().items():
         assert definition == snapshot.commands[name].tool_definition()
@@ -128,10 +174,15 @@ def test_legacy_playbook_fixtures_are_unchanged():
         "tests/fixtures/playbooks/v2/review-pipeline.v6.artifact.json",
     }
     changes = {**changes, **_script_changes()["playbook_fixtures"]}
+    main = _main_changes()["playbook_fixtures"]
     for path, digest in json.loads(GOLDEN.read_text())["playbook_fixtures"].items():
         if path in changes:
             assert changes[path]["previous_sha256"] == digest
             digest = changes[path]["sha256"]
+        if path in main:
+            assert main[path]["previous_sha256"] == digest
+            digest = main[path]["sha256"]
+            path = main[path]["path"]
         assert hashlib.sha256((ROOT / path).read_bytes()).hexdigest() == digest, path
 
 

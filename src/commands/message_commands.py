@@ -560,7 +560,7 @@ class MessageCommandsMixin:
             await self._inbox_mailbox_scope_error(original.to_kind, original.to_id)
             or (scope.get("project_id") and original.project_id != scope["project_id"])
         ):
-            return {"error": f"Message '{message_id}' not found"}
+            return {"success": False, "error": f"Message '{message_id}' not found"}
 
         scoped_global_reply = False
         if original.project_id is None:
@@ -613,7 +613,7 @@ class MessageCommandsMixin:
         # A plain session signs as the mailbox it was addressed at, never as
         # an identity it names.
         if plain_session and (from_kind, from_id) != (derived_kind, original.to_id):
-            return {"error": "reply identity is server-derived"}
+            return {"success": False, "error": "reply identity is server-derived"}
         if scoped_global_reply:
             from_kind, from_id = "session", self._current_scope["session_id"]
 
@@ -780,7 +780,7 @@ class MessageCommandsMixin:
         if scope.get("elevated") and scope.get("project_id") is not None:
             for message in [*pending, *consumed]:
                 if not await self._message_in_project(message, scope["project_id"]):
-                    return {"error": "out of scope: recipient mailbox project mismatch"}
+                    return {"success": False, "error": "out of scope: recipient mailbox project mismatch"}
 
         if not inject:
             return {
@@ -877,7 +877,7 @@ class MessageCommandsMixin:
         project_id = None if system_only else args.get("project_id") or self._active_project_id
         if scope.get("kind") == "session" and scope.get("project_id") is not None:
             if args.get("project_id") not in (None, scope["project_id"]):
-                return {"error": "out of scope: project_id mismatch"}
+                return {"success": False, "error": "out of scope: project_id mismatch"}
             project_id = scope["project_id"]
         own_addresses = []
         if not system_only and project_id == scope.get("project_id"):

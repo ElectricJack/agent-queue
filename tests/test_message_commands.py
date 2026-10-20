@@ -1855,7 +1855,7 @@ class TestNativeGuidanceReplyRoute:
             denied = await _execute_as(handler, "message_reply", {
                 "message_id": guidance.id, "body": "hijack",
             }, {**self._worker_scope(intruder), "project_id": intruder.project_id})
-            assert denied == {"error": f"Message '{guidance.id}' not found"}, denied
+            assert denied == {"success": False, "error": f"Message '{guidance.id}' not found"}, denied
         assert (await db.get_message(guidance.id)).read_at is None
         thread = await db.list_messages(thread_id="task-w:ask", include_archived=True)
         assert {m.id for m in thread} == {guidance.reply_to_id, guidance.id}
@@ -1872,7 +1872,7 @@ class TestNativeGuidanceReplyRoute:
             "message_id": guidance.id, "body": "forged", "from_kind": from_kind,
             "from_id": from_id,
         }, self._worker_scope(worker))
-        assert denied == {"error": "reply identity is server-derived"}, denied
+        assert denied == {"success": False, "error": "reply identity is server-derived"}, denied
         assert len(await db.list_messages()) == before
 
     async def test_ordinary_system_notices_stay_unanswerable(self, setup):

@@ -2093,7 +2093,7 @@
             "terminal_outcome": "failed"
           }
         ],
-        "contract_fingerprint": "sha256:cef412074d2e82ff21c66ce7aac359b3fd4211e7a2a7ec5f451db6ddf023500d",
+        "contract_fingerprint": "sha256:dd500df1eeafbdc80e2888c5ea44da49f2b2a221e1a0aeadbe7bb2bb08dd4ab5",
         "docs_url": "https://github.com/ElectricJack/agent-queue/blob/main/docs/reference/playbook-commands/gate_create.md",
         "renderer": "contract"
       },
@@ -2325,7 +2325,7 @@
             "policy": "safe"
           }
         ],
-        "execution_fingerprint": "sha256:cef412074d2e82ff21c66ce7aac359b3fd4211e7a2a7ec5f451db6ddf023500d"
+        "execution_fingerprint": "sha256:dd500df1eeafbdc80e2888c5ea44da49f2b2a221e1a0aeadbe7bb2bb08dd4ab5"
       },
       "diagnostics": [],
       "out_degree": 5,

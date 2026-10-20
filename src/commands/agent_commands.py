@@ -325,10 +325,10 @@ class AgentCommandsMixin(FlockCommandsMixin):
         try:
             deadline = resolve_deadline(args.get("deadline_seconds"))
         except (TypeError, ValueError) as exc:
-            return {"error": str(exc) or "deadline_seconds must be a number"}
+            return {"success": False, "error": str(exc) or "deadline_seconds must be a number"}
         probe_git = args.get("git", True)
         if not isinstance(probe_git, bool):
-            return {"error": "git must be a boolean"}
+            return {"success": False, "error": "git must be a boolean"}
         workspaces = await self.db.list_workspaces(project_id=project_id)
 
         # Pre-resolve kinds so annotations don't do N+1 lookups.
@@ -461,9 +461,9 @@ class AgentCommandsMixin(FlockCommandsMixin):
                     ws.id, expected_path=ws.workspace_path,
                 )
             except ValueError as exc:
-                return {"error": f"Workspace '{ws.id}' cleanup refused: {exc}"}
+                return {"success": False, "error": f"Workspace '{ws.id}' cleanup refused: {exc}"}
             except IntegrityError:
-                return {"error": f"Workspace '{ws.id}' cleanup refused: matching repository "
+                return {"success": False, "error": f"Workspace '{ws.id}' cleanup refused: matching repository "
                         "is still referenced; reconcile its references before removal"}
         else:
             await self.db.delete_workspace(ws.id)
@@ -559,7 +559,7 @@ class AgentCommandsMixin(FlockCommandsMixin):
             candidate = os.path.realpath(requested)
             if candidate != ws.workspace_path:
                 if ws.is_slot or await self.db.list_slots_for_base(ws.id):
-                    return {"error": "Register a new base and use workspace_cutover; "
+                    return {"success": False, "error": "Register a new base and use workspace_cutover; "
                                      "linked slot paths cannot be relocated in place"}
                 if not force and not os.path.isdir(candidate):
                     return {
@@ -604,7 +604,7 @@ class AgentCommandsMixin(FlockCommandsMixin):
             require_unlocked=relocated, **updates,
         )
         if not changed:
-            return {"error": "Workspace binding changed or is locked; edit was not applied"}
+            return {"success": False, "error": "Workspace binding changed or is locked; edit was not applied"}
         return {
             "success": True,
             "updated": ws.id,

@@ -4400,12 +4400,12 @@ class TaskCommandsMixin:
         task_id = args["task_id"]
         reason = (args.get("reason") or "").strip()
         if not reason:
-            return {"error": "reason is required"}
+            return {"success": False, "error": "reason is required"}
         error = await self._task_control_scope_error(task_id)
         if error:
             return error
         if await self.db.get_task(task_id) is None:
-            return {"error": f"Task '{task_id}' not found"}
+            return {"success": False, "error": f"Task '{task_id}' not found"}
         actor = (self._current_scope or {}).get("session_id") or "local-operator"
         # Under the pause/resume lock: never race a capture or a resume.
         async with self.orchestrator._task_control_lock(task_id):
@@ -4413,8 +4413,9 @@ class TaskCommandsMixin:
                 task_id, reason=reason, actor=actor,
             )
         if discarded is None:
-            return {"error": f"Task '{task_id}' has no paused checkpoint"}
+            return {"success": False, "error": f"Task '{task_id}' has no paused checkpoint"}
         return {
+            "success": True,
             "task_id": task_id, "discarded": True,
             "branch": discarded.get("branch"), "ref": discarded.get("ref"),
             "commit": discarded.get("commit"),
@@ -4689,7 +4690,7 @@ class TaskCommandsMixin:
             if current is not None and current.assigned_agent_id:
                 incident = await self.db.get_task_meta(task_id, "supervisor_recovery_incident") or {}
                 if incident.get("id") != args.get("incident_id"):
-                    return {"error": "Incident is stale or not found"}
+                    return {"success": False, "error": "Incident is stale or not found"}
                 stopped_session = await self._confirm_recovery_worker_stopped(incident)
         result = await self.db.decide_task_recovery(
             task_id,

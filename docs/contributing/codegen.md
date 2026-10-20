@@ -327,6 +327,15 @@ catalogue bytes and existing playbook artifacts. An intentional compatibility
 change must review that evidence; regenerating expected values during a test
 would conceal the change.
 
+The frozen-main refresh at `c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb`
+records its reviewed deltas in `main-refresh-contract-changes.json` alongside
+the original recording. It pins human-decision fences, migration-admission
+receipts and transport changes independently, then chains their catalogue and
+artifact digests after the observation and script deltas. Retired train bundles
+are verified at their `historical-v2` archive paths; their original records stay
+in the legacy fixture. These files are checked-in review evidence, never values
+computed by a running test.
+
 **Generated invocation remains disabled pending private-value storage and safe
 inspection (A3).** There is no runtime bypass flag. The A2 producer audit is
 pinned in `tests/fixtures/contracts/generated-command-audit.json`, keyed by all

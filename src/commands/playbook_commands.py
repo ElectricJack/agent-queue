@@ -277,7 +277,8 @@ class PlaybookCommandsMixin:
 
     async def _cmd_resume_playbook(self, args: dict) -> dict:
         from src.asks.models import AskError, SourceIdentity
-        from src.playbooks.services import load_v2_snapshot
+        from src.playbooks.private_values import PrivateValueError
+        from src.playbooks.services import load_v2_snapshot, run_project_id
 
         run_id = str(args.get("run_id") or "").strip()
         snap = await load_v2_snapshot(self.db, run_id) if run_id else None
@@ -287,11 +288,13 @@ class PlaybookCommandsMixin:
             return {"success": False, "error": "Only human waits accept a decision; technical waits consume their registered event or timer"}
 
         try:
-            source = SourceIdentity(str(snap.event.get("project_id") or ""), "wait",
+            source = SourceIdentity(await run_project_id(self.db, snap), "wait",
                 snap.wait.wait_id, {"run_id": run_id, "step_id": snap.current_step_id})
             return await self._legacy_ask_decision(source, args,
                 option_key=str(args.get("human_input") or args.get("decision") or "continue"))
         except AskError as exc:
+            return {"success": False, "error_code": exc.code, "error": str(exc)}
+        except PrivateValueError as exc:
             return {"success": False, "error_code": exc.code, "error": str(exc)}
 
     async def _cmd_cancel_playbook_run(self, args: dict) -> dict:

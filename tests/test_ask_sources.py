@@ -292,15 +292,33 @@ async def test_proposal_materialization_failure_rolls_back_approval(command_hand
 
 
 async def test_human_resume_command_consumes_exact_wait_receipt(command_handler_factory, monkeypatch):
+    from src.asks.reconcile import identity
+    from src.asks.sources import WaitAdapter
     from src.commands.principal import TRUSTED_LOCAL
+    from src.database.tables import playbook_v2_runs
     from src.models import Project
+    from src.playbooks.private_values import PrivateValueService, is_reference
     from tests.test_v2_restart_resume import recovery_engine
     from tests.playbook_v2_engine_helpers import event
     handler = await command_handler_factory()
     await handler.db.create_project(Project(id="p", name="Wait project"))
+    handler.db.set_playbook_private_values(PrivateValueService(
+        handler.db._engine, active_key_id="test", keys={"test": b"x" * 32},
+    ))
     engine, _, ref = await recovery_engine(handler.db, "wait-kinds.artifact.json")
     started = await engine.run_rule(ref, "gate", {**event("task-completed-code"), "project_id": "p"}, TRUSTED_LOCAL)
+    assert started.snapshot.wait.kind == "human"
     monkeypatch.setattr(handler, "_v2_engine", lambda: engine)
+    persisted = await handler.db.load_run(started.run_id)
+    assert is_reference(persisted.event["project_id"])
+    async with handler.db.immediate() as conn:
+        row = (await conn.execute(select(playbook_v2_runs).where(
+            playbook_v2_runs.c.run_id == started.run_id,
+        ))).mappings().one()
+        source = await identity(handler, playbook_v2_runs, row, conn)
+        assert source.project_id == "p"
+        with pytest.raises(AskError, match="Playbook run was not found"):
+            await WaitAdapter(handler).snapshot(replace(source, project_id="other"), conn=conn)
     args = {"run_id": started.run_id, "human_input": "approve", "idempotency_key": "wait-answer"}
     refused = await handler._cmd_resume_playbook(args)
     assert refused["error_code"] == "ask.context_missing", refused

@@ -758,27 +758,27 @@ class SessionCommandsMixin:
                 and session.desired_state == "sleeping"):
             if (not session.instance_token or session.task_id is not None
                     or session.claim_phase is not None or session.failed_preparation is not None):
-                return {"error": "Stopped pool session retains work or lacks an instance token"}
+                return {"success": False, "error": "Stopped pool session retains work or lacks an instance token"}
             provider = self._provider_for_session(session)
             if provider is None:
-                return {"error": "Provider unavailable; cannot confirm pool instance is inactive"}
+                return {"success": False, "error": "Provider unavailable; cannot confirm pool instance is inactive"}
             try:
                 if not await provider.confirm_instance_stopped(self._session_handle(session)):
-                    return {"error": "Pool instance is still live; sleep intent was not changed"}
+                    return {"success": False, "error": "Pool instance is still live; sleep intent was not changed"}
                 from src.sessions.proctable import scan_by_env_marker
 
                 if any(process.marker == session.instance_token
                        for process in await scan_by_env_marker("AQ_INSTANCE_TOKEN")):
-                    return {"error": "Pool instance still has live marked processes"}
+                    return {"success": False, "error": "Pool instance still has live marked processes"}
                 stopped_confirmed = True
             except Exception:
-                return {"error": "Could not verify pool instance is inactive"}
+                return {"success": False, "error": "Could not verify pool instance is inactive"}
         try:
             current = await self.db.request_session_sleep(
                 session, stopped_confirmed=stopped_confirmed,
             )
         except ValueError as exc:
-            return {"error": str(exc)}
+            return {"success": False, "error": str(exc)}
         return {
             "success": True,
             "session_id": current.id,
