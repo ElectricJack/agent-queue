@@ -86,6 +86,7 @@ POLICY_ROLES = (
 #: The classes are the seven-class set (``fast/standard/deep/astra``, no
 #: ``-medium`` rung) and the worker entries are the per-harness templates.
 SHIPPED_ROUTES = {
+    "fidelity-reviewer": ("claude", "deep-high"),
     "final-reviewer": ("claude", "standard-high"),
     "operator-claude": ("claude", "standard-high"),
     "operator-codex": ("codex", "deep-high"),
