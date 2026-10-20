@@ -77,19 +77,6 @@ async def attach_readiness(db, rows: list[dict]) -> None:
         row.update(readiness.get(row["id"], {}))
 
 
-async def readiness_for_ids(db, ids) -> dict[str, dict]:
-    if not ids:
-        return {}
-    async with db._engine.connect() as conn:
-        rows = await conn.execute(
-            select(tasks.c.id, tasks.c.status, tasks.c.project_id).where(
-                tasks.c.id.in_(ids), tasks.c.status == "READY"
-            )
-        )
-        rows = rows.mappings().all()
-    return await load_readiness(db, rows)
-
-
 async def delivery_waits(db, project_ids=None) -> list[dict]:
     """Current delivery holds in the destination's scope, never activity facts."""
     query = (

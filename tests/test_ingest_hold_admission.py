@@ -70,8 +70,8 @@ NOT_INGEST_HELD = {
 FRONTIER_CALLERS = {
     "src/database/queries/claim_queries.py::claim_frontier_predicates": "builder",
     "src/database/queries/claim_queries.py::_frontier_where": "sql",
-    "src/database/queries/claim_queries.py::ClaimQueryMixin.claim_frontier_exclusions": (
-        "tests/test_claim_commands.py::test_held_member_not_claimable"
+    "src/database/queries/claim_queries.py::ClaimQueryMixin.claim_frontier_exclusions_many": (
+        "test_frontier_diagnostics_report_ingestion_hold"
     ),
     "src/database/queries/routing_queries.py::_eligible_backlog_predicate": "builder",
     "src/database/queries/task_reroute_queries.py::TaskRerouteQueryMixin.list_spill_candidates": (
@@ -266,6 +266,24 @@ async def test_sql_row_executes_the_hold(db, symbol):
 
 
 # -- behavior --------------------------------------------------------------
+
+
+@pytest.mark.parametrize("batched", [False, True])
+async def test_frontier_diagnostics_report_ingestion_hold(db, batched):
+    await mktask(db, "held")
+    await mktask(db, "free")
+    await hold(db, "held")
+    options = {"cached_only": True, "hierarchy_modes": {}}
+    if batched:
+        reasons = await db.claim_frontier_exclusions_many(["held", "free"], **options)
+        assert reasons["free"] == []
+        held_reasons = reasons["held"]
+    else:
+        held_reasons = await db.claim_frontier_exclusions("held", **options)
+    [reason] = [r for r in held_reasons if r["code"] == "frontier_ingest_held"]
+    assert reason["ref"] == "held"
+    assert "batch-held" in reason["detail"]
+    assert await held_batch(db, "held") == "batch-held"
 
 
 async def test_ingest_held_task_ids_names_only_held_members(db):
