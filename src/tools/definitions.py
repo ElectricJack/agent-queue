@@ -2683,7 +2683,16 @@ _ALL_TOOL_DEFINITIONS = [
         "description": "Resume a paused task, respecting its existing gates and approval state. Retries any unfinished session stop first.",
         "input_schema": {
             "type": "object",
-            "properties": {"task_id": {"type": "string", "description": "Task ID to resume"}},
+            "properties": {
+                "task_id": {"type": "string", "description": "Task ID to resume"},
+                "recover_stale_pause": {
+                    "type": "boolean",
+                    "description": (
+                        "Operator/supervisor recovery of a stale pause on an unchanged retained "
+                        "source; still requires writer stop proof and ordinary checkpoint cleanup."
+                    ),
+                },
+            },
             "required": ["task_id"],
         },
     },

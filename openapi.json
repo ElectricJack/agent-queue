@@ -68567,6 +68567,18 @@
             "type": "string",
             "title": "Task Id",
             "description": "Task ID to resume"
+          },
+          "recover_stale_pause": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Recover Stale Pause",
+            "description": "Operator/supervisor recovery of a stale pause on an unchanged retained source; still requires writer stop proof and ordinary checkpoint cleanup."
           }
         },
         "type": "object",

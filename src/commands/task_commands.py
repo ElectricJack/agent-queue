@@ -4337,7 +4337,10 @@ class TaskCommandsMixin:
             task = await self.db.get_task(task_id)
             await self._emit_task_graph_change("task.updated", task)
             return {"task_id": task_id, "status": task.status.value}
-        task = await self.orchestrator.resume_task(task_id)
+        task = await self.orchestrator.resume_task(
+            task_id, recover_stale_pause=bool(args.get("recover_stale_pause")),
+            actor=(self._current_scope or {}).get("session_id") or "local-operator",
+        )
         await self._emit_task_graph_change("task.updated", task)
         return {"task_id": task_id, "status": task.status.value}
 
