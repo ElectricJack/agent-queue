@@ -267,6 +267,30 @@ def integration_settle_batch(ctx, batch_id, expected_target_sha, reason, apply):
     })
 
 
+@integration.command("release-withheld-source")
+@click.argument("batch_id")
+@click.option("--task", "task_id", required=True, help="Frozen member the aborted batch withholds.")
+@click.option("--source-sha", "expected_source_sha", help="Exact source SHA returned by preview.")
+@click.option("--target-sha", "expected_target_sha", help="Exact target SHA returned by preview.")
+@click.option("--reason", default="", help="Required explanation when releasing.")
+@click.option("--apply", is_flag=True, help="Release the exact source; default is preview.")
+@click.pass_context
+@_handle_errors
+def integration_release_withheld_source(ctx, batch_id, task_id, expected_source_sha,
+                                        expected_target_sha, reason, apply):
+    """Preview or release a TASK source that aborted BATCH_ID withholds from the train.
+
+    The aborted batch stays history and the next batch carries its repair count.
+    """
+    if apply and (not expected_source_sha or not expected_target_sha or not reason.strip()):
+        raise click.UsageError("--apply requires --source-sha, --target-sha and --reason")
+    _execute(ctx, "integration_release_withheld_source", {
+        "batch_id": batch_id, "task_id": task_id,
+        "expected_source_sha": expected_source_sha, "expected_target_sha": expected_target_sha,
+        "reason": reason, "dry_run": not apply,
+    })
+
+
 @integration.command("refresh-epic")
 @click.option("--task", "task_id", required=True, help="Epic whose branch needs the default branch.")
 @click.option("--apply", is_flag=True, help="Start or advance the attested refresh; default is preview.")

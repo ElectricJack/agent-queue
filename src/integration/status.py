@@ -6,6 +6,7 @@ import asyncio
 import time
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
+from types import SimpleNamespace
 from typing import Any
 
 from sqlalchemy import and_, exists, select
@@ -791,7 +792,8 @@ class IntegrationStatusService:
         own = self._train_source_blockers(visits, task_id=task_id)
         blockers: list[dict[str, Any]] = []
         for batch in batches:
-            blockers.extend(self._train_batch_blockers(batch, visits))
+            blockers.extend(blocker for blocker in self._train_batch_blockers(batch, visits)
+                            if blocker.get("task_id") in (None, task_id))
         for batch in [] if own else ahead:
             # One batch at a time per target: an admissible source the open batch
             # does not carry waits for it to settle, whatever holds that batch. A
@@ -873,13 +875,19 @@ class IntegrationStatusService:
 
     async def _train_batches_on(self, conn: AsyncConnection, where) -> list[dict[str, Any]]:
         """Open git batches with their members, intent and open repair tasks."""
-        from src.integration.batches import candidate_ref, ejection_instruction
+        from src.integration.batches import (
+            candidate_ref,
+            ejection_instruction,
+            withheld_release,
+            withheld_source_blocker,
+        )
 
         table = integration_batches
         rows = await self._all(
             conn,
             select(table.c.id, table.c.project_id, table.c.repository_id, table.c.target_ref, table.c.intent,
                    table.c.lifecycle, table.c.repair_attempt_count, table.c.created_at,
+                   table.c.human_abort_reason,
                    ejection_instruction(table.c.id).label("ejected"))
             .where(where, table.c.target_ref.is_not(None), table.c.lifecycle != "promoted")
             .order_by(table.c.created_at, table.c.id)
@@ -891,7 +899,10 @@ class IntegrationStatusService:
         members = await self._all(
             conn,
             select(integration_batch_members.c.batch_id, integration_batch_members.c.task_id,
-                   integration_batch_members.c.source_sha)
+                   integration_batch_members.c.source_sha,
+                   withheld_release(integration_batch_members.c.batch_id,
+                                    integration_batch_members.c.task_id,
+                                    integration_batch_members.c.source_sha).label("released"))
             .where(integration_batch_members.c.batch_id.in_(ids))
             .order_by(integration_batch_members.c.batch_id,
                       integration_batch_members.c.ordinal),
@@ -911,19 +922,33 @@ class IntegrationStatusService:
 
         for row in rows:
             ejected = row.pop("ejected")
+            aborted = row["intent"] == "aborted"
+            # An aborted batch withholds each exact source until its ejection
+            # or an operator release of that source; both stay history.
+            row["members"] = [
+                {"task_id": m["task_id"], "source_sha": m["source_sha"],
+                 "disposition": ("pending" if ejected else "released" if m["released"]
+                                 else "withheld") if aborted else row["intent"]}
+                for m in members if m["batch_id"] == row["id"]
+            ]
+            withheld = [m for m in row["members"] if m["disposition"] == "withheld"]
             row["member_disposition"] = (
-                "pending" if row["intent"] == "aborted" and ejected
-                else "withheld" if row["intent"] == "aborted"
-                else row["intent"]
+                ("withheld" if withheld else "pending" if ejected else "released")
+                if aborted else row["intent"]
             )
+            target = SimpleNamespace(repository_id=row["repository_id"],
+                                     target_ref=row["target_ref"])
+            source = SimpleNamespace(batch_id=row["id"],
+                                     human_abort_reason=row["human_abort_reason"],
+                                     repair_attempt_count=row["repair_attempt_count"])
+            row["withheld"] = [
+                withheld_source_blocker(target, m["task_id"], m["source_sha"], source)
+                for m in withheld
+            ]
             row["operator_decisions"] = await history_on(
                 conn, row["project_id"], await related_on(conn, "batch", row["id"])
             )
             row["candidate_ref"] = candidate_ref(row["id"])
-            row["members"] = [
-                {"task_id": m["task_id"], "source_sha": m["source_sha"]}
-                for m in members if m["batch_id"] == row["id"]
-            ]
             row["repairs"] = [
                 {"task_id": r["id"], "status": r["status"]}
                 for r in repairs if r["created_by_id"] == row["id"]
@@ -1005,7 +1030,8 @@ class IntegrationStatusService:
             return [_blocker("operator_decision_hold", row["decision"], row["id"])
                     for row in holds]
         if batch["intent"] == "aborted":
-            return [_blocker("batch_aborted", "the batch was aborted; it is never rebuilt", ref)]
+            return batch.get("withheld") or [
+                _blocker("batch_aborted", "the batch was aborted; it is never rebuilt", ref)]
         if batch["intent"] == "paused":
             return [_blocker("batch_paused", "the batch is paused by operator intent", ref)]
         blockers = [

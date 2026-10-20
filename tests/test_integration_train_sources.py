@@ -111,6 +111,7 @@ from src.database.tables import (
     integration_batches,
     integration_source_ci,
     integration_legacy_deliveries,
+    operator_decisions,
     projects,
     repos,
     sessions,
@@ -163,6 +164,7 @@ from src.integration.train_sources import (
     train_for,
 )
 from src.models import Project, RepoConfig, RepoSourceType, Task, TaskStatus, Workspace
+from src.operator_decisions import WITHHELD_RELEASE_SOURCE
 from src.test_selection import catalogue as Catalogue
 from tests.test_delivery_consumers import Origin, close, git
 from tests.test_integration_gitops import LocalGit, commit, inherited_source
@@ -7857,6 +7859,189 @@ async def test_task_metadata_ejection_markers_never_release_aborted_batch(world,
     assert await train.batches.pending(MAIN, await snapshot(world)) is None
     status = await IntegrationStatusService(world.db, git_first="active").control_status("p")
     assert status["batches"][0]["member_disposition"] == "withheld"
+
+
+async def _withheld(world, *tids, repair_attempts=0):
+    """An aborted batch freezing *tids*, as an operator abort leaves it."""
+    heads = {tid: await completed(world, tid) for tid in tids}
+    train, _, _ = lane(world, LocalGit(Path(world.origin.url)))
+    visit = await train.visit(MAIN)
+    store = BatchStore(world.db)
+    await store.set_intent(visit.batch_id, "aborted")
+    async with world.db.immediate() as conn:
+        await conn.execute(update(integration_batches).where(
+            integration_batches.c.id == visit.batch_id).values(
+                repair_attempt_count=repair_attempts,
+                human_abort_reason="operator stopped a looping repair"))
+    return train, visit.batch_id, heads
+
+
+async def _release(controls, batch_id, task_id, preview=None, *, human=True, **changes):
+    arguments = {"dry_run": preview is None, "operator_id": "human:local-operator",
+                 "expected_source_sha": preview and preview["source_sha"],
+                 "expected_target_sha": preview and preview["target_sha"],
+                 "reason": "" if preview is None else "re-batch the accepted source",
+                 "human_authority": human} | changes
+    return await controls.release_withheld_source(batch_id, task_id, **arguments)
+
+
+async def test_aborted_batch_names_each_withheld_source_instead_of_idling(world):
+    """fleet-meadow-72: an aborted batch silently withheld a source and its dependents."""
+    train, batch_id, heads = await _withheld(world, "a")
+    await completed(world, "dependent", needs=("a",))
+    blockers = []
+    assert await train.batches.pending(MAIN, await snapshot(world), blockers=blockers) is None
+    withheld = next(b for b in blockers if b["code"] == "source_withheld_by_aborted_batch")
+    assert (withheld["task_id"], withheld["source_sha"], withheld["batch_id"]) == (
+        "a", heads["a"], batch_id)
+    assert withheld["abort_reason"] == "operator stopped a looping repair"
+    assert "aq integration release-withheld-source " + batch_id in withheld["action"]
+    assert any(b["code"] == "prerequisite_withheld" and b["task_id"] == "dependent"
+               for b in blockers), blockers
+    assert (await train.visit(MAIN)).state == "blocked"
+    status = IntegrationStatusService(world.db, git_first="active", train=train)
+    batch = (await status.control_status("p"))["batches"][0]
+    assert batch["member_disposition"] == "withheld"
+    assert batch["members"] == [{"task_id": "a", "source_sha": heads["a"],
+                                 "disposition": "withheld"}]
+    task = await status.task_blockers("a")
+    assert [b["code"] for b in task["blockers"]] == ["source_withheld_by_aborted_batch"]
+    assert task["blockers"][0]["action"] == withheld["action"]
+
+
+async def test_release_withheld_source_preview_apply_carries_repair_history(world):
+    from src.integration.train_controls import TrainControlError
+
+    train, batch_id, heads = await _withheld(world, "a", "b", repair_attempts=2)
+    controls = TrainControls(world.db, train=train)
+    before = git(world.origin.url, "show-ref")
+    preview = await _release(controls, batch_id, "a", human=False)
+    assert preview["outcome"] == "preview" and preview["source_sha"] == heads["a"]
+    assert preview["repair_attempt_count"] == 2
+    assert preview["target_sha"] == git(world.origin.url, "rev-parse", "main")
+    with pytest.raises(TrainControlError) as refused:
+        await _release(controls, batch_id, "a", preview, human=False,
+                       operator_id="supervisor session:s")
+    assert refused.value.outcome == "unauthorized"
+    for outcome in ("released", "already_released"):
+        assert (await _release(controls, batch_id, "a", preview))["outcome"] == outcome
+    async with world.db._engine.connect() as conn:
+        notes = (await conn.execute(select(operator_decisions).where(
+            operator_decisions.c.object_id == batch_id))).mappings().all()
+    assert [(n["effect"], n["source_ref"], n["recorded_by"]) for n in notes] == [
+        ("note", "a@" + heads["a"], "human:local-operator")]
+    old = await BatchStore(world.db).get(batch_id)
+    assert (old.intent, old.repair_attempt_count) == ("aborted", 2)
+    assert git(world.origin.url, "show-ref") == before
+    status = IntegrationStatusService(world.db, git_first="active", train=train)
+    aborted = (await status.control_status("p"))["batches"][0]
+    assert {m["task_id"]: m["disposition"] for m in aborted["members"]} == {
+        "a": "released", "b": "withheld"}
+    blockers = []
+    members, _, _ = await train.batches.pending(MAIN, await snapshot(world), blockers=blockers)
+    assert [m.task_id for m in members] == ["a"]
+    assert [b["task_id"] for b in blockers
+            if b["code"] == "source_withheld_by_aborted_batch"] == ["b"]
+    visit = await train.visit(MAIN)
+    assert visit.batch_id not in (None, batch_id)
+    fresh = await BatchStore(world.db).get(visit.batch_id)
+    assert fresh.repair_attempt_count == 2
+    assert [m.task_id for m in await BatchStore(world.db).members(fresh.id)] == ["a"]
+
+
+@pytest.mark.parametrize("case", ["hold", "source", "target", "repair", "exhausted",
+                                  "reopened", "not_a_member", "writer"])
+async def test_release_withheld_source_refuses_unsafe_release(world, case):
+    from src.integration.train_controls import TrainControlError
+    from src.operator_decisions import OperatorDecisions
+
+    train, batch_id, _ = await _withheld(world, "a")
+    controls = TrainControls(world.db, train=train)
+    preview = await _release(controls, batch_id, "a")
+    changes, task_id = {}, "a"
+    if case == "hold":
+        await OperatorDecisions(world.db).record({
+            "object_kind": "task", "object_id": "a", "operator": "operator",
+            "decision": "Keep a out of the train", "effect": "hold", "source": "dashboard",
+            "source_ref": "message:hold", "idempotency_key": "withheld-hold", "releases": None,
+        }, recorded_by="human:local-operator")
+    elif case == "source":
+        changes["expected_source_sha"] = "f" * 40
+    elif case == "target":
+        changes["expected_target_sha"] = "f" * 40
+    elif case == "repair":
+        await world.db.create_task(Task(id="repair", project_id="p", title="repair",
+                                        description="", dedup_key=f"repair:{batch_id}:1"))
+    elif case == "exhausted":
+        # 3 + 3 attempts of the frozen default repair policy are spent.
+        async with world.db.immediate() as conn:
+            await conn.execute(update(integration_batches).where(
+                integration_batches.c.id == batch_id).values(repair_attempt_count=6))
+    elif case == "reopened":
+        await world.db.update_task("a", status=TaskStatus.IN_PROGRESS)
+    elif case == "not_a_member":
+        task_id = "unrelated"
+    elif case == "writer":
+        await world.db.create_workspace(Workspace(
+            id="writer", project_id="p", workspace_path=str(world.origin.clone),
+            source_type=RepoSourceType.LINK, locked_by_task_id="a"))
+    with pytest.raises(TrainControlError) as refused:
+        await _release(controls, batch_id, task_id, preview, **changes)
+    assert refused.value.outcome == {
+        "hold": "operator_decision_hold", "source": "source_changed",
+        "target": "target_changed", "repair": "repair_outstanding",
+        "exhausted": "repair_exhausted", "reopened": "source_changed",
+        "not_a_member": "not_a_member", "writer": "live_writer",
+    }[case], refused.value
+    if case == "exhausted":
+        assert "a new completion of a" in str(refused.value)
+    async with world.db._engine.connect() as conn:
+        assert not await conn.scalar(select(operator_decisions.c.id).where(
+            operator_decisions.c.source == WITHHELD_RELEASE_SOURCE))
+    assert await train.batches.pending(MAIN, await snapshot(world)) is None
+
+
+async def test_release_withheld_source_refuses_a_hand_merged_source(world):
+    """The owner merged the withheld source by hand: nothing remains to release."""
+    from src.integration.train_controls import TrainControlError
+
+    train, batch_id, heads = await _withheld(world, "a", repair_attempts=3)
+    controls = TrainControls(world.db, train=train)
+    git(world.origin.clone, "fetch", "origin")
+    git(world.origin.clone, "push", "origin", f"{heads['a']}:refs/heads/main")
+    with pytest.raises(TrainControlError) as refused:
+        await _release(controls, batch_id, "a")
+    assert refused.value.outcome == "source_delivered", refused.value
+    async with world.db._engine.connect() as conn:
+        assert not await conn.scalar(select(operator_decisions.c.id).where(
+            operator_decisions.c.source == WITHHELD_RELEASE_SOURCE))
+    old = await BatchStore(world.db).get(batch_id)
+    assert (old.intent, old.repair_attempt_count) == ("aborted", 3)
+
+
+async def test_release_withheld_source_allows_terminal_repair_history(world):
+    train, batch_id, _ = await _withheld(world, "a", repair_attempts=1)
+    await world.db.create_task(Task(id="repair", project_id="p", title="repair",
+                                    description="", dedup_key=f"repair:{batch_id}:1",
+                                    status=TaskStatus.FAILED))
+    controls = TrainControls(world.db, train=train)
+    preview = await _release(controls, batch_id, "a")
+    assert (await _release(controls, batch_id, "a", preview))["outcome"] == "released"
+
+
+async def test_release_withheld_source_handler_maps_refusals(world):
+    from src.commands.integration_commands import IntegrationCommandsMixin
+
+    train, batch_id, _ = await _withheld(world, "a")
+    handler = IntegrationCommandsMixin()
+    handler.db = world.db
+    handler.orchestrator = SimpleNamespace(integration_train=train)
+    preview = await handler._cmd_integration_release_withheld_source(
+        {"batch_id": batch_id, "task_id": "a", "dry_run": True})
+    assert preview["success"] and preview["outcome"] == "preview", preview
+    missing = await handler._cmd_integration_release_withheld_source(
+        {"batch_id": "missing", "task_id": "a", "dry_run": True})
+    assert not missing["success"] and missing["outcome"] == "unknown_batch", missing
 
 
 async def test_superseded_batch_releases_inputs_with_daemon_owned_record(world):
