@@ -19,7 +19,14 @@ It returns the current source head and existing completion identity, without
 changing task, checkpoint, ownership, child, review or verification state.
 
 Apply requires the preview head and a reason. It repeats eligibility and source
-observation, refuses live claims/writers/ownership, wakes the target's ordinary
+observation and refuses live claims/writers/ownership. Under the project and
+branch locks, it may retire the completed epic's own `worker` reservation when
+the row is `reserved`, names no session or workspace, and has no unexpired lease
+or different holder. Retirement compares the row identity, state and fences,
+advances its fences, clears its holder, and records an attributable event in
+the same transaction. Attached rows, other owners/roles, live leases, open
+batches, active integration operations and reserved ref mutations remain
+refusals; preview never retires ownership. Apply then wakes the target's ordinary
 backoff and requests one bounded, serialized train visit. Repository concurrency
 and rate-limit admission still apply. The train may collect pending children or
 continue existing checks/repair under its ordinary gates. A deferred visit returns
