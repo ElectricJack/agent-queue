@@ -2686,6 +2686,7 @@
         "jobs": {
           "enabled": false,
           "exclusive_queue_seconds": 5400,
+          "full_suite_reserved_slots": 2,
           "head_bytes": 1048576,
           "log_budget_bytes": 2147483648,
           "log_days": 14,
@@ -2755,6 +2756,7 @@
           "default": {
             "enabled": false,
             "exclusive_queue_seconds": 5400,
+            "full_suite_reserved_slots": 2,
             "head_bytes": 1048576,
             "log_budget_bytes": 2147483648,
             "log_days": 14,
@@ -2779,6 +2781,10 @@
             },
             "exclusive_queue_seconds": {
               "default": 5400,
+              "type": "integer"
+            },
+            "full_suite_reserved_slots": {
+              "default": 2,
               "type": "integer"
             },
             "head_bytes": {

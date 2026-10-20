@@ -124,12 +124,16 @@ class JobService:
                 accepted, args, cwd, self.config.resources.test_worker_cap(), xdist=xdist
             )
         job_class = accepted.job_class
+        test_scope = None
+        weight = accepted.weight
         if accepted.pytest:
             from src.cli.test_runner import _is_full_suite
 
-            if await asyncio.to_thread(_is_full_suite, tuple(args), cwd=cwd):
-                job_class = "exclusive"
-        if accepted.weight > self.config.resources.test_slots:
+            full_suite = await asyncio.to_thread(_is_full_suite, tuple(args), cwd=cwd)
+            test_scope = "full" if full_suite else "focused"
+            if full_suite:
+                weight = max(1, self.config.resources.test_slots - cfg.full_suite_reserved_slots)
+        if weight > self.config.resources.test_slots:
             raise JobError("jobs.weight_invalid")
         if accepted.pytest and not any(
             a in {"-m", "--markexpr"} or a.startswith("--markexpr=") for a in args
@@ -215,6 +219,7 @@ class JobService:
             "capacity": self.config.resources.test_slots,
             "lock_dir": str(Path(self.config.data_dir) / "locks/test-slots"),
             "pytest": accepted.pytest,
+            "test_scope": test_scope,
             "nice": self.config.resources.session_nice,
             "head_bytes": cfg.head_bytes,
             "tail_bytes": cfg.tail_bytes,
@@ -246,7 +251,9 @@ class JobService:
         if (queue_seconds is not None or run_seconds is not None) and owner_kind != "integration":
             raise JobError("jobs.preset_denied")
         default_queue = (
-            cfg.exclusive_queue_seconds if job_class == "exclusive" else cfg.shared_queue_seconds
+            cfg.exclusive_queue_seconds
+            if job_class == "exclusive" or test_scope == "full"
+            else cfg.shared_queue_seconds
         )
         queue_budget = min(default_queue, queue_seconds) if queue_seconds is not None else default_queue
         run_budget = min(cfg.run_seconds, run_seconds) if run_seconds is not None else cfg.run_seconds
@@ -272,7 +279,7 @@ class JobService:
             "input_mode": input_mode,
             "input_ref": input_ref,
             "job_class": job_class,
-            "weight": accepted.weight,
+            "weight": weight,
             "priority_band": trusted_band,
             "submitted_at": now,
             "queue_deadline": now + queue_budget,

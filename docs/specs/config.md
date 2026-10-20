@@ -766,6 +766,7 @@ reads it per launch and `aq test` reads it per run.
 | `per_session_cpu_share` | `int \| None` | `None` | Explicit share override. `None` derives `cores // max_concurrent_agents`, floored at 1. |
 | `session_nice` | `int` | `10` | `nice` increment on the harness process, so the daemon, API, dashboard and tmux stay schedulable under agent load. `0` disables. |
 | `test_slots` | `int` | `2` | Concurrent `aq test` runs allowed box-wide. |
+| `jobs.full_suite_reserved_slots` | `int` | `2` | Slots left for focused work beside a managed full suite. Positive integer; full-suite weight is `max(1, test_slots - reserve)`. Accepted contracts remain immutable. |
 | `test_workers` | `int \| None` | `None` | `-n` cap `aq test` enforces. `None` uses the per-session share. |
 | `test_wait_timeout` | `int` | `1800` | Seconds `aq test` waits for a slot before exiting `75` (`EX_TEMPFAIL`). |
 | `test_poll_interval` | `float` | `2.0` | Slot poll interval while waiting; also the cadence of the "waiting" line. |
