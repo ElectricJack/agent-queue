@@ -7608,8 +7608,10 @@ async def test_pr_preparation_rechecks_remote_identity_and_actual_checkout(
         git_mutex=handler.orchestrator._git_mutex,
     )
     original_reset = manager.reset_slot_for_task
+    finish_reset = asyncio.Event()
 
     async def move_after_observation(*args, **kwargs):
+        await finish_reset.wait()
         branch = await original_reset(*args, **kwargs)
         if movement == "remote":
             env.git(env.source, "push", "--force", "origin", f"{env.base}:refs/heads/aq/dependent")
@@ -7621,9 +7623,22 @@ async def test_pr_preparation_rechecks_remote_identity_and_actual_checkout(
 
     manager.reset_slot_for_task = move_after_observation
     handler.orchestrator._worktree_slots = MagicMock(return_value=manager)
-    result = await settled_claim(scoped(handler, sid), {"next": True})
-    assert result["result"] != "claimed", result
-    assert (await db.get_task("dependent")).status is not TaskStatus.IN_PROGRESS
+    with patch("src.commands.claim_commands._PREPARATION_RESPONSE_SECONDS", 0):
+        progress = await scoped(handler, sid)._cmd_task_claim({"next": True})
+    assert progress["result"] == "claim_in_progress", progress
+    preparation = handler.orchestrator.claim_preparations[
+        (sid, "dependent", progress["claim_epoch"])
+    ]
+    finish_reset.set()
+    # Observe this attempt's refusal directly. A new claim request retries
+    # moved admission inputs and can start another preparation generation.
+    result = await asyncio.wait_for(asyncio.shield(preparation), timeout=30)
+    assert result["result"] == "no_ready_work", result
+    assert result["reason"] == "delivery_snapshot_changed", result
+    task = await db.get_task("dependent")
+    assert task.status is TaskStatus.READY
+    assert task.claim_epoch == progress["claim_epoch"]
+    assert (await db.get_session(sid)).task_id is None
     assert not (work_dir / ".aq/claim.json").exists()
 
 
