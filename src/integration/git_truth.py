@@ -20,17 +20,22 @@ from dataclasses import dataclass, field, replace
 
 from src.git.manager import GitError, GitManager, is_valid_git_oid
 from src.integration.delivery_truth import (
+    CONTAINMENT_CONTRACT_VERSION,
+    INVALID_PARENT_COMPLETION,
     MISSING_PROVENANCE,
+    DeliveryAnswer,
     DeliveryEvidence,
     DeliveryRequest,
     DeliverySnapshot,
     DeliveryState,
+    delivered,
     delivery_snapshot,
 )
 from src.integration.provenance import CompletionIdentity, GitProvenance
 from src.integration.selection_metrics import selection_count
 
 logger = logging.getLogger(__name__)
+LEGACY_CONTRACT_VERSION = "legacy-equivalence-v1"
 
 
 class SharedFetchCancelled(RuntimeError):
@@ -111,17 +116,21 @@ class GitTruth:
         retry_delay: float = 1, max_retry_delay: float = 60,
         clock: Callable[[], float] = time.monotonic,
         share_fetches: bool = False,
+        contract_version: str = LEGACY_CONTRACT_VERSION,
     ):
         if cache_limit < 1 or retry_delay <= 0 or max_retry_delay < retry_delay:
             raise ValueError("invalid Git truth cache/backoff limits")
         self.git = git
+        if contract_version not in {LEGACY_CONTRACT_VERSION, CONTAINMENT_CONTRACT_VERSION}:
+            raise ValueError("unsupported delivery proof contract")
+        self.contract_version = contract_version
         self.cache_limit = cache_limit
         self.retry_delay, self.max_retry_delay, self.clock = retry_delay, max_retry_delay, clock
-        self._cache: OrderedDict[tuple[str, str, str, str], _PairFacts] = OrderedDict()
+        self._cache: OrderedDict[tuple, _PairFacts] = OrderedDict()
         # Validated immutable records and whole proofs must be cached too:
         # caching ancestry alone still launches eight processes per warm task.
         self._completions: OrderedDict[tuple, dict] = OrderedDict()
-        self._proofs: OrderedDict[tuple, GitDeliveryEvidence] = OrderedDict()
+        self._proofs: OrderedDict[tuple, GitDeliveryEvidence | DeliveryAnswer] = OrderedDict()
         self._objects: OrderedDict[tuple, str] = OrderedDict()
         self._failures: dict[tuple[str, str], tuple[float, float, str]] = {}
         self.share_fetches = share_fetches
@@ -182,12 +191,14 @@ class GitTruth:
             return GitTruthSnapshot(self, DeliverySnapshot(
                 self.git, str(store), project_id, repository_id, repository_url,
                 target_ref, None, {}, error=failure[2],
+                contract_version=self.contract_version,
             ), retry_at=failure[0])
         selection_count("fetch_starts")
         observation = await delivery_snapshot(
             self.git, store, project_id=project_id, repository_id=repository_id,
             repository_url=repository_url, target_ref=target_ref,
         )
+        observation = replace(observation, contract_version=self.contract_version)
         retry_at = None
         if observation.error and observation.error.startswith("snapshot_git_error:"):
             delay = min(failure[1] * 2 if failure else self.retry_delay, self.max_retry_delay)
@@ -197,8 +208,10 @@ class GitTruth:
             self._failures.pop(key, None)
         return GitTruthSnapshot(self, observation, retry_at=retry_at)
 
-    def _pair(self, snapshot: DeliverySnapshot, source_oid: str) -> _PairFacts:
-        key = snapshot.repository_id, snapshot.repository_url, source_oid, snapshot.target_oid
+    def _pair(self, snapshot: DeliverySnapshot, source_oid: str, *,
+              contract_version=LEGACY_CONTRACT_VERSION) -> _PairFacts:
+        key = (snapshot.store, snapshot.repository_id, snapshot.repository_url,
+               source_oid, snapshot.target_oid, contract_version)
         facts = self._cache.setdefault(key, _PairFacts())
         self._cache.move_to_end(key)
         while len(self._cache) > self.cache_limit:
@@ -264,6 +277,22 @@ class GitTruthSnapshot:
     def target_oid(self) -> str | None:
         return self.observation.target_oid
 
+    async def delivered(self, request: DeliveryRequest, target_ref: str | None = None):
+        return await delivered(request, target_ref or request.target_ref, observation=self)
+
+    async def strict_is_delivered(self, request: DeliveryRequest, *, source_base=None):
+        """Compatibility projection of the common strict contract for shadow consumers."""
+        answer = await self.delivered(request)
+        return GitDeliveryEvidence(request, answer.state, answer.target_oid, answer.source_oid,
+                                   answer.reason, source_base, answer.diagnostic)
+
+    async def strictly_contains_source(self, source_oid: str) -> bool | None:
+        """Frozen-input delegate to the same replacement-disabled ancestry primitive."""
+        try:
+            return await strict_source_ancestry(self, source_oid)
+        except (GitError, OSError, ValueError):
+            return None
+
     def for_target(self, target_ref: str) -> GitTruthSnapshot:
         """Another target from the same fetched repository, without a second fetch."""
         if not target_ref.startswith("refs/heads/"):
@@ -303,6 +332,8 @@ class GitTruthSnapshot:
         The caller separately revalidates ordinary identity and authorization.
         None is an unavailable observation and never permission to collect.
         """
+        if self.truth.contract_version == CONTAINMENT_CONTRACT_VERSION:
+            return await self.strictly_contains_source(source_oid)
         observed = self.observation
         if observed.error or not all(is_valid_git_oid(oid) for oid in (
             source_oid, source_base, observed.target_oid,
@@ -551,6 +582,8 @@ async def is_delivered(
     Branch names, reported heads, settlements and receipts never locate an
     artifact or satisfy delivery here. Missing input or failed Git is unknown.
     """
+    if snapshot.truth.contract_version == CONTAINMENT_CONTRACT_VERSION:
+        return await snapshot.strict_is_delivered(request, source_base=source_base)
     observed = snapshot.observation
     source = None
     proof_key = None
@@ -662,6 +695,116 @@ async def is_delivered(
         return answer(DeliveryState.UNKNOWN, "missing_or_ambiguous_source", error_detail=detail)
 
 
+async def strict_source_ancestry(snapshot: GitTruthSnapshot, source_oid: str) -> bool:
+    """Shared exact-OID primitive for completed generations and frozen inputs."""
+    observed = snapshot.observation
+    if observed.error or not is_valid_git_oid(observed.target_oid):
+        raise GitError("target_unavailable")
+    if observed._freshness.get(observed.target_ref) is False:
+        raise GitError("observation_stale")
+    if not is_valid_git_oid(source_oid):
+        raise ValueError("provenance requires a full lowercase Git OID")
+    facts = snapshot.truth._pair(observed, source_oid,
+                                contract_version=CONTAINMENT_CONTRACT_VERSION)
+    if facts.ancestor is None:
+        if snapshot.cached_only:
+            raise GitError("proof_unavailable")
+        await snapshot.truth.exact(observed, source_oid)
+        await snapshot.truth.exact(observed, observed.target_oid)
+        store = GitProvenance(observed.git, observed.store, repository_url=observed.repository_url)
+        facts.ancestor = await store._strict_ancestor(source_oid, observed.target_oid)
+    return facts.ancestor
+
+
+async def strict_delivery(
+    snapshot: GitTruthSnapshot, request: DeliveryRequest, target_ref: str,
+) -> DeliveryAnswer:
+    """Implementation of delivery_truth.delivered; legacy proofs cannot enter its caches."""
+    observed = snapshot.observation
+    source = None
+    proof_key = None
+
+    def answer(state, reason, diagnostic=None):
+        value = DeliveryAnswer(request, state, source, target_ref, observed.target_oid,
+                               observed.observed_at, observed.observation_token, reason, diagnostic)
+        if proof_key is not None and state is not DeliveryState.UNKNOWN:
+            snapshot.truth._remember(snapshot.truth._proofs, proof_key, value)
+        return value
+
+    if not target_ref.startswith("refs/") or target_ref != request.target_ref:
+        return answer(DeliveryState.UNKNOWN, "invalid_target_binding")
+    if (request.project_id, request.repository_id, target_ref) != (
+        observed.project_id, observed.repository_id, observed.target_ref,
+    ):
+        return answer(DeliveryState.UNKNOWN, "scope_mismatch")
+    if observed._freshness.get(target_ref) is False:
+        return answer(DeliveryState.UNKNOWN, "observation_stale")
+    if request.task_status != "COMPLETED":
+        return answer(DeliveryState.PENDING, "task_not_completed")
+    if request.completion_outcome not in {None, "pass"}:
+        return answer(DeliveryState.PENDING, "completion_not_passing")
+    if request.requires_parent_completion and (
+        request.parent_completion is None and request.parent_adoption is None
+    ):
+        return answer(DeliveryState.UNKNOWN, INVALID_PARENT_COMPLETION)
+    if not request.completion_id:
+        return answer(DeliveryState.UNKNOWN, "missing_completion_identity")
+    # A branchless/missing ref is not a proof of code-free work.
+    if request.code_free_proven and not (
+        request.branch_name or request.has_recorded_source or request.retained_source_oid
+        or request.reported_source or request.completion_commits or request.requires_parent_completion
+    ):
+        return answer(DeliveryState.NOT_APPLICABLE, "explicit_code_free")
+    if observed.error or not is_valid_git_oid(observed.target_oid):
+        return answer(DeliveryState.UNKNOWN, "target_unavailable")
+    try:
+        identity = CompletionIdentity(request.project_id, request.repository_id,
+                                      request.task_id, request.completion_id)
+        proof_key = (CONTAINMENT_CONTRACT_VERSION, snapshot.truth._record_key(observed, identity),
+                     observed.target_oid, request)
+        cached = snapshot.truth._proofs.get(proof_key)
+        if cached is not None:
+            snapshot.truth._proofs.move_to_end(proof_key)
+            # Facts survive visits; collector time/token belong to this observation.
+            return replace(cached, observed_at=observed.observed_at,
+                           observation_token=observed.observation_token)
+        if snapshot.cached_only:
+            return answer(DeliveryState.UNKNOWN, "proof_unavailable")
+        record = await snapshot.read_completion(identity)
+        parent = request.parent_completion
+        if parent is not None:
+            if (parent.project_id, parent.repository_id, parent.completion_id) != (
+                request.project_id, request.repository_id, request.completion_id,
+            ) or parent.branch.removeprefix("refs/heads/") != (
+                request.branch_name or ""
+            ).removeprefix("refs/heads/"):
+                return answer(DeliveryState.UNKNOWN, INVALID_PARENT_COMPLETION)
+            source = parent.source_oid
+            if record is not None and (record["source_oid"] != source or not record["artifact"]):
+                return answer(DeliveryState.UNKNOWN, "parent_provenance_mismatch")
+        elif record is not None:
+            source = record["source_oid"]
+        else:
+            return answer(DeliveryState.UNKNOWN, MISSING_PROVENANCE)
+        if request.retained_source_oid is not None and request.retained_source_oid != source:
+            return answer(DeliveryState.UNKNOWN, "completion_source_mismatch")
+        if request.parent_adoption is not None and (
+            request.parent_adoption.completion_id != request.completion_id
+            or request.parent_adoption.source_oid != source or not record["artifact"]
+        ):
+            return answer(DeliveryState.UNKNOWN, "parent_adoption_provenance_mismatch")
+        if record is not None and not record["artifact"]:
+            return answer(DeliveryState.NOT_APPLICABLE, "git_no_artifact")
+        contained = await strict_source_ancestry(snapshot, source)
+        return answer(DeliveryState.CONTAINED if contained else DeliveryState.PENDING,
+                      "ancestor" if contained else "source_not_contained")
+    except (GitError, OSError, ValueError, KeyError, TypeError) as exc:
+        reason = str(exc) if str(exc) in {
+            "incomplete_shallow_history", "observation_stale", "proof_unavailable",
+        } else "missing_or_ambiguous_source"
+        return answer(DeliveryState.UNKNOWN, reason, _failure_message(exc))
+
+
 async def epic_complete(
     snapshot: GitTruthSnapshot, children: Sequence[DeliveryRequest], *,
     green_oid: str | None, approved_tree: str | None = None,
@@ -684,6 +827,7 @@ async def epic_complete(
             return None
         if proof.state not in {
             DeliveryState.CONTAINED, DeliveryState.NO_CHANGE, DeliveryState.NO_ARTIFACT,
+            DeliveryState.NOT_APPLICABLE,
         }:
             return False
     if green_oid != snapshot.target_oid:
