@@ -3649,6 +3649,39 @@ class TestClaim:
         restore.assert_awaited_once_with(slot, task_id="t1")
         assert (await db.get_session(sid)).task_id is None
 
+    async def test_pool_close_releases_the_slot_sentinel_after_the_claim(
+        self, handler, db, tmp_path
+    ):
+        """A completed task's sentinel must not outlive its claim.
+
+        A train repair left ``.aq-worktree.json`` naming its batch branch;
+        once that branch was deleted the next task's checkout refused the
+        slot (amber-bridge-75).
+        """
+        await mktask(db, "t1", profile_id="worker")
+        sid, _ = await pool_session(db, tmp_path)
+        h = scoped(handler, sid)
+        claimed = await settled_claim(h, {"next": True})
+        slot = MagicMock()
+        handler.orchestrator._slot_workspace_at = AsyncMock(return_value=slot)
+        slots = handler.orchestrator._worktree_slots.return_value
+        slots.restore_slot_after_task = AsyncMock()
+        holder_at_release: list[str | None] = []
+
+        async def release(*_args):
+            holder_at_release.append((await db.get_session(sid)).task_id)
+            return True
+
+        slots.release_task_sentinel = AsyncMock(side_effect=release)
+
+        closed = await h._cmd_task_close(
+            {"outcome": "pass", "summary": "done", "claim_epoch": claimed["claim_epoch"]}
+        )
+
+        assert closed["success"] is True
+        slots.release_task_sentinel.assert_awaited_once_with(slot, "t1")
+        assert holder_at_release == [None]
+
     async def test_pool_close_skips_the_slot_restore_the_release_already_ran(
         self, handler, db, tmp_path
     ):
@@ -5391,7 +5424,7 @@ async def _cloned_pool_session(db, tmp_path, env, sid, agent_id):
 
 
 async def test_unavailable_stack_evidence_withholds_only_stacked_work(
-    handler, db, tmp_path, development_admission
+    handler, db, tmp_path, development_admission, monkeypatch
 ):
     """A failed or backed-off fetch is no stack change: eligible roots still claim.
 
@@ -5400,6 +5433,7 @@ async def test_unavailable_stack_evidence_withholds_only_stacked_work(
     prerequisite, but it moved nothing either; refusing the whole project as
     ``stack_snapshot_changed`` starved every stable root for the backoff.
     """
+    from src.git.manager import GitError
     from src.integration.stacked_branches import observe_stacks
 
     env = development_admission
@@ -5426,11 +5460,15 @@ async def test_unavailable_stack_evidence_withholds_only_stacked_work(
     )
     sid, work_dir = await _cloned_pool_session(db, tmp_path, env, "s1", "agent-1")
     assert await (await observe_stacks(observer, PROJECT_ID)).fresh()
-    # One failed fetch puts the repository into backoff; the remote is back at once.
-    away = env.remote.with_name("remote-away.git")
-    env.remote.rename(away)
-    await observer.prerequisite_view(PROJECT_ID)
-    away.rename(env.remote)
+    # Fail exactly the fetch: renaming the remote can instead fail process-group
+    # cleanup under CI load, which does not establish GitTruth's fetch backoff.
+    # Restore transport immediately; the recorded backoff must still withhold
+    # stacked work until the fake clock advances.
+    failed_fetch = AsyncMock(side_effect=GitError("transport unavailable"))
+    with monkeypatch.context() as failure:
+        failure.setattr(handler.orchestrator.git, "afetch_origin", failed_fetch)
+        await observer.prerequisite_view(PROJECT_ID)
+    failed_fetch.assert_awaited_once()
     stack = await observe_stacks(observer, PROJECT_ID)
     state = await stack.currentness()
     assert state.state == "unavailable", state
