@@ -346,6 +346,127 @@ class TestGoldenAssembly:
 
 
 class TestTaskContextSection:
+    @pytest.mark.parametrize("override", [False, True])
+    async def test_aggregate_budget_pages_salvage_without_cutting_inline_rules(
+        self, db, config, task, tmp_path, override,
+    ):
+        from src.knowledge.budget import ContextBudget
+
+        description = "Required acceptance αβ.\n" * 3000 + "FINAL ACCEPTANCE"
+        salvage = "diff --git a/work.py b/work.py\n" + "+retained αβ\n" * 10000 + "FINAL DIFF"
+        await db.update_task(task.id, description=description, deliverables=json.dumps([
+            {"kind": "file", "id": "code", "target": "src/work.py"},
+        ]))
+        await db.add_task_context(task.id, type="worktree_salvage", label="Saved work", content=salvage)
+        await db.add_task_context(task.id, type="handoff", label="handoff", content=json.dumps({
+            "constraints": ["Keep the human acceptance gate."],
+            "next_step": "Verify the checkout before reusing work.",
+            "detail": "Earlier observations. " * 400,
+        }))
+        await db.update_project(task.project_id, status=ProjectStatus.PAUSED)
+        if override:
+            _write(str(tmp_path / ".aq" / "PRIME.md"),
+                   "{{role}}\n{{task}}\n{{task_context}}\n{{task_context}}\n"
+                   "{{messages}}\n{{workspaces}}\n{{tool_guidance}}\n{{completion_protocol}}")
+        renderer = PrimeRenderer(db, config)
+        before = await renderer.render_for_task(task.id, work_dir=str(tmp_path))
+        # Use the default configured limit and make only inline policy large
+        # enough to reproduce aggregate overflow from independently bounded prose.
+        role = "Must preserve this exact policy. " + "r" * max(
+            0, 34000 - len(before.to_markdown().encode("utf-8")),
+        )
+        _write(os.path.join(config.vault_agent_types, "coder", "profile.md"), "## Role\n" + role)
+        before = await renderer.render_for_task(task.id, work_dir=str(tmp_path))
+        budget = ContextBudget.from_config(config)
+        assert budget.account(before.to_markdown())["diagnostic"] == "context.required_over_budget"
+        config.knowledge.enabled = config.knowledge.context.enabled = config.memory.enabled = True
+        config.knowledge.enabled_projects = [task.project_id]
+        after = await renderer.render_for_task(task.id, work_dir=str(tmp_path))
+        budget.enforce(after.to_markdown())
+        assert role.strip() in after.to_markdown()
+        assert "code" in next(s.body for s in after.sections if s.key == "task")
+        assert "Keep the human acceptance gate." in after.to_markdown()
+        assert "Verify the checkout before reusing work." in after.to_markdown()
+        assert "--field context --offset 0 --limit 4096" in after.to_markdown()
+        assert "Project paused" in after.to_markdown()
+        assert "aq task close" in after.to_markdown()
+        assert "--field prime_context" in after.to_markdown()
+        assert "--field description" in after.to_markdown()
+        full = await renderer.render_for_task(task.id, work_dir=str(tmp_path), bounded_worker=False)
+        full_context = next(s.body for s in full.sections if s.key == "task_context")
+        assert salvage in full_context and "Historical recovery snapshot" in full_context
+        assert (await db.get_task(task.id)).description == description
+        assert "FINAL ACCEPTANCE" in full.to_markdown()
+        assert not budget.account(full.to_markdown())["fits"]
+
+    async def test_handoff_paging_keeps_complete_comments_messages_and_current_facts(
+        self, db, config, task, tmp_path, monkeypatch,
+    ):
+        from unittest.mock import AsyncMock
+        from types import SimpleNamespace
+        from src.knowledge.budget import ContextBudget
+        from src.prime.budgets import field_page
+
+        # No ordinary context and a small description: only the historical
+        # handoff can pay for this overflow. Comments and messages stay inline.
+        comment = "Keep this complete human decision. αβ\n" * 60 + "FINAL DECISION"
+        await db.add_task_comment(task.id, comment, author_kind="agent", author_id="worker")
+        stored_note = json.dumps({"detail": "Prior observation αβ. " * 500 + "FINAL NOTE"})
+        row_id = await db.add_task_context(task.id, type="handoff", label="handoff", content=stored_note)
+        message = SimpleNamespace(id="msg-current", from_kind="session", from_id="supervisor",
+                                  subject=None, body="Current instruction stays inline.",
+                                  priority=0, created_at=1)
+        config.messages.enabled = True
+        monkeypatch.setattr(db, "get_pending_messages", AsyncMock(return_value=[message]))
+        marked = AsyncMock()
+        monkeypatch.setattr(db, "mark_delivered", marked)
+        renderer = PrimeRenderer(db, config)
+        before = await renderer.render_for_task(task.id, work_dir=str(tmp_path))
+        before_message = next(s.body for s in before.sections if s.key == "messages")
+        config.knowledge.enabled = config.knowledge.context.enabled = config.memory.enabled = True
+        config.knowledge.enabled_projects = [task.project_id]
+        config.knowledge.context.input_max_tokens = (
+            ContextBudget.from_config(config).account(before.to_markdown())["total_tokens"] - 1200
+        )
+        after = await renderer.render_for_task(task.id, work_dir=str(tmp_path), mark_messages_delivered=True)
+        ContextBudget.from_config(config).enforce(after.to_markdown())
+        message_section = next(s.body for s in after.sections if s.key == "messages")
+        assert len(message_section.encode()) < len(before_message.encode())
+        assert "--field context --offset 0 --limit 4096" in message_section
+        assert str(row_id) in message_section
+        assert "Current instruction stays inline." in message_section
+        assert "Current daemon facts (observed now)" in message_section
+        assert "work_dir:" in message_section
+        assert "Do the thing, carefully." in after.to_markdown()  # cheaper than a pointer
+        assert "\n".join("> " + line for line in comment.split("\n")) in after.to_markdown()
+        marked.assert_awaited_once_with(message.id, via="prime")
+        # Follow the exact task-show paging implementation to recover the note.
+        info = {"id": task.id, "context": await db.get_task_contexts(task.id)}
+        chunks, offset = [], 0
+        while True:
+            page = field_page(info, "context", offset, 4096)
+            chunks.append(page["content"])
+            offset = page["next_offset"]
+            if offset is None:
+                break
+        rows = json.loads("".join(chunks))
+        assert next(r["content"] for r in rows if r["id"] == row_id) == stored_note
+
+    async def test_unpageable_inline_policy_still_refuses_delivery(self, db, config, task):
+        from src.knowledge.budget import ContextBudget
+        from src.records.models import RecordError
+
+        config.knowledge.enabled = config.knowledge.context.enabled = config.memory.enabled = True
+        config.knowledge.enabled_projects = [task.project_id]
+        role = "MANDATORY POLICY " * 3000
+        _write(os.path.join(config.vault_agent_types, "coder", "profile.md"), "## Role\n" + role)
+        await db.add_task_context(task.id, type="note", label="Context", content="c" * 20000)
+        doc = await PrimeRenderer(db, config).render_for_task(task.id)
+        assert role.strip() in doc.to_markdown()
+        assert "--field prime_context" in doc.to_markdown()
+        with pytest.raises(RecordError, match="context.required_over_budget"):
+            ContextBudget.from_config(config).enforce(doc.to_markdown())
+
     async def test_worker_previews_bound_description_and_context_but_keep_protocol(
         self, db, config, task
     ):
@@ -391,6 +512,21 @@ class TestTaskContextSection:
         assert '"fence": 7' in section.body
         assert "--field prime_context" in section.body
         assert len(section.body.encode()) < CONTEXT_BYTES + 1000
+        # Aggregate shrinking must keep the live authority outside the
+        # pageable spec body, even when the excerpt becomes a pointer only.
+        from datetime import datetime, timezone
+        from src.knowledge.budget import ContextBudget
+        from src.prime.renderer import _fit_worker_previews
+
+        doc = PrimeDocument(task_id=task.id, session_id="worker", source="default",
+                            rendered_at=datetime.now(timezone.utc), sections=(section,))
+        budget = ContextBudget(input_tokens=1800, output_tokens=0, wrapper_tokens=0)
+        fitted = _fit_worker_previews(doc, budget, None, None)
+        budget.enforce(fitted.to_markdown())
+        assert '"intent_id": "live-intent"' in fitted.to_markdown()
+        assert '"operation_id": "live-operation"' in fitted.to_markdown()
+        assert '"fence": 7' in fitted.to_markdown()
+        assert "--field prime_context" in fitted.to_markdown()
 
     async def test_note_context_row_is_inlined(self, db, config, task):
         await db.add_task_context("task-1", type="note", label="note", content="hello there")

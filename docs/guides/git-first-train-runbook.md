@@ -468,6 +468,11 @@ These are command forms, not control actions executed for this documentation.
 | `aq integration eject --batch BATCH --task TASK --reason "isolate failure"` | Preview aborting the old batch and freezing its remainder under a new ID; `--apply` requires a nonblank reason. The ejected member returns to pending with its PR and approval intact. |
 | `aq integration seal-now --project PROJECT` | Preview eligible inputs; `--apply` freezes them immediately, returns an existing batch, or reports `no_ready_work`. It cannot admit a member that fails its gate. |
 
+Seal-now selects the project's unique active default integration root (`root`
+or `development` kind). Epic branches and configured promotion targets such as
+staging and main are excluded. An absent or ambiguous default root still refuses
+both preview and apply; promotion lanes keep their own request and approval controls.
+
 Eject refuses a promoted batch, changed source/candidate evidence, or removal
 of an undelivered prerequisite needed by the remainder. It never edits frozen
 membership in place. Keep the returned `replacement_batch_id`; the old ID
@@ -510,6 +515,27 @@ and exact source withholding remain. Target visits and terminal cleanup repair
 stale seals left by older aborts. Cleanup retires the private candidate under its
 ref lease and releases only the batch's detached collector reservation; a live
 repair lease defers cleanup without preventing member rework.
+
+### Settle a batch the target already contains
+
+Abort refuses a batch whose target already holds every member, and such a
+batch can still sit unsettled: its reused candidate's checks may never turn
+green (a run cancelled because a waived platform's job was cancelled). Settle
+it instead:
+
+```bash
+aq integration settle-batch <batch-id>
+aq integration settle-batch <batch-id> --apply --reason "target already matches"
+```
+
+The control requires every member source to be a Git ancestor of the observed
+target, or delivery trailers for it; a matching tree alone is refused with
+`target_not_settled`. Applying it records the batch as promoted at the observed
+target (never the untested candidate) and logs `integration.batch_settled` with
+the principal and reason; the next target visit runs epic completion. The train
+settles on its own an epic refresh whose epic already is the default head (an
+ancestor with an identical tree; a resolved merge still runs its checks), and a run whose only non-success job lies outside the required checks no longer
+holds candidate checks unknown.
 
 The train excludes current completions whose exact retained source is an ancestor
 of the project's default/development ref. Scoped legacy delivery attestations also

@@ -154,7 +154,11 @@ the same database transaction as the `COMPLETED` transition. Git provenance is
 already retained before that transition. Delivery readers use this current id
 even while the full task completion record is being saved after close hooks;
 an earlier generation's record must never stand in for a reopened close. The
-transition out of `COMPLETED` clears the current id.
+transition out of `COMPLETED` clears the current id. A descriptive close older
+than the task's `integration_rework_at` fence remains historical even if
+automatic container settlement returns the task to `COMPLETED`. Delivery
+requests and recursive aggregate readers withhold that old close until a fresh
+completion supplies the new generation's evidence.
 
 Claim selection receives an ephemeral allowed set and retains priority, age,
 affinity and `SKIP LOCKED` exclusivity. Keyset paging continues past withheld
@@ -261,6 +265,55 @@ branch, the gate stays open until `origin/<base>` is an ancestor of
 `origin/<default>`. An **unanswerable** question — no `gh`, no auth, no
 network, no checkout — resolves the gate as before: unknowable must not wedge
 every dependent shut forever.
+
+The gate is attached automatically when a task completes in `pull_request`
+integration mode. Session close completes such a task with its PR still open.
+A `blocks` edge is satisfied by `COMPLETED` alone, so the dependents would be
+dispatched onto a default branch that has none of the prerequisite's work.
+This is what happened to sound-journey-29: PR #56 was still open when
+calm-summit-59.1 started without it.
+
+To prevent this, the `COMPLETED` transition takes a `pr_merge_gate=<PR URL>`
+argument (`_apply_transition` → `gate_dependents_on_pr_on`). In the same
+transaction, and before the projection recomputes, it adds the task's
+unstarted `blocks` dependents as waiters on the PR's open `pr-merged` gate.
+The dependents it gates are those in `DEFINED`, `READY`, `BLOCKED` or `PAUSED`.
+If an open gate for that PR already exists it is reused; otherwise a new one is
+created. Completion-created gate associations are recorded separately from explicit
+waiters. Shared admission for readiness, pool demand, scheduling and claims is
+the authority for **every** `blocks` edge, including edges and graphs created
+after completion. For a completed `pull_request` source it authenticates the
+current PR against the configured repository, branch and latest completion
+head. A closed unmerged PR, unknown current source or unavailable observation
+withholds the dependent even if an older gate was resolved.
+
+Admission requires the current source (or its authenticated squash merge
+object) to be an ancestor of the repository default branch. Alternatively, a
+same-repository dependent's published branch may qualify as a stack when its
+observed tip contains the exact PR head. Claim preparation pins that tip and
+verifies ancestry in the actual checkout before activation; a branch name or
+old checkpoint alone grants nothing. Source, graph, configuration and remote
+observations are rechecked across preparation.
+
+When this proof holds, admission removes only completion-owned gate links,
+including obsolete links from a replaced PR. It never resolves the shared gate
+or removes explicit human waiter links. Explicit attachment takes ownership of
+an existing generated link. Completion and graph notifications do not publish
+an intermediate ready event for a PR source awaiting admission.
+
+Ordinary claims whose `blocks` sources have no branch, PR, completion commits or
+legacy artifact may bypass remote admission. The existing project and preparation
+reads carry this request hint; it is never a stored delivery fact. Activation locks
+the candidate, its sources and project policy and rechecks artifact absence and
+graph blockedness in the activation transaction. A source/configuration writer,
+new edge or newly recorded artifact invalidates the hint and retries admission.
+Development claims always retain their delivery observation. Pool measurement
+carries the same hint on its existing project-list query; skipped remote reads
+never authorize activation, which still revalidates the task's current inputs.
+
+Managed projects (`development`, `hierarchy`, `train`) retain their own source
+delivery policies. Organizational sources with no branch, PR or completion
+artifact retain ordinary graph semantics.
 
 Before it merges anything, `pr_merge` asks what CI said. `integration.merge_ci_policy`
 (`off` / `warn` / `required`, shipped as `warn`) decides what a non-green
@@ -382,6 +435,17 @@ predicates; claim retains fresh Git and identity revalidation. The explicit
 
 ### 9.2 Ready frontier
 
+Task list/detail, graph (including epic children), CLI and digest reads expose
+`claim_readiness` for READY tasks. This is a read-only projection of the shared
+claim-frontier predicates, never a new lifecycle status. Failed delivery fences
+read **Waiting on delivery**, naming each missing sibling/cross-epic source and
+its target branch, or the epic and open refresh batches that must finish.
+Missing cached delivery evidence reads **Checking delivery evidence** and must
+not imply proven delivery or claimability. Interactive reads never fetch Git.
+Held rows contribute no claimable count; pool demand retains its authoritative
+admission query. Stall readers classify delivery fences as
+`WAITING-ON-DELIVERY`, separately from stuck routing or execution.
+
 Pool demand and claim selection use the same `claim_frontier_predicates` builder,
 including preparation backoff, prerequisite-stack repair, workspace requirements
 and hold labels. A READY task rejected by that builder contributes no demand.
@@ -493,6 +557,27 @@ reason in retained comments, and still refuses running sessions and live operati
 Bulk/automatic archive keeps its terminal-only selection. Delete/archive refusals
 in the dashboard offer **Remove while keeping history and branches** where that
 control can resolve the refusal.
+
+Evidence-preserving duplicate retirement uses
+`aq task archive --task-id <id> --disposition obsolete --reason ... --replacement <leaf>`.
+In one change-set transaction, every incoming nonstructural edge is redirected
+to the replacement with its original type and explanation, the final graph is validated, and
+the duplicate is archived. A replacement must be a distinct live leaf in the
+same project; cycles, incomplete rewrites, running dependents and active
+integration ownership refuse the transaction. `--satisfied-by <evidence>`
+records why the requirement is already met; it requires an explicit `--rewire`
+JSON object with `edges` and `remove_edges` arrays when dependents exist. Their
+edge objects use `from`, `to`, and `dep_type`, as ordinary change sets do.
+Evidence never produces a passing completion or satisfies an unchanged edge.
+
+The obsolete marker records `replacement_task_id`, `satisfied_by` and the edge
+plan. Archive retains that exact marker in task comments because live metadata
+is FK-bound to the removed task row. Source identity, original status, branch
+and completion history remain archived. Branches go through the existing
+audited retirement service, which preserves tips before fenced deletion;
+empty parents settle under the existing container rules. `ObsoleteClose` also
+accepts these evidence arguments for a hierarchical leaf through the same
+transactional edge proof, while keeping the live task marked abandoned.
 
 ## 13a. Claims and pools
 
@@ -616,6 +701,19 @@ close). A branch or recorded commits without that record is unknown
 branchless task with no recorded artifact is organizational. The stale
 `development_publisher_skip` still clears once git proves the work, and a failed origin
 fetch is unknown, never an empty source.
+
+**Recovering an unlabelled completion.** In Git-first hierarchy/train mode, an
+explicit `reopen_with_feedback` by the local operator or a live authorized
+supervisor may reopen a completed task whose own current, revalidated Git
+observation is `missing_git_provenance`. This repairs a completion; it does not
+establish delivery or waive provenance, checks or review on the next close.
+The branch and descendants remain intact. Containment on branches inside that
+subtree does not prevent reopening only its aggregate. Sealed batches, external
+delivery receipts or proven external containment still fix the identity; missing
+descendant provenance, stale observations, repository mismatches and Git failures
+still refuse the control. Reopening invalidates the task's aggregate checkpoint
+and its immediate parent's verification in the same transaction. Ordinary status
+writes and reviewer controls retain the unknown-delivery guard.
 
 **Delivered commits-less work after branch cleanup.** A completed task whose close lists
 no commits, such as a plan or docs task whose branch is its base, is released by its

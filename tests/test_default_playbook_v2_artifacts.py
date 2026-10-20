@@ -555,7 +555,7 @@ def _routing_policy_block(source: str) -> str:
 #: (docs/guides/operator-workers.md), and standard-first bugfix escalation
 #: (docs/specs/design/routing-live-context.md).
 SHIPPED_ROUTING_POLICY_SHA256 = (
-    "sha256:4133b64ec754ff8cd88f1bf0eaa3badff1f34b4d594005705842d4d71edea9bf"
+    "sha256:82e852857e630dfb459b4ddac5f9244ffafb70c2656dbfedd9447c0a8db17412"
 )
 
 ROUTING_BUNDLES = (

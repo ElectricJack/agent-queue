@@ -610,3 +610,30 @@ def test_repair_can_take_ordinary_idle_capacity_but_not_busy_or_repair_capacity(
                    cand("repairing", live=6, ready=50, repair_ready=1,
                         idle_session_ids=("reserved",))]:
         assert rebalance([source, target], since={K: 0}) == ([], {})
+
+
+def test_kind_placement_shares_project_and_profile_budgets():
+    candidates = [cand("p", ready=5, project_cap=3),
+                  cand("p", workspace_kind="native", ready=5,
+                       workspace_capacity=2, project_cap=3)]
+    starts, _, starved = place(count=5, candidates=candidates)
+    assert sum(s.count for s in starts) == 3
+    assert sum(s.count for s in starts if s.workspace_kind == "native") <= 2
+    assert sum(s.wanted for s in starved) == 2
+    assert any(s.workspace_kind == "project-repo" for s in starts)
+
+
+def test_no_special_kind_warm_supply_without_matching_demand():
+    starts, _, _ = place(count=3, candidates=[cand("p"), cand("p", workspace_kind="native")])
+    assert {s.workspace_kind for s in starts} == {"project-repo"}
+
+
+def test_incompatible_idle_workers_rebalance_within_capped_project():
+    candidates = [cand("p", live=2, project_live_total=2, project_cap=2,
+                       idle_session_ids=("linux-1", "linux-2"), warm_floor=2),
+                  cand("p", workspace_kind="native", ready=2,
+                       project_live_total=2, project_cap=2, workspace_capacity=2)]
+    drains, since = rebalance(candidates)
+    assert not drains
+    drains, _ = rebalance(candidates, since=since, now=1000)
+    assert {sid for d in drains for sid in d.session_ids} == {"linux-1", "linux-2"}

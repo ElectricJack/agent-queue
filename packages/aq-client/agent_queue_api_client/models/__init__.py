@@ -58,6 +58,7 @@ from .archive_settings_response import ArchiveSettingsResponse
 from .archive_settings_response_422 import ArchiveSettingsResponse422
 from .archive_settings_response_blocked_item import ArchiveSettingsResponseBlockedItem
 from .archive_task_request import ArchiveTaskRequest
+from .archive_task_request_rewire_type_0 import ArchiveTaskRequestRewireType0
 from .archive_task_response import ArchiveTaskResponse
 from .archive_task_response_delivery_type_0 import ArchiveTaskResponseDeliveryType0
 from .archive_task_response_undelivered_item import ArchiveTaskResponseUndeliveredItem
@@ -70,7 +71,11 @@ from .ask_apply_input_request import AskApplyInputRequest
 from .ask_apply_input_request_expected import AskApplyInputRequestExpected
 from .ask_control_response import AskControlResponse
 from .ask_control_response_result import AskControlResponseResult
+from .ask_cutover_destination import AskCutoverDestination
 from .ask_cutover_request import AskCutoverRequest
+from .ask_cutover_status_request import AskCutoverStatusRequest
+from .ask_cutover_status_response import AskCutoverStatusResponse
+from .ask_cutover_status_result import AskCutoverStatusResult
 from .ask_decide_request import AskDecideRequest
 from .ask_decide_request_expected import AskDecideRequestExpected
 from .ask_decision_response import AskDecisionResponse
@@ -85,6 +90,7 @@ from .ask_history_response import AskHistoryResponse
 from .ask_history_response_items_item import AskHistoryResponseItemsItem
 from .ask_input_response import AskInputResponse
 from .ask_input_response_receipt import AskInputResponseReceipt
+from .ask_legacy_reset_request import AskLegacyResetRequest
 from .ask_list_request import AskListRequest
 from .ask_list_response import AskListResponse
 from .ask_prepare_decision_request import AskPrepareDecisionRequest
@@ -113,6 +119,11 @@ from .ask_update_context_request_expected import AskUpdateContextRequestExpected
 from .ask_version import AskVersion
 from .assignment_route_detail import AssignmentRouteDetail
 from .assignment_route_detail_override_type_0 import AssignmentRouteDetailOverrideType0
+from .batch_reconcile_request import BatchReconcileRequest
+from .batch_reconcile_response import BatchReconcileResponse
+from .batch_reconcile_response_422 import BatchReconcileResponse422
+from .batch_reconcile_response_errors_item import BatchReconcileResponseErrorsItem
+from .batch_reconcile_response_recovered_item import BatchReconcileResponseRecoveredItem
 from .benchmark_stage_record_request import BenchmarkStageRecordRequest
 from .benchmark_stage_record_response import BenchmarkStageRecordResponse
 from .benchmark_stage_record_response_422 import BenchmarkStageRecordResponse422
@@ -154,6 +165,9 @@ from .ci_repair_adopt_request import CiRepairAdoptRequest
 from .ci_repair_adopt_response import CiRepairAdoptResponse
 from .ci_repair_adopt_response_422 import CiRepairAdoptResponse422
 from .ci_test_policy import CITestPolicy
+from .claim_readiness import ClaimReadiness
+from .claim_readiness_reason import ClaimReadinessReason
+from .claim_readiness_state import ClaimReadinessState
 from .claim_session_summary import ClaimSessionSummary
 from .claim_session_summary_failed_preparation_type_0 import ClaimSessionSummaryFailedPreparationType0
 from .claim_timing_detail import ClaimTimingDetail
@@ -399,6 +413,8 @@ from .effect_clause_dto import EffectClauseDTO
 from .effect_clause_dto_kind import EffectClauseDTOKind
 from .effective_git_identity import EffectiveGitIdentity
 from .effective_git_identity_source import EffectiveGitIdentitySource
+from .ensure_fidelity_review_request import EnsureFidelityReviewRequest
+from .ensure_fidelity_review_response_422 import EnsureFidelityReviewResponse422
 from .ensure_spec_ingest_request import EnsureSpecIngestRequest
 from .ensure_spec_ingest_response_422 import EnsureSpecIngestResponse422
 from .ensure_task_request import EnsureTaskRequest
@@ -739,6 +755,11 @@ from .inspect_playbook_run_response_trigger_event import InspectPlaybookRunRespo
 from .install_profile_request import InstallProfileRequest
 from .install_profile_response import InstallProfileResponse
 from .install_profile_response_422 import InstallProfileResponse422
+from .integration_settings import IntegrationSettings
+from .integration_settings_engine import IntegrationSettingsEngine
+from .integration_settings_hierarchical_integration_mode import IntegrationSettingsHierarchicalIntegrationMode
+from .integration_settings_policy_type_0 import IntegrationSettingsPolicyType0
+from .integration_settings_promotion_flow_type_0_item import IntegrationSettingsPromotionFlowType0Item
 from .intelligence_class_model import IntelligenceClassModel
 from .intelligence_class_model_mapping import IntelligenceClassModelMapping
 from .intelligence_class_policy import IntelligenceClassPolicy
@@ -1802,6 +1823,9 @@ from .task_attachment_response import TaskAttachmentResponse
 from .task_attachments_response import TaskAttachmentsResponse
 from .task_batch_ack_response import TaskBatchAckResponse
 from .task_batch_ack_response_diff_type_0 import TaskBatchAckResponseDiffType0
+from .task_batch_ack_response_lineage_type_0 import TaskBatchAckResponseLineageType0
+from .task_batch_ack_response_members_type_0 import TaskBatchAckResponseMembersType0
+from .task_batch_ack_response_release_receipt_type_0 import TaskBatchAckResponseReleaseReceiptType0
 from .task_batch_commit_request import TaskBatchCommitRequest
 from .task_batch_commit_response import TaskBatchCommitResponse
 from .task_batch_commit_response_422 import TaskBatchCommitResponse422
@@ -1813,8 +1837,14 @@ from .task_batch_propose_response import TaskBatchProposeResponse
 from .task_batch_propose_response_422 import TaskBatchProposeResponse422
 from .task_batch_propose_response_diff_type_0 import TaskBatchProposeResponseDiffType0
 from .task_batch_update_request import TaskBatchUpdateRequest
-from .task_batch_update_request_payload import TaskBatchUpdateRequestPayload
+from .task_batch_update_request_payload_type_0 import TaskBatchUpdateRequestPayloadType0
 from .task_batch_update_response_422 import TaskBatchUpdateResponse422
+from .task_batch_validate_request import TaskBatchValidateRequest
+from .task_batch_validate_response import TaskBatchValidateResponse
+from .task_batch_validate_response_422 import TaskBatchValidateResponse422
+from .task_batch_validate_response_advisory_item import TaskBatchValidateResponseAdvisoryItem
+from .task_batch_validate_response_gaps_item import TaskBatchValidateResponseGapsItem
+from .task_batch_validate_response_hard_item import TaskBatchValidateResponseHardItem
 from .task_children_request import TaskChildrenRequest
 from .task_children_response import TaskChildrenResponse
 from .task_children_response_422 import TaskChildrenResponse422
@@ -2007,6 +2037,15 @@ from .wait_register_request import WaitRegisterRequest
 from .wait_register_response_422 import WaitRegisterResponse422
 from .wait_response import WaitResponse
 from .withheld_task import WithheldTask
+from .workspace_cutover_request import WorkspaceCutoverRequest
+from .workspace_cutover_response import WorkspaceCutoverResponse
+from .workspace_cutover_response_422 import WorkspaceCutoverResponse422
+from .workspace_cutover_snapshot import WorkspaceCutoverSnapshot
+from .workspace_cutover_snapshot_owners_item import WorkspaceCutoverSnapshotOwnersItem
+from .workspace_cutover_snapshot_sessions_item import WorkspaceCutoverSnapshotSessionsItem
+from .workspace_cutover_snapshot_source import WorkspaceCutoverSnapshotSource
+from .workspace_cutover_snapshot_source_additional_property import WorkspaceCutoverSnapshotSourceAdditionalProperty
+from .workspace_cutover_snapshot_workspaces_item import WorkspaceCutoverSnapshotWorkspacesItem
 from .workspace_doctor_request import WorkspaceDoctorRequest
 from .workspace_doctor_response_422 import WorkspaceDoctorResponse422
 from .workspace_list_diagnostics import WorkspaceListDiagnostics
@@ -2017,6 +2056,9 @@ from .workspace_owner_session import WorkspaceOwnerSession
 from .workspace_owner_task import WorkspaceOwnerTask
 from .workspace_reap_request import WorkspaceReapRequest
 from .workspace_reap_response_422 import WorkspaceReapResponse422
+from .workspace_retire_claim_request import WorkspaceRetireClaimRequest
+from .workspace_retire_claim_response import WorkspaceRetireClaimResponse
+from .workspace_retire_claim_response_422 import WorkspaceRetireClaimResponse422
 from .workspace_summary import WorkspaceSummary
 from .write_file_request import WriteFileRequest
 from .write_file_response import WriteFileResponse
@@ -2082,6 +2124,7 @@ __all__ = (
     "ArchiveSettingsResponse422",
     "ArchiveSettingsResponseBlockedItem",
     "ArchiveTaskRequest",
+    "ArchiveTaskRequestRewireType0",
     "ArchiveTaskResponse",
     "ArchiveTaskResponseDeliveryType0",
     "ArchiveTaskResponseUndeliveredItem",
@@ -2094,7 +2137,11 @@ __all__ = (
     "AskApplyInputRequestExpected",
     "AskControlResponse",
     "AskControlResponseResult",
+    "AskCutoverDestination",
     "AskCutoverRequest",
+    "AskCutoverStatusRequest",
+    "AskCutoverStatusResponse",
+    "AskCutoverStatusResult",
     "AskDecideRequest",
     "AskDecideRequestExpected",
     "AskDecisionResponse",
@@ -2109,6 +2156,7 @@ __all__ = (
     "AskHistoryResponseItemsItem",
     "AskInputResponse",
     "AskInputResponseReceipt",
+    "AskLegacyResetRequest",
     "AskListRequest",
     "AskListResponse",
     "AskPrepareDecisionRequest",
@@ -2137,6 +2185,11 @@ __all__ = (
     "AskVersion",
     "AssignmentRouteDetail",
     "AssignmentRouteDetailOverrideType0",
+    "BatchReconcileRequest",
+    "BatchReconcileResponse",
+    "BatchReconcileResponse422",
+    "BatchReconcileResponseErrorsItem",
+    "BatchReconcileResponseRecoveredItem",
     "BenchmarkStageRecordRequest",
     "BenchmarkStageRecordResponse",
     "BenchmarkStageRecordResponse422",
@@ -2179,6 +2232,9 @@ __all__ = (
     "CiRepairAdoptResponse422",
     "CITestPolicy",
     "ClaimedBy",
+    "ClaimReadiness",
+    "ClaimReadinessReason",
+    "ClaimReadinessState",
     "ClaimSessionSummary",
     "ClaimSessionSummaryFailedPreparationType0",
     "ClaimTimingDetail",
@@ -2421,6 +2477,8 @@ __all__ = (
     "EffectClauseDTOKind",
     "EffectiveGitIdentity",
     "EffectiveGitIdentitySource",
+    "EnsureFidelityReviewRequest",
+    "EnsureFidelityReviewResponse422",
     "EnsureSpecIngestRequest",
     "EnsureSpecIngestResponse422",
     "EnsureTaskRequest",
@@ -2759,6 +2817,11 @@ __all__ = (
     "InstallProfileRequest",
     "InstallProfileResponse",
     "InstallProfileResponse422",
+    "IntegrationSettings",
+    "IntegrationSettingsEngine",
+    "IntegrationSettingsHierarchicalIntegrationMode",
+    "IntegrationSettingsPolicyType0",
+    "IntegrationSettingsPromotionFlowType0Item",
     "IntelligenceClassModel",
     "IntelligenceClassModelMapping",
     "IntelligenceClassPolicy",
@@ -3814,6 +3877,9 @@ __all__ = (
     "TaskAttachmentsResponse",
     "TaskBatchAckResponse",
     "TaskBatchAckResponseDiffType0",
+    "TaskBatchAckResponseLineageType0",
+    "TaskBatchAckResponseMembersType0",
+    "TaskBatchAckResponseReleaseReceiptType0",
     "TaskBatchCommitRequest",
     "TaskBatchCommitResponse",
     "TaskBatchCommitResponse422",
@@ -3825,8 +3891,14 @@ __all__ = (
     "TaskBatchProposeResponse422",
     "TaskBatchProposeResponseDiffType0",
     "TaskBatchUpdateRequest",
-    "TaskBatchUpdateRequestPayload",
+    "TaskBatchUpdateRequestPayloadType0",
     "TaskBatchUpdateResponse422",
+    "TaskBatchValidateRequest",
+    "TaskBatchValidateResponse",
+    "TaskBatchValidateResponse422",
+    "TaskBatchValidateResponseAdvisoryItem",
+    "TaskBatchValidateResponseGapsItem",
+    "TaskBatchValidateResponseHardItem",
     "TaskChildrenRequest",
     "TaskChildrenResponse",
     "TaskChildrenResponse422",
@@ -4019,6 +4091,15 @@ __all__ = (
     "WaitRegisterResponse422",
     "WaitResponse",
     "WithheldTask",
+    "WorkspaceCutoverRequest",
+    "WorkspaceCutoverResponse",
+    "WorkspaceCutoverResponse422",
+    "WorkspaceCutoverSnapshot",
+    "WorkspaceCutoverSnapshotOwnersItem",
+    "WorkspaceCutoverSnapshotSessionsItem",
+    "WorkspaceCutoverSnapshotSource",
+    "WorkspaceCutoverSnapshotSourceAdditionalProperty",
+    "WorkspaceCutoverSnapshotWorkspacesItem",
     "WorkspaceDoctorRequest",
     "WorkspaceDoctorResponse422",
     "WorkspaceListDiagnostics",
@@ -4029,6 +4110,9 @@ __all__ = (
     "WorkspaceOwnerTask",
     "WorkspaceReapRequest",
     "WorkspaceReapResponse422",
+    "WorkspaceRetireClaimRequest",
+    "WorkspaceRetireClaimResponse",
+    "WorkspaceRetireClaimResponse422",
     "WorkspaceSummary",
     "WriteFileRequest",
     "WriteFileResponse",

@@ -253,6 +253,26 @@ These auto-expose through the existing MCP registration and
 mounted at `src/api/app.py:83–85`) — no bespoke plumbing. `message_send`,
 `message_reply`, `message_inbox` join the slim task-scoped MCP allowlist (G.2).
 
+**Ordinary send identity.** Omitted sender flags on `aq message send` are omitted
+from the request. `CommandHandler` derives `session:<UUID>` from the authenticated
+execution principal, verifying the persisted live launch, project and (for task
+or pool workers) held task and agent. Pool sends require the current claim epoch.
+Explicit session senders must name that UUID; a live named supervisor may also
+use its own canonical logical/runtime address. A session cannot send as a user,
+another session or a foreign supervisor. A live global supervisor may explicitly
+issue nonreplyable system notices. Local human/operator/script calls without a
+session principal retain `user:cli` when omitted and their explicit sender options.
+Service callers retain explicit human/system attribution. Existing collaboration
+and scoped global-report attribution remain server-derived by those routes.
+
+A worker's ordinary report and the supervisor's `aq message reply <id> "..."`
+share the original thread and reply linkage; the reply addresses the worker's
+session UUID. Its durable message wait therefore retains the existing project
+and ownership checks without a visibility grant. Before this source is deployed,
+workers can explicitly supply `--from-kind session --from-id <held-session-UUID>`
+using `.aq/claim.json` or prime as identity evidence, retaining `--claim-epoch`
+for a pool claim. A successful source test does not change the running daemon.
+
 **Mailbox fence** (`_inbox_mailbox_scope_error`): `message_inbox` is not a pure
 read — `inject=true` marks the returned rows delivered, and
 `get_pending_messages` has no project filter. A non-elevated session token may
@@ -310,6 +330,18 @@ Existing command capability checks and invocation auditing still apply. Explicit
 `system_only`, global inbox/history, unrelated projectless replies, ordinary
 workers and user/local behavior retain their existing authority requirements.
 Source validation of this contract does not establish loaded daemon acceptance.
+
+A pool worker whose claim is still `preparing` may report to its own project
+supervisor before `.aq/claim.json` exists. The authenticated live session instance,
+project/profile, persisted preparation epoch, IN_PROGRESS task and BUSY agent must
+still agree; a supplied epoch must match too. Only the canonical own-supervisor
+addresses or its persisted named session UUID are admitted by this exception.
+The sender remains the authenticated worker UUID and replies use its session inbox.
+This permits a blocker report while preparation retains ownership; it does not
+admit ordinary messaging to peers or users, task mutations, or a report after the
+preparation binding has been released. Active pool messaging still requires an
+explicit claim epoch.
+
 `agent_message --reply-to` still threads only onto the target worker's own
 project's messages; a readable row from another project is refused with the
 `aq message reply <id>` that answers it, and an unreadable one stays

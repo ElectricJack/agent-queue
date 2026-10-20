@@ -59,6 +59,94 @@ def _with_reason(success: bool, payload: dict[str, Any]) -> dict[str, Any]:
 
 
 class IntegrationCommandsMixin:
+    async def retained_repository_recovery(self, state, *, load=False):
+        """Daemon port for its managed cache, never a caller-supplied repair command."""
+        from src.integration.repository_incidents import record_incident
+
+        return await record_incident(self, state, load=load)
+
+    async def _cmd_integration_clear_retained_recovery(self, args: dict) -> dict:
+        """Lift a retained-cache admission hold after the store passes a full fsck."""
+        from pydantic import ValidationError
+
+        from src.commands.contracts.integration import IntegrationClearRetainedRecoveryArgs
+        from src.integration.repository_incidents import admission_holds, clear_incident
+        from src.integration.repository_recovery import clear_retained_recovery
+
+        try:
+            request = IntegrationClearRetainedRecoveryArgs.model_validate(args)
+        except ValidationError as exc:
+            return _failure("not_found", f"invalid clear request: {exc}")
+        principal, refusal = await integration_operator(self.db, request.project_id)
+        if refusal is not None:
+            return _failure("unauthorized", refusal)
+        holds = [state for state in await admission_holds(self.db, request.project_id)
+                 if request.incident_id in (None, state["id"])]
+        if not holds:
+            return _failure("not_found", "no retained recovery incident holds this project")
+        incidents = []
+        for state in holds:
+            try:
+                result = await clear_retained_recovery(
+                    self.orchestrator.git, state, by=principal,
+                    record=lambda cleared, state=state: clear_incident(self, state, cleared),
+                )
+            except (GitError, OSError, ValueError) as exc:
+                incidents.append({"id": state["id"], "cache": state["cache"],
+                                  "outcome": "unavailable", "error": str(exc)})
+                continue
+            incidents.append({"id": state["id"], "cache": state["cache"],
+                              "outcome": "cleared" if result["cleared"] else "not_clean",
+                              "fsck": result["fsck"]})
+        outcomes = {item["outcome"] for item in incidents}
+        outcome = next(name for name in ("not_clean", "unavailable", "cleared")
+                       if name in outcomes)
+        payload = {"outcome": outcome, "project_id": request.project_id,
+                   "evidence": {"incidents": incidents}}
+        if outcome != "cleared":
+            payload["reason"] = "a held retained cache failed its full fsck or is unavailable"
+        return _with_reason(outcome == "cleared", payload)
+
+    async def _cmd_integration_supersede_completion(self, args: dict) -> dict:
+        """Preview/apply one human-directed supersession, without the close pipeline."""
+        from src.commands.contracts.integration import IntegrationSupersedeCompletionArgs
+        from src.integration.finished_owners import stop_confirmer_for
+        from src.integration.superseded_completion import SupersededCompletion
+        from src.sessions.obsolete import (
+            ObsoleteClose, ObsoleteCloseRefused, obsolete_owner_release_for,
+        )
+
+        request = IntegrationSupersedeCompletionArgs.model_validate(args)
+        principal, refusal = await integration_operator(self.db, request.project_id)
+        if refusal:
+            return _failure("refused", refusal)
+        closer = ObsoleteClose(
+            self.db, release_owner=obsolete_owner_release_for(self.orchestrator),
+            git_manager=self.orchestrator.git,
+        )
+        try:
+            result = await SupersededCompletion(
+                self.db, closer=closer, confirm_stopped=stop_confirmer_for(self.orchestrator),
+            ).run(request, principal=principal)
+        except (ValueError, GitError, HierarchyError, ObsoleteCloseRefused) as exc:
+            return _failure("refused", str(exc))
+        return {"success": True, **result}
+
+    async def _cmd_integration_off(self, args: dict) -> dict:
+        from src.commands.contracts.integration import IntegrationOffArgs
+        from src.integration.manual_control import ManualIntegration
+
+        principal = current_principal()
+        if principal is None or principal.kind is not PrincipalKind.LOCAL:
+            return _failure("refused", "manual integration controls require the local operator")
+        request = IntegrationOffArgs.model_validate(args)
+        try:
+            result = await ManualIntegration(self.db).run(
+                request, operator_id="human:local-operator")
+        except (ValueError, HierarchyError, GitError, BranchBusy, TimeoutError) as exc:
+            return _failure("refused", str(exc))
+        return {"success": True, **result}
+
     async def _cmd_integration_migrate_provenance_refs(self, args: dict) -> dict:
         from src.commands.contracts.integration import IntegrationMigrateProvenanceRefsArgs
         from src.integration.provenance_migration import ProvenanceMigration
@@ -279,6 +367,26 @@ class IntegrationCommandsMixin:
             return _failure("refused", str(exc))
         return {"success": True, **result}
 
+    async def _cmd_integration_reverify_epic(self, args: dict) -> dict:
+        """Request ordinary aggregate verification without reopening a completed epic."""
+        from src.commands.contracts.integration import IntegrationReverifyEpicArgs
+        from src.integration.train_controls import TrainControls
+
+        request = IntegrationReverifyEpicArgs.model_validate(args)
+        task = await self.db.get_task(request.task_id)
+        operator, refusal = await integration_operator(self.db, task.project_id if task else None)
+        if refusal:
+            return _failure("unauthorized", refusal)
+        try:
+            result = await TrainControls(self.db, train=getattr(
+                self.orchestrator, "integration_train", None)).reverify_epic(
+                    request.task_id, dry_run=request.dry_run, operator_id=operator,
+                    expected_head_sha=request.expected_head_sha, reason=request.reason,
+                    expected_project_id=task.project_id if task else None)
+        except (ValueError, GitError, OSError) as exc:
+            return _failure("refused", str(exc))
+        return {"success": result["outcome"] != "changed", **result}
+
     async def _cmd_integration_promotion_publish(self, args: dict) -> dict:
         """Mechanism entry for one admitted promotion; no worker can publish a target."""
         from sqlalchemy import select
@@ -341,6 +449,29 @@ class IntegrationCommandsMixin:
                 request.batch_id, dry_run=request.dry_run, operator_id=operator,
                 reason=request.reason,
             )
+        except (ValueError, GitError, OSError) as exc:
+            return _failure("refused", str(exc))
+        return {"success": True, **result}
+
+    async def _cmd_integration_settle_batch(self, args: dict) -> dict:
+        """Preview or settle a batch whose target already contains every member."""
+        from src.commands.contracts.integration import IntegrationAbortBatchArgs
+        from src.integration.batches import BatchStore
+        from src.integration.train_controls import TrainControlError, TrainControls
+
+        request = IntegrationAbortBatchArgs.model_validate(args)
+        batch = await BatchStore(self.db).get(request.batch_id)
+        operator, refusal = await integration_operator(self.db, batch.project_id if batch else None)
+        if refusal:
+            return _failure("unauthorized", refusal)
+        try:
+            result = await TrainControls(self.db, train=getattr(
+                self.orchestrator, "integration_train", None)).settle_batch(
+                request.batch_id, dry_run=request.dry_run, operator_id=operator,
+                reason=request.reason,
+            )
+        except TrainControlError as exc:
+            return _failure(exc.outcome, str(exc))
         except (ValueError, GitError, OSError) as exc:
             return _failure("refused", str(exc))
         return {"success": True, **result}
@@ -1847,6 +1978,26 @@ class IntegrationCommandsMixin:
             "dry_run": request.dry_run,
             **result,
         }
+
+    async def _cmd_integration_recover_completed_container(self, args: dict) -> dict:
+        from pydantic import ValidationError
+
+        from src.commands.contracts.integration import IntegrationRecoverCompletedContainerArgs
+        from src.integration.completed_container_recovery import CompletedContainerRecovery
+
+        try:
+            request = IntegrationRecoverCompletedContainerArgs.model_validate(args)
+        except ValidationError as exc:
+            return _failure("invalid", str(exc))
+        operator, refusal = await integration_operator(self.db, request.project_id)
+        if refusal:
+            return _failure("unauthorized", refusal)
+        result = await CompletedContainerRecovery(
+            self.db, self._integration_repository_git(),
+            git_first=lambda: self.config.integration.git_first,
+            authorize=lambda: integration_operator(self.db, request.project_id),
+        ).run(request, operator_id=operator)
+        return _with_reason(result["outcome"] != "refused", result)
 
     async def _cmd_integration_reopen_collection(self, args: dict) -> dict:
         """Recover a suspended producer, cancelled collection or failed verifier."""

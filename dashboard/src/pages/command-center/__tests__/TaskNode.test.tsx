@@ -370,3 +370,13 @@ function ReviewProbe() {
   const { reviewId } = useParams();
   return <p data-testid="review-page">{reviewId}</p>;
 }
+
+it("gives a delivery-held READY card a waiting pill and exact landing reason", () => {
+  const data = card("READY", { childCount: 0, descendantCount: 0 });
+  data.task.claim_readiness = { state: "waiting_on_delivery", claimable: false,
+    label: "Waiting on delivery", reason: "Land source.6 on dev; refresh aq/epic" };
+  render(<TaskCard data={data} />);
+  expect(screen.getByText("Waiting on delivery")).toBeInTheDocument();
+  expect(screen.getByText("Land source.6 on dev; refresh aq/epic")).toBeInTheDocument();
+  expect(screen.queryByText("Claimable · next in frontier")).not.toBeInTheDocument();
+});

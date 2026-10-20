@@ -187,9 +187,12 @@ def evaluate(
         # Keep workflow-level publication gating without inventing failed jobs.
         # The train blocks repair allocation when no required check actually failed.
         state = ChecksState.RED
-    elif workflow_conclusions != {"success"}:
+    elif workflow_conclusions - {"success", "cancelled"}:
         state = ChecksState.UNKNOWN
     else:
+        # Every required job concluded success here, so a cancelled run can only
+        # reflect a job outside the required set (a waived platform). The verdict
+        # is final; waiting on it would hold the train forever.
         state = ChecksState.GREEN
     due = [check.due_at for check in checks if check.conclusion not in FINAL and check.due_at]
     return ChecksResult(

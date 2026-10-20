@@ -31,6 +31,55 @@ def test_all_frozen_commands_have_schema_contract_category_and_response():
     assert "ask." in _FORWARDED_PREFIXES
 
 
+def test_cutover_status_contract_is_read_only_and_operator_scoped():
+    from src.commands.contracts.models import ReadClause, SideEffectClass
+
+    contract = CONTRACTS.get("ask_cutover_status").contract.execution
+    assert contract.side_effect is SideEffectClass.READ
+    assert all(isinstance(effect, ReadClause) for effect in contract.effects)
+    assert "ask_cutover_status" in OPERATOR_COMMANDS
+    assert (
+        check_command_scope("ask_cutover_status", {"project_id": "p"}, RequestScope(kind="local"))
+        is None
+    )
+
+
+@pytest.mark.parametrize("surface", ["typed", "execute"])
+async def test_cutover_status_http_returns_initial_generation(env, monkeypatch, surface):
+    from src.asks.delivery import destination
+
+    handler, _ = env
+    monkeypatch.setattr(deps, "_command_handler", handler)
+    monkeypatch.setattr(deps, "_orchestrator", handler.orchestrator)
+    monkeypatch.setattr(deps, "_require_session_token", False)
+    app = FastAPI()
+    app.include_router(execute_router)
+    paths = {}
+    for router in build_category_routers():
+        app.include_router(router)
+        for route in router.routes:
+            paths[route.name] = route.path
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            paths["ask_cutover_status"] if surface == "typed" else "/api/execute",
+            json={"project_id": "p"}
+            if surface == "typed"
+            else {
+                "command": "ask_cutover_status",
+                "args": {"project_id": "p"},
+            },
+        )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    if surface == "execute":
+        body = body["result"]
+    assert body["success"], body
+    assert body["result"]["configured_destination"] == destination(handler.config)
+    assert body["result"]["destinations"][0]["generation"] == 0
+
+
 @pytest.mark.parametrize("kind,elevated", [("local", False), ("session", True), ("session", False)])
 def test_gateway_tools_cannot_be_called_by_http_or_mcp(kind, elevated):
     scope = RequestScope(kind=kind, elevated=elevated, project_id="p", session_id="s")

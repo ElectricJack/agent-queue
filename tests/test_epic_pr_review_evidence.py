@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import logging
-import shutil
 import subprocess
 from types import SimpleNamespace
 
@@ -1263,10 +1262,9 @@ def _git(*args: str, cwd=None) -> str:
     ).stdout.strip()
 
 
-@pytest.fixture(scope="session")
-def review_git_template(tmp_path_factory):
-    """Build the immutable starting history once; every case gets private copies."""
-    tmp_path = tmp_path_factory.mktemp("review-git-template")
+@pytest.fixture
+def review_git_template(tmp_path):
+    """Build fresh repositories and starting history for this case."""
     remote = tmp_path / "origin.git"
     work = tmp_path / "work"
     init_bare_seed(remote)
@@ -1293,12 +1291,7 @@ def review_git_template(tmp_path_factory):
 
 @pytest.fixture
 async def case(tmp_path, reuse_database, review_git_template):
-    source_remote, source_work, base, first, tree, second = review_git_template
-    remote = tmp_path / "origin.git"
-    work = tmp_path / "work"
-    shutil.copytree(source_remote, remote)
-    shutil.copytree(source_work, work)
-    _git("remote", "set-url", "origin", str(remote), cwd=work)
+    remote, work, base, first, tree, second = review_git_template
 
     db = await reuse_database("epic-pr-review-evidence.db")
     await db.create_project(Project(id="p", name="PR review project"))

@@ -330,6 +330,17 @@ holds, pinned jobs and integration-owned delegates are not automatically requeue
 the same preservation and release. Command callers must pass `dry_run: false` to
 apply. Preview performs no publication, detach, release or audit writes.
 
+Claim release also clears the exact old assignment when the task has already
+returned to READY: it matches the releasing session's agent and claim epoch,
+leaving a successor's assignment untouched. An attached integration owner still
+vetoes release. For an assignment stranded after its sessions stopped, the existing
+`aq task recover --decision release --operator-release --expected-hold-at …`
+control clears it while releasing the exact recovery hold, provided the incident's
+worker is confirmed stopped by its provider, its instance and claim generation
+still match, all sessions for that task and agent are stopped, and no integration
+owner remains. It preserves task status, retry budgets, workspaces and other
+frontier guards; releasing an integration-owned hold never clears its assignment.
+
 `agents.last_heartbeat` is fed from two sources: transcript `in-turn` activity (§4.5) and
 explicit `aq task heartbeat` calls (the prompt instructs agents to call it before long
 commands). A lease TTL of ~8 minutes without either marks the task **stalled** — not dead.

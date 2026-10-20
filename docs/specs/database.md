@@ -558,6 +558,7 @@ There is no foreign key from `subject` to `projects(id)` — the column is also 
 | `description` | TEXT | NOT NULL | Full prompt/instructions for the agent |
 | `priority` | INTEGER | NOT NULL DEFAULT 100 | Lower number = higher priority |
 | `status` | TEXT | NOT NULL DEFAULT 'DEFINED' | See task state machine |
+| `held_batch_id` | TEXT | nullable, indexed by `ix_tasks_held_batch_id` | Independent ingestion admission hold; cleared by atomic batch release. Added by revision `a00000000100` |
 | `verification_type` | TEXT | NOT NULL DEFAULT 'auto_test' | One of: auto_test, qa_agent, human |
 | `retry_count` | INTEGER | NOT NULL DEFAULT 0 | How many times this task has been retried |
 | `max_retries` | INTEGER | NOT NULL DEFAULT 3 | |
@@ -608,10 +609,10 @@ Directed edge: "`task_id` depends on `depends_on_task_id`" (i.e., `depends_on_ta
 |---|---|---|---|
 | `task_id` | TEXT | NOT NULL REFERENCES tasks(id) | The waiting task |
 | `depends_on_task_id` | TEXT | NOT NULL REFERENCES tasks(id) | Must complete first |
-| `dep_type` | TEXT | NOT NULL DEFAULT `'blocks'` | Edge type: `blocks`, `parent-child`, `waits-for`, `conditional-blocks`, `discovered-from`, `related`, `duplicates`, `supersedes`. Part of the PK, so one pair of tasks may carry several differently-typed edges. |
+| `dep_type` | TEXT | NOT NULL DEFAULT `'blocks'` | Edge type: `blocks`, `parent-child`, `waits-for`, `conditional-blocks`, `delivery-of`, `discovered-from`, `related`, `duplicates`, `supersedes`. Part of the PK, so one pair of tasks may carry several differently-typed edges. `delivery-of` represents a landed delivery obligation independently of task completion. |
 | (composite PK) | | PRIMARY KEY (task_id, depends_on_task_id, dep_type) | No duplicate edges *of the same type* |
 | (check) | | CHECK (task_id != depends_on_task_id) | No self-dependencies |
-| (check) | | CHECK `ck_task_deps_dep_type` on `dep_type` | Only the eight known types |
+| (check) | | CHECK `ck_task_deps_dep_type` on `dep_type` | Only the nine known types |
 
 Partial unique index `uq_task_deps_single_parent` on `task_id` where
 `dep_type = 'parent-child'` (swarm-work-model §4): enforces exactly one
@@ -1378,12 +1379,93 @@ its tasks do not have real ids until the commit creates them.
 | `project_id` | TEXT | NOT NULL REFERENCES projects(id) | Owning project |
 | `source` | TEXT | NOT NULL | Provenance, e.g. `spec:projects/foo/specs/2026-08-21-thing.md`; stamped onto every task the commit creates |
 | `payload` | TEXT | NOT NULL | JSON: `tasks`, `edits`, `edges`, `remove_edges`, `comments`, validated `diff`, and committed `receipt`; legacy `expected` snapshots are ignored at commit; see [task change sets](../guides/task-change-sets.md) |
-| `status` | TEXT | NOT NULL DEFAULT 'draft' | CHECK `ck_task_proposals_status`: draft, ready, committed, discarded |
+| `status` | TEXT | NOT NULL DEFAULT 'draft' | CHECK `ck_task_proposals_status`: draft, ready, held, committed, discarded |
 | `created_at` | REAL | NOT NULL | Set on insert |
 | `updated_at` | REAL | NOT NULL | Set on insert and every update |
 
 Index: `idx_task_proposals_project_status` on (`project_id`, `status`) — the
 review surface lists pending proposals per project.
+
+### Table: `ingest_batches`
+
+Held ingestion batch identity and release evidence, added by revision `a00000000100`.
+The source approval identity is unique per project; the optional design lineage
+must be entirely present or entirely absent (`ck_ingest_batches_design_lineage`).
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `batch_id` | TEXT | PRIMARY KEY REFERENCES task_proposals(id) | Existing proposal identity |
+| `project_id` | TEXT | NOT NULL REFERENCES projects(id) | Owning project |
+| `source_review_id` | TEXT | NOT NULL | Immutable source review identity |
+| `source_revision` | INTEGER | NOT NULL | Approved source revision |
+| `source_content_sha256` | TEXT | NOT NULL | Approved content hash |
+| `decision_id` | TEXT | NOT NULL | Approval decision identity |
+| `design_review_id` | TEXT | nullable | Optional design ancestor review |
+| `design_revision` | INTEGER | nullable | Design ancestor revision |
+| `design_content_sha256` | TEXT | nullable | Design ancestor content hash |
+| `lineage_kind` | TEXT | NOT NULL, `ck_ingest_batches_lineage_kind` | `resolved` or `none` |
+| `idempotency_key` | TEXT | NOT NULL | Request replay identity |
+| `structure_revision` | INTEGER | NOT NULL DEFAULT 1 | Version of the proposed graph |
+| `structure_digest` | TEXT | NOT NULL | Canonical digest of that graph |
+| `state` | TEXT | NOT NULL DEFAULT 'held', `ck_ingest_batches_state` | `held`, `reviewing`, `needs_scope`, `released` or `retired` |
+| `check_results` | JSONB | nullable | Structural validation results |
+| `reviewer_task_id` | TEXT | nullable | Assigned fidelity reviewer task |
+| `reviewer_session_id` | TEXT | nullable | Reviewer session identity |
+| `reviewer_claim_epoch` | INTEGER | nullable | Reviewer claim fence |
+| `release_actor` | TEXT | nullable | Principal that released the batch |
+| `release_revision` | INTEGER | nullable | Released structure revision |
+| `release_digest` | TEXT | nullable | Released structure digest |
+| `released_at` | FLOAT | nullable | Release timestamp |
+| `release_receipt` | JSONB | nullable | Durable release evidence |
+| `created_at` | FLOAT | NOT NULL | Creation timestamp |
+| `updated_at` | FLOAT | NOT NULL | Last update timestamp |
+
+Unique constraint `uq_ingest_batches_source` covers (`project_id`,
+`source_review_id`, `source_revision`, `source_content_sha256`).
+
+### Table: `ingest_batch_members`
+
+Task membership and retirement history for an ingestion batch (revision
+`a00000000100`). Task identities are soft references so archival preserves the record.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `batch_id` | TEXT | PRIMARY KEY REFERENCES ingest_batches(batch_id) | Owning batch |
+| `task_id` | TEXT | PRIMARY KEY | Task identity, retained after archival |
+| `member_key` | TEXT | NOT NULL | Stable key within the batch |
+| `role` | TEXT | NOT NULL, `ck_ingest_batch_members_role` | `container`, `leaf` or `operational_root` |
+| `section_anchor` | TEXT | NOT NULL | Source section covered by this task |
+| `primary_outcome` | TEXT | NOT NULL | Intended task outcome |
+| `state` | TEXT | NOT NULL DEFAULT 'active', `ck_ingest_batch_members_state` | `active` or `retired` |
+| `retired_reason` | TEXT | nullable | Reason membership was retired |
+| `created_revision` | INTEGER | NOT NULL | Structure revision that introduced membership |
+| `retired_revision` | INTEGER | nullable | Structure revision that retired membership |
+
+Unique constraint `uq_ingest_batch_members_key` covers (`batch_id`, `member_key`).
+
+### Table: `ingest_batch_receipts`
+
+Fidelity review receipts bound to a batch's structure revision and digest
+(revision `a00000000100`). Reviewer identities survive task archival.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `receipt_id` | TEXT | PRIMARY KEY | Receipt identity |
+| `batch_id` | TEXT | NOT NULL REFERENCES ingest_batches(batch_id) | Reviewed batch |
+| `structure_revision` | INTEGER | NOT NULL | Reviewed structure version |
+| `structure_digest` | TEXT | NOT NULL | Reviewed graph digest |
+| `reviewer_task_id` | TEXT | NOT NULL | Reviewer task identity |
+| `reviewer_session_id` | TEXT | NOT NULL | Reviewer session identity |
+| `passing` | BOOLEAN | NOT NULL DEFAULT false | Whether the review passed |
+| `section_verdicts` | JSONB | NOT NULL | Verdict per source section |
+| `reverse_coverage_verdict` | TEXT | NOT NULL | Reverse coverage assessment |
+| `walkthrough_verdict` | TEXT | NOT NULL | Graph walkthrough assessment |
+| `structural_findings` | JSONB | NOT NULL | Structural review findings |
+| `created_at` | FLOAT | NOT NULL | Receipt timestamp |
+
+Partial unique index `uq_ingest_batch_receipts_passing` covers (`batch_id`,
+`structure_revision`) where `passing`: several failed receipts may be retained,
+but only one passing receipt exists for each structure revision.
 
 ### Table: `merge_slots`
 

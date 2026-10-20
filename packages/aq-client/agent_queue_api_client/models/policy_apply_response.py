@@ -25,6 +25,7 @@ class PolicyApplyResponse:
         success (bool | Unset):  Default: True.
         reviews (list[PolicyReviewReceipt] | Unset):
         pending_configuration (list[str] | Unset):
+        configured_integration (list[str] | Unset):
         activated (bool | Unset):  Default: False.
     """
 
@@ -33,6 +34,7 @@ class PolicyApplyResponse:
     success: bool | Unset = True
     reviews: list[PolicyReviewReceipt] | Unset = UNSET
     pending_configuration: list[str] | Unset = UNSET
+    configured_integration: list[str] | Unset = UNSET
     activated: bool | Unset = False
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
@@ -57,6 +59,10 @@ class PolicyApplyResponse:
         if not isinstance(self.pending_configuration, Unset):
             pending_configuration = self.pending_configuration
 
+        configured_integration: list[str] | Unset = UNSET
+        if not isinstance(self.configured_integration, Unset):
+            configured_integration = self.configured_integration
+
         activated = self.activated
 
         field_dict: dict[str, Any] = {}
@@ -73,6 +79,8 @@ class PolicyApplyResponse:
             field_dict["reviews"] = reviews
         if pending_configuration is not UNSET:
             field_dict["pending_configuration"] = pending_configuration
+        if configured_integration is not UNSET:
+            field_dict["configured_integration"] = configured_integration
         if activated is not UNSET:
             field_dict["activated"] = activated
 
@@ -106,6 +114,8 @@ class PolicyApplyResponse:
 
         pending_configuration = cast(list[str], d.pop("pending_configuration", UNSET))
 
+        configured_integration = cast(list[str], d.pop("configured_integration", UNSET))
+
         activated = d.pop("activated", UNSET)
 
         policy_apply_response = cls(
@@ -114,6 +124,7 @@ class PolicyApplyResponse:
             success=success,
             reviews=reviews,
             pending_configuration=pending_configuration,
+            configured_integration=configured_integration,
             activated=activated,
         )
 

@@ -41,6 +41,7 @@ from src.database.queries.task_queries import (
     STALE_OPEN_ATTENTION,
     TransitionResult,
 )
+from src.database.queries.ingest_hold import not_ingest_held
 from src.database.tables import (
     agents,
     integration_batch_members,
@@ -225,13 +226,16 @@ def childless_held_open_container():
 def _settlement_clauses() -> list:
     """The §7 conditions both settlement legs share, correlated to ``tasks``.
 
-    Container flag ∧ no live session holds it ∧ no non-COMPLETED child ∧ not
-    a childless held-open container ∧ no hierarchy/train collection episode
-    owns its completion.  The caller joins ``projects`` and adds the status.
+    Container flag ∧ not an ingestion batch member awaiting fidelity review
+    (design §4: a held container never auto-settles) ∧ no live session holds
+    it ∧ no non-COMPLETED child ∧ not a childless held-open container ∧ no
+    hierarchy/train collection episode owns its completion.  The caller
+    joins ``projects`` and adds the status.
     """
     child = tasks.alias("child")
     return [
         container_flag_exists(),
+        not_ingest_held(),
         ~exists(
             select(literal(1)).where(
                 and_(
@@ -716,10 +720,18 @@ def delivered_prerequisites_for_projects(modes=None, *, cross_parent=True):
     )
 
 
+# Built once: the claim frontier evaluates these predicates on every claim, and
+# a fresh alias copies every column of its table (see claim_queries).
+_CROSS_PREREQUISITE_EDGE = task_dependencies.alias("cross_prerequisite_edge")
+_CROSS_PREREQUISITE_SOURCE = tasks.alias("cross_prerequisite_source")
+_REFRESH_PENDING_PARENT = tasks.alias("refresh_pending_parent")
+_CONTAINMENT_PARENT = tasks.alias("containment_parent")
+
+
 def _cross_parent_prerequisites():
     """Completed cross-parent blocks edges, correlated to the dependent task."""
-    edge = task_dependencies.alias("cross_prerequisite_edge")
-    source = tasks.alias("cross_prerequisite_source")
+    edge = _CROSS_PREREQUISITE_EDGE
+    source = _CROSS_PREREQUISITE_SOURCE
     return source, select(literal_column("1")).select_from(
         edge.join(source, source.c.id == edge.c.depends_on_task_id),
     ).correlate(tasks).where(
@@ -756,7 +768,7 @@ def cross_parent_prerequisites_on_default(mode: ProjectIntegrationMode | None = 
 
 def open_epic_refresh_batches():
     """Open refresh batch ids for this task's epic; ordinary collections are unrelated."""
-    parent = tasks.alias("refresh_pending_parent")
+    parent = _REFRESH_PENDING_PARENT
     return select(integration_batches.c.id).select_from(
         integration_batches.join(parent, parent.c.repo_id == integration_batches.c.repository_id),
     ).correlate(tasks).where(
@@ -777,7 +789,7 @@ def epic_refresh_ready(mode: ProjectIntegrationMode | None = None):
     withhold a child whose epic already contains every proven source.
     """
     _, cross_edge = _cross_parent_prerequisites()
-    parent = tasks.alias("containment_parent")
+    parent = _CONTAINMENT_PARENT
     has_epic = exists(select(literal_column("1")).where(
         parent.c.id == tasks.c.parent_task_id, parent.c.branch_name.is_not(None),
     ))
@@ -872,6 +884,7 @@ class HierarchyQueryMixin:
                             # One array bind avoids expanding the whole READY frontier
                             # into thousands of parameters on each scheduler tick.
                             tasks.c.id == any_(bindparam("task_ids", task_ids, type_=ARRAY(Text))),
+                            not_ingest_held(),
                             materialized_origin_when_hierarchical(),
                             delivered_prerequisites_for_projects(hierarchy_modes),
                         )
@@ -1334,6 +1347,7 @@ class HierarchyQueryMixin:
         abandon_undelivered: bool = False,
         delivery=None,
         obsolete_integration_delegate: bool = False,
+        allow_missing_provenance_reopen: bool = False,
     ) -> bool:
         """Fence hierarchy/lifecycle writers; return whether hierarchy delivery applies.
 
@@ -1343,6 +1357,8 @@ class HierarchyQueryMixin:
         BranchDiscardService). Omitted policy refuses materialized origins explicitly.
         The caller observes delivery before this transaction; unknown Git evidence
         refuses mutation, and archive requires proof on the configured default target.
+        An authorized explicit reopen may repair only this task's missing provenance,
+        retaining internal child delivery and invalidating aggregate verification.
         """
         if branch_policy not in (None, "keep", "discard"):
             raise ValueError(f"unknown branch_policy: {branch_policy!r}")
@@ -1448,19 +1464,27 @@ class HierarchyQueryMixin:
                 )
             )
         from src.integration.delivery_observer import delivery_sensitive_ids, prerequisite_observer
-        from src.integration.delivery_truth import DeliveryState
+        from src.integration.delivery_truth import MISSING_PROVENANCE, DeliveryState
 
+        recovering_provenance = False
         if prerequisite_observer(self) is not None and mutation != "archive":
             sensitive = await delivery_sensitive_ids(conn, ids, hierarchical=True)
             verified = await delivery.verified_on(conn, sensitive) if delivery is not None else {}
+            own_proof = verified.get(task_id)
+            recovering_provenance = bool(
+                mutation == "reopen" and allow_missing_provenance_reopen
+                and own_proof is not None and own_proof.state is DeliveryState.UNKNOWN
+                and own_proof.reason == MISSING_PROVENANCE
+            )
             if sensitive - verified.keys() or any(
                 proof.state is DeliveryState.UNKNOWN for proof in verified.values()
+                if not (recovering_provenance and proof.request.task_id == task_id)
             ):
                 raise HierarchyError(
                     "delivery_unknown", f"{mutation} requires current Git delivery evidence",
                 )
             internal_refs = set()
-            if rollover_operation is not None:
+            if rollover_operation is not None or recovering_provenance:
                 branches = (await conn.execute(select(tasks.c.branch_name).where(
                     tasks.c.id.in_(ids), tasks.c.branch_name.is_not(None),
                 ))).scalars()
@@ -1471,6 +1495,15 @@ class HierarchyQueryMixin:
                 and proof.request.target_ref not in internal_refs
                 for proof in verified.values()
             )
+            if recovering_provenance:
+                # Reopening only the aggregate preserves its children's internal
+                # deliveries. An existing receipt leaving the subtree still fixes
+                # its identity even when this completion cannot be located in Git.
+                external_receipt = delivered_stmt.where(or_(
+                    task_delivery_receipts.c.target_task_id.is_(None),
+                    task_delivery_receipts.c.target_task_id.not_in(ids),
+                ))
+                delivered = delivered or (await conn.execute(external_receipt.limit(1))).first()
         elif prerequisite_observer(self) is not None:
             delivered = False  # Archive already proved default-target delivery above.
         else:
@@ -1552,7 +1585,7 @@ class HierarchyQueryMixin:
                         updated_at=now,
                     )
                 )
-        if rollover_operation is not None:
+        if rollover_operation is not None or recovering_provenance:
             await conn.execute(
                 update(task_integration_checkpoints)
                 .where(task_integration_checkpoints.c.task_id == task_id)
@@ -1567,7 +1600,10 @@ class HierarchyQueryMixin:
                     updated_at=time.time(),
                 )
             )
-        elif mutation in {"reopen", "disposition"} and task_row.parent_task_id:
+        if (
+            mutation in {"reopen", "disposition"} and task_row.parent_task_id
+            and (rollover_operation is None or recovering_provenance)
+        ):
             # Reopening or changing the terminal disposition makes the
             # parent's previously observed child aggregate stale even when
             # no delivery receipt exists yet.  The transition and this

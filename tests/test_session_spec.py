@@ -1442,13 +1442,21 @@ class TestHarnessIdSlice:
 
 
 @pytest.mark.parametrize("harness", [CLAUDE, replace(CLAUDE, id="codex", command="codex")])
-def test_worker_native_compaction_setting_is_applied_only_to_future_worker_specs(harness):
+def test_worker_native_compaction_setting_is_applied_only_to_future_worker_specs(
+    harness, monkeypatch
+):
     from src.config import SessionsConfig
 
     config = _Cfg()
+    monkeypatch.setenv("CLAUDE_AUTOCOMPACT_PCT_OVERRIDE", "20")
+    monkeypatch.setenv("CLAUDE_CODE_AUTO_COMPACT_WINDOW", "58000")
+    monkeypatch.setenv("AQ_CLAIM_EPOCH", "parent-epoch")
+    monkeypatch.setenv("AQ_FUTURE_CONTROL", "parent-policy")
     config.sessions = SessionsConfig()
     builder = SessionSpecBuilder(config)
     worker = _build(builder, harness=harness)
+    for key in ("CLAUDE_AUTOCOMPACT_PCT_OVERRIDE", "AQ_CLAIM_EPOCH", "AQ_FUTURE_CONTROL"):
+        assert key not in worker.env
     if harness.id == "claude":
         assert worker.env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] == "160000"
     else:

@@ -57,6 +57,21 @@ PARENT_ADOPTION_EVENT = "integration.parent_adopted"
 SETTLEMENT_KEY = "development_delivery_settlement"
 
 
+def completion_after_rework(completed_at: float, rework_value: str | None) -> bool:
+    """A historical close cannot answer a generation reopened after it.
+
+    Container settlement changes work status without writing a fresh close.
+    Keep that history, but never select it as current delivery evidence.
+    """
+    if rework_value is None:
+        return True
+    try:
+        rework_at = json.loads(rework_value)
+    except (TypeError, ValueError):
+        return False
+    return type(rework_at) in (int, float) and completed_at >= rework_at
+
+
 class DeliveryState(StrEnum):
     CONTAINED = "contained"
     NO_CHANGE = "no_change"
@@ -393,7 +408,8 @@ async def load_delivery_requests(db, task_ids, *, repository_id, target_ref, con
             select(tasks.c.id).where(tasks.c.id.in_(task_ids), legacy_artifact(tasks))
         )).scalars())
         settlements, parent_ids, abandoned = {}, set(), set()
-        parent_completions, adopted_parents, parent_adoptions, rework = {}, {}, {}, {}
+        parent_completions, adopted_parents, parent_adoptions = {}, {}, {}
+        parent_history = set()
         if not reduced:
             settlements = {
                 task_id: settlement_fields(value)
@@ -412,18 +428,23 @@ async def load_delivery_requests(db, task_ids, *, repository_id, target_ref, con
             parent_history = parent_ids | abandoned
             adopted_parents = await _adopted_parents_on(reader, parent_history, repository_id)
             parent_adoptions = await _parent_adoptions_on(reader, parent_history, repository_id)
-            rework = dict((await reader.execute(select(
-                task_metadata.c.task_id, task_metadata.c.value,
-            ).where(task_metadata.c.task_id.in_(parent_history),
-                    task_metadata.c.key == INTEGRATION_REWORK_AT_KEY))).all()) if parent_history else {}
+        rework = dict((await reader.execute(select(
+            task_metadata.c.task_id, task_metadata.c.value,
+        ).where(task_metadata.c.task_id.in_(task_ids | parent_history),
+                task_metadata.c.key == INTEGRATION_REWORK_AT_KEY))).all())
     completion_by_id = {
         row["task_id"]: db._row_to_task_completion(row) for row in completions
     }
     requests = {}
     for rows, is_archived in ((live, False), (archived, True)):
         for row in rows:
+            completion = completion_by_id.get(row["id"])
+            if completion and not completion_after_rework(
+                completion.completed_at, rework.get(row["id"]),
+            ):
+                completion = None
             request = DeliveryRequest.from_task(
-                {**row, "archived": is_archived}, completion_by_id.get(row["id"]),
+                {**row, "archived": is_archived}, completion,
                 repository_id=repository_id, target_ref=target_ref,
             )
             current_id = json.loads(row["current_generation"]) if not is_archived and row[
@@ -890,7 +911,8 @@ async def delivery_snapshot(git, store, *, project_id, repository_id, repository
         if not target_ref.startswith("refs/heads/"):
             raise GitError("invalid_target")
         await _run(git, store, "check-ref-format", target_ref)
-        await fetch_retained_origin(git, store, repository_url=repository_url)
+        await fetch_retained_origin(git, store, repository_url=repository_url,
+                                    project_id=project_id, repository_id=repository_id)
         refs = await _run(
             git, store, "for-each-ref", "--format=%(refname) %(objectname)",
             "refs/remotes/origin/", "refs/aq/provenance/",

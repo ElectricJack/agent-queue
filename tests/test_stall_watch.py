@@ -284,3 +284,16 @@ async def test_live_timer_queues_each_tick_then_stops_when_resolved(handler, db,
     assert all(m["to_id"] == "supervisor-global" and m["project_id"] is None for m in messages)
     assert messages[0]["body"] == messages[1]["body"]
     assert "ORPHANED" in messages[0]["body"]
+
+
+@pytest.mark.parametrize("code", ["frontier_sibling_prerequisite_not_delivered",
+                                  "frontier_prerequisite_not_on_default_branch",
+                                  "frontier_epic_refresh_pending"])
+def test_delivery_hold_is_waiting_on_delivery_even_with_route_pressure(code):
+    snap = snapshot(task(status="READY"), reasons={"task": [
+        {"code": code, "detail": "Land source.6 on dev; refresh aq/epic"},
+        {"code": "route_no_candidates", "detail": "No worker"},
+    ]})
+    [finding] = findings(snap)
+    assert finding["kind"] == "WAITING-ON-DELIVERY"
+    assert "source.6" in finding["reason"] and "dev" in finding["reason"]

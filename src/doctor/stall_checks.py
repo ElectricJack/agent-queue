@@ -129,6 +129,18 @@ async def _work_findings(ctx: DoctorContext, tasks: list, now: float, explains: 
     completions: dict[str, float | None] = {}
     for task, why in zip(candidates, explanations):
         reasons = why.get("reasons") or []
+        from src.task_graph.readiness import DELIVERY_CODES, readiness_from_reasons
+
+        if any(r.get("code") in DELIVERY_CODES for r in reasons):
+            readiness = readiness_from_reasons(reasons)
+            findings.append(_finding(
+                "WAITING-ON-DELIVERY", task.project_id,
+                f"{task.id}: {readiness['reason']}", task_id=task.id,
+                blockers=sorted({ref for r in reasons if r.get("code") in DELIVERY_CODES
+                                 for ref in r.get("blocking_task_ids", [r.get("ref")])
+                                 if ref and ref != task.id}), reasons=reasons,
+            ))
+            continue
         deps = [r for r in reasons if r.get("code") == "blocked_dependency"]
         completed = [r for r in deps if "status=COMPLETED" in r.get("detail", "")]
         # An unfinished dependency is normal queued work.  If a completed

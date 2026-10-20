@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import shutil
 import subprocess
 import time
 from unittest.mock import AsyncMock
@@ -42,45 +41,18 @@ def git(path, *args) -> str:
     ).strip()
 
 
-def _disable_auto_maintenance(repo) -> None:
-    # Keep the shared seed immutable during copytree, including receive-pack:
-    # local transport does not propagate command-line -c to the bare origin.
-    for key, value in (
-        ("maintenance.auto", "false"),
-        ("gc.auto", "0"),
-        ("receive.autogc", "false"),
-    ):
-        git(repo, "config", key, value)
-
-
 class Origin:
-    def __init__(self, tmp_path, *, template=None):
+    def __init__(self, tmp_path):
         self.url = str(tmp_path / "origin.git")
         self.clone = tmp_path / "clone"
-        if template is not None:
-            shutil.copytree(template.url, self.url)
-            shutil.copytree(template.clone, self.clone)
-            git(self.clone, "remote", "set-url", "origin", self.url)
-            return
         init_bare_seed(self.url)
-        self._disable_auto_maintenance(self.url)
         clone_seed(self.url, self.clone)
-        self._disable_auto_maintenance(self.clone)
         git(self.clone, "config", "user.name", "Tester")
         git(self.clone, "config", "user.email", "tester@example.test")
         (self.clone / "base.txt").write_text("base\n")
         git(self.clone, "add", ".")
         git(self.clone, "commit", "-q", "-m", "base")
         git(self.clone, "push", "-q", "origin", "main")
-
-    @staticmethod
-    def _disable_auto_maintenance(repo) -> None:
-        # Detached maintenance can remove objects/maintenance.lock while copytree
-        # walks the seed. Local receive-pack needs its own repository config too.
-        for key, value in (
-            ("maintenance.auto", "false"), ("gc.auto", "0"), ("receive.autogc", "false"),
-        ):
-            git(repo, "config", "--local", key, value)
 
     def work(self, tid: str, name: str = "work") -> str:
         git(self.clone, "fetch", "-q", "origin")
@@ -100,22 +72,22 @@ class Origin:
         git(self.clone, "push", "-q", "origin", "main")
 
 
-def test_origin_template_and_copies_do_not_launch_auto_maintenance(tmp_path, monkeypatch):
+def test_fresh_origins_do_not_launch_auto_maintenance(tmp_path, monkeypatch):
     trace = tmp_path / "git-trace.json"
     config = tmp_path / "empty-git-config"
     config.touch()
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(config))
     monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
     monkeypatch.setenv("GIT_TRACE2_EVENT", str(trace))
-    seed_root = tmp_path / "seed"
-    seed_root.mkdir()
-    seed = Origin(seed_root)
-    seed_head = git(seed.url, "rev-parse", "main")
-    copied = Origin(tmp_path, template=seed)
-    copied_head = copied.work("private-copy")
-    assert git(seed.url, "rev-parse", "main") == seed_head
-    assert git(seed.url, "for-each-ref", "refs/heads/aq/private-copy") == ""
-    assert git(copied.url, "rev-parse", "aq/private-copy") == copied_head
+    first_root = tmp_path / "first"
+    first_root.mkdir()
+    first = Origin(first_root)
+    first_head = git(first.url, "rev-parse", "main")
+    second = Origin(tmp_path)
+    second_head = second.work("private-work")
+    assert git(first.url, "rev-parse", "main") == first_head
+    assert git(first.url, "for-each-ref", "refs/heads/aq/private-work") == ""
+    assert git(second.url, "rev-parse", "aq/private-work") == second_head
     commands = [json.loads(line).get("argv", []) for line in trace.read_text().splitlines()]
     assert not [
         args for args in commands
@@ -141,15 +113,9 @@ async def close(db, tid: str, commits: list[str], *, close_id: str | None = None
     await db.transition_task(tid, TaskStatus.COMPLETED)
 
 
-@pytest.fixture(scope="session")
-def origin_template(tmp_path_factory):
-    """Reuse only the starting Git history; refs and working files remain private."""
-    return Origin(tmp_path_factory.mktemp("delivery-git-template"))
-
-
 @pytest.fixture
-async def world(tmp_path, reuse_database, origin_template):
-    origin = Origin(tmp_path, template=origin_template)
+async def world(tmp_path, reuse_database):
+    origin = Origin(tmp_path)
     db = await reuse_database("delivery-consumers.db")
     await db.create_project(Project(id="p", name="Development"))
     await db.create_repo(
@@ -463,7 +429,7 @@ async def test_explain_names_missing_engine_for_undelivered_prerequisite(
     from src.integration.service import IntegrationService
     from src.orchestrator import Orchestrator
 
-    db, origin, observer, primitives = world
+    db, _origin, observer, primitives = world
     primitives.git = observer.git
     primitives._delivery_observer = observer
     config = AppConfig(database=DatabaseConfig(url=lease_dsn("delivery-consumers.db")),
@@ -1085,7 +1051,10 @@ async def test_frontier_freshness_failure_does_not_poison_unchecked_targets(
     world, monkeypatch,
 ):
     from src.integration.delivery_observer import (
-        DeliveryTarget, DeliveryView, PrerequisiteView, hierarchy_frontier_modes,
+        DeliveryTarget,
+        DeliveryView,
+        PrerequisiteView,
+        hierarchy_frontier_modes,
     )
     from src.integration.git_truth import GitTruth
 
@@ -1205,6 +1174,141 @@ async def test_git_first_mutation_rejects_unknown_proof_without_receipts(active_
         await db.transition_task("wrong", TaskStatus.IN_PROGRESS, force=True)
     assert refused.value.code == "delivery_unknown"
     assert (await db.get_task("wrong")).status is TaskStatus.COMPLETED
+
+
+async def reopen_command(db, task_id):
+    from src.commands.task_commands import TaskCommandsMixin
+
+    handler = TaskCommandsMixin()
+    handler.db, handler._current_scope = db, {}
+    return await handler._cmd_reopen_with_feedback({
+        "task_id": task_id, "feedback": "Recover the unlabelled completion; retain the branch",
+    })
+
+
+@pytest.mark.parametrize("caller", [
+    "operator", "supervisor", "reviewer", "service", "stopped_supervisor", "foreign_supervisor",
+])
+async def test_missing_provenance_reopen_requires_operator_control(
+    active_git_world, monkeypatch, caller,
+):
+    from types import SimpleNamespace
+
+    from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_context
+    from src.profiles.capabilities import DENY_ALL
+
+    db, origin, _observer = active_git_world
+    head = origin.work("missing")
+    if caller.endswith("supervisor"):
+        monkeypatch.setattr(db, "get_session", AsyncMock(return_value=SimpleNamespace(
+            id=caller, profile_id="supervisor", lifecycle="named",
+            state="stopped" if caller == "stopped_supervisor" else "running",
+            desired_state="running", project_id="other" if caller == "foreign_supervisor" else "p",
+        )))
+    principal = ExecutionPrincipal(
+        kind=(PrincipalKind.LOCAL if caller == "operator" else
+              PrincipalKind.SERVICE if caller == "service" else PrincipalKind.SESSION),
+        policy=DENY_ALL, session_id=caller, project_id="p", elevated=caller.endswith("supervisor"),
+    )
+    before = await db.get_task("missing")
+    # Generic lifecycle writes still cannot make the missing close claimable.
+    with pytest.raises(HierarchyError, match="delivery_unknown"):
+        await db.transition_task("missing", TaskStatus.READY, context="reopen_with_feedback")
+    with principal_context(principal):
+        if caller in {"operator", "supervisor"}:
+            assert (await reopen_command(db, "missing"))["status"] == "READY"
+        else:
+            with pytest.raises(HierarchyError, match="delivery_unknown"):
+                await reopen_command(db, "missing")
+    task = await db.get_task("missing")
+    assert task.status is (TaskStatus.READY if caller in {"operator", "supervisor"}
+                           else TaskStatus.COMPLETED)
+    assert task.branch_name == before.branch_name
+    assert git(origin.url, "rev-parse", "aq/missing") == head
+    assert (await db.get_task_completion("missing")).id == "close-missing"
+
+
+async def test_unlabelled_subepic_reopens_preserving_collected_children(active_git_world):
+    from src.database.tables import task_integration_checkpoints
+
+    db, origin, observer = active_git_world
+    origin.work("subepic")
+    await db.create_task(Task(
+        id="subepic", project_id="p", repo_id="r", title="Subepic", description="",
+        branch_name="aq/subepic", parent_task_id="epic", status=TaskStatus.COMPLETED,
+    ))
+    child_head = git(origin.clone, "rev-parse", "origin/aq/reopened")
+    git(origin.clone, "merge", "-q", "--no-ff", "-m", "Collect child", "origin/aq/reopened")
+    git(origin.clone, "push", "-q", "origin", "aq/subepic")
+    head = git(origin.clone, "rev-parse", "HEAD")
+    async with db.immediate() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == "reopened").values(
+            parent_task_id="subepic",
+        ))
+        for tid in ("epic", "subepic"):
+            await conn.execute(insert(task_integration_checkpoints).values(
+                task_id=tid, repository_id="r", branch=f"aq/{tid}", checkpoint_sha=head,
+                generation=4, verified_sha=head, verified_generation=4, updated_at=1.0,
+            ))
+    view = await observer.observe(["subepic", "reopened"])
+    assert view.get("subepic").reason == "missing_git_provenance"
+    assert view.get("reopened").state is DeliveryState.CONTAINED
+    assert (await reopen_command(db, "subepic"))["status"] == "READY"
+    assert (await db.get_task("subepic")).status is TaskStatus.READY
+    assert (await db.get_task("reopened")).status is TaskStatus.COMPLETED
+    assert git(origin.url, "rev-parse", "aq/subepic") == head
+    assert git(origin.url, "rev-parse", "aq/reopened") == child_head
+    for tid in ("epic", "subepic"):
+        checkpoint = await db.get_integration_checkpoint(tid)
+        assert checkpoint["generation"] == 5
+        assert checkpoint["verified_sha"] is None
+        assert checkpoint["verified_generation"] is None
+    # Reopening has not manufactured provenance or a passing new completion.
+    assert await db.get_task_completion("subepic") is None
+
+
+@pytest.mark.parametrize("obstacle", ["stale", "wrong_repository", "descendant", "receipt"])
+async def test_missing_provenance_recovery_preserves_delivery_fences(
+    active_git_world, obstacle,
+):
+    from src.database.tables import task_delivery_receipts
+
+    db, origin, _observer = active_git_world
+    origin.work("missing")
+    view = await db.observe_removal_delivery(["missing"], for_mutation=True)
+    if obstacle == "stale":
+        await db.update_task("epic", branch_name="aq/retargeted")
+    elif obstacle == "wrong_repository":
+        await db.update_task("missing", repo_id="web")
+        view = await db.observe_removal_delivery(["missing"], for_mutation=True)
+    elif obstacle == "descendant":
+        await db.create_task(Task(
+            id="unknown-child", project_id="p", repo_id="r", title="Child", description="",
+            branch_name="aq/unknown-child", parent_task_id="missing", status=TaskStatus.COMPLETED,
+        ))
+        view = await db.observe_removal_delivery(["missing"], for_mutation=True)
+    with pytest.raises(HierarchyError) as refused:
+        if obstacle == "receipt":
+            # Roll back the supplied historical receipt with the refused write:
+            # delivery receipts themselves are intentionally append-only.
+            async with db.immediate() as conn:
+                await conn.execute(insert(task_delivery_receipts).values(
+                    id="external", domain_key="external", source_task_id="missing",
+                    target_task_id="epic", repository_id="r", target_branch="aq/epic",
+                    disposition="code", created_at=1.0,
+                ))
+                await db._apply_transition(
+                    conn, "missing", TaskStatus.READY, context="reopen_with_feedback",
+                    integration_delivery=view, allow_missing_provenance_reopen=True,
+                )
+        else:
+            await db.transition_task(
+                "missing", TaskStatus.READY, context="reopen_with_feedback",
+                integration_delivery=view, allow_missing_provenance_reopen=True,
+            )
+    assert refused.value.code == ("delivery_target_fixed" if obstacle == "receipt"
+                                  else "delivery_unknown")
+    assert (await db.get_task("missing")).status is TaskStatus.COMPLETED
 
 
 async def test_git_first_reparent_guard_refuses_completed_work_without_receipts(active_git_world):
@@ -1336,3 +1440,428 @@ async def test_missing_git_observer_warns_offline_frontier_reader(active_git_wor
     await db.claim_frontier_exclusions("done")
     assert "No Git prerequisite observer" in caplog.text
     assert "invalid when integration.git_first is active" in caplog.text
+
+
+# --- Shared store observations -------------------------------------------------
+#
+# Concurrent guarded callers of one repository store share a bounded flight. A
+# controlled fetch counts every observation and blocks on an event, so these
+# regressions order callers with barriers, never with host time.
+
+
+class ControlledFetches:
+    """A counted ``delivery_snapshot`` whose fetch N blocks until released."""
+
+    def __init__(self, heads=None):
+        from collections import defaultdict
+
+        self.calls: list[dict] = []
+        self.started = defaultdict(asyncio.Event)
+        self.released = defaultdict(asyncio.Event)
+        self.failures: dict[int, BaseException | str] = {}
+        self.heads = heads or (lambda n: {"refs/remotes/origin/main": f"{n:040x}"})
+        self.gated = True
+
+    @property
+    def count(self) -> int:
+        return len(self.calls)
+
+    def release(self, n: int) -> None:
+        self.released[n].set()
+
+    async def __call__(self, git, store, *, project_id, repository_id, repository_url,
+                      target_ref):
+        from types import MappingProxyType
+
+        from src.integration.delivery_truth import DeliverySnapshot
+
+        self.calls.append({"project_id": project_id, "repository_id": repository_id,
+                           "repository_url": repository_url, "target_ref": target_ref})
+        n = self.count
+        self.started[n].set()
+        if self.gated:
+            await self.released[n].wait()
+        failure = self.failures.get(n)
+        if isinstance(failure, BaseException):
+            raise failure
+        if failure is not None:
+            return DeliverySnapshot(git, str(store), project_id, repository_id, repository_url,
+                                    target_ref, None, MappingProxyType({}), failure)
+        heads = dict(self.heads(n))
+        oid = heads.get("refs/remotes/origin/" + target_ref.removeprefix("refs/heads/"))
+        return DeliverySnapshot(git, str(store), project_id, repository_id, repository_url,
+                                target_ref, oid, MappingProxyType(heads),
+                                None if oid else "missing_target")
+
+
+def oid(n: int) -> str:
+    return f"{n:040x}"
+
+
+async def settle() -> None:
+    """Run every ready task to its next real suspension point (no host time)."""
+    for _ in range(20):
+        await asyncio.sleep(0)
+
+
+@pytest.fixture
+def shared_store(tmp_path, monkeypatch):
+    from src.integration import delivery_observer as module
+
+    fetches = ControlledFetches()
+    monkeypatch.setattr(module, "delivery_snapshot", fetches)
+
+    def make(git=None, data_dir=None):
+        observer = DeliveryObserver(None, git=git or object(),
+                                    data_dir=data_dir or tmp_path / "shared")
+        observer._store = AsyncMock(side_effect=lambda target: observer.store_path(
+            target.repository_id))
+        return observer
+
+    return fetches, make
+
+
+def _target(ref="refs/heads/main", *, project="p", repository="r",
+            url="https://example.test/r.git"):
+    from src.integration.delivery_observer import DeliveryTarget
+
+    return DeliveryTarget(project, repository, url, ref)
+
+
+def _flight_state(observer, target):
+    from src.integration.delivery_observer import _FLIGHTS
+
+    key = (str(observer.store_path(target.repository_id)), target.project_id,
+           target.repository_id, target.repository_url)
+    return _FLIGHTS.get(asyncio.get_running_loop(), {}).get(key)
+
+
+async def test_simultaneous_guarded_burst_shares_one_store_observation(shared_store):
+    fetches, make = shared_store
+    observer = make()
+    target = _target()
+    callers = [asyncio.create_task(observer.snapshot(target)) for _ in range(12)]
+    await fetches.started[1].wait()
+    await settle()
+    assert fetches.count == 1
+    assert _flight_state(observer, target).readers == 12
+    fetches.release(1)
+    results = await asyncio.gather(*callers)
+    assert fetches.count == 1
+    assert {(r.target_oid, r.error) for r in results} == {(oid(1), None)}
+    assert _flight_state(observer, target) is None
+
+
+async def test_callers_arriving_mid_fetch_share_exactly_one_successor(shared_store):
+    fetches, make = shared_store
+    observer = make()
+    target = _target()
+    first = asyncio.create_task(observer.snapshot(target))
+    await fetches.started[1].wait()
+    # Fetch 1 began before these callers asked: it is no proof for them.
+    late = [asyncio.create_task(observer.snapshot(target)) for _ in range(8)]
+    await settle()
+    assert fetches.count == 1
+    fetches.release(1)
+    assert (await first).target_oid == oid(1)
+    await fetches.started[2].wait()
+    # A caller arriving once fetch 2 began needs a newer observation still.
+    later = asyncio.create_task(observer.snapshot(target))
+    await settle()
+    assert fetches.count == 2
+    fetches.release(2)
+    assert {r.target_oid for r in await asyncio.gather(*late)} == {oid(2)}
+    await fetches.started[3].wait()
+    assert not later.done()
+    fetches.release(3)
+    assert (await later).target_oid == oid(3)
+    assert fetches.count == 3
+    assert _flight_state(observer, target) is None
+
+
+async def test_required_later_observation_fetches_and_readers_alone_reuse_age(shared_store):
+    fetches, make = shared_store
+    fetches.gated = False
+    observer = make()
+    target = _target()
+    assert (await observer.snapshot(target)).target_oid == oid(1)
+    assert (await observer.snapshot(target)).target_oid == oid(2)
+    assert fetches.count == 2
+    # Only a read-only max_age caller may reuse a completed observation.
+    assert (await observer.snapshot(target, max_age=30)).target_oid == oid(2)
+    assert fetches.count == 2
+
+
+async def test_one_observation_covers_other_refs_of_the_same_repository(shared_store):
+    fetches, make = shared_store
+    fetches.heads = lambda n: {"refs/remotes/origin/main": oid(n),
+                               "refs/remotes/origin/aq/epic": oid(100 + n)}
+    observer = make()
+    refs = ("refs/heads/main", "refs/heads/aq/epic", "refs/heads/aq/absent",
+            "refs/heads/bad..name", "refs/tags/v1")
+    callers = [asyncio.create_task(observer.snapshot(_target(ref))) for ref in refs]
+    await fetches.started[1].wait()
+    await settle()
+    fetches.release(1)
+    main, epic, absent, malformed, tag = await asyncio.gather(*callers)
+    assert fetches.count == 1
+    assert (main.target_ref, main.target_oid, main.error) == ("refs/heads/main", oid(1), None)
+    assert (epic.target_ref, epic.target_oid, epic.error) == ("refs/heads/aq/epic", oid(101), None)
+    assert (absent.target_oid, absent.error) == (None, "missing_target")
+    # A name its own fetch would have rejected stays unknown, never "missing".
+    for refused in (malformed, tag):
+        assert refused.target_oid is None
+        assert refused.error == "snapshot_git_error: invalid_target"
+    assert {target.target_ref for target in observer._recent} >= {
+        "refs/heads/main", "refs/heads/aq/epic", "refs/heads/aq/absent"}
+
+
+async def test_repositories_urls_and_projects_never_share_an_observation(shared_store):
+    fetches, make = shared_store
+    fetches.gated = False
+    observer = make()
+    targets = [_target(), _target(repository="r2"), _target(url="https://example.test/fork.git"),
+               _target(project="p2")]
+    results = await asyncio.gather(*(observer.snapshot(target) for target in targets))
+    assert fetches.count == 4
+    assert sorted((c["project_id"], c["repository_id"], c["repository_url"])
+                  for c in fetches.calls) == sorted(
+        (t.project_id, t.repository_id, t.repository_url) for t in targets)
+    for target, result in zip(targets, results, strict=True):
+        assert (result.project_id, result.repository_id, result.repository_url) == (
+            target.project_id, target.repository_id, target.repository_url)
+        assert result.error is None
+
+
+async def test_moved_and_vanished_refs_are_seen_by_the_observation_after_them(shared_store):
+    fetches, make = shared_store
+    fetches.gated = False
+    fetches.heads = lambda n: {"refs/remotes/origin/main": oid(n)} | (
+        {"refs/remotes/origin/aq/x": oid(50)} if n == 1 else {})
+    observer = make()
+    main, x = _target(), _target("refs/heads/aq/x")
+    assert (await observer.snapshot(main)).target_oid == oid(1)
+    assert observer._recent[x][1].target_oid == oid(50)
+    fetches.gated = True
+    held = asyncio.create_task(observer.snapshot(main))
+    await fetches.started[2].wait()
+    moved = asyncio.create_task(observer.snapshot(x))
+    await settle()
+    fetches.release(2)
+    assert (await held).target_oid == oid(2)
+    # The vanished ref's cached evidence is retired by the covering fetch.
+    assert observer._recent[x][1].error == "missing_target"
+    await fetches.started[3].wait()
+    fetches.release(3)
+    assert ((await moved).target_oid, (await moved).error) == (None, "missing_target")
+    assert (await observer.snapshot(x, max_age=30, cached_only=True)).error == "missing_target"
+    assert fetches.count == 3
+
+
+@pytest.mark.parametrize("failure", [
+    "snapshot_git_error: fatal: Authentication failed", RuntimeError("transport"),
+])
+async def test_failed_observation_is_unknown_for_every_joiner_until_recovery(
+    shared_store, failure,
+):
+    fetches, make = shared_store
+    fetches.heads = lambda n: {"refs/remotes/origin/main": oid(n),
+                               "refs/remotes/origin/aq/epic": oid(100 + n)}
+    fetches.failures[1] = failure
+    observer = make()
+    callers = [asyncio.create_task(observer.snapshot(_target(ref)))
+               for ref in ("refs/heads/main", "refs/heads/aq/epic", "refs/heads/main")]
+    await fetches.started[1].wait()
+    await settle()
+    fetches.release(1)
+    results = await asyncio.gather(*callers)
+    assert fetches.count == 1
+    for result in results:
+        assert result.target_oid is None
+        assert result.error not in {None, "missing_target"}
+    assert observer._recent == {}
+    fetches.release(2)
+    recovered = await observer.snapshot(_target("refs/heads/aq/epic"))
+    assert (recovered.target_oid, recovered.error) == (oid(102), None)
+    assert fetches.count == 2
+
+
+async def test_cached_only_diagnostics_never_wait_for_or_start_a_shared_fetch(shared_store):
+    fetches, make = shared_store
+    observer = make()
+    target = _target()
+    cold = asyncio.create_task(observer.snapshot(target))
+    await fetches.started[1].wait()
+    unavailable = asyncio.create_task(observer.snapshot(target, max_age=30, cached_only=True))
+    await settle()
+    assert unavailable.done()
+    assert (await unavailable).error == "snapshot_unavailable"
+    fetches.release(1)
+    await cold
+    guarded = asyncio.create_task(observer.snapshot(target))
+    await fetches.started[2].wait()
+    warm = asyncio.create_task(observer.snapshot(target, max_age=30, cached_only=True))
+    await settle()
+    assert warm.done()
+    assert (await warm).target_oid == oid(1)
+    assert fetches.count == 2
+    fetches.release(2)
+    assert (await guarded).target_oid == oid(2)
+
+
+async def test_cancelled_creator_leaves_its_flight_and_peers_running(shared_store):
+    fetches, make = shared_store
+    observer = make()
+    target = _target()
+    creator = asyncio.create_task(observer.snapshot(target))
+    peers = [asyncio.create_task(observer.snapshot(target)) for _ in range(3)]
+    await fetches.started[1].wait()
+    await settle()
+    flight = _flight_state(observer, target).flight.task
+    creator.cancel()
+    await settle()
+    assert creator.cancelled()
+    assert not flight.done()
+    assert _flight_state(observer, target).readers == 3
+    fetches.release(1)
+    assert {r.target_oid for r in await asyncio.gather(*peers)} == {oid(1)}
+    assert fetches.count == 1
+    assert _flight_state(observer, target) is None
+
+
+async def test_abandoned_callers_leave_no_fetch_backlog_or_state(shared_store):
+    fetches, make = shared_store
+    observer = make()
+    target = _target()
+    early = [asyncio.create_task(observer.snapshot(target)) for _ in range(5)]
+    await fetches.started[1].wait()
+    late = [asyncio.create_task(observer.snapshot(target)) for _ in range(5)]
+    await settle()
+    flight = _flight_state(observer, target).flight.task
+    for caller in early + late:
+        caller.cancel()
+    await settle()
+    assert all(caller.cancelled() for caller in early + late)
+    assert _flight_state(observer, target).readers == 0
+    fetches.release(1)
+    await asyncio.wait((flight,))
+    await settle()
+    # Nobody still asks: the late callers' successor fetch never starts.
+    assert fetches.count == 1
+    assert _flight_state(observer, target) is None
+    fetches.release(2)
+    assert (await observer.snapshot(target)).target_oid == oid(2)
+    assert fetches.count == 2
+
+
+async def test_cancelled_flight_is_an_unknown_observation_not_a_peer_cancellation(shared_store):
+    fetches, make = shared_store
+    observer = make()
+    target = _target()
+    callers = [asyncio.create_task(observer.snapshot(target)) for _ in range(3)]
+    await fetches.started[1].wait()
+    await settle()
+    _flight_state(observer, target).flight.task.cancel()
+    results = await asyncio.gather(*callers)
+    assert {r.error for r in results} == {"observer_error: CancelledError"}
+    assert all(r.target_oid is None for r in results)
+    assert observer._recent == {}
+    assert _flight_state(observer, target) is None
+    fetches.release(2)
+    assert (await observer.snapshot(target)).target_oid == oid(2)
+
+
+async def test_observers_sharing_a_store_share_flights_but_not_mutable_state(shared_store):
+    fetches, make = shared_store
+    monitoring_git, development_git = object(), object()
+    monitoring, development = make(monitoring_git), make(development_git)
+    target = _target()
+    callers = [asyncio.create_task(observer.snapshot(target))
+               for observer in (monitoring, development, development)]
+    await fetches.started[1].wait()
+    await settle()
+    fetches.release(1)
+    first, second, third = await asyncio.gather(*callers)
+    assert fetches.count == 1
+    assert (first.git, second.git, third.git) == (monitoring_git, development_git,
+                                                  development_git)
+    assert monitoring._recent[target][1].git is monitoring_git
+    assert development._recent[target][1].git is development_git
+    # Each caller's freshness marks are its own, as if it had fetched alone.
+    first._freshness["refs/heads/main"] = False
+    assert second._freshness == third._freshness == {}
+    assert development._recent[target][1]._freshness == {}
+    # A different store is a different flight even for the same repository.
+    elsewhere = make(data_dir=monitoring.data_dir.parent / "elsewhere")
+    fetches.release(2)
+    await elsewhere.snapshot(target)
+    assert fetches.count == 2
+
+
+async def test_concurrent_guarded_writers_share_fetches_and_need_current_proof(
+    active_git_world, monkeypatch,
+):
+    """A real race: writers that asked after a fetch began never consume it."""
+    import src.integration.repository_recovery as recovery
+
+    db, origin, _observer = active_git_world
+    real_fetch = recovery.fetch_retained_origin
+    fetched, captured, release = [], asyncio.Event(), asyncio.Event()
+
+    async def controlled_fetch(*args, **kwargs):
+        result = await real_fetch(*args, **kwargs)
+        fetched.append(kwargs.get("repository_url"))
+        if len(fetched) == 1:
+            captured.set()
+            await release.wait()
+        return result
+
+    monkeypatch.setattr(recovery, "fetch_retained_origin", controlled_fetch)
+    def epic_head() -> str:
+        return git(origin.url, "rev-parse", "refs/heads/aq/epic")
+
+    stale_epic = epic_head()
+
+    def guarded_view():
+        return asyncio.create_task(db.observe_removal_delivery(["reopened"], for_mutation=True))
+
+    async def joined(readers: int) -> None:
+        # Writers reach the store after their own database reads; wait until each
+        # has really asked the shared observation rather than guessing a delay.
+        from src.integration.delivery_observer import _FLIGHTS
+
+        async with asyncio.timeout(30):
+            while sum(state.readers for state in _FLIGHTS.get(
+                    asyncio.get_running_loop(), {}).values()) < readers:
+                await asyncio.sleep(0.005)
+
+    early = [guarded_view() for _ in range(4)]
+    await captured.wait()
+    await joined(4)
+    # Fetch 1 holds aq/epic without the reopened work; now it is collected.
+    git(origin.clone, "fetch", "-q", "origin")
+    git(origin.clone, "checkout", "-q", "-B", "aq/epic", "origin/aq/epic")
+    git(origin.clone, "merge", "-q", "--no-ff", "-m", "Collect reopened", "origin/aq/reopened")
+    git(origin.clone, "push", "-q", "origin", "aq/epic")
+    git(origin.clone, "push", "-q", "origin", "aq/epic:main")
+    current_epic = epic_head()
+    assert current_epic != stale_epic
+    late = [guarded_view() for _ in range(4)]
+    await joined(8)
+    release.set()
+    views = await asyncio.gather(*early, *late)
+    # Eight guarded writers, no serial per-caller backlog. Fetch 1 began before
+    # all but its creator asked, and its stale epic is caught by that creator's
+    # ls-remote; the seven writers that asked mid-fetch share fetch 2, and the
+    # creator's retry asked after fetch 2 began, so it alone takes fetch 3.
+    assert len(fetched) == 3
+    for view in views:
+        assert view is not None
+        assert {s.target_oid for s in view.snapshots} == {current_epic}
+        async with db.immediate() as conn:
+            with pytest.raises(HierarchyError) as refused:
+                await db.guard_integration_mutation("reopened", "reopen", conn=conn,
+                                                    delivery=view)
+        assert refused.value.code == "delivery_target_fixed"
+    assert (await db.get_task("reopened")).status is TaskStatus.COMPLETED
+
