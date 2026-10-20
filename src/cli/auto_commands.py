@@ -128,6 +128,8 @@ HANDCRAFTED_COVERAGE = {
     "wait_get",
     "wait_list",
     "wait_cancel",
+    "wait_explain", "wait_graph", "wait_checkpoint", "wait_ack",
+    "wait_decide", "wait_lift", "wait_legacy_bridge",
     # collaboration.py — positional THREAD ids and --claim-epoch resolution.
     "collaboration_create",
     "collaboration_accept",
@@ -151,6 +153,7 @@ HANDCRAFTED_COVERAGE = {
     "integration_app_verify",
     "integration_reevaluate_repair",
     "integration_release_owner",
+    "integration_restore_task_origin",
     "integration_reserve_owner",
     "integration_clear_retained_recovery",
     "integration_release_stale_owners",
@@ -193,6 +196,8 @@ HANDCRAFTED_COVERAGE = {
 
 # Commands to exclude entirely from the CLI (dangerous or irrelevant).
 EXCLUDED = {
+    "wait_source_commit", "wait_deadline_fire", "wait_resume_dispatch",
+    "wait_sleep_decide", "wait_evict", "scheduler_wait_sync",
     "integration_train_tick",  # daemon-only git-first train dispatch
     "job_reconcile",
     "job_submit_integration",

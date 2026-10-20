@@ -20,6 +20,8 @@ from src.models import (
     WorkspaceMode,
 )
 
+from src.waits.sources import execute_workspace_release
+
 logger = logging.getLogger(__name__)
 
 # Ordering expression: clones first, then links
@@ -671,7 +673,7 @@ class WorkspaceQueryMixin:
     async def release_workspace(self, workspace_id: str) -> None:
         """Clear lock columns on a workspace."""
         async with self._engine.begin() as conn:
-            await conn.execute(
+            await execute_workspace_release(conn,
                 update(workspaces).where(unpinned_workspace())
                 .where(workspaces.c.id == workspace_id)
                 .values(
@@ -695,10 +697,10 @@ class WorkspaceQueryMixin:
             )
         )
         if conn is not None:
-            result = await conn.execute(stmt)
+            result = await execute_workspace_release(conn, stmt)
             return result.rowcount
         async with self._engine.begin() as conn:
-            result = await conn.execute(stmt)
+            result = await execute_workspace_release(conn, stmt)
             return result.rowcount
 
     async def get_workspace_for_agent(self, agent_id: str) -> Workspace | None:
@@ -715,7 +717,7 @@ class WorkspaceQueryMixin:
     async def release_workspaces_for_task(self, task_id: str) -> int:
         """Release all workspace locks held by a task. Returns count released."""
         async with self._engine.begin() as conn:
-            result = await conn.execute(
+            result = await execute_workspace_release(conn,
                 update(workspaces).where(unpinned_workspace())
                 .where(workspaces.c.locked_by_task_id == task_id)
                 .values(

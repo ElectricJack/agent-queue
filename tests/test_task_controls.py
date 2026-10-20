@@ -1,5 +1,6 @@
 """Operator task controls: persistence, race fences and existing work-state safety."""
 
+import json
 from dataclasses import asdict
 from types import SimpleNamespace
 
@@ -1819,6 +1820,18 @@ async def test_pause_checks_reassignment_before_publishing_checkpoint(env, tmp_p
     assert (await env.db.get_workspace("workspace")).locked_by_task_id == "peer"
 
 
+@pytest.mark.parametrize(
+    ("is_slot", "branch_name", "expected"),
+    [(True, None, "aq/t"), (True, "aq/own", "aq/own"), (False, None, None)],
+)
+async def test_slot_pause_without_recorded_branch_is_held_to_the_task_branch(
+    is_slot, branch_name, expected
+):
+    ws = SimpleNamespace(is_slot=is_slot)
+    branch = Orchestrator._paused_checkpoint_branch("t", ws, {"branch_name": branch_name})
+    assert branch == expected
+
+
 async def test_pause_refuses_attached_foreign_task_branch_without_salvage(env, tmp_path):
     repo, git = make_git_repo(tmp_path, "foreign-branch")
     provider, _ = await running_session(env, repo)
@@ -2277,9 +2290,7 @@ async def test_checkpoint_validation_precedes_destructive_reset(env, tmp_path, c
     assert await env.db.get_task_meta("t", "manual_pause_checkpoint")
 
 
-@pytest.mark.parametrize("conflict", [
-    "foreign_task", "legacy_foreign_branch", "legacy_foreign_owned_branch", "foreign_project",
-])
+@pytest.mark.parametrize("conflict", ["foreign_task", "foreign_project"])
 async def test_checkpoint_task_identity_precedes_all_git_changes(env, tmp_path, monkeypatch, conflict):
     from src.git.manager import GitError
     from src.orchestrator.task_checkpoint import restore_checkpoint
@@ -2297,9 +2308,6 @@ async def test_checkpoint_task_identity_precedes_all_git_changes(env, tmp_path, 
     assert saved["pause_workspace_id"] == "workspace"
     if conflict == "foreign_task":
         saved["task_id"] = "peer"
-    elif conflict in {"legacy_foreign_branch", "legacy_foreign_owned_branch"}:
-        saved.pop("task_id")
-        saved["branch"] = "aq/peer"
     else:
         saved["pause_project_id"] = "other"
     await env.db.set_task_meta("t", "manual_pause_checkpoint", saved)
@@ -2316,10 +2324,7 @@ async def test_checkpoint_task_identity_precedes_all_git_changes(env, tmp_path, 
     monkeypatch.setattr(env.orch.git, "aclear_stale_locks", unexpected_git)
     ws = await env.db.get_workspace("workspace")
     with pytest.raises(GitError, match="unchanged"):
-        await env.orch._worktree_slots().reset_slot_for_task(
-            ws, await env.db.get_task("t"),
-            target_branch="main" if conflict == "legacy_foreign_owned_branch" else None,
-        )
+        await env.orch._worktree_slots().reset_slot_for_task(ws, await env.db.get_task("t"))
     # Supplying a previously prepared plan must not bypass task validation.
     with pytest.raises(GitError, match="unchanged"):
         await restore_checkpoint(env.db, env.orch.git, "t", str(repo), saved=saved)
@@ -2332,7 +2337,107 @@ async def test_checkpoint_task_identity_precedes_all_git_changes(env, tmp_path, 
     assert (await env.db.get_task("t")).branch_name == "main"
 
 
-@pytest.mark.parametrize("outcome", ["activate", "block_before_activation", "foreign_checkpoint"])
+@pytest.mark.parametrize("legacy", [True, False])
+@pytest.mark.parametrize("owned", [False, True])
+async def test_foreign_branch_checkpoint_is_discarded_with_audit_before_git_changes(
+    env, tmp_path, monkeypatch, legacy, owned
+):
+    """A pause that captured the slot's other checkout no longer blocks preparation."""
+    from src.git.manager import GitError
+    from src.orchestrator.task_checkpoint import (
+        _foreign_checkpoint_reason,
+        prepare_checkpoint,
+        restore_checkpoint,
+    )
+
+    repo, git = make_git_repo(tmp_path, "foreign")
+    (repo / "foreign.txt").write_text("unstaged\n")
+    await running_session(env, repo)
+    await pause(env)
+    saved = await env.db.get_task_meta("t", "manual_pause_checkpoint")
+    if legacy:  # Captured before checkpoints carried task identity (ME 10-20).
+        saved.pop("task_id")
+    if legacy or not owned:
+        saved["branch"] = "aq/peer"
+    else:  # An owned continuation proves a renamed own branch; only labels differ.
+        saved["branch"] = "aq/renamed"
+    await env.db.set_task_meta("t", "manual_pause_checkpoint", saved)
+    head, index = git("rev-parse", "HEAD"), (repo / ".git" / "index").read_bytes()
+
+    async def unexpected_git(*args, **kwargs):
+        pytest.fail("a discarded checkpoint reached Git")
+
+    real_git = env.orch.git._arun
+    monkeypatch.setattr(env.orch.git, "_arun", unexpected_git)
+    if owned and not legacy:
+        # Not foreign: identity proves this task's own capture; reachability decides.
+        assert await _foreign_checkpoint_reason(
+            env.db, "t", saved, owned_continuation=True,
+        ) is None
+        return
+    assert await prepare_checkpoint(
+        env.db, env.orch.git, "t", str(repo), owned_branch="main" if owned else None,
+    ) is None
+    assert await env.db.get_task_meta("t", "manual_pause_checkpoint") is None
+    audit = [ctx for ctx in await env.db.get_task_contexts("t")
+             if ctx["type"] == "manual_pause_checkpoint_discarded"]
+    assert len(audit) == 1
+    record = json.loads(audit[0]["content"])
+    assert record["actor"] == "checkpoint-preparation"
+    assert "'aq/peer'" in record["reason"] and "'main'" in record["reason"]
+    assert record["checkpoint"] == saved
+    monkeypatch.setattr(env.orch.git, "_arun", real_git)
+    assert git("rev-parse", saved["ref"]) == saved["commit"]  # The work stays reachable.
+    assert git("rev-parse", "HEAD") == head
+    assert (repo / ".git" / "index").read_bytes() == index
+    assert (repo / "foreign.txt").read_text() == "unstaged\n"
+    # An explicitly supplied stale plan still never switches to the foreign branch.
+    with pytest.raises(GitError, match="unchanged"):
+        await restore_checkpoint(env.db, env.orch.git, "t", str(repo), saved=saved)
+
+
+async def test_foreign_checkpoint_discard_refuses_a_changed_checkpoint(env, tmp_path):
+    repo, _git = make_git_repo(tmp_path, "changed")
+    await running_session(env, repo)
+    await pause(env)
+    saved = await env.db.get_task_meta("t", "manual_pause_checkpoint")
+    newer = {**saved, "head": "0" * 40}
+    await env.db.set_task_meta("t", "manual_pause_checkpoint", newer)
+    with pytest.raises(ValueError, match="changed during discard"):
+        await env.db.discard_task_pause_checkpoint(
+            "t", reason="stale", actor="test", expected=saved,
+        )
+    assert await env.db.get_task_meta("t", "manual_pause_checkpoint") == newer
+    assert not [ctx for ctx in await env.db.get_task_contexts("t")
+                if ctx["type"] == "manual_pause_checkpoint_discarded"]
+
+
+async def test_discard_pause_checkpoint_command_audits_and_keeps_ref(env, tmp_path):
+    repo, git = make_git_repo(tmp_path, "command")
+    await running_session(env, repo)
+    await pause(env)
+    saved = await env.db.get_task_meta("t", "manual_pause_checkpoint")
+
+    assert "reason is required" in (await command(env, "discard_pause_checkpoint"))["error"]
+    result = await command(env, "discard_pause_checkpoint", reason="captured aq/peer")
+    assert result == {
+        "task_id": "t", "discarded": True, "branch": saved["branch"],
+        "ref": saved["ref"], "commit": saved["commit"],
+    }
+    assert await env.db.get_task_meta("t", "manual_pause_checkpoint") is None
+    record = json.loads(next(
+        ctx for ctx in await env.db.get_task_contexts("t")
+        if ctx["type"] == "manual_pause_checkpoint_discarded"
+    )["content"])
+    assert (record["actor"], record["reason"]) == ("local-operator", "captured aq/peer")
+    assert record["checkpoint"] == saved
+    assert git("rev-parse", saved["ref"]) == saved["commit"]
+    again = await command(env, "discard_pause_checkpoint", reason="again")
+    assert "no paused checkpoint" in again["error"]
+
+
+@pytest.mark.parametrize("outcome", ["activate", "block_before_activation", "foreign_checkpoint",
+    "foreign_branch_checkpoint"])
 async def test_checkpoint_capture_restore_and_pool_activation_fences(
     env, tmp_path, monkeypatch, outcome
 ):
@@ -2392,6 +2497,10 @@ async def test_checkpoint_capture_restore_and_pool_activation_fences(
     })
     if outcome == "foreign_checkpoint":
         await env.db.set_task_meta("t", "manual_pause_checkpoint", {**saved, "task_id": "peer"})
+    elif outcome == "foreign_branch_checkpoint":
+        # ME 10-20: a pre-identity pause captured the predecessor's checkout.
+        foreign = {k: v for k, v in saved.items() if k != "task_id"} | {"branch": "aq/peer"}
+        await env.db.set_task_meta("t", "manual_pause_checkpoint", foreign)
     elif outcome == "block_before_activation":
         reset = manager.reset_slot_for_task
 
@@ -2418,6 +2527,17 @@ async def test_checkpoint_capture_restore_and_pool_activation_fences(
         assert (repo / "peer.txt").read_text() == "predecessor committed work\n"
         assert await env.db.get_task_meta("t", "manual_pause_checkpoint")
         assert read_claim_file(str(repo)) is None
+        return
+    if outcome == "foreign_branch_checkpoint":
+        # Discarded with an audit record; the task prepares its own branch fresh.
+        assert result["result"] == "claimed", result
+        assert current_session.claims == 1
+        assert git("branch", "--show-current") == "main"
+        assert await env.db.get_task_meta("t", "manual_pause_checkpoint") is None
+        audit = [ctx for ctx in await env.db.get_task_contexts("t")
+                 if ctx["type"] == "manual_pause_checkpoint_discarded"]
+        assert json.loads(audit[0]["content"])["checkpoint"] == foreign
+        assert git("rev-parse", saved["ref"]) == saved["commit"]
         return
     assert git("branch", "--show-current") == "main"
     assert git("rev-parse", "HEAD") == original_head

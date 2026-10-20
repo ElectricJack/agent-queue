@@ -506,6 +506,8 @@ _FOREIGN_TARGETS = [
     ("integration_reevaluate_repair", {"operation_id": "op-other"}),
     ("integration_release", {"batch_id": "batch-other"}),
     ("integration_release_owner", {"owner_row_id": "owner-other"}),
+    ("integration_restore_task_origin", {"task_id": "foreign"}),
+    ("integration_restore_task_origin", {"task_id": "own", "origin_id": "origin-foreign"}),
     ("integration_eject", {"batch_id": "batch-other", "task_id": "foreign", "reason": "x"}),
     ("integration_release_held_gate", {"subject_id": "subject-other", "gate_id": "gate-p"}),
     ("integration_release_held_gate", {"subject_id": "subject-p", "gate_id": "gate-other"}),
@@ -518,6 +520,7 @@ _OWN_TARGETS = [
     ("integration_reevaluate_repair", {"operation_id": "op-p"}),
     ("integration_release", {"batch_id": "batch-p"}),
     ("integration_release_owner", {"owner_row_id": "owner-p"}),
+    ("integration_restore_task_origin", {"task_id": "own", "origin_id": "origin-own"}),
     ("integration_eject", {"batch_id": "batch-p", "task_id": "own", "reason": "x"}),
     ("integration_release_held_gate", {"subject_id": "subject-p", "gate_id": "gate-p"}),
 ]

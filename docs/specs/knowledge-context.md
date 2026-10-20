@@ -40,12 +40,23 @@ transaction, preserving identity-only citations and receipts.
 The conservative `upper_bound_bytes` method counts UTF-8 bytes as an input
 token upper bound, including required instructions, tools, separators and
 knowledge. It also reserves wrapper and output allowances. The defaults are
-32768 total tokens, 4096 output reserve, 256 wrapper reserve, 4096 knowledge
+an automatic input ceiling, 4096 output reserve, 256 wrapper reserve, 4096 knowledge
 tokens/16384 bytes and eight discovered items/1000 discovery tokens. Knowledge
 uses the minimum of its hard cap, `memory.context_max_tokens` and remaining
 input allowance. Whole items are dropped with omission reasons. Required
 content overflow stores an empty diagnostic bundle and refuses delivery with
 `context.required_over_budget`; authoritative instructions are never cut.
+
+`knowledge.context.input_max_tokens` defaults to null (automatic). The ceiling
+uses the claiming session's model context window when its bounded, fresh
+transcript observation reports one (currently Codex's `model_context_window`).
+Without that telemetry, including a fresh launch or an unmeasured harness, the
+fallback is 131072. An explicit nonnegative integer remains an operator cap;
+a known smaller model window and any remaining allowance can only lower it.
+Preview fitting, context selection and delivery rechecks use the same rule.
+Accounting stays conservative: bytes are counted as a token upper bound;
+no characters/4 estimate is used to authorize delivery. An existing explicit
+32768 setting retains its meaning until the operator changes or removes it.
 
 For pilot worker prime, the renderer fits pageable prose to that same configured
 budget before knowledge selection. It reduces ordinary task-context excerpts,
@@ -68,6 +79,9 @@ wrappers and cannot stand in for the final override body's measured size.
 `aq prime --json` preserves these details in the error envelope. Use retained
 failure diagnostics to distinguish an oversized required section from changed
 runtime limits; a task checkout SHA is not deployed daemon provenance.
+The ordinary refusal also names the available input allowance, output/wrapper
+reserves and the three largest required sections with their UTF-8 byte counts,
+so diagnostics are visible without JSON or access to instruction bodies.
 
 `prime` returns `context_bundle` and `context_state: prepared`. A read refused
 on access grounds — `record.forbidden`, `knowledge.disabled` — degrades instead

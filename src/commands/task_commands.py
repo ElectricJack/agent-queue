@@ -34,6 +34,7 @@ from src.database.queries.task_queries import (
 from src.deliverables import REVIEW_TARGETS
 from src.notifications.render import classify_error
 from src.models import (
+    SUSPENDED_TASK_STATUSES,
     BLOCKING_DEP_TYPES,
     DEP_TYPE_VALUES,
     INTEGRATION_MODES,
@@ -1043,14 +1044,23 @@ class TaskCommandsMixin:
     ) -> None:
         """Publish a committed graph edit; subscriber failures cannot undo it.
 
-        Persist the small identity-only audit row for reconnect replay. The bus
+        Persist the small identity/status audit row for reconnect replay. The bus
         uses the usual task base fields (never description or command arguments).
         This intentionally does not emit task.created, which triggers routing.
         """
         pid = project_id or task.project_id
         seq = None
+        payload = None
+        if event_type == "task.updated":
+            details["status"] = task.status.value
+            payload = json.dumps({"status": task.status.value})
+            if details.get("edited_fields"):
+                payload = json.dumps({"status": task.status.value,
+                                      "edited_fields": details["edited_fields"]})
         try:
-            seq = await self.db.log_event(event_type, project_id=pid, task_id=task.id)
+            seq = await self.db.log_event(
+                event_type, project_id=pid, task_id=task.id, payload=payload,
+            )
         except Exception:
             logger.warning(
                 "Could not persist graph change %s for %s", event_type, task.id, exc_info=True
@@ -1543,6 +1553,7 @@ class TaskCommandsMixin:
         )
         claimed = moved is None or moved.status in (
             TaskStatus.IN_PROGRESS,
+            *SUSPENDED_TASK_STATUSES,
             TaskStatus.COMPLETED,
             TaskStatus.FAILED,
         ) or moved.assigned_agent_id is not None
@@ -4073,7 +4084,10 @@ class TaskCommandsMixin:
         refusal = _filing_refusal("edit_task", args)
         if refusal is not None:
             return refusal
-        claimed = task.status == TaskStatus.IN_PROGRESS or bool(task.assigned_agent_id)
+        claimed = (
+            task.status in (TaskStatus.IN_PROGRESS, *SUSPENDED_TASK_STATUSES)
+            or bool(task.assigned_agent_id)
+        )
         if "intelligence_class" in args and claimed:
             return {"error": "Task is running or claimed; stop the task before changing its class hint."}
 
@@ -4256,10 +4270,11 @@ class TaskCommandsMixin:
                 "monorepo support. Use 'exclusive' instead ('branch-isolated' is "
                 "deprecated and now behaves identically to 'exclusive')."
             )
-        await self._emit_task_graph_change("task.updated", task)
+        refreshed = await self.db.get_task(task.id) or task
+        await self._emit_task_graph_change("task.updated", refreshed, edited_fields=all_fields)
         if updates.get("project_id", task.project_id) != task.project_id:
             await self._emit_task_graph_change(
-                "task.updated", task, project_id=updates["project_id"]
+                "task.updated", refreshed, project_id=task.project_id
             )
         return result
 
@@ -4354,6 +4369,30 @@ class TaskCommandsMixin:
         )
         await self._emit_task_graph_change("task.updated", task)
         return {"task_id": task_id, "status": task.status.value}
+
+    async def _cmd_discard_pause_checkpoint(self, args: dict) -> dict:
+        task_id = args["task_id"]
+        reason = (args.get("reason") or "").strip()
+        if not reason:
+            return {"error": "reason is required"}
+        error = await self._task_control_scope_error(task_id)
+        if error:
+            return error
+        if await self.db.get_task(task_id) is None:
+            return {"error": f"Task '{task_id}' not found"}
+        actor = (self._current_scope or {}).get("session_id") or "local-operator"
+        # Under the pause/resume lock: never race a capture or a resume.
+        async with self.orchestrator._task_control_lock(task_id):
+            discarded = await self.db.discard_task_pause_checkpoint(
+                task_id, reason=reason, actor=actor,
+            )
+        if discarded is None:
+            return {"error": f"Task '{task_id}' has no paused checkpoint"}
+        return {
+            "task_id": task_id, "discarded": True,
+            "branch": discarded.get("branch"), "ref": discarded.get("ref"),
+            "commit": discarded.get("commit"),
+        }
 
     async def _cmd_stop_task(self, args: dict) -> dict:
         error = await self.orchestrator.stop_task(args["task_id"])
@@ -5425,6 +5464,9 @@ class TaskCommandsMixin:
                     "code": "integration.completion_provenance_required",
                 }
         await self.db.transition_task(task_id, TaskStatus(new_status), context="admin_set_status")
+        refreshed = await self.db.get_task(task_id)
+        if refreshed:
+            await self._emit_task_graph_change("task.updated", refreshed)
         return {
             "task_id": task_id,
             "old_status": old_status,
@@ -5697,6 +5739,28 @@ class TaskCommandsMixin:
                 detail=f"{blocked_terminal}; not auto-recovered, restart or reopen to retry",
                 ref=str(task_id),
             ))
+        # BLOCKED with no attention, terminal mark, open incident or graph
+        # blocker: nothing recovers it (the promotion cascade only lifts
+        # BLOCKED work that has a graph blocker), and pools count only READY.
+        # Without this explain answered with route/pool waits for an hour
+        # while the task could never be claimed (swift-crest-94).
+        open_incident = isinstance(recovery, dict) and recovery.get("id") and not recovery.get(
+            "decision"
+        )
+        if (task.status is TaskStatus.BLOCKED and not retirement and not needs_attention
+                and not blocked_terminal and not open_incident
+                and not await self.db.tasks_with_graph_blockers([str(task_id)])):
+            failure = await self.db.get_task_meta(str(task_id), "slot_reset_failure")
+            if isinstance(failure, dict):
+                detail = (f"BLOCKED by a failed slot reset: "
+                          f"{failure.get('reason') or 'no reason recorded'} "
+                          f"(attempt {failure.get('attempt')}). After fixing the cause: "
+                          f"aq task resume --task-id {task_id}")
+            else:
+                detail = ("BLOCKED with no recorded blocker: no dependency, gate, attention "
+                          "flag or terminal close holds it, and nothing requeues it. "
+                          f"aq task set-status --task-id {task_id} --status READY")
+            reasons.append(Reason(code="blocked_unheld", detail=detail, ref=str(task_id)))
 
         # A cooling-down PAUSED task is not blocked by anything in the graph
         # — it is waiting out a backoff (rate limit, rapid crash, stalled

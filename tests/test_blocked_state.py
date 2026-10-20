@@ -38,7 +38,13 @@ from src.database.tables import (
     tasks as tasks_t,
 )
 from src.models import DepType, Project, RepoConfig, RepoSourceType, Task, TaskStatus
-from src.state_machine import CyclicDependencyError, validate_dag_with_new_edge, validate_waits_for
+from src.state_machine import (
+    CyclicDependencyError,
+    InvalidTransition,
+    VALID_STATUS_TRANSITIONS,
+    validate_dag_with_new_edge,
+    validate_waits_for,
+)
 
 PROJECT = "p-wg"
 
@@ -668,12 +674,13 @@ class TestCycleRules:
 
 class TestRecomputeProperty:
     @pytest.mark.parametrize("seed", [1, 2, 3, 4, 5])
-    async def test_random_dag_mutations_match_full_evaluation(self, db, seed):
+    async def test_random_dag_mutations_match_full_evaluation(self, db, seed, monkeypatch):
         """After every random mutation, the persisted projection must equal a
         full brute-force evaluation of the predicate over all tasks."""
         rng = random.Random(seed)
         statuses = list(TaskStatus)
         dep_types = [d.value for d in DepType]
+        monkeypatch.setattr(db, "_sm_enforce", True, raising=False)
 
         n = 25
         ids = [f"n{i:02d}" for i in range(n)]
@@ -706,8 +713,14 @@ class TestRecomputeProperty:
                 from src.database.queries.task_queries import ManualPauseActive
 
                 previous = await db.get_task(tid)
+                # Generate legal moves across the full lifecycle, including
+                # suspension. Invalid writes have a rollback regression below.
+                targets = [
+                    status for status in statuses
+                    if (previous.status, status) in VALID_STATUS_TRANSITIONS
+                ]
                 try:
-                    await db.transition_task(tid, rng.choice(statuses))
+                    await db.transition_task(tid, rng.choice(targets))
                 except ManualPauseActive:
                     # Random automatic transitions cannot override a manual hold.
                     assert previous.status == TaskStatus.PAUSED
@@ -716,6 +729,33 @@ class TestRecomputeProperty:
             persisted = await db.get_blocked_map(ids)
             brute = await db.evaluate_blocked(ids)
             assert persisted == brute, f"drift after mutation (seed={seed})"
+
+    @pytest.mark.parametrize(
+        "source,target",
+        [
+            (TaskStatus.ASSIGNED, TaskStatus.RESUME_PENDING),
+            (TaskStatus.RESUME_PENDING, TaskStatus.ASSIGNED),
+            (TaskStatus.WAITING, TaskStatus.RESUME_PENDING),
+            (TaskStatus.PAUSED, TaskStatus.WAITING),
+            (TaskStatus.WAITING, TaskStatus.BLOCKED),
+        ],
+    )
+    async def test_invalid_suspended_transition_preserves_projection(self, db, source, target):
+        await mktask(db, "source", status=source)
+        await mktask(db, "dependent")
+        await db.add_dependency("dependent", "source", DepType.CONDITIONAL_BLOCKS.value)
+        previous = await db.get_task("source")
+        projection = await db.get_blocked_map(["source", "dependent"])
+        events = await db.get_recent_events(limit=50)
+
+        with pytest.raises(InvalidTransition) as error:
+            await db.transition_task("source", target)
+
+        assert (error.value.from_status, error.value.to_status) == (source, target)
+        assert await db.get_task("source") == previous
+        assert await db.get_blocked_map(["source", "dependent"]) == projection
+        assert await db.evaluate_blocked(["source", "dependent"]) == projection
+        assert await db.get_recent_events(limit=50) == events
 
     async def test_recompute_all_repairs_drift(self, db):
         """A hand-corrupted row is repaired by the full recompute."""

@@ -161,6 +161,11 @@ async def enqueue_integration_event(
     if identity != (event_id, dedup_key, project_id, event_type) or dict(row["payload"]) != body:
         raise ValueError("integration event identity was reused with different content")
 
+    if batch_id := body.get("batch_id"):
+        from src.waits.sources import record_batch_event
+
+        await record_batch_event(conn, batch_id)
+
 
 async def enqueue_batch_event(
     conn: AsyncConnection, batch: dict, event_type: str, *,

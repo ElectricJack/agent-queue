@@ -23,6 +23,7 @@ from src.database.tables import (
     job_workspace_pins,
     messages,
     workspaces,
+    wait_source_events,
 )
 from src.jobs.result import build_result
 from src.models import AgentProfile, Workspace, RepoSourceType
@@ -816,3 +817,17 @@ async def test_long_worker_compaction_checkpoint_preserves_claim_job_wait_gate_a
     assert after["waits"][0]["result_ref"] is not None
     assert after["waits"][0]["state"] == "satisfied"
     assert after["jobs"] == []
+
+
+async def test_terminal_job_source_event_matches_result_and_stale_cas_is_silent(setup):
+    job = await submit(setup)
+    terminal = await finish(setup, job)
+    assert await setup.db.transition_job(job["id"], 1, "failed") is None
+    async with setup.db._engine.connect() as conn:
+        rows = (await conn.execute(select(wait_source_events).where(
+            wait_source_events.c.source_key == f"job:{job['id']}",
+        ))).mappings().all()
+    assert len(rows) == 1
+    assert rows[0]["source_generation"] == 1
+    assert rows[0]["source_revision"] == str(terminal["state_version"])
+    assert rows[0]["occurred_at"] == terminal["ended_at"]

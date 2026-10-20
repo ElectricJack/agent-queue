@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import shutil
 import tempfile
 import uuid
@@ -9,6 +10,8 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from src.git.manager import GitError, GitManager, is_valid_git_oid
+
+logger = logging.getLogger(__name__)
 
 CHECKPOINT_META = "manual_pause_checkpoint"
 
@@ -176,19 +179,62 @@ async def _validate_checkpoint_task(
                        "workspace was left unchanged")
 
 
+async def _foreign_checkpoint_reason(
+    db, task_id, saved, expected_branch=None, *, owned_continuation=False,
+) -> str | None:
+    """Name a checkpoint captured from another task's slot checkout, else None.
+
+    Only a branch label mismatch qualifies: the task and project identity
+    still match, so the snapshot is this task's pause of whatever the slot
+    had checked out. Every other refusal stays with ``_validate_checkpoint_task``.
+    A retained stop's checkpoint is its release proof and is never discarded here.
+    """
+    if "retained_stop_identity" in saved:
+        return None
+    task = await db.get_task(task_id)
+    if (task is None or saved.get("task_id", task_id) != task_id
+            or saved.get("pause_project_id", task.project_id) != task.project_id):
+        return None
+    expected = expected_branch or getattr(task, "branch_name", None)
+    current = getattr(task, "branch_name", None)
+    if expected is None or owned_continuation and saved.get("task_id") == task_id:
+        return None
+    expected = expected.removeprefix("refs/heads/")
+    if current is not None and current.removeprefix("refs/heads/") != expected:
+        return None
+    if saved["branch"] == expected:
+        return None
+    return (f"Paused checkpoint branch {saved['branch']!r} is not the task's own "
+            f"branch {expected!r}; the slot held another checkout when it was paused")
+
+
 async def prepare_checkpoint(
     db, git, task_id: str, workspace: str, *, handoff_sha: str | None = None,
     owned_branch: str | None = None, owned_head: str | None = None,
     expected_branch: str | None = None,
 ) -> dict | None:
     """Validate source and destination before any reset or clean can run."""
-    saved = await db.get_task_meta(task_id, CHECKPOINT_META)
-    if not saved:
+    raw = await db.get_task_meta(task_id, CHECKPOINT_META)
+    if not raw:
         return None
-    saved = _retained_stop_restoration(saved, task_id)
+    saved = _retained_stop_restoration(raw, task_id)
     if saved.get("branch") is None:
         raise GitError("Paused checkpoint has detached HEAD and no proved branch; "
                        "retain the checkpoint for guarded recovery; workspace was left unchanged")
+    reason = await _foreign_checkpoint_reason(
+        db, task_id, saved, expected_branch, owned_continuation=owned_branch is not None,
+    )
+    if reason is not None:
+        # Restoring would switch to a branch this task never owned; blocking
+        # would refuse every later preparation. Keep the ref, audit, continue.
+        try:
+            await db.discard_task_pause_checkpoint(
+                task_id, reason=reason, actor="checkpoint-preparation", expected=raw,
+            )
+        except ValueError as exc:
+            raise GitError(f"{exc}; workspace was left unchanged") from exc
+        logger.warning("Discarded foreign paused checkpoint for %s: %s", task_id, reason)
+        return None
     # An owned continuation proves reachability below, even when the snapshot
     # predates a branch rename. Task and project identity still must match.
     await _validate_checkpoint_task(
@@ -263,25 +309,29 @@ async def _prepare_owned_checkpoint(git, workspace, saved, branch, proved_head):
         if len(tips) > 1 or tips and not is_valid_git_oid(tips[0]):
             raise GitError("Owned branch tip is ambiguous")
         branch_tip = tips[0] if tips else None
-        if branch_tip is None and proved_head is None:
-            # The caller refreshed authorized origin refs under the owned
-            # preparation fence. Never use the foreign slot's current HEAD.
-            remote = f"refs/remotes/origin/{branch}"
-            refs = await git._arun(
-                ["for-each-ref", "--format=%(refname) %(objectname)", "--", remote], cwd=workspace,
-            )
-            tips = [line.partition(" ")[2] for line in refs.splitlines()
-                    if line.partition(" ")[0] == remote]
-            if len(tips) > 1 or tips and not is_valid_git_oid(tips[0]):
-                raise GitError("Owned origin branch tip is ambiguous")
-            branch_tip = tips[0] if tips else None
-        head = proved_head or branch_tip
+        # The caller refreshed authorized origin refs under the owned fence.
+        # A present local ref can still predate a later published attempt.
+        remote = f"refs/remotes/origin/{branch}"
+        refs = await git._arun(
+            ["for-each-ref", "--format=%(refname) %(objectname)", "--", remote], cwd=workspace,
+        )
+        tips = [line.partition(" ")[2] for line in refs.splitlines()
+                if line.partition(" ")[0] == remote]
+        if len(tips) > 1 or tips and not is_valid_git_oid(tips[0]):
+            raise GitError("Owned origin branch tip is ambiguous")
+        remote_tip = tips[0] if tips else None
+        head = proved_head or branch_tip or remote_tip
         if not is_valid_git_oid(head):
             raise GitError("Owned branch has no proved continuation commit")
-        if branch_tip is not None and branch_tip != head:
-            if await git.ais_ancestor(workspace, head, branch_tip, strict=True) is True:
-                head = branch_tip
-            elif await git.ais_ancestor(workspace, branch_tip, head, strict=True) is not True:
+        # A snapshot captured on this exact branch can hold a newer committed
+        # attempt. A renamed snapshot still needs owned-tip reachability proof.
+        saved_head = saved["head"] if saved["branch"] == branch else None
+        for candidate in (branch_tip, remote_tip, saved_head):
+            if candidate is None or candidate == head:
+                continue
+            if await git.ais_ancestor(workspace, head, candidate, strict=True) is True:
+                head = candidate
+            elif await git.ais_ancestor(workspace, candidate, head, strict=True) is not True:
                 raise GitError("Owned branch and continuation diverged or are unproved")
         if await git.ais_ancestor(workspace, saved["head"], head, strict=True) is not True:
             raise GitError("Saved checkpoint is not reachable from the owned branch or is unproved")
@@ -377,6 +427,23 @@ async def restore_checkpoint(
     branch = saved["branch"]
     plan = saved.get("handoff_restore")
     if plan:
+        # Recheck at the destructive boundary, including explicitly supplied
+        # plans: a newer fetched publication must never be reset backwards.
+        remote_ref = f"refs/remotes/origin/{branch}"
+        refs = await git._arun(
+            ["for-each-ref", "--format=%(refname) %(objectname)", "--", remote_ref],
+            cwd=workspace,
+        )
+        tips = [line.partition(" ")[2] for line in refs.splitlines()
+                if line.partition(" ")[0] == remote_ref]
+        if len(tips) > 1 or tips and not is_valid_git_oid(tips[0]):
+            raise GitError("Owned origin branch tip is ambiguous; workspace was left unchanged")
+        remote = tips[0] if tips else None
+        if remote and await git.ais_ancestor(
+            workspace, remote, plan["head"], strict=True,
+        ) is not True:
+            raise GitError("Paused restoration would move the task branch backwards from origin; "
+                           "workspace was left unchanged")
         await git._arun(["switch", "-C", branch, plan["head"]], cwd=workspace)
     else:
         try:

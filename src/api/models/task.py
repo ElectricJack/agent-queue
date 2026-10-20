@@ -2,11 +2,19 @@
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field
+from src.models import TaskStatus
 
 from . import TaskRef
+
+
+# Preserve loose response projections and their empty legacy default while
+# exposing the lifecycle vocabulary from the enum to generated clients.
+TaskStatusValue = Annotated[str, Field(json_schema_extra={
+    "enum": ["", *(status.value for status in TaskStatus)],
+})]
 
 
 # ---------------------------------------------------------------------------
@@ -205,7 +213,7 @@ class TaskDetail(TaskDisplayFields):
     project_id: str
     title: str
     description: str = ""
-    status: str = ""
+    status: TaskStatusValue = ""
     priority: int = 0
     assigned_agent: str | None = None
     retry_count: int = 0
@@ -270,7 +278,7 @@ class TaskDict(BaseModel):
     model_config = {"extra": "allow"}
     id: str
     title: str = ""
-    status: str = ""
+    status: TaskStatusValue = ""
 
 
 # ---------------------------------------------------------------------------
@@ -624,6 +632,14 @@ class RemoveTaskResponse(DeleteTaskResponse):
 class TaskControlResponse(BaseModel):
     task_id: str
     status: str
+
+
+class DiscardPauseCheckpointResponse(BaseModel):
+    task_id: str
+    discarded: bool
+    branch: str | None = None
+    ref: str | None = None
+    commit: str | None = None
 
 
 class StopTaskResponse(BaseModel):
@@ -1212,6 +1228,7 @@ class PoolProjectStatus(BaseModel):
     ready: int = 0
     running_idle: int = 0
     running_busy: int = 0
+    evictable: int = 0  # subset of busy occupants, still charged to capacity
     starting: int = 0
     draining: int = 0
     #: The project's own ``max_concurrent_agents`` ceiling, which bounds how
@@ -1267,6 +1284,7 @@ class PoolStatusRow(BaseModel):
     desired: int
     running_idle: int
     running_busy: int
+    evictable: int = 0  # subset of busy occupants, still charged to capacity
     starting: int
     draining: int
     ready: int
@@ -1437,6 +1455,7 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "stop_task": StopTaskResponse,
     "pause_task": TaskControlResponse,
     "resume_task": TaskControlResponse,
+    "discard_pause_checkpoint": DiscardPauseCheckpointResponse,
     "restart_task": RestartTaskResponse,
     "task_recover": TaskRecoveryResponse,
     "reopen_with_feedback": ReopenWithFeedbackResponse,

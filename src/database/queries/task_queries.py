@@ -15,6 +15,7 @@ from sqlalchemy import (
     and_,
     any_,
     bindparam,
+    case,
     delete,
     func,
     insert,
@@ -28,6 +29,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB, insert as pg_insert
 
 from src.routing.sources import LEGACY
+from src.waits.graph import apply_base_priority_change, lock_component_tasks
 
 from src.database.queries.blocked_state import (
     PROJECTION_INPUT_COLUMNS,
@@ -35,8 +37,10 @@ from src.database.queries.blocked_state import (
 )
 from src.database.queries.ingest_hold import not_ingest_held
 from src.database.tables import (
+    admission_reservations,
     agents,
     archived_tasks,
+    continuations,
     events,
     gates,
     integration_branch_owners,
@@ -60,10 +64,13 @@ from src.database.tables import (
     task_tools,
     task_workspace_requirements,
     tasks,
+    wait_priority_projection,
+    wait_records,
     workspaces,
 )
 from src.models import (
     HOLD_LABEL_PREFIX,
+    SUSPENDED_TASK_STATUSES,
     AgentState,
     Task,
     TaskStatus,
@@ -352,6 +359,7 @@ class TaskQueryMixin:
                 title=task.title,
                 description=task.description,
                 priority=task.priority,
+                effective_priority=task.priority,
                 status=task.status.value,
                 verification_type=task.verification_type.value,
                 retry_count=task.retry_count,
@@ -681,6 +689,8 @@ class TaskQueryMixin:
             )
         retired = []
         async with self._engine.begin() as conn:
+            if "priority" in values:
+                await lock_component_tasks(conn, {f"task:{task_id}"})
             comment_source_project = None
             if "project_id" in kwargs:
                 # Project moves serialize with hierarchy mutations before
@@ -757,7 +767,12 @@ class TaskQueryMixin:
             if lifecycle & kwargs.keys():
                 stmt = stmt.where(_not_manually_paused())
             result = await conn.execute(stmt.values(**values))
+            if result.rowcount == 1 and "priority" in values:
+                await apply_base_priority_change(conn, task_id, now=values["updated_at"])
             if result.rowcount == 1 and previous_status is not None:
+                from src.waits.sources import record_task_transition
+
+                await record_task_transition(conn, task_id, previous_status, values["status"])
                 await self._record_recovery_failure_generation_on(
                     conn, task_id, TaskStatus(previous_status), TaskStatus(values["status"]),
                     values["updated_at"],
@@ -1178,6 +1193,40 @@ class TaskQueryMixin:
                 created_at=time.time(),
             ))
 
+    async def discard_task_pause_checkpoint(
+        self, task_id: str, *, reason: str, actor: str, expected: dict | None = None,
+    ) -> dict | None:
+        """Drop the checkpoint metadata, keeping its ref and commit in an audit row.
+
+        With *expected*, delete only that exact checkpoint (compare-and-delete):
+        a changed value raises ``ValueError`` and nothing is removed. Returns the
+        discarded checkpoint, or None when the task has none.
+        """
+        async with self.immediate() as conn:
+            raw = await conn.scalar(select(task_metadata.c.value).where(
+                task_metadata.c.task_id == task_id,
+                task_metadata.c.key == "manual_pause_checkpoint",
+            ).with_for_update())
+            if raw is None:
+                if expected is not None:
+                    raise ValueError("Paused checkpoint changed during discard")
+                return None
+            current = json.loads(raw)
+            if expected is not None and current != expected:
+                raise ValueError("Paused checkpoint changed during discard")
+            await conn.execute(delete(task_metadata).where(
+                task_metadata.c.task_id == task_id,
+                task_metadata.c.key == "manual_pause_checkpoint",
+            ))
+            await conn.execute(insert(task_context).values(
+                id=str(uuid.uuid4())[:12], task_id=task_id,
+                type="manual_pause_checkpoint_discarded",
+                label="Paused checkpoint discarded; its ref keeps the work",
+                content=json.dumps({"actor": actor, "reason": reason, "checkpoint": current}),
+                created_at=time.time(),
+            ))
+            return current
+
     async def record_task_pause_preparations_stopped(
         self, task_id: str, snapshot: dict, identities: list[dict]
     ) -> dict:
@@ -1392,18 +1441,7 @@ class TaskQueryMixin:
                 task_metadata.c.key == "slot_reset_failure",
             ))).scalar_one_or_none()
             if row["status"] in {"READY", "BLOCKED"} and failure:
-                await self._release_stopped_slot_reset_claim(conn, row, stopped_sessions)
-                await conn.execute(delete(task_metadata).where(
-                    task_metadata.c.task_id == task_id,
-                    task_metadata.c.key.in_([
-                        "claim_prepare_backoff_until", "claim_prepare_backoff_attempts",
-                    ]) | ((task_metadata.c.key == "needs_attention")
-                          & (task_metadata.c.value == json.dumps("slot_reset_failed"))),
-                ))
-                result = await self._apply_transition(
-                    conn, task_id, TaskStatus.READY, force=True,
-                    context="slot_reset_retry", returning=True, assigned_agent_id=None,
-                )
+                result = await self._retry_slot_reset_locked(conn, row, stopped_sessions)
             else:
                 if row["status"] != TaskStatus.PAUSED.value:
                     # "Task is not paused (status: FAILED)" is true and useless
@@ -1423,9 +1461,38 @@ class TaskQueryMixin:
                     raise ValueError(f"Task is not paused (status: {row['status']})")
                 encoded = await self._read_manual_pause(conn, task_id)
                 result = await self._resume_locked(conn, task_id, encoded)
+                # A hold placed over a failed slot reset restores the parked
+                # status, and the restore clears its attention: a BLOCKED row
+                # with no blocker the promotion cascade or explain can see
+                # (swift-crest-94).  Resuming it is the same operator retry as
+                # resuming the unpaused task, so apply it in this transaction.
+                row = await self._lock_task_row(conn, task_id)
+                if failure and row["status"] in {"READY", "BLOCKED"}:
+                    retried = await self._retry_slot_reset_locked(conn, row, stopped_sessions)
+                    seen = {ready_id for ready_id, _ in result.ready}
+                    result.flipped |= retried.flipped
+                    result.ready += [entry for entry in retried.ready if entry[0] not in seen]
         await self.log_blocked_flips(result.flipped)
         await self._notify_ready(result.ready)
         return await self.get_task(task_id)
+
+    async def _retry_slot_reset_locked(
+        self, conn, row, stopped_sessions: Sequence[dict]
+    ) -> TransitionResult:
+        """Requeue a failed slot reset; the caller holds the row lock."""
+        task_id = row["id"]
+        await self._release_stopped_slot_reset_claim(conn, row, stopped_sessions)
+        await conn.execute(delete(task_metadata).where(
+            task_metadata.c.task_id == task_id,
+            task_metadata.c.key.in_([
+                "claim_prepare_backoff_until", "claim_prepare_backoff_attempts",
+            ]) | ((task_metadata.c.key == "needs_attention")
+                  & (task_metadata.c.value == json.dumps("slot_reset_failed"))),
+        ))
+        return await self._apply_transition(
+            conn, task_id, TaskStatus.READY, force=True,
+            context="slot_reset_retry", returning=True, assigned_agent_id=None,
+        )
 
     async def recover_orphaned_pause(self, task_id: str) -> Task | None:
         """Resume a task wedged in PAUSED with no timer and no operator hold.
@@ -1516,6 +1583,21 @@ class TaskQueryMixin:
         if saved.get("cleanup_pending"):
             raise ValueError("Task pause cleanup is pending; repeat Pause to finish cleanup while held.")
         prior = TaskStatus(saved.get("status", "READY"))
+        if prior in SUSPENDED_TASK_STATUSES:
+            # Pause stops the old session. Only an uncleared outcome on the
+            # current continuation can authorize a new resume; never restore
+            # WAITING onto a stopped owner or put a continuation in READY.
+            resolved = await conn.scalar(
+                select(wait_records.c.id)
+                .join(continuations, continuations.c.wait_id == wait_records.c.id)
+                .where(
+                    continuations.c.task_id == task_id,
+                    continuations.c.resume_state.notin_(("acknowledged", "failed", "cancelled")),
+                    wait_records.c.outcome != "pending",
+                    wait_records.c.cleared_at.is_(None),
+                ).limit(1)
+            )
+            prior = TaskStatus.RESUME_PENDING if resolved else TaskStatus.HIBERNATED
         if prior in (TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS, TaskStatus.PAUSED):
             prior = (
                 TaskStatus.IN_PROGRESS if await self.is_container(task_id, conn=conn)
@@ -1851,6 +1933,24 @@ class TaskQueryMixin:
             if extra_values:
                 values = {**values, **extra_values}
             stmt = stmt.values(**values)
+            if current_status != new_status:
+                from src.waits.source_sql import task_transition_statement
+
+                stmt = task_transition_statement(stmt, current_status.value)
+                # The CTE returns the updated row even when the caller only
+                # needs a match count. Preserve existing returning semantics.
+                out = (await conn.execute(stmt)).mappings().fetchone()
+                if out is None and not _manual_pause_control and extra_where is None:
+                    paused = (await conn.execute(select(tasks.c.id).where(
+                        tasks.c.id == task_id, ~_not_manually_paused()
+                    ))).scalar_one_or_none()
+                    if paused:
+                        raise ManualPauseActive(f"Task {task_id} is manually paused; use resume_task.")
+                if out is not None and await record_retry() and returning:
+                    out = (await conn.execute(select(tasks).where(
+                        tasks.c.id == task_id,
+                    ))).mappings().one()
+                return out is not None, dict(out) if returning and out is not None else None
             if returning and supports_returning(conn):
                 out = (await conn.execute(stmt.returning(*tasks.c))).mappings().fetchone()
                 if out is None and not _manual_pause_control and extra_where is None:
@@ -2003,7 +2103,11 @@ class TaskQueryMixin:
                 # WG-5: enforce raises when the flag is on and the
                 # caller didn't opt out via ``force=True``.  Warn-only
                 # otherwise (unchanged pre-flip behaviour).
-                if getattr(self, "_sm_enforce", False) and not force:
+                if (
+                    getattr(self, "_sm_enforce", False)
+                    or current_status in SUSPENDED_TASK_STATUSES
+                    or new_status in SUSPENDED_TASK_STATUSES
+                ) and not force:
                     from src.state_machine import InvalidTransition
 
                     raise InvalidTransition(
@@ -2696,6 +2800,23 @@ class TaskQueryMixin:
             .values(handoff_state="released", updated_at=time.time())
         )
 
+        # Suspension history survives removal, but may never launch again.
+        await conn.execute(update(continuations).where(
+            continuations.c.task_id == task_id,
+            continuations.c.resume_state.not_in(("acknowledged", "failed", "cancelled")),
+        ).values(resume_state="cancelled", version=continuations.c.version + 1))
+        await conn.execute(update(admission_reservations).where(
+            (admission_reservations.c.task_id == task_id)
+            | admission_reservations.c.continuation_id.in_(
+                select(continuations.c.id).where(continuations.c.task_id == task_id)),
+        ).values(
+            task_id=None,
+            state=case((admission_reservations.c.state.in_(("pending", "overdue", "granted")),
+                        "cancelled"), else_=admission_reservations.c.state),
+        ))
+        await conn.execute(delete(wait_priority_projection).where(
+            wait_priority_projection.c.task_id == task_id,
+        ))
         await conn.execute(delete(tasks).where(tasks.c.id == task_id))
         # The parent DELETE waits for an accepted comment's UPDATE lock.
         # Cleanup afterwards cannot miss a concurrently committed append.

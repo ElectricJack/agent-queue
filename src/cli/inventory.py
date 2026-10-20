@@ -210,6 +210,10 @@ def _infer_handwritten_backend(command: click.Command) -> str | None:
     except (OSError, TypeError):
         return None
     names = set(re.findall(r"\.execute\(\s*[\"']([a-z0-9_]+)[\"']", source))
+    # The wait CLI uses one transport helper. Its literal command argument is
+    # equally direct evidence, without guessing from a callback's name.
+    if callback.__module__ == "src.cli.waits":
+        names.update(re.findall(r"_execute\(ctx,\s*[\"']([a-z0-9_]+)[\"']", source))
     return next(iter(names)) if len(names) == 1 else None
 
 

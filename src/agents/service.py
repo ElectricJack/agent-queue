@@ -10,7 +10,9 @@ from src.agents.sessions import session_role
 from src.models import AgentState, TaskStatus
 
 _ACTIVE_SESSIONS = set(LIVE_SESSION_STATES)
-_ACTIVE_TASKS = {TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS, TaskStatus.WAITING_INPUT}
+_ACTIVE_TASKS = {
+    TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS, TaskStatus.WAITING_INPUT, TaskStatus.WAITING,
+}
 
 
 def configured_settings(agent) -> dict:

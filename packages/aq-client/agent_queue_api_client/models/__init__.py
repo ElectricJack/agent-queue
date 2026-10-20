@@ -360,6 +360,9 @@ from .digest_status_response import DigestStatusResponse
 from .digest_status_response_delivery_health import DigestStatusResponseDeliveryHealth
 from .digest_window_bounds import DigestWindowBounds
 from .digest_window_record import DigestWindowRecord
+from .discard_pause_checkpoint_request import DiscardPauseCheckpointRequest
+from .discard_pause_checkpoint_response import DiscardPauseCheckpointResponse
+from .discard_pause_checkpoint_response_422 import DiscardPauseCheckpointResponse422
 from .discord_cutover_status import DiscordCutoverStatus
 from .discord_intake_diagnostics import DiscordIntakeDiagnostics
 from .discord_intake_diagnostics_ignored import DiscordIntakeDiagnosticsIgnored
@@ -622,6 +625,7 @@ from .get_task_response_descendant_state_counts_type_0 import GetTaskResponseDes
 from .get_task_response_display_state_type_0 import GetTaskResponseDisplayStateType0
 from .get_task_response_parent_type_0 import GetTaskResponseParentType0
 from .get_task_response_route_type_0 import GetTaskResponseRouteType0
+from .get_task_response_status import GetTaskResponseStatus
 from .get_task_result_request import GetTaskResultRequest
 from .get_task_result_response import GetTaskResultResponse
 from .get_task_result_response_422 import GetTaskResultResponse422
@@ -1009,6 +1013,7 @@ from .message_status_request import MessageStatusRequest
 from .message_status_response import MessageStatusResponse
 from .message_status_response_422 import MessageStatusResponse422
 from .message_wait_args import MessageWaitArgs
+from .message_wait_args_schema_version import MessageWaitArgsSchemaVersion
 from .message_wait_response import MessageWaitResponse
 from .message_wait_response_422 import MessageWaitResponse422
 from .message_wait_response_state import MessageWaitResponseState
@@ -1895,7 +1900,9 @@ from .task_detail_descendant_state_counts_type_0 import TaskDetailDescendantStat
 from .task_detail_display_state_type_0 import TaskDetailDisplayStateType0
 from .task_detail_parent_type_0 import TaskDetailParentType0
 from .task_detail_route_type_0 import TaskDetailRouteType0
+from .task_detail_status import TaskDetailStatus
 from .task_dict import TaskDict
+from .task_dict_status import TaskDictStatus
 from .task_heartbeat_request import TaskHeartbeatRequest
 from .task_heartbeat_response_422 import TaskHeartbeatResponse422
 from .task_metrics import TaskMetrics
@@ -1937,6 +1944,7 @@ from .task_set_response_fidelity_type_0 import TaskSetResponseFidelityType0
 from .task_set_response_parent_type_0 import TaskSetResponseParentType0
 from .task_set_response_provenance_item import TaskSetResponseProvenanceItem
 from .task_set_response_route_type_0 import TaskSetResponseRouteType0
+from .task_set_response_status import TaskSetResponseStatus
 from .task_show_request import TaskShowRequest
 from .task_show_response import TaskShowResponse
 from .task_show_response_422 import TaskShowResponse422
@@ -1951,6 +1959,7 @@ from .task_show_response_fidelity_type_0 import TaskShowResponseFidelityType0
 from .task_show_response_parent_type_0 import TaskShowResponseParentType0
 from .task_show_response_provenance_item import TaskShowResponseProvenanceItem
 from .task_show_response_route_type_0 import TaskShowResponseRouteType0
+from .task_show_response_status import TaskShowResponseStatus
 from .task_status_summary import TaskStatusSummary
 from .task_status_summary_by_status import TaskStatusSummaryByStatus
 from .task_status_summary_in_progress_item import TaskStatusSummaryInProgressItem
@@ -2038,22 +2047,72 @@ from .update_playbook_source_response import UpdatePlaybookSourceResponse
 from .update_playbook_source_response_422 import UpdatePlaybookSourceResponse422
 from .validation_error import ValidationError
 from .validation_error_context import ValidationErrorContext
-from .wait_cancel_request import WaitCancelRequest
+from .wait_ack_args import WaitAckArgs
+from .wait_ack_response import WaitAckResponse
+from .wait_ack_response_422 import WaitAckResponse422
+from .wait_bridge_response import WaitBridgeResponse
+from .wait_bridge_response_result import WaitBridgeResponseResult
+from .wait_cancel_args import WaitCancelArgs
+from .wait_cancel_args_schema_version import WaitCancelArgsSchemaVersion
 from .wait_cancel_response_422 import WaitCancelResponse422
+from .wait_checkpoint_args import WaitCheckpointArgs
+from .wait_checkpoint_response import WaitCheckpointResponse
+from .wait_checkpoint_response_422 import WaitCheckpointResponse422
+from .wait_counterfactual import WaitCounterfactual
+from .wait_decide_args import WaitDecideArgs
+from .wait_decide_args_decision import WaitDecideArgsDecision
+from .wait_decide_response import WaitDecideResponse
+from .wait_decide_response_422 import WaitDecideResponse422
+from .wait_duration_metrics import WaitDurationMetrics
+from .wait_explain_args import WaitExplainArgs
+from .wait_explain_response import WaitExplainResponse
+from .wait_explain_response_422 import WaitExplainResponse422
+from .wait_explain_response_explanation_type_0 import WaitExplainResponseExplanationType0
+from .wait_explain_response_waits_item import WaitExplainResponseWaitsItem
 from .wait_facts_dto import WaitFactsDTO
 from .wait_facts_dto_deadline_source_type_0 import WaitFactsDTODeadlineSourceType0
 from .wait_facts_dto_wait_kind import WaitFactsDTOWaitKind
-from .wait_get_request import WaitGetRequest
+from .wait_get_args import WaitGetArgs
+from .wait_get_args_schema_version import WaitGetArgsSchemaVersion
 from .wait_get_response_422 import WaitGetResponse422
-from .wait_list_request import WaitListRequest
+from .wait_graph_args import WaitGraphArgs
+from .wait_graph_response import WaitGraphResponse
+from .wait_graph_response_422 import WaitGraphResponse422
+from .wait_graph_response_graph import WaitGraphResponseGraph
+from .wait_legacy_bridge_args import WaitLegacyBridgeArgs
+from .wait_legacy_bridge_args_mode import WaitLegacyBridgeArgsMode
+from .wait_legacy_bridge_response_422 import WaitLegacyBridgeResponse422
+from .wait_lift_args import WaitLiftArgs
+from .wait_lift_response_422 import WaitLiftResponse422
+from .wait_list_args import WaitListArgs
+from .wait_list_args_schema_version import WaitListArgsSchemaVersion
 from .wait_list_response import WaitListResponse
 from .wait_list_response_422 import WaitListResponse422
+from .wait_list_response_waits_item_type_1 import WaitListResponseWaitsItemType1
+from .wait_metrics import WaitMetrics
+from .wait_metrics_by_project import WaitMetricsByProject
+from .wait_metrics_scheduler_by_reason import WaitMetricsSchedulerByReason
 from .wait_node_detail_dto import WaitNodeDetailDTO
 from .wait_node_detail_dto_wait_kind import WaitNodeDetailDTOWaitKind
-from .wait_register_request import WaitRegisterRequest
+from .wait_priority_metrics import WaitPriorityMetrics
+from .wait_project_metrics import WaitProjectMetrics
+from .wait_register_args import WaitRegisterArgs
+from .wait_register_args_condition_type_0 import WaitRegisterArgsConditionType0
+from .wait_register_args_kind_type_0 import WaitRegisterArgsKindType0
+from .wait_register_args_owner_kind_type_0 import WaitRegisterArgsOwnerKindType0
+from .wait_register_args_schema_version import WaitRegisterArgsSchemaVersion
 from .wait_register_response_422 import WaitRegisterResponse422
 from .wait_response import WaitResponse
+from .wait_response_condition_type_0 import WaitResponseConditionType0
+from .wait_response_decision_type_0 import WaitResponseDecisionType0
+from .wait_response_evidence_type_0 import WaitResponseEvidenceType0
+from .wait_response_wait_type_1 import WaitResponseWaitType1
+from .wait_slot_seconds import WaitSlotSeconds
+from .wait_wakes import WaitWakes
 from .withheld_task import WithheldTask
+from .workspace_clear_sentinel_request import WorkspaceClearSentinelRequest
+from .workspace_clear_sentinel_response import WorkspaceClearSentinelResponse
+from .workspace_clear_sentinel_response_422 import WorkspaceClearSentinelResponse422
 from .workspace_cutover_request import WorkspaceCutoverRequest
 from .workspace_cutover_response import WorkspaceCutoverResponse
 from .workspace_cutover_response_422 import WorkspaceCutoverResponse422
@@ -2443,6 +2502,9 @@ __all__ = (
     "DigestStatusResponseDeliveryHealth",
     "DigestWindowBounds",
     "DigestWindowRecord",
+    "DiscardPauseCheckpointRequest",
+    "DiscardPauseCheckpointResponse",
+    "DiscardPauseCheckpointResponse422",
     "DiscordCutoverStatus",
     "DiscordIntakeDiagnostics",
     "DiscordIntakeDiagnosticsIgnored",
@@ -2701,6 +2763,7 @@ __all__ = (
     "GetTaskResponseDisplayStateType0",
     "GetTaskResponseParentType0",
     "GetTaskResponseRouteType0",
+    "GetTaskResponseStatus",
     "GetTaskResultRequest",
     "GetTaskResultResponse",
     "GetTaskResultResponse422",
@@ -3086,6 +3149,7 @@ __all__ = (
     "MessageStatusResponse",
     "MessageStatusResponse422",
     "MessageWaitArgs",
+    "MessageWaitArgsSchemaVersion",
     "MessageWaitResponse",
     "MessageWaitResponse422",
     "MessageWaitResponseState",
@@ -3966,7 +4030,9 @@ __all__ = (
     "TaskDetailDisplayStateType0",
     "TaskDetailParentType0",
     "TaskDetailRouteType0",
+    "TaskDetailStatus",
     "TaskDict",
+    "TaskDictStatus",
     "TaskHeartbeatRequest",
     "TaskHeartbeatResponse422",
     "TaskMetrics",
@@ -4008,6 +4074,7 @@ __all__ = (
     "TaskSetResponseParentType0",
     "TaskSetResponseProvenanceItem",
     "TaskSetResponseRouteType0",
+    "TaskSetResponseStatus",
     "TaskShowRequest",
     "TaskShowResponse",
     "TaskShowResponse422",
@@ -4022,6 +4089,7 @@ __all__ = (
     "TaskShowResponseParentType0",
     "TaskShowResponseProvenanceItem",
     "TaskShowResponseRouteType0",
+    "TaskShowResponseStatus",
     "TaskStatusSummary",
     "TaskStatusSummaryByStatus",
     "TaskStatusSummaryInProgressItem",
@@ -4109,22 +4177,72 @@ __all__ = (
     "UpdatePlaybookSourceResponse422",
     "ValidationError",
     "ValidationErrorContext",
-    "WaitCancelRequest",
+    "WaitAckArgs",
+    "WaitAckResponse",
+    "WaitAckResponse422",
+    "WaitBridgeResponse",
+    "WaitBridgeResponseResult",
+    "WaitCancelArgs",
+    "WaitCancelArgsSchemaVersion",
     "WaitCancelResponse422",
+    "WaitCheckpointArgs",
+    "WaitCheckpointResponse",
+    "WaitCheckpointResponse422",
+    "WaitCounterfactual",
+    "WaitDecideArgs",
+    "WaitDecideArgsDecision",
+    "WaitDecideResponse",
+    "WaitDecideResponse422",
+    "WaitDurationMetrics",
+    "WaitExplainArgs",
+    "WaitExplainResponse",
+    "WaitExplainResponse422",
+    "WaitExplainResponseExplanationType0",
+    "WaitExplainResponseWaitsItem",
     "WaitFactsDTO",
     "WaitFactsDTODeadlineSourceType0",
     "WaitFactsDTOWaitKind",
-    "WaitGetRequest",
+    "WaitGetArgs",
+    "WaitGetArgsSchemaVersion",
     "WaitGetResponse422",
-    "WaitListRequest",
+    "WaitGraphArgs",
+    "WaitGraphResponse",
+    "WaitGraphResponse422",
+    "WaitGraphResponseGraph",
+    "WaitLegacyBridgeArgs",
+    "WaitLegacyBridgeArgsMode",
+    "WaitLegacyBridgeResponse422",
+    "WaitLiftArgs",
+    "WaitLiftResponse422",
+    "WaitListArgs",
+    "WaitListArgsSchemaVersion",
     "WaitListResponse",
     "WaitListResponse422",
+    "WaitListResponseWaitsItemType1",
+    "WaitMetrics",
+    "WaitMetricsByProject",
+    "WaitMetricsSchedulerByReason",
     "WaitNodeDetailDTO",
     "WaitNodeDetailDTOWaitKind",
-    "WaitRegisterRequest",
+    "WaitPriorityMetrics",
+    "WaitProjectMetrics",
+    "WaitRegisterArgs",
+    "WaitRegisterArgsConditionType0",
+    "WaitRegisterArgsKindType0",
+    "WaitRegisterArgsOwnerKindType0",
+    "WaitRegisterArgsSchemaVersion",
     "WaitRegisterResponse422",
     "WaitResponse",
+    "WaitResponseConditionType0",
+    "WaitResponseDecisionType0",
+    "WaitResponseEvidenceType0",
+    "WaitResponseWaitType1",
+    "WaitSlotSeconds",
+    "WaitWakes",
     "WithheldTask",
+    "WorkspaceClearSentinelRequest",
+    "WorkspaceClearSentinelResponse",
+    "WorkspaceClearSentinelResponse422",
     "WorkspaceCutoverRequest",
     "WorkspaceCutoverResponse",
     "WorkspaceCutoverResponse422",

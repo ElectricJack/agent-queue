@@ -526,6 +526,14 @@ _CANONICAL_PAYLOADS: dict[str, dict] = {
         "actor": "claim",
         "claimant_task_id": "task-new",
     },
+    "worktree.sentinel_cleared": {
+        "project_id": "proj-1",
+        "workspace_id": "ws-slot-4",
+        "path": "/repos/myrepo/.aq/worktrees/slot-4",
+        "holder_task_id": "brisk-quest-34",
+        "branch": "aq/brisk-quest-34",
+        "reason": "task brisk-quest-34 is COMPLETED",
+    },
     "worktree.restored": {
         "project_id": "proj-1",
         "workspace_id": "ws-slot-2",
@@ -1926,6 +1934,28 @@ class TestAllEventTypesHaveSchemas:
     def test_timer_common_intervals_registered(self):
         for interval in ("1m", "5m", "15m", "30m", "1h", "4h", "12h", "24h"):
             assert f"timer.{interval}" in EVENT_SCHEMAS
+
+
+# Independent canonical payloads for implementation §7.5 (not generated from schemas).
+_CANONICAL_PAYLOADS.update({
+    name: {"wait_id": "wait-1", "project_id": "p-1", "generation": 1}
+    for name in (
+        "wait.registered", "wait.satisfied", "wait.cancelled", "wait.source_unavailable",
+        "wait.escalated",
+        "wait.decided", "wait.lifted", "wait.evicted", "wait.loop_detected",
+    )
+})
+_CANONICAL_PAYLOADS.update({
+    name: {"continuation_id": "cont-1", "project_id": "p-1", "task_id": "t-1", "generation": 1}
+    for name in (
+        "continuation.suspended", "continuation.queued", "continuation.launched",
+        "continuation.acknowledged", "continuation.held", "continuation.loop_detected",
+    )
+})
+_CANONICAL_PAYLOADS["continuation.loop_detected"] = {
+    "wait_id": "wait-1", "project_id": "p-1", "task_id": "t-1",
+    "registrations": [{"wait_id": "wait-1", "registered_at": 1800000000.0}],
+}
 
 
 class TestAllCanonicalPayloadsPassValidation:

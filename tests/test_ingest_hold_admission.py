@@ -82,6 +82,9 @@ FRONTIER_CALLERS = {
     ),
     "src/doctor/task_checks.py::_check_ready_frontier_exclusions": "frontier",
     "src/integration/epic_delivery.py::EpicDeliveryProjection._workers_on": "frontier",
+    "src/waits/admission.py::AdmissionReader.observe_task": (
+        "tests/test_wait_admission.py::test_admission_reader_preserves_ingestion_hold"
+    ),
 }
 HELD_ID_CALLERS = {
     "src/database/queries/task_queries.py::TaskQueryMixin._notify_ready": (

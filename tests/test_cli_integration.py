@@ -35,6 +35,23 @@ def test_release_owner_defaults_to_preview(target, flags):
     assert args[target[0][2:].replace("-", "_")] == target[1]
 
 
+@pytest.mark.parametrize("flags", [[], ["--apply"]])
+def test_release_owner_no_push_is_forwarded_only_when_set(flags):
+    from src.cli.app import cli
+
+    client = _client({"success": True, "outcome": "released"})
+    with patch("src.cli.integration._get_client", return_value=client):
+        result = CliRunner().invoke(
+            cli, ["integration", "release-owner", "--task-id", "task", "--no-push", *flags],
+        )
+        assert result.exit_code == 0, result.output
+        assert client.execute.call_args.args[1] == {
+            "dry_run": not flags, "no_push": True, "task_id": "task",
+        }
+        CliRunner().invoke(cli, ["integration", "release-owner", "--task-id", "task", *flags])
+    assert "no_push" not in client.execute.call_args.args[1]
+
+
 def test_release_owner_refuses_conflicting_preview_and_apply_flags():
     from src.cli.app import cli
 
@@ -45,6 +62,48 @@ def test_release_owner_refuses_conflicting_preview_and_apply_flags():
     assert result.exit_code == 2
     assert "mutually exclusive" in result.output
     client.execute.assert_not_awaited()
+
+
+def test_restore_task_origin_previews_and_requires_exact_apply_fences():
+    from src.cli.app import cli
+
+    client = _client({"success": True, "outcome": "preview"})
+    argv = ["integration", "restore-task-origin", "--task-id", "task"]
+    with patch("src.cli.integration._get_client", return_value=client):
+        result = CliRunner().invoke(cli, argv)
+        assert result.exit_code == 0, result.output
+        assert client.execute.call_args.args == ("integration_restore_task_origin", {
+            "task_id": "task", "dry_run": True, "reason": "",
+        })
+        client.reset_mock()
+        result = CliRunner().invoke(cli, argv + ["--apply"])
+        assert result.exit_code == 2
+        client.execute.assert_not_awaited()
+        result = CliRunner().invoke(cli, argv + ["--apply", "--origin-id", "origin",
+            "--expected-remote-oid", "a" * 40, "--expected-fence-token", "5",
+            "--reason", "remove contamination"])
+        assert result.exit_code == 0, result.output
+        assert client.execute.call_args.args[1] == {
+            "task_id": "task", "dry_run": False, "origin_id": "origin",
+            "expected_remote_oid": "a" * 40, "expected_fence_token": 5,
+            "reason": "remove contamination",
+        }
+
+
+@pytest.mark.parametrize("apply", [False, True])
+def test_release_owner_self_owned_is_explicit_and_keeps_preview_default(apply):
+    from src.cli.app import cli
+
+    client = _client({"success": True, "outcome": "released"})
+    with patch("src.cli.integration._get_client", return_value=client):
+        result = CliRunner().invoke(cli, [
+            "integration", "release-owner", "--task-id", "task", "--self-owned",
+            *(["--apply"] if apply else []),
+        ])
+    assert result.exit_code == 0, result.output
+    assert client.execute.call_args.args == ("integration_release_owner", {
+        "task_id": "task", "self_owned": True, "dry_run": not apply,
+    })
 
 
 @pytest.mark.parametrize("apply", [False, True])
