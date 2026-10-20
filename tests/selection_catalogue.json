@@ -978,6 +978,7 @@
         "tests/test_playbook_pending_events_policy.py",
         "tests/test_playbook_private_values.py",
         "tests/test_playbook_receipts.py",
+        "tests/test_playbook_run_authority.py",
         "tests/test_playbook_run_overlay.py",
         "tests/test_playbook_run_repository.py",
         "tests/test_playbook_script.py",
@@ -987,6 +988,7 @@
         "tests/test_playbook_state.py",
         "tests/test_playbook_state_notify.py",
         "tests/test_playbook_wait_repository.py",
+        "tests/test_stuck_task_watch.py",
         "tests/test_v2_dry_run.py",
         "tests/test_v2_engine.py",
         "tests/test_v2_engine_repository.py",
@@ -12423,7 +12425,7 @@
         "doctor"
       ],
       "default_arm": true,
-      "digest": "sha256:9945c14131dcebf07198e0c6c207c6dc25faee66e96db8a65e3ad50141b120d9",
+      "digest": "sha256:b18507bb8a343d2058c14850e8a6408e76edcabc1f24e035e8ba3b73c6589c5f",
       "imports": [
         "src.api.models.project",
         "src.api.models.system",
@@ -12443,6 +12445,8 @@
         "src.doctor.runner",
         "src.models",
         "src.observations.snapshots",
+        "src.playbooks.expressions",
+        "src.playbooks.invocation",
         "src.playbooks.private_values",
         "src.profiles.capabilities"
       ],
@@ -13030,6 +13034,30 @@
       "markers": [],
       "summary": "Execution receipts — attempt identity and default-deny projection."
     },
+    "tests/test_playbook_run_authority.py": {
+      "areas": [
+        "playbook-engine"
+      ],
+      "default_arm": true,
+      "digest": "sha256:574f7dc92c4fa16e92744a19fee03c39c670749ab260971a55159149d088c02c",
+      "imports": [
+        "src.commands.contracts",
+        "src.commands.contracts.builtin",
+        "src.commands.principal",
+        "src.database",
+        "src.database.tables",
+        "src.playbooks.authority",
+        "src.playbooks.definition",
+        "src.playbooks.engine",
+        "src.playbooks.executors.base",
+        "src.playbooks.run_state",
+        "src.profiles.capabilities"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Run-bound authority for manual, recovery and preview execution of gated artifacts."
+    },
     "tests/test_playbook_run_overlay.py": {
       "areas": [
         "playbook-engine"
@@ -13196,9 +13224,10 @@
         "playbook-engine"
       ],
       "default_arm": true,
-      "digest": "sha256:c15275941d5c1ce3556e3a8e341fe076443ca16060ca6dddd1cc115f527d6445",
+      "digest": "sha256:0c8ac1e1d6003961ba9f24c51902c7a6c44c0b0538fbc86b6fff2288a0c18834",
       "imports": [
         "src.commands.contracts",
+        "src.commands.contracts.builtin",
         "src.commands.principal",
         "src.config",
         "src.database",
@@ -16997,6 +17026,48 @@
       ],
       "markers": [],
       "summary": "Unit tests for the in-memory streams registry (no HTTP, no subprocess)."
+    },
+    "tests/test_stuck_task_watch.py": {
+      "areas": [
+        "playbook-engine"
+      ],
+      "default_arm": true,
+      "digest": "sha256:f1b387f9123625f3c5563cc3c6da0debc594c6428ebfcf47ac4a97964c873725",
+      "imports": [
+        "src.commands.contracts",
+        "src.commands.contracts.builtin",
+        "src.commands.handler",
+        "src.commands.principal",
+        "src.config",
+        "src.database",
+        "src.database.queries",
+        "src.database.queries.playbook_state_queries",
+        "src.database.tables",
+        "src.doctor.observations",
+        "src.messages.delivery",
+        "src.models",
+        "src.observations.snapshots",
+        "src.playbooks.artifact_store",
+        "src.playbooks.authoring",
+        "src.playbooks.definition",
+        "src.playbooks.engine",
+        "src.playbooks.executors.base",
+        "src.playbooks.private_values",
+        "src.playbooks.profiles",
+        "src.playbooks.proposal",
+        "src.playbooks.required",
+        "src.playbooks.run_state",
+        "src.playbooks.services",
+        "src.playbooks.state",
+        "src.playbooks.state_notify",
+        "src.playbooks.validation",
+        "src.profiles.capabilities"
+      ],
+      "markers": [
+        "integration",
+        "parametrize"
+      ],
+      "summary": "Reviewed watch policy through the real engine, handler and disposable PostgreSQL."
     },
     "tests/test_subagent_events.py": {
       "areas": [

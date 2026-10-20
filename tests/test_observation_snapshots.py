@@ -435,3 +435,121 @@ async def test_typed_adapters_and_api_dtos_preserve_snapshot_receipts(db, servic
         assert failed.value.complete is False and failed.value.error_code == "snapshot.unavailable"
     finally:
         set_handler_provider(None)
+
+
+def _assigned(tid, updated_at):
+    return {"id": tid, "project_id": "p", "title": tid, "description": "",
+            "status": "ASSIGNED", "created_at": updated_at, "updated_at": updated_at}
+
+
+def _qualifies(row):
+    # The F2 predicate, applied verbatim to payload rows and manifest rows.
+    return ((row["status"] == "ASSIGNED" and row["seconds_in_state"] > 1800)
+            or (row["status"] == "IN_PROGRESS" and row["seconds_in_state"] > 7200))
+
+
+async def test_stuck_manifest_carries_status_and_age_for_qualification(db, service):
+    await db.create_project(Project(id="p", name="P"))
+    now = time.time()
+    async with db.immediate() as conn:
+        await conn.execute(insert(t.tasks), [_assigned("older", now - 1900),
+                                             _assigned("younger", now - 1300)])
+    h = handler(db)
+    args = {"pagination": "snapshot", "now": now}
+    initial = await h.execute("get_stuck_tasks", args)
+    assert initial["complete"], initial
+    page = await h.execute("get_stuck_tasks", {**args, "snapshot_id": initial["snapshot_id"],
+                                              "page_token": initial["page_tokens"][0]["page_token"]})
+    # Both are ORPHANED; only the older one passes the authored age predicate.
+    assert {row["kind"] for row in page["stuck"]} == {"ORPHANED"}
+    manifest = initial["identity_manifest"]
+    assert [row["id"] for row in manifest if _qualifies(row)] == ["older"]
+    assert ([row["id"] for row in manifest if _qualifies(row)]
+            == [row["id"] for row in page["stuck"] if _qualifies(row)])
+    by_id = {row["id"]: row for row in page["stuck"]}
+    for row in manifest:
+        assert row == {key: by_id[row["id"]][key] for key in row}
+        assert set(row) == {"id", "project_id", "status", "kind", "seconds_in_state"}
+
+
+def _invocation(observed_at, observation_id="evt-1", run_id="run-1"):
+    from src.playbooks.invocation import PlaybookInvocation
+
+    return PlaybookInvocation(run_id=run_id, dispatch_id="d", artifact_ref=None, rule_id="r",
+                              step_id="s", attempt=1, observed_at=observed_at,
+                              observation_id=observation_id)
+
+
+async def test_snapshots_use_frozen_invocation_observation_time(db, service):
+    from src.playbooks.invocation import _invocation_var
+
+    await db.create_project(Project(id="p", name="P"))
+    tick = time.time() - 600
+    async with db.immediate() as conn:
+        # 2,100s old at the tick but 2,700s old by wall clock.
+        await conn.execute(insert(t.tasks), [_assigned("aged", tick - 2100),
+                                             _assigned("fresh", tick + 300)])
+    h = handler(db)
+    token = _invocation_var.set(_invocation(tick))
+    try:
+        for producer, args, kind in (
+            ("list_projects", {"pagination": "snapshot"}, "projects"),
+            ("list_tasks", {"pagination": "snapshot", "project_id": "p"}, "tasks"),
+            ("get_stuck_tasks", {"pagination": "snapshot", "project_id": "p"}, "stuck"),
+        ):
+            initial = await h.execute(producer, args)
+            assert initial["complete"], initial
+            assert initial["observed_at"] == tick
+            # The continuation repeats the authored request and is accepted.
+            page = await h.execute(producer, {**args, "snapshot_id": initial["snapshot_id"],
+                                             "page_token": initial["page_tokens"][0]["page_token"]})
+            assert page["success"] and page["observed_at"] == tick, page
+            assert page[kind]
+        assert initial["now_used"] == tick
+        assert {row["id"]: row["seconds_in_state"] for row in initial["identity_manifest"]} \
+            == {"aged": 2100}
+        probe = AsyncMock(return_value=CheckResult(
+            id="test", severity=Severity.OK, detail="ok", data={"original": []},
+            execution_status="succeeded", complete=True, coverage=[]))
+        h._doctor_registry = DoctorRegistry()
+        h._doctor_registry.register(DoctorCheck(
+            id="test", owner="tests", run=probe, read_only_audited=True,
+            supported_scopes=("system",), finding_schema={"kinds": ["broken"]},
+            identity_adapter=lambda result: result.data["original"],
+            completeness_contract="all"))
+        doctor = await h.execute("doctor_run", {"check_id": "test", "pagination": "snapshot"})
+        assert doctor["observed_at"] == tick, doctor
+        assert probe.await_args.args[0].reference_time == tick
+        # An explicitly authored time still wins over the frozen default.
+        explicit = await h.execute("get_stuck_tasks", {"pagination": "snapshot", "now": tick + 60})
+        assert explicit["observed_at"] == tick + 60
+    finally:
+        _invocation_var.reset(token)
+    # Outside a playbook invocation the snapshot keeps the live clock.
+    started = time.time()
+    live = await h.execute("list_projects", {"pagination": "snapshot"})
+    assert started <= live["observed_at"] <= time.time()
+    stuck = await h.execute("get_stuck_tasks", {"pagination": "snapshot", "project_id": "p"})
+    assert stuck["now_used"] >= started
+    assert {row["id"] for row in stuck["identity_manifest"]} == {"aged"}
+
+
+async def test_invocation_context_derives_frozen_observation_from_engine_context():
+    from src.playbooks.expressions import ResolutionScope
+    from src.playbooks.invocation import _invocation_context, current_invocation
+
+    def ctx(context):
+        return SimpleNamespace(run_id="run", dispatch_id="d", artifact_ref=None, rule_id="r",
+                               step_id="s", attempt=1, iteration_path="",
+                               scope=ResolutionScope(context=context),
+                               services=SimpleNamespace(private_values=None))
+
+    with _invocation_context(ctx({"observed_at": 12.5, "observation_id": "evt"})):
+        assert (current_invocation().observed_at, current_invocation().observation_id) \
+            == (12.5, "evt")
+    # Runs persisted before the frozen context keep the legacy live clock.
+    for legacy in ({}, {"observed_at": True, "observation_id": 3},
+                   {"observed_at": float("nan")}, {"observed_at": "12"}):
+        with _invocation_context(ctx(legacy)):
+            assert current_invocation().observed_at is None
+            assert current_invocation().observation_id is None

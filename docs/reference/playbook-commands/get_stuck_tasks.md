@@ -84,9 +84,13 @@ command. `summary` formats the same rows as one line per task.
 
 ## When a playbook uses it
 
-The system `stuck-task-watch` calls it every ten minutes, ends on an empty
-`stuck` list, and otherwise sends `summary` to `session:supervisor-global` via
-`message_send`. Repeated nonempty ticks intentionally repeat the notification.
+The optional reviewed `stuck-task-watch` calls it on `timer.15m` with snapshot
+pagination and a frozen observation time. It selects ASSIGNED rows older than
+1,800 seconds and IN_PROGRESS rows older than 7,200 seconds, including qualifying
+ORPHANED rows. It excludes READY rows. Per-key notifications use
+`playbook_state_notify` for `session:supervisor-global`; repeated observations
+are suppressed and complete absence clears the saved episode. See the
+[building-block rollout guide](../../guides/playbook-building-blocks.md).
 
 ## How it works internally
 

@@ -47,6 +47,9 @@ scripts:
 ```
 
 `required_capabilities` is a unique list of command names for review, not a grant.
+The one exception is a declared dependency of a step's own command: a
+`playbook_state_notify` step's artifact grants `message_send` only when the pinned
+declaration names it (`DECLARED_COMMAND_DEPENDENCIES` in `src/playbooks/definition.py`).
 State versions are strict positive integers (default 1 for state users). Script
 manifests are strict `ScriptProgram` objects: exactly one script/argv/shell form,
 literal runtime/interpreter/source identity, declared supporting files, typed data
@@ -108,6 +111,21 @@ knowing a handle grants nothing. Missing keys refuse protected binding/readback,
 never plaintext fallback. See [script configuration](playbook-script-sandbox.md).
 
 ## Deliberate rollout and rollback
+
+The reviewed `stuck-task-watch` bundle uses notification namespace version 1,
+`timer.15m`, and `session:supervisor-global`. It reports aged ASSIGNED (>1,800s)
+and IN_PROGRESS (>7,200s) tasks, every BLOCKED task, and the five finding kinds
+from `task_observations_v1`. Complete source partitions can clear missing keys;
+failed or incomplete partitions retain their episodes. The base has no reminders.
+The separate `stuck-task-watch-reminder` bundle repeats after 86,400 seconds and
+owns a separate namespace. Choose the intended policy before importing it;
+activating both creates independent notification episodes.
+
+Both bundles live in `src/prompts/reviewed_playbooks/` with byte-identical test
+recordings in `tests/fixtures/playbooks/v2/`. Neither belongs to first-install
+defaults or startup requirements. Existing operator-installed sources and
+activations are retained; changing the shipped inventory does not migrate them.
+Ordinary recompilation, restart, and disable/re-enable preserve notification state.
 
 1. Validate this checkout's focused compiler, graph, activation and dashboard tests.
    Keep stored legacy golden hashes; empty additive metadata must not change them.
