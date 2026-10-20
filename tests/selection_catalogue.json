@@ -611,6 +611,7 @@
         "tests/test_integration_completed_container_recovery.py",
         "tests/test_integration_completion_recovery.py",
         "tests/test_integration_container_completion.py",
+        "tests/test_integration_containment_cutover.py",
         "tests/test_integration_contracts.py",
         "tests/test_integration_cutover.py",
         "tests/test_integration_git_truth.py",
@@ -8529,6 +8530,43 @@
       ],
       "markers": [],
       "summary": "A held writer that gains children closes at its exact final published head."
+    },
+    "tests/test_integration_containment_cutover.py": {
+      "areas": [
+        "integration-trains"
+      ],
+      "default_arm": true,
+      "digest": "sha256:bd0db945a482118465e4893855b4d7fab5909a039f865856f641be4ea1b24833",
+      "imports": [
+        "src.cli.app",
+        "src.commands.integration_commands",
+        "src.commands.principal",
+        "src.commands.system_commands",
+        "src.config",
+        "src.database",
+        "src.database.queries.hierarchy_queries",
+        "src.database.tables",
+        "src.git.manager",
+        "src.integration",
+        "src.integration.batches",
+        "src.integration.containment_audit",
+        "src.integration.containment_cutover",
+        "src.integration.containment_git",
+        "src.integration.delivery_branches",
+        "src.integration.delivery_observer",
+        "src.integration.delivery_truth",
+        "src.integration.engine",
+        "src.integration.git_truth",
+        "src.integration.provenance",
+        "src.integration.selection_metrics",
+        "src.integration.train",
+        "src.integration.train_sources",
+        "src.models"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Guarded preparation uses real Git ancestry and disposable PostgreSQL."
     },
     "tests/test_integration_contracts.py": {
       "areas": [

@@ -203,6 +203,14 @@ class BatchStore:
                                              promotion=promotion)
 
     async def _freeze_locked(self, conn, batch, members, *, trees, exclusive_target, promotion):
+        from src.integration.delivery_truth import load_delivery_requests
+        from src.integration.engine import lock_key
+
+        # Hold the cutover fence through membership commit. Reading the audit
+        # before a later blocked INSERT could otherwise miss a concurrent apply.
+        # Take it before the project lock: cutover apply holds the exclusive
+        # side while it updates the project row.
+        await conn.execute(select(func.pg_advisory_xact_lock_shared(lock_key(batch.repository_id))))
         if self.require_enabled:
             from src.database.tables import projects
 
@@ -215,6 +223,12 @@ class BatchStore:
             ).with_for_update())
             if enabled is None:
                 raise ValueError("automatic integration is off")
+        requests = await load_delivery_requests(
+            self.db, [member.task_id for member in members], repository_id=batch.repository_id,
+            target_ref=batch.target_ref, conn=conn, reduced=True,
+        )
+        if any(request.lifecycle_disposition for request in requests.values()):
+            raise ValueError("delivery obligation was retired by containment cutover")
         await self._target_lock(conn, batch)
         if exclusive_target:
             await self._exclusive_target(conn, batch)
