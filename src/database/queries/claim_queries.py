@@ -693,15 +693,32 @@ class ClaimQueryMixin:
         *router_ready* adds the route filter (:func:`route_claimable`) for a
         project whose router is (not) ready.
         """
+        return (await self.claim_frontier_exclusions_many(
+            [task_id], router_ready=router_ready, cached_only=cached_only,
+            hierarchy_modes=hierarchy_modes, single_task_id=task_id,
+        )).get(task_id, [])
+
+    async def claim_frontier_exclusions_many(
+        self, task_ids, *, router_ready=None, cached_only=False,
+        hierarchy_modes=None, project_ids=None, single_task_id=None, router_ready_projects=None,
+    ) -> dict[str, list[dict]]:
+        """Batch the same predicate evaluation used by explain; never fetch Git for display."""
+        if not task_ids:
+            return {}
         from src.integration.delivery_observer import hierarchy_frontier_modes
 
         unavailable = {}
         modes = hierarchy_modes if hierarchy_modes is not None else await hierarchy_frontier_modes(
-            self, task_id=task_id, cached_only=cached_only,
+            self, project_ids=project_ids, task_id=single_task_id, cached_only=cached_only,
             **({"display_unavailable": unavailable} if cached_only else {}),
         )
         predicates = claim_frontier_predicates(modes)
-        if router_ready is not None:
+        if router_ready_projects is not None:
+            predicates["route_not_claimable"] = or_(
+                and_(tasks.c.project_id.in_(router_ready_projects), route_claimable(True)),
+                and_(tasks.c.project_id.not_in(router_ready_projects), route_claimable(False)),
+            )
+        elif router_ready is not None:
             predicates["route_not_claimable"] = route_claimable(router_ready)
         display_predicates = {}
         if unavailable:
@@ -725,82 +742,115 @@ class ClaimQueryMixin:
                 }
             }
         async with self._engine.connect() as conn:
-            row = (await conn.execute(
+            rows = (await conn.execute(
                 select(
-                    tasks.c.held_batch_id,
+                    tasks.c.id, tasks.c.project_id, tasks.c.held_batch_id,
                     *(predicate.label(name) for name, predicate in predicates.items()),
                     *(predicate.label("display_" + name)
                       for name, predicate in display_predicates.items()),
                 )
-                .where(tasks.c.id == task_id, tasks.c.status == TaskStatus.READY.value)
-            )).mappings().one_or_none()
-        if row is None:
-            return []
-        exclusions = [
-            {
-                "code": ("delivery_evidence_unavailable"
-                         if name in display_predicates and row["display_" + name]
-                         else f"frontier_{name}"),
-                "detail": (
-                    "Delivery evidence has not loaded yet; claim frontier eligibility "
-                    f"for {name} is unknown (snapshot_unavailable)"
-                    if name in display_predicates and row["display_" + name]
-                    else "Pool claim frontier excludes this READY task: "
-                    + FRONTIER_PREDICATE_DETAILS[name].format(batch_id=row["held_batch_id"])
-                ),
-                "ref": task_id,
-            }
-            for name in predicates if not row[name]
-        ]
-        if not row["epic_refresh_pending"]:
-            async with self._engine.connect() as conn:
-                batches = (await conn.execute(
-                    open_epic_refresh_batches().where(tasks.c.id == task_id)
-                    .order_by(integration_batches.c.id)
-                )).scalars().all()
-            for exclusion in exclusions:
-                if exclusion["code"] == "frontier_epic_refresh_pending" and batches:
-                    exclusion["batch_id"] = batches[0]
-                    exclusion["batch_ids"] = batches
-                    exclusion["detail"] += "; blocking epic-refresh batch: " + ", ".join(batches)
-        if not row["prerequisite_not_on_default_branch"]:
-            from src.database.tables import task_dependencies
+                .where(tasks.c.id.in_(task_ids), tasks.c.status == TaskStatus.READY.value)
+             )).mappings().all()
+        batches_by_task = {}
+        cross_sources = {}
+        refresh_ids = [row["id"] for row in rows if not row["epic_refresh_pending"]]
+        cross_ids = [row["id"] for row in rows if not row["prerequisite_not_on_default_branch"]]
+        async with self._engine.connect() as conn:
+            if refresh_ids:
+                batch_rows = await conn.execute(open_epic_refresh_batches()
+                    .add_columns(tasks.c.id.label("task_id")).correlate(None)
+                    .where(tasks.c.id.in_(refresh_ids)).order_by(integration_batches.c.id))
+                for batch, tid in batch_rows:
+                    batches_by_task.setdefault(tid, []).append(batch)
+            if cross_ids:
+                from src.database.tables import task_dependencies
 
-            source = tasks.alias("explain_cross_source")
-            dependent = tasks.alias("explain_cross_dependent")
-            mode = next(iter(modes.values()), None)
-            async with self._engine.connect() as conn:
-                sources = (await conn.execute(select(source.c.id, source.c.parent_task_id)
+                source = tasks.alias("explain_cross_source")
+                dependent = tasks.alias("explain_cross_dependent")
+                source_rows = await conn.execute(select(dependent.c.id, source.c.id,
+                                                        source.c.parent_task_id)
                     .select_from(task_dependencies.join(source,
                         source.c.id == task_dependencies.c.depends_on_task_id)
                         .join(dependent, dependent.c.id == task_dependencies.c.task_id))
-                    .where(dependent.c.id == task_id, task_dependencies.c.dep_type == "blocks",
+                    .where(dependent.c.id.in_(cross_ids), task_dependencies.c.dep_type == "blocks",
                            source.c.status == "COMPLETED",
                            source.c.parent_task_id.is_distinct_from(dependent.c.parent_task_id)
-                           | source.c.parent_task_id.is_(None)))).all()
-            missing = set().union(*(entry["default"] for entry in unavailable.values()))
-            exclusions.extend({
-                "code": ("delivery_evidence_unavailable" if tid in missing
-                         else "prerequisite_not_on_default_branch"),
-                "ref": tid, "epic_id": parent,
-                "detail": (f"Prerequisite {tid}: delivery evidence has not loaded yet; "
-                           "default-branch delivery is unknown (snapshot_unavailable)"
-                           if tid in missing else f"Prerequisite {tid} (epic {parent or tid}) "
-                           "is not proven on the default branch"),
+                           | source.c.parent_task_id.is_(None)).order_by(source.c.id))
+                for tid, sid, parent in source_rows:
+                    cross_sources.setdefault(tid, []).append((sid, parent))
+        result = {}
+        for row in rows:
+            task_id = row["id"]
+            exclusions = [
+                {
+                    "code": ("delivery_evidence_unavailable"
+                             if name in display_predicates and row["display_" + name]
+                             else f"frontier_{name}"),
+                    "detail": (
+                        "Delivery evidence has not loaded yet; claim frontier eligibility "
+                        f"for {name} is unknown (snapshot_unavailable)"
+                        if name in display_predicates and row["display_" + name]
+                        else "Pool claim frontier excludes this READY task: "
+                        + FRONTIER_PREDICATE_DETAILS[name].format(batch_id=row["held_batch_id"])
+                    ),
+                    "ref": task_id,
                 }
-                for tid, parent in sources if mode is None or tid not in mode.default_prerequisite_ids)
-        if cached_only:
-            for exclusion in exclusions:
-                if exclusion["code"] in {
-                    "frontier_sibling_prerequisite_not_delivered",
-                    "frontier_prerequisite_not_on_default_branch",
-                    "frontier_epic_refresh_pending",
-                    "prerequisite_not_on_default_branch",
-                }:
-                    exclusion["detail"] += (
-                        "; delivery read is cache-only; missing or stale evidence withholds work"
-                    )
-        return exclusions
+                for name in predicates if not row[name]
+            ]
+            if not row["epic_refresh_pending"]:
+                batches = batches_by_task.get(task_id, [])
+                for exclusion in exclusions:
+                    if exclusion["code"] == "frontier_epic_refresh_pending" and batches:
+                        exclusion["batch_id"] = batches[0]
+                        exclusion["batch_ids"] = batches
+                        exclusion["detail"] += "; blocking epic-refresh batch: " + ", ".join(batches)
+            if not row["prerequisite_not_on_default_branch"]:
+                mode = modes.get(row["project_id"])
+                sources = cross_sources.get(task_id, [])
+                missing = set().union(*(entry["default"] for entry in unavailable.values()))
+                exclusions.extend({
+                    "code": ("delivery_evidence_unavailable" if tid in missing
+                             else "prerequisite_not_on_default_branch"),
+                    "ref": tid, "epic_id": parent,
+                    "detail": (f"Prerequisite {tid}: delivery evidence has not loaded yet; "
+                               "default-branch delivery is unknown (snapshot_unavailable)"
+                               if tid in missing else f"Prerequisite {tid} (epic {parent or tid}) "
+                               "is not proven on the default branch"),
+                    }
+                    for tid, parent in sources if mode is None or tid not in mode.default_prerequisite_ids)
+            if cached_only:
+                for exclusion in exclusions:
+                    if exclusion["code"] in {
+                        "frontier_sibling_prerequisite_not_delivered",
+                        "frontier_prerequisite_not_on_default_branch",
+                        "frontier_epic_refresh_pending",
+                        "prerequisite_not_on_default_branch",
+                    }:
+                        exclusion["detail"] += (
+                            "; delivery read is cache-only; missing or stale evidence withholds work"
+                        )
+            result[task_id] = exclusions
+        delivery_rows = [row for row in rows if any(
+            item["code"] in {
+                "frontier_sibling_prerequisite_not_delivered",
+                "frontier_prerequisite_not_on_default_branch", "frontier_epic_refresh_pending",
+            } for item in result[row["id"]]
+        )]
+        if delivery_rows:
+            from src.task_graph.readiness import delivery_details
+
+            details = await delivery_details(self, delivery_rows, modes)
+            for tid, items in details.items():
+                for reason in result[tid]:
+                    matches = [item for item in items if item["code"] == reason["code"]]
+                    if reason["code"] == "prerequisite_not_on_default_branch":
+                        matches = [item for item in matches if item["ref"] == reason["ref"]]
+                    if matches:
+                        reason["action"] = "; ".join(item["detail"] for item in matches)
+                        reason["blocking_task_ids"] = sorted({item["ref"] for item in matches
+                                                               if item.get("ref")})
+                        reason["detail"] += "; " + reason["action"]
+        return result
 
     async def take_claim_slot(self, conn, session_id: str, *, now: float, cap: int | None):
         """CAS into ``claiming``; return kind, session and registered workspace binding.

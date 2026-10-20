@@ -1931,6 +1931,8 @@ async def test_sibling_prerequisite_needs_current_delivery_receipt_before_claim(
     [exclusion] = await db.claim_frontier_exclusions(second)
     assert exclusion["code"] == "frontier_sibling_prerequisite_not_delivered"
     assert "delivered_same_parent_prerequisites_when_hierarchical()" in exclusion["detail"]
+    assert first in exclusion["action"] and "aq/parent" in exclusion["action"]
+    assert exclusion["blocking_task_ids"] == [first]
 
     source = await db.get_integration_checkpoint(first)
     delivered_at = time.time()
@@ -2538,3 +2540,44 @@ def test_route_free_policy_dump_omits_route_and_round_trips():
     dumped = policy.model_dump(mode="json")
     assert "route" not in dumped["parent"] and "route" not in dumped["root"]
     assert HierarchicalIntegrationPolicy.model_validate(dumped) == policy
+
+
+async def test_read_projection_names_cross_epic_landing_and_refresh(db, hierarchy, monkeypatch):
+    from dataclasses import replace
+    from src.database.queries.hierarchy_queries import ProjectIntegrationMode
+    from src.task_graph.readiness import load_readiness
+
+    await db.create_profile(AgentProfile(id="worker", name="worker"))
+    for parent in ("upstream", "downstream"):
+        await _create(db, parent)
+    source = (await hierarchy.file_children("upstream", [{"title": "source"}], 0))["children"][0]["task_id"]
+    dependent = (await hierarchy.file_children("downstream", [{"title": "consumer"}], 0))["children"][0]["task_id"]
+    await db.add_dependency(dependent, source, "blocks")
+    async with db.immediate() as conn:
+        await conn.execute(update(task_branch_origins).where(
+            task_branch_origins.c.task_id == dependent,
+        ).values(materialized=True, materialized_at=1.0))
+        await conn.execute(update(tasks).where(tasks.c.id == source).values(status="COMPLETED"))
+        await conn.execute(update(tasks).where(tasks.c.id == dependent).values(
+            status="READY", is_blocked=False, profile_id="worker", route_source="router",
+        ))
+    mode = ProjectIntegrationMode(hierarchical=True, integration_repository_id="repo")
+
+    async def modes(*args, **kwargs):
+        assert kwargs["cached_only"] is True
+        return {"p": mode}
+
+    monkeypatch.setattr("src.integration.delivery_observer.hierarchy_frontier_modes", modes)
+    rows = [{"id": dependent, "status": "READY", "project_id": "p"}]
+    readiness = (await load_readiness(db, rows))[dependent]["claim_readiness"]
+    assert readiness["state"] == "waiting_on_delivery"
+    assert source in readiness["reason"] and "main" in readiness["reason"]
+    assert "downstream" in readiness["reason"] and "Epic refresh" in readiness["reason"]
+    assert not readiness["claimable"]
+    mode = replace(mode, default_prerequisite_ids=frozenset({source}))
+    refresh = (await load_readiness(db, rows))[dependent]["claim_readiness"]
+    assert [r["code"] for r in refresh["reasons"]] == ["frontier_epic_refresh_pending"]
+    assert source in refresh["reason"] and "aq/downstream" in refresh["reason"]
+    mode = replace(mode, parent_contained_task_ids=frozenset({dependent}))
+    assert (await load_readiness(db, rows))[dependent]["claim_readiness"]["claimable"]
+    assert (await db.get_task(dependent)).status == TaskStatus.READY

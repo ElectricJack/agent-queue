@@ -725,6 +725,9 @@ class TaskCommandsMixin:
         capped_tasks = active + finished[:cap]
         task_dicts = [self._task_to_dict(t) for t in capped_tasks]
         await attach_activity(self.db, task_dicts)
+        from src.task_graph.readiness import attach_readiness
+
+        await attach_readiness(self.db, task_dicts)
 
         if show_dependencies:
             await self._enrich_with_dependencies(task_dicts, capped_tasks)
@@ -793,8 +796,11 @@ class TaskCommandsMixin:
             }
             if include_project:
                 d["project_id"] = t.project_id
-            return {**d, **activity.get(t.id, {})}
+            return {**d, **activity.get(t.id, {}), **readiness.get(t.id, {})}
 
+        from src.task_graph.readiness import load_readiness
+
+        readiness = await load_readiness(self.db, [self._task_to_dict(t) for t in tasks])
         activity = await load_activity(self.db, [t.id for t in tasks])
         by_project: dict[str, list[dict]] = {}
         for t in tasks:
@@ -978,6 +984,15 @@ class TaskCommandsMixin:
             # Count root + all its subtasks
             total_tasks += 1 + subtask_total
 
+        from src.task_graph.readiness import load_readiness
+
+        readiness = await load_readiness(self.db, [self._task_to_dict(task)
+            for root, children in raw_trees for task in [root, *_collect_tree_tasks(children)]])
+        for entry, (root, children) in zip(trees, raw_trees):
+            entry["root"].update(readiness.get(root.id, {}))
+            entry["formatted"] = _format_task_tree(
+                root, children, compact=compact, readiness_map=readiness,
+            )
         await attach_activity(self.db, [entry["root"] for entry in trees])
         # Enrich root task dicts with dependency info when requested.
         if show_dependencies:
@@ -1001,6 +1016,7 @@ class TaskCommandsMixin:
                             children,
                             compact=False,
                             dep_map=dep_map,
+                            readiness_map=readiness,
                         )
 
         result: dict = {
@@ -1253,6 +1269,10 @@ class TaskCommandsMixin:
         root_task: Task = tree_data["task"]
         children: list[dict] = tree_data.get("children", [])
 
+        from src.task_graph.readiness import load_readiness
+
+        readiness = await load_readiness(self.db, [self._task_to_dict(task)
+            for task in [root_task, *_collect_tree_tasks(children)]])
         completed, subtask_total = _count_subtree(children)
         status_counts = _count_subtree_by_status(children)
 
@@ -1271,10 +1291,12 @@ class TaskCommandsMixin:
             compact=compact,
             max_depth=max_depth,
             dep_map=dep_map,
+            readiness_map=readiness,
         )
 
         result: dict = {
-            "root": {**self._task_to_dict(root_task), **await task_activity(self.db, root_task.id)},
+            "root": {**self._task_to_dict(root_task), **await task_activity(self.db, root_task.id),
+                     **readiness.get(root_task.id, {})},
             "formatted": formatted,
             "subtask_completed": completed,
             "subtask_total": subtask_total,
@@ -1305,12 +1327,11 @@ class TaskCommandsMixin:
             limit=args.get("limit"),
             offset=int(args.get("offset") or 0),
         )
-        return {
-            "success": True,
-            "task_id": task_id,
-            "count": len(children),
-            "children": [self._task_to_dict(t) for t in children],
-        }
+        from src.task_graph.readiness import attach_readiness
+
+        rows = [self._task_to_dict(t) for t in children]
+        await attach_readiness(self.db, rows)
+        return {"success": True, "task_id": task_id, "count": len(rows), "children": rows}
 
     async def _cmd_task_progress(self, args: dict) -> dict:
         """Computed group progress (counts, waves, max parallelism).  Backs ``aq task progress``."""
@@ -3745,6 +3766,9 @@ class TaskCommandsMixin:
         # Implementation progress kept apart from delivery (a read-only
         # projection; it never changes the stored status shown above).
         info.update(await task_activity(self.db, task.id), delivery_status=None)
+        from src.task_graph.readiness import attach_readiness
+
+        await attach_readiness(self.db, [info])
         if info["children"]:
             from src.integration.epic_delivery import EpicDeliveryProjection, lease_ttl_from
 

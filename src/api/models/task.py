@@ -167,6 +167,25 @@ class EpicDeliveryStatus(BaseModel):
     implementation_total: int = 0
 
 
+class ClaimReadinessReason(BaseModel):
+    code: str
+    detail: str
+    ref: str | None = None
+    batch_id: str | None = None
+    batch_ids: list[str] | None = None
+    epic_id: str | None = None
+    action: str | None = None
+    blocking_task_ids: list[str] | None = None
+
+
+class ClaimReadiness(BaseModel):
+    state: Literal["claimable", "waiting_on_delivery", "withheld", "unknown"]
+    claimable: bool
+    label: str
+    reason: str = ""
+    reasons: list[ClaimReadinessReason] = Field(default_factory=list)
+
+
 class TaskDisplayFields(BaseModel):
     """A container's rollup of its descendants (``src/task_graph/activity.py``).
 
@@ -178,6 +197,7 @@ class TaskDisplayFields(BaseModel):
     display_reason: str | None = None
     child_state_counts: dict[str, int] | None = None
     descendant_state_counts: dict[str, int] | None = None
+    claim_readiness: ClaimReadiness | None = None
 
 
 class TaskDetail(TaskDisplayFields):

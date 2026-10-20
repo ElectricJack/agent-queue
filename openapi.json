@@ -27064,6 +27064,137 @@
         "type": "object",
         "title": "CiRepairAdoptResponse"
       },
+      "ClaimReadiness": {
+        "properties": {
+          "state": {
+            "type": "string",
+            "enum": [
+              "claimable",
+              "waiting_on_delivery",
+              "withheld",
+              "unknown"
+            ],
+            "title": "State"
+          },
+          "claimable": {
+            "type": "boolean",
+            "title": "Claimable"
+          },
+          "label": {
+            "type": "string",
+            "title": "Label"
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason",
+            "default": ""
+          },
+          "reasons": {
+            "items": {
+              "$ref": "#/components/schemas/ClaimReadinessReason"
+            },
+            "type": "array",
+            "title": "Reasons"
+          }
+        },
+        "type": "object",
+        "required": [
+          "state",
+          "claimable",
+          "label"
+        ],
+        "title": "ClaimReadiness"
+      },
+      "ClaimReadinessReason": {
+        "properties": {
+          "code": {
+            "type": "string",
+            "title": "Code"
+          },
+          "detail": {
+            "type": "string",
+            "title": "Detail"
+          },
+          "ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ref"
+          },
+          "batch_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Batch Id"
+          },
+          "batch_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Batch Ids"
+          },
+          "epic_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Epic Id"
+          },
+          "action": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Action"
+          },
+          "blocking_task_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Blocking Task Ids"
+          }
+        },
+        "type": "object",
+        "required": [
+          "code",
+          "detail"
+        ],
+        "title": "ClaimReadinessReason"
+      },
       "ClaimSessionSummary": {
         "properties": {
           "id": {
@@ -40130,6 +40261,16 @@
             ],
             "title": "Descendant State Counts"
           },
+          "claim_readiness": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ClaimReadiness"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "id": {
             "type": "string",
             "title": "Id"
@@ -42787,6 +42928,16 @@
               }
             ],
             "title": "Descendant State Counts"
+          },
+          "claim_readiness": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ClaimReadiness"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "id": {
             "type": "string",
@@ -47931,6 +48082,16 @@
               }
             ],
             "title": "Descendant State Counts"
+          },
+          "claim_readiness": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ClaimReadiness"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "id": {
             "type": "string",
@@ -75950,6 +76111,16 @@
             ],
             "title": "Descendant State Counts"
           },
+          "claim_readiness": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ClaimReadiness"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "id": {
             "type": "string",
             "title": "Id"
@@ -76481,6 +76652,16 @@
               }
             ],
             "title": "Descendant State Counts"
+          },
+          "claim_readiness": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ClaimReadiness"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "success": {
             "type": "boolean",
@@ -77537,6 +77718,16 @@
             ],
             "title": "Descendant State Counts"
           },
+          "claim_readiness": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ClaimReadiness"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "id": {
             "type": "string",
             "title": "Id"
@@ -78035,6 +78226,16 @@
               }
             ],
             "title": "Descendant State Counts"
+          },
+          "claim_readiness": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ClaimReadiness"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "id": {
             "type": "string",

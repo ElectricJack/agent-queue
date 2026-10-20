@@ -163,6 +163,9 @@ from .ci_repair_adopt_request import CiRepairAdoptRequest
 from .ci_repair_adopt_response import CiRepairAdoptResponse
 from .ci_repair_adopt_response_422 import CiRepairAdoptResponse422
 from .ci_test_policy import CITestPolicy
+from .claim_readiness import ClaimReadiness
+from .claim_readiness_reason import ClaimReadinessReason
+from .claim_readiness_state import ClaimReadinessState
 from .claim_session_summary import ClaimSessionSummary
 from .claim_session_summary_failed_preparation_type_0 import ClaimSessionSummaryFailedPreparationType0
 from .claim_timing_detail import ClaimTimingDetail
@@ -2217,6 +2220,9 @@ __all__ = (
     "CiRepairAdoptResponse422",
     "CITestPolicy",
     "ClaimedBy",
+    "ClaimReadiness",
+    "ClaimReadinessReason",
+    "ClaimReadinessState",
     "ClaimSessionSummary",
     "ClaimSessionSummaryFailedPreparationType0",
     "ClaimTimingDetail",
