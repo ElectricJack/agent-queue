@@ -15111,12 +15111,24 @@
             "default": true,
             "title": "Dry Run",
             "type": "boolean"
+          },
+          "expected_target_sha": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Expected Target Sha"
           }
         },
         "required": [
           "batch_id"
         ],
-        "title": "IntegrationAbortBatchArgs",
+        "title": "IntegrationSettleBatchArgs",
         "type": "object"
       }
     },

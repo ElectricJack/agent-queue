@@ -131,7 +131,7 @@ def test_root_noop_apply_requires_exact_head_and_reason(extra):
 
 @pytest.mark.parametrize("leaf,identity,extra,command", [
     ("abort-batch", "batch", [], "integration_abort_batch"),
-    ("settle-batch", "batch", [], "integration_settle_batch"),
+    ("settle-batch", "batch", ["--target-sha", "a" * 40], "integration_settle_batch"),
     ("retire-origin", "task", ["--origin-id", "origin"], "integration_retire_origin"),
 ])
 def test_train_controls_default_to_preview_and_apply_with_reason(leaf, identity, extra, command):
@@ -154,7 +154,8 @@ def test_train_controls_default_to_preview_and_apply_with_reason(leaf, identity,
 
 @pytest.mark.parametrize("argv", [
     ["abort-batch", "batch", "--apply"],
-    ["settle-batch", "batch", "--apply"],
+    ["settle-batch", "batch", "--apply", "--reason", "delivered"],
+    ["settle-batch", "batch", "--apply", "--target-sha", "a" * 40],
     ["retire-origin", "task", "--apply", "--reason", "delivered"],
 ])
 def test_train_controls_require_apply_arguments_before_transport(argv):

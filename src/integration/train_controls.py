@@ -416,6 +416,80 @@ class TrainControls:
             "dry_run": dry_run,
         }
 
+    async def settle_batch(self, batch_id, *, dry_run, expected_target_sha, operator_id, reason):
+        """Record complete frozen-source inclusion without attempting publication."""
+        from src.integration.batches import BatchObservation
+        from src.integration.lock import CRITICAL_SECTION_SECONDS
+        from src.integration.train_sources import DatabaseBatches
+        from src.operator_decisions import history_on, related_on
+
+        if not dry_run and (not expected_target_sha or not reason.strip()):
+            raise ValueError("apply requires the previewed target SHA and a nonblank reason")
+        store = BatchStore(self.db, clock=self.clock)
+        batch = await store.get(batch_id)
+        if batch is None:
+            raise TrainControlError("unknown_batch", "Git-first batch is missing")
+        if batch.epic_sync or batch.epic_refresh:
+            raise ValueError("settlement requires an ordinary Git-first batch")
+        target = TrainTarget(batch.project_id, batch.repository_id, batch.target_ref)
+        snapshot = await self.snapshot(self.db, target)
+        if snapshot is None or snapshot.error or not snapshot.target_oid:
+            raise ValueError("batch target cannot be observed")
+        if expected_target_sha and snapshot.target_oid != expected_target_sha:
+            raise ValueError("batch target changed; preview again")
+        members = await store.members(batch.id)
+        if not members or not all([
+            await snapshot.contains_source(m.task_id, m.source_sha, m.base_sha) is True
+            for m in members
+        ]):
+            raise TrainControlError("target_not_settled",
+                                    "target does not prove every frozen source was delivered")
+        observed = snapshot.observation
+        candidate = observed.source_heads.get(
+            "refs/remotes/origin/" + candidate_ref(batch.id).removeprefix("refs/heads/"))
+        result = {
+            "outcome": "preview" if dry_run else "settled", "batch_id": batch.id,
+            "project_id": batch.project_id, "target_ref": batch.target_ref,
+            "target_sha": snapshot.target_oid, "candidate_sha": candidate,
+            "members": tuple(m.task_id for m in members), "dry_run": dry_run,
+        }
+        batches = (self.train.batches if self.train is not None
+                   else DatabaseBatches(self.db, clock=self.clock))
+        async with asyncio.timeout(CRITICAL_SECTION_SECONDS), self.db.immediate() as conn:
+            await self.db.lock_hierarchy_project(conn, batch.project_id)
+            await conn.execute(select(projects.c.id).where(
+                projects.c.id == batch.project_id).with_for_update())
+            await store._target_lock(conn, batch)
+            row = (await conn.execute(select(integration_batches).where(
+                integration_batches.c.id == batch.id,
+            ).with_for_update())).mappings().one()
+            if row["trigger"] == "promotion":
+                raise ValueError("promotion intents require their promotion settlement protocol")
+            if batch.intent == "aborted" or row["lifecycle"] == "aborted":
+                raise ValueError("aborted batch cannot be settled")
+            if Batch.from_row(row) != batch or await store.members(batch.id) != members:
+                raise ValueError("frozen batch changed; preview again")
+            decisions = await history_on(conn, batch.project_id,
+                                         await related_on(conn, "batch", batch.id))
+            if any(decision["active"] for decision in decisions):
+                raise ValueError("batch has an active operator hold")
+            if not await snapshot.is_fresh():
+                raise ValueError("batch target changed; preview again")
+            if not dry_run:
+                await batches.settle_on(conn, batch, BatchObservation(
+                    "delivered", None, snapshot.target_oid))
+                await self.db.log_event("integration.batch_settled", project_id=batch.project_id,
+                    payload=json.dumps({**result, "operator_id": operator_id,
+                                        "reason": reason.strip()}), conn=conn)
+        if not dry_run:
+            from src.integration.repair import OrdinaryRepairService
+
+            repair = (self.train.repair if self.train is not None
+                      else OrdinaryRepairService(self.db, clock=self.clock))
+            await repair.settle_green(batch.id, candidate or snapshot.target_oid)
+            await batches.cleanup_settled(batch)
+        return result
+
     async def _abort_observation(self, batch_id):
         store = BatchStore(self.db, clock=self.clock)
         batch = await store.get(batch_id)
@@ -456,86 +530,6 @@ class TrainControls:
             return remote.state is RemoteRefState.ABSENT
 
         return batch, snapshot, candidate, unchanged
-
-    async def settle_batch(self, batch_id, *, dry_run, operator_id, reason):
-        """Record promotion of a batch whose target already holds every member.
-
-        Abort refuses such a batch and its candidate may never pass checks
-        again (a cancelled run, a reused refresh candidate), so this is the
-        terminal control. Proof is exact ancestry or the delivery trailers the
-        abort refusal reads; a tree match alone never settles.
-        """
-        from src.integration.batches import BatchObservation
-        from src.integration.train_sources import DatabaseBatches
-
-        if not dry_run and not reason.strip():
-            raise ValueError("settlement requires a nonblank reason")
-        store = BatchStore(self.db, clock=self.clock)
-        batch = await store.get(batch_id)
-        if batch is None:
-            raise TrainControlError("unknown_batch", "Git-first batch is missing")
-        async with self.db._engine.connect() as conn:
-            lifecycle = await conn.scalar(select(integration_batches.c.lifecycle).where(
-                integration_batches.c.id == batch_id))
-        if batch.intent == "aborted" or lifecycle == "aborted":
-            raise ValueError("aborted batch cannot be settled")
-        if lifecycle == "promoted":
-            raise ValueError("batch is already promoted")
-        members = await store.members(batch_id)
-        if not members:
-            raise ValueError("batch has no frozen members")
-        target = TrainTarget(batch.project_id, batch.repository_id, batch.target_ref)
-        snapshot = await self.snapshot(self.db, target)
-        if snapshot is None or snapshot.error or not snapshot.target_oid:
-            raise ValueError("batch target cannot be observed")
-        ref = candidate_ref(batch.id)
-        candidate = snapshot.observation.source_heads.get(
-            "refs/remotes/origin/" + ref.removeprefix("refs/heads/")
-        )
-        observed = snapshot.observation
-        for member in members:
-            ancestor = await observed.git.ais_ancestor(
-                observed.store, member.source_sha, snapshot.target_oid, strict=True,
-            )
-            if ancestor is None:
-                raise ValueError("batch promotion cannot be observed")
-            if ancestor:
-                continue
-            proof = await snapshot.contains_source(
-                member.task_id, member.source_sha, member.base_sha)
-            if proof is None:
-                raise ValueError("batch promotion cannot be observed")
-            if not proof:
-                raise TrainControlError(
-                    "target_not_settled", f"target does not contain member {member.task_id}")
-        result = {
-            "outcome": "preview" if dry_run else "settled",
-            "batch_id": batch_id,
-            "project_id": batch.project_id,
-            "target_ref": batch.target_ref,
-            "candidate_sha": candidate,
-            "target_sha": snapshot.target_oid,
-            "intent": batch.intent,
-            "dry_run": dry_run,
-        }
-        if dry_run:
-            return result
-        if not await snapshot.is_fresh():
-            raise ValueError("batch target changed during settlement")
-        batches = self.train.batches if self.train is not None else DatabaseBatches(
-            self.db, clock=self.clock)
-        # The target, not the candidate, is what was delivered: settling the
-        # candidate would claim checks that never passed.
-        await batches.settle(batch, BatchObservation(
-            "delivered", None, snapshot.target_oid,
-            detail={"reason": "operator_settled", "operator_id": operator_id}))
-        await self.db.log_event(
-            "integration.batch_settled", project_id=batch.project_id,
-            payload=json.dumps({"batch_id": batch_id, "target_sha": snapshot.target_oid,
-                                "candidate_sha": candidate, "operator_id": operator_id,
-                                "reason": reason}),
-        )
-        return result
 
     async def set_batch_intent(self, batch_id, intent, *, dry_run, operator_id, reason=""):
         store = BatchStore(self.db, clock=self.clock)

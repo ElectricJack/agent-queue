@@ -5734,6 +5734,7 @@
           "batch_id"
         ],
         "optional": [
+          "--target-sha",
           "--reason",
           "--apply",
           "--json",
@@ -16734,13 +16735,16 @@
         "optional": [
           "--reason",
           "--dry-run",
+          "--expected-target-sha",
           "--json",
           "--brief",
           "--save-output",
           "--api-url"
         ],
         "structured": [],
-        "nullable": []
+        "nullable": [
+          "--expected-target-sha"
+        ]
       }
     },
     {
