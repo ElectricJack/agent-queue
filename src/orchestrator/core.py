@@ -1113,9 +1113,14 @@ class Orchestrator(
                     )
                     await self._finish_manual_pause(task_id, snapshot)
             task = await self.db.get_task(task_id)
+            # A hold placed over a failed slot reset resumes into the same
+            # retry, so the old writer needs the same proof of stop.
+            held = await self.db.get_task_meta(task_id, "manual_pause") if snapshot else None
+            parked = task.status if task is not None else None
+            if parked is TaskStatus.PAUSED and isinstance(held, dict):
+                parked = TaskStatus(held.get("status", "READY"))
             if (
-                task is not None
-                and task.status in {TaskStatus.READY, TaskStatus.BLOCKED}
+                parked in {TaskStatus.READY, TaskStatus.BLOCKED}
                 and await self.db.get_task_meta(task_id, "slot_reset_failure")
             ):
                 from src.sessions.provider import SessionHandle
