@@ -364,6 +364,75 @@ class TrainControls:
             "dry_run": dry_run,
         }
 
+    async def settle_batch(self, batch_id, *, dry_run, expected_target_sha, operator_id, reason):
+        """Record complete frozen-source inclusion without attempting publication."""
+        from src.integration.batches import BatchObservation
+        from src.integration.lock import CRITICAL_SECTION_SECONDS
+        from src.integration.train_sources import DatabaseBatches
+        from src.operator_decisions import history_on, related_on
+
+        if not dry_run and (not expected_target_sha or not reason.strip()):
+            raise ValueError("apply requires the previewed target SHA and a nonblank reason")
+        store = BatchStore(self.db, clock=self.clock)
+        batch = await store.get(batch_id)
+        if batch is None or batch.epic_sync or batch.epic_refresh:
+            raise ValueError("settlement requires an ordinary Git-first batch")
+        target = TrainTarget(batch.project_id, batch.repository_id, batch.target_ref)
+        snapshot = await self.snapshot(self.db, target)
+        if snapshot is None or snapshot.error or not snapshot.target_oid:
+            raise ValueError("batch target cannot be observed")
+        if expected_target_sha and snapshot.target_oid != expected_target_sha:
+            raise ValueError("batch target changed; preview again")
+        members = await store.members(batch.id)
+        if not members or not all([
+            await snapshot.contains_source(m.task_id, m.source_sha, m.base_sha) is True
+            for m in members
+        ]):
+            raise ValueError("target does not prove every frozen source was delivered")
+        observed = snapshot.observation
+        candidate = observed.source_heads.get(
+            "refs/remotes/origin/" + candidate_ref(batch.id).removeprefix("refs/heads/"))
+        result = {
+            "outcome": "preview" if dry_run else "settled", "batch_id": batch.id,
+            "project_id": batch.project_id, "target_ref": batch.target_ref,
+            "target_sha": snapshot.target_oid, "candidate_sha": candidate,
+            "members": tuple(m.task_id for m in members), "dry_run": dry_run,
+        }
+        batches = (self.train.batches if self.train is not None
+                   else DatabaseBatches(self.db, clock=self.clock))
+        async with asyncio.timeout(CRITICAL_SECTION_SECONDS), self.db.immediate() as conn:
+            await self.db.lock_hierarchy_project(conn, batch.project_id)
+            await conn.execute(select(projects.c.id).where(
+                projects.c.id == batch.project_id).with_for_update())
+            await store._target_lock(conn, batch)
+            row = (await conn.execute(select(integration_batches).where(
+                integration_batches.c.id == batch.id,
+            ).with_for_update())).mappings().one()
+            if row["trigger"] == "promotion":
+                raise ValueError("promotion intents require their promotion settlement protocol")
+            if Batch.from_row(row) != batch or await store.members(batch.id) != members:
+                raise ValueError("frozen batch changed; preview again")
+            decisions = await history_on(conn, batch.project_id,
+                                         await related_on(conn, "batch", batch.id))
+            if any(decision["active"] for decision in decisions):
+                raise ValueError("batch has an active operator hold")
+            if not await snapshot.is_fresh():
+                raise ValueError("batch target changed; preview again")
+            if not dry_run:
+                await batches.settle_on(conn, batch, BatchObservation(
+                    "delivered", candidate, snapshot.target_oid))
+                await self.db.log_event("integration.batch_settled", project_id=batch.project_id,
+                    payload=json.dumps({**result, "operator_id": operator_id,
+                                        "reason": reason.strip()}), conn=conn)
+        if not dry_run:
+            from src.integration.repair import OrdinaryRepairService
+
+            repair = (self.train.repair if self.train is not None
+                      else OrdinaryRepairService(self.db, clock=self.clock))
+            await repair.settle_green(batch.id, candidate or snapshot.target_oid)
+            await batches.cleanup_settled(batch)
+        return result
+
     async def _abort_observation(self, batch_id):
         store = BatchStore(self.db, clock=self.clock)
         batch = await store.get(batch_id)

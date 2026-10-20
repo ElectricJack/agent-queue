@@ -433,6 +433,27 @@ class IntegrationCommandsMixin:
                 "source_sha": observation.candidate_sha, "target_sha": observation.target_sha,
                 "detail": observation.detail}
 
+    async def _cmd_integration_settle_batch(self, args: dict) -> dict:
+        """Preview or settle an ordinary batch already proven on its target."""
+        from src.commands.contracts.integration import IntegrationSettleBatchArgs
+        from src.integration.batches import BatchStore
+        from src.integration.train_controls import TrainControls
+
+        request = IntegrationSettleBatchArgs.model_validate(args)
+        batch = await BatchStore(self.db).get(request.batch_id)
+        operator, refusal = await integration_operator(self.db, batch.project_id if batch else None)
+        if refusal:
+            return _failure("unauthorized", refusal)
+        try:
+            result = await TrainControls(self.db, train=getattr(
+                self.orchestrator, "integration_train", None,
+            )).settle_batch(request.batch_id, dry_run=request.dry_run,
+                expected_target_sha=request.expected_target_sha, operator_id=operator,
+                reason=request.reason)
+        except (ValueError, GitError, OSError) as exc:
+            return _failure("refused", str(exc))
+        return {"success": True, **result}
+
     async def _cmd_integration_abort_batch(self, args: dict) -> dict:
         """Preview or abort an unpromoted Git-first batch."""
         from src.commands.contracts.integration import IntegrationAbortBatchArgs

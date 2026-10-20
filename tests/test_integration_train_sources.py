@@ -2149,6 +2149,7 @@ async def test_train_control_handlers_refuse_non_supervisor_principals(world, ki
     with principal_context(ExecutionPrincipal(kind=PrincipalKind(kind), policy=DENY_ALL,
                                               elevated=True, project_id="p")):
         abort = await handler._cmd_integration_abort_batch({"batch_id": "batch"})
+        settle = await handler._cmd_integration_settle_batch({"batch_id": "batch"})
         retire = await handler._cmd_integration_retire_origin({"task_id": "a"})
         pause = await handler._cmd_integration_pause_batch({"batch_id": "batch"})
         resume = await handler._cmd_integration_resume_batch({"batch_id": "batch"})
@@ -2156,7 +2157,7 @@ async def test_train_control_handlers_refuse_non_supervisor_principals(world, ki
         seal = await handler._cmd_integration_seal_now({"project_id": "p"})
         refresh = await handler._cmd_integration_refresh_epic({"task_id": "a"})
     assert abort["outcome"] == retire["outcome"] == refresh["outcome"] == "unauthorized"
-    assert {r["outcome"] for r in (pause, resume, eject, seal)} == {"unauthorized"}
+    assert {r["outcome"] for r in (pause, resume, eject, seal, settle)} == {"unauthorized"}
     assert (await store.get("batch")).intent == "open"
 
 
@@ -3168,6 +3169,155 @@ async def test_visit_freezes_gates_and_fast_forwards_through_the_lease(world):
     lease = await BranchLock(db).get(BranchKey(repository_id="r", branch="refs/heads/main"))
     assert lease is None or lease.holder is None
     assert (await train.visit(MAIN)).state == "idle"
+
+
+async def test_required_job_passes_while_unrequired_workflow_job_is_queued_and_batch_delivers(world):
+    await completed(world, "linux-source")
+    train, github, _ = await hosted_train(world)
+    testing = await train.visit(MAIN)
+    assert testing.state == "testing"
+    github.runs[testing.candidate_sha] = "success"
+    rows = github._rows
+
+    def queued_workflow(sha, event="push"):
+        check, workflow, job = rows(sha, event)
+        if sha == testing.candidate_sha and event == "push":
+            workflow = {**workflow, "status": "queued", "conclusion": None}
+        return check, workflow, job
+
+    github._rows = queued_workflow
+    listing = github.paged_items
+
+    async def with_unrequired_job(path, *, key):
+        records = await listing(path, key=key)
+        if key == "jobs" and records and records[0]["head_sha"] == testing.candidate_sha:
+            return records + [{**records[0], "id": 99999, "name": "waived-windows",
+                               "status": "queued", "conclusion": None}]
+        return records
+
+    github.paged_items = with_unrequired_job
+    delivered = await train.visit(MAIN)
+    async with world.db._engine.connect() as conn:
+        from src.database.tables import integration_check_evidence
+
+        checks = (await conn.execute(select(integration_check_evidence).where(
+            integration_check_evidence.c.sha == testing.candidate_sha,
+        ))).mappings().all()
+        lifecycle = await conn.scalar(select(integration_batches.c.lifecycle).where(
+            integration_batches.c.id == testing.batch_id))
+    assert delivered.state == "delivered", (delivered, [dict(row) for row in checks])
+    assert git(world.origin.url, "rev-parse", "main") == testing.candidate_sha
+    assert lifecycle == "promoted"
+    assert len(checks) == 1 and checks[0]["conclusion"] == "success"
+    assert "/job/" in checks[0]["run_url"]
+
+
+@pytest.mark.parametrize("removed_policy", [False, True])
+async def test_train_settles_candidate_already_on_target_before_source_admission(world, removed_policy):
+    await completed(world, "externally-delivered")
+    train, github, _ = await hosted_train(world)
+    testing = await train.visit(MAIN)
+    assert testing.state == "testing"
+    git(world.origin.clone, "push", "origin", testing.candidate_sha + ":main")
+    git(world.origin.clone, "push", "origin", ":aq/externally-delivered")
+    if removed_policy:
+        await world.db.update_project("p", hierarchical_integration_policy={
+            "root": {"required_checks": {"version": "v2", "names": []}},
+        })
+    train.batches.pending = AsyncMock(side_effect=AssertionError("delivery precedes admission"))
+    delivered = await train.visit(MAIN)
+    assert delivered.state == "delivered", delivered
+    assert delivered.batch_id == testing.batch_id
+    async with world.db._engine.connect() as conn:
+        assert await conn.scalar(select(integration_batches.c.lifecycle).where(
+            integration_batches.c.id == testing.batch_id)) == "promoted"
+
+
+async def test_settle_batch_preview_apply_and_replay_preserve_git(world):
+    await completed(world, "external")
+    train, _, _ = lane(world, LocalGit(Path(world.origin.url)))
+    testing = await train.visit(MAIN)
+    git(world.origin.clone, "push", "origin", testing.candidate_sha + ":main")
+    controls = TrainControls(world.db, train=train)
+    store = BatchStore(world.db)
+    before = git(world.origin.url, "show-ref")
+    preview = await controls.settle_batch(testing.batch_id, dry_run=True,
+        expected_target_sha=None, operator_id="supervisor", reason="")
+    assert preview["outcome"] == "preview" and preview["target_sha"] == testing.candidate_sha
+    async with world.db._engine.connect() as conn:
+        assert await conn.scalar(select(integration_batches.c.lifecycle).where(
+            integration_batches.c.id == testing.batch_id)) == "sealed"
+    for _ in range(2):
+        applied = await controls.settle_batch(testing.batch_id, dry_run=False,
+            expected_target_sha=preview["target_sha"], operator_id="supervisor",
+            reason="target was fast-forwarded externally")
+        assert applied["outcome"] == "settled"
+    assert await store.members(testing.batch_id)
+    assert git(world.origin.url, "show-ref") == before
+    async with world.db._engine.connect() as conn:
+        row = (await conn.execute(select(integration_batches.c.lifecycle,
+            integration_batches.c.final_main_sha).where(
+                integration_batches.c.id == testing.batch_id))).one()
+    assert tuple(row) == ("promoted", testing.candidate_sha)
+
+
+async def test_settle_batch_refuses_incomplete_or_changed_target(world):
+    await completed(world, "waiting")
+    train, _, _ = lane(world, LocalGit(Path(world.origin.url)))
+    testing = await train.visit(MAIN)
+    controls = TrainControls(world.db)
+    with pytest.raises(ValueError, match="every frozen source"):
+        await controls.settle_batch(testing.batch_id, dry_run=True,
+            expected_target_sha=None, operator_id="supervisor", reason="")
+    git(world.origin.clone, "push", "origin", testing.candidate_sha + ":main")
+    with pytest.raises(ValueError, match="target changed"):
+        await controls.settle_batch(testing.batch_id, dry_run=False,
+            expected_target_sha=testing.target_sha, operator_id="supervisor", reason="external FF")
+
+
+@pytest.mark.parametrize("blocker", ["hold", "promotion", "unknown", "moved"])
+async def test_settle_batch_refuses_held_special_or_stale_evidence(world, blocker):
+    from src.integration.train_sources import project_snapshot
+    from src.operator_decisions import OperatorDecisions
+
+    await completed(world, "delivered-source")
+    train, _, _ = lane(world, LocalGit(Path(world.origin.url)))
+    testing = await train.visit(MAIN)
+    git(world.origin.clone, "push", "origin", testing.candidate_sha + ":main")
+    expected = {"hold": "operator hold", "promotion": "promotion settlement",
+                "unknown": "every frozen source", "moved": "target changed"}[blocker]
+    if blocker == "hold":
+        await OperatorDecisions(world.db).record({
+            "object_kind": "batch", "object_id": testing.batch_id, "operator": "operator",
+            "decision": "Keep this batch", "effect": "hold", "source": "dashboard",
+            "source_ref": "message:hold", "idempotency_key": "settlement-hold", "releases": None,
+        }, recorded_by="human:local-operator")
+    batch_id = testing.batch_id
+    if blocker == "promotion":
+        store = BatchStore(world.db)
+        members = await store.members(batch_id)
+        batch_id = "promotion-already-delivered"
+        await store.freeze(Batch(batch_id, "p", "r", MAIN.target_ref), members,
+            trees={m.task_id: tree(world, m.source_sha) for m in members},
+            promotion={"repository_id": "r", "request_id": "promotion:r:release:1",
+                       "step": {"id": "release"}})
+
+    async def observed(db, target):
+        snapshot = await project_snapshot(db, target)
+        return SimpleNamespace(
+            error=snapshot.error, target_oid=snapshot.target_oid, observation=snapshot.observation,
+            contains_source=(AsyncMock(return_value=None) if blocker == "unknown"
+                             else snapshot.contains_source),
+            is_fresh=(AsyncMock(return_value=False) if blocker == "moved" else snapshot.is_fresh),
+        )
+
+    with pytest.raises(ValueError, match=expected):
+        await TrainControls(world.db, snapshot=observed).settle_batch(batch_id,
+            dry_run=False, expected_target_sha=testing.candidate_sha, operator_id="supervisor",
+            reason="externally delivered")
+    async with world.db._engine.connect() as conn:
+        assert await conn.scalar(select(integration_batches.c.lifecycle).where(
+            integration_batches.c.id == batch_id)) == "sealed"
 
 
 @pytest.mark.parametrize("staged_auth", [False, True])

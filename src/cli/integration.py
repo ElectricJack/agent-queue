@@ -250,6 +250,23 @@ def integration_abort_batch(ctx, batch_id, reason, apply):
     })
 
 
+@integration.command("settle-batch")
+@click.argument("batch_id")
+@click.option("--target-sha", "expected_target_sha", help="Exact target SHA returned by preview.")
+@click.option("--reason", default="", help="Required explanation when settling.")
+@click.option("--apply", is_flag=True, help="Settle proven delivery; default is preview.")
+@click.pass_context
+@_handle_errors
+def integration_settle_batch(ctx, batch_id, expected_target_sha, reason, apply):
+    """Preview or settle BATCH_ID whose frozen inputs already reached its target."""
+    if apply and (not expected_target_sha or not reason.strip()):
+        raise click.UsageError("--apply requires --target-sha and --reason")
+    _execute(ctx, "integration_settle_batch", {
+        "batch_id": batch_id, "expected_target_sha": expected_target_sha,
+        "reason": reason, "dry_run": not apply,
+    })
+
+
 @integration.command("refresh-epic")
 @click.option("--task", "task_id", required=True, help="Epic whose branch needs the default branch.")
 @click.option("--apply", is_flag=True, help="Start or advance the attested refresh; default is preview.")

@@ -14715,6 +14715,47 @@
         "type": "object"
       }
     },
+    "integration_settle_batch": {
+      "name": "integration_settle_batch",
+      "description": "Authenticated hierarchical integration operational control.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "batch_id": {
+            "minLength": 1,
+            "title": "Batch Id",
+            "type": "string"
+          },
+          "reason": {
+            "default": "",
+            "title": "Reason",
+            "type": "string"
+          },
+          "dry_run": {
+            "default": true,
+            "title": "Dry Run",
+            "type": "boolean"
+          },
+          "expected_target_sha": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Expected Target Sha"
+          }
+        },
+        "required": [
+          "batch_id"
+        ],
+        "title": "IntegrationSettleBatchArgs",
+        "type": "object"
+      }
+    },
     "integration_status": {
       "name": "integration_status",
       "description": "Authenticated hierarchical integration operational control.",
