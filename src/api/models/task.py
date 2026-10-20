@@ -626,6 +626,14 @@ class TaskControlResponse(BaseModel):
     status: str
 
 
+class DiscardPauseCheckpointResponse(BaseModel):
+    task_id: str
+    discarded: bool
+    branch: str | None = None
+    ref: str | None = None
+    commit: str | None = None
+
+
 class StopTaskResponse(BaseModel):
     stopped: str
 
@@ -1437,6 +1445,7 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "stop_task": StopTaskResponse,
     "pause_task": TaskControlResponse,
     "resume_task": TaskControlResponse,
+    "discard_pause_checkpoint": DiscardPauseCheckpointResponse,
     "restart_task": RestartTaskResponse,
     "task_recover": TaskRecoveryResponse,
     "reopen_with_feedback": ReopenWithFeedbackResponse,

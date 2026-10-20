@@ -18827,6 +18827,41 @@
       }
     },
     {
+      "path": "aq task discard-pause-checkpoint",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "discard_pause_checkpoint",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--task-id",
+          "--reason"
+        ],
+        "optional": [
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
       "path": "aq task edit",
       "registration": "generated",
       "owner_kind": "core",

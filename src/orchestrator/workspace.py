@@ -385,10 +385,12 @@ class WorkspaceMixin:
         if integration_origin is None and await self.db.get_task_meta(task.id, CHECKPOINT_META):
             try:
                 branch = await restore_checkpoint(self.db, self.git, task.id, workspace)
-                await self.db.update_task(task.id, branch_name=branch)
-                if is_git_workspace:
-                    await self._ensure_control_files_excluded(workspace)
-                return workspace  # Preserve the resumed task's plan files too.
+                # None: a foreign checkpoint was discarded; prepare normally.
+                if branch is not None:
+                    await self.db.update_task(task.id, branch_name=branch)
+                    if is_git_workspace:
+                        await self._ensure_control_files_excluded(workspace)
+                    return workspace  # Preserve the resumed task's plan files too.
             except Exception as exc:
                 logger.error("Cannot restore paused task %s: %s", task.id, exc)
                 self._remove_sentinel(workspace)

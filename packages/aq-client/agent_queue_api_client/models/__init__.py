@@ -360,6 +360,9 @@ from .digest_status_response import DigestStatusResponse
 from .digest_status_response_delivery_health import DigestStatusResponseDeliveryHealth
 from .digest_window_bounds import DigestWindowBounds
 from .digest_window_record import DigestWindowRecord
+from .discard_pause_checkpoint_request import DiscardPauseCheckpointRequest
+from .discard_pause_checkpoint_response import DiscardPauseCheckpointResponse
+from .discard_pause_checkpoint_response_422 import DiscardPauseCheckpointResponse422
 from .discord_cutover_status import DiscordCutoverStatus
 from .discord_intake_diagnostics import DiscordIntakeDiagnostics
 from .discord_intake_diagnostics_ignored import DiscordIntakeDiagnosticsIgnored
@@ -2446,6 +2449,9 @@ __all__ = (
     "DigestStatusResponseDeliveryHealth",
     "DigestWindowBounds",
     "DigestWindowRecord",
+    "DiscardPauseCheckpointRequest",
+    "DiscardPauseCheckpointResponse",
+    "DiscardPauseCheckpointResponse422",
     "DiscordCutoverStatus",
     "DiscordIntakeDiagnostics",
     "DiscordIntakeDiagnosticsIgnored",
