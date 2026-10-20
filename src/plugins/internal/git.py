@@ -860,6 +860,12 @@ class GitPlugin(InternalPlugin):
                 identity_policy=policy,
                 inherited_oids=inherited,
             )
+        if oid is not None:
+            from src.integration.hierarchy import record_worker_publication
+
+            await record_worker_publication(
+                self._db._db, publication.task_id, publication.branch, oid,
+            )
         return publication.branch, oid, list(policy.notes)
 
     async def _source_ci_inherited_oids(self, task_id: str) -> list[str]:
