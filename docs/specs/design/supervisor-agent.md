@@ -264,7 +264,11 @@ delivery consumer. A direct cycle caller without the service retains the deliver
 Concurrent engine passes are skipped while one is in flight.
 
 1. **Target session idle** → provider `nudge` for the first pending message only, as a
-   single line pointing at its durable body (``Handle `aq message status <id> --json`.``);
+   single line pointing at its durable body (``Handle `aq message status <id> --json`
+   (running it marks the message read).``), the same text on every attempt. Saying that
+   the command is the acknowledgment matters: a supervisor that had peeked at the bodies
+   with `aq message inbox` answered each retry from memory and never acknowledged
+   (2026-10-20);
    the rest stay pending for later passes. The nudge carries no body and no reply
    instruction — the supervisor profile teaches `aq reply <msg-id>` for user messages,
    and internal notices (`task_recovery`, `agent_question`) take no reply. The nudge
@@ -272,7 +276,9 @@ Concurrent engine passes are skipped while one is in flight.
    reads its body with `message_status`, replies, or receives inbox/prime injection.
    An operator or another supervisor inspecting status does not consume the
    recipient's message. Notification attempts and their timestamps survive daemon
-   restarts. Retry after 60 seconds, doubling up to five minutes; after three
+   restarts. Retry after 60 seconds, doubling up to five minutes. A read message is
+   never nudged again: the pending query, the notification claim and the cold-start
+   recheck all exclude rows with `read_at` set. After three
    unanswered attempts queue one durable alert, including the original body, to
    the global supervisor. For mail addressed to the global supervisor, send that
    alert to `user:dashboard` instead: an unauthenticated supervisor cannot alert

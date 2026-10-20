@@ -1237,7 +1237,10 @@ class TestStatusRecipientProject:
         assert (await engine.run_delivery_pass())["delivered"] == 0
         [(kind, target_id, text)] = sessions.nudges
         assert (kind, target_id) == ("session", "supervisor-p1")
-        pointer = re.fullmatch(r"Handle `aq message status (\S+) --json`\.", text)
+        pointer = re.fullmatch(
+            r"Handle `aq message status (\S+) --json` \(running it marks the message read\)\.",
+            text,
+        )
         assert pointer and pointer.group(1) == sent["message_id"], text
 
         result = await _execute_as(

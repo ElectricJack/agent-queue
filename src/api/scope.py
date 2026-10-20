@@ -71,9 +71,9 @@ AGENT_COMMAND_SET: frozenset[str] = frozenset(
         "message_inbox",
         "message_reply",
         # The idle-session nudge (``src/messages/delivery.py:_render_nudge``)
-        # names ``aq message status <id>``, and marks the row delivered, so
-        # ``message_inbox`` no longer lists it: this is the only way a worker
-        # reaches the body it was handed.  ``_cmd_message_status`` fences a
+        # names ``aq message status <id>``.  Run by the recipient, it is the
+        # acknowledgment that marks the row read and stops the nudge retries;
+        # a ``message_inbox`` peek does not.  ``_cmd_message_status`` fences a
         # plain session to messages addressed to its own mailboxes.
         "message_status",
         "memory_save",

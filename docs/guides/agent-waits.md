@@ -183,8 +183,8 @@ exhausted session; do not keep polling the closed task.
 Task-addressed results route to the session currently holding the task,
 including pool workers whose session names do not contain the task id.
 Plain messages to `task:<id>` or `session:<id>` use the same idle delivery:
-an idle holder has ``Handle `aq message status <id> --json`.`` typed into its
-terminal.
+an idle holder has ``Handle `aq message status <id> --json` (running it marks the
+message read).`` typed into its terminal.
 
 A message wait (`--kind message --ref <thread> --after-seq <n>`) resolves on
 the first later message on that thread addressed to the waiting session or its
