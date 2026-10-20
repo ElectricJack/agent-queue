@@ -123,7 +123,7 @@ from src.git.github_contracts import (
     GitHubCredentialIdentity,
     GitHubRepositoryBinding,
 )
-from src.git.manager import GitManager
+from src.git.manager import GitError, GitManager
 from src.integration.attestation import IntegrationAttestationService
 from src.integration.batches import (
     Batch,
@@ -1064,6 +1064,59 @@ async def test_targets_follow_mode_routing_and_open_batches(world):
     async with db._engine.begin() as conn:
         await conn.execute(update(projects).where(projects.c.id == "p").values(status="PAUSED"))
     assert await DatabaseTargets(db).targets(time.time()) == []
+
+
+@pytest.mark.parametrize("status,open_batch", [
+    (TaskStatus.COMPLETED, False), (TaskStatus.IN_PROGRESS, False),
+    (TaskStatus.COMPLETED, True),
+])
+async def test_missing_completed_container_target_retires_but_live_work_stays_visible(
+    world, status, open_batch,
+):
+    db, origin = world.db, world.origin
+    await db.create_task(Task(
+        id="epic", project_id="p", repo_id="r", title="epic", description="",
+        branch_name="aq/epic", status=status,
+    ))
+    git(origin.clone, "push", "origin", "main:aq/epic")
+    child = await completed(world, "child", parent="epic")
+    targets = DatabaseTargets(db)
+    epic = TrainTarget("p", "r", "refs/heads/aq/epic", "epic")
+    assert epic in await targets.targets(time.time())
+    git(origin.clone, "push", "origin", ":aq/epic")
+    if open_batch:
+        await BatchStore(db).freeze(
+            Batch("held", "p", "r", epic.target_ref, created_at=1.0),
+            (BatchMember("child", child, child),), trees={"child": tree(world, child)},
+        )
+    retired = status is TaskStatus.COMPLETED and not open_batch
+    assert (epic in await targets.targets(time.time())) is not retired
+    assert (epic.key in targets.retired_targets) is retired
+    assert MAIN in await targets.targets(time.time())
+    status_view = await IntegrationStatusService(db, git_first="active").train_status("p")
+    assert any(item["task_id"] == "epic" for item in status_view["epics"]) is not retired
+
+
+@pytest.mark.parametrize("remote_error", [False, True])
+async def test_container_retirement_uses_remote_absence_when_acquisition_is_unavailable(
+    world, remote_error,
+):
+    await world.db.create_task(Task(
+        id="epic", project_id="p", title="epic", description="",
+        branch_name="aq/epic", status=TaskStatus.COMPLETED,
+    ))
+    await completed(world, "child", parent="epic")
+    observed = await snapshot(world)
+    observed = replace(observed, observation=replace(
+        observed.observation, target_oid=None, source_heads={},
+        error="snapshot_git_error: retained Git object integrity is unavailable",
+    ))
+    if remote_error:
+        observed.observation.git.als_remote_refs = AsyncMock(side_effect=GitError("unavailable"))
+    targets = DatabaseTargets(world.db, snapshot=AsyncMock(return_value=observed))
+    epic = TrainTarget("p", "r", "refs/heads/aq/epic", "epic")
+    assert (epic in await targets.targets(time.time())) is remote_error
+    assert (epic.key in targets.retired_targets) is not remote_error
 
 
 async def promotion_flow(world, targets):
@@ -5600,7 +5653,7 @@ async def test_retired_epic_reports_delivered_only_with_current_root_proof(world
         assert event["target_ref"] == "refs/heads/dev"
         assert "blockers" not in visit.detail
     else:
-        assert [b["code"] for b in visit.detail["blockers"]] == ["missing_target"]
+        assert [b["code"] for b in visit.detail["blockers"]] == ["target_ref_missing"]
     assert await db.get_task_completions("epic") == completions
     assert not github.records
     status = await IntegrationStatusService(db, git_first="active", train=train).control_status("p")

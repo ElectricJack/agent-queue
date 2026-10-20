@@ -226,6 +226,33 @@ async def test_no_open_batch_is_idle_and_reports_the_fetched_target():
     assert (visit.state, visit.batch_id, visit.target_sha) == ("idle", None, TARGET_SHA)
 
 
+async def test_explicitly_retired_target_drops_finished_status_after_running_visit_settles():
+    epic = TrainTarget("p", "r", "refs/heads/epic", "epic")
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def blocked_snapshot():
+        entered.set()
+        await release.wait()
+        return await lane(Service()).snapshot()
+
+    targets = Targets(ROOT, epic)
+    targets.retired_targets = set()
+    t = train(targets, Batches(), {
+        ROOT.key: lane(Service()), epic.key: lane(Service(), fetch=blocked_snapshot),
+    })
+    await t.tick()
+    await entered.wait()
+    targets.items = [ROOT]
+    targets.retired_targets = {epic.key}
+    await t.tick()
+    assert any(row["target_ref"] == epic.target_ref and row["running"] for row in t.status())
+    release.set()
+    await t.drain()
+    await t.tick()
+    await t.drain()
+    assert [row["target_ref"] for row in t.status()] == [ROOT.target_ref]
+
+
 @pytest.mark.parametrize("blockers,observes", [
     (("selection_deferred",), True),
     (("repository_recovery",), False),
