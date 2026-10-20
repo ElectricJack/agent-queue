@@ -5694,6 +5694,28 @@ class TaskCommandsMixin:
                 detail=f"{blocked_terminal}; not auto-recovered, restart or reopen to retry",
                 ref=str(task_id),
             ))
+        # BLOCKED with no attention, terminal mark, open incident or graph
+        # blocker: nothing recovers it (the promotion cascade only lifts
+        # BLOCKED work that has a graph blocker), and pools count only READY.
+        # Without this explain answered with route/pool waits for an hour
+        # while the task could never be claimed (swift-crest-94).
+        open_incident = isinstance(recovery, dict) and recovery.get("id") and not recovery.get(
+            "decision"
+        )
+        if (task.status is TaskStatus.BLOCKED and not retirement and not needs_attention
+                and not blocked_terminal and not open_incident
+                and not await self.db.tasks_with_graph_blockers([str(task_id)])):
+            failure = await self.db.get_task_meta(str(task_id), "slot_reset_failure")
+            if isinstance(failure, dict):
+                detail = (f"BLOCKED by a failed slot reset: "
+                          f"{failure.get('reason') or 'no reason recorded'} "
+                          f"(attempt {failure.get('attempt')}). After fixing the cause: "
+                          f"aq task resume --task-id {task_id}")
+            else:
+                detail = ("BLOCKED with no recorded blocker: no dependency, gate, attention "
+                          "flag or terminal close holds it, and nothing requeues it. "
+                          f"aq task set-status --task-id {task_id} --status READY")
+            reasons.append(Reason(code="blocked_unheld", detail=detail, ref=str(task_id)))
 
         # A cooling-down PAUSED task is not blocked by anything in the graph
         # — it is waiting out a backoff (rate limit, rapid crash, stalled
