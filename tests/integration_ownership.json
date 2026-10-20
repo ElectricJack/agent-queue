@@ -8798,6 +8798,81 @@
     },
     "src/api/target_scope.py::import from src.database.tables import ask_decision_previews, ask_decisions, conversation_inputs, escalation_messages, escalations, gates, human_asks, integration_batches, integration_branch_owners, integration_candidate_resolutions, integration_check_evidence, integration_outbox, integration_parent_episodes, integration_subjects, jobs, projects, repos, task_branch_origins, test_selection_promotions, test_selections": {
       "reason": "Project ownership resolver table import includes integration targets alongside generic human ask targets. Integration table dependencies remain charged; human identity and decision evidence retain generic storage ownership."
+    },
+    "src/orchestrator/workspace_binding_audit.py::_inspect_binding": {
+      "reason": "Read-only reconciliation of existing registered slot bindings against retained integration owner/job pins, current session instance/claim epoch/acquisition receipt and physical source identity. Reports mismatches or unknown evidence; never clears claims, releases locks, changes retry budgets or writes integration lifecycle/ref replay state."
+    },
+    "src/orchestrator/workspace_binding_audit.py::import from src.database.tables import integration_branch_owners, job_workspace_pins, sessions": {
+      "reason": "Read-only ownership/pin/session evidence for historical workspace reconciliation; charges the integration-owned import and probe separately from generic inventory formatting."
+    },
+    "src/orchestrator/worktree_manager.py::WorktreeSlotManager.reap_slot": {
+      "reason": "Fresh transaction/generation/cap, retained integration owner/session/job pin, claim, process-liveness, sentinel/repository and cleanliness guards for retired inventory deletion. PostgreSQL deletion precedes non-forcing Git removal and successful commit precedes the reaped event; no ref publication/replay or duplicate integration lifecycle authority."
+    },
+    "src/commands/workspace_cutover.py::cutover": {
+      "reason": "Workspace base cutover reads active integration owners to retain writer-bound sources; counted alongside its ordinary workspace state changes.",
+      "landing_span": null,
+      "baseline_span": null
+    },
+    "src/commands/workspace_cutover.py::import from src.database.tables import integration_branch_owners, sessions, workspaces": {
+      "reason": "Integration table imports used by shared workspace/claim ownership guards.",
+      "landing_span": null,
+      "baseline_span": null
+    },
+    "src/database/queries/claim_queries.py::import from src.database.tables import agents, integration_batches, integration_branch_owners, integration_repair_operations, integration_repair_stages, projects, sessions, task_branch_origins, task_completion_records, task_delivery_receipts, task_integration_checkpoints, task_metadata, task_session_attempts, task_workspace_requirements, tasks, workspace_kinds, workspaces": {
+      "reason": "Integration table imports used by shared workspace/claim ownership guards.",
+      "landing_span": null,
+      "baseline_span": null
+    },
+    "src/database/queries/workspace_queries.py::WorkspaceQueryMixin.acquire_one_unlocked": {
+      "reason": "Workspace acquisition includes exact retained integration-repair successor admission; all generic lock checks and the final guarded CAS remain counted.",
+      "landing_span": null,
+      "baseline_span": null
+    },
+    "src/orchestrator/workspace.py::WorkspaceMixin._integration_preparation_cleanup_unproved": {
+      "reason": "Integration handoff reads durable preparation cleanup uncertainty before proving a writer stopped.",
+      "landing_span": null,
+      "baseline_span": null
+    },
+    "src/commands/worktree_commands.py::WorktreeCommandsMixin._cmd_workspace_cutover": {
+      "reason": "Command adapter for the reviewed workspace cutover transaction, including integration-owner guards; no independent mutation authority.",
+      "landing_span": null,
+      "baseline_span": null
+    },
+    "src/database/queries/retained_workspace_queries.py::finish": {
+      "reason": "Exact snapshot revalidation and native owner/session/workspace release after preservation and fresh termination proof; successor and operation fences retained."
+    },
+    "src/database/queries/retained_workspace_queries.py::import from src.database.tables import agents, integration_branch_owners, job_workspace_pins, repos, sessions, task_context, task_integration_checkpoints, task_metadata, tasks, workspaces": {
+      "reason": "Shared schema imports for fenced retained-workspace handoff and checkpoint evidence."
+    },
+    "src/database/queries/retained_workspace_queries.py::snapshot": {
+      "reason": "Binds current retained-workspace source, acquisition generation, session instance, claim, pins and native integration owner before cleanup."
+    },
+    "src/database/queries/task_queries.py::TaskQueryMixin._pause_owners": {
+      "reason": "Captures exact integration owner identities for pause fencing."
+    },
+    "src/orchestrator/retained_workspace.py::stop_retained_workspace": {
+      "reason": "Qualified retained stop coordinates fresh writer proof, durable checkpoint/claim retirement, nondestructive source detachment and fenced native owner release."
+    },
+    "src/orchestrator/task_checkpoint.py::capture_checkpoint": {
+      "reason": "Captures full retained source using isolated index; may store preparation cleanup uncertainty, never remote-ref replay authority."
+    },
+    "src/commands/task_commands.py::TaskCommandsMixin.recover_missing_session_task": {
+      "reason": "Orphan recovery calls retained-source capture under task control lock and revalidates exact session and resource identities before release; no remote ref publication."
+    },
+    "src/orchestrator/core.py::Orchestrator._checkpoint_paused_workspace": {
+      "reason": "Managed pause requires full durable capture, exact source identity and fresh provider/process proof before cleanup; bounded retry exhaustion cannot release an uncaptured managed slot."
+    },
+    "src/orchestrator/retained_workspace.py::import from src.orchestrator.task_checkpoint import capture_checkpoint": {
+      "reason": "Imports full-source capture for guarded retained-workspace stop; captured checkpoint is preservation evidence, not publication authority."
+    },
+    "src/orchestrator/task_checkpoint.py::validate_checkpoint_branch": {
+      "reason": "Source identity gate rejects foreign attached branches and preserves detached identity without inferring a restorable branch."
+    },
+    "src/orchestrator/core.py::Orchestrator._salvage_paused_workspace": {
+      "reason": "Partial-source salvage validates the stopped task and exact workspace/branch before recording context; it does not qualify managed-slot release without a full checkpoint."
+    },
+    "src/orchestrator/task_checkpoint.py::salvage_checkpoint": {
+      "reason": "Preserves best-effort patch using an isolated index with fresh repository/branch validation; explicit partial evidence grants no restoration or ref publication authority."
     }
   },
   "exclusions": {
@@ -15506,9 +15581,37 @@
       "integration_signal": false,
       "disposition": "ordinary",
       "reason": "Approved-document dispatch audit records the immutable decision identity and event sequence in its source-owned ingestion operation. Retries cannot authorize work without the approved application receipt; no Git ref replay or integration delivery lifecycle state."
+    },
+    "src/commands/claim_commands.py::ClaimCommandsMixin._record_prepare_failure::2d36ab3da05dcd99c7a0cb4b8a22925dd23e723147d1b0fe6a07ff4716ee55ac": {
+      "line": 1210,
+      "owner": "ClaimCommandsMixin._record_prepare_failure",
+      "call": "insert",
+      "owner_fingerprint": "abce8c8dfb430e868e2b24a5b1bbda0633b8a6254c4e671778ad5f661bbec68b",
+      "integration_signal": false,
+      "disposition": "ordinary",
+      "reason": "One bounded, scrubbed canonical prepare_failure diagnostic attributes a permanent failure to the observing session instance and task claim epoch. A task row lock checks that epoch and holds it through this insert-or-update; a late completion cannot replace a newer claim diagnostic. It grants no release/reset authority, consumes no retry budget and stores no Git ref replay or duplicate integration lifecycle. Also records PREPARE_CLEANUP_HOLD when subprocess quiescence is unproved; this bounded identity/diagnostic hold prevents release or reset and is never ref replay authority."
+    },
+    "src/orchestrator/core.py::Orchestrator._checkpoint_paused_workspace::cda00a809de8dac8c704f9da910433579b679b64df6e34c7ec8b86d4e6dc3882": {
+      "line": 1465,
+      "owner": "Orchestrator._checkpoint_paused_workspace",
+      "call": "set_task_meta",
+      "owner_fingerprint": "89cc2b8db7ebe15d17ccb17c1cf37afe86a91efb283285010ee907428ea99e28",
+      "integration_signal": false,
+      "disposition": "ordinary",
+      "reason": "Ordinary full-source pause checkpoint and exact claim-retirement intent, retained until fenced cleanup completes; not a second integration publication lifecycle."
+    },
+    "src/orchestrator/core.py::Orchestrator._finish_manual_pause_resources::42aa00e8ced31b193cf50efcb0d356bb67a4fdf96c0380cd95c85329ab1acf31": {
+      "line": 1236,
+      "owner": "Orchestrator._finish_manual_pause_resources",
+      "call": "set_task_meta",
+      "owner_fingerprint": "034652b642c58c46e84312846e1f568f2a6e78066bcc3f706ff0ff60778d89ac",
+      "integration_signal": false,
+      "disposition": "ordinary",
+      "reason": "Ordinary durable preparation-cleanup uncertainty marker when a writer cannot be proved stopped; retains ownership, not publication authority."
     }
   },
   "generic_dependencies": {
+    "src/database/queries/ingest_hold.py::not_ingest_held": "Generic ingestion admission predicate over tasks.held_batch_id, shared by claim demand and execution admission. It performs no integration delivery, publication or lifecycle mutation.",
     "src/agent_waits.py::AgentWaitReconciler": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/agents/configuration.py::apply_agent_overrides": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/agents/configuration.py::ensure_supervisor_agent": "Generic dependency; integration-specific definitions in this file are charged independently.",
@@ -16416,7 +16519,18 @@
     "src/database/tables.py::ask_reconciliation_cases": "Generic source/transport evidence conflicts and explicit repair receipts for every ask source; no integration subject journal or ref replay authority.",
     "src/database/tables.py::ask_source_aliases": "Generic human request source identity and alias reconciliation shared by every source kind; integration source interpretation remains independently charged.",
     "src/database/tables.py::review_feedback_obligations": "Generic accepted review feedback, ownership and completion evidence; no integration branch, publication state or ref replay authority.",
-    "src/doctor/ask_checks.py::ask_checks": "Generic registration of a report-only human request cleanup diagnostic; integration checks and source-specific authority remain independently charged."
+    "src/database/tables.py::ingest_batches": "Generic specification-ingestion approval state and held task structure. Reconciliation uses shared outbox transport, but this table stores no integration branch, code publication or ref replay authority; the outbox adapter remains independently charged.",
+    "src/database/tables.py::ingest_batch_members": "Generic specification-ingestion task membership, section coverage and structure revision history. It records neither integration candidate membership nor code delivery, publication or ref replay authority; shared outbox transport remains independently charged.",
+    "src/database/tables.py::ingest_batch_receipts": "Generic specification-to-task fidelity review evidence, fenced by batch structure revision, digest and assigned reviewer. It grants ingestion admission only, not integration delivery, code publication or ref replay authority; shared outbox transport remains independently charged.",
+    "src/doctor/ask_checks.py::ask_checks": "Generic registration of a report-only human request cleanup diagnostic; integration checks and source-specific authority remain independently charged.",
+    "src/database/queries/job_queries.py::unpinned_workspace": "Generic managed-job pin predicate; no integration storage or ref authority. Integration acquisition callers and their fencing remain charged.",
+    "src/git/process.py::PREPARE_CLEANUP_HOLD": "Generic string key naming an unproved preparation cleanup hold. It performs no reads or writes; integration consumers and metadata writers remain inventoried.",
+    "src/models.py::KIND_MODE_WORKTREE": "Generic workspace mode string constant, with no integration policy, storage or ref authority.",
+    "src/workspace_disable.py::OPERATOR": "Generic workspace disable-provenance string constant. It neither changes state nor grants integration authority.",
+    "src/workspace_disable.py::kind_slot_cap": "Generic pure capacity arithmetic for a workspace kind and project limit; no integration storage, ownership or delivery authority.",
+    "src/claim_file.py::CLAIM_FILE": "Generic claim-file basename, with no integration state or policy.",
+    "src/preparation_failure.py::safe_text": "Generic bounded diagnostic scrubber, with no ref/owner or lifecycle authority.",
+    "src/sessions/proctable.py::workspace_quiescent": "Generic read-only process liveness proof; caller owns integration/workspace release decisions."
   },
   "exclusion_policy": {
     "tests": "Fixtures and tests do not ship as production mechanisms.",

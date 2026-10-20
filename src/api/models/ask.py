@@ -141,6 +141,13 @@ class AskRetryOperationArgs(CommandArgs):
     decision_id: str = Field(min_length=1)
 
 
+class AskLegacyResetArgs(CommandArgs):
+    project_id: str = Field(min_length=1)
+    apply: bool = False
+    max_rows: int = Field(default=10000, ge=1, le=100000)
+    evidence_sha256: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
+
+
 class AskCutoverArgs(CommandArgs):
     project_id: str
     mode: Literal["legacy", "shadow", "dashboard", "transferring", "channel", "delivery_disabled"]
@@ -149,6 +156,31 @@ class AskCutoverArgs(CommandArgs):
     evidence: str | None = Field(default=None, min_length=1, max_length=4000)
     legacy_controls_disabled: bool = False
     aliases_redirected: bool = False
+
+
+class AskCutoverStatusArgs(CommandArgs):
+    project_id: str = Field(min_length=1)
+
+
+class AskCutoverDestination(BaseModel):
+    destination: str
+    mode: str
+    generation: int
+    migrated: bool
+    first_switch_utc: str | None
+    compatibility_deadline: float | None
+    compatibility_deadline_utc: str | None
+
+
+class AskCutoverStatusResult(BaseModel):
+    project_id: str
+    configured_destination: str
+    destinations: list[AskCutoverDestination]
+
+
+class AskCutoverStatusResponse(BaseModel):
+    success: bool = True
+    result: AskCutoverStatusResult
 
 
 class AskRepairDeliveryArgs(CommandArgs):
@@ -253,7 +285,9 @@ ASK_ARGS = {
     "ask_discussion_reply": AskDiscussionReplyArgs,
     "ask_update_context": AskUpdateContextArgs,
     "ask_reconcile": AskReconcileArgs,
+    "ask_legacy_reset": AskLegacyResetArgs,
     "ask_cutover": AskCutoverArgs,
+    "ask_cutover_status": AskCutoverStatusArgs,
     "ask_retry_operation": AskRetryOperationArgs,
     "ask_repair_delivery": AskRepairDeliveryArgs,
     "ask_intake": AskIntakeArgs,
@@ -270,7 +304,9 @@ RESPONSE_MODELS.update(
         "ask_discussion_reply": AskDiscussionResponse,
         "ask_update_context": AskControlResponse,
         "ask_reconcile": AskControlResponse,
+        "ask_legacy_reset": AskControlResponse,
         "ask_cutover": AskControlResponse,
+        "ask_cutover_status": AskCutoverStatusResponse,
         "ask_repair_delivery": AskControlResponse,
         "ask_button": AskInputResponse,
     }

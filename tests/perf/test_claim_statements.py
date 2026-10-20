@@ -46,6 +46,7 @@ import pytest
 from sqlalchemy import event, text
 from sqlalchemy.dialects import postgresql
 
+from src.claim_file import remove_claim_file_if_matches
 from src.models import (
     Agent,
     AgentProfile,
@@ -60,6 +61,7 @@ from src.intelligence_classes import IntelligenceClass
 from tests.perf.test_hierarchy_statements import count_statements, seed_scale
 from tests.db_fixtures import lease_dsn
 from src.config import DatabaseConfig
+from src.database.tables import task_session_attempts, tasks
 
 pytestmark = pytest.mark.perf
 
@@ -72,6 +74,19 @@ NOW = time.time()
 #: these, so a pre-read added without updating this constant would otherwise
 #: be charged to the transaction.
 _OUTER_PRE_READS = 3
+
+
+@pytest.fixture(autouse=True)
+def _await_whole_preparation(monkeypatch):
+    """Count every claim's statements to completion, never a wall-clock cut.
+
+    ``_cmd_task_claim`` answers ``claim_in_progress`` once preparation
+    outlives ``_PREPARATION_RESPONSE_SECONDS`` (0.5s), leaving the rest of
+    it running outside the statement and transaction counters. Every claim
+    in this module asserts ``claimed`` and measures statements, transactions
+    or a floor-relative latency, so a loaded runner must not decide the result.
+    """
+    monkeypatch.setattr("src.commands.claim_commands._PREPARATION_RESPONSE_SECONDS", 60.0)
 
 
 def _over(n: int, budget: int, statements) -> str:
@@ -354,7 +369,8 @@ class TestClaimStatementBudgets:
         print(f"\nno_ready_work: {c['n']} statements (budget {budget})")
         assert c["n"] <= budget, _over(c["n"], budget, c["statements"])
 
-    async def test_work_query_is_an_index_ordered_scan(self, any_db, tmp_path):
+    @pytest.mark.parametrize("recovery_hold", ["none", "stale", "current"])
+    async def test_work_query_is_an_index_ordered_scan(self, any_db, tmp_path, recovery_hold):
         """Both halves of the §10 work query stop at the first row.
 
         The statement budgets above count statements; this counts what one
@@ -385,12 +401,40 @@ class TestClaimStatementBudgets:
         (ANALYZE, BUFFERS)`` on the way past -- so a rewrite that keeps the
         budget by moving work into a sub-plan is still caught.
         """
+        # Reproduce statistics collected before the recovery history exists,
+        # rather than relying on when autovacuum happens to analyze this lease.
+        async with any_db._engine.begin() as conn:
+            await conn.execute(text("ANALYZE task_session_attempts"))
         await _seed_worker_scale(any_db)
+        # Every arm gets real history, including the arm without a hold.
+        # An empty attempt table can legitimately use a cheap scan/sort in
+        # an unexecuted subplan; history exercises the ordered index lookup.
+        started = time.time() + 1
+        async with any_db._engine.begin() as conn:
+            await conn.execute(task_session_attempts.insert(), [{
+                "id": f"attempt-{i:03}", "session_id": f"session-{i}",
+                "task_id": "seed-1", "project_id": PROJECT_ID,
+                "profile_id": "worker", "name": "worker", "lifecycle": "task",
+                "harness": "codex", "provider": "fake", "state": "stopped",
+                "work_dir": "/unused", "started_at": started,
+                "session_started_at": started, "ended_at": started + 1,
+            } for i in range(128)])
+        if recovery_hold != "none":
+            # Exercise the recovery subplan, including its deterministic ID
+            # tie-break, instead of only explaining an empty attempt table.
+            async with any_db._engine.begin() as conn:
+                await conn.execute(tasks.update().where(tasks.c.id == "seed-1").values(priority=-1))
+            await any_db.set_task_meta("seed-1", "supervisor_recovery_incident", {
+                "decision": "hold", "claim_epoch": 0,
+                "attempt_id": "attempt-000" if recovery_hold == "stale" else "attempt-127",
+            })
         # Measure the seeded queue, independently of when autovacuum runs or
         # which earlier fixture occupied this leased database. Statistics
         # collection is fixture setup, outside the explained claim queries.
         async with any_db._engine.begin() as conn:
-            await conn.execute(text("ANALYZE tasks, task_dependencies"))
+            await conn.execute(text(
+                "ANALYZE tasks, task_dependencies, task_session_attempts, task_metadata"
+            ))
         # The route filter differs with the project's router readiness
         # (mandatory routing §9.1): ``route_source IN (router, override,
         # role)``, widened by ``legacy`` while the router is not ready.
@@ -406,6 +450,10 @@ class TestClaimStatementBudgets:
                     router_ready=router_ready,
                 )
             assert tid is not None
+            if recovery_hold == "stale":
+                assert tid == "seed-1"
+            elif recovery_hold == "current":
+                assert tid != "seed-1"
             budget = 64
             total = sum(plan.buffers for plan in explaining.plans)
             print(
@@ -774,10 +822,17 @@ class TestClaimLatency:
             started = time.perf_counter()
             res = await h._cmd_task_claim({"next": True})
             assert res["result"] == "claimed"
-            await any_db.release_claim(
+            released = await any_db.release_claim(
                 sid, task_status=TaskStatus.READY, context="perf", now=time.time()
             )
+            # The command layer normally retires the exact released marker.
+            # This benchmark calls the database transition directly.
+            assert released.released
+            remove_claim_file_if_matches(_wd, res["task"]["id"], res["claim_epoch"])
             times.append(time.perf_counter() - started)
+            # The benchmark calls the database release directly, so it must
+            # also perform the CLI's claim-file cleanup before reusing the slot.
+            remove_claim_file_if_matches(_wd, res["task"]["id"], res["claim_epoch"])
         after = await measure_wire_floor(any_db)
 
         transaction_s = (before[0] + after[0]) / 2

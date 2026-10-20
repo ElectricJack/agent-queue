@@ -50,6 +50,22 @@ SECTION_TITLES: dict[str, str] = {
 
 
 @dataclass(frozen=True)
+class PrimePreview:
+    """A losslessly pageable part of a section, separate from inline authority."""
+
+    prefix: str
+    text: str
+    suffix: str
+    field: str
+    max_bytes: int
+
+    def render(self, task_id: str, limit: int) -> str:
+        from .budgets import text_preview
+
+        return self.prefix + text_preview(self.text, limit, task_id, self.field) + self.suffix
+
+
+@dataclass(frozen=True)
 class PrimeSection:
     """One section of the prime document.
 
@@ -63,6 +79,7 @@ class PrimeSection:
     title: str
     body: str
     message_ids: tuple[str, ...] = ()
+    preview: PrimePreview | None = field(default=None, repr=False)
 
 
 @dataclass(frozen=True)

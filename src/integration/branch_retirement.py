@@ -482,7 +482,7 @@ class BranchRetirementService(BranchDiscardService):
             if client is None:
                 raise GitError("authenticated retirement transport is unavailable")
             transport = self.git
-        await self._ensure_store(store)
+        await self._ensure_store(store, repository)
         paths = await self._checkout_paths(row, repository)
         locks = BranchLock(self.db, clock=self.clock)
         target = BranchKey(repository_id=repository.id, branch=row["branch"])

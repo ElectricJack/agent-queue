@@ -131,6 +131,7 @@ def test_root_noop_apply_requires_exact_head_and_reason(extra):
 
 @pytest.mark.parametrize("leaf,identity,extra,command", [
     ("abort-batch", "batch", [], "integration_abort_batch"),
+    ("settle-batch", "batch", [], "integration_settle_batch"),
     ("retire-origin", "task", ["--origin-id", "origin"], "integration_retire_origin"),
 ])
 def test_train_controls_default_to_preview_and_apply_with_reason(leaf, identity, extra, command):
@@ -153,6 +154,7 @@ def test_train_controls_default_to_preview_and_apply_with_reason(leaf, identity,
 
 @pytest.mark.parametrize("argv", [
     ["abort-batch", "batch", "--apply"],
+    ["settle-batch", "batch", "--apply"],
     ["retire-origin", "task", "--apply", "--reason", "delivered"],
 ])
 def test_train_controls_require_apply_arguments_before_transport(argv):
@@ -189,6 +191,32 @@ def test_reevaluate_repair_apply_requires_exact_preview():
     client.execute.assert_not_awaited()
 
 
+@pytest.mark.parametrize("apply", [False, True])
+def test_reverify_epic_control_forwards_preview_source(apply):
+    from src.cli.app import cli
+
+    client = _client({"success": True, "outcome": "visited" if apply else "preview"})
+    args = ["integration", "reverify-epic", "epic"]
+    if apply:
+        args += ["--apply", "--head", "a" * 40, "--reason", "verify aggregate"]
+    with patch("src.cli.integration._get_client", return_value=client):
+        result = CliRunner().invoke(cli, args)
+    assert result.exit_code == 0, result.output
+    assert client.execute.call_args.args == ("integration_reverify_epic", {
+        "task_id": "epic", "dry_run": not apply,
+        "expected_head_sha": "a" * 40 if apply else None,
+        "reason": "verify aggregate" if apply else "",
+    })
+
+
+def test_reverify_epic_apply_requires_preview_source_and_reason():
+    from src.cli.app import cli
+
+    client = _client({})
+    with patch("src.cli.integration._get_client", return_value=client):
+        result = CliRunner().invoke(cli, ["integration", "reverify-epic", "epic", "--apply"])
+    assert result.exit_code == 2 and "--head and --reason" in result.output
+    client.execute.assert_not_awaited()
 
 
 @pytest.mark.parametrize(
@@ -480,3 +508,18 @@ def test_train_brief_status_keeps_batch_intent_and_ejection_disposition():
         result = CliRunner().invoke(cli, ["integration", "status", "p", "--json", "--brief"])
     assert result.exit_code == 0
     assert json.loads(result.output)["data"]["batches"] == response["batches"]
+
+
+@pytest.mark.parametrize("incident", [[], ["--incident-id", "abc"]])
+def test_clear_retained_recovery_names_the_project_and_optional_incident(incident):
+    from src.cli.app import cli
+
+    client = _client({"success": True, "outcome": "cleared"})
+    with patch("src.cli.integration._get_client", return_value=client):
+        result = CliRunner().invoke(cli, ["integration", "clear-retained-recovery",
+                                         "--project-id", "p", *incident])
+    assert result.exit_code == 0, result.output
+    assert client.execute.call_args.args == (
+        "integration_clear_retained_recovery",
+        {"project_id": "p", **({"incident_id": "abc"} if incident else {})},
+    )

@@ -19,7 +19,6 @@ from src.integration.provenance import CompletedSource, CompletionIdentity, GitP
 from src.integration.train import TrainTarget
 from src.integration.train_sources import BackmergeAdmission
 from src.models import TaskType
-from tests.test_delivery_consumers import origin_template as origin_template
 from tests.test_integration_gitops import git_history_template as git_history_template
 from tests.test_integration_gitops import commit, git, setup as setup
 from tests.test_integration_train_sources import hosted_train, world as world

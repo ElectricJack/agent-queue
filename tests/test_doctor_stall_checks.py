@@ -761,3 +761,16 @@ async def test_disabled_worktree_slots_inside_the_cap_reach_stall_sweep(tmp_path
     [disabled] = finding["disabled_slots"]
     assert disabled["reason"] == "operator: maintenance"
     assert disabled["reason_code"] == "operator"
+
+
+async def test_delivery_held_ready_work_is_not_reported_as_unclaimed(context):
+    context.handler = Handler({"child": [{
+        "code": "frontier_sibling_prerequisite_not_delivered", "ref": "child",
+        "detail": "Land source.6 on aq/epic", "blocking_task_ids": ["source.6"],
+    }]})
+    [finding] = await module._work_findings(
+        context, [task("child")], NOW, module._Explains(context),
+    )
+    assert finding["kind"] == "WAITING-ON-DELIVERY"
+    assert finding["blockers"] == ["source.6"]
+    assert "aq/epic" in finding["detail"]

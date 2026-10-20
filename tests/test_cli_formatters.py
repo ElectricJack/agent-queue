@@ -405,3 +405,15 @@ def test_canonical_ask_formatters_keep_count_health_version_and_full_packet():
     packet = _render("ask_prepare_decision", {"preview": {"id": "preview-1", "packet_sha256": "sha",
         "packet": {"domain": {"feedback": [{"original_text": "Full feedback", "disposition": "fold_in"}]}}}})
     assert "Full feedback" in packet and "fold_in" in packet and "preview-1" in packet
+
+
+def test_ready_delivery_hold_names_prerequisite_and_target_in_list_and_show():
+    row = {"id": "consumer.4", "project_id": "p", "title": "Consumer",
+           "status": "READY", "priority": 100,
+           "claim_readiness": {"state": "waiting_on_delivery", "claimable": False,
+                               "label": "Waiting on delivery",
+                               "reason": "Land source.6 on dev; refresh aq/epic"}}
+    for command, payload in (("list_tasks", {"tasks": [row]}), ("get_task", row)):
+        text = _render(command, payload)
+        assert "Waiting on delivery" in text
+        assert "source.6" in text and "dev" in text and "aq/epic" in text

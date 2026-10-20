@@ -1293,9 +1293,9 @@ async def _orphaned_integration_pool_handoff_is_recoverable_on(conn, owner: dict
                 select(sessions.c.id)
                 .where(
                     sessions.c.id != session_id,
-                    sessions.c.agent_id == session_row["agent_id"],
-                    sessions.c.work_dir == session_row["work_dir"],
-                    sessions.c.started_at > session_row["started_at"],
+                    or_(sessions.c.agent_id == session_row["agent_id"],
+                        sessions.c.work_dir == session_row["work_dir"]),
+                    sessions.c.started_at >= session_row["started_at"],
                 )
                 .limit(1)
             )
@@ -1323,8 +1323,8 @@ async def _orphaned_integration_pool_handoff_is_recoverable_on(conn, owner: dict
         or task_row["repo_id"] != owner_row["repository_id"]
         or task_row["branch_name"] != owner_row["ref"]
         or workspace_row["locked_by_task_id"] is not None
-        or workspace_row["locked_by_agent_id"] != session_row["agent_id"]
-        or agent_row["state"] != AgentState.IDLE.value
+        or workspace_row["locked_by_agent_id"] not in {None, session_row["agent_id"]}
+        or agent_row["state"] not in {AgentState.IDLE.value, AgentState.RETIRED.value}
         or agent_row["current_task_id"] is not None
         or newer_session is not None
     ):

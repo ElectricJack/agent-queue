@@ -226,6 +226,29 @@ async def test_no_open_batch_is_idle_and_reports_the_fetched_target():
     assert (visit.state, visit.batch_id, visit.target_sha) == ("idle", None, TARGET_SHA)
 
 
+@pytest.mark.parametrize("blockers,observes", [
+    (("selection_deferred",), True),
+    (("repository_recovery",), False),
+    (("selection_deferred", "repository_recovery"), False),
+])
+async def test_epic_selection_deferral_observes_aggregate_without_bypassing_refusals(
+    blockers, observes,
+):
+    epic = TrainTarget("p", "r", "refs/heads/epic", kind="epic")
+    selected = BatchSelection(blockers=tuple({"code": code} for code in blockers))
+    batches = Batches()
+    batches.open_batch = AsyncMock(return_value=selected)
+    complete = AsyncMock(return_value=())
+    service = Service()
+    epic_lane = replace(lane(service), complete_epic=complete)
+    t = train(Targets(epic), batches, {epic.key: epic_lane})
+    visit = await t.visit(epic)
+    assert visit.state == "blocked"
+    assert visit.detail["blockers"] == list(selected.blockers)
+    assert complete.await_count == int(observes)
+    assert service.calls == 0
+
+
 async def test_contained_candidate_settles_without_checks_or_repair():
     checks, repair = Checks(), Repair()
     batches = Batches({ROOT.key: (batch(), MEMBERS)})
@@ -705,6 +728,9 @@ async def conflicting_batch_env(setup):
     db, ops, _subject, _fence, repo, base, _head, _green = setup
     await db.create_project(Project(id="p", name="Project"))
     await db.create_repo(RepoConfig(id="r", project_id="p", source_type=RepoSourceType.LINK))
+    await db.update_project(
+        "p", integration_repository_id="r", hierarchical_integration_mode="train",
+    )
     left = commit(repo.store, {"new.txt": "left\n"}, base=base)
     right = commit(repo.store, {"new.txt": "right\n"}, base=base)
     store = BatchStore(db)
@@ -836,7 +862,7 @@ async def test_conflict_after_target_move_publishes_and_briefs_the_real_partial_
     }, repairs)
     visit = await t.visit(ROOT)
     partial = visit.detail["head"]
-    assert visit.state == "repair" and visit.repair["outcome"] == "filed"
+    assert visit.state == "repair" and visit.repair["outcome"] == "filed", visit
     assert visit.repair["attempt_count"] == 2 and visit.repair["task_id"] != previous_task
     assert visit.candidate_sha == partial != repaired
     assert visit.detail["replaced_candidate_sha"] == repaired

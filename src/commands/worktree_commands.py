@@ -8,6 +8,8 @@ Worktree-execution implementation spec §6.8 / design §9:
 * ``workspace_reap`` — explicit reap of retired slots.  Refuses live
   slots (liveness guard).  ``all_retired: true`` sweeps every retired
   slot in the caller's project scope.
+* ``workspace_retire_claim`` — remove a slot's leftover claim file when
+  its holder provably no longer holds it.
 
 Convention (see ``src/commands/handler.py``): every ``_cmd_*`` method
 takes a flat ``dict`` of arguments and returns a ``dict`` — domain data
@@ -20,12 +22,18 @@ import logging
 from pathlib import Path
 
 from src.models import KIND_MODE_WORKTREE
+from src.workspace_registration import path_is_missing, workspace_missing_detail
 
 logger = logging.getLogger(__name__)
 
 
 class WorktreeCommandsMixin:
     """Worktree command methods mixed into CommandHandler."""
+
+    async def _cmd_workspace_cutover(self, args: dict) -> dict:
+        from src.commands.workspace_cutover import cutover
+
+        return await cutover(self, args)
 
     async def _cmd_workspace_doctor(self, args: dict) -> dict:
         """Diagnose workspace inventory.  Read-only unless ``fix`` is set.
@@ -35,6 +43,8 @@ class WorktreeCommandsMixin:
                                             "detail": str}, ...]}
 
         Kinds emitted:
+        * ``missing_workspace_path`` — a workspace row's directory is gone;
+          restore it or explicitly remove its registration.
         * ``exclude_missing`` — Git's exact exclude file lacks the block.
         * ``exclude_unverifiable`` — resolving or reading that exact path
           failed, so doctor cannot claim the workspace is protected.
@@ -42,11 +52,15 @@ class WorktreeCommandsMixin:
           directory no longer exists.
         * ``dirty_unlocked_slot`` — slot dir has uncommitted work but is
           not locked.
+        * ``unlocked_slot_claim`` — an unlocked slot still holds a claim
+          file, which claim preparation refuses as a foreign claim unless
+          it can prove the holder let go.
         * ``merge_lease_expired`` — a project's merge slot is held past
           its lease.
         * ``redundant_clone`` — a git kind is in worktree mode but the
           project still has extra non-slot rows beyond the designated base.
         """
+        from src.claim_file import read_claim_file
         from src.orchestrator.worktree_manager import resolve_managed_exclude_path
 
         project_id = args.get("project_id") or self._active_project_id
@@ -62,6 +76,15 @@ class WorktreeCommandsMixin:
 
         for project in projects:
             workspaces = await self.db.list_workspaces(project_id=project.id)
+            missing_ids = set()
+            for ws in workspaces:
+                if path_is_missing(ws.workspace_path):
+                    missing_ids.add(ws.id)
+                    findings.append({
+                        "kind": "missing_workspace_path",
+                        "workspace_id": ws.id,
+                        "detail": workspace_missing_detail(ws),
+                    })
             bases = [ws for ws in workspaces if not ws.is_slot]
             slots = [ws for ws in workspaces if ws.is_slot]
 
@@ -136,6 +159,8 @@ class WorktreeCommandsMixin:
                 continue
 
             for base in bases:
+                if base.id in missing_ids:
+                    continue
                 try:
                     kind = await self.db.resolve_workspace_kind(
                         project.id, base.kind_id or "project-repo"
@@ -195,12 +220,29 @@ class WorktreeCommandsMixin:
             if worktrees_cfg is None or not worktrees_cfg.enabled:
                 continue
 
+            from src.orchestrator.workspace_binding_audit import reconcile_slot_bindings
+
+            findings.extend(await reconcile_slot_bindings(self.db, mgr, project.id))
+
             for slot in slots:
                 if slot.locked_by_task_id:
                     continue
                 slot_dir = slot.workspace_path
                 if not Path(slot_dir).is_dir():
                     continue
+                claim = read_claim_file(slot_dir)
+                if claim is not None:
+                    findings.append(
+                        {
+                            "kind": "unlocked_slot_claim",
+                            "workspace_id": slot.id,
+                            "detail": (
+                                f"{slot_dir} is not locked but its claim file names "
+                                f"task {claim.get('task_id')}; workspace_retire_claim "
+                                "retires it once the holder provably let go"
+                            ),
+                        }
+                    )
                 try:
                     dirty = await self.orchestrator.git.ahas_uncommitted_changes(slot_dir)
                 except Exception:
@@ -217,6 +259,54 @@ class WorktreeCommandsMixin:
                     )
 
         return {"success": True, "findings": findings}
+
+    async def _cmd_workspace_retire_claim(self, args: dict) -> dict:
+        """Retire a slot's leftover ``.aq/claim.json`` when its holder let go.
+
+        The supervisor's control for a slot that preparation refuses with
+        ``retains a foreign claim``.  The marker is removed only under the
+        same proofs claim preparation applies (``retire_stale_slot_claim``):
+        the slot is unlocked, the holder task is terminal, paused, released
+        or superseded, and no live session works in the slot.  Otherwise the
+        claim may still be live and the command refuses, naming the holder.
+        """
+        from src.claim_file import read_claim_file
+
+        ws_id = args.get("workspace_id")
+        if not ws_id:
+            return {"success": False, "error": "workspace_id is required"}
+        ws = await self.db.get_workspace(ws_id)
+        if ws is None:
+            return {"success": False, "error": f"workspace {ws_id} not found"}
+        if not ws.is_slot:
+            return {"success": False, "error": f"{ws_id} is not a worktree slot"}
+        claim = read_claim_file(ws.workspace_path)
+        if claim is None:
+            return {"success": True, "workspace_id": ws.id, "retired": False,
+                    "detail": "no claim file"}
+        retired = await self._retire_stale_slot_claim(
+            ws, ws.workspace_path, actor="workspace_retire_claim",
+        )
+        if retired is None:
+            return {
+                "success": False,
+                "workspace_id": ws.id,
+                "holder_task_id": claim.get("task_id"),
+                "error": (
+                    f"claim of task {claim.get('task_id')} in {ws.id} is not provably "
+                    "stale: the slot is locked, the holder still holds an active claim, "
+                    "or a live session works there"
+                ),
+            }
+        return {
+            "success": True,
+            "workspace_id": ws.id,
+            "retired": True,
+            "holder_task_id": retired.get("task_id"),
+            "holder_claim_epoch": retired.get("claim_epoch"),
+            "holder_session_id": retired.get("session_id"),
+            "reason": retired["reason"],
+        }
 
     async def _cmd_workspace_reap(self, args: dict) -> dict:
         """Explicit reap of retired slots.  Refuses live slots.
@@ -274,14 +364,15 @@ class WorktreeCommandsMixin:
         projects = [p for p in projects if p.id == project_id]
         for project in projects:
             workspaces = await self.db.list_workspaces(project_id=project.id)
-            cap = project.max_concurrent_agents or 0
+            from src.workspace_disable import kind_slot_cap
             for ws in workspaces:
                 if not ws.is_slot:
                     continue
                 if ws.locked_by_task_id or ws.locked_by_agent_id:
                     skipped.append({"id": ws.id, "reason": "locked"})
                     continue
-                if (ws.slot_index or 0) < cap:
+                kind = await self.db.resolve_workspace_kind(project.id, ws.kind_id or "project-repo")
+                if (ws.slot_index or 0) < kind_slot_cap(project.max_concurrent_agents or 0, kind):
                     skipped.append({"id": ws.id, "reason": "within cap"})
                     continue
                 ok = await mgr.reap_slot(ws, reason="cli:workspace_reap all_retired")

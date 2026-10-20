@@ -244,6 +244,9 @@ def _recovery_incident_reason(incident: dict):
 
     owner = incident.get("owner") or {}
     parts = [f"open recovery incident for {incident.get('reason')}"]
+    identity = incident.get("identity_reason")
+    if identity and identity != incident.get("reason"):
+        parts[0] += f" (first diagnosed as {identity})"
     if owner.get("kind") == "integration_operation":
         parts.append(
             f"owned by integration operation {owner.get('operation_id')} "
@@ -722,6 +725,9 @@ class TaskCommandsMixin:
         capped_tasks = active + finished[:cap]
         task_dicts = [self._task_to_dict(t) for t in capped_tasks]
         await attach_activity(self.db, task_dicts)
+        from src.task_graph.readiness import attach_readiness
+
+        await attach_readiness(self.db, task_dicts)
 
         if show_dependencies:
             await self._enrich_with_dependencies(task_dicts, capped_tasks)
@@ -790,8 +796,11 @@ class TaskCommandsMixin:
             }
             if include_project:
                 d["project_id"] = t.project_id
-            return {**d, **activity.get(t.id, {})}
+            return {**d, **activity.get(t.id, {}), **readiness.get(t.id, {})}
 
+        from src.task_graph.readiness import load_readiness
+
+        readiness = await load_readiness(self.db, [self._task_to_dict(t) for t in tasks])
         activity = await load_activity(self.db, [t.id for t in tasks])
         by_project: dict[str, list[dict]] = {}
         for t in tasks:
@@ -975,6 +984,15 @@ class TaskCommandsMixin:
             # Count root + all its subtasks
             total_tasks += 1 + subtask_total
 
+        from src.task_graph.readiness import load_readiness
+
+        readiness = await load_readiness(self.db, [self._task_to_dict(task)
+            for root, children in raw_trees for task in [root, *_collect_tree_tasks(children)]])
+        for entry, (root, children) in zip(trees, raw_trees):
+            entry["root"].update(readiness.get(root.id, {}))
+            entry["formatted"] = _format_task_tree(
+                root, children, compact=compact, readiness_map=readiness,
+            )
         await attach_activity(self.db, [entry["root"] for entry in trees])
         # Enrich root task dicts with dependency info when requested.
         if show_dependencies:
@@ -998,6 +1016,7 @@ class TaskCommandsMixin:
                             children,
                             compact=False,
                             dep_map=dep_map,
+                            readiness_map=readiness,
                         )
 
         result: dict = {
@@ -1250,6 +1269,10 @@ class TaskCommandsMixin:
         root_task: Task = tree_data["task"]
         children: list[dict] = tree_data.get("children", [])
 
+        from src.task_graph.readiness import load_readiness
+
+        readiness = await load_readiness(self.db, [self._task_to_dict(task)
+            for task in [root_task, *_collect_tree_tasks(children)]])
         completed, subtask_total = _count_subtree(children)
         status_counts = _count_subtree_by_status(children)
 
@@ -1268,10 +1291,12 @@ class TaskCommandsMixin:
             compact=compact,
             max_depth=max_depth,
             dep_map=dep_map,
+            readiness_map=readiness,
         )
 
         result: dict = {
-            "root": {**self._task_to_dict(root_task), **await task_activity(self.db, root_task.id)},
+            "root": {**self._task_to_dict(root_task), **await task_activity(self.db, root_task.id),
+                     **readiness.get(root_task.id, {})},
             "formatted": formatted,
             "subtask_completed": completed,
             "subtask_total": subtask_total,
@@ -1302,12 +1327,11 @@ class TaskCommandsMixin:
             limit=args.get("limit"),
             offset=int(args.get("offset") or 0),
         )
-        return {
-            "success": True,
-            "task_id": task_id,
-            "count": len(children),
-            "children": [self._task_to_dict(t) for t in children],
-        }
+        from src.task_graph.readiness import attach_readiness
+
+        rows = [self._task_to_dict(t) for t in children]
+        await attach_readiness(self.db, rows)
+        return {"success": True, "task_id": task_id, "count": len(rows), "children": rows}
 
     async def _cmd_task_progress(self, args: dict) -> dict:
         """Computed group progress (counts, waves, max parallelism).  Backs ``aq task progress``."""
@@ -3742,6 +3766,9 @@ class TaskCommandsMixin:
         # Implementation progress kept apart from delivery (a read-only
         # projection; it never changes the stored status shown above).
         info.update(await task_activity(self.db, task.id), delivery_status=None)
+        from src.task_graph.readiness import attach_readiness
+
+        await attach_readiness(self.db, [info])
         if info["children"]:
             from src.integration.epic_delivery import EpicDeliveryProjection, lease_ttl_from
 
@@ -4577,6 +4604,13 @@ class TaskCommandsMixin:
             stopped_session = await self._confirm_recovery_worker_stopped(incident)
             if "error" in stopped_session:
                 return stopped_session
+        elif decision == "release":
+            current = await self.db.get_task(task_id)
+            if current is not None and current.assigned_agent_id:
+                incident = await self.db.get_task_meta(task_id, "supervisor_recovery_incident") or {}
+                if incident.get("id") != args.get("incident_id"):
+                    return {"error": "Incident is stale or not found"}
+                stopped_session = await self._confirm_recovery_worker_stopped(incident)
         result = await self.db.decide_task_recovery(
             task_id,
             args.get("incident_id"),
@@ -4841,6 +4875,15 @@ class TaskCommandsMixin:
             "assigned_agent_id": None,
             "pr_url": None,
         }
+        # Missing provenance is recoverable only through an explicit operator
+        # control. Ordinary lifecycle writes and reviewer rejections retain the
+        # unknown-delivery fence.
+        from src.commands.supervisor_authority import operator_or_supervisor
+
+        _, recovery_refusal = await operator_or_supervisor(
+            self.db, task.project_id, subject="task reopen"
+        )
+        transition_values["allow_missing_provenance_reopen"] = recovery_refusal is None
         if review_evidence_snapshot is None:
             await self.db.transition_task(task_id, TaskStatus.READY, **transition_values)
         else:
@@ -5034,6 +5077,9 @@ class TaskCommandsMixin:
             ``retire``: the decision for completed work that has not reached
             the default branch. ``obsolete`` and ``retire`` abandon it and
             archive; ``deliver`` keeps the task and reports its delivery.
+            ``replacement`` / ``satisfied_by`` – (obsolete only) retirement
+            evidence. A replacement redirects all dependent edges; evidence
+            alone requires an explicit ``rewire`` edge plan.
         """
         from src.integration.removal_guard import DELIVERY_DISPOSITIONS
 
@@ -5042,6 +5088,15 @@ class TaskCommandsMixin:
         abandon_undelivered = bool(args.get("abandon_undelivered"))
         abandon_reason = args.get("reason")
         disposition = args.get("disposition") or None
+        replacement_task_id = args.get("replacement", args.get("replacement_task_id"))
+        satisfied_by = args.get("satisfied_by")
+        rewire = args.get("rewire")
+        if any(value is not None for value in (replacement_task_id, satisfied_by, rewire)):
+            if not task_id or disposition != "obsolete":
+                return {
+                    "success": False, "code": "obsolete.invalid_disposition",
+                    "error": "Replacement, satisfied-by and rewire require a single obsolete archive.",
+                }
         if disposition is not None and disposition not in DELIVERY_DISPOSITIONS:
             return {
                 "error": f"--disposition must be one of {', '.join(DELIVERY_DISPOSITIONS)}.",
@@ -5109,6 +5164,9 @@ class TaskCommandsMixin:
                     abandoned_by=(self._current_scope or {}).get("session_id") or "operator",
                     archive_reason=abandon_reason,
                     disposition=disposition,
+                    replacement_task_id=replacement_task_id,
+                    satisfied_by=satisfied_by,
+                    rewire=rewire,
                 )
             except HierarchyError as exc:
                 # Same renderer as delete: an ``integration_owned`` refusal
@@ -5669,8 +5727,13 @@ class TaskCommandsMixin:
         ))
 
         from src.integration.admission import observe_admission
+
         admission = await observe_admission(
-            self.db, [str(task_id)], self._development_integration(), cached_only=True,
+            self.db,
+            [str(task_id)],
+            self._development_integration(),
+            cached_only=True,
+            default_mode=self.config.integration.default_mode,
         )
         from src.integration.delivery_engine import project_delivery_issue
 
@@ -5769,8 +5832,19 @@ class TaskCommandsMixin:
             blockers = await self.db.get_blocking_dependencies(str(task_id))
         except Exception:
             blockers = []
+        delivery_targets = [b[0] for b in blockers if b[3] == DepType.DELIVERY_OF.value]
+        try:
+            delivery_failures = await self.db.delivery_failures(delivery_targets)
+        except Exception:
+            delivery_failures = {}
         for dep_id, dep_title, dep_status, dep_type, dep_project in blockers:
-            if dep_project and dep_project != task.project_id:
+            if dep_type == DepType.DELIVERY_OF.value:
+                # Unknown delivery (no receipt yet) and failed delivery both
+                # hold the root; a failure names its reason.
+                detail = f"waiting_for: delivery-of {dep_id}"
+                if dep_id in delivery_failures:
+                    detail += f" (delivery failed: {delivery_failures[dep_id]})"
+            elif dep_project and dep_project != task.project_id:
                 detail = (
                     f"blocked by {dep_type} dep '{dep_id}' ({dep_title}) "
                     f"status={dep_status} in project '{dep_project}'"
@@ -6221,6 +6295,14 @@ class TaskCommandsMixin:
         profile_id = args.get("profile_id")
         brief = bool(args.get("brief"))
 
+        from src.integration.admission import observe_admission, structural_candidates
+
+        admission = await observe_admission(
+            self.db,
+            await structural_candidates(self.db, str(project_id)),
+            self._development_integration(),
+            default_mode=self.config.integration.default_mode,
+        )
         try:
             frontier = await self.db.get_ready_frontier(
                 str(project_id), labels=labels, any_label=any_label
@@ -6228,10 +6310,6 @@ class TaskCommandsMixin:
         except Exception as exc:
             return {"success": False, "error": str(exc)}
 
-        from src.integration.admission import observe_admission
-        admission = await observe_admission(
-            self.db, [task.id for task in frontier], self._development_integration()
-        )
         delivery_withheld = {task.id for task in frontier if task.id not in admission.allowed}
         frontier = [task for task in frontier if task.id in admission.allowed]
 

@@ -10,6 +10,7 @@ from ..models.layout_node_display_state_type_0 import LayoutNodeDisplayStateType
 from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
+    from ..models.claim_readiness import ClaimReadiness
     from ..models.epic_delivery_status import EpicDeliveryStatus
     from ..models.layout_node_child_state_counts_type_0 import LayoutNodeChildStateCountsType0
     from ..models.layout_node_descendant_state_counts_type_0 import LayoutNodeDescendantStateCountsType0
@@ -37,6 +38,7 @@ class LayoutNode:
         display_reason (None | str | Unset):
         child_state_counts (LayoutNodeChildStateCountsType0 | None | Unset):
         descendant_state_counts (LayoutNodeDescendantStateCountsType0 | None | Unset):
+        claim_readiness (ClaimReadiness | None | Unset):
         priority (int | Unset):  Default: 100.
         is_blocked (bool | Unset):  Default: False.
         profile_id (None | str | Unset):
@@ -76,6 +78,7 @@ class LayoutNode:
     display_reason: None | str | Unset = UNSET
     child_state_counts: LayoutNodeChildStateCountsType0 | None | Unset = UNSET
     descendant_state_counts: LayoutNodeDescendantStateCountsType0 | None | Unset = UNSET
+    claim_readiness: ClaimReadiness | None | Unset = UNSET
     priority: int | Unset = 100
     is_blocked: bool | Unset = False
     profile_id: None | str | Unset = UNSET
@@ -103,6 +106,7 @@ class LayoutNode:
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
+        from ..models.claim_readiness import ClaimReadiness
         from ..models.epic_delivery_status import EpicDeliveryStatus
         from ..models.layout_node_child_state_counts_type_0 import LayoutNodeChildStateCountsType0
         from ..models.layout_node_descendant_state_counts_type_0 import LayoutNodeDescendantStateCountsType0
@@ -155,6 +159,14 @@ class LayoutNode:
             descendant_state_counts = self.descendant_state_counts.to_dict()
         else:
             descendant_state_counts = self.descendant_state_counts
+
+        claim_readiness: dict[str, Any] | None | Unset
+        if isinstance(self.claim_readiness, Unset):
+            claim_readiness = UNSET
+        elif isinstance(self.claim_readiness, ClaimReadiness):
+            claim_readiness = self.claim_readiness.to_dict()
+        else:
+            claim_readiness = self.claim_readiness
 
         priority = self.priority
 
@@ -284,6 +296,8 @@ class LayoutNode:
             field_dict["child_state_counts"] = child_state_counts
         if descendant_state_counts is not UNSET:
             field_dict["descendant_state_counts"] = descendant_state_counts
+        if claim_readiness is not UNSET:
+            field_dict["claim_readiness"] = claim_readiness
         if priority is not UNSET:
             field_dict["priority"] = priority
         if is_blocked is not UNSET:
@@ -337,6 +351,7 @@ class LayoutNode:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
+        from ..models.claim_readiness import ClaimReadiness
         from ..models.epic_delivery_status import EpicDeliveryStatus
         from ..models.layout_node_child_state_counts_type_0 import LayoutNodeChildStateCountsType0
         from ..models.layout_node_descendant_state_counts_type_0 import LayoutNodeDescendantStateCountsType0
@@ -421,6 +436,23 @@ class LayoutNode:
             return cast(LayoutNodeDescendantStateCountsType0 | None | Unset, data)
 
         descendant_state_counts = _parse_descendant_state_counts(d.pop("descendant_state_counts", UNSET))
+
+        def _parse_claim_readiness(data: object) -> ClaimReadiness | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                claim_readiness_type_0 = ClaimReadiness.from_dict(data)
+
+                return claim_readiness_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(ClaimReadiness | None | Unset, data)
+
+        claim_readiness = _parse_claim_readiness(d.pop("claim_readiness", UNSET))
 
         priority = d.pop("priority", UNSET)
 
@@ -591,6 +623,7 @@ class LayoutNode:
             display_reason=display_reason,
             child_state_counts=child_state_counts,
             descendant_state_counts=descendant_state_counts,
+            claim_readiness=claim_readiness,
             priority=priority,
             is_blocked=is_blocked,
             profile_id=profile_id,

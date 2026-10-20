@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import subprocess
 import time
 from pathlib import Path
@@ -13,6 +14,8 @@ import pytest
 from src.commands.handler import CommandHandler
 from src.config import DatabaseConfig, AppConfig
 from src.database.queries.claim_queries import CLAIMED_BY_SESSION_KEY
+from src.integration.lock import BranchLock
+from src.integration.models import BranchKey
 from src.models import (
     Agent,
     AgentProfile,
@@ -20,6 +23,7 @@ from src.models import (
     Project,
     Project as _Project,
     RepoSourceType,
+    RepoConfig,
     SessionRecord,
     SYSTEM_KIND_SCOPE,
     Task,
@@ -30,6 +34,7 @@ from src.models import (
 from src.orchestrator import Orchestrator
 from src.orchestrator.worktree_manager import EXCLUDE_BLOCK
 from src.runtimes.base import Runtime
+from src.workspace_registration import path_is_missing
 from tests.db_fixtures import lease_dsn
 
 
@@ -339,6 +344,33 @@ async def test_resumed_exclusive_clone_handoff_excludes_daemon_bookkeeping(
 
 
 class TestWorkspaceDoctor:
+    @pytest.mark.parametrize("locked", [False, True])
+    async def test_missing_registration_without_slot_manager(self, setup, locked):
+        handler, db, tmp_path = setup
+        await db.create_task(Task(id="holder", project_id="p1", title="holder", description=""))
+        await db.create_workspace(_Workspace(
+            id="gone", project_id="p1", workspace_path=str(tmp_path / "gone"),
+            source_type=RepoSourceType.LINK,
+            locked_by_task_id="holder" if locked else None,
+        ))
+        handler.orchestrator._worktree_slots = None
+        result = await handler._cmd_workspace_doctor({"project_id": "p1"})
+        assert result["success"] is True
+        assert len(result["findings"]) == 1
+        finding = result["findings"][0]
+        assert finding["kind"] == "missing_workspace_path"
+        assert finding["workspace_id"] == "gone"
+        assert str(tmp_path / "gone") in finding["detail"]
+        assert ("release its lock" if locked else "remove-workspace --workspace-id gone") in finding[
+            "detail"]
+        assert await db.get_workspace("gone") is not None
+
+    async def test_missing_base_has_no_exclude_error(self, worktree_handler, tmp_path):
+        handler, orch, _ = worktree_handler
+        await orch.db.update_workspace("ws-base", workspace_path=str(tmp_path / "gone"))
+        result = await handler._cmd_workspace_doctor({"project_id": "p1"})
+        assert [f["kind"] for f in result["findings"]] == ["missing_workspace_path"]
+
     async def test_dirty_unlocked_slot_finding(self, worktree_handler):
         handler, orch, base = worktree_handler
         slot_ws, slot_dir = await _make_slot_for(orch)
@@ -513,6 +545,78 @@ class TestWorkspaceDoctor:
         assert len(redundant_ids) == 1
 
 
+class TestWorkspaceRetireClaim:
+    """wise-quest-93: the supervisor's control for a slot refused as holding a
+    foreign claim after its holder completed or paused."""
+
+    async def _leftover(self, orch, status):
+        from src.claim_file import write_claim_file
+
+        slot_ws, slot_dir = await _make_slot_for(orch)
+        marker = {"task_id": "tsk-1", "claim_epoch": 1, "session_id": "gone"}
+        write_claim_file(slot_dir, marker)
+        await orch.db.update_task("tsk-1", status=status, claim_epoch=1)
+        await orch.db.release_workspace(slot_ws.id)
+        return slot_ws, slot_dir, marker
+
+    @pytest.mark.parametrize("status", ["COMPLETED", "PAUSED"])
+    async def test_retires_a_released_holders_marker(self, worktree_handler, status):
+        from src.claim_file import read_claim_file
+
+        handler, orch, _ = worktree_handler
+        slot_ws, slot_dir, _ = await self._leftover(orch, status)
+        doctor = await handler._cmd_workspace_doctor({"project_id": "p1"})
+        assert ("unlocked_slot_claim", slot_ws.id) in {
+            (f["kind"], f["workspace_id"]) for f in doctor["findings"]}
+        events = []
+        real = orch.bus.emit
+
+        async def emit(kind, data=None):
+            if kind == "worktree.stale_claim_retired":
+                events.append(data)
+            return await real(kind, data)
+
+        orch.bus.emit = emit
+
+        result = await handler._cmd_workspace_retire_claim({"workspace_id": slot_ws.id})
+
+        assert result == {
+            "success": True, "workspace_id": slot_ws.id, "retired": True,
+            "holder_task_id": "tsk-1", "holder_claim_epoch": 1,
+            "holder_session_id": "gone", "reason": f"holder task is {status}",
+        }
+        assert read_claim_file(slot_dir) is None
+        assert [(e["holder_task_id"], e["actor"]) for e in events] == [
+            ("tsk-1", "workspace_retire_claim")]
+        again = await handler._cmd_workspace_retire_claim({"workspace_id": slot_ws.id})
+        assert (again["success"], again["retired"], again["detail"]) == (
+            True, False, "no claim file")
+        doctor = await handler._cmd_workspace_doctor({"project_id": "p1"})
+        assert "unlocked_slot_claim" not in {f["kind"] for f in doctor["findings"]}
+
+    @pytest.mark.parametrize("obstacle", ["active", "locked"])
+    async def test_refuses_a_claim_that_may_still_be_held(self, worktree_handler, obstacle):
+        from src.claim_file import read_claim_file
+
+        handler, orch, _ = worktree_handler
+        slot_ws, slot_dir, marker = await self._leftover(
+            orch, "IN_PROGRESS" if obstacle == "active" else "COMPLETED")
+        if obstacle == "locked":
+            await orch.db.update_workspace(slot_ws.id, locked_by_agent_id="tsk-1-a")
+
+        result = await handler._cmd_workspace_retire_claim({"workspace_id": slot_ws.id})
+
+        assert result["success"] is False
+        assert result["holder_task_id"] == "tsk-1"
+        assert "not provably stale" in result["error"]
+        assert read_claim_file(slot_dir) == marker
+
+    async def test_refuses_a_non_slot_workspace(self, worktree_handler):
+        handler, _, _ = worktree_handler
+        result = await handler._cmd_workspace_retire_claim({"workspace_id": "ws-base"})
+        assert result == {"success": False, "error": "ws-base is not a worktree slot"}
+
+
 class TestWorkspaceReap:
     async def test_reap_refused_when_slot_is_live(
         self, worktree_handler, monkeypatch,
@@ -556,6 +660,7 @@ class TestWorkspaceReap:
         handler, orch, base = worktree_handler
         slot_ws, _ = await _make_slot_for(orch)
         await orch.db.release_workspace(slot_ws.id)
+        await orch.db.update_project("p1", max_concurrent_agents=0)
 
         async def fake_scan(marker_key):
             return []
@@ -568,6 +673,106 @@ class TestWorkspaceReap:
         assert result["success"] is True
         assert slot_ws.id in result["reaped"]
         assert await orch.db.get_workspace(slot_ws.id) is None
+
+
+def test_inaccessible_path_is_not_missing(monkeypatch):
+    def inaccessible(self):
+        raise PermissionError("mount is inaccessible")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "stat", inaccessible)
+        assert path_is_missing("/unavailable") is False
+
+
+class TestRemoveMissingWorkspace:
+    @pytest.mark.parametrize("source_type", [RepoSourceType.LINK, RepoSourceType.CLONE])
+    async def test_removes_matching_repo_with_audit(self, setup, source_type):
+        handler, db, tmp_path = setup
+        missing = str(tmp_path / "gone")
+        await db.create_workspace(_Workspace(
+            id="gone", project_id="p1", workspace_path=missing, source_type=source_type,
+        ))
+        await db.create_repo(RepoConfig(
+            id="matching", project_id="p1", source_type=source_type, url="",
+            source_path=missing if source_type is RepoSourceType.LINK else "",
+            checkout_base_path=missing if source_type is RepoSourceType.CLONE else "",
+        ))
+        await db.create_repo(RepoConfig(
+            id="unrelated", project_id="p1", source_type=source_type,
+            url="", source_path=missing + "-other", checkout_base_path=missing + "-other",
+        ))
+        await db.create_project(Project(id="p2", name="other"))
+        await db.create_repo(RepoConfig(
+            id="other-project", project_id="p2", source_type=source_type,
+            url="", source_path=missing, checkout_base_path=missing,
+        ))
+
+        result = await handler._cmd_remove_workspace({"workspace_id": "gone"})
+
+        assert result["deleted"] == "gone"
+        assert await db.get_workspace("gone") is None
+        assert await db.get_repo("matching") is None
+        assert await db.get_repo("unrelated") is not None
+        assert await db.get_repo("other-project") is not None
+        events = await db.get_recent_events(event_type="workspace.registration_removed")
+        assert len(events) == 1
+        assert json.loads(events[0]["payload"]) == {
+            "workspace_id": "gone", "path": missing, "repository_ids": ["matching"],
+            "reason": "missing_path",
+        }
+
+    @pytest.mark.parametrize("holder", ["task", "binding", "session", "shared", "slot", "lease"])
+    async def test_preserves_owned_or_shared_registration(self, setup, holder):
+        handler, db, tmp_path = setup
+        missing = str(tmp_path / "gone")
+        await db.create_workspace(_Workspace(
+            id="gone", project_id="p1", workspace_path=missing, source_type=RepoSourceType.LINK,
+        ))
+        await db.create_repo(RepoConfig(
+            id="repo", project_id="p1", url="", source_type=RepoSourceType.LINK,
+            source_path=missing,
+        ))
+        if holder == "task":
+            await db.create_task(Task(id="t", project_id="p1", title="t", description="",
+                                      repo_id="repo"))
+        elif holder == "binding":
+            await db.update_project("p1", integration_repository_id="repo")
+        elif holder == "session":
+            await db.create_session(SessionRecord(
+                id="s", project_id="p1", profile_id="p", harness="fake", provider="fake",
+                name="s", lifecycle="pool", state="running", desired_state="running",
+                work_dir=missing, epoch="e", instance_token="s", started_at=1, last_activity=1,
+            ))
+        elif holder == "lease":
+            await BranchLock(db).acquire(BranchKey(repository_id="repo", branch="aq/live"), "live")
+        else:
+            await db.create_workspace(_Workspace(
+                id="other", project_id="p1", source_type=RepoSourceType.LINK,
+                workspace_path=missing + "/." if holder == "shared" else missing + "-slot",
+                base_workspace_id="gone" if holder == "slot" else None,
+                slot_index=0 if holder == "slot" else None,
+            ))
+
+        result = await handler._cmd_remove_workspace({"workspace_id": "gone"})
+
+        assert await db.get_repo("repo") is not None
+        if holder == "shared":
+            assert result["deleted"] == "gone"
+        else:
+            assert "refused" in result["error"]
+            assert await db.get_workspace("gone") is not None
+            assert not await db.get_recent_events(event_type="workspace.registration_removed")
+
+    async def test_task_only_lock_refuses_removal(self, setup):
+        handler, db, tmp_path = setup
+        await db.create_task(Task(id="t", project_id="p1", title="t", description=""))
+        await db.create_workspace(_Workspace(
+            id="gone", project_id="p1", workspace_path=str(tmp_path / "gone"),
+            source_type=RepoSourceType.LINK, locked_by_task_id="t",
+        ))
+        result = await handler._cmd_remove_workspace({"workspace_id": "gone"})
+        assert "locked" in result["error"]
+        assert await db.get_workspace("gone") is not None
 
 
 class TestListWorkspacesAnnotations:
@@ -779,3 +984,176 @@ class TestListWorkspacesBoundedDiagnostics:
         assert [s["id"] for s in facts["sessions"]] == ["sess-1"]
         assert await orch.db.read_workspace_owner_facts([]) == {
             "tasks": [], "sessions": []}
+
+
+@pytest.mark.parametrize("drift", [None, "generation", "head", "claim"])
+async def test_cutover_preserves_locked_source_and_rejects_stale_proof(setup, drift):
+    handler, db, tmp_path = setup
+    await db.create_profile(AgentProfile(id="worker", name="worker"))
+    await db.create_agent(Agent(id="writer", name="writer", profile_id="worker"))
+    await db.create_task(Task(id="working", project_id="p1", title="working", description=""))
+    for wid, base, slot, enabled in (("old", None, None, True), ("new", None, None, False),
+                                     ("old-slot", "old", 0, True)):
+        path = tmp_path / wid
+        path.mkdir()
+        await db.create_workspace(_Workspace(
+            id=wid, project_id="p1", workspace_path=str(path),
+            source_type=RepoSourceType.WORKTREE if base else RepoSourceType.LINK,
+            kind_id="project-repo", base_workspace_id=base, slot_index=slot, enabled=enabled,
+            locked_by_agent_id="writer" if base else None,
+            locked_by_task_id="working" if base else None,
+        ))
+    claim = tmp_path / "old-slot" / ".aq" / "claim.json"
+    claim.parent.mkdir()
+    claim.write_text('{"task_id":"working","claim_epoch":1}')
+    git = handler.orchestrator.git
+    git._arun = AsyncMock(side_effect=lambda args, cwd: cwd)
+    git.aget_remote_url = AsyncMock(return_value="/origin.git")
+    git.arev_parse = AsyncMock(return_value="a" * 40)
+    git.aget_current_branch = AsyncMock(return_value="main")
+    git.aworktree_base_path = AsyncMock(side_effect=lambda path: path)
+    git.aget_dirty_paths = AsyncMock(return_value=[])
+    args = {"project_id": "p1", "source_id": "old", "target_id": "new"}
+    preview = await handler._cmd_workspace_cutover(args)
+    assert preview["success"], preview
+    assert not preview["applied"]
+    if drift == "generation":
+        await db.update_workspace("old-slot", generation=1)
+    elif drift == "head":
+        git.arev_parse.return_value = "b" * 40
+    elif drift == "claim":
+        claim.write_text('{"task_id":"working","claim_epoch":2}')
+    result = await handler._cmd_workspace_cutover({**args, "apply": True,
+                                                   "expected_proof": preview["proof"]})
+    assert result["success"] is (drift is None), result
+    assert (await db.get_workspace("old")).enabled is (drift is not None)
+    assert (await db.get_workspace("new")).enabled is (drift is None)
+    slot = await db.get_workspace("old-slot")
+    assert (slot.locked_by_agent_id, slot.locked_by_task_id) == ("writer", "working")
+    assert slot.generation == int(drift == "generation")
+    assert claim.exists()
+    assert slot.workspace_path == str(tmp_path / "old-slot")
+
+
+async def test_cutover_requires_disabled_independent_target(setup):
+    handler, db, tmp_path = setup
+    for wid in ("old", "new"):
+        await db.create_workspace(_Workspace(id=wid, project_id="p1", workspace_path=str(tmp_path / wid),
+                                            source_type=RepoSourceType.LINK, kind_id="project-repo"))
+    result = await handler._cmd_workspace_cutover({"project_id": "p1", "source_id": "old", "target_id": "new"})
+    assert not result["success"]
+    assert "disabled target" in result["error"]
+
+
+async def test_add_disabled_target_and_refuse_linked_base_relocation(setup):
+    handler, db, tmp_path = setup
+    new = tmp_path / "new"
+    new.mkdir()
+    created = await handler._cmd_add_workspace({"project_id": "p1", "source": "link",
+                                               "path": str(new), "enabled": False})
+    base = await db.get_workspace(created["created"])
+    assert not base.enabled
+    await db.create_workspace(_Workspace(id="slot", project_id="p1", workspace_path=str(new / "slot"),
+                                        source_type=RepoSourceType.WORKTREE, base_workspace_id=base.id,
+                                        slot_index=0, kind_id="project-repo"))
+    result = await handler._cmd_edit_workspace({"workspace_id": base.id, "workspace_path": str(tmp_path)})
+    assert "cutover" in result["error"]
+    assert (await db.get_workspace(base.id)).workspace_path == str(new)
+
+
+@pytest.mark.parametrize("obstruction", ["origin", "subdirectory", "dirty", "confirmed_writer"])
+async def test_cutover_refuses_unqualified_real_target(worktree_handler, tmp_path, obstruction):
+    handler, orch, base = worktree_handler
+    target = tmp_path / "target"
+    subprocess.run(["git", "clone", str(base.parent / "origin.git"), str(target)],
+                   check=True, capture_output=True)
+    registered = target
+    if obstruction == "origin":
+        _git_cli(["remote", "set-url", "origin", str(tmp_path / "unrelated.git")], target)
+    elif obstruction == "subdirectory":
+        registered = target / "nested"
+        registered.mkdir()
+    elif obstruction == "dirty":
+        (target / "untracked.txt").write_text("retained\n")
+    await orch.db.create_workspace(_Workspace(
+        id="ws-target", project_id="p1", workspace_path=str(registered),
+        source_type=RepoSourceType.CLONE, kind_id="project-repo", enabled=False,
+    ))
+    if obstruction == "confirmed_writer":
+        from sqlalchemy import insert
+        from src.database.tables import integration_branch_owners
+
+        async with orch.db.immediate() as conn:
+            await conn.execute(insert(integration_branch_owners).values(
+                id="retained-owner", repository_id="p1", ref="aq/integration",
+                owner_id="owner", owner_role="integration", fence_token=1,
+                handoff_state="handoff_pending", workspace_id="ws-base",
+                confirmed_workspace_id="ws-target", created_at=1, updated_at=1,
+            ))
+    result = await handler._cmd_workspace_cutover({
+        "project_id": "p1", "source_id": "ws-base", "target_id": "ws-target",
+    })
+    assert not result["success"], result
+    assert (await orch.db.get_workspace("ws-base")).enabled
+    assert not (await orch.db.get_workspace("ws-target")).enabled
+    assert registered.exists()
+
+
+async def test_real_cutover_preserves_writer_and_provisions_each_base_with_its_kind_limit(
+    worktree_handler, tmp_path,
+):
+    handler, orch, base = worktree_handler
+    await orch.db.update_project("p1", max_concurrent_agents=4)
+    old_slot, old_path = await _make_slot_for(orch)
+    (old_path / "unpublished.txt").write_text("writer still working\n")
+    old_head = _git_cli(["rev-parse", "HEAD"], old_path)
+    await orch.db.set_task_meta("tsk-1", "manual_pause_checkpoint", {"saved": True})
+
+    args = {"project_id": "p1", "source_id": "ws-base", "target_id": "ws-fast"}
+    for wid, name, kind, enabled in (
+        ("ws-fast", "fast", "project-repo", False),
+        ("ws-native", "native", "windows-native", True),
+    ):
+        path = tmp_path / name
+        subprocess.run(["git", "clone", str(base.parent / "origin.git"), str(path)],
+                       check=True, capture_output=True)
+        await orch.db.create_workspace(_Workspace(
+            id=wid, project_id="p1", workspace_path=str(path), kind_id=kind,
+            source_type=RepoSourceType.CLONE, enabled=enabled,
+        ))
+    await orch.db.upsert_workspace_kind(_WorkspaceKind(
+        project_id="p1", id="windows-native", is_git_repo=True, writable=True,
+        lockable=True, mode=KIND_MODE_WORKTREE, max_slots=2,
+    ))
+    preview = await handler._cmd_workspace_cutover(args)
+    assert preview["success"], preview
+    result = await handler._cmd_workspace_cutover({**args, "apply": True,
+                                                  "expected_proof": preview["proof"]})
+    assert result["success"], result
+    assert await orch.db.get_project_workspace_path("p1") == str(tmp_path / "fast")
+
+    project = await orch.db.get_project("p1")
+    for kind, limit in (("project-repo", 4), ("windows-native", 2)):
+        # Growth is lazy, one slot per dispatch, and stops once its kind is full.
+        for index in range(limit + 1):
+            await orch._ensure_worktree_slots(project, kind)
+            acquired = await orch.db.acquire_one_unlocked(
+                "p1", kind, mode="exclusive", locked_by_task_id="tsk-1",
+                locked_by_agent_id=old_slot.locked_by_agent_id,
+                kind_mode=KIND_MODE_WORKTREE, worktree_slot_cap=4,
+            )
+            assert (acquired is not None) is (index < limit)
+    fast_slots = await orch.db.list_slots_for_base("ws-fast")
+    native_slots = await orch.db.list_slots_for_base("ws-native")
+    assert len(fast_slots) == 4
+    assert len(native_slots) == 2
+    assert all(Path(s.workspace_path).is_relative_to(tmp_path / "fast") for s in fast_slots)
+    assert all(Path(s.workspace_path).is_relative_to(tmp_path / "native") for s in native_slots)
+    retained = await orch.db.get_workspace(old_slot.id)
+    assert not retained.enabled
+    assert retained.locked_by_task_id == "tsk-1"
+    assert retained.locked_by_agent_id == old_slot.locked_by_agent_id
+    assert retained.generation == old_slot.generation
+    assert _git_cli(["rev-parse", "HEAD"], old_path) == old_head
+    assert (old_path / "unpublished.txt").read_text() == "writer still working\n"
+    assert await orch.db.get_task_meta("tsk-1", "manual_pause_checkpoint") == {"saved": True}
