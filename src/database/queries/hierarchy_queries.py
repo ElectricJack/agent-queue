@@ -1947,15 +1947,16 @@ class HierarchyQueryMixin:
             .values(parent_task_id=parent_id, updated_at=now)
         )
 
-        from src.waits.sources import record_dependency_change
+        from src.waits.sources import record_dependency_changes
 
+        changes = []
         for row in child_rows:
             if row.parent_task_id == parent_id:
                 continue
             if row.parent_task_id:
-                await record_dependency_change(conn, row.id, row.parent_task_id,
-                                               "parent-child", "removed")
-            await record_dependency_change(conn, row.id, parent_id, "parent-child", "added")
+                changes.append((row.id, row.parent_task_id, "parent-child", "removed"))
+            changes.append((row.id, parent_id, "parent-child", "added"))
+        await record_dependency_changes(conn, changes)
         affected = await self._collect_affected(set(ids), conn)
         affected.add(parent_id)
         affected |= old_parents

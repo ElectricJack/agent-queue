@@ -8,9 +8,9 @@ from sqlalchemy.ext.asyncio import create_async_engine
 
 from src.database.queries.wait_source_queries import WaitSourceQueriesMixin
 
-from src.database.tables import wait_deadlines, wait_listener_cursors, wait_records, wait_source_events
-from src.models import Project
-from src.waits.sources import payload_hash, record_source_event
+from src.database.tables import tasks, wait_deadlines, wait_listener_cursors, wait_records, wait_source_events
+from src.models import Project, Task
+from src.waits.sources import payload_hash, record_dependency_changes, record_source_event
 
 
 @pytest.fixture
@@ -39,6 +39,32 @@ async def test_revision_replay_and_rollback_are_atomic(db):
     assert len(rows) == 2
     assert all(row["payload_hash"] == payload_hash(row["payload"]) for row in rows)
     assert {row["source_revision"] for row in rows} == {"1"}
+
+
+async def test_dependency_batch_preserves_generations_and_rollback(db):
+    for task_id, epoch in (("upstream", 7), ("other", 9), ("child", 0)):
+        await db.create_task(Task(id=task_id, project_id="p", title=task_id,
+                                  description="d"))
+        async with db._engine.begin() as conn:
+            await conn.execute(update(tasks).where(tasks.c.id == task_id).values(claim_epoch=epoch))
+    changes = [("child", "upstream", "parent-child", "removed"),
+               ("child", "other", "parent-child", "added")]
+    with pytest.raises(RuntimeError, match="abort"):
+        async with db._engine.begin() as conn:
+            await record_dependency_changes(conn, changes)
+            raise RuntimeError("abort")
+    async with db._engine.connect() as conn:
+        assert not (await conn.execute(select(wait_source_events))).all()
+    async with db._engine.begin() as conn:
+        await record_dependency_changes(conn, changes)
+    async with db._engine.connect() as conn:
+        rows = (await conn.execute(select(wait_source_events))).mappings().all()
+    assert {(row["source_key"], row["source_generation"], row["payload"]["action"])
+            for row in rows} == {
+        ("dependency:child:upstream:parent-child", 7, "removed"),
+        ("dependency:child:other:parent-child", 9, "added"),
+    }
+    assert all(row["payload_hash"] == payload_hash(row["payload"]) for row in rows)
 
 
 async def test_watermark_cannot_pass_an_earlier_inflight_writer(db):

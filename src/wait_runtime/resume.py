@@ -66,6 +66,24 @@ class ResumeTransaction:
             if observed is None:
                 return None
             blocked = {key for key, value in observed.constraints.items() if value['blocked']}
+            now = self.clock()
+            reservation_id = None
+            if blocked <= {'slot', 'workspace'}:
+                # Persist demand before capacity is available. Reuse the same
+                # request across retries so accounting retains the delay.
+                reservation_id = await conn.scalar(select(admission_reservations.c.id).where(
+                    admission_reservations.c.continuation_id == intent['id'],
+                    admission_reservations.c.state.in_(('pending', 'overdue')),
+                ))
+                if reservation_id is None:
+                    reservation_id = str(uuid.uuid4())
+                    await conn.execute(insert(admission_reservations).values(
+                        id=reservation_id, project_id=task['project_id'], continuation_id=intent['id'],
+                        scope={**observed.binding['scope'], 'generation': generation},
+                        effective_priority=task['effective_priority'], provenance='resume',
+                        deadline_at=now + self.orch.config.wait_policy.transition_budget_seconds,
+                        state='pending', created_at=now,
+                    ))
             if blocked:
                 if blocked <= {'slot', 'workspace'}:
                     # A continuation requires a new process. Retire an unused
@@ -82,19 +100,14 @@ class ResumeTransaction:
                         await conn.execute(update(sessions).where(sessions.c.id == idle).values(
                             desired_state='stopped'))
                 return None
-            now = self.clock()
             agent = Agent(id=str(uuid.uuid4()), name=f"resume-{continuation_id}",
                           profile_id=task['profile_id'], state=AgentState.BUSY,
                           current_task_id=task['id'], last_heartbeat=now,
                           intelligence_class=task['intelligence_class'])
             await self.db._insert_agent_on(conn, agent)
-            await conn.execute(insert(admission_reservations).values(
-                id=str(uuid.uuid4()), project_id=task['project_id'], continuation_id=intent['id'],
-                scope={**observed.binding['scope'], 'generation': generation},
-                effective_priority=task['effective_priority'], provenance='resume',
-                deadline_at=now + self.orch.config.wait_policy.transition_budget_seconds,
-                state='granted', created_at=now, granted_at=now,
-            ))
+            await conn.execute(update(admission_reservations).where(
+                admission_reservations.c.id == reservation_id,
+            ).values(state='granted', granted_at=now))
             await conn.execute(update(continuations).where(continuations.c.id == intent['id']).values(
                 resume_state='reserved', version=intent['version'] + 1,
                 launch_attempts=intent['launch_attempts'] + 1,
@@ -374,7 +387,8 @@ class ResumeTransaction:
             incident_id = intent['facts'].get('hold_escalation_id')
             if incident_id:
                 resolved = await self.service.decisions.resolve_escalation(
-                    conn, {'escalation_id': incident_id, 'wait_id': wait_id}, event,
+                    conn, {'escalation_id': incident_id, 'wait_id': wait_id,
+                           'continuation_id': intent['id']}, event,
                     outcome='satisfied', now=self.clock(),
                 )
                 if not resolved['success']:

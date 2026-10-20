@@ -344,3 +344,30 @@ async def test_upgrade_twice_repairs_indexes_preserves_data_and_retains_downgrad
             await conn.run_sync(verify)
     finally:
         await engine.dispose()
+
+
+@pytest.mark.migration
+@pytest.mark.integration
+async def test_continuation_task_audit_fk_upgrade_is_idempotent():
+    engine = create_async_engine(await create_scratch_database("continuationaudit"))
+    revision = import_module("migrations.versions.a00000000106_continuation_task_audit")
+    try:
+        await migrate(engine, "head")
+
+        def verify(bind):
+            operations = Operations(MigrationContext.configure(bind))
+            operations.create_foreign_key(
+                "continuations_task_id_fkey", "continuations", "tasks", ["task_id"], ["id"],
+            )
+            with Operations.context(MigrationContext.configure(bind)):
+                revision.upgrade()
+                revision.upgrade()
+                revision.downgrade()
+            assert {tuple(fk["constrained_columns"])
+                    for fk in sa.inspect(bind).get_foreign_keys("continuations")} == {("wait_id",)}
+            assert_schema(bind)
+
+        async with engine.begin() as conn:
+            await conn.run_sync(verify)
+    finally:
+        await engine.dispose()

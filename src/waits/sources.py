@@ -141,17 +141,28 @@ async def insert_message_with_source_event(conn, statement):
 
 
 async def record_dependency_change(conn, task_id, depends_on, dep_type, action):
-    from src.database.tables import tasks
+    await record_dependency_changes(conn, [(task_id, depends_on, dep_type, action)])
 
-    generation = await conn.scalar(select(tasks.c.claim_epoch).where(tasks.c.id == depends_on))
-    await record_source_event(
-        conn, source_key=f"dependency:{task_id}:{depends_on}:{dep_type}",
-        generation=generation or 0, revision=uuid.uuid4().hex,
+
+async def record_dependency_changes(conn, changes):
+    """Publish a structural batch with one generation read and one outbox write."""
+    from src.database.tables import tasks
+    from src.waits.source_sql import source_batch_statement
+
+    changes = list(changes)
+    if not changes:
+        return
+    generations = dict((await conn.execute(select(tasks.c.id, tasks.c.claim_epoch).where(
+        tasks.c.id.in_(sorted({upstream for _, upstream, _, _ in changes})),
+    ))).all())
+    await conn.execute(source_batch_statement([dict(
+        source_key=f"dependency:{task_id}:{depends_on}:{dep_type}",
+        generation=generations.get(depends_on) or 0, revision=uuid.uuid4().hex,
         outcome_ref=f"task:{task_id}", payload={
             "task_id": task_id, "depends_on_task_id": depends_on,
             "dep_type": dep_type, "action": action,
         },
-    )
+    ) for task_id, depends_on, dep_type, action in changes]))
 
 
 async def record_dependency_source_change(conn, source_task_id, action):

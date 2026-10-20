@@ -27,6 +27,7 @@ from src.database.tables import (
     wait_escalations,
     wait_listener_cursors,
     wait_measurements,
+    wait_priority_projection,
     wait_records,
 )
 from src.messages.delivery import MessageDeliveryEngine
@@ -575,7 +576,21 @@ async def test_matrix_manual_intervention_during_wake_retains_audit_without_laun
     assert await service.tick()
     outcome = await one_outcome(env, wakes=0)
     if change == "delete":
+        async with env.db._engine.begin() as conn:
+            for subject in ({"task_id": "owner"}, {"continuation_id": "c"}):
+                await conn.execute(insert(admission_reservations).values(
+                    id=f"reservation-{next(iter(subject))}", project_id="p", **subject,
+                    scope={}, effective_priority=20, provenance="resume", deadline_at=NOW + 60,
+                    state="pending", created_at=NOW + 30,
+                ))
+            await conn.execute(insert(wait_priority_projection).values(
+                task_id="owner", donor_path=[], graph_version=1, computed_at=NOW,
+            ))
         await env.db.delete_task("owner")
+        reservations = await records(env, admission_reservations)
+        assert len(reservations) == 2
+        assert all(r["state"] == "cancelled" and r["task_id"] is None for r in reservations)
+        assert await records(env, wait_priority_projection) == []
     elif change == "gate":
         await env.db.create_gate("p", "human", "Approval revoked", waiter_task_ids=["owner"])
         service.orch._worktrees_enabled = lambda: False
@@ -597,6 +612,8 @@ async def test_matrix_manual_intervention_during_wake_retains_audit_without_laun
             "PAUSED" if change == "pause" else "RESUME_PENDING")
     assert await one_outcome(env, wakes=0) == outcome
     assert (await intent(env))["new_session_id"] is None
+    if change == "delete":
+        assert (await intent(env))["resume_state"] == "cancelled"
 
 
 async def test_matrix_two_launch_failures_then_provider_event_releases_without_relay(
@@ -624,7 +641,9 @@ async def test_matrix_two_launch_failures_then_provider_event_releases_without_r
             facts={"resume_attempt_started_at": NOW + 30}))
         await conn.execute(update(tasks).where(tasks.c.id == "owner").values(assigned_agent_id="a"))
     assert (await driver.failed(action, task, "second failure", handler=handler))["held"]
-    assert len(await records(env, escalations)) == 1
+    incidents = await records(env, escalations)
+    assert len(incidents) == 1
+    assert incidents[0]["source_kind"] == "continuation"
     await env.db.create_profile(AgentProfile(id="worker-codex", name="Worker"))
     driver.orch.provider_availability = SimpleNamespace(provider_for_profile=lambda *a, **k: "fake")
     async with env.db._engine.begin() as conn:
@@ -641,8 +660,42 @@ async def test_matrix_two_launch_failures_then_provider_event_releases_without_r
         row = await intent(env)
         assert row["resume_state"] == ("held" if generation == 1 else "queued")
     assert row["launch_attempts"] == 0 and row["hold_reason"] is None
-    assert (await records(env, escalations))[0]["status"] == "cancelled"
+    assert (await records(env, escalations))[0]["state"] == "cancelled"
     assert (await env.db.get_task("owner")).status is TaskStatus.RESUME_PENDING
+
+
+@pytest.mark.parametrize("mutation", ["public", "task", "project", "identity", "terminal"])
+async def test_continuation_hold_incident_rejects_invalid_binding(hibernation_env, mutation):
+    from src.waits.registry import build_registry
+
+    env = hibernation_env
+    await bound_resume(env)
+    env.registry = build_registry(clock=lambda: NOW)
+    service = service_for(env, [NOW + 30])
+    handler = service.orch._command_handler
+    row = await intent(env)
+    identity = f"continuation:{row['id']}:resume_launch_failed"
+    args = {
+        "project_id": "p", "task_id": "owner", "source_kind": "continuation",
+        "source_identity": identity, "incident_key": identity, "summary": "Hold",
+        "investigation": "Launch failed", "decision_requested": "Repair infrastructure",
+        "severity": "high",
+    }
+    if mutation == "public":
+        result = await handler.execute("escalation_create", args)
+    else:
+        async with env.db._engine.begin() as conn:
+            if mutation == "terminal":
+                await conn.execute(update(continuations).where(
+                    continuations.c.id == row["id"],
+                ).values(resume_state="acknowledged"))
+            elif mutation == "identity":
+                args["incident_key"] = "unbound"
+            else:
+                args[f"{mutation}_id"] = "source" if mutation == "task" else "foreign"
+            result = await handler.wait_escalation_create(conn, args)
+    assert not result["success"]
+    assert await records(env, escalations) == []
 
 
 async def test_matrix_live_legacy_wait_and_waiting_input_restart_preserve_deadlines(env):
@@ -859,6 +912,8 @@ async def test_matrix_accounting_from_park_through_sampler_api_and_display_contr
             lifecycle="pool", work_dir="/tmp/idle", epoch="boot", instance_token="idle-token",
             state="running", desired_state="running", started_at=NOW, last_activity=NOW))
         assert await resume.reserve("c", 1) is None
+        assert await resume.reserve("c", 1) is None
+        assert len(await records(env, admission_reservations)) == 1
         assert (await env.db.get_session("idle")).desired_state == "stopped"
         clock.now += capacity_delay
         await env.db.update_session("idle", state="stopped")

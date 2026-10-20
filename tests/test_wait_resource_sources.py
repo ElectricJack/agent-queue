@@ -13,7 +13,7 @@ from sqlalchemy import insert, select, update
 from src.database.tables import provider_availability, tasks, wait_records, wait_source_events, workspaces
 from src.models import Project, RepoSourceType, Task, Workspace
 from src.orchestrator.core import Orchestrator
-from src.scheduler import PoolKey, PoolSupply
+from src.scheduler import PlacementCandidate, PoolKey, PoolSupply
 from src.waits.resource_sources import (
     RESOURCE_BLOCKERS, reobserve_resource_candidates, resource_invalidation_candidates,
     resource_source_key,
@@ -253,7 +253,11 @@ async def test_batched_pool_bounds_audit_preserves_every_profile_and_announces_o
 
     profiles = {PoolKey(profile_id=f"worker-{n}"): SimpleNamespace(max_active=n + 1, min_active=n)
                 for n in range(3)}
-    measurement = SimpleNamespace(profiles=profiles, candidates={key: ["p", "q"] for key in profiles})
+    candidates = [PlacementCandidate(
+        project_id=project_id, ready=0, live=0, project_live_total=0, project_cap=None,
+        workspace_capacity=1, quarantined=False, warm_floor=0, workspace_kind=kind,
+    ) for project_id, kind in (("p", "project-repo"), ("p", "other"), ("q", "project-repo"))]
+    measurement = SimpleNamespace(profiles=profiles, candidates={key: candidates for key in profiles})
     orch = SimpleNamespace(db=db, bus=SimpleNamespace(emit=emit))
     await Orchestrator._announce_bounds_rescoped(orch, measurement)
     await Orchestrator._announce_bounds_rescoped(orch, measurement)

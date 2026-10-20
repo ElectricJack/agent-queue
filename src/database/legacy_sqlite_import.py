@@ -196,6 +196,11 @@ _EXCLUDED_TABLES: frozenset[str] = frozenset(
         # Session-owned recurring prompts shipped in PostgreSQL revision 86;
         # legacy SQLite files predate schedules and their delivery diagnostics.
         "agent_cron",
+        # Verified waits and continuation admission shipped in PostgreSQL
+        # revisions 97/103 and later; legacy SQLite has no lifecycle to import.
+        "admission_reservations", "continuations", "wait_bridge_progress",
+        "wait_deadlines", "wait_edges", "wait_escalations", "wait_listener_cursors",
+        "wait_measurements", "wait_priority_projection", "wait_records", "wait_source_events",
         # Branch deletion audits (revision 88) and explicit branch retirement
         # requests (revision 89) shipped after SQLite removal.
         "branch_deletion_audit",

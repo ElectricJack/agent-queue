@@ -95,7 +95,7 @@ class HibernationTransaction:
         """One incident per generation/reason; no claim/workspace release."""
         result = await handler.wait_escalation_create(conn, {
             "project_id": task["project_id"], "task_id": task["id"],
-            "task_title": task["title"], "source_kind": "wait",
+            "task_title": task["title"], "source_kind": "continuation",
             "source_identity": f"continuation:{intent['id']}:{reason}",
             "incident_key": f"continuation:{intent['id']}:{reason}",
             "summary": f"Hibernation held: {reason}",

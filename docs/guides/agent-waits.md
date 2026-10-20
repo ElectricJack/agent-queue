@@ -370,6 +370,13 @@ completed decision. The internal escalation binding is unavailable to public
 human registration and `wait_lift`. Projections never mutate their owner or wake
 a task, and incur no invented worker-seat measurements.
 
+Infrastructure holds use `source_kind=continuation`, bound to the live suspension
+intent and its task/project inside the wait transaction. Their incident identity
+includes the continuation ID and hold reason, so retries reuse the incident and
+each suspension generation remains distinct. These holds can follow a satisfied
+wait (for example, two failed resume launches); pending wait deadlines retain
+their separate `source_kind=wait` binding and `wait_decide` resolution protocol.
+
 Sessionless `WAITING_INPUT` adoption requires no live writer, claimant or locked
 workspace, plus an existing verified integration checkpoint and its exact
 published remote branch head. A server-owned migration receipt binds the task

@@ -98,8 +98,20 @@ class WaitDecisions:
         incident = (await conn.execute(select(escalations).where(
             escalations.c.id == escalation["escalation_id"],
         ).with_for_update())).mappings().first()
-        if not incident or incident["source_kind"] != "wait":
+        continuation_id = escalation.get("continuation_id")
+        expected_kind = "continuation" if continuation_id else "wait"
+        if not incident or incident["source_kind"] != expected_kind:
             return {"success": False}
+        if continuation_id:
+            bound = await conn.scalar(select(continuations.c.id).where(
+                continuations.c.id == continuation_id,
+                continuations.c.wait_id == escalation["wait_id"],
+                continuations.c.task_id == incident["task_id"],
+            ))
+            if not bound or not incident["source_identity"].startswith(
+                f"continuation:{continuation_id}:",
+            ):
+                return {"success": False}
         if incident["state"] in {"resolved", "cancelled", "stale"}:
             return {"success": True}
         evidence = {"wait_id": escalation["wait_id"], "source_seq": event.get("seq"),

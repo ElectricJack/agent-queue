@@ -3540,6 +3540,21 @@ updates against the epoch.
 | `result_message_id` | TEXT | nullable | Message that carried the result to the owner |
 
 
+### Table: `wait_bridge_progress`
+
+Durable legacy-wait migration receipts, independent of source and timer listener
+cursors. Per-object receipts survive partial passes; identity `*` records guarded
+phase completion. A held object prevents its phase from completing.
+
+| Column | Type | Constraints |
+|---|---|---|
+| `project_id` | TEXT | PRIMARY KEY (composite), FK → projects.id |
+| `phase` | TEXT | PRIMARY KEY (composite), CHECK: project, agent-waits, audit, sessionless |
+| `identity` | TEXT | PRIMARY KEY (composite) |
+| `state` | TEXT | NOT NULL, CHECK: pending, complete, held |
+| `evidence` | JSONB | NOT NULL |
+| `updated_at` | FLOAT | NOT NULL |
+
 ### Table: `wait_records`
 
 Verified typed conditions, their source watermark, evidence, sleep decision and immutable outcome. Agent commentary lives in claimed separately from verified evidence. Partial unique indexes admit one pending non-scheduler wait per owner, deduplicate registrations and legacy translations, and allow multiple distinct scheduler blockers.
@@ -3682,7 +3697,7 @@ Added by revision `a00000000097`; schema only until the verified-waits cutover.
 | Column | Type | Constraints |
 |---|---|---|
 | `id` | TEXT | PRIMARY KEY |
-| `task_id` | TEXT | NOT NULL, FK → tasks.id |
+| `task_id` | TEXT | NOT NULL, no FK; retained suspension audit after task removal |
 | `wait_id` | TEXT | NOT NULL, FK → wait_records.id |
 | `suspension_generation` | INTEGER | NOT NULL |
 | `summary` | TEXT | nullable |

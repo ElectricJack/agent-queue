@@ -15,6 +15,7 @@ from sqlalchemy import (
     and_,
     any_,
     bindparam,
+    case,
     delete,
     func,
     insert,
@@ -36,6 +37,7 @@ from src.database.queries.blocked_state import (
 )
 from src.database.queries.ingest_hold import not_ingest_held
 from src.database.tables import (
+    admission_reservations,
     agents,
     archived_tasks,
     continuations,
@@ -62,6 +64,7 @@ from src.database.tables import (
     task_tools,
     task_workspace_requirements,
     tasks,
+    wait_priority_projection,
     wait_records,
     workspaces,
 )
@@ -2797,6 +2800,23 @@ class TaskQueryMixin:
             .values(handoff_state="released", updated_at=time.time())
         )
 
+        # Suspension history survives removal, but may never launch again.
+        await conn.execute(update(continuations).where(
+            continuations.c.task_id == task_id,
+            continuations.c.resume_state.not_in(("acknowledged", "failed", "cancelled")),
+        ).values(resume_state="cancelled", version=continuations.c.version + 1))
+        await conn.execute(update(admission_reservations).where(
+            (admission_reservations.c.task_id == task_id)
+            | admission_reservations.c.continuation_id.in_(
+                select(continuations.c.id).where(continuations.c.task_id == task_id)),
+        ).values(
+            task_id=None,
+            state=case((admission_reservations.c.state.in_(("pending", "overdue", "granted")),
+                        "cancelled"), else_=admission_reservations.c.state),
+        ))
+        await conn.execute(delete(wait_priority_projection).where(
+            wait_priority_projection.c.task_id == task_id,
+        ))
         await conn.execute(delete(tasks).where(tasks.c.id == task_id))
         # The parent DELETE waits for an accepted comment's UPDATE lock.
         # Cleanup afterwards cannot miss a concurrently committed append.

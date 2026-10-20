@@ -40,6 +40,7 @@ from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR, UUID
 
 from src.asks.schema import register_ask_schema_events
 from src.records.schema import register_record_schema_events
+from src.knowledge.extraction_schema import register_extraction_schema
 
 metadata = MetaData()
 
@@ -5973,7 +5974,8 @@ continuations = Table(
     "continuations",
     metadata,
     Column("id", Text, primary_key=True),
-    Column("task_id", Text, ForeignKey("tasks.id"), nullable=False),
+    # Retain the suspension audit after its task is deleted or archived.
+    Column("task_id", Text, nullable=False),
     Column("wait_id", Text, ForeignKey("wait_records.id"), nullable=False),
     Column("suspension_generation", Integer, nullable=False),
     Column("summary", Text, nullable=True),
@@ -7236,8 +7238,6 @@ record_compatibility_usage = Table(
 )
 
 register_record_schema_events(metadata)
-
-from src.knowledge.extraction_schema import register_extraction_schema
 
 register_extraction_schema(metadata)
 
