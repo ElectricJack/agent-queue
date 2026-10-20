@@ -18610,12 +18610,13 @@
         "github"
       ],
       "default_arm": true,
-      "digest": "sha256:94960140ca7f2f48a9bff50efa918b40cd8895685b29418cdc81f9057cbfd080",
+      "digest": "sha256:e261159034933b8f9bf8cc18e9ef9695a9bb1c3e941a8541d23a16f7643893f5",
       "imports": [
         "src.api.auth",
         "src.api.scope",
         "src.cli.app",
         "src.config",
+        "src.database.tables",
         "src.git.github_contracts",
         "src.git.identity",
         "src.git.manager",
