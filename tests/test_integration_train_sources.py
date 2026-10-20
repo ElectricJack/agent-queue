@@ -1935,11 +1935,15 @@ async def test_cancelled_git_proof_advances_selection_without_reusing_mutable_in
     entered, stopped = asyncio.Event(), asyncio.Event()
     run = world.truth.git.arun_git_result
     writes = []
+    metrics = SelectionMetrics()
 
     async def delayed_git(args, **kwargs):
         if "push" in args:
             writes.append(args)
-        if "diff" in args and first in args and not stopped.is_set():
+        # Stall the per-source strict ancestry proof, after selection has
+        # advanced past the frontier filter's ancestry read of the same source.
+        if ("merge-base" in args and first in args and not stopped.is_set()
+                and "target_delivery" in {name for name, _ in metrics.active.values()}):
             entered.set()
             try:
                 await asyncio.Event().wait()
@@ -1947,10 +1951,12 @@ async def test_cancelled_git_proof_advances_selection_without_reusing_mutable_in
                 stopped.set()
         return await run(args, **kwargs)
 
+    async def select_with_metrics(current):
+        with selection_metrics_scope(metrics):
+            return await batches.open_batch(MAIN, current, service)
+
     monkeypatch.setattr(world.truth.git, "arun_git_result", delayed_git)
-    selecting = asyncio.create_task(batches.open_batch(
-        MAIN, await snapshot(world), service,
-    ))
+    selecting = asyncio.create_task(select_with_metrics(await snapshot(world)))
     try:
         await asyncio.wait_for(entered.wait(), 20)
     finally:
@@ -4898,7 +4904,8 @@ async def test_obsolete_archive_settles_work_but_requires_fresh_collected_comple
     assert ("obsolete", "work_paused") in {
         (item["task_id"], item["code"]) for item in blocked.detail["blockers"]
     }
-    reader = EpicGraphReader(policy_on=epic_policy_on, source_base_on=epic_source_base_on)
+    reader = EpicGraphReader(case.db, policy_on=epic_policy_on,
+                             source_base_on=epic_source_base_on)
     async with case.db.immediate() as conn:
         # Legacy orphan settlement already cancelled this episode. Its
         # checkpoint is history, not current aggregate verification.
@@ -5275,7 +5282,8 @@ async def test_reopened_container_settlement_still_owes_aggregate_completion(col
                                                 target_ref=MAIN.target_ref, reduced=reduced)
         assert requests["epic"].completion_id != previous.id
         assert requests["epic"].completed_at is None
-    reader = EpicGraphReader(policy_on=epic_policy_on, source_base_on=epic_source_base_on)
+    reader = EpicGraphReader(case.db, policy_on=epic_policy_on,
+                             source_base_on=epic_source_base_on)
     async with case.db._engine.connect() as conn:
         graph = await reader.read_on(conn, "epic")
     assert graph.node("epic").request.completion_id != previous.id

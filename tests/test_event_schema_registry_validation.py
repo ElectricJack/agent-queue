@@ -832,6 +832,12 @@ _CANONICAL_PAYLOADS.update(
             "intent_id": "intent-1",
             "head_sha": "b" * 40,
         },
+        "integration.readiness_changed": {
+            "project_id": "proj-1",
+            "repository_id": "repo-1",
+            "head_sha": "a" * 40,
+            "reason": "checks_changed",
+        },
         "task.route_needed": {
             "task_id": "t-1",
             "project_id": "proj-1",
