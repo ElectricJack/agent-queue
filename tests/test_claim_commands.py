@@ -5286,7 +5286,7 @@ async def _cloned_pool_session(db, tmp_path, env, sid, agent_id):
 
 
 async def test_unavailable_stack_evidence_withholds_only_stacked_work(
-    handler, db, tmp_path, development_admission
+    handler, db, tmp_path, development_admission, monkeypatch
 ):
     """A failed or backed-off fetch is no stack change: eligible roots still claim.
 
@@ -5295,6 +5295,7 @@ async def test_unavailable_stack_evidence_withholds_only_stacked_work(
     prerequisite, but it moved nothing either; refusing the whole project as
     ``stack_snapshot_changed`` starved every stable root for the backoff.
     """
+    from src.git.manager import GitError
     from src.integration.stacked_branches import observe_stacks
 
     env = development_admission
@@ -5321,11 +5322,15 @@ async def test_unavailable_stack_evidence_withholds_only_stacked_work(
     )
     sid, work_dir = await _cloned_pool_session(db, tmp_path, env, "s1", "agent-1")
     assert await (await observe_stacks(observer, PROJECT_ID)).fresh()
-    # One failed fetch puts the repository into backoff; the remote is back at once.
-    away = env.remote.with_name("remote-away.git")
-    env.remote.rename(away)
-    await observer.prerequisite_view(PROJECT_ID)
-    away.rename(env.remote)
+    # Fail exactly the fetch: renaming the remote can instead fail process-group
+    # cleanup under CI load, which does not establish GitTruth's fetch backoff.
+    # Restore transport immediately; the recorded backoff must still withhold
+    # stacked work until the fake clock advances.
+    failed_fetch = AsyncMock(side_effect=GitError("transport unavailable"))
+    with monkeypatch.context() as failure:
+        failure.setattr(handler.orchestrator.git, "afetch_origin", failed_fetch)
+        await observer.prerequisite_view(PROJECT_ID)
+    failed_fetch.assert_awaited_once()
     stack = await observe_stacks(observer, PROJECT_ID)
     state = await stack.currentness()
     assert state.state == "unavailable", state
