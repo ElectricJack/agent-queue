@@ -2193,7 +2193,7 @@ async def test_settle_batch_records_promotion_of_contained_members(world):
     await store.freeze(batch, (BatchMember("a", source, source),), trees={"a": tree(world, source)})
     controls = TrainControls(db)
     with pytest.raises(ValueError, match="cannot be aborted"):
-        await controls.abort_batch(batch.id, dry_run=True, expected_target_sha=None, operator_id="operator", reason="")
+        await controls.abort_batch(batch.id, dry_run=True, operator_id="operator", reason="")
     with pytest.raises(ValueError, match="nonblank reason"):
         await controls.settle_batch(batch.id, dry_run=False, expected_target_sha=source, operator_id="operator", reason=" ")
     preview = await controls.settle_batch(batch.id, dry_run=True, expected_target_sha=None, operator_id="operator",
@@ -2201,7 +2201,7 @@ async def test_settle_batch_records_promotion_of_contained_members(world):
     target = git(world.origin.url, "rev-parse", "main")
     assert (preview["outcome"], preview["target_sha"]) == ("preview", target)
     assert (await db.get_integration_batch(batch.id))["lifecycle"] == "sealed"
-    applied = await controls.settle_batch(batch.id, dry_run=False, expected_target_sha=source, operator_id="operator",
+    applied = await controls.settle_batch(batch.id, dry_run=False, expected_target_sha=target, operator_id="operator",
                                           reason="target already matches")
     assert applied["outcome"] == "settled"
     settled = await db.get_integration_batch(batch.id)
@@ -2211,7 +2211,7 @@ async def test_settle_batch_records_promotion_of_contained_members(world):
         [audit] = (await conn.execute(select(events.c.payload).where(
             events.c.event_type == "integration.batch_settled"))).scalars().all()
     assert "target already matches" in audit
-    replay = await controls.settle_batch(batch.id, dry_run=False, expected_target_sha=source,
+    replay = await controls.settle_batch(batch.id, dry_run=False, expected_target_sha=target,
                                         operator_id="operator", reason="again")
     assert replay["outcome"] == "settled"
     assert (await db.get_integration_batch(batch.id))["final_main_sha"] == target
