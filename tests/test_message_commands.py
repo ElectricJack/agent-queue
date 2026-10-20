@@ -1720,9 +1720,10 @@ class TestScopedGlobalReports:
                     provider="fake", name="n-supervisor--global", lifecycle="named", work_dir="/tmp",
                     epoch="test", instance_token="global-launch", started_at=1, state="running",
                 ))
-            denied = await _execute_as(handler, "message_send", {
+            denied = await handler.execute("message_send", {
                 "to_kind": "session", "to_id": address, "from_id": "cli", "body": "report",
-            }, scope)
+                "system_only": True, "_scope": scope,
+            })
             assert "out of scope" in denied["error"], denied
         assert await db.list_messages() == []
 

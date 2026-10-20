@@ -151,12 +151,15 @@ async def prepare_submission(handler, args, *, conn=None):
         and (to_id == "n-supervisor--global" or await handler._global_supervisor_address(to_id))
     ):
         if (
-            to_id != _GLOBAL_SUPERVISOR_ADDRESS or args.get("system_only")
+            args.get("system_only")
             or await handler._project_supervisor_session() is None
             or args.get("project_id") not in (None, scope["project_id"])
         ):
             return {"success": False, "error": "out of scope: system messages require global admin"}
         scoped_global_report = True
+        # Every verified global address is the same report destination;
+        # addressing that mailbox does not request projectless scope.
+        to_id = _GLOBAL_SUPERVISOR_ADDRESS
         requested_project_id = scope["project_id"]
         from_kind, from_id = "session", scope["session_id"]
     if not scoped_global_report and not (
