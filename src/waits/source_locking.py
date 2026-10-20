@@ -32,6 +32,8 @@ async def lock_database_source(conn, cond):
     elif cond.kind == "playbook_condition":
         subjects = [(t.playbook_v2_runs, t.playbook_v2_runs.c.run_id == p["run_id"]),
                     (t.playbook_waits, t.playbook_waits.c.wait_id == p["wait_id"])]
+    elif cond.kind == "human" and p["subject"] == "legacy_escalation":
+        subjects = [(t.escalations, t.escalations.c.id == p['escalation_id'])]
     elif cond.kind == "human" and p["subject"] == "review":
         subjects = [(t.doc_reviews, t.doc_reviews.c.id == p["review_id"])]
     elif cond.kind == "human" and p["subject"] == "task_comment":

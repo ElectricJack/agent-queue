@@ -251,5 +251,10 @@
     "count": 0,
     "source_health": "healthy",
     "identity_hash": "empty"
+  },
+  "waiting_on_you": {
+    "items": [],
+    "count": 0,
+    "more": 0
   }
 }

@@ -396,13 +396,18 @@ def wait_lift(ctx, **params):
 
 
 @wait.command("bridge")
+@click.option("--mode", type=click.Choice(["project", "agent-waits"]), default="agent-waits")
 @click.option("--project", "project_id", default=None)
 @click.option("--apply", is_flag=True)
 @click.pass_context
 @_handle_errors
-def wait_bridge(ctx, project_id, apply):
-    """Operator-only projection of legacy waits; implementation must be installed."""
-    params = {"apply": apply}
+def wait_bridge(ctx, project_id, apply, mode):
+    """Preview legacy adoption; --apply commits the guarded migration.
+
+    agent-waits adopts v1 waits and WAITING_INPUT tasks, including the first
+    scheduler audit. project projects legacy sources and performs that audit.
+    """
+    params = {"apply": apply, "mode": mode}
     if project_id:
         params["project_id"] = project_id
     emit(ctx, _execute(ctx, "wait_legacy_bridge", params))

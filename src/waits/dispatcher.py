@@ -25,6 +25,7 @@ from src.waits.listener import ListenerUnavailable
 from src.waits.loops import progress
 from src.waits.ownership import fence_owner
 from src.waits.sources import execute_task_status_mutation, insert_message_with_source_event
+from src.wait_runtime.legacy_parking import legacy_parked
 
 
 class WakeDispatcher:
@@ -173,28 +174,33 @@ class WakeDispatcher:
                     raise ListenerUnavailable("transactional wait escalation resolution refused")
         from src.waits.measurements import cost_values
 
-        await conn.execute(insert(wait_measurements).values(
-            id=f"outcome:{row['id']}", project_id=row["project_id"], wait_id=row["id"],
-            condition_kind=cond.kind, source_class=adapter.source_class(cond),
-            decision=row["sleep_decision"], waited_seconds=max(0, now - row["created_at"]),
-            hibernated=bool(continuation and continuation['stopped_at'] is not None),
-            evicted=row['decision_reason'] == 'evicted', recorded_at=now,
-            **await cost_values(conn, row, continuation),
-        ))
+        # Visibility-only migration projections never held a worker seat.
+        if row["sleep_decision"] is not None:
+            await conn.execute(insert(wait_measurements).values(
+                id=f"outcome:{row['id']}", project_id=row["project_id"], wait_id=row["id"],
+                condition_kind=cond.kind, source_class=adapter.source_class(cond),
+                decision=row["sleep_decision"], waited_seconds=max(0, now - row["created_at"]),
+                hibernated=bool(continuation and continuation['stopped_at'] is not None),
+                evicted=row['decision_reason'] == 'evicted', recorded_at=now,
+                **await cost_values(conn, row, continuation),
+            ))
+        event_type = "wait.lifted" if outcome == "lifted_by_supervisor" else f"wait.{outcome}"
+        payload = {"wait_id": row["id"], "project_id": row["project_id"],
+                   "result_ref": result_ref, "source_seq": event.get("seq"), "decision": decision}
+        if outcome == "lifted_by_supervisor":
+            payload.update(supervisor_session_id=decision["supervisor_session_id"],
+                           message_id=decision["message_id"])
         await conn.execute(insert(events).values(
-            event_type=f"wait.{outcome}", project_id=row["project_id"],
+            event_type=event_type, project_id=row["project_id"],
             task_id=row["owner_id"] if row["owner_kind"] == "task" else None,
-            timestamp=now, payload=json.dumps({"wait_id": row["id"],
-                                             "project_id": row["project_id"],
-                                             "result_ref": result_ref,
-                                             "source_seq": event.get("seq"),
-                                             "decision": decision}),
+            timestamp=now, payload=json.dumps(payload),
         ))
         if not deliver:
             await conn.execute(update(wait_records).where(wait_records.c.id == row["id"]).values(
                 cleared_at=now,
             ))
-        elif continuation and continuation["stopped_at"] is None:
+        elif (continuation and continuation['stopped_at'] is None
+              and not await legacy_parked(conn, task, row, continuation)):
             # The outcome commits once while the retiring writer still owns the
             # slot. Park observes it and queues exactly this generation. Never
             # deliver into a process which the stop transaction may be killing.

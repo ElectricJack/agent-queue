@@ -1,5 +1,6 @@
 """Verified wait surfaces, principal fences and dormant runtime composition."""
 
+import json
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -11,7 +12,7 @@ from pydantic import ValidationError
 from sqlalchemy import func, insert, select, update
 
 from src.api.codegen import API_EXCLUDED, DETAILED_ERROR_COMMANDS
-from src.api.models.wait import REQUEST_MODELS, WaitResponse
+from src.api.models.wait import REQUEST_MODELS, WaitDecideResponse, WaitResponse
 from src.api.scope import AGENT_COMMAND_SET
 from src.api.target_scope import target_scope_error
 from src.cli.auto_commands import EXCLUDED
@@ -34,14 +35,20 @@ from src.commands.principal import (
 )
 from src.config import AppConfig
 from src.database.queries.wait_queries import register_wait
-from src.database.tables import continuations, sessions, wait_records, wait_source_events
+from src.database.tables import (
+    continuations, doc_reviews, events, messages, sessions, tasks, wait_deadlines,
+    wait_records, wait_source_events,
+)
+from src.database.queries.continuation_queries import wait_outcome_envelope
+from src.models import SessionRecord
+from src.wait_runtime.service import WaitService
 from src.mcp_registration import DEFAULT_EXCLUDED_COMMANDS
 from src.profiles.capabilities import AQ_FEATURE_CAPABILITIES, CapabilityPolicy
 from src.profiles.capability_sync import sync_profile_capabilities
 from src.profiles.drift import diff_profile, shipped_profile_path, vault_profile_path
 from src.tools.definitions import _ALL_TOOL_DEFINITIONS
 from src.waits.legacy import translate_registration
-from src.waits.conditions import Scope
+from src.waits.conditions import Condition, Scope, WaitError
 from src.waits.registry import build_registry
 from tests.test_operator_workers import operator as _operator, execute as operator_execute
 from tests.test_wait_queries import NOW, Policy, decide, env as _env, register
@@ -353,21 +360,30 @@ async def test_checkpoint_requires_current_holder_before_runtime_mutation(comman
     assert result["success"] and callback.await_args.kwargs["scope"] == env.scope
 
 
-async def test_show_consume_uses_ack_and_forwards_claim_fence(commands, env):
+@pytest.mark.parametrize("legacy_alias", [False, True])
+async def test_show_consume_uses_ack_and_forwards_claim_fence(commands, env, legacy_alias):
     receipt = await register(env)
+    read_id = receipt["wait_id"]
+    if legacy_alias:
+        read_id = "legacy-wait"
+        async with env.db._engine.begin() as conn:
+            await conn.execute(update(wait_records).where(
+                wait_records.c.id == receipt["wait_id"],
+            ).values(legacy_kind="agent_wait", legacy_id=read_id))
     callback = AsyncMock(
         return_value={"success": True, "wait_id": receipt["wait_id"], "acknowledged": True}
     )
     commands.orchestrator.wait_v2_handlers["wait_ack"] = callback
     result = await execute(
-        commands, "wait_get", dict(wait_id=receipt["wait_id"], consume=True, claim_epoch=1)
+        commands, "wait_get", dict(wait_id=read_id, consume=True, claim_epoch=1)
     )
     assert result["success"] and result["next_step"] == "continue"
     assert callback.await_args.args[0]["claim_epoch"] == 1
+    assert callback.await_args.args[0]["wait_id"] == receipt["wait_id"]
     callback.return_value = dict(success=False, error_code="continuation.stale_generation")
     assert (
         await execute(
-            commands, "wait_get", dict(wait_id=receipt["wait_id"], consume=True, claim_epoch=1)
+            commands, "wait_get", dict(wait_id=read_id, consume=True, claim_epoch=1)
         )
     )["error_code"] == "continuation.stale_generation"
 
@@ -734,3 +750,153 @@ def test_cli_public_verbs_have_inventory_backend_evidence():
     }
     for path, name in expected.items():
         assert _infer_handwritten_backend(wait.commands[path]) == name
+
+
+async def human_runtime(env, subject="task_comment"):
+    config = AppConfig()
+    config.wait_policy.v2_enabled = config.wait_policy.hibernation_enabled = True
+    orch = SimpleNamespace(db=env.db, config=config, wait_registry=env.registry,
+                           bus=SimpleNamespace(emit=AsyncMock()), plugin_registry=None)
+    service = WaitService(orch, clock=lambda: NOW)
+    handler = CommandHandler(orch, config)
+    orch._command_handler = handler
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == "owner").values(
+            branch_name="aq/owner"))
+        if subject == "review":
+            await conn.execute(insert(doc_reviews).values(
+                id="human-review", project_id="p", author_task_id="owner", kind="spec",
+                title="Proposal", vault_path="specs/human.md", current_revision=1,
+                state="in_review", created_at=NOW, updated_at=NOW))
+    if subject == "message_thread":
+        question = await env.db.create_message(
+            project_id="p", from_kind="session", from_id="s", to_kind="user", to_id="dashboard",
+            thread_id="human-thread", body="May I proceed?")
+        condition = dict(kind="human", subject=subject, thread_id="human-thread",
+                         after_seq=question.created_seq)
+    elif subject == "review":
+        condition = dict(kind="human", subject=subject, review_id="human-review")
+    else:
+        condition = dict(kind="human", subject=subject, task_id="owner")
+    receipt = await execute(handler, "wait_register", dict(
+        schema_version=2, condition=condition, idempotency_key="human-runtime", claim_epoch=1))
+    assert receipt["success"], receipt
+    await env.db.create_session(SessionRecord(
+        id="supervisor", project_id="p", profile_id="supervisor", harness="codex",
+        provider="fake", name="supervisor", lifecycle="named", state="running",
+        desired_state="running", instance_token="supervisor-token", epoch="boot",
+        work_dir="/tmp/supervisor", started_at=NOW))
+    principal = replace(WORKER, session_id="supervisor", session_instance_token="supervisor-token",
+                        task_id=None, profile_id="supervisor", elevated=True)
+    async with env.db._engine.begin() as conn:
+        await env.db.park_task_for_continuation(
+            conn, task_id="owner", wait_id=receipt["wait_id"],
+            continuation_id=receipt["continuation_id"], generation=receipt["generation"],
+            session_id="s", instance_token="token", claim_epoch=1,
+            saved_head="a" * 40, now=NOW + 10)
+    return service, handler, principal, receipt
+
+
+@pytest.mark.parametrize("subject", ["review", "task_comment", "message_thread"])
+async def test_human_lift_commits_response_and_one_fresh_resume(env, subject):
+    service, handler, principal, receipt = await human_runtime(env, subject)
+    service.human.clock = lambda: NOW + 86400 * 4
+    result = await execute(handler, "wait_lift", dict(
+        wait_id=receipt["wait_id"], response="Proceed with the approved scope.",
+        expected_generation=receipt["generation"]), principal)
+    assert result["success"], result
+    assert result["outcome"] == "lifted_by_supervisor"
+    assert WaitDecideResponse.model_validate(result).decision == "lift"
+    async with env.db._engine.connect() as conn:
+        wait = dict((await conn.execute(select(wait_records))).mappings().one())
+        intent = (await conn.execute(select(continuations))).mappings().one()
+        answer = (await conn.execute(select(messages).where(
+            messages.c.body_kind == "wait_lift"))).mappings().one()
+        audit = (await conn.execute(select(events).where(
+            events.c.event_type == "wait.lifted"))).mappings().all()
+        assert not list((await conn.execute(select(wait_deadlines).where(
+            wait_deadlines.c.deadline_type.in_(("due", "ceiling", "escalation"))))).mappings())
+    assert intent["resume_state"] == "queued"
+    assert (await env.db.get_task("owner")).status.value == "RESUME_PENDING"
+    assert answer["from_kind"] == "session" and answer["from_id"] == "supervisor"
+    assert answer["to_kind"] == "task" and answer["to_id"] == "owner"
+    assert answer["body"] == "Proceed with the approved scope."
+    envelope = wait_outcome_envelope(wait, intent)
+    assert envelope["decision"] == "lift"
+    assert envelope["facts"]["supervisor_session_id"] == "supervisor"
+    assert envelope["result_ref"] == f"message:{answer['id']}"
+    assert len(audit) == 1
+    payload = json.loads(audit[0]["payload"])
+    assert payload["project_id"] == "p"
+    assert payload["supervisor_session_id"] == "supervisor"
+    assert payload["message_id"] == answer["id"]
+    repeated = await execute(handler, "wait_lift", dict(
+        wait_id=wait["id"], response="A second answer"), principal)
+    assert repeated["error_code"] == "wait.already_satisfied"
+    # A late answer remains ordinary mail and cannot enqueue a second resume.
+    late = await env.db.create_message(
+        project_id="p", from_kind="user", from_id="dashboard", to_kind="task", to_id="owner",
+        thread_id=answer["thread_id"], body="Late human answer")
+    async with env.db._engine.connect() as conn:
+        event = dict((await conn.execute(select(wait_source_events).where(
+            wait_source_events.c.source_key == f"message:{answer['thread_id']}",
+            wait_source_events.c.source_revision == str(late.created_seq),
+        ))).mappings().one())
+    async with env.db._engine.begin() as conn:
+        assert not (await service.dispatcher.commit(conn, wait, event))["committed"]
+    assert late.delivered_at is None
+
+
+async def test_parked_human_comment_survives_epoch_fence_and_ignores_supervisor(env):
+    service, handler, principal, receipt = await human_runtime(env)
+    await env.db.add_task_comment("owner", "Discussing", author_kind="supervisor", author_id="sup")
+    async with env.db._engine.connect() as conn:
+        wait = dict((await conn.execute(select(wait_records))).mappings().one())
+        assert (await service.registry.observe(conn, Condition.from_record(wait["condition"]))).state == "unsatisfied"
+    answer = await env.db.add_task_comment("owner", "Approved", author_kind="user", author_id="ui")
+    async with env.db._engine.connect() as conn:
+        event = dict((await conn.execute(select(wait_source_events).where(
+            wait_source_events.c.source_key == wait["source_key"],
+            wait_source_events.c.source_generation == wait["source_generation"],
+            wait_source_events.c.source_revision == answer["id"],
+        ))).mappings().one())
+    async with env.db._engine.begin() as conn:
+        result = await service.dispatcher.commit(conn, wait, event)
+    assert result["outcome"] == "satisfied", result
+    assert (await env.db.get_task("owner")).status.value == "RESUME_PENDING"
+
+
+@pytest.mark.parametrize("change", ["instance", "epoch", "generation", "answer"])
+async def test_human_lift_rechecks_identity_and_racing_answer_without_message(env, change):
+    _, handler, principal, receipt = await human_runtime(env)
+    if change == "instance":
+        await env.db.update_session("supervisor", instance_token="replacement")
+    elif change == "epoch":
+        async with env.db._engine.begin() as conn:
+            await conn.execute(update(tasks).where(tasks.c.id == "owner").values(
+                assigned_agent_id="a"))
+    elif change == "answer":
+        await env.db.add_task_comment("owner", "User wins", author_kind="user", author_id="ui")
+    args = dict(wait_id=receipt["wait_id"], response="Supervisor answer")
+    if change == "generation":
+        args["expected_generation"] = 99
+    result = await execute(handler, "wait_lift", args, principal)
+    assert not result["success"], result
+    async with env.db._engine.connect() as conn:
+        assert not await conn.scalar(select(messages.c.id).where(messages.c.body_kind == "wait_lift"))
+        assert await conn.scalar(select(wait_records.c.outcome)) == "pending"
+
+
+async def test_human_registration_requires_hibernation_before_any_wait_write(env):
+    from src.wait_runtime.lifecycle import WaitLifecycle
+
+    config = AppConfig()
+    config.wait_policy.v2_enabled = True
+    lifecycle = WaitLifecycle(SimpleNamespace(orch=SimpleNamespace(db=env.db, config=config)))
+    with pytest.raises(WaitError) as error:
+        await lifecycle.register(dict(condition=dict(kind="human", subject="task_comment",
+                                                      task_id="owner")),
+                                 principal=WORKER, scope=env.scope, handler=None)
+    assert error.value.code == "wait.disabled"
+    async with env.db._engine.connect() as conn:
+        assert not await conn.scalar(select(wait_records.c.id))

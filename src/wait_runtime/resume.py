@@ -19,6 +19,7 @@ from src.waits.conditions import WaitError
 from src.wait_runtime.hibernate import locked_suspension
 from src.waits.mail import held_messages
 from src.waits.sources import insert_message_with_source_event
+from src.wait_runtime.legacy_parking import parked
 
 
 async def verify_saved_branch(orch, task, path):
@@ -57,8 +58,7 @@ class ResumeTransaction:
             if intent['resume_state'] != 'queued':
                 return None
             if (task['status'] != 'RESUME_PENDING' or wait['outcome'] == 'pending'
-                    or not intent['stopped_at'] or not intent['saved_head']
-                    or 'workspace_released_at' not in intent['facts']):
+                    or not await parked(conn, task, wait, intent)):
                 return None
             observed = await self.service.scheduler.reader.observe_task(
                 conn, task['id'], continuation_id=continuation_id,

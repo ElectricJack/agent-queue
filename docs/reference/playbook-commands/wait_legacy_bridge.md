@@ -14,12 +14,13 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/wait_v2.py`](../../../src/commands/contracts/wait_v2.py) |
-| Contract fingerprint | `sha256:0c9e684f665fddc2fec398cdf516354d18f70f0fb5d42f53c1168afdd46e65db` |
+| Contract fingerprint | `sha256:ff41b6b6bd23fe8a6edacdbb445d52b4d9ca18eb35c3c9c346d4838a9b9c3d36` |
 
 ## Parameters
 
 | Parameter | Type | Required | Default | Description |
 |---|---|---|---|---|
+| `mode` | `"project" \| "agent-waits"` | no | `"agent-waits"` | — |
 | `project_id` | `string \| null` | no | `null` | — |
 | `apply` | `boolean` | no | `false` | — |
 
@@ -42,7 +43,7 @@ This command declares no effect clause, so the playbook graph falls back to its 
 
 | Effect | Subject | Condition |
 |---|---|---|
-| Composite using project_id, apply | — | always |
+| Composite using mode, project_id, apply | — | always |
 
 <!-- aq:generated:end -->
 

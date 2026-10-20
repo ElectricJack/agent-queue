@@ -490,6 +490,7 @@ class DigestScheduleService:
             landed=collected["landed"],
             stuck=collected["stuck"],
             asks=collected["asks"],
+            waiting_on_you=collected.get("waiting_on_you", []),
             sessions_working=collected["sessions_working"],
             sessions_total=collected["sessions_total"],
             active_tasks=collected["active_tasks"],

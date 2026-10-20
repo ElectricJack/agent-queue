@@ -63,7 +63,8 @@ class SchedulerWaitService:
             await lock_graph(conn)
             candidates = (await conn.execute(select(tasks).where(
                 tasks.c.project_id == project_id,
-                or_(tasks.c.status == "READY", exists(select(wait_records.c.id).where(
+                or_(tasks.c.status.in_(("READY", "DEFINED", "PAUSED"))
+                    if args.get("initial_audit") else tasks.c.status == "READY", exists(select(wait_records.c.id).where(
                     wait_records.c.origin == "scheduler", wait_records.c.owner_id == tasks.c.id,
                     wait_records.c.outcome == "pending",
                 )), exists(select(admission_reservations.c.id).where(
@@ -87,7 +88,11 @@ class SchedulerWaitService:
             ))).mappings()]
             desired = set()
             for task in candidates:
-                observation = await self.reader.observe_task(conn, task["id"])
+                audit = bool(args.get('initial_audit') or any(
+                    r['owner_id'] == task['id'] and
+                    (r['decision_inputs'] or {}).get('legacy_audit') for r in previous))
+                observation = await self.reader.observe_task(
+                    conn, task["id"], migration_audit=audit)
                 reservation = reservations.get(task["id"])
                 if reservation and (observation is None
                         or reservation["scope"] != observation.binding["scope"]
@@ -153,6 +158,9 @@ class SchedulerWaitService:
                             continue
                     changed.add(f"task:{task['id']}")
                     if (row["outcome"] == "pending" and observation.owns_branch
+                            and (not audit or (task['status'] == 'READY'
+                                and not any(observation.constraints[key]['blocked'] for key in (
+                                    'policy_hold', 'batch_hold', 'backoff', 'budget', 'provider'))))
                             and condition.parameters["blocker"] == "slot"):
                         first_due = min([
                             d["due_at"] for d in prior_deadlines
@@ -177,6 +185,11 @@ class SchedulerWaitService:
                                     outcome="satisfied" if observed.state == "satisfied"
                                     else "source_unavailable", result_ref=observed.result_ref))
                     changed.add(f"task:{row['owner_id']}")
+            if args.get("initial_audit"):
+                from src.wait_runtime.legacy_audit import audit_scheduler_age
+
+                await audit_scheduler_age(conn, project_id, now=now,
+                    deadline_seconds=self.orchestrator.config.wait_policy.branch_admission_deadline_seconds)
             if changed:
                 await recompute_from(conn, changed, now=now)
         return {"success": True, "changed": len(changed), "cycle_id": args["cycle_id"]}

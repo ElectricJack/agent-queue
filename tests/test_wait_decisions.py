@@ -21,7 +21,7 @@ from src.waits.conditions import Condition
 from src.waits.mail import acknowledge_in_place
 from tests.test_wait_dispatch import runtime
 from tests.test_wait_holding import mail
-from tests.test_wait_queries import NOW, Policy, env as _env, records, register
+from tests.test_wait_queries import NOW, env as _env, records, register
 from tests.test_wait_outcomes import waiting
 
 env = _env
@@ -30,7 +30,7 @@ env = _env
 def service_for(env, now):
     service = runtime(env, clock=lambda: now[0])
     del service.orch.wait_dispatcher
-    policy = Policy()
+    policy = AppConfig().wait_policy
     policy.v2_enabled = True
     service.orch.config.wait_policy = policy
     return service

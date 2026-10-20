@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+import asyncio
 
 from src.waits.listener import WaitSourceListener
 from src.waits.registry import build_registry
@@ -11,6 +12,7 @@ from src.waits.dispatcher import WakeDispatcher
 from src.waits.graph import recompute_from
 from src.waits.source_locking import lock_database_source
 from src.waits.decisions import WaitDecisions
+from src.waits.human import HumanWaits
 from src.wait_runtime.lifecycle import WaitLifecycle
 from src.wait_runtime.scheduler import SchedulerWaitService
 
@@ -27,7 +29,13 @@ class WaitService:
         self.listener = WaitSourceListener(self, clock=clock, owner=owner, connect=connect)
         self.timers = WaitTimerDriver(self, clock=clock)
         self.decisions = WaitDecisions(self, clock=clock)
+        self.human = HumanWaits(self, clock=clock)
         self.lifecycle = WaitLifecycle(self, clock=clock)
+        from src.wait_runtime.legacy_bridge import LegacyWaitBridge
+
+        self.legacy_bridge = LegacyWaitBridge(self, clock=clock)
+        self._bridge_started = False
+        self._bridge_lock = asyncio.Lock()
         self.registry.loop_handler = self.loop_escalation
         self._dispatcher = WakeDispatcher(
             self.registry, clock=clock,
@@ -40,8 +48,10 @@ class WaitService:
         if handlers is None:
             handlers = orch.wait_v2_handlers = {}
         for name, callback in (("wait_deadline_fire", self.timers.fire),
+                               ("wait_legacy_bridge", self.legacy_bridge.run),
                                ("wait_source_commit", self.source_commit),
                                ("wait_decide", self.decisions.decide),
+                               ("wait_lift", self.human.lift),
                                ("wait_register", self.lifecycle.register),
                                ("wait_graph", self.graph),
                                ("wait_ack", self.lifecycle.acknowledge),
@@ -119,10 +129,39 @@ class WaitService:
 
     async def tick(self):
         if self.enabled:
+            await self.startup_bridge()
             await self.lifecycle.tick()
             return await self.listener.tick()
         return False
 
     async def run(self):
         if self.enabled:
+            await self.startup_bridge()
             await self.listener.run()
+
+    async def startup_bridge(self):
+        """One attempt per process; durable receipts permit restart recovery."""
+        from sqlalchemy import exists, select
+        from src.database.tables import projects, wait_bridge_progress
+        from src.waits.decision import project_policy
+
+        async with self._bridge_lock:
+            if self._bridge_started:
+                return
+            async with self.orch.db._engine.connect() as conn:
+                pids = list((await conn.execute(select(projects.c.id).where(~exists(
+                    select(wait_bridge_progress.c.identity).where(
+                        wait_bridge_progress.c.project_id == projects.c.id,
+                        wait_bridge_progress.c.phase == 'agent-waits',
+                        wait_bridge_progress.c.identity == '*',
+                        wait_bridge_progress.c.state == 'complete',
+                    ),
+                )))).scalars())
+            for pid in pids:
+                if project_policy(self.orch.config.wait_policy, pid).v2_enabled:
+                    result = await self.command('wait_legacy_bridge', {
+                        'project_id': pid, 'mode': 'agent-waits', 'apply': True,
+                    })
+                    if not result.get('success'):
+                        return
+            self._bridge_started = True

@@ -304,7 +304,7 @@ class ObservingDispatcher:
 
 def runtime(env, *, clock=lambda: NOW, dispatcher=None, enabled=True, registry=None):
     config = AppConfig()
-    config.wait_policy = SimpleNamespace(v2_enabled=enabled)
+    config.wait_policy.v2_enabled = enabled
     orch = SimpleNamespace(db=env.db, config=config, bus=SimpleNamespace(emit=AsyncMock()),
                            plugin_registry=None, wait_registry=registry or env.registry,
                            wait_dispatcher=dispatcher)

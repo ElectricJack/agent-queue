@@ -17870,6 +17870,11 @@
       "input_schema": {
         "additionalProperties": false,
         "properties": {
+          "initial_audit": {
+            "default": false,
+            "title": "Initial Audit",
+            "type": "boolean"
+          },
           "project_id": {
             "minLength": 1,
             "title": "Project Id",
@@ -18458,6 +18463,15 @@
       "input_schema": {
         "additionalProperties": false,
         "properties": {
+          "mode": {
+            "default": "agent-waits",
+            "enum": [
+              "project",
+              "agent-waits"
+            ],
+            "title": "Mode",
+            "type": "string"
+          },
           "project_id": {
             "anyOf": [
               {

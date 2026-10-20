@@ -10428,6 +10428,24 @@
         100,
         107
       ]
+    },
+    "src/wait_runtime/legacy_parking.py::checkpoint_proof": {
+      "reason": "Migration admission checks canonical integration checkpoint evidence without modifying delivery authority."
+    },
+    "src/wait_runtime/legacy_parking.py::current_proof": {
+      "reason": "Migration admission checks canonical integration checkpoint evidence without modifying delivery authority."
+    },
+    "src/wait_runtime/legacy_parking.py::import from src.database.tables import agents, sessions, task_integration_checkpoints, wait_bridge_progress, workspaces": {
+      "reason": "Migration admission checks canonical integration checkpoint evidence without modifying delivery authority."
+    },
+    "src/wait_runtime/legacy_parking.py::legacy_parked": {
+      "reason": "Migration admission checks canonical integration checkpoint evidence without modifying delivery authority."
+    },
+    "src/wait_runtime/legacy_parking.py::parked": {
+      "reason": "Migration admission checks canonical integration checkpoint evidence without modifying delivery authority."
+    },
+    "src/waits/admission.py::import from src.database.tables import continuations, integration_batch_members, integration_batches, integration_branch_owners, integration_repair_stages, projects, sessions, tasks, token_ledger, wait_records": {
+      "reason": "Admission reads canonical integration ownership and repair blockers; integration source authority remains charged."
     }
   },
   "shared_state": {

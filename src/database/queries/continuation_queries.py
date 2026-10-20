@@ -190,7 +190,7 @@ def wait_outcome_envelope(wait, continuation=None, *, held_messages=(), decision
     """The same outcome envelope for in-place delivery and a fresh continuation."""
     if wait["outcome"] == "pending":
         raise WaitError("wait.checkpoint_invalid", "pending wait has no outcome envelope")
-    return {
+    envelope = {
         "kind": "wait_outcome",
         "wait_id": wait["id"],
         "continuation_generation": continuation["suspension_generation"] if continuation else None,
@@ -203,6 +203,11 @@ def wait_outcome_envelope(wait, continuation=None, *, held_messages=(), decision
         "held_messages": list(held_messages),
         "next_action": "ack_then_continue",
     }
+    detail = envelope["decision"]
+    if isinstance(detail, dict) and detail.get("decision") == "lift":
+        envelope["decision"] = "lift"
+        envelope["facts"] = detail["facts"]
+    return envelope
 
 
 async def continuation_prime_context(conn, *, task_id, project_id, session_id):
