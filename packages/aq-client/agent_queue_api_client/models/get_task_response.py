@@ -18,6 +18,7 @@ if TYPE_CHECKING:
     from ..models.get_task_response_descendant_state_counts_type_0 import GetTaskResponseDescendantStateCountsType0
     from ..models.get_task_response_parent_type_0 import GetTaskResponseParentType0
     from ..models.get_task_response_route_type_0 import GetTaskResponseRouteType0
+    from ..models.held_batch_summary import HeldBatchSummary
     from ..models.provider_hold_detail import ProviderHoldDetail
     from ..models.task_completion_detail import TaskCompletionDetail
     from ..models.task_ref import TaskRef
@@ -71,6 +72,7 @@ class GetTaskResponse:
         rerouted_from (None | str | Unset):
         reroute (None | TaskReroute | Unset):
         provider_hold (None | ProviderHoldDetail | Unset):
+        held_batch (HeldBatchSummary | None | Unset):
         route_source (None | str | Unset):
         class_hint (None | str | Unset):
         prefer_target (None | str | Unset):
@@ -119,6 +121,7 @@ class GetTaskResponse:
     rerouted_from: None | str | Unset = UNSET
     reroute: None | TaskReroute | Unset = UNSET
     provider_hold: None | ProviderHoldDetail | Unset = UNSET
+    held_batch: HeldBatchSummary | None | Unset = UNSET
     route_source: None | str | Unset = UNSET
     class_hint: None | str | Unset = UNSET
     prefer_target: None | str | Unset = UNSET
@@ -135,6 +138,7 @@ class GetTaskResponse:
         from ..models.get_task_response_descendant_state_counts_type_0 import GetTaskResponseDescendantStateCountsType0
         from ..models.get_task_response_parent_type_0 import GetTaskResponseParentType0
         from ..models.get_task_response_route_type_0 import GetTaskResponseRouteType0
+        from ..models.held_batch_summary import HeldBatchSummary
         from ..models.provider_hold_detail import ProviderHoldDetail
         from ..models.task_completion_detail import TaskCompletionDetail
         from ..models.task_reroute import TaskReroute
@@ -343,6 +347,14 @@ class GetTaskResponse:
         else:
             provider_hold = self.provider_hold
 
+        held_batch: dict[str, Any] | None | Unset
+        if isinstance(self.held_batch, Unset):
+            held_batch = UNSET
+        elif isinstance(self.held_batch, HeldBatchSummary):
+            held_batch = self.held_batch.to_dict()
+        else:
+            held_batch = self.held_batch
+
         route_source: None | str | Unset
         if isinstance(self.route_source, Unset):
             route_source = UNSET
@@ -466,6 +478,8 @@ class GetTaskResponse:
             field_dict["reroute"] = reroute
         if provider_hold is not UNSET:
             field_dict["provider_hold"] = provider_hold
+        if held_batch is not UNSET:
+            field_dict["held_batch"] = held_batch
         if route_source is not UNSET:
             field_dict["route_source"] = route_source
         if class_hint is not UNSET:
@@ -491,6 +505,7 @@ class GetTaskResponse:
         from ..models.get_task_response_descendant_state_counts_type_0 import GetTaskResponseDescendantStateCountsType0
         from ..models.get_task_response_parent_type_0 import GetTaskResponseParentType0
         from ..models.get_task_response_route_type_0 import GetTaskResponseRouteType0
+        from ..models.held_batch_summary import HeldBatchSummary
         from ..models.provider_hold_detail import ProviderHoldDetail
         from ..models.task_completion_detail import TaskCompletionDetail
         from ..models.task_ref import TaskRef
@@ -824,6 +839,23 @@ class GetTaskResponse:
 
         provider_hold = _parse_provider_hold(d.pop("provider_hold", UNSET))
 
+        def _parse_held_batch(data: object) -> HeldBatchSummary | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                held_batch_type_0 = HeldBatchSummary.from_dict(data)
+
+                return held_batch_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(HeldBatchSummary | None | Unset, data)
+
+        held_batch = _parse_held_batch(d.pop("held_batch", UNSET))
+
         def _parse_route_source(data: object) -> None | str | Unset:
             if data is None:
                 return data
@@ -935,6 +967,7 @@ class GetTaskResponse:
             rerouted_from=rerouted_from,
             reroute=reroute,
             provider_hold=provider_hold,
+            held_batch=held_batch,
             route_source=route_source,
             class_hint=class_hint,
             prefer_target=prefer_target,

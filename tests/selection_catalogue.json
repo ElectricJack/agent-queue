@@ -2545,7 +2545,7 @@
         "api-contract"
       ],
       "default_arm": true,
-      "digest": "sha256:23926930e3ed84853e42f6c02327d87e4126dbd91c54175ae039d9e3eb8bdd82",
+      "digest": "sha256:7df30f9e9a2cb247c7cb4459aca44a0d4d090663e9f62527f331de263fda8d19",
       "imports": [
         "src.api",
         "src.api.app",
@@ -2555,6 +2555,9 @@
         "src.api.spec",
         "src.config",
         "src.database",
+        "src.database.queries",
+        "src.database.queries.ingest_batch_queries",
+        "src.database.queries.proposal_queries",
         "src.event_bus",
         "src.mcp_registration",
         "src.models",
@@ -2562,7 +2565,9 @@
         "src.plugins.internal",
         "src.tools"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "Live API ↔ generated-client conformance guards (api-cli plan 1-3, API-2)."
     },
     "tests/test_api_codegen_input_models.py": {
@@ -14227,14 +14232,20 @@
         "document-reviews"
       ],
       "default_arm": true,
-      "digest": "sha256:876b6eb2c058cfd96ac1959d21c68143c4c17be161d8f9092c11a0ce7c3d6805",
+      "digest": "sha256:f61515d34273d12b1d1a68d10c16521c9e8c0f33ddc922df4c4d1857820c08d0",
       "imports": [
+        "src.api.auth",
+        "src.api.models.task",
         "src.api.routers.proposals",
         "src.database.queries",
+        "src.database.queries.ingest_batch_queries",
         "src.database.queries.proposal_queries",
+        "src.database.tables",
         "src.models"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "GET /api/proposals/{id} — dashboard ghost-overlay read."
     },
     "tests/test_proposal_status_event.py": {

@@ -728,6 +728,9 @@ from .grep_request import GrepRequest
 from .grep_response import GrepResponse
 from .grep_response_422 import GrepResponse422
 from .grid_position_dto import GridPositionDTO
+from .held_batch_summary import HeldBatchSummary
+from .held_batch_summary_lineage import HeldBatchSummaryLineage
+from .held_batch_summary_state import HeldBatchSummaryState
 from .hierarchy_refusal_response import HierarchyRefusalResponse
 from .histogram import Histogram
 from .host_perf import HostPerf
@@ -745,6 +748,17 @@ from .import_profile_response_422 import ImportProfileResponse422
 from .import_request import ImportRequest
 from .import_request_selections import ImportRequestSelections
 from .import_request_values import ImportRequestValues
+from .ingest_batch_detail import IngestBatchDetail
+from .ingest_batch_detail_check_results_type_0 import IngestBatchDetailCheckResultsType0
+from .ingest_batch_detail_diff_type_0 import IngestBatchDetailDiffType0
+from .ingest_batch_detail_lineage import IngestBatchDetailLineage
+from .ingest_batch_detail_members import IngestBatchDetailMembers
+from .ingest_batch_detail_membership_item import IngestBatchDetailMembershipItem
+from .ingest_batch_detail_receipts_item import IngestBatchDetailReceiptsItem
+from .ingest_batch_detail_release_receipt_type_0 import IngestBatchDetailReleaseReceiptType0
+from .ingest_batch_detail_section_verdicts import IngestBatchDetailSectionVerdicts
+from .ingest_batch_detail_state import IngestBatchDetailState
+from .ingest_batch_detail_structural_findings_item import IngestBatchDetailStructuralFindingsItem
 from .inspect_playbook_run_request import InspectPlaybookRunRequest
 from .inspect_playbook_run_response import InspectPlaybookRunResponse
 from .inspect_playbook_run_response_422 import InspectPlaybookRunResponse422
@@ -1836,6 +1850,10 @@ from .task_batch_propose_request import TaskBatchProposeRequest
 from .task_batch_propose_response import TaskBatchProposeResponse
 from .task_batch_propose_response_422 import TaskBatchProposeResponse422
 from .task_batch_propose_response_diff_type_0 import TaskBatchProposeResponseDiffType0
+from .task_batch_propose_response_lineage_type_0 import TaskBatchProposeResponseLineageType0
+from .task_batch_propose_response_members_type_0 import TaskBatchProposeResponseMembersType0
+from .task_batch_propose_response_release_receipt_type_0 import TaskBatchProposeResponseReleaseReceiptType0
+from .task_batch_propose_response_status_type_0 import TaskBatchProposeResponseStatusType0
 from .task_batch_update_request import TaskBatchUpdateRequest
 from .task_batch_update_request_payload_type_0 import TaskBatchUpdateRequestPayloadType0
 from .task_batch_update_response_422 import TaskBatchUpdateResponse422
@@ -2790,6 +2808,9 @@ __all__ = (
     "GrepResponse",
     "GrepResponse422",
     "GridPositionDTO",
+    "HeldBatchSummary",
+    "HeldBatchSummaryLineage",
+    "HeldBatchSummaryState",
     "HierarchyRefusalResponse",
     "Histogram",
     "HostPerf",
@@ -2807,6 +2828,17 @@ __all__ = (
     "ImportRequest",
     "ImportRequestSelections",
     "ImportRequestValues",
+    "IngestBatchDetail",
+    "IngestBatchDetailCheckResultsType0",
+    "IngestBatchDetailDiffType0",
+    "IngestBatchDetailLineage",
+    "IngestBatchDetailMembers",
+    "IngestBatchDetailMembershipItem",
+    "IngestBatchDetailReceiptsItem",
+    "IngestBatchDetailReleaseReceiptType0",
+    "IngestBatchDetailSectionVerdicts",
+    "IngestBatchDetailState",
+    "IngestBatchDetailStructuralFindingsItem",
     "InspectPlaybookRunRequest",
     "InspectPlaybookRunResponse",
     "InspectPlaybookRunResponse422",
@@ -3890,6 +3922,10 @@ __all__ = (
     "TaskBatchProposeResponse",
     "TaskBatchProposeResponse422",
     "TaskBatchProposeResponseDiffType0",
+    "TaskBatchProposeResponseLineageType0",
+    "TaskBatchProposeResponseMembersType0",
+    "TaskBatchProposeResponseReleaseReceiptType0",
+    "TaskBatchProposeResponseStatusType0",
     "TaskBatchUpdateRequest",
     "TaskBatchUpdateRequestPayloadType0",
     "TaskBatchUpdateResponse422",
