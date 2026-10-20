@@ -683,19 +683,34 @@ async def test_repair_start_allows_git_import_beyond_publication_bound(
     from src.integration import lock as lock_module
 
     env = await ordinary_pool_repair(handler, db, tmp_path)
-    # Scale both bounds: startup survives a slow import which would exceed
-    # the normal publication fence, without a wall-clock performance budget.
-    monkeypatch.setattr(lock_module, "CRITICAL_SECTION_SECONDS", 1)
-    monkeypatch.setattr(lock_module, "REPAIR_START_SECONDS", 10)
+    # Observe the real exclusions without shortening ordinary SQL work to a
+    # one-second deadline: contention there legitimately retries the import.
+    exclusion = lock_module.BranchLock.exclusion
+    bounds = []
+
+    def observe_exclusion(lock, fence, **kwargs):
+        bounds.append(kwargs.get("timeout_seconds"))
+        return exclusion(lock, fence, **kwargs)
+
+    monkeypatch.setattr(lock_module.BranchLock, "exclusion", observe_exclusion)
+    assert lock_module.REPAIR_START_SECONDS > lock_module.CRITICAL_SECTION_SECONDS
 
     async def import_objects(*args, **kwargs):
-        await asyncio.sleep(1.1)
+        assert bounds[-1] == lock_module.REPAIR_START_SECONDS
         return "b" * 40
 
+    async def reset_slot(*args, **kwargs):
+        # The extended import allowance must not leak into ordinary mutation.
+        assert bounds[-1] is None
+        return env.target.branch
+
     handler.orchestrator._hierarchy_repair_start.side_effect = import_objects
+    reset = handler.orchestrator._worktree_slots.return_value.reset_slot_for_task
+    reset.side_effect = reset_slot
     result = await settled_claim(env.handler, {"next": True})
     assert result["result"] == "claimed", result
     handler.orchestrator._hierarchy_repair_start.assert_awaited_once()
+    reset.assert_awaited_once()
     assert (await env.store.get("repair-batch")).repair_attempt_count == 1
 
 
