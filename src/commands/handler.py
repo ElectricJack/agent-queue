@@ -939,6 +939,7 @@ class CommandHandler(
         """
         from src.task_templates import task_template_scope
 
+        request_started = time.monotonic()
         with task_template_scope(self.config.data_dir), CorrelationContext(
             command=name, component="command_handler"
         ):
@@ -1015,7 +1016,7 @@ class CommandHandler(
             # ``_resolve_project_id_in_args`` and by handler bodies (e.g. an
             # embedded body/plan being popped for storage), and the raw values
             # never appear on the bus regardless.
-            _emit_started_at = time.monotonic()
+            _emit_started_at = request_started
             _emit_args_snapshot = dict(args) if isinstance(args, dict) else {}
             if name in {"bind_project_repository", "create_project", "onboard_project"}:
                 _emit_args_snapshot = dict(log_args)
@@ -1191,6 +1192,7 @@ class CommandHandler(
                 _emit_error = f"{e.__class__.__name__}: {e}"[:200]
                 return {"error": str(e)}
             finally:
+                dispatch_ms = (time.monotonic() - request_started) * 1000
                 # Ensure scope does not leak across commands.
                 _current_scope_var.reset(_scope_token)
                 _principal_var.reset(_principal_token)
@@ -1227,3 +1229,11 @@ class CommandHandler(
                             await bus.emit("command.invoked", payload)
                 except Exception:  # pragma: no cover -- defensive
                     logger.debug("command.invoked emit failed for %s", name, exc_info=True)
+                finally:
+                    total_ms = (time.monotonic() - request_started) * 1000
+                    log = logger.warning if total_ms >= 1000 else logger.debug
+                    log(
+                        "command timing name=%s ok=%s duration_ms=%.1f "
+                        "dispatch_ms=%.1f event_ms=%.1f",
+                        name, _emit_ok, total_ms, dispatch_ms, total_ms - dispatch_ms,
+                    )

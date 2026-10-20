@@ -4583,8 +4583,9 @@
         "events"
       ],
       "default_arm": true,
-      "digest": "sha256:87b6d1284240548c9f7188ebb53d7dded3711be3b31a7552eef15dde0e0320f6",
+      "digest": "sha256:3d581ea2ba6195c3bcf5c2c8f5370e7c7f2c8b350e3efebe0fec2488a1f8f1aa",
       "imports": [
+        "src.commands",
         "src.commands.handler"
       ],
       "markers": [
@@ -6396,13 +6397,15 @@
         "metrics"
       ],
       "default_arm": true,
-      "digest": "sha256:a5fad3537b30e28a598fb43244ac5e7f82eed6cf1dfd2d293be746735212724f",
+      "digest": "sha256:8f19a6bb5f4bcf6285413368abaa7e18e9622ca3880d9f3e2b3bf90cddb5f3a0",
       "imports": [
         "src.database",
         "src.database.engine",
         "src.metrics.perf"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "Pool wait and query duration reach the perf registry; statement text never does."
     },
     "tests/test_ensure_task.py": {
@@ -17255,7 +17258,7 @@
         "task-dependencies"
       ],
       "default_arm": true,
-      "digest": "sha256:c54b5a0781ab5ed4e47b6aecceef903b2a08d760e3621de356ebd8b209252dd3",
+      "digest": "sha256:03c969be3339afa0433e1e9c6a39a5d66da3528d8e0800a39cce09aec7fc77d2",
       "imports": [
         "src.commands.handler",
         "src.config",
@@ -17264,7 +17267,8 @@
         "src.orchestrator"
       ],
       "markers": [
-        "asyncio"
+        "asyncio",
+        "parametrize"
       ],
       "summary": "Unit tests for task dependency features: _cmd_task_deps handler, batch"
     },
