@@ -1002,6 +1002,85 @@ class DatabaseBatches:
         return next((batch for batch, refreshed in await self._open_batches(target)
                      if refreshed is None), None)
 
+    async def reassemble_preexisting(
+        self, target, snapshot, service, batch, frozen, *, names, source_checks,
+    ):
+        """Admit exact green baseline fixes without losing the batch they unblock."""
+        from src.integration.checks import Conclusion
+        from src.integration.train_controls import TrainControlError, TrainControls
+        from src.operator_decisions import OperatorDecisions
+
+        if (batch.intent != "open" or batch.epic_sync or batch.epic_refresh or not names
+                or await OperatorDecisions(self.db).holds("batch", batch.id)):
+            return None
+        # Rotate a bounded frontier even while a frozen batch owns the target.
+        ids = await self._candidate_ids(target, snapshot, continuation=True,
+                                       include_ids={m.task_id for m in frozen})
+        pending = await self.pending(target, snapshot, gate_pr=False, candidate_ids=ids,
+                                     include_ids={m.task_id for m in frozen})
+        if pending is None:
+            return None
+        members, requests, dependencies = pending
+        originals = {m.task_id: m for m in frozen}
+        if any(not any(m.task_id == old.task_id and m.source_sha == old.source_sha
+                       and m.base_sha == old.base_sha for m in members) for old in frozen):
+            return None
+        accepted = dict(originals)
+        for member in members:
+            if member.task_id in originals:
+                continue
+            self._selection_after[target.key] = member.task_id
+            if self.pr_gate is None or await self.pr_gate(target, member):
+                continue
+            result = await source_checks(member)
+            passed = ({c.name for c in result.checks if c.conclusion is Conclusion.SUCCESS}
+                if (result is not None and result.green and result.sha == member.source_sha
+                    and result.repository_id == target.repository_id) else set())
+            if set(names) <= passed:
+                accepted[member.task_id] = member
+        # A green source cannot bring an unaccepted prerequisite along with it.
+        while True:
+            unsafe = {tid for tid in accepted if tid not in originals
+                      and set(dependencies.get(tid, ())) - accepted.keys()}
+            if not unsafe:
+                break
+            for tid in unsafe:
+                accepted.pop(tid)
+        if len(accepted) == len(originals):
+            return None
+        if any(set(dependencies.get(tid, ())) - accepted.keys() for tid in originals):
+            return None
+        members = tuple(m for m in members if m.task_id in accepted)
+        requests = {tid: requests[tid] for tid in accepted}
+        async with self.db._engine.connect() as conn:
+            carried = await released_repair_attempts_on(conn, target, members)
+        replacement = replace(batch,
+            id="train-reassemble-" + hashlib.sha256(repr((batch.id, members)).encode()).hexdigest()[:32],
+            repair_attempt_count=max(batch.repair_attempt_count, carried),
+            created_at=self.clock())
+        members, trees = await service.freeze_inputs(
+            replacement, members, requests=requests, snapshot=snapshot, dependencies=dependencies)
+        controls = TrainControls(self.db)
+
+        async def authorize(conn, row):
+            current = await load_delivery_requests(self.db, list(requests), conn=conn,
+                repository_id=batch.repository_id, target_ref=batch.target_ref, reduced=True)
+            if current != requests or not await snapshot.is_fresh():
+                return False
+            for tid in accepted:
+                await controls._release_refusal(conn, batch, tid, requests[tid], row["policy_snapshot"])
+            return True
+
+        try:
+            replaced = await service.store.reassemble(
+                batch, replacement, members, trees=trees, authorize=authorize)
+        except TrainControlError as exc:
+            return {"outcome": "blocked", "blocker": exc.outcome, "reason": str(exc)}
+        return {"outcome": "reassembled" if replaced else "changed",
+                "replacement_batch_id": replacement.id,
+                "added_members": sorted(accepted.keys() - originals.keys()),
+                "pre_existing_checks": list(names)}
+
     async def _supersede_removed_checks(self, target, snapshot, service, batch, members):
         """Release obsolete check pins without rewriting frozen policy or sources."""
         from src.operator_decisions import OperatorDecisions
@@ -2429,11 +2508,28 @@ class DaemonLanes:
                 except (AttestationError, GitHubAccessError, GitError, OSError, ValueError):
                     return None
 
+        async def baseline_fix_checks(member):
+            from src.integration.runtime_contracts import HeadIdentity
+
+            if local or local_ci:
+                exact = await resolve(batch=Batch("baseline-fix-" + member.task_id,
+                    target.project_id, target.repository_id, target.target_ref),
+                    candidate_sha=member.source_sha)
+            else:
+                exact = await self._pr_checks(target, member, policy, binding)
+            if exact is None:
+                return None
+            task = await self.db.get_task(member.task_id)
+            return await _exact_head_verdict(exact, HeadIdentity(
+                repository_id=target.repository_id, ref=_branch(task.branch_name),
+                sha=member.source_sha, generation=0))
+
         return TrainLane(snapshot=snapshot, service=service, checks=checks,
                          repair_policy=(RepairPolicy.model_validate(repair_policy)
                                         if repair_policy else None),
                          complete_epic=complete_epic, sync_default_branch=sync_default_branch,
-                         sync_closed_epic=sync_closed_epic)
+                         sync_closed_epic=sync_closed_epic,
+                         baseline_fix_checks=baseline_fix_checks)
 
     async def _default_branch_sync(
         self, target, retained, binding, policy, batch, snapshot, candidate_sha, names,

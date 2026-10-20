@@ -22,6 +22,23 @@ holds and identity checks. Partial conflict candidates and unknown proofs remain
 unsettled. Epic synchronization and promotion intents keep their own
 settlement protocols.
 
+When an ordinary root or development candidate fails only checks proven to
+fail on its frozen target, the train may replace its batch to admit a pending
+baseline fix. Require trusted green checks on the exact additional source,
+including every pre-existing failing name, and normal source admission. Freeze
+the original exact members together with the additional admitted sources in
+one atomic replacement. Retain the old batch, checks and membership as history,
+carry its repair attempt count, and record the replacement and reason. Never
+replace paused or held batches, outstanding repairs, or candidates with new or
+unproven failures. A missing or red fix leaves the bounded suite retry intact.
+The replacement must pass its own candidate checks and publication gates.
+
+For batches previously aborted by hand, the owning project supervisor may use
+`aq integration release-withheld-source BATCH_ID --task TASK_ID` to preview recovery
+and apply with the exact source SHA, target SHA and a nonblank reason. This
+retains the existing hold, writer, completion, repair and repair-budget guards;
+it neither changes abort history nor publishes a target.
+
 An epic refresh's single member is the frozen default head, and a refresh repair
 publishes its resolved merge into the epic itself. Containment of that head is
 therefore not the refresh's promotion. The train delivers a refresh only when the
