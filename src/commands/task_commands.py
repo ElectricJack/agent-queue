@@ -6038,7 +6038,8 @@ class TaskCommandsMixin:
         ).task_blockers(str(task_id))
         if integration is not None and integration["integration_active"]:
             reasons.extend(
-                Reason(code=item["code"], detail=item["detail"], ref=item.get("ref"))
+                Reason(code=item["code"], ref=item.get("ref"), detail=item["detail"] + (
+                    f"; next: {item['action']}" if item.get("action") else ""))
                 for item in integration["blockers"]
             )
 

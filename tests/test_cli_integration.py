@@ -228,6 +228,28 @@ def test_train_controls_default_to_preview_and_apply_with_reason(leaf, identity,
     assert client.execute.call_args.args[1]["reason"] == "delivered work"
 
 
+def test_release_withheld_source_previews_and_applies_only_exact_shas():
+    from src.cli.app import cli
+
+    client = _client({"success": True, "outcome": "preview"})
+    base = ["integration", "release-withheld-source", "batch", "--task", "t"]
+    with patch("src.cli.integration._get_client", return_value=client):
+        result = CliRunner().invoke(cli, base)
+        assert result.exit_code == 0, result.output
+        assert client.execute.call_args.args == ("integration_release_withheld_source", {
+            "batch_id": "batch", "task_id": "t", "expected_source_sha": None,
+            "expected_target_sha": None, "reason": "", "dry_run": True})
+        client.reset_mock()
+        refused = CliRunner().invoke(cli, [*base, "--apply", "--reason", "re-batch it"])
+        assert refused.exit_code == 2
+        client.execute.assert_not_called()
+        result = CliRunner().invoke(cli, [*base, "--apply", "--source-sha", "b" * 40,
+                                          "--target-sha", "a" * 40, "--reason", "re-batch it"])
+    assert result.exit_code == 0, result.output
+    arguments = client.execute.call_args.args[1]
+    assert arguments["dry_run"] is False and arguments["expected_source_sha"] == "b" * 40
+
+
 @pytest.mark.parametrize("argv", [
     ["abort-batch", "batch", "--apply"],
     ["settle-batch", "batch", "--apply", "--reason", "delivered"],
