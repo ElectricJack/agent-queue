@@ -2,20 +2,28 @@
 
 from sqlalchemy import Float, cast, func, select
 
-from src.database.tables import sessions, tasks, wait_records
+from src.database.tables import sessions, tasks, wait_records, workspaces
 from src.waits.conditions import WaitError
 from src.waits.graph import lock_graph
 from src.waits.holding import execution_waits
 
 
-async def candidate(conn, project_id, profile_id):
+async def candidate(conn, project_id, profile_id, *, workspace_kind=None):
     cost = func.coalesce(cast(wait_records.c.decision_inputs['resume_cost_minutes'].astext, Float), 10)
-    return (await conn.execute(execution_waits().where(
+    query = execution_waits().where(
         wait_records.c.project_id == project_id, sessions.c.profile_id == profile_id,
         wait_records.c.owner_kind == 'task', wait_records.c.outcome == 'pending',
         wait_records.c.sleep_decision == 'in_place', tasks.c.status == 'WAITING',
-    ).order_by(wait_records.c.created_at.desc(), tasks.c.effective_priority.desc(), cost,
-               wait_records.c.id).limit(1))).mappings().first()
+    )
+    if workspace_kind is not None:
+        query = query.where(select(workspaces.c.id).where(
+            workspaces.c.project_id == project_id,
+            workspaces.c.workspace_path == sessions.c.work_dir,
+            func.coalesce(workspaces.c.kind_id, 'project-repo') == workspace_kind,
+        ).exists())
+    return (await conn.execute(query.order_by(
+        wait_records.c.created_at.desc(), tasks.c.effective_priority.desc(), cost,
+        wait_records.c.id).limit(1))).mappings().first()
 
 
 async def evict(lifecycle, args):
@@ -32,7 +40,13 @@ async def evict(lifecycle, args):
         profile = await conn.scalar(select(sessions.c.profile_id).where(
             sessions.c.id == wait['session_id'],
         ))
-        selected = await candidate(conn, wait['project_id'], profile)
+        kind = await conn.scalar(
+            select(func.coalesce(workspaces.c.kind_id, 'project-repo'))
+            .join(sessions, sessions.c.work_dir == workspaces.c.workspace_path).where(
+                sessions.c.id == wait['session_id'],
+                workspaces.c.project_id == wait['project_id'],
+            ))
+        selected = await candidate(conn, wait['project_id'], profile, workspace_kind=kind)
         if selected is None:
             return {'success': True, 'suspended': False}
         await conn.execute(select(tasks.c.id).where(tasks.c.id == selected['owner_id'])
@@ -54,7 +68,8 @@ async def request_evictions(orch, starts):
             continue
         for _ in range(action.count):
             async with orch.db._engine.connect() as conn:
-                wait = await candidate(conn, action.project_id, action.key.profile_id)
+                wait = await candidate(conn, action.project_id, action.key.profile_id,
+                                       workspace_kind=action.workspace_kind)
             if not wait:
                 break
             result = await service.command('wait_evict', {'wait_id': wait['id'], 'reason': 'pressure'})

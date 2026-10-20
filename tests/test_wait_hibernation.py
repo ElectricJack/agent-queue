@@ -802,6 +802,56 @@ async def test_eviction_chooses_least_sunk_then_priority_then_cost(
     assert (await env.db.get_task(winner)).status.value == 'WAITING'
 
 
+async def test_pool_eviction_keeps_the_placed_workspace_kind_through_reselection(env):
+    from sqlalchemy import delete
+
+    from src.models import RepoSourceType, Workspace
+    from src.scheduler import PlacedStart, PoolKey
+    from src.wait_runtime.eviction import candidate, evict, request_evictions
+    from src.wait_runtime.lifecycle import WaitLifecycle
+
+    second = await owner(env.db, 'second', 's2', 'a2')
+    await env.db.update_session('s2', work_dir='/tmp/native-wait')
+    for workspace_id, path, kind in (
+        ('ordinary', '/tmp/wait-v2', 'project-repo'),
+        ('native', '/tmp/native-wait', 'native'),
+    ):
+        await env.db.create_workspace(Workspace(
+            id=workspace_id, project_id='p', workspace_path=path,
+            source_type=RepoSourceType.CLONE, kind_id=kind,
+        ))
+    async with env.db._engine.begin() as conn:
+        await conn.execute(delete(continuations))
+        await register_wait(
+            conn, scope=second, condition={'kind': 'task', 'task_id': 'source'},
+            idempotency_key='native-wait', registry=build_registry(clock=lambda: NOW),
+            policy=Policy(), decide_sleep=lambda *_: SleepDecision('in_place', 'short'),
+            now=NOW + 1, source_watermark=0,
+        )
+        await conn.execute(update(tasks).where(tasks.c.id.in_(['owner', 'second'])).values(
+            status='WAITING', branch_name='aq/owner'))
+        await conn.execute(update(wait_records).where(
+            wait_records.c.id == env.wait_id).values(sleep_decision='in_place'))
+        assert (await candidate(conn, 'p', 'worker-codex'))['owner_id'] == 'second'
+    config = AppConfig()
+    config.wait_policy.hibernation_enabled = True
+    orch = SimpleNamespace(db=env.db, config=config)
+    lifecycle = WaitLifecycle(SimpleNamespace(orch=orch), clock=lambda: NOW + 10)
+
+    async def command(name, args):
+        assert name == 'wait_evict'
+        return await evict(lifecycle, args)
+
+    orch.wait_service = SimpleNamespace(command=AsyncMock(side_effect=command))
+    assert await request_evictions(orch, [PlacedStart(
+        PoolKey('worker-codex'), 'p', 1, 'evict', 'project-repo',
+    )]) == []
+    assert (await intent(env))['task_id'] == 'owner'
+    async with env.db._engine.connect() as conn:
+        assert (await candidate(conn, 'p', 'worker-codex',
+                                workspace_kind='native'))['owner_id'] == 'second'
+
+
 async def test_completed_eviction_reenters_pool_arbitration_immediately(env):
     from src.wait_runtime.lifecycle import WaitLifecycle
 
