@@ -934,17 +934,32 @@ async def test_resume_reserves_common_capacity_only_after_idle_process_stops(env
     orch = SimpleNamespace(db=env.db, config=config, _worktrees_enabled=lambda: False,
                            _pool_quarantine_state=lambda *a: (None, None))
     service = SimpleNamespace(orch=orch, scheduler=SchedulerWaitService(orch, clock=lambda: NOW))
-    driver = ResumeTransaction(service, clock=lambda: NOW + 30)
+    now = [NOW + 30]
+    driver = ResumeTransaction(service, clock=lambda: now[0])
+
+    async def requests():
+        async with env.db._engine.connect() as conn:
+            return list((await conn.execute(select(admission_reservations))).mappings())
+
     assert await driver.reserve('c', 1) is None
     assert (await env.db.get_session('idle')).desired_state == 'stopped'
+    # A blocked reserve durably records the first request, never a grant.
+    [request] = await requests()
+    assert (request['state'], request['created_at'], request['granted_at']) == (
+        'pending', NOW + 30, None)
+    now[0] = NOW + 60
     assert await driver.reserve('c', 1) is None  # Requested stop is not proof of free capacity.
+    assert await requests() == [request]  # An idempotent retry keeps the first boundary.
     await env.db.update_session('idle', state='stopped')
+    now[0] = NOW + 90
     action = await driver.reserve('c', 1)
     assert action is not None and action.continuation_id == 'c'
+    now[0] = NOW + 120
     assert (await driver.reserve('c', 1)).agent_id == action.agent_id
-    async with env.db._engine.connect() as conn:
-        reservations = list((await conn.execute(select(admission_reservations))).mappings())
+    reservations = await requests()
     assert len(reservations) == 1 and reservations[0]['state'] == 'granted'
+    assert (reservations[0]['id'], reservations[0]['fifo_seq']) == (request['id'], request['fifo_seq'])
+    assert (reservations[0]['created_at'], reservations[0]['granted_at']) == (NOW + 30, NOW + 90)
     assert reservations[0]['scope']['profile_id'] == 'worker'
     assert (await env.db.get_task('owner')).status.value == 'RESUME_PENDING'
 

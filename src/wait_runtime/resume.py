@@ -37,6 +37,30 @@ async def verify_saved_branch(orch, task, path):
         await orch.git._arun(['merge-base', '--is-ancestor', intent['saved_head'], ref], cwd=path)
 
 
+async def capacity_request(conn, task, intent, observed, generation, *, now, budget):
+    """The continuation's durable admission request, created once per attempt.
+
+    A blocked reserve records when resume first asked for capacity; retries
+    reuse that row, so slot accounting can split condition from capacity time.
+    """
+    scope = {**observed.binding['scope'], 'generation': generation}
+    row = (await conn.execute(select(admission_reservations).where(
+        admission_reservations.c.continuation_id == intent['id'],
+        admission_reservations.c.state.in_(('pending', 'overdue', 'granted')),
+    ).with_for_update())).mappings().first()
+    if row is None:
+        row = (await conn.execute(insert(admission_reservations).values(
+            id=str(uuid.uuid4()), project_id=task['project_id'], continuation_id=intent['id'],
+            scope=scope, effective_priority=task['effective_priority'], provenance='resume',
+            deadline_at=now + budget, state='pending', created_at=now,
+        ).returning(admission_reservations))).mappings().one()
+    elif row['scope'] != scope or row['effective_priority'] != task['effective_priority']:
+        await conn.execute(update(admission_reservations).where(
+            admission_reservations.c.id == row['id'],
+        ).values(scope=scope, effective_priority=task['effective_priority']))
+    return dict(row)
+
+
 class ResumeTransaction:
     def __init__(self, service, *, clock=time.time):
         self.service = service
@@ -66,6 +90,10 @@ class ResumeTransaction:
             if observed is None:
                 return None
             blocked = {key for key, value in observed.constraints.items() if value['blocked']}
+            now = self.clock()
+            budget = self.orch.config.wait_policy.transition_budget_seconds
+            request = await capacity_request(conn, task, intent, observed, generation,
+                                             now=now, budget=budget)
             if blocked:
                 if blocked <= {'slot', 'workspace'}:
                     # A continuation requires a new process. Retire an unused
@@ -82,19 +110,16 @@ class ResumeTransaction:
                         await conn.execute(update(sessions).where(sessions.c.id == idle).values(
                             desired_state='stopped'))
                 return None
-            now = self.clock()
             agent = Agent(id=str(uuid.uuid4()), name=f"resume-{continuation_id}",
                           profile_id=task['profile_id'], state=AgentState.BUSY,
                           current_task_id=task['id'], last_heartbeat=now,
                           intelligence_class=task['intelligence_class'])
             await self.db._insert_agent_on(conn, agent)
-            await conn.execute(insert(admission_reservations).values(
-                id=str(uuid.uuid4()), project_id=task['project_id'], continuation_id=intent['id'],
-                scope={**observed.binding['scope'], 'generation': generation},
-                effective_priority=task['effective_priority'], provenance='resume',
-                deadline_at=now + self.orch.config.wait_policy.transition_budget_seconds,
-                state='granted', created_at=now, granted_at=now,
-            ))
+            # The grant keeps the first request's created_at and FIFO position.
+            await conn.execute(update(admission_reservations).where(
+                admission_reservations.c.id == request['id'],
+            ).values(state='granted', granted_at=request['granted_at'] or now,
+                     deadline_at=now + budget))
             await conn.execute(update(continuations).where(continuations.c.id == intent['id']).values(
                 resume_state='reserved', version=intent['version'] + 1,
                 launch_attempts=intent['launch_attempts'] + 1,
