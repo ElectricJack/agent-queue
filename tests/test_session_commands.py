@@ -2687,8 +2687,9 @@ class TestEndToEndOnFakeProvider:
         again = await asyncio.wait_for(real_handler.execute("task_close", args), timeout=2)
         assert again["success"] is True and again["status"] == "COMPLETED", again
 
+    @pytest.mark.parametrize("cancel_caller", [False, True])
     async def test_escalated_verification_refusal_does_not_blame_the_workspace(
-        self, db, real_orch, real_handler, provider, tmp_path, monkeypatch
+        self, db, real_orch, real_handler, provider, tmp_path, monkeypatch, cancel_caller
     ):
         """A precondition the workspace cannot satisfy reads as an escalation.
 
@@ -2696,12 +2697,44 @@ class TestEndToEndOnFakeProvider:
         thing is daemon-side delivery state sends it into a retry loop or
         into closing ``--outcome fail`` over passing work (task fleet-willow).
         """
-        import asyncio
+        await self._assert_escalated_verification_refusal(
+            db, real_orch, real_handler, provider, tmp_path, monkeypatch,
+            cancel_caller=cancel_caller,
+        )
 
+    @pytest.mark.perf
+    async def test_escalated_verification_refusal_latency_budget(
+        self, perf_strict, db, real_orch, real_handler, provider, tmp_path, monkeypatch
+    ):
+        """Keep the two-second cold-close budget on an opted-in quiet box."""
+        await self._assert_escalated_verification_refusal(
+            db, real_orch, real_handler, provider, tmp_path, monkeypatch,
+            synchronize=False, close_timeout=2,
+        )
+
+    async def _assert_escalated_verification_refusal(
+        self, db, real_orch, real_handler, provider, tmp_path, monkeypatch, *,
+        cancel_caller=False, synchronize=True, close_timeout=120,
+    ):
+        from src.api.auth import SessionTokenStore
+
+        real_orch.token_store = SessionTokenStore(db)
         await self._launch_via_execute_task(db, real_orch, monkeypatch, tmp_path)
         session = await db.get_session_for_task("t1")
+        before_task = await db.get_task("t1")
+        before_workspace = await db.get_workspace_for_task("t1")
+        token = provider.starts[0].env["AQ_API_TOKEN"]
+        entered = asyncio.Event()
+        release = asyncio.Event()
+        attempts = []
+        if not synchronize:
+            release.set()
 
         async def _stop_escalated(ctx):
+            attempts.append(asyncio.current_task())
+            entered.set()
+            await release.wait()
+            assert ctx.close_session_live is True
             ctx.verification_retry_in_session = True
             ctx.verification_escalated = True
             ctx.verification_issues = ["dirty: task t1 holds no integration workspace"]
@@ -2709,7 +2742,7 @@ class TestEndToEndOnFakeProvider:
             return None, False
 
         monkeypatch.setattr(real_orch, "_run_completion_pipeline", _stop_escalated)
-        close = await asyncio.wait_for(
+        caller = asyncio.create_task(
             real_handler.execute(
                 "task_close",
                 {
@@ -2719,16 +2752,60 @@ class TestEndToEndOnFakeProvider:
                     "work_outcome": "shipped",
                     "summary": "Work done.",
                 },
-            ),
-            timeout=2,
+            )
         )
+        try:
+            if synchronize:
+                # Hold the real close at a known checkpoint, rather than racing
+                # cold command-catalogue construction and PostgreSQL against a
+                # two-second CI deadline. These are deadlock backstops; only the
+                # perf_strict arm above asserts a wall-clock latency budget.
+                await asyncio.wait_for(entered.wait(), timeout=close_timeout)
+                assert not caller.done()
+                assert await db.get_task_meta("t1", "pending_completion") is not None
+                assert await db.get_task_meta("t1", "accepted_close") is None
+                if cancel_caller:
+                    caller.cancel()
+                    with pytest.raises(asyncio.CancelledError):
+                        await caller
+                    assert not attempts[0].done(), "the shielded close must survive"
+                release.set()
+            close = await asyncio.wait_for(
+                attempts[0] if cancel_caller else caller, timeout=close_timeout
+            )
+        finally:
+            # A failed assertion must not leave a shielded close using the
+            # database after its fixture has been torn down.
+            release.set()
+            await asyncio.wait_for(
+                asyncio.gather(caller, *attempts, return_exceptions=True), timeout=120
+            )
 
         assert close["success"] is False and close["escalated"] is True
+        assert close["result"] == "verification_failed"
+        assert close["issues"] == ["dirty: task t1 holds no integration workspace"]
         assert "you can still fix from this workspace" not in close["error"]
         assert "daemon state this workspace cannot change" in close["error"]
         assert "user:dashboard" in close["error"]
-        # Still a refusal, not a close: the task keeps its claim.
-        assert (await db.get_task("t1")).status is TaskStatus.IN_PROGRESS
+        # Still a refusal: neither caller cancellation nor slow verification
+        # may turn daemon-side delivery state into a failed/quarantined worker.
+        task = await db.get_task("t1")
+        assert task.status is TaskStatus.IN_PROGRESS
+        assert (task.assigned_agent_id, task.claim_epoch, task.retry_count) == (
+            before_task.assigned_agent_id, before_task.claim_epoch, before_task.retry_count,
+        )
+        assert await db.get_workspace_for_task("t1") == before_workspace
+        assert (await db.get_agent("a1")).state is AgentState.BUSY
+        assert await real_orch.token_store.validate(token) is not None
+        assert await db.get_task_completion("t1") is None
+        assert await db.get_task_meta("t1", "pending_completion") is None
+        assert await db.get_task_meta("t1", "accepted_close") is None
+        await real_orch.session_reconciler.tick(now=time.time())
+        after_session = await db.get_session(session.id)
+        assert (after_session.state, after_session.instance_token) == (
+            "running", session.instance_token,
+        )
+        assert await db.get_workspace_for_task("t1") == before_workspace
 
     async def test_verification_reopen_returns_ready_and_releases_resources(
         self, db, real_orch, real_handler, provider, tmp_path, monkeypatch
@@ -4555,7 +4632,23 @@ class TestEndToEndOnFakeProvider:
         close surface ever stops threading it through, a read-only reviewer
         is back to being refused for a PR it was never going to open.
         """
-        import asyncio
+        await self._assert_no_op_close(db, real_orch, real_handler, tmp_path, monkeypatch)
+
+    @pytest.mark.perf
+    async def test_no_op_close_latency_budget(
+        self, perf_strict, db, real_orch, real_handler, tmp_path, monkeypatch
+    ):
+        """Measure the two-second close budget only on an opted-in quiet box."""
+        await self._assert_no_op_close(
+            db, real_orch, real_handler, tmp_path, monkeypatch, close_timeout=2
+        )
+
+    async def _assert_no_op_close(
+        self, db, real_orch, real_handler, tmp_path, monkeypatch, *, close_timeout=120
+    ):
+        # The default test always checks the real command and durable outcome.
+        # The 120-second backstop catches hangs; PostgreSQL latency belongs to the
+        # separate perf_strict budget test, not the default CI shard.
 
         wd = await self._launch_via_execute_task(db, real_orch, monkeypatch, tmp_path)
         await self._setup_task_publication(db, real_orch, tmp_path, wd)
@@ -4578,7 +4671,7 @@ class TestEndToEndOnFakeProvider:
                     "summary": "Reviewed; nothing to ship.",
                 },
             ),
-            timeout=2,
+            timeout=close_timeout,
         )
         assert close["success"] is True and close["status"] == "COMPLETED"
         assert seen == {"work_outcome": "no-op"}

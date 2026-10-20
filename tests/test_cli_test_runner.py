@@ -1578,6 +1578,7 @@ cli(["test", "tests/"], prog_name="aq")
     def wrapper(self, tmp_path):
         import os
         import signal
+        import site
         import subprocess
         import sys
         import threading
@@ -1597,6 +1598,11 @@ cli(["test", "tests/"], prog_name="aq")
             AQ_TEST_SLOTS="2",
             AQ_TASK_ID="signalled-run",
             POSTGRES_TEST_DSN="postgresql://test:test@localhost/postgres",
+        )
+        # Changing HOME also changes Python's user site. Keep this interpreter's
+        # installed dependencies while isolating the config and semaphore files.
+        env["PYTHONPATH"] = os.pathsep.join(
+            [site.getusersitepackages(), env.get("PYTHONPATH", "")]
         )
         proc = subprocess.Popen(
             [sys.executable, "-c", self._SCRIPT.format(root=str(root))],

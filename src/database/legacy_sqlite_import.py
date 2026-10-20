@@ -263,6 +263,18 @@ _EXCLUDED_TABLES: frozenset[str] = frozenset(
         "record_compatibility_usage",
         # Per-API-call transcript usage maxima shipped in revision 56.
         "transcript_usage_calls",
+        # Encrypted playbook private values (revision 95), protected
+        # observation snapshots (revision 97) and durable playbook state
+        # namespaces and journals (revision 98) shipped after SQLite removal;
+        # legacy files have none of them.
+        "playbook_private_values",
+        "observation_snapshots",
+        "observation_snapshot_pages",
+        "playbook_state_namespaces",
+        "playbook_state_entries",
+        "playbook_state_operations",
+        # Script input retention pins shipped in PostgreSQL revision 100.
+        "job_input_pins",
     }
 )
 
@@ -358,13 +370,13 @@ _ORDERED_TABLES = [
     morning_report_facts,
     # Frozen outbound payloads and delivery receipts; owner references are soft.
     outbound_deliveries,
-    # Durable managed job contracts/results; owner/workspace references are soft.
-    jobs,
-    # FK → jobs; terminal receipt intents survive until delivery.
-    job_outbox,
     # FK → playbook_artifacts
     playbook_activations,
     playbook_v2_runs,
+    # Managed script jobs now reference playbook_v2_runs.
+    jobs,
+    # FK → jobs; terminal receipt intents survive until delivery.
+    job_outbox,
     # FK → playbook_v2_runs
     playbook_step_receipts,
     playbook_waits,

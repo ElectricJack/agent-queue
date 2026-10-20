@@ -1,6 +1,8 @@
 import { cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it } from "vitest";
+import { collectionNode } from "./projected";
+import { COLLECTION_EXPRESSION_LABELS } from "../types";
 import SemanticNodeInspector from "../SemanticNodeInspector";
 import {
   awaitApproval,
@@ -21,6 +23,30 @@ const overlayFor = (stepId: string) => runOverlay.nodes!.find((node) => node.ste
 afterEach(cleanup);
 
 describe("SemanticNodeInspector", () => {
+  it("shows the reviewed script program, runtime and supporting input pins", () => {
+    render(<SemanticNodeInspector node={{ ...ensureReviewTask, step_kind: "script", script: {
+      program: { shell: "printf approved", runtime: "python", limits: { wall_seconds: 10 } },
+      program_sha256: "program-digest", runtime_sha256: "runtime-digest",
+      executable_sha256: "executable-digest", source_revision: "reviewed-revision",
+      environment_names: ["LABEL"], input_pins: [{ path: "support.json", sha256: "input-digest" }],
+    } }} />);
+    const program = within(screen.getByRole("region", { name: "Script program" }));
+    for (const text of ["printf approved", "program-digest", "runtime-digest", "executable-digest",
+      "reviewed-revision", "LABEL", "support.json", "input-digest"]) {
+      expect(program.getByText(new RegExp(text))).toBeInTheDocument();
+    }
+  });
+
+  it("renders every collection expression with its full projected semantics", () => {
+    render(<SemanticNodeInspector node={collectionNode} />);
+    const inputs = within(screen.getByRole("group", { name: "Inputs" }));
+    for (const row of collectionNode.explanation.inputs!) {
+      const value = inputs.getByLabelText(COLLECTION_EXPRESSION_LABELS[row.value.kind]!);
+      expect(value).toHaveAttribute("data-expression-kind", row.value.kind);
+      expect(value).toHaveTextContent(row.value.display);
+    }
+  });
+
   it("shows inputs, outputs, outcomes and their targets for a command node", () => {
     render(<SemanticNodeInspector node={ensureReviewTask} />);
     const inputs = within(screen.getByRole("group", { name: "Inputs" }));
@@ -131,6 +157,8 @@ describe("SemanticNodeInspector", () => {
     expect(loop.getByText("downstream.tasks")).toBeInTheDocument();
     expect(loop.getByText("task")).toBeInTheDocument();
     expect(loop.getByText("collect")).toBeInTheDocument();
+    expect(loop.getByText("maximum iterations")).toBeInTheDocument();
+    expect(loop.getByText("500")).toBeInTheDocument();
     expect(loop.getByText("open-gate")).toBeInTheDocument();
     expect(loop.getByText("sweep-done")).toBeInTheDocument();
   });

@@ -11,6 +11,7 @@ if TYPE_CHECKING:
     from ..models.activation_state_dto import ActivationStateDTO
     from ..models.artifact_ref_dto import ArtifactRefDTO
     from ..models.event_group_dto import EventGroupDTO
+    from ..models.execution_requirements_dto import ExecutionRequirementsDTO
     from ..models.graph_diagnostic_dto import GraphDiagnosticDTO
     from ..models.graph_edge_dto import GraphEdgeDTO
     from ..models.graph_layout_dto import GraphLayoutDTO
@@ -37,6 +38,8 @@ class PlaybookV2GraphResponse:
                 only when there is no active artifact at all.
             success (bool | Unset):  Default: True.
             purpose (str | Unset):  Default: 'routine'.
+            execution_requirements (ExecutionRequirementsDTO | Unset): Reviewed requirements, never a grant or a resolved
+                principal.
             event_groups (list[EventGroupDTO] | Unset):
             rules (list[RuleClusterDTO] | Unset):
             nodes (list[GraphNodeDTO] | Unset):
@@ -50,6 +53,7 @@ class PlaybookV2GraphResponse:
     activation: ActivationStateDTO
     success: bool | Unset = True
     purpose: str | Unset = "routine"
+    execution_requirements: ExecutionRequirementsDTO | Unset = UNSET
     event_groups: list[EventGroupDTO] | Unset = UNSET
     rules: list[RuleClusterDTO] | Unset = UNSET
     nodes: list[GraphNodeDTO] | Unset = UNSET
@@ -66,6 +70,10 @@ class PlaybookV2GraphResponse:
         success = self.success
 
         purpose = self.purpose
+
+        execution_requirements: dict[str, Any] | Unset = UNSET
+        if not isinstance(self.execution_requirements, Unset):
+            execution_requirements = self.execution_requirements.to_dict()
 
         event_groups: list[dict[str, Any]] | Unset = UNSET
         if not isinstance(self.event_groups, Unset):
@@ -122,6 +130,8 @@ class PlaybookV2GraphResponse:
             field_dict["success"] = success
         if purpose is not UNSET:
             field_dict["purpose"] = purpose
+        if execution_requirements is not UNSET:
+            field_dict["execution_requirements"] = execution_requirements
         if event_groups is not UNSET:
             field_dict["event_groups"] = event_groups
         if rules is not UNSET:
@@ -144,6 +154,7 @@ class PlaybookV2GraphResponse:
         from ..models.activation_state_dto import ActivationStateDTO
         from ..models.artifact_ref_dto import ArtifactRefDTO
         from ..models.event_group_dto import EventGroupDTO
+        from ..models.execution_requirements_dto import ExecutionRequirementsDTO
         from ..models.graph_diagnostic_dto import GraphDiagnosticDTO
         from ..models.graph_edge_dto import GraphEdgeDTO
         from ..models.graph_layout_dto import GraphLayoutDTO
@@ -159,6 +170,13 @@ class PlaybookV2GraphResponse:
         success = d.pop("success", UNSET)
 
         purpose = d.pop("purpose", UNSET)
+
+        _execution_requirements = d.pop("execution_requirements", UNSET)
+        execution_requirements: ExecutionRequirementsDTO | Unset
+        if isinstance(_execution_requirements, Unset):
+            execution_requirements = UNSET
+        else:
+            execution_requirements = ExecutionRequirementsDTO.from_dict(_execution_requirements)
 
         _event_groups = d.pop("event_groups", UNSET)
         event_groups: list[EventGroupDTO] | Unset = UNSET
@@ -224,6 +242,7 @@ class PlaybookV2GraphResponse:
             activation=activation,
             success=success,
             purpose=purpose,
+            execution_requirements=execution_requirements,
             event_groups=event_groups,
             rules=rules,
             nodes=nodes,

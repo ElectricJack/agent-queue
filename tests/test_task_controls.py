@@ -2421,7 +2421,7 @@ async def test_discard_pause_checkpoint_command_audits_and_keeps_ref(env, tmp_pa
     assert "reason is required" in (await command(env, "discard_pause_checkpoint"))["error"]
     result = await command(env, "discard_pause_checkpoint", reason="captured aq/peer")
     assert result == {
-        "task_id": "t", "discarded": True, "branch": saved["branch"],
+        "success": True, "task_id": "t", "discarded": True, "branch": saved["branch"],
         "ref": saved["ref"], "commit": saved["commit"],
     }
     assert await env.db.get_task_meta("t", "manual_pause_checkpoint") is None
@@ -2433,6 +2433,7 @@ async def test_discard_pause_checkpoint_command_audits_and_keeps_ref(env, tmp_pa
     assert record["checkpoint"] == saved
     assert git("rev-parse", saved["ref"]) == saved["commit"]
     again = await command(env, "discard_pause_checkpoint", reason="again")
+    assert again["success"] is False
     assert "no paused checkpoint" in again["error"]
 
 

@@ -639,6 +639,11 @@ class TaskCommandsMixin:
             ``depends_on`` and ``blocks`` lists and include a pre-formatted
             ``formatted`` key with the dependency-aware text representation.
         """
+        from src.observations.commands import snapshot_command
+        from src.observations.snapshots import requested
+
+        if requested(args):
+            return await snapshot_command(self, "list_tasks", args)
         context = await self._fidelity_read_context("list_tasks", args)
         if context is not None:
             if "error" in context:
@@ -821,6 +826,7 @@ class TaskCommandsMixin:
         flat = [_entry(t, include_project=True) for t in active_tasks + finished_tasks[:cap]]
 
         return {
+            "success": True,
             "by_project": by_project,
             "tasks": flat,
             "total": len(tasks),
@@ -1270,7 +1276,7 @@ class TaskCommandsMixin:
 
         tree_data = await self.db.get_task_tree(task_id, max_depth=max_depth)
         if tree_data is None:
-            return {"error": f"Task '{task_id}' not found"}
+            return {"success": False, "error": f"Task '{task_id}' not found"}
 
         root_task: Task = tree_data["task"]
         children: list[dict] = tree_data.get("children", [])
@@ -1300,7 +1306,7 @@ class TaskCommandsMixin:
             readiness_map=readiness,
         )
 
-        result: dict = {
+        result: dict = {"success": True,
             "root": {**self._task_to_dict(root_task), **await task_activity(self.db, root_task.id),
                      **readiness.get(root_task.id, {})},
             "formatted": formatted,
@@ -1319,10 +1325,10 @@ class TaskCommandsMixin:
         """Direct or recursive children of a task.  Backs ``aq task children``."""
         task_id = args.get("task_id")
         if not task_id:
-            return {"error": "task_id is required"}
+            return {"success": False, "error": "task_id is required"}
         task = await self.db.get_task(task_id)
         if task is None:
-            return {"error": f"Task '{task_id}' not found"}
+            return {"success": False, "error": f"Task '{task_id}' not found"}
         out_of_scope = self._assert_task_in_scope(task)
         if out_of_scope:
             return out_of_scope
@@ -1343,10 +1349,10 @@ class TaskCommandsMixin:
         """Computed group progress (counts, waves, max parallelism).  Backs ``aq task progress``."""
         task_id = args.get("task_id")
         if not task_id:
-            return {"error": "task_id is required"}
+            return {"success": False, "error": "task_id is required"}
         task = await self.db.get_task(task_id)
         if task is None:
-            return {"error": f"Task '{task_id}' not found"}
+            return {"success": False, "error": f"Task '{task_id}' not found"}
         out_of_scope = self._assert_task_in_scope(task)
         if out_of_scope:
             return out_of_scope
@@ -1371,12 +1377,12 @@ class TaskCommandsMixin:
         """
         task_id = args.get("task_id")
         if not task_id:
-            return {"error": "task_id is required"}
+            return {"success": False, "error": "task_id is required"}
         if bool(args.get("root")) == bool(args.get("parent_id")):
-            return {"error": "exactly one of parent_id or root is required"}
+            return {"success": False, "error": "exactly one of parent_id or root is required"}
         task = await self.db.get_task(task_id)
         if task is None:
-            return {"error": f"Task '{task_id}' not found"}
+            return {"success": False, "error": f"Task '{task_id}' not found"}
         new_parent = None if args.get("root") else args["parent_id"]
         old_parent = task.parent_task_id
         gate_id: str | None = None
@@ -1471,7 +1477,7 @@ class TaskCommandsMixin:
                     )
                     result.flipped |= gate_flipped
         except HierarchyError as exc:
-            return {"error": f"hierarchy.{exc.code}: {exc.detail}", "code": f"hierarchy.{exc.code}"}
+            return {"success": False, "error": f"hierarchy.{exc.code}: {exc.detail}", "code": f"hierarchy.{exc.code}"}
         await self.db.log_blocked_flips(result.flipped)
         await self.db._notify_settled(result.settled)
         await self.db._notify_ready(result.ready)
@@ -1530,7 +1536,7 @@ class TaskCommandsMixin:
                 "error": f"held task '{held_id}' no longer exists",
             }, None
         if task_id not in locked:
-            return {"error": f"Task '{task_id}' not found", "code": "hierarchy.not_found"}, None
+            return {"success": False, "error": f"Task '{task_id}' not found", "code": "hierarchy.not_found"}, None
         held_parent_id = locked[held_id]
         allowed = {held_id} | set(await self.db.subtree_ids(held_id, conn=conn))
         moved = await self.db.get_task(task_id)
@@ -2131,7 +2137,7 @@ class TaskCommandsMixin:
 
         project_id = args.get("project_id") or self._active_project_id
         if not project_id:
-            return {"error": "project_id is required (no active project set)"}
+            return {"success": False, "error": "project_id is required (no active project set)"}
         unsupported = await self._parent_key_mode_refusal(str(project_id))
         if unsupported is not None:
             return unsupported
@@ -2375,19 +2381,19 @@ class TaskCommandsMixin:
 
         project_id = args.get("project_id") or self._active_project_id
         if not project_id:
-            return {"error": "project_id is required (no active project set)"}
+            return {"success": False, "error": "project_id is required (no active project set)"}
         project = await self.db.get_project(project_id)
         if project is None:
-            return {"error": f"Project '{project_id}' not found"}
+            return {"success": False, "error": f"Project '{project_id}' not found"}
         hierarchy_enabled = project.hierarchical_integration_mode in {"hierarchy", "train"} or (
             project.hierarchical_integration_mode == "development"
             and bool(args.get("_integration_root_ref"))
         )
         if hierarchy_enabled and not project.integration_repository_id:
-            return {"error": "hierarchical integration requires a designated repository"}
+            return {"success": False, "error": "hierarchical integration requires a designated repository"}
         deliverables, deliverables_error = normalize_deliverables(args.get("deliverables"))
         if deliverables_error:
-            return {"error": deliverables_error}
+            return {"success": False, "error": deliverables_error}
         # ``task_id`` is generated *after* parent_id validation below so
         # hierarchical child ids ({parent}.{n}) can be wired.  Placeholder
         # here keeps the downstream code readable.
@@ -2396,6 +2402,7 @@ class TaskCommandsMixin:
         integration_mode = args.get("integration_mode")
         if integration_mode is not None and integration_mode not in INTEGRATION_MODES:
             return {
+                "success": False,
                 "error": f"Invalid integration_mode '{integration_mode}'. "
                 f"Allowed: {', '.join(sorted(INTEGRATION_MODES))} (omit to inherit "
                 "the project/system policy)"
@@ -2410,6 +2417,7 @@ class TaskCommandsMixin:
                 task_type = TaskType(raw_task_type)
             else:
                 return {
+                    "success": False,
                     "error": f"Invalid task_type '{raw_task_type}'. "
                     f"Allowed: {', '.join(sorted(TASK_TYPE_VALUES))}"
                 }
@@ -2454,7 +2462,7 @@ class TaskCommandsMixin:
 
             principal = current_principal()
             if principal is not None and principal.enforced and profile_id:
-                return {"error": "delegation refused: caller has no resolved profile"}
+                return {"success": False, "error": "delegation refused: caller has no resolved profile"}
         if caller_profile_id and profile_id:
             caller_profile = await self.db.get_profile(caller_profile_id)
             if caller_profile is None:
@@ -2462,6 +2470,7 @@ class TaskCommandsMixin:
                 # caller_profile_id mid-run shouldn't widen the child's
                 # scope; refuse the create until the situation is sane.
                 return {
+                    "success": False,
                     "error": f"Caller profile '{caller_profile_id}' not "
                     "found — refusing to create task without a resolved "
                     "capability bound."
@@ -2482,9 +2491,9 @@ class TaskCommandsMixin:
         if profile_id:
             profile = await self.db.get_profile(profile_id)
             if not profile:
-                return {"error": f"Profile '{profile_id}' not found"}
+                return {"success": False, "error": f"Profile '{profile_id}' not found"}
             if error := self._task_execution_profile_error(profile):
-                return {"error": error}
+                return {"success": False, "error": error}
             # The supervisor is the control plane: the subset check that
             # bounds a worker's or playbook's delegation does not apply to it.
             # ``_task_execution_profile_error`` still refuses the supervisor
@@ -2501,6 +2510,7 @@ class TaskCommandsMixin:
                 escalation = _check_capability_escalation(caller_profile, profile)
                 if escalation:
                     return {
+                        "success": False,
                         "error": (
                             f"Capability escalation rejected: child profile "
                             f"'{profile.id}' is not a subset of caller profile "
@@ -2531,9 +2541,10 @@ class TaskCommandsMixin:
         if preferred_workspace_id:
             ws = await self.db.get_workspace(preferred_workspace_id)
             if not ws:
-                return {"error": f"Workspace '{preferred_workspace_id}' not found"}
+                return {"success": False, "error": f"Workspace '{preferred_workspace_id}' not found"}
             if ws.project_id != project_id:
                 return {
+                    "success": False,
                     "error": f"Workspace '{preferred_workspace_id}' belongs to "
                     f"project '{ws.project_id}', not '{project_id}'"
                 }
@@ -2547,7 +2558,7 @@ class TaskCommandsMixin:
                 if os.path.isfile(path):
                     valid_paths.append(os.path.abspath(path))
                 else:
-                    return {"error": f"Attachment file not found: {path}"}
+                    return {"success": False, "error": f"Attachment file not found: {path}"}
             attachments = valid_paths
 
         # Validate optional affinity_agent_id
@@ -2555,13 +2566,14 @@ class TaskCommandsMixin:
         if affinity_agent_id:
             agent = await self.db.get_agent(affinity_agent_id)
             if not agent:
-                return {"error": f"Agent '{affinity_agent_id}' not found for affinity"}
+                return {"success": False, "error": f"Agent '{affinity_agent_id}' not found for affinity"}
 
         # Validate optional affinity_reason
         affinity_reason = args.get("affinity_reason")
         valid_affinity_reasons = {"context", "workspace", "type"}
         if affinity_reason and affinity_reason not in valid_affinity_reasons:
             return {
+                "success": False,
                 "error": f"Invalid affinity_reason '{affinity_reason}'. "
                 f"Allowed: {', '.join(sorted(valid_affinity_reasons))}"
             }
@@ -2574,6 +2586,7 @@ class TaskCommandsMixin:
                 workspace_mode = WorkspaceMode(raw_workspace_mode)
             else:
                 return {
+                    "success": False,
                     "error": f"Invalid workspace_mode '{raw_workspace_mode}'. "
                     f"Allowed: {', '.join(sorted(WORKSPACE_MODE_VALUES))}"
                 }
@@ -2598,9 +2611,10 @@ class TaskCommandsMixin:
                 kind_id = entry.get("kind") or entry.get("kind_id")
                 alias = entry.get("alias")
                 if not kind_id:
-                    return {"error": (f"requires_kinds entry {entry!r} is missing 'kind'")}
+                    return {"success": False, "error": (f"requires_kinds entry {entry!r} is missing 'kind'")}
             else:
                 return {
+                    "success": False,
                     "error": (
                         f"requires_kinds entries must be str or dict; got "
                         f"{type(entry).__name__}: {entry!r}"
@@ -2609,6 +2623,7 @@ class TaskCommandsMixin:
             resolved = await self.db.resolve_workspace_kind(project_id, kind_id)
             if resolved is None:
                 return {
+                    "success": False,
                     "error": (
                         f"Kind '{kind_id}' is not defined for project "
                         f"'{project_id}' and no system default exists. "
@@ -2643,15 +2658,17 @@ class TaskCommandsMixin:
                 )
             else:
                 return {
+                    "success": False,
                     "error": (
                         "depends_on entries must be str or dict; got "
                         f"{type(entry).__name__}: {entry!r}"
                     )
                 }
             if not dep_id:
-                return {"error": f"depends_on entry {entry!r} is missing 'task_id'"}
+                return {"success": False, "error": f"depends_on entry {entry!r} is missing 'task_id'"}
             if dep_type not in DEP_TYPE_VALUES:
                 return {
+                    "success": False,
                     "error": f"Invalid dep_type '{dep_type}'. "
                     f"Allowed: {', '.join(sorted(DEP_TYPE_VALUES))}"
                 }
@@ -2668,14 +2685,14 @@ class TaskCommandsMixin:
                     ),
                 }
             if await self.db.get_task(dep_id) is None:
-                return {"error": f"Dependency task '{dep_id}' not found"}
+                return {"success": False, "error": f"Dependency task '{dep_id}' not found"}
             edges.append((dep_id, dep_type, dep_reason))
 
         parent_id = args.get("parent_id")
         if parent_id:
             parent = await self.db.get_task(parent_id)
             if parent is None:
-                return {"error": f"Parent task '{parent_id}' not found"}
+                return {"success": False, "error": f"Parent task '{parent_id}' not found"}
         if edges:
             # Membership is already the parent-child edge, and a container
             # settles only after its children: a gating edge onto the new
@@ -2712,7 +2729,7 @@ class TaskCommandsMixin:
             held_task = await self.db.get_task(held_id)
             repo = await self.db.get_repo(project.integration_repository_id or "")
             if held_task is None or repo is None:
-                return {"error": "hierarchical filing writer is no longer configured"}
+                return {"success": False, "error": "hierarchical filing writer is no longer configured"}
             try:
                 repair_filing_head = await resolve_workspace_checkpoint(
                     self.db,
@@ -2747,7 +2764,7 @@ class TaskCommandsMixin:
             try:
                 initial_status = TaskStatus(internal_initial_status)
             except ValueError:
-                return {"error": f"Invalid internal initial status '{internal_initial_status}'"}
+                return {"success": False, "error": f"Invalid internal initial status '{internal_initial_status}'"}
         else:
             initial_status = (
                 TaskStatus.DEFINED
@@ -2984,6 +3001,7 @@ class TaskCommandsMixin:
                         await after_create_on(conn, task_id, parent_id)
             except HierarchyError as exc:
                 return {
+                    "success": False,
                     "error": f"hierarchy.{exc.code}: {exc.detail}",
                     "code": f"hierarchy.{exc.code}",
                 }
@@ -3048,6 +3066,7 @@ class TaskCommandsMixin:
                     )
                 except HierarchyError as exc:
                     return {
+                        "success": False,
                         "error": (
                             f"hierarchy.{exc.code}: {exc.detail} "
                             f"(task '{task_id}' was already created; fix the edge with "
@@ -3282,25 +3301,29 @@ class TaskCommandsMixin:
         parent = await self.db.get_task(parent_id)
         if parent is None:
             return {
+                "success": False,
                 "error": f"Parent task '{parent_id}' not found",
                 "code": "hierarchy.not_found",
             }, None
         if parent.project_id != project_id:
             return {
+                "success": False,
                 "error": "parent is in another project",
                 "code": "hierarchy.cross_project",
             }, None
         if parent.status == TaskStatus.COMPLETED:
-            return {"error": "parent is COMPLETED", "code": "hierarchy.container_closed"}, None
+            return {"success": False, "error": "parent is COMPLETED", "code": "hierarchy.container_closed"}, None
         async with self.db._engine.begin() as conn:
             depth = await self.db.structural_depth(parent_id, conn=conn)
         if depth + 1 > MAX_STRUCTURAL_DEPTH:
             return {
+                "success": False,
                 "error": f"parent at structural depth {depth}; cap is {MAX_STRUCTURAL_DEPTH}",
                 "code": "hierarchy.depth",
             }, None
         if naming_depth(parent_id) >= MAX_NAMING_DEPTH:
             return {
+                "success": False,
                 "error": (
                     f"parent '{parent_id}' is at naming depth cap "
                     f"{MAX_NAMING_DEPTH} — a graph cannot mint further dotted children"
@@ -3434,15 +3457,15 @@ class TaskCommandsMixin:
         scoped_session = scope.get("kind") == "session" and not scope.get("elevated")
         project_id = args.get("project_id") or scope.get("project_id") or self._active_project_id
         if not project_id:
-            return {"error": "project_id is required (no active project set)"}
+            return {"success": False, "error": "project_id is required (no active project set)"}
         project = await self.db.get_project(project_id)
         if not project:
-            return {"error": f"Project '{project_id}' not found"}
+            return {"success": False, "error": f"Project '{project_id}' not found"}
 
         raw_graph = args.get("graph")
         spec_path = args.get("spec_path")
         if bool(raw_graph) == bool(spec_path):
-            return {"error": "exactly one of 'graph' or 'spec_path' is required"}
+            return {"success": False, "error": "exactly one of 'graph' or 'spec_path' is required"}
 
         # ``after_review`` gates every node on a document review, like
         # ``create_task``'s.  Resolved before anything is parsed or written,
@@ -3483,13 +3506,14 @@ class TaskCommandsMixin:
                 )
                 if reason == "outside_vault":
                     return {
+                        "success": False,
                         "error": (
                             f"Spec '{spec_path}' resolves outside the vault — "
                             "spec paths must stay inside the vault root"
                         )
                     }
                 if resolved is None:
-                    return {"error": f"Spec '{spec_path}' not found in the vault"}
+                    return {"success": False, "error": f"Spec '{spec_path}' not found in the vault"}
                 with open(resolved, encoding="utf-8") as handle:
                     markdown = handle.read()
                 graph = extract_graph_from_spec(markdown, resolved)
@@ -3500,11 +3524,12 @@ class TaskCommandsMixin:
             if refused is not None:
                 return refused
             return {
+                "success": False,
                 "error": "graph document is invalid",
                 "errors": [e.to_dict() for e in exc.errors],
             }
         except OSError as exc:
-            return {"error": f"Could not read spec '{spec_path}': {exc}"}
+            return {"success": False, "error": f"Could not read spec '{spec_path}': {exc}"}
 
         if not scoped_session:
             phases_refusal = self._phases_need_root_refusal(graph, parent_id)
@@ -3594,6 +3619,7 @@ class TaskCommandsMixin:
         errors, warnings = split_findings(findings)
         if errors:
             return {
+                "success": False,
                 "error": (
                     f"graph validation failed with {len(errors)} error(s) — nothing was created"
                 ),
@@ -3623,6 +3649,7 @@ class TaskCommandsMixin:
             # ``write_plan`` is one transaction, so nothing was created; a
             # dry run performs the same route check and fails the same way.
             return {
+                "success": False,
                 "error": f"hierarchy.{exc.code}: {exc.detail} — nothing was created",
                 "code": f"hierarchy.{exc.code}",
             }
@@ -3666,11 +3693,11 @@ class TaskCommandsMixin:
             return context
         task = await self.db.get_task(args["task_id"])
         if not task:
-            return {"error": f"Task '{args['task_id']}' not found"}
+            return {"success": False, "error": f"Task '{args['task_id']}' not found"}
         if context is not None:
             return await self._fidelity_member_detail(task, context)
         if args.get("clear_needs_attention") and args.get("needs_attention") is not None:
-            return {"error": "--clear-needs-attention and --needs-attention are mutually exclusive"}
+            return {"success": False, "error": "--clear-needs-attention and --needs-attention are mutually exclusive"}
         out_of_scope = self._assert_task_in_scope(task)
         if out_of_scope:
             return out_of_scope
@@ -3835,11 +3862,11 @@ class TaskCommandsMixin:
         """
         task_id = args.get("task_id", "")
         if not task_id:
-            return {"error": "task_id is required"}
+            return {"success": False, "error": "task_id is required"}
 
         task = await self.db.get_task(task_id)
         if not task:
-            return {"error": f"Task '{task_id}' not found"}
+            return {"success": False, "error": f"Task '{task_id}' not found"}
 
         # Upstream: what this task depends on
         depends_on: list[dict] = []
@@ -3895,6 +3922,7 @@ class TaskCommandsMixin:
             )
 
         return {
+            "success": True,
             "task_id": task.id,
             "title": task.title,
             "status": task.status.value,
@@ -3924,16 +3952,17 @@ class TaskCommandsMixin:
         task_id = args.get("task_id", "")
         depends_on = args.get("depends_on", "")
         if not task_id:
-            return {"error": "task_id is required"}
+            return {"success": False, "error": "task_id is required"}
         if not depends_on:
-            return {"error": "depends_on is required"}
+            return {"success": False, "error": "depends_on is required"}
         if task_id == depends_on:
-            return {"error": "A task cannot depend on itself"}
+            return {"success": False, "error": "A task cannot depend on itself"}
 
         dep_type = args.get("dep_type") or DepType.BLOCKS.value
         reason = str(args.get("reason") or "").strip() or None
         if dep_type not in DEP_TYPE_VALUES:
             return {
+                "success": False,
                 "error": f"Invalid dep_type '{dep_type}'. "
                 f"Allowed: {', '.join(sorted(DEP_TYPE_VALUES))}"
             }
@@ -3941,15 +3970,16 @@ class TaskCommandsMixin:
         # Verify both tasks exist.
         task = await self.db.get_task(task_id)
         if not task:
-            return {"error": f"Task '{task_id}' not found"}
+            return {"success": False, "error": f"Task '{task_id}' not found"}
         dep_task = await self.db.get_task(depends_on)
         if not dep_task:
-            return {"error": f"Dependency task '{depends_on}' not found"}
+            return {"success": False, "error": f"Dependency task '{depends_on}' not found"}
 
         # Check for a duplicate edge *of this type*.
         existing = await self.db.get_typed_dependencies(task_id)
         if (depends_on, dep_type) in existing:
             return {
+                "success": False,
                 "error": (
                     f"Dependency already exists: '{task_id}' already has a "
                     f"'{dep_type}' edge to '{depends_on}'"
@@ -3962,7 +3992,7 @@ class TaskCommandsMixin:
             try:
                 validate_dag_with_new_edge(all_deps, task_id, depends_on, dep_type)
             except CyclicDependencyError as exc:
-                return {"error": f"Cannot add dependency: {exc}"}
+                return {"success": False, "error": f"Cannot add dependency: {exc}"}
 
         if dep_type == DepType.WAITS_FOR.value:
             # A waiter that is itself a descendant of the container fans in
@@ -3972,6 +4002,7 @@ class TaskCommandsMixin:
                 validate_waits_for(pc_edges, task_id, depends_on)
             except CyclicDependencyError as exc:
                 return {
+                    "success": False,
                     "error": (
                         f"Cannot add waits-for dependency: '{task_id}' is a child of "
                         f"'{depends_on}' and would fan in over itself ({exc})"
@@ -3986,7 +4017,7 @@ class TaskCommandsMixin:
                 reject_container_target=worker,
             )
         except HierarchyError as exc:
-            return {"error": f"hierarchy.{exc.code}: {exc.detail}", "code": f"hierarchy.{exc.code}"}
+            return {"success": False, "error": f"hierarchy.{exc.code}: {exc.detail}", "code": f"hierarchy.{exc.code}"}
         await self.db.log_event(
             "dependency.added",
             project_id=task.project_id,
@@ -4014,13 +4045,14 @@ class TaskCommandsMixin:
         task_id = args.get("task_id", "")
         depends_on = args.get("depends_on", "")
         if not task_id:
-            return {"error": "task_id is required"}
+            return {"success": False, "error": "task_id is required"}
         if not depends_on:
-            return {"error": "depends_on is required"}
+            return {"success": False, "error": "depends_on is required"}
 
         dep_type = args.get("dep_type") or None
         if dep_type is not None and dep_type not in DEP_TYPE_VALUES:
             return {
+                "success": False,
                 "error": f"Invalid dep_type '{dep_type}'. "
                 f"Allowed: {', '.join(sorted(DEP_TYPE_VALUES))}"
             }
@@ -4028,7 +4060,7 @@ class TaskCommandsMixin:
         # Verify the task exists (the dependency target need not still exist).
         task = await self.db.get_task(task_id)
         if not task:
-            return {"error": f"Task '{task_id}' not found"}
+            return {"success": False, "error": f"Task '{task_id}' not found"}
 
         # Check that a matching edge actually exists.
         existing = await self.db.get_typed_dependencies(task_id)
@@ -4040,6 +4072,7 @@ class TaskCommandsMixin:
         if not matching:
             suffix = f" with dep_type '{dep_type}'" if dep_type else ""
             return {
+                "success": False,
                 "error": (
                     f"No dependency found: '{task_id}' does not depend on '{depends_on}'{suffix}"
                 )
@@ -4055,6 +4088,7 @@ class TaskCommandsMixin:
         await self._emit_task_graph_change("task.updated", task)
 
         return {
+            "success": True,
             "ok": True,
             "task_id": task_id,
             "removed_dependency": depends_on,
@@ -4064,10 +4098,10 @@ class TaskCommandsMixin:
 
     async def _cmd_edit_task(self, args: dict) -> dict:
         if args.get("status") == "PAUSED":
-            return {"error": "Use pause_task to pause safely and stop any running session."}
+            return {"success": False, "error": "Use pause_task to pause safely and stop any running session."}
         task = await self.db.get_task(args["task_id"])
         if not task:
-            return {"error": f"Task '{args['task_id']}' not found"}
+            return {"success": False, "error": f"Task '{args['task_id']}' not found"}
 
         after_review = args.get("after_review")
         review = None
@@ -4077,7 +4111,7 @@ class TaskCommandsMixin:
                 return review_error
 
         if "status" in args and task.status == TaskStatus.PAUSED and task.resume_after is None:
-            return {"error": "Task is manually paused; use resume_task."}
+            return {"success": False, "error": "Task is manually paused; use resume_task."}
 
         # A route is never edited: the router writes it (mandatory-routing
         # spec §5.1).  The hints stay editable — the class hint and the kind —
@@ -4088,7 +4122,7 @@ class TaskCommandsMixin:
             return refusal
         claimed = task.status == TaskStatus.IN_PROGRESS or bool(task.assigned_agent_id)
         if "intelligence_class" in args and claimed:
-            return {"error": "Task is running or claimed; stop the task before changing its class hint."}
+            return {"success": False, "error": "Task is running or claimed; stop the task before changing its class hint."}
 
         VERIFICATION_VALUES = frozenset(v.value for v in VerificationType)
 
@@ -4100,7 +4134,7 @@ class TaskCommandsMixin:
                 new_status = TaskStatus(new_status_raw)
             except ValueError:
                 valid = ", ".join(s.value for s in TaskStatus)
-                return {"error": f"Invalid status '{new_status_raw}'. Valid: {valid}"}
+                return {"success": False, "error": f"Invalid status '{new_status_raw}'. Valid: {valid}"}
             old_status = task.status.value
             status_changed = True
 
@@ -4109,11 +4143,11 @@ class TaskCommandsMixin:
             new_pid = args["project_id"]
             project = await self.db.get_project(new_pid)
             if not project:
-                return {"error": f"Project '{new_pid}' not found"}
+                return {"success": False, "error": f"Project '{new_pid}' not found"}
             if new_pid != task.project_id:
                 blockers = await self.db.get_task_project_move_blockers(task.id)
                 if blockers and any(blockers.values()):
-                    return {"error": str(TaskProjectMoveError(task.id, new_pid, blockers))}
+                    return {"success": False, "error": str(TaskProjectMoveError(task.id, new_pid, blockers))}
             updates["project_id"] = new_pid
         if "title" in args:
             updates["title"] = args["title"]
@@ -4131,6 +4165,7 @@ class TaskCommandsMixin:
                 updates["task_type"] = TaskType(raw_tt)
             else:
                 return {
+                    "success": False,
                     "error": f"Invalid task_type '{raw_tt}'. Allowed: {', '.join(sorted(TASK_TYPE_VALUES))}"
                 }
         if "max_retries" in args:
@@ -4141,6 +4176,7 @@ class TaskCommandsMixin:
                 updates["verification_type"] = VerificationType(raw_vt)
             else:
                 return {
+                    "success": False,
                     "error": f"Invalid verification_type '{raw_vt}'. Allowed: {', '.join(sorted(VERIFICATION_VALUES))}"
                 }
         if "intelligence_class" in args:
@@ -4148,12 +4184,13 @@ class TaskCommandsMixin:
             # An unknown class is refused, as at filing: the router ignores a
             # class missing from its policy, so a typo would lose the hint.
             if class_hint is not None and (class_error := self._validate_routing_class(class_hint)):
-                return {"error": class_error}
+                return {"success": False, "error": class_error}
             updates["class_hint"] = class_hint  # None clears the hint
         if "integration_mode" in args:
             mode = args["integration_mode"]
             if mode is not None and mode not in INTEGRATION_MODES:
                 return {
+                    "success": False,
                     "error": f"Invalid integration_mode '{mode}'. "
                     f"Allowed: {', '.join(sorted(INTEGRATION_MODES))} "
                     "(null clears the override — the task inherits the "
@@ -4169,13 +4206,14 @@ class TaskCommandsMixin:
             if val is not None:
                 agent = await self.db.get_agent(val)
                 if not agent:
-                    return {"error": f"Agent '{val}' not found for affinity"}
+                    return {"success": False, "error": f"Agent '{val}' not found for affinity"}
             updates["affinity_agent_id"] = val  # None clears affinity
         if "affinity_reason" in args:
             val = args["affinity_reason"]
             valid_reasons = {"context", "workspace", "type"}
             if val is not None and val not in valid_reasons:
                 return {
+                    "success": False,
                     "error": f"Invalid affinity_reason '{val}'. "
                     f"Allowed: {', '.join(sorted(valid_reasons))}"
                 }
@@ -4188,6 +4226,7 @@ class TaskCommandsMixin:
                 updates["workspace_mode"] = WorkspaceMode(val)
             else:
                 return {
+                    "success": False,
                     "error": f"Invalid workspace_mode '{val}'. "
                     f"Allowed: {', '.join(sorted(WORKSPACE_MODE_VALUES))}"
                 }
@@ -4203,7 +4242,7 @@ class TaskCommandsMixin:
             try:
                 await self.db.update_task(args["task_id"], **other_updates)
             except TaskProjectMoveError as exc:
-                return {"error": str(exc)}
+                return {"success": False, "error": str(exc)}
         if status_changed:
             await self.db.transition_task(args["task_id"], new_status, context="edit_task")
 
@@ -4248,6 +4287,7 @@ class TaskCommandsMixin:
 
         if not all_fields:
             return {
+                "success": False,
                 "error": (
                     "No fields to update. Provide project_id, title, description, priority, "
                     "task_type, status, max_retries, verification_type, integration_mode, "
@@ -4301,6 +4341,7 @@ class TaskCommandsMixin:
             return None
         if not await self.db.reset_task_route(task.id, **hint):
             return {
+                "success": False,
                 "error": "Task is running or claimed; stop the task before changing its hints."
             }
         return None
@@ -4308,7 +4349,7 @@ class TaskCommandsMixin:
     async def _task_control_scope_error(self, task_id: str) -> dict | None:
         scope = self._current_scope or {}
         if scope.get("kind") == "session" and not scope.get("elevated"):
-            return {"error": "out of scope: task Pause/Resume requires an operator"}
+            return {"success": False, "error": "out of scope: task Pause/Resume requires an operator"}
         task = await self.db.get_task(task_id)
         if task is not None:
             return self._task_findings_scope_error(task)
@@ -4322,7 +4363,7 @@ class TaskCommandsMixin:
         await self.orchestrator.pause_task(task_id)
         task = await self.db.get_task(task_id)
         await self._emit_task_graph_change("task.updated", task)
-        return {"task_id": task_id, "status": task.status.value}
+        return {"success": True, "task_id": task_id, "status": task.status.value}
 
     async def _cmd_resume_task(self, args: dict) -> dict:
         task_id = args["task_id"]
@@ -4343,7 +4384,7 @@ class TaskCommandsMixin:
 
             actor, refusal = await operator_or_supervisor(self.db, current.project_id)
             if refusal:
-                return {"error": refusal}
+                return {"success": False, "error": refusal}
             stopped = await self._confirm_recovery_worker_stopped(incident)
             if "error" in stopped:
                 return stopped
@@ -4360,24 +4401,24 @@ class TaskCommandsMixin:
             )
             task = await self.db.get_task(task_id)
             await self._emit_task_graph_change("task.updated", task)
-            return {"task_id": task_id, "status": task.status.value}
+            return {"success": True, "task_id": task_id, "status": task.status.value}
         task = await self.orchestrator.resume_task(
             task_id, recover_stale_pause=bool(args.get("recover_stale_pause")),
             actor=(self._current_scope or {}).get("session_id") or "local-operator",
         )
         await self._emit_task_graph_change("task.updated", task)
-        return {"task_id": task_id, "status": task.status.value}
+        return {"success": True, "task_id": task_id, "status": task.status.value}
 
     async def _cmd_discard_pause_checkpoint(self, args: dict) -> dict:
         task_id = args["task_id"]
         reason = (args.get("reason") or "").strip()
         if not reason:
-            return {"error": "reason is required"}
+            return {"success": False, "error": "reason is required"}
         error = await self._task_control_scope_error(task_id)
         if error:
             return error
         if await self.db.get_task(task_id) is None:
-            return {"error": f"Task '{task_id}' not found"}
+            return {"success": False, "error": f"Task '{task_id}' not found"}
         actor = (self._current_scope or {}).get("session_id") or "local-operator"
         # Under the pause/resume lock: never race a capture or a resume.
         async with self.orchestrator._task_control_lock(task_id):
@@ -4385,8 +4426,9 @@ class TaskCommandsMixin:
                 task_id, reason=reason, actor=actor,
             )
         if discarded is None:
-            return {"error": f"Task '{task_id}' has no paused checkpoint"}
+            return {"success": False, "error": f"Task '{task_id}' has no paused checkpoint"}
         return {
+            "success": True,
             "task_id": task_id, "discarded": True,
             "branch": discarded.get("branch"), "ref": discarded.get("ref"),
             "commit": discarded.get("commit"),
@@ -4395,7 +4437,7 @@ class TaskCommandsMixin:
     async def _cmd_stop_task(self, args: dict) -> dict:
         error = await self.orchestrator.stop_task(args["task_id"])
         if error:
-            return {"error": error}
+            return {"success": False, "error": error}
         return {"stopped": args["task_id"]}
 
     async def recover_orphaned_integration_task(self, task_id: str, session) -> dict | None:
@@ -4574,7 +4616,7 @@ class TaskCommandsMixin:
             else None
         )
         if row is None:
-            return {"error": "Cannot confirm the old worker has stopped; operator review required"}
+            return {"success": False, "error": "Cannot confirm the old worker has stopped; operator review required"}
         try:
             provider = self.orchestrator.session_providers.create(row.provider, self.config)
             stopped = await asyncio.wait_for(
@@ -4582,9 +4624,9 @@ class TaskCommandsMixin:
                 timeout=10,
             )
         except Exception:
-            return {"error": "Worker liveness check unavailable; recovery was not accepted"}
+            return {"success": False, "error": "Worker liveness check unavailable; recovery was not accepted"}
         if stopped is not True:
-            return {"error": "The old worker may still be running; recovery was not accepted"}
+            return {"success": False, "error": "The old worker may still be running; recovery was not accepted"}
         return {"id": row.id, "instance_token": row.instance_token}
 
     async def _cmd_task_recover(self, args: dict, *, ask_decision=None) -> dict:
@@ -4599,33 +4641,34 @@ class TaskCommandsMixin:
             or not isinstance(reason, str)
             or not 1 <= len(reason.strip()) <= 4000
         ):
-            return {"error": "Provide decision retry|hold|release and a reason of 1 to 4000 characters"}
+            return {"success": False, "error": "Provide decision retry|hold|release and a reason of 1 to 4000 characters"}
         operator_release = args.get("operator_release", False)
         if not isinstance(operator_release, bool):
-            return {"error": "operator_release must be a boolean"}
+            return {"success": False, "error": "operator_release must be a boolean"}
         expected_hold_at = args.get("expected_hold_at")
         if expected_hold_at is not None and (
             decision not in ("retry", "release")
             or isinstance(expected_hold_at, bool)
             or not isinstance(expected_hold_at, (int, float))
         ):
-            return {"error": "expected_hold_at requires retry|release and the prior hold's decided_at"}
+            return {"success": False, "error": "expected_hold_at requires retry|release and the prior hold's decided_at"}
         actor = None
         if operator_release:
             if decision not in ("retry", "release") or expected_hold_at is None:
-                return {"error": "operator_release requires retry|release and expected_hold_at"}
+                return {"success": False, "error": "operator_release requires retry|release and expected_hold_at"}
             from src.commands.supervisor_authority import operator_or_global_supervisor
 
             actor, refusal = await operator_or_global_supervisor(self.db)
             if refusal:
-                return {"error": refusal}
+                return {"success": False, "error": refusal}
         elif decision == "release":
-            return {"error": "decision release requires operator_release"}
+            return {"success": False, "error": "decision release requires operator_release"}
         repair_operation = await self.db.get_active_integration_repair_for_task(task_id)
         verifier_operation = await self.db.get_active_integration_verifier_for_task(task_id)
         if decision != "release" and (repair_operation is not None or verifier_operation is not None):
             operation = repair_operation or verifier_operation
             return {
+                "success": False,
                 "error": (
                     "Task recovery is owned by integration operation "
                     f"{operation['id']}; use the integration operation's existing controls and budgets"
@@ -4637,7 +4680,7 @@ class TaskCommandsMixin:
         if decision == "retry":
             incident = await self.db.get_task_meta(task_id, "supervisor_recovery_incident") or {}
             if incident.get("id") != args.get("incident_id"):
-                return {"error": "Incident is stale or not found"}
+                return {"success": False, "error": "Incident is stale or not found"}
             current = await self.db.get_task(task_id)
             operator_handoff = bool(
                 expected_hold_at is not None
@@ -4651,7 +4694,7 @@ class TaskCommandsMixin:
 
                 actor, refusal = await operator_or_supervisor(self.db, current.project_id)
                 if refusal:
-                    return {"error": refusal}
+                    return {"success": False, "error": refusal}
             stopped_session = await self._confirm_recovery_worker_stopped(incident)
             if "error" in stopped_session:
                 return stopped_session
@@ -4660,7 +4703,7 @@ class TaskCommandsMixin:
             if current is not None and current.assigned_agent_id:
                 incident = await self.db.get_task_meta(task_id, "supervisor_recovery_incident") or {}
                 if incident.get("id") != args.get("incident_id"):
-                    return {"error": "Incident is stale or not found"}
+                    return {"success": False, "error": "Incident is stale or not found"}
                 stopped_session = await self._confirm_recovery_worker_stopped(incident)
         result = await self.db.decide_task_recovery(
             task_id,
@@ -4699,21 +4742,21 @@ class TaskCommandsMixin:
             return disabled
         task_id = args.get("task_id")
         if not isinstance(task_id, str) or not task_id:
-            return {"error": "task_id is required"}
+            return {"success": False, "error": "task_id is required"}
         error = await self._task_control_scope_error(task_id)
         if error:
             return error
         result = await self.db.notify_task_recovery(task_id, project_id=args.get("project_id"))
         if result["outcome"] == "not_found":
-            return {"error": f"Task '{task_id}' not found in this project"}
+            return {"success": False, "error": f"Task '{task_id}' not found in this project"}
         return result
 
     async def _cmd_restart_task(self, args: dict) -> dict:
         task = await self.db.get_task(args["task_id"])
         if not task:
-            return {"error": f"Task '{args['task_id']}' not found"}
+            return {"success": False, "error": f"Task '{args['task_id']}' not found"}
         if task.status == TaskStatus.IN_PROGRESS:
-            return {"error": "Task is currently in progress. Stop it first."}
+            return {"success": False, "error": "Task is currently in progress. Stop it first."}
         project = await self.db.get_project(task.project_id)
         managed = (
             project is not None
@@ -4735,7 +4778,7 @@ class TaskCommandsMixin:
 
                 reservation = await reserve_canonical_task_branch(self.db, task.id)
                 if reservation["outcome"] not in {"acquired", "already_reserved"}:
-                    return {"error": (
+                    return {"success": False, "error": (
                         f"Cannot restart integration task: {reservation['reason']}. "
                         "For a stopped writer, preview "
                         f"aq integration release-owner --task-id {task.id} --dry-run; "
@@ -4750,6 +4793,7 @@ class TaskCommandsMixin:
             assigned_agent_id=None,
         )
         return {
+            "success": True,
             "restarted": args["task_id"],
             "title": task.title,
             "previous_status": old_status,
@@ -4807,6 +4851,7 @@ class TaskCommandsMixin:
                         f"Task {task.id} changed during its restart handoff; retry restart."
                     )}
             return {
+                "success": True,
                 "restarted": task.id,
                 "title": task.title,
                 "previous_status": previous[0].value,
@@ -4817,6 +4862,7 @@ class TaskCommandsMixin:
             await self.db.set_task_meta(task.id, "worker_failure_streak", previous_streak)
         detail = reservation.get("dispatch", {}).get("reason") or reservation.get("reason")
         return {
+            "success": False,
             "error": (
                 f"Cannot restart integration task {task.id}: its repair operation "
                 f"did not hand the branch back to this delegate ({detail}). Run "
@@ -4875,15 +4921,15 @@ class TaskCommandsMixin:
         task_id = args.get("task_id")
         feedback = args.get("feedback", "").strip()
         if not task_id:
-            return {"error": "task_id is required"}
+            return {"success": False, "error": "task_id is required"}
         if not feedback:
-            return {"error": "feedback text is required"}
+            return {"success": False, "error": "feedback text is required"}
 
         task = await self.db.get_task(task_id)
         if not task:
-            return {"error": f"Task '{task_id}' not found"}
+            return {"success": False, "error": f"Task '{task_id}' not found"}
         if task.status == TaskStatus.IN_PROGRESS:
-            return {"error": "Task is currently in progress. Stop it first."}
+            return {"success": False, "error": "Task is currently in progress. Stop it first."}
 
         review_evidence_snapshot = None
         caller_scope = self._current_scope or {}
@@ -4907,7 +4953,7 @@ class TaskCommandsMixin:
                         requested_subject_id=task_id,
                     )
                 except HierarchyError as exc:
-                    return {"error": f"integration review evidence refused: {exc}"}
+                    return {"success": False, "error": f"integration review evidence refused: {exc}"}
 
         old_status = task.status.value
 
@@ -5031,6 +5077,7 @@ class TaskCommandsMixin:
                     )
 
         return {
+            "success": True,
             "reopened": task_id,
             "title": task.title,
             "previous_status": old_status,
@@ -5150,10 +5197,11 @@ class TaskCommandsMixin:
                 }
         if disposition is not None and disposition not in DELIVERY_DISPOSITIONS:
             return {
+                "success": False,
                 "error": f"--disposition must be one of {', '.join(DELIVERY_DISPOSITIONS)}.",
             }
         if disposition == "deliver" and abandon_undelivered:
-            return {"error": "--disposition deliver keeps the work; drop --abandon-undelivered."}
+            return {"success": False, "error": "--disposition deliver keeps the work; drop --abandon-undelivered."}
         if disposition in {"obsolete", "retire"}:
             abandon_undelivered = True
 
@@ -5166,10 +5214,10 @@ class TaskCommandsMixin:
                     "error": "--abandon-undelivered is an operator decision; a worker session cannot make it.",
                 }
             if not task_id:
-                return {"error": "--abandon-undelivered is available only with task_id."}
+                return {"success": False, "error": "--abandon-undelivered is available only with task_id."}
         if abandon_undelivered:
             if not isinstance(abandon_reason, str) or not abandon_reason.strip():
-                return {"error": "--abandon-undelivered requires --reason."}
+                return {"success": False, "error": "--abandon-undelivered requires --reason."}
             if disposition is None:
                 return {
                     "success": False,
@@ -5189,13 +5237,14 @@ class TaskCommandsMixin:
             # --- Single-task mode ---
             task = await self.db.get_task(task_id)
             if not task:
-                return {"error": f"Task '{task_id}' not found"}
+                return {"success": False, "error": f"Task '{task_id}' not found"}
 
             terminal = {TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.BLOCKED}
             if isinstance(abandon_reason, str) and abandon_reason.strip():
                 terminal.update({TaskStatus.PAUSED, TaskStatus.DEFINED, TaskStatus.READY})
             if task.status not in terminal:
                 return {
+                    "success": False,
                     "error": (
                         f"Cannot archive task in {task.status.value} status. "
                         "Archive PAUSED, DEFINED, or READY tasks with --reason, "
@@ -5225,7 +5274,7 @@ class TaskCommandsMixin:
                 # instead of just printing a code.
                 return self._hierarchy_failure(exc)
             if not success:
-                return {"error": f"Failed to archive task '{task_id}'"}
+                return {"success": False, "error": f"Failed to archive task '{task_id}'"}
 
             await self.db.log_event(
                 "task_archived",
@@ -5234,6 +5283,7 @@ class TaskCommandsMixin:
             )
             await self._emit_task_graph_change("task.archived", task)
             return {
+                "success": True,
                 "archived": task_id,
                 "title": task.title,
                 "status": task.status.value,
@@ -5241,7 +5291,7 @@ class TaskCommandsMixin:
             }
 
         if not project_id and not task_id:
-            return {"error": "Provide task_id or project_id."}
+            return {"success": False, "error": "Provide task_id or project_id."}
 
         # --- Bulk mode ---
         include_failed = args.get("include_failed", False)
@@ -5255,7 +5305,7 @@ class TaskCommandsMixin:
 
         if not tasks_to_archive:
             scope = f" in project `{project_id}`" if project_id else ""
-            return {"message": f"No completed tasks to archive{scope}."}
+            return {"success": True, "message": f"No completed tasks to archive{scope}."}
 
         # Phase 1 — gather results and dependencies before any deletions.
         task_data: list[tuple] = []
@@ -5317,6 +5367,7 @@ class TaskCommandsMixin:
                 break
 
         return {
+            "success": True,
             "archived_count": len(archived),
             "archived_ids": [a["id"] for a in archived],
             "archived": archived,
@@ -5342,6 +5393,7 @@ class TaskCommandsMixin:
         )
         total = await self.db.count_archived_tasks(project_id=project_id)
         return {
+            "success": True,
             "tasks": tasks,
             "count": len(tasks),
             "total": total,
@@ -5379,6 +5431,7 @@ class TaskCommandsMixin:
             blocked_total, blocked = report.total, report.roots
 
         return {
+            "success": True,
             "enabled": cfg.enabled,
             "after_hours": cfg.after_hours,
             "statuses": cfg.statuses,
@@ -5400,15 +5453,15 @@ class TaskCommandsMixin:
         task_id = args.get("task_id")
         input_text = args.get("input", "").strip()
         if not task_id:
-            return {"error": "task_id is required"}
+            return {"success": False, "error": "task_id is required"}
         if not input_text:
-            return {"error": "input text is required"}
+            return {"success": False, "error": "input text is required"}
 
         task = await self.db.get_task(task_id)
         if not task:
-            return {"error": f"Task '{task_id}' not found"}
+            return {"success": False, "error": f"Task '{task_id}' not found"}
         if task.status != TaskStatus.WAITING_INPUT:
-            return {"error": f"Task is not waiting for input (status: {task.status.value})"}
+            return {"success": False, "error": f"Task is not waiting for input (status: {task.status.value})"}
 
         # Append the human reply to the task description so the agent sees it
         # when the task is re-executed.
@@ -5429,6 +5482,7 @@ class TaskCommandsMixin:
             payload=input_text[:500],
         )
         return {
+            "success": True,
             "task_id": task_id,
             "title": task.title,
             "status": "READY",
@@ -5436,17 +5490,18 @@ class TaskCommandsMixin:
 
     async def _cmd_set_task_status(self, args: dict) -> dict:
         if args.get("status") == "PAUSED":
-            return {"error": "Use pause_task to pause safely and stop any running session."}
+            return {"success": False, "error": "Use pause_task to pause safely and stop any running session."}
         task_id = args["task_id"]
         new_status = args["status"]
         task = await self.db.get_task(task_id)
         if not task:
-            return {"error": f"Task '{task_id}' not found"}
+            return {"success": False, "error": f"Task '{task_id}' not found"}
         old_status = task.status.value
         if new_status == TaskStatus.COMPLETED.value:
             open_children = await self.db.open_children(task_id)
             if open_children:
                 return {
+                    "success": False,
                     "error": f"task {task_id} has open children: {', '.join(open_children)}",
                     "code": "hierarchy.open_children",
                     "open_children": open_children,
@@ -5456,6 +5511,7 @@ class TaskCommandsMixin:
             origin = await self.db.get_task_branch_origin_for_promotion(task.id, repo_id or "")
             if task.branch_name or origin:
                 return {
+                    "success": False,
                     "error": "A task with a Git branch or origin needs completion provenance. "
                     "Use task close for held work, or integration record-root-noop for an "
                     "unheld no-change root whose published head equals its recorded base.",
@@ -5463,6 +5519,7 @@ class TaskCommandsMixin:
                 }
         await self.db.transition_task(task_id, TaskStatus(new_status), context="admin_set_status")
         return {
+            "success": True,
             "task_id": task_id,
             "old_status": old_status,
             "new_status": new_status,
@@ -5473,8 +5530,9 @@ class TaskCommandsMixin:
         """Skip a BLOCKED/FAILED task to unblock its dependency chain."""
         error, unblocked = await self.orchestrator.skip_task(args["task_id"])
         if error:
-            return {"error": error}
+            return {"success": False, "error": error}
         return {
+            "success": True,
             "skipped": args["task_id"],
             "unblocked_count": len(unblocked),
             "unblocked": [{"id": t.id, "title": t.title} for t in unblocked],
@@ -5489,9 +5547,10 @@ class TaskCommandsMixin:
         """
         task = await self.db.get_task(task_id)
         if not task:
-            return {"error": f"Task '{task_id}' not found"}
+            return {"success": False, "error": f"Task '{task_id}' not found"}
         if task.status != TaskStatus.COMPLETED:
             return {
+                "success": False,
                 "error": (
                     f"--disposition deliver applies to completed work; {task_id} is "
                     f"{task.status.value}."
@@ -5525,6 +5584,7 @@ class TaskCommandsMixin:
             payload=json.dumps({"disposition": "deliver", "undelivered": len(undelivered)}),
         )
         return {
+            "success": True,
             "archived": "",
             "kept": task_id,
             "title": task.title,
@@ -5560,9 +5620,10 @@ class TaskCommandsMixin:
         if task_id:
             task = await self.db.get_task(task_id)
             if not task:
-                return {"error": f"Task '{task_id}' not found"}
+                return {"success": False, "error": f"Task '{task_id}' not found"}
             if task.status != TaskStatus.BLOCKED:
                 return {
+                    "success": True,
                     "task_id": task_id,
                     "status": task.status.value,
                     "stuck_downstream": [],
@@ -5570,6 +5631,7 @@ class TaskCommandsMixin:
                 }
             stuck = await self.orchestrator._find_stuck_downstream(task_id)
             return {
+                "success": True,
                 "task_id": task_id,
                 "title": task.title,
                 "status": task.status.value,
@@ -5595,6 +5657,7 @@ class TaskCommandsMixin:
                     }
                 )
         return {
+            "success": True,
             "project_id": pid,
             "stuck_chains": chains,
             "total_stuck_chains": len(chains),
@@ -5603,18 +5666,18 @@ class TaskCommandsMixin:
     async def _cmd_get_task_result(self, args: dict) -> dict:
         result = await self.db.get_task_result(args["task_id"])
         if not result:
-            return {"error": f"No results found for task '{args['task_id']}'"}
-        return result
+            return {"success": False, "error": f"No results found for task '{args['task_id']}'"}
+        return {**result, "success": True}
 
     async def _cmd_get_agent_error(self, args: dict) -> dict:
         task_id = args["task_id"]
         task = await self.db.get_task(task_id)
         if not task:
-            return {"error": f"Task '{task_id}' not found"}
+            return {"success": False, "error": f"Task '{task_id}' not found"}
 
         result = await self.db.get_task_result(task_id)
 
-        info = {
+        info = {"success": True,
             "task_id": task_id,
             "title": task.title,
             "status": task.status.value,
@@ -5783,6 +5846,9 @@ class TaskCommandsMixin:
         try:
             labels = await self.db.get_task_labels(str(task_id))
         except Exception:
+            from src.doctor.models import observation_read_failed
+
+            observation_read_failed("task_labels_unavailable", task.project_id)
             labels = []
         for lbl in labels:
             if lbl.startswith("hold:"):
@@ -5904,6 +5970,9 @@ class TaskCommandsMixin:
         try:
             blockers = await self.db.get_blocking_dependencies(str(task_id))
         except Exception:
+            from src.doctor.models import observation_read_failed
+
+            observation_read_failed("blocking_dependencies_unavailable", task.project_id)
             blockers = []
         delivery_targets = [b[0] for b in blockers if b[3] == DepType.DELIVERY_OF.value]
         try:
@@ -5930,6 +5999,9 @@ class TaskCommandsMixin:
         try:
             gates = await self.db.get_gates_for_task(str(task_id))
         except Exception:
+            from src.doctor.models import observation_read_failed
+
+            observation_read_failed("task_gates_unavailable", task.project_id)
             gates = []
         for g in gates:
             if g["status"] != "resolved":
@@ -5959,7 +6031,18 @@ class TaskCommandsMixin:
         provider_hold = None
         availability = getattr(self.orchestrator, "provider_availability", None)
         if availability is not None and not retirement:
-            provider_hold = await availability.hold_for(task)
+            from src.doctor.models import observation_context
+
+            observation = observation_context.get()
+            if observation is not None:
+                # Supply these reads explicitly: hold_for's human diagnostic
+                # fallback swallows their failures and cannot prove absence.
+                profiles = {profile.id: profile for profile in await self.db.list_profiles()}
+                if project is None or (task.profile_id and task.profile_id not in profiles):
+                    observation.incomplete("provider_context_unavailable", project_id=task.project_id)
+                provider_hold = await availability.hold_for(task, project=project, profiles=profiles)
+            else:
+                provider_hold = await availability.hold_for(task)
         if provider_hold is not None:
             until = provider_hold.get("until")
             reasons.append(Reason(
@@ -6207,6 +6290,9 @@ class TaskCommandsMixin:
                 router, task.id, since=now - _ROUTER_RUN_LOOKBACK_SECONDS
             )
         except Exception:  # diagnostics only: no run is "awaiting"
+            from src.doctor.models import observation_read_failed
+
+            observation_read_failed("router_run_unavailable", task.project_id)
             logger.debug("explain: router run lookup failed for %s", task.id, exc_info=True)
             run = None
         emitted = getattr(self.orchestrator, "__dict__", {}).get("_route_needed_emitted") or {}

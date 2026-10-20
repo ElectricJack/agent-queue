@@ -10,7 +10,7 @@ import pytest
 from sqlalchemy import select, update
 from src.config import AppConfig
 from src.database import Database
-from src.database.tables import workspaces, jobs, job_outbox, job_workspace_pins, tasks
+from src.database.tables import workspaces, jobs, job_outbox, job_workspace_pins, job_input_pins, tasks
 from src.models import Project, Task, TaskStatus, Workspace, RepoSourceType, Agent
 from src.jobs.policy import JobError
 from src.jobs.result import build_result
@@ -223,7 +223,7 @@ async def test_jobs_migration_handles_existing_workspace_schema_and_is_idempoten
     try:
         await database.initialize()
         async with database._engine.begin() as conn:
-            for table in (job_outbox, job_workspace_pins, jobs):
+            for table in (job_input_pins, job_outbox, job_workspace_pins, jobs):
                 await conn.execute(text(f'DROP TABLE "{table.name}"'))
             for name in ("generation", "job_pin_count"):
                 await conn.execute(text(f'ALTER TABLE workspaces DROP COLUMN "{name}"'))

@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any, Literal
 
 from pydantic import BaseModel
+from src.observations.models import SnapshotValue
 
 
 class ProjectSummary(BaseModel):
@@ -141,7 +142,7 @@ class WorkspaceListDiagnostics(BaseModel):
     authority: str
 
 
-class ListProjectsResponse(BaseModel):
+class ListProjectsResponse(SnapshotValue):
     projects: list[ProjectSummary] = []
 
 
