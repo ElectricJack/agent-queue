@@ -96,14 +96,20 @@ class TrainControls:
         return (dict(task), dict(origins[0]), dict(repo), dict(completion) if completion else None,
                 request.completion_id)
 
-    async def _assert_root_unheld(self, conn, task, *, subject="root", action="recording a no-op"):
-        from src.database.queries.integration_state_queries import unresolved_claim_clause
+    async def _assert_root_unheld(self, conn, task, *, subject="root", action="recording a no-op",
+                                  retire_epic_reservation=False):
+        from src.database.queries.integration_state_queries import (
+            session_attached_clause,
+            unresolved_claim_clause,
+        )
         from src.database.tables import sessions, task_metadata, workspaces
         from src.integration.lock import BranchLock
         from src.integration.models import BranchKey
 
         if await conn.scalar(select(sessions.c.id).where(
-            sessions.c.task_id == task["id"], sessions.c.state.in_(("starting", "running", "draining")),
+            sessions.c.task_id == task["id"],
+            session_attached_clause() if retire_epic_reservation
+            else sessions.c.state.in_(("starting", "running", "draining")),
         ).limit(1)) or await conn.scalar(select(workspaces.c.id).where(
             workspaces.c.locked_by_task_id == task["id"],
         ).limit(1)):
@@ -118,7 +124,14 @@ class TrainControls:
         owner = await BranchLock(self.db).lock_on(conn, BranchKey(
             repository_id=task["repo_id"], branch=task["branch_name"],
         ))
-        if owner and (owner["holder"] or owner["handoff_state"] != "released"):
+        retire = bool(retire_epic_reservation and owner
+            and task["status"] == "COMPLETED"
+            and owner["owner_id"] == task["id"] and owner["owner_role"] == "worker"
+            and owner["handoff_state"] == "reserved"
+            and owner["session_id"] is None and owner["workspace_id"] is None
+            and owner["holder"] in (None, task["id"])
+            and (owner["expires_at"] is None or owner["expires_at"] <= self.clock()))
+        if owner and (owner["holder"] or owner["handoff_state"] != "released") and not retire:
             raise ValueError(f"{subject} still has branch ownership; release it before {action}")
         if await conn.scalar(select(integration_batches.c.id).where(
             integration_batches.c.id.in_(select(integration_batch_members.c.batch_id).where(
@@ -127,6 +140,37 @@ class TrainControls:
             integration_batches.c.lifecycle != "promoted",
         ).limit(1)):
             raise ValueError(f"{subject} belongs to an open batch")
+        if retire:
+            from src.database.tables import integration_branch_owners as owners
+            from src.database.tables import integration_candidate_ref_mutations as mutations
+            from src.integration.delegate_release import live_integration_owner
+
+            branch = owner["ref"].removeprefix("refs/heads/")
+            if await live_integration_owner(conn, [task["id"]]) or await conn.scalar(
+                select(mutations.c.id).where(
+                    mutations.c.repository_id == owner["repository_id"],
+                    mutations.c.branch.in_((branch, "refs/heads/" + branch)),
+                    mutations.c.state == "reserved",
+                ).limit(1)
+            ):
+                raise ValueError("epic still has an integration operation or ref mutation")
+
+            # lock_on excludes managed ref acquisition (including ref aliases).
+            # Bump both fences so no previous authority can survive retirement.
+            token = max(owner["fence_token"], owner["fence"] or 0) + 1
+            swapped = await conn.execute(update(owners).where(
+                owners.c.id == owner["id"],
+                owners.c.fence_token == owner["fence_token"],
+                owners.c.fence.is_not_distinct_from(owner["fence"]),
+                owners.c.handoff_state == "reserved",
+            ).values(handoff_state="released", holder=None, expires_at=self.clock(),
+                     fence_token=token, fence=token if owner["fence"] is not None else None,
+                     updated_at=self.clock()))
+            if swapped.rowcount != 1:
+                raise ValueError("epic branch ownership changed; preview again")
+            return {"owner_row_id": owner["id"], "previous_fence_token": owner["fence_token"],
+                    "previous_fence": owner["fence"], "released_fence_token": token}
+        return None
 
     async def record_root_noop(self, task_id, *, dry_run, expected_head_sha, operator_id, reason,
                                expected_project_id=None):
@@ -289,6 +333,7 @@ class TrainControls:
                             expected_head_sha=None, reason="", expected_project_id=None):
         """Observe/request the normal train; a visited run never implies PASS."""
         from src.git.manager import is_valid_git_oid
+        from src.integration.lock import CRITICAL_SECTION_SECONDS
 
         if not dry_run and (not is_valid_git_oid(expected_head_sha or "") or not reason.strip()):
             raise ValueError("apply requires the preview head and a nonblank reason")
@@ -314,7 +359,7 @@ class TrainControls:
             return {**result, "outcome": "changed"}
         if self.train is None:
             raise ValueError("the Git-first integration train is unavailable")
-        async with self.db.immediate() as conn:
+        async with asyncio.timeout(CRITICAL_SECTION_SECONDS), self.db.immediate() as conn:
             await self.db.lock_hierarchy_project(conn, task["project_id"])
             await self.db._slot_reset_claim_sessions(conn, task_id, lock=True)
             await conn.execute(select(tasks.c.id).where(tasks.c.id == task_id).with_for_update())
@@ -322,10 +367,17 @@ class TrainControls:
                 raise ValueError("epic identity changed; preview again")
             if task["assigned_agent_id"]:
                 raise ValueError("epic still has an assigned agent")
-            await self._assert_root_unheld(conn, task, subject="epic",
-                                           action="requesting aggregate reverification")
-        if not await observed.observation.is_fresh():
-            return {**result, "outcome": "changed"}
+            retired = await self._assert_root_unheld(conn, task, subject="epic",
+                action="requesting aggregate reverification", retire_epic_reservation=True)
+            if not await observed.observation.is_fresh():
+                # Roll back any retirement along with the refused observation.
+                await conn.rollback()
+                return {**result, "outcome": "changed"}
+            if retired:
+                await self.db.log_event("integration.epic_reservation_released",
+                    project_id=task["project_id"], task_id=task_id,
+                    payload=json.dumps({**retired, "operator_id": operator_id, "reason": reason,
+                                        "head_sha": expected_head_sha}), conn=conn)
         audit = {**result, "operator_id": operator_id, "reason": reason}
         await self.db.log_event("integration.epic_reverification_requested",
             project_id=task["project_id"], task_id=task_id, payload=json.dumps(audit))

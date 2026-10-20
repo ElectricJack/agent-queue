@@ -353,6 +353,11 @@ used 961 Git commands in 2.864 seconds; the warm pass used zero commands with
 - `aq integration reverify-epic EPIC_ID` previews aggregate verification for a completed epic. Apply with `--apply --head HEAD_SHA --reason REASON` to request one bounded train visit, including when the old owner is released. The result names the actual visit state and blockers; `visited` does not mean checks or review passed. Read the [control specification](../specs/design/epic-aggregate-reverification.md) for the operator handoff.
 - `aq integration record-root-noop ROOT_TASK_ID` previews a no-artifact completion for an unheld no-code root; apply requires `--apply --head HEAD_SHA --reason REASON`.
 
+Reverification apply also retires the completed epic's own detached `worker`
+reservation under its branch fence. The reservation must have no session,
+workspace or unexpired lease. Preview leaves it intact; live writers, other
+owners, attached rows and open batches still block the request.
+
 Removing a required check from project policy causes the next root or epic
 target visit to supersede an open, unpromoted batch that froze that check. Its
 sources can seal under the updated policy; the original snapshot and sources
