@@ -9018,7 +9018,7 @@
         "integration-ownership"
       ],
       "default_arm": true,
-      "digest": "sha256:557135f7f39c62d3be00818ae9dc28de97a43c96f3a590f17dd691e5f32612ba",
+      "digest": "sha256:a3f67fae450f8e4d3119a84bcbae4ebe12bbdf86ef5a2803d4e986e7ff58f25c",
       "imports": [
         "src.database.tables",
         "src.integration.models",
@@ -9026,7 +9026,8 @@
         "src.models"
       ],
       "markers": [
-        "asyncio"
+        "asyncio",
+        "parametrize"
       ],
       "summary": "Fenced ownership for repository-qualified integration branches."
     },
