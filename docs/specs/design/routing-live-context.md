@@ -118,6 +118,25 @@ compatible alternative with free observed capacity by the existing pressure
 score. With no free candidate, preserve queued routing by pressure. Headroom is
 an observation used to rank preference, never an admission reservation.
 
+`balance.usage_mode: headroom` optionally weights each candidate's capacity by
+its provider's remaining quota below or at the soft limit. The default,
+`soft_limit`, retains the existing scoring and policy digest. In headroom mode,
+the binding window is the fullest fresh, unreset window for that provider;
+its factor is `1 - used_percent / 100`. Windows whose reset time has passed
+are excluded, as are stale readings. Unknown quota or percentage-only readings
+without freshness evidence have a neutral factor of 1. No reset-time pacing
+or comparison of absolute quotas between providers is inferred.
+
+Above `usage_soft_percent`, the existing soft-limit penalty applies unchanged
+and the additional headroom factor is 1. Class, lane, preference and reserved
+cell rules still apply before pressure selection. With equal slots and steady
+20% / 70% usage, routine work without a harness preference spreads in the
+80:30 ratio of effective capacity as routed backlog grows. Scores, decision
+evidence and the route reason name `usage_headroom_factor` and the binding
+window/scope/reset; `aq task explain` exposes that persisted reason. This is
+an opt-in policy mechanism; enabling it in an installed routing policy still
+requires the normal reviewed artifact activation.
+
 Apply recomputes this selection under the existing route lock. Persisted reasons
 and decision evidence name selected class/profile/provider, load and headroom,
 availability, quota freshness/age and snapshot age, including why a preferred
