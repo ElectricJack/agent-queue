@@ -252,6 +252,7 @@ start code work, tests or QA from a digest author turn.
     "integration_authorize_root",
     "integration_supersede_completion",
     "integration_release_owner",
+    "integration_restore_task_origin",
     "integration_reserve_owner",
     "integration_clear_retained_recovery",
     "integration_release_stale_owners",

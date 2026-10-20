@@ -1819,6 +1819,29 @@ class IntegrationCommandsMixin:
             outcome = "not_eligible"
         return {"success": True, "outcome": outcome, "outcomes": serialized}
 
+    async def _cmd_integration_restore_task_origin(self, args: dict) -> dict:
+        """Preview/apply restoration of a task's branch to its recorded origin."""
+        from pydantic import ValidationError
+
+        from src.commands.contracts.integration import IntegrationRestoreTaskOriginArgs
+        from src.integration.owner_recovery import owner_recovery_for
+
+        try:
+            request = IntegrationRestoreTaskOriginArgs.model_validate(args)
+        except ValidationError as exc:
+            return _failure("not_eligible", f"invalid origin restore request: {exc}")
+        task = await self.db.get_task(request.task_id)
+        if task is None:
+            return _failure("not_found", "task does not exist")
+        principal, refusal = await integration_operator(self.db, task.project_id)
+        if refusal is not None:
+            return _failure("unauthorized", refusal)
+        recovery = owner_recovery_for(self.orchestrator)
+        if recovery is None:
+            return _failure("not_eligible", "owner recovery is unavailable")
+        result = await recovery.restore_task_origin(request, principal=principal)
+        return _with_reason(result["outcome"] in {"preview", "restored"}, result)
+
     async def _cmd_integration_reserve_owner(self, args: dict) -> dict:
         """Restore one stopped producer's missing canonical branch reservation."""
         from pydantic import ValidationError

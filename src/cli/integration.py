@@ -457,6 +457,31 @@ def integration_release_owner(
     _execute(ctx, "integration_release_owner", args)
 
 
+@integration.command("restore-task-origin")
+@click.option("--task-id", required=True)
+@click.option("--origin-id")
+@click.option("--expected-remote-oid")
+@click.option("--expected-fence-token", type=int)
+@click.option("--reason", default="")
+@click.option("--apply", is_flag=True)
+@click.pass_context
+@_handle_errors
+def integration_restore_task_origin(
+    ctx, task_id, origin_id, expected_remote_oid, expected_fence_token, reason, apply,
+):
+    """Preview restoration to the recorded origin; apply with the preview's fences."""
+    if apply and (not origin_id or not expected_remote_oid
+                  or expected_fence_token is None or not reason.strip()):
+        raise click.UsageError("--apply requires --origin-id, --expected-remote-oid, "
+                               "--expected-fence-token and --reason")
+    args = {"task_id": task_id, "dry_run": not apply, "reason": reason}
+    for key, value in (("origin_id", origin_id), ("expected_remote_oid", expected_remote_oid),
+                       ("expected_fence_token", expected_fence_token)):
+        if value is not None:
+            args[key] = value
+    _execute(ctx, "integration_restore_task_origin", args)
+
+
 @integration.command("reserve-owner")
 @click.option("--task-id", required=True)
 @click.pass_context
