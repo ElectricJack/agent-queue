@@ -1372,6 +1372,22 @@
       }
     },
     {
+      "name": "workspace_retire_claim",
+      "description": "Remove a worktree slot's leftover .aq/claim.json when its holder provably let go: the slot is unlocked, the holder task is completed, paused, released or superseded, and no live session works there. Refuses a claim that may still be live. Use when claim preparation reports 'retains a foreign claim'.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "workspace_id": {
+            "type": "string",
+            "description": "Slot workspace id whose claim file to retire."
+          }
+        },
+        "required": [
+          "workspace_id"
+        ]
+      }
+    },
+    {
       "name": "workspace_reap",
       "description": "Explicitly reap a retired worktree slot (removes its directory + row). Refuses live slots via /proc liveness check. Pass either 'workspace_id' to reap one slot, or 'all_retired: true' to sweep every retired slot in the project scope. Worktree-execution spec \u00a76.8.",
       "input_schema": {
@@ -18281,6 +18297,7 @@
     "workspace_doctor": "project",
     "workspace_reap": "project",
     "workspace_cutover": "project",
+    "workspace_retire_claim": "project",
     "list_project_roots": "project",
     "browse_project_root": "project",
     "get_github_auth_status": "project",
