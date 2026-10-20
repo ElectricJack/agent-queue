@@ -167,6 +167,9 @@ Preservation first proves the local task ref, recorded task origin, claim time
 and matching slot sentinel. An unrelated detached slot is skipped; a missing
 local ref appears as `skip_preserve` with reason `missing_local_ref`. Unpublished
 work without provenance returns `unproven_task_work`, leaving it in place.
+Detached checkouts skipped for a missing task ref or mismatched sentinel remain
+intact and their released slots are disabled, including clean checkouts, until
+their unknown commits can be reviewed.
 It takes no `--project-id`: the task (or the owner row's repository) names the
 project, and the caller's token has to name the same one. A project's supervisor session may
 therefore run this recovery for its own work and is refused for another project's — see

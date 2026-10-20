@@ -32,7 +32,8 @@ never from the task row or its status:
 3. **Release in one transaction.**  A compare-and-swap on
    ``(id, fence_token, handoff_state)`` (``stale_fence`` when it misses)
    releases the row with a fresh fence, unlocks the row's workspace
-   (disabling it when dirty, so allocation cannot recycle it) and releases
+   (disabling it when dirty or retaining an unproven detached checkout, so
+   allocation cannot recycle it) and releases
    the gone writer's claim, then writes the audit row and
    ``integration.owner_recovered``.
 
@@ -278,6 +279,7 @@ class _Plan:
 
     preserved: bool
     workspace_clean: bool
+    retain_checkout: bool = False
 
 
 class OwnerRecovery:
@@ -612,6 +614,7 @@ class OwnerRecovery:
         preserve: list[tuple[str, str | None, str]] = []  # (kind, worktree, sha)
         detach: list[str] = []
         workspace_clean = True
+        retain_checkout = False
         row_inspected = False
         async with self._mutex(checkout):
             try:
@@ -674,7 +677,19 @@ class OwnerRecovery:
                 dirty = await self._dirty(path)
                 if row_path is not None and _same_path(path, row_path):
                     workspace_clean, row_inspected = not dirty, True
-                if own_detached and not self._matching_sentinel(path, row, branch):
+                sentinel_matches = (
+                    not own_detached or self._matching_sentinel(path, row, branch) is not None
+                )
+                if own_detached and (not sentinel_matches or local_sha is None):
+                    # Skipping publication must also keep allocation from resetting
+                    # unknown detached commits, even when the checkout is clean.
+                    retain_checkout = True
+                    planned.append({
+                        "action": "retain_checkout", "worktree": path,
+                        "reason": "missing_local_ref" if sentinel_matches else "sentinel_mismatch",
+                        "disable_workspace": True,
+                    })
+                if not sentinel_matches:
                     evidence.setdefault("skipped_worktrees", []).append(path)
                     planned.append({"action": "skip_preserve", "reason": "sentinel_mismatch",
                                     "worktree": path})
@@ -801,7 +816,10 @@ class OwnerRecovery:
                     evidence.setdefault("detached", []).append(path)
         if dry_run:
             evidence["planned"] = planned
-        return _Plan(preserved=bool(preserve or pending), workspace_clean=workspace_clean)
+        return _Plan(
+            preserved=bool(preserve or pending), workspace_clean=workspace_clean,
+            retain_checkout=retain_checkout,
+        )
 
     def _matching_sentinel(self, path: str, row: dict, branch: str):
         from src.orchestrator.worktree_manager import WorktreeSlotManager
@@ -1104,6 +1122,13 @@ class OwnerRecovery:
             evidence["workspace_unlocked"] = False
             return
         holders = [workspaces.c.locked_by_task_id == row["owner_id"]]
+        if plan.retain_checkout:
+            # Failed preparation may already have dropped the workspace lock.
+            # Retain an idle slot too, without touching a successor's lock.
+            holders.append(and_(
+                workspaces.c.locked_by_task_id.is_(None),
+                workspaces.c.locked_by_agent_id.is_(None),
+            ))
         agent_id = session["agent_id"] if session is not None else None
         if agent_id and not await _agent_live_elsewhere(conn, agent_id, session["id"]):
             holders.append(workspaces.c.locked_by_agent_id == agent_id)
@@ -1113,8 +1138,9 @@ class OwnerRecovery:
             "locked_at": None,
             "lock_mode": None,
         }
-        if not plan.workspace_clean:
-            # A dirty checkout must not be recycled by allocation.
+        disable_workspace = not plan.workspace_clean or plan.retain_checkout
+        if disable_workspace:
+            # Dirty data and unproven detached commits must survive allocation.
             values["enabled"] = False
         unlocked = await conn.execute(
             update(workspaces)
@@ -1122,7 +1148,7 @@ class OwnerRecovery:
             .values(**values)
         )
         evidence["workspace_unlocked"] = unlocked.rowcount == 1
-        if unlocked.rowcount == 1 and not plan.workspace_clean:
+        if unlocked.rowcount == 1 and disable_workspace:
             evidence["workspace_disabled"] = True
 
     async def _release_claim(

@@ -341,6 +341,9 @@ at or after that claim. A missing local task ref
 is reported as `skip_preserve` in preview and never replaced with a slot HEAD.
 Unproven unpublished work refuses release as `unproven_task_work`, without
 snapshotting, publishing or detaching; an unrelated detached slot is skipped.
+When a detached slot is skipped because its sentinel does not match or its task
+ref is absent, retain its checkout and disable the released workspace, even if
+clean, so allocation cannot reset unknown commits. Preview reports that retention.
 
 `aq integration restore-task-origin` is an operator/live project supervisor
 control for a contaminated task branch. Preview is the default. Apply requires

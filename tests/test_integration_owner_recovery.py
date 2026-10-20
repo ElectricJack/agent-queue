@@ -601,11 +601,24 @@ async def test_a_dry_run_plans_the_preservation_and_changes_nothing(env):
 
 @pytest.mark.parametrize("dry_run", [False, True])
 @pytest.mark.parametrize("dirty", [False, True])
-async def test_missing_task_ref_never_preserves_a_predecessors_detached_head(env, dry_run, dirty):
+@pytest.mark.parametrize("matching_sentinel", [False, True])
+@pytest.mark.parametrize("locked", [False, True])
+async def test_missing_task_ref_never_preserves_a_predecessors_detached_head(
+    env, dry_run, dirty, matching_sentinel, locked,
+):
     """The failed preparation retained a slot still containing another task's work."""
-    original = env.branch("aq/failed")
+    original = git(env.base, "rev-parse", "main")
+    git(env.base, "branch", "aq/failed", original)
+    git(env.base, "push", "origin", "aq/failed")
     predecessor = env.branch("aq/predecessor", extra=2)
-    slot = await env.slot("slot", "aq/predecessor")
+    await env.task("failed")
+    slot = await env.slot(
+        "slot", "aq/predecessor", locked_by_task_id="failed" if locked else None,
+    )
+    if matching_sentinel:
+        sentinel = WorktreeSlotManager.read_sentinel(slot)
+        sentinel.task_id, sentinel.branch = "failed", "aq/failed"
+        WorktreeSlotManager.write_sentinel(slot, sentinel)
     git(slot, "switch", "--detach")
     git(env.base, "branch", "-D", "aq/failed")
     if dirty:
@@ -620,11 +633,24 @@ async def test_missing_task_ref_never_preserves_a_predecessors_detached_head(env
     assert result.evidence["local_sha"] is None
     assert {"action": "skip_preserve", "reason": "missing_local_ref",
             "ref": "aq/failed"} in result.evidence["planned"]
+    assert {"action": "retain_checkout", "worktree": str(slot),
+            "reason": "missing_local_ref" if matching_sentinel else "sentinel_mismatch",
+            "disable_workspace": True} in result.evidence["planned"]
+    # Ancestry alone would have admitted this predecessor's unrelated work.
+    git(env.base, "merge-base", "--is-ancestor", original, predecessor)
     assert remote_sha(env.origin, "aq/failed") == original
     assert git(slot, "rev-parse", "HEAD") == predecessor
     assert git(slot, "status", "--porcelain") == before
     assert git(env.origin, "for-each-ref", "refs/heads/aq/recovery/") == ""
     assert len(await env.audits("owner")) == (0 if dry_run else 1)
+    async with env.db._engine.connect() as conn:
+        workspace = (await conn.execute(
+            select(workspaces).where(workspaces.c.id == "ws-slot")
+        )).mappings().one()
+    assert workspace["enabled"] is dry_run
+    assert workspace["locked_by_task_id"] == ("failed" if dry_run and locked else None)
+    if not dry_run:
+        assert result.evidence["workspace_disabled"] is True
 
 
 @pytest.mark.parametrize("dry_run", [False, True])
