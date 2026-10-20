@@ -1375,6 +1375,12 @@ class DatabaseBatches:
             if task_id in repairs:
                 continue
             if request is None or not is_valid_git_oid(base or ""):
+                if blockers is not None:
+                    blockers.append({
+                        "code": "source_identity_unavailable", "ref": task_id,
+                        "task_id": task_id,
+                        "detail": "Completed source needs a current delivery request and exact origin base",
+                    })
                 continue
             with selection_stage("target_delivery", items=1):
                 evidence = await snapshot.is_delivered(request, source_base=base)
@@ -1428,6 +1434,11 @@ class DatabaseBatches:
                 stack_valid = (await stacks.current(task_id, source_sha=source)
                                and await stacks.source_contains_stack(task_id, source, snapshot))
             if not stack_valid:
+                if blockers is not None:
+                    blockers.append({
+                        "code": "stack_source_changed", "ref": task_id, "task_id": task_id,
+                        "detail": "Completion source does not match or contain its prerequisite stack",
+                    })
                 continue
             member = BatchMember(task_id, source, base)
             if gate_pr and target.kind == "root":
@@ -1503,9 +1514,16 @@ class DatabaseBatches:
         while changed:
             changed = False
             for task_id in list(members):
-                if (admission_edges.get(task_id, set()) & blocked
+                missing = admission_edges.get(task_id, set()) & blocked
+                if (missing
                         or (task_id in paired_sources
                             and not paired_sources[task_id] & members.keys())):
+                    if missing and blockers is not None:
+                        blockers.append({
+                            "code": "prerequisite_pending", "ref": task_id, "task_id": task_id,
+                            "detail": "Source waits for undelivered prerequisites outside this batch",
+                            "prerequisite_task_ids": sorted(missing),
+                        })
                     if task_id in paired_sources and blockers is not None:
                         refusal = refused_sources[task_id][1]
                         if refusal not in blockers:
