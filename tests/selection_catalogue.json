@@ -320,6 +320,7 @@
         "tests/test_ask_delivery.py",
         "tests/test_ask_discussion.py",
         "tests/test_ask_intake.py",
+        "tests/test_ask_legacy_reset.py",
         "tests/test_ask_migration.py",
         "tests/test_ask_operations.py",
         "tests/test_ask_sources.py",
@@ -3006,6 +3007,29 @@
         "parametrize"
       ],
       "summary": "One verified input across gateway, backfill and legacy thread replay."
+    },
+    "tests/test_ask_legacy_reset.py": {
+      "areas": [
+        "document-reviews"
+      ],
+      "default_arm": true,
+      "digest": "sha256:335d2cc74562e83b4fc4d81f74fdcf94bbe07236c63d3e0df923268e3408f486",
+      "imports": [
+        "src.api.auth",
+        "src.api.scope",
+        "src.asks.delivery",
+        "src.asks.intake",
+        "src.asks.reconcile",
+        "src.asks.reset_policy",
+        "src.database",
+        "src.database.tables",
+        "src.models",
+        "src.sessions.spec"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Project fresh starts discard history without sending or replaying decisions."
     },
     "tests/test_ask_migration.py": {
       "areas": [
