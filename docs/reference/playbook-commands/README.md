@@ -117,6 +117,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`integration_release_held_gate`](integration_release_held_gate.md) | Release a held parent gate | A local human releases an exact parent hold with an audited reason. |
 | [`integration_release_owner`](integration_release_owner.md) | Integration Release Owner | Authenticated hierarchical integration operational control. |
 | [`integration_release_stale_owners`](integration_release_stale_owners.md) | Integration Release Stale Owners | Authenticated hierarchical integration operational control. |
+| [`integration_release_withheld_source`](integration_release_withheld_source.md) | Integration Release Withheld Source | Authenticated hierarchical integration operational control. |
 | [`integration_reopen_collection`](integration_reopen_collection.md) | Integration Reopen Collection | Authenticated hierarchical integration operational control. |
 | [`integration_repair_close_current`](integration_repair_close_current.md) | Resolve exact current repair close | Resolve exact current repair close |
 | [`integration_repair_dispatch`](integration_repair_dispatch.md) | Integration Repair Dispatch | Create the repair task and hand the current branch writer fence to it. |

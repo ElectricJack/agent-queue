@@ -248,6 +248,7 @@ start code work, tests or QA from a digest author turn.
     "integration_recover_completed_container",
     "integration_abort_batch",
     "integration_settle_batch",
+    "integration_release_withheld_source",
     "integration_pause_batch",
     "integration_resume_batch",
     "integration_eject",

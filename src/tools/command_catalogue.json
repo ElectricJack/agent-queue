@@ -14769,6 +14769,65 @@
         "type": "object"
       }
     },
+    "integration_release_withheld_source": {
+      "name": "integration_release_withheld_source",
+      "description": "Authenticated hierarchical integration operational control.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "batch_id": {
+            "minLength": 1,
+            "title": "Batch Id",
+            "type": "string"
+          },
+          "reason": {
+            "default": "",
+            "title": "Reason",
+            "type": "string"
+          },
+          "dry_run": {
+            "default": true,
+            "title": "Dry Run",
+            "type": "boolean"
+          },
+          "task_id": {
+            "minLength": 1,
+            "title": "Task Id",
+            "type": "string"
+          },
+          "expected_source_sha": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Expected Source Sha"
+          },
+          "expected_target_sha": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Expected Target Sha"
+          }
+        },
+        "required": [
+          "batch_id",
+          "task_id"
+        ],
+        "title": "IntegrationReleaseWithheldSourceArgs",
+        "type": "object"
+      }
+    },
     "integration_reopen_collection": {
       "name": "integration_reopen_collection",
       "description": "Authenticated hierarchical integration operational control.",

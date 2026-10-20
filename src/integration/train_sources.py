@@ -51,7 +51,9 @@ from src.integration.batches import (
     BatchStore,
     SupersedeMemberUnavailable,
     candidate_ref,
-    ejection_instruction,
+    released_repair_attempts_on,
+    withheld_source_blocker,
+    withheld_sources_query,
 )
 from src.integration.candidate_baseline import CandidateBaselineService
 from src.integration.ci import (
@@ -970,9 +972,11 @@ class DatabaseBatches:
                     "settling_cap_seconds": policy.settling_cap_seconds,
                     "task_ids": [member.task_id for member in members],
                 })
+        async with self.db._engine.connect() as conn:
+            carried = await released_repair_attempts_on(conn, target, members)
         batch = Batch(id=await self.next_batch_id(target, members), project_id=target.project_id,
                       repository_id=target.repository_id, target_ref=target.target_ref,
-                      created_at=now)
+                      repair_attempt_count=carried, created_at=now)
         with selection_stage("freeze", items=len(members)):
             frozen = await service.freeze(batch, members, requests=requests, snapshot=snapshot,
                                           dependencies=dependencies)
@@ -981,15 +985,16 @@ class DatabaseBatches:
         return BatchSelection(frozen, await service.store.members(frozen.id), tuple(blockers))
 
     async def next_batch_id(self, target, members):
-        """An ejected singleton may return with the same exact frozen inputs."""
+        """Ejected or released sources may return with the same exact frozen inputs.
+
+        The aborted batch stays immutable history under its own id.
+        """
         identity = batch_id(target, members)
         async with self.db._engine.connect() as conn:
             while True:
-                row = (await conn.execute(select(integration_batches.c.intent,
-                    ejection_instruction(integration_batches.c.id).label("ejected")).where(
-                        integration_batches.c.id == identity,
-                    ))).first()
-                if row is None or row.intent != "aborted" or not row.ejected:
+                intent = await conn.scalar(select(integration_batches.c.intent).where(
+                    integration_batches.c.id == identity))
+                if intent != "aborted":
                     return identity
                 identity = "train-" + hashlib.sha256((identity + ":readmit").encode()).hexdigest()[:32]
 
@@ -1286,18 +1291,13 @@ class DatabaseBatches:
                 if not ids:
                     return None
             epics = await _epic_branches_on(conn, ids)
-            withheld = set((await conn.execute(
-                select(integration_batch_members.c.task_id, integration_batch_members.c.source_sha)
-                .select_from(integration_batch_members.join(
-                    integration_batches,
-                    integration_batches.c.id == integration_batch_members.c.batch_id))
-                .where(integration_batches.c.project_id == target.project_id,
-                       integration_batches.c.repository_id == target.repository_id,
-                       integration_batches.c.target_ref == target.target_ref,
-                       integration_batches.c.intent == "aborted",
-                       ~ejection_instruction(integration_batches.c.id),
-                       integration_batch_members.c.task_id.in_(ids))
-            )).all())
+            # The latest aborted batch still withholding each exact source.
+            # Only its ejection or an explicit operator release frees it.
+            withheld = {(row.task_id, row.source_sha): row for row in (await conn.execute(
+                withheld_sources_query(target).where(
+                    integration_batch_members.c.task_id.in_(ids))
+                .order_by(integration_batches.c.created_at, integration_batches.c.id)
+            )).all()}
             repairs = set((await conn.execute(select(task_metadata.c.task_id).where(
                 task_metadata.c.task_id.in_(ids), task_metadata.c.key == "stack_repair_for",
             ))).scalars())
@@ -1349,6 +1349,7 @@ class DatabaseBatches:
             reduced=True,
         )
         members: dict[str, BatchMember] = {}
+        withheld_ids: set[str] = set()
         refused_sources = {}
         paired_sources = {}
         delivered: set[str] = set()
@@ -1422,7 +1423,13 @@ class DatabaseBatches:
             source = evidence.source_oid
             if (evidence.state is not DeliveryState.PENDING
                     or evidence.reason != "source_not_delivered"
-                    or not is_valid_git_oid(source or "") or (task_id, source) in withheld):
+                    or not is_valid_git_oid(source or "")):
+                continue
+            if (task_id, source) in withheld:
+                withheld_ids.add(task_id)
+                if blockers is not None:
+                    blockers.append(withheld_source_blocker(
+                        target, task_id, source, withheld[task_id, source]))
                 continue
             with selection_stage("stack_source", items=1):
                 stack_valid = (await stacks.current(task_id, source_sha=source)
@@ -1510,6 +1517,17 @@ class DatabaseBatches:
                         refusal = refused_sources[task_id][1]
                         if refusal not in blockers:
                             blockers.append(refusal)
+                    waits_on = admission_edges.get(task_id, set()) & withheld_ids
+                    if waits_on and blockers is not None:
+                        prerequisite = min(waits_on)
+                        blockers.append({
+                            "code": "prerequisite_withheld", "ref": task_id, "task_id": task_id,
+                            "prerequisite_task_id": prerequisite,
+                            "detail": f"task {task_id} waits on prerequisite {prerequisite}, "
+                                      "whose exact source an aborted batch withholds",
+                            "repository_id": target.repository_id,
+                            "target_ref": target.target_ref,
+                        })
                     blocked.add(members.pop(task_id).task_id)
                     changed = True
         if not members:
