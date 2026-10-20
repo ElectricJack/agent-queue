@@ -46,7 +46,11 @@ _MOVED_ADMISSION = frozenset({"delivery_snapshot_changed", "stack_snapshot_chang
 
 
 def _retryable_preparation_error(exc: Exception) -> bool:
-    """Recognize PostgreSQL transaction conflicts through driver/SQLAlchemy wrappers."""
+    """Retry fenced I/O expiry and PostgreSQL transaction conflicts."""
+    from src.integration.lock import BranchLockTimeout
+
+    if isinstance(exc, BranchLockTimeout):
+        return True
     seen = set()
     while exc is not None and id(exc) not in seen:
         seen.add(id(exc))
@@ -1370,15 +1374,16 @@ class ClaimCommandsMixin:
                     # reservation: releasing either would strand a delegate
                     # outside the materialized-origin claim frontier.
                     logger.info(
-                        "claim %s/%s: transient database conflict during preparation (%s/%s)",
-                        session.id, task.id, attempt + 1, len(_PREPARATION_RETRY_DELAYS) + 1,
+                        "claim %s/%s: transient %s during preparation (%s/%s)",
+                        session.id, task.id, type(exc).__name__,
+                        attempt + 1, len(_PREPARATION_RETRY_DELAYS) + 1,
                     )
                     if attempt < len(_PREPARATION_RETRY_DELAYS):
                         await asyncio.sleep(_PREPARATION_RETRY_DELAYS[attempt])
             remove_claim_file_if_matches(row.work_dir, task.id, task.claim_epoch, session_id=session.id)
             self._resolve_claim_waiters(session.id, task.claim_epoch, "no_ready_work")
             return self._simple(
-                ClaimResult.NO_READY_WORK, "claim preparation database contention", row, cap
+                ClaimResult.NO_READY_WORK, "claim preparation transient contention", row, cap
             )
 
     async def _branch_fenced_prepare_failed(
@@ -1830,6 +1835,8 @@ class ClaimCommandsMixin:
                 )
                 base_sha = origin["base_sha"]
                 if owner_role == "repair":
+                    from src.integration.lock import REPAIR_START_SECONDS
+
                     # A repair stage's clock runs from its activation, so a
                     # delegate the pool could not staff in time is claimed with
                     # its budget already spent -- and its close is then refused
@@ -1849,6 +1856,7 @@ class ClaimCommandsMixin:
                         async with ownership.mutation_exclusion_on(
                             repair_conn, fence, expected_role=owner_role,
                             state="attached" if hierarchy_attached else "reserved",
+                            timeout_seconds=REPAIR_START_SECONDS,
                         ):
                             base_sha = await self.orchestrator._hierarchy_repair_start(
                                 slot.workspace_path, origin, fence,
@@ -1938,7 +1946,7 @@ class ClaimCommandsMixin:
         except Exception as exc:
             if _retryable_preparation_error(exc):
                 # Retry only after the failed transaction unwinds; never run
-                # permanent failure cleanup for a database conflict.
+                # permanent failure cleanup for transient contention/expiry.
                 raise
             current = await self.db.get_session(session.id)
             current_task = await self.db.get_task(task.id)

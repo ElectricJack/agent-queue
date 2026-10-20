@@ -983,8 +983,11 @@ class WorkspaceMixin:
             return fence.target.branch
         owner = await BranchOwnership(self.db).get_owner(fence.target)
         role = owner["owner_role"] if owner else None
+        from src.integration.lock import REPAIR_START_SECONDS
+
         async with BranchOwnership(self.db).mutation_exclusion(
-            fence, expected_role=role
+            fence, expected_role=role,
+            timeout_seconds=REPAIR_START_SECONDS if role == "repair" else None,
         ):
             from src.integration.owner_recovery import resume_recovery_snapshots
 
