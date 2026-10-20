@@ -274,7 +274,9 @@ AGENT_TASK_ROUTE_INPUTS: Final[frozenset[str]] = frozenset(
 class AgentTaskStep(StepBase):
     type: Literal["agent_task"] = "agent_task"
     #: Only control-plane roles bypass routing (mandatory-routing §5.1).
-    profile_id: Literal["triage", "spec-ingest", "reviewer", "final-reviewer"] | None = None
+    profile_id: Literal[
+        "triage", "spec-ingest", "reviewer", "final-reviewer", "fidelity-reviewer"
+    ] | None = None
     intelligence_class: QualifiedName | None = None  # hint, never a worker route
     task_type: QualifiedName | None = None  # kind hint for the router
     objective: Value  # rendered to a string

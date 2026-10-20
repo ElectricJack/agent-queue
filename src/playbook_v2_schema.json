@@ -147,7 +147,8 @@
                 "triage",
                 "spec-ingest",
                 "reviewer",
-                "final-reviewer"
+                "final-reviewer",
+                "fidelity-reviewer"
               ],
               "type": "string"
             },
