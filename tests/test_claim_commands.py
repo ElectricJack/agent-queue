@@ -3470,11 +3470,13 @@ class TestClaim:
         failed = False
         replaced = False
         stale_task = None
+        finish_reset = asyncio.Event()
         get_session = db.get_session
         get_task = db.get_task
 
         async def replaced_then_timeout(*args, **kwargs):
             nonlocal failed
+            await finish_reset.wait()
             failed = True
             raise TimeoutError()
 
@@ -3502,7 +3504,16 @@ class TestClaim:
         reset.side_effect = replaced_then_timeout
         monkeypatch.setattr(db, "get_session", replace_after_rollback)
         monkeypatch.setattr(db, "get_task", task_before_epoch_race)
-        result = await scoped(handler, sid)._cmd_task_claim({"next": True})
+        with patch("src.commands.claim_commands._PREPARATION_RESPONSE_SECONDS", 0):
+            progress = await scoped(handler, sid)._cmd_task_claim({"next": True})
+        assert progress["result"] == "claim_in_progress"
+        preparation = handler.orchestrator.claim_preparations[
+            (sid, "t1", progress["claim_epoch"])
+        ]
+        finish_reset.set()
+        # Observe the original job: a follow-up claim belongs to the replacement
+        # session and must not consume its predecessor's deferred response.
+        result = await asyncio.wait_for(asyncio.shield(preparation), timeout=10)
         assert result["result"] == "prepare_failed"
         assert result["reason"].startswith("slot_reset: TimeoutError (no message)")
         session = await db.get_session(sid)
