@@ -290,8 +290,8 @@ async def test_unhealthy_http_response_is_actionable_and_closes_client(monkeypat
     assert transport.is_closed
 
 
-@pytest.mark.parametrize("argv", [["--json", "prime"], ["prime", "--json"]])
-def test_prime_json_refusal_preserves_budget_diagnostics(monkeypatch, argv):
+@pytest.mark.parametrize("argv", [["--json", "prime"], ["prime", "--json"], ["prime"]])
+def test_prime_refusal_preserves_budget_diagnostics(monkeypatch, argv):
     """A fake daemon refusal passes through the real client and error envelope."""
     from src.cli.app import cli
 
@@ -316,13 +316,17 @@ def test_prime_json_refusal_preserves_budget_diagnostics(monkeypatch, argv):
         "required_section_bytes": {"role": 6000, "task": 33000, "context": 0},
         "source": "default",
     }
+    message = (
+        "context.required_over_budget: required body 40000 bytes exceeds 28416 available; "
+        "largest required sections (UTF-8 bytes, excluding headings): task=33000, role=6000"
+    )
     calls = []
 
     def handler(request):
         assert request.url.path == "/api/execute"
         calls.append(json.loads(request.content))
         return httpx.Response(200, json={
-            "ok": False, "error": "context.required_over_budget", "details": details,
+            "ok": False, "error": message, "details": details,
         })
 
     async def connect(client):
@@ -333,15 +337,16 @@ def test_prime_json_refusal_preserves_budget_diagnostics(monkeypatch, argv):
     monkeypatch.setattr(CLIClient, "connect", connect)
     result = CliRunner().invoke(cli, [*argv, "--task-id", "test-task"])
     assert result.exit_code == 1, result.output
-    payload = json.loads(result.stdout)
-    assert payload == {
-        "schema_version": 1,
-        "data": None,
-        "error": {
-            "code": "command_error", "message": "context.required_over_budget",
-            "details": details,
-        },
-    }
+    if "--json" in argv:
+        payload = json.loads(result.stdout)
+        assert payload == {
+            "schema_version": 1,
+            "data": None,
+            "error": {"code": "command_error", "message": message, "details": details},
+        }
+    else:
+        assert "context.required_over_budget" in result.output
+        assert "task=33000" in result.output and "role=6000" in result.output
     # No prime body/bundle, delivery receipt, retry, or actual daemon request.
     assert calls == [{"command": "prime", "args": {"task_id": "test-task"}}]
 

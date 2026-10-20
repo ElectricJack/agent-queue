@@ -976,7 +976,7 @@
           "discovery_max_items": 8,
           "discovery_max_tokens": 1000,
           "enabled": false,
-          "input_max_tokens": 32768,
+          "input_max_tokens": null,
           "max_bytes": 16384,
           "max_tokens": 4096,
           "output_reserve_tokens": 4096,
@@ -1065,7 +1065,7 @@
             "discovery_max_items": 8,
             "discovery_max_tokens": 1000,
             "enabled": false,
-            "input_max_tokens": 32768,
+            "input_max_tokens": null,
             "max_bytes": 16384,
             "max_tokens": 4096,
             "output_reserve_tokens": 4096,
@@ -1092,8 +1092,11 @@
               "type": "boolean"
             },
             "input_max_tokens": {
-              "default": 32768,
-              "type": "integer"
+              "default": null,
+              "type": [
+                "integer",
+                "null"
+              ]
             },
             "max_bytes": {
               "default": 16384,
