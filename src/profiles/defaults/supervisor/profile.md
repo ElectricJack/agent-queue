@@ -52,6 +52,10 @@ human holds, live workers and branch ownership throughout recovery.
 When preparation refuses a slot that `retains a foreign claim`, run `aq project
 workspace-retire-claim --workspace-id SLOT`: it removes the leftover claim file
 only when the holder provably let go, and otherwise names the holder to examine.
+When it refuses because the slot's `branch disagrees with its source sentinel`
+and the sentinel names a finished task, run `aq project workspace-clear-sentinel
+--workspace-id SLOT --if-task-terminal`: it frees the sentinel only when that task
+is terminal and the slot is unheld, clean and published.
 
 A held train repair blocks every delivery through that train. Diagnose and
 escalate it promptly; do not park it on an indefinite recovery hold. Supervisor
@@ -354,6 +358,7 @@ start code work, tests or QA from a digest author turn.
     "task_subtask_get",
     "task_subtask_update",
     "task_subtasks",
+    "workspace_clear_sentinel",
     "workspace_retire_claim"
   ],
   "plugin_tools": [

@@ -2054,6 +2054,9 @@ from .wait_register_request import WaitRegisterRequest
 from .wait_register_response_422 import WaitRegisterResponse422
 from .wait_response import WaitResponse
 from .withheld_task import WithheldTask
+from .workspace_clear_sentinel_request import WorkspaceClearSentinelRequest
+from .workspace_clear_sentinel_response import WorkspaceClearSentinelResponse
+from .workspace_clear_sentinel_response_422 import WorkspaceClearSentinelResponse422
 from .workspace_cutover_request import WorkspaceCutoverRequest
 from .workspace_cutover_response import WorkspaceCutoverResponse
 from .workspace_cutover_response_422 import WorkspaceCutoverResponse422
@@ -4125,6 +4128,9 @@ __all__ = (
     "WaitRegisterResponse422",
     "WaitResponse",
     "WithheldTask",
+    "WorkspaceClearSentinelRequest",
+    "WorkspaceClearSentinelResponse",
+    "WorkspaceClearSentinelResponse422",
     "WorkspaceCutoverRequest",
     "WorkspaceCutoverResponse",
     "WorkspaceCutoverResponse422",

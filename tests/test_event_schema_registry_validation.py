@@ -526,6 +526,14 @@ _CANONICAL_PAYLOADS: dict[str, dict] = {
         "actor": "claim",
         "claimant_task_id": "task-new",
     },
+    "worktree.sentinel_cleared": {
+        "project_id": "proj-1",
+        "workspace_id": "ws-slot-4",
+        "path": "/repos/myrepo/.aq/worktrees/slot-4",
+        "holder_task_id": "brisk-quest-34",
+        "branch": "aq/brisk-quest-34",
+        "reason": "task brisk-quest-34 is COMPLETED",
+    },
     "worktree.restored": {
         "project_id": "proj-1",
         "workspace_id": "ws-slot-2",

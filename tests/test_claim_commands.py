@@ -7925,3 +7925,29 @@ async def test_activation_retires_only_accepted_completed_older_stop(
     assert (await db.get_task_meta(task.id, "needs_attention") is None) is accepted
     contexts = await db.get_task_contexts(task.id)
     assert any(c["type"] == "retained_workspace_checkpoint" and c["content"] == "durable" for c in contexts)
+
+
+@pytest.mark.parametrize("owner", ["t-next", "t-other"])
+async def test_retained_binding_probe_can_exclude_the_claimants_owner_row(db, owner):
+    """Only a foreign owner row retains a finished predecessor's slot.
+
+    Claim preparation attaches the claimant's own row before the slot reset
+    re-checks the predecessor (bold-torrent-46).
+    """
+    from src.orchestrator.worktree_manager import WorktreeSlotManager
+
+    async with db.immediate() as conn:
+        await conn.execute(integration_branch_owners.insert().values(
+            id="owner", repository_id="repo", ref="aq/t-next", owner_id=owner,
+            owner_role="worker", handoff_state="handoff_pending",
+            workspace_id="ws-slot", fence_token=1, created_at=NOW, updated_at=NOW,
+        ))
+    slots = WorktreeSlotManager(
+        db=db, git=MagicMock(), bus=MagicMock(), config=MagicMock(), git_mutex=MagicMock(),
+    )
+
+    assert await slots._slot_has_retained_binding("ws-slot") is True
+    assert await slots._slot_has_retained_binding("ws-other") is False
+    assert await slots._slot_has_retained_binding(
+        "ws-slot", excluding_owner="t-next",
+    ) is (owner != "t-next")

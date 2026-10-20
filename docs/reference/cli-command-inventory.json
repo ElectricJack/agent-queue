@@ -11198,6 +11198,41 @@
       }
     },
     {
+      "path": "aq project workspace-clear-sentinel",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "workspace_clear_sentinel",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--workspace-id"
+        ],
+        "optional": [
+          "--if-task-terminal",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
       "path": "aq project workspace-cutover",
       "registration": "generated",
       "owner_kind": "core",
