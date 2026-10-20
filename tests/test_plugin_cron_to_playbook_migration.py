@@ -308,7 +308,6 @@ class TestVaultInstallation:
             "morning-report.md",
             "provider-failover.md",
             "provider-usage-probe.md",
-            "stuck-task-watch.md",
             "supervisor-failure-triage.md",
         }
         installed = set(result["created"])
@@ -316,6 +315,9 @@ class TestVaultInstallation:
             f"Missing playbooks: {expected - installed}, "
             f"Extra playbooks: {installed - expected}"
         )
+        playbooks_dir = tmp_path / "vault" / "system" / "playbooks"
+        assert not (playbooks_dir / "stuck-task-watch.md").exists()
+        assert not (playbooks_dir / "stuck-task-watch-reminder.md").exists()
 
 
 # ===================================================================
