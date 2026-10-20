@@ -336,6 +336,15 @@ are verified at their `historical-v2` archive paths; their original records stay
 in the legacy fixture. These files are checked-in review evidence, never values
 computed by a running test.
 
+The dev refresh at `35d58eee0183bcc25252931ae5958072983606d6` adds
+`integration_release_withheld_source`. Its separate
+`withheld-source-contract-changes.json` records the typed contract fingerprint,
+transport definition and chained catalogue digest. Removing exactly that new
+fallback definition must reproduce the preceding dev catalogue byte for byte.
+The producer audit records its existing human apply authority and source/target
+fences, plus the `explain_task` addition of the blocker action; older evidence
+files remain unchanged.
+
 **Generated invocation remains disabled pending private-value storage and safe
 inspection (A3).** There is no runtime bypass flag. The A2 producer audit is
 pinned in `tests/fixtures/contracts/generated-command-audit.json`, keyed by all

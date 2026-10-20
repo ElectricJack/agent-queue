@@ -36,6 +36,7 @@ C2_CHANGES = ROOT / "tests/fixtures/contracts/observation-contract-changes.json"
 SCRIPT_CHANGES = ROOT / "tests/fixtures/contracts/script-contract-changes.json"
 MAIN_CHANGES = ROOT / "tests/fixtures/contracts/main-refresh-contract-changes.json"
 DEV_CHANGES = ROOT / "tests/fixtures/contracts/dev-refresh-contract-changes.json"
+WITHHELD_CHANGES = ROOT / "tests/fixtures/contracts/withheld-source-contract-changes.json"
 WATCH_CHANGES = ROOT / "tests/fixtures/contracts/watch-contract-changes.json"
 
 
@@ -189,12 +190,27 @@ def test_transport_views_and_cli_serialization_preserve_golden_evidence():
     assert scripts["previous_cli_catalogue_sha256"] == changes["cli_catalogue_sha256"]
     assert main["previous_cli_catalogue_sha256"] == scripts["cli_catalogue_sha256"]
     assert dev["previous_cli_catalogue_sha256"] == main["cli_catalogue_sha256"]
-    assert actual == dev["cli_catalogue_sha256"]
+    withheld = json.loads(WITHHELD_CHANGES.read_text())
+    assert withheld["previous_cli_catalogue_sha256"] == dev["cli_catalogue_sha256"]
+    assert actual == withheld["cli_catalogue_sha256"]
     definitions = {d["name"]: d for d in effective_tool_definitions()}
     for name, definition in _discover_all_commands().items():
         assert definition == snapshot.commands[name].tool_definition()
         if name in definitions:
             assert definition == definitions[name]
+
+
+def test_withheld_source_catalogue_only_adds_reviewed_command():
+    evidence = json.loads(WITHHELD_CHANGES.read_text())
+    assert evidence["source_base"] == "35d58eee0183bcc25252931ae5958072983606d6"
+    name = "integration_release_withheld_source"
+    catalogue = json.loads(render_command_catalogue())
+    assert catalogue["fallback"].pop(name) == evidence["transport_definition"]
+    assert CONTRACTS.require(name).contract.fingerprint() == evidence["contract_fingerprint"]
+    # Removing exactly the new command must recover the prior bytes, including
+    # schema field ordering. Existing commands and category maps stay pinned.
+    previous = json.dumps(catalogue, indent=2) + "\n"
+    assert hashlib.sha256(previous.encode()).hexdigest() == _dev_changes()["cli_catalogue_sha256"]
 
 
 def test_dev_redrive_contract_only_adds_explicit_source_adoption():

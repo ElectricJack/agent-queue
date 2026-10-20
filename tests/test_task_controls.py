@@ -1395,7 +1395,9 @@ async def test_activate_claim_rejects_pause_even_before_session_cleanup(env, tmp
     assert await env.db.activate_claim("s", "t", epoch=task.claim_epoch, now=1) is None
 
 
-async def test_manual_pause_serializes_with_pool_teardown_before_worker_reuse(env, tmp_path):
+async def test_manual_pause_serializes_with_pool_teardown_before_worker_reuse(
+    env, tmp_path, monkeypatch,
+):
     import asyncio
 
     provider, _ = await running_session(env, tmp_path)
@@ -1412,14 +1414,29 @@ async def test_manual_pause_serializes_with_pool_teardown_before_worker_reuse(en
         await original_stop(handle, grace=grace)
 
     provider.stop = delayed_stop
+    pause_waiting = asyncio.Event()
+    teardown_lock = env.orch._pool_teardown_lock
+
+    def observed_lock(session_id):
+        lock = teardown_lock(session_id)
+        if lock.locked():
+            pause_waiting.set()
+        return lock
+
+    monkeypatch.setattr(env.orch, "_pool_teardown_lock", observed_lock)
     session = await env.db.get_session("s")
     teardown = asyncio.create_task(env.orch._terminate_pool_session(session, reason="test"))
     await asyncio.wait_for(entered.wait(), 15)
     paused = asyncio.create_task(command(env, "pause_task"))
-    await asyncio.wait({paused}, timeout=1.0)
-    premature_release = paused.done()
-    proceed.set()
-    await asyncio.gather(teardown, paused, return_exceptions=True)
+    # Wait for Pause to persist its fence and reach the held teardown lock.
+    # A fixed delay can release teardown while Pause is still taking its
+    # snapshot on a busy runner, exercising a different, correctly refused race.
+    try:
+        await asyncio.wait_for(pause_waiting.wait(), 15)
+        premature_release = paused.done()
+    finally:
+        proceed.set()
+        await asyncio.gather(teardown, paused, return_exceptions=True)
     assert not premature_release, "Pause freed the worker before the earlier teardown finished"
     assert "error" not in paused.result(), paused.result()
     assert await env.db.assign_task_to_agent("peer", "agent")

@@ -4976,7 +4976,7 @@
   "explain_task": {
     "mode": "json_object",
     "producer": "src/commands/task_commands.py:TaskCommandsMixin._cmd_explain_task",
-    "source_digest": "sha256:5cfe4635ab0664c53552d4c76d692405cc5539b92d610eb542c344d0288d3b90",
+    "source_digest": "sha256:d3d2a73da5759b7e981ed7c63feca6fc81cf0807a53a55f46aa225e62e3b726b",
     "input_schema_source": "fallback",
     "schema_quality": "declared",
     "argument_reads_diagnostic_only": [
@@ -5022,12 +5022,13 @@
       "tests/test_claim_commands.py",
       "tests/test_delivery_consumers.py",
       "tests/test_explain.py",
-      "tests/test_doctor_observations.py"
+      "tests/test_doctor_observations.py",
+      "tests/test_integration_train_sources.py::test_aborted_batch_names_each_withheld_source_instead_of_idling"
     ],
     "helper_producers": {
       "_assert_task_in_scope": "sha256:a66da16b3047ca2247a1e612e6aede543b65effd65666764c031e5465d7d23d7"
     },
-    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. "
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled.  Dev ff25a7d71 only appends the available next action to integration blocker detail; return branches and task resource gates are unchanged."
   },
   "export_portable_config": {
     "mode": "json_object",
@@ -8773,6 +8774,52 @@
       "tests/test_generated_command_contracts.py::test_generic_result_protocol",
       "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
     ]
+  },
+  "integration_release_withheld_source": {
+    "mode": "typed",
+    "producer": "src/commands/integration_commands.py:IntegrationCommandsMixin._cmd_integration_release_withheld_source",
+    "source_digest": "sha256:58046d15c1f371e9809503500863d84fff4620270eb0e55642faae2299b04925",
+    "input_schema_source": "typed_contract",
+    "schema_quality": "typed",
+    "effect": "destructive",
+    "retry_safe": true,
+    "principal_requirement": "original_principal",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "denial_reason": null,
+    "result_policy": "retained typed adapter",
+    "argument_reads_diagnostic_only": [],
+    "return_branches": [
+      {
+        "return": "{'success': True, **result}",
+        "protocol": "explicit_boolean: True"
+      },
+      {
+        "return": "_failure('unauthorized', refusal)",
+        "protocol": "delegated_producer"
+      },
+      {
+        "return": "_failure(exc.outcome, str(exc))",
+        "protocol": "delegated_producer"
+      },
+      {
+        "return": "_failure('refused', str(exc))",
+        "protocol": "delegated_producer"
+      }
+    ],
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_command_descriptors.py::test_withheld_source_catalogue_only_adds_reviewed_command",
+      "tests/test_integration_train_sources.py::test_release_withheld_source_preview_apply_carries_repair_history",
+      "tests/test_integration_train_sources.py::test_release_withheld_source_refuses_unsafe_release",
+      "tests/test_integration_train_sources.py::test_release_withheld_source_refuses_a_hand_merged_source",
+      "tests/test_integration_train_sources.py::test_release_withheld_source_allows_terminal_repair_history",
+      "tests/test_integration_train_sources.py::test_release_withheld_source_handler_maps_refusals",
+      "tests/test_integration_contracts.py",
+      "tests/test_operator_workers.py"
+    ],
+    "review_notes": "Dev ff25a7d71: typed operational control, original-principal integration_operator gate; human authority required for apply. TrainControls checks exact source/target, reason, acceptance, live writers, holds and repair budget; repeated apply is idempotent. Producer maps domain/authority failures through _failure and emits explicit success for completed preview/apply. Generated invocation remains disabled."
   },
   "integration_reopen_collection": {
     "mode": "typed",
