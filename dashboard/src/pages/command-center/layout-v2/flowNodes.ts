@@ -158,7 +158,7 @@ export function relationsByTask(store: LayoutStore): Map<string, TaskRelations> 
   }
   // The frontier never offers a parent (claim_queries' `has_children` rule).
   const ready = [...store.nodes.values()].filter((n) =>
-    n.status === "READY" && !n.is_blocked && n.kind !== "container" && (n.agg_children ?? 0) === 0);
+    n.status === "READY" && !n.is_blocked && n.claim_readiness?.claimable !== false && n.kind !== "container" && (n.agg_children ?? 0) === 0);
   const priorities = ready.map((n) => n.priority ?? 100).sort((a, b) => a - b);
   for (const n of ready) {
     const p = n.priority ?? 100;
@@ -179,6 +179,7 @@ export function taskNodeData(n: LayoutNode, ctx: FlowContext, gates: GraphGate[]
     profile_id: n.profile_id, intelligence_class: n.intelligence_class, assigned_agent_id: n.assigned_agent_id,
     branch_name: n.branch_name, pr_url: n.pr_url, playbook_run_id: n.playbook_run_id,
     display_state: n.display_state, display_reason: n.display_reason,
+    claim_readiness: n.claim_readiness,
     child_state_counts: n.child_state_counts, descendant_state_counts: n.descendant_state_counts,
   };
   return {
@@ -215,6 +216,7 @@ function nodeSignature(n: LayoutNode, gates: GraphGate[]): string {
     n.branch_name, n.pr_url, n.playbook_run_id, n.subtasks_total, n.subtasks_settled,
     n.phase_order, n.phase_label,
     n.display_state, n.display_reason, JSON.stringify(n.child_state_counts), JSON.stringify(n.descendant_state_counts),
+    JSON.stringify(n.claim_readiness),
     // Only epics carry one; the canvas must repaint when its delivery moves.
     n.delivery ? JSON.stringify(n.delivery) : "",
     // The review strip draws id, state, kind and title from every wait.

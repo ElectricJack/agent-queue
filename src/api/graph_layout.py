@@ -239,15 +239,21 @@ def build_graph_layout_router(*, db, command_handler=None) -> APIRouter:
         leaves ``delivery`` unset rather than failing the layout response.
         """
         ids = [row.task_id for row in rows if (row.agg_children or 0) > 0]
+        from src.task_graph.readiness import readiness_for_ids
+
+        readiness = await readiness_for_ids(db, [row.task_id for row in rows])
         if not ids:
-            return {}
+            return _with_activity({}, readiness)
         from src.integration.epic_delivery import EpicDeliveryProjection, lease_ttl_from
 
         projection = EpicDeliveryProjection(
             db, lease_ttl=lease_ttl_from(getattr(command_handler, "config", None)),
             cached_only=True,
         )
-        return _with_activity(await projection.for_tasks(ids), await load_activity(db, ids))
+        activity = await load_activity(db, ids)
+        for tid, fields in readiness.items():
+            activity.setdefault(tid, {}).update(fields)
+        return _with_activity(await projection.for_tasks(ids), activity)
 
     async def _project_or_404(project_id: str):
         if await db.get_project(project_id) is None:

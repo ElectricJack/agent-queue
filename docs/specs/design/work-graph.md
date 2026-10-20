@@ -431,6 +431,17 @@ predicates; claim retains fresh Git and identity revalidation. The explicit
 
 ### 9.2 Ready frontier
 
+Task list/detail, graph (including epic children), CLI and digest reads expose
+`claim_readiness` for READY tasks. This is a read-only projection of the shared
+claim-frontier predicates, never a new lifecycle status. Failed delivery fences
+read **Waiting on delivery**, naming each missing sibling/cross-epic source and
+its target branch, or the epic and open refresh batches that must finish.
+Missing cached delivery evidence reads **Checking delivery evidence** and must
+not imply proven delivery or claimability. Interactive reads never fetch Git.
+Held rows contribute no claimable count; pool demand retains its authoritative
+admission query. Stall readers classify delivery fences as
+`WAITING-ON-DELIVERY`, separately from stuck routing or execution.
+
 Pool demand and claim selection use the same `claim_frontier_predicates` builder,
 including preparation backoff, prerequisite-stack repair, workspace requirements
 and hold labels. A READY task rejected by that builder contributes no demand.

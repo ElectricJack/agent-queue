@@ -2444,3 +2444,23 @@ async def test_graph_delivery_reads_never_fetch_git(db, client_factory, tmp_path
         assert epic["delivery"]["state"] == "unknown"
         assert epic["delivery"]["evidence"] == "unavailable"
     observer._store.assert_not_awaited()
+
+
+async def test_tiles_preserve_cached_delivery_hold(db, client_factory, monkeypatch):
+    await db.create_task(Task(id="leaf", project_id="p1", title="Consumer",
+                              description="", status=TaskStatus.READY))
+    await LayoutDriver(db).full_layout("p1", "all")
+
+    async def exclusions(ids, **kwargs):
+        assert kwargs["cached_only"]
+        return {tid: [{"code": "frontier_epic_refresh_pending", "ref": "epic",
+                       "detail": "Refresh aq/epic after source.6 lands on dev"}] for tid in ids}
+
+    monkeypatch.setattr(db, "claim_frontier_exclusions_many", exclusions)
+    async with client_factory() as ac:
+        response = await ac.post("/api/projects/p1/graph/tiles", json=ALL)
+    assert response.status_code == 200
+    [node] = response.json()["nodes"]
+    assert node["status"] == "READY"
+    assert node["claim_readiness"]["claimable"] is False
+    assert "source.6" in node["claim_readiness"]["reason"]

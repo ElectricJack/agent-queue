@@ -2624,9 +2624,10 @@
         "dashboard-state"
       ],
       "default_arm": true,
-      "digest": "sha256:e7830640d932164023019dc9e3b73ab44df2793c36083e13d24d1518f3ec50e3",
+      "digest": "sha256:9e0df51332f67e6da0fc2ef7be591d85fe6d3451444a76356c21beb7a65c3a42",
       "imports": [
         "src.api.graph",
+        "src.database.tables",
         "src.models"
       ],
       "markers": [],
@@ -8650,7 +8651,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:4a82655ba500feffb589d36f6ffe4d48f24e09dfd51999b513a486bf495893d2",
+      "digest": "sha256:baf0cbb14b41c32aef5497ae1a53a03b80efa56f41d284ef846d377b8894704c",
       "imports": [
         "src",
         "src.api",
@@ -8671,6 +8672,7 @@
         "src.models",
         "src.task_graph",
         "src.task_graph.creator",
+        "src.task_graph.readiness",
         "src.task_names",
         "src.vault"
       ],
@@ -17203,11 +17205,13 @@
         "task-graph-creation"
       ],
       "default_arm": true,
-      "digest": "sha256:f17f4b18b489d983bec87c1c7a65251599047b865ccd818ec71a711cc7d5cb25",
+      "digest": "sha256:970486538a3c9683014993574cc790bd69227e08f55ce3381926615f3290fa7c",
       "imports": [
         "src.commands.handler",
+        "src.database.tables",
         "src.models",
-        "src.task_graph.activity"
+        "src.task_graph.activity",
+        "src.task_graph.readiness"
       ],
       "markers": [
         "parametrize"
