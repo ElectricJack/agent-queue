@@ -132,6 +132,27 @@ async def get_wait(conn, wait_id: str, *, project_id: str):
     )
 
 
+async def pending_human_waits(conn, *, now, project_ids=None):
+    """Current reminders, independent of report windows and wait deadlines."""
+    query = select(wait_records, tasks.c.title).outerjoin(
+        tasks, and_(wait_records.c.owner_kind == "task", tasks.c.id == wait_records.c.owner_id,
+                    tasks.c.project_id == wait_records.c.project_id),
+    ).where(wait_records.c.condition_kind == "human", wait_records.c.outcome == "pending")
+    if project_ids is not None:
+        query = query.where(wait_records.c.project_id.in_(project_ids))
+    rows = (await conn.execute(query.order_by(
+        wait_records.c.created_at, wait_records.c.id,
+    ))).mappings()
+    return [{
+        "wait_id": r["id"], "project_id": r["project_id"],
+        "task_id": r["owner_id"] if r["owner_kind"] == "task" else None,
+        "title": r["title"] or "", "subject": r["condition"]["subject"],
+        "age_seconds": max(0, now - r["created_at"]), "created_at": r["created_at"],
+        **{key: r["condition"][key] for key in ("thread_id", "review_id", "revision")
+           if key in r["condition"]},
+    } for r in rows]
+
+
 async def register_wait(
     conn,
     *,
@@ -221,6 +242,8 @@ async def register_wait(
         # Replay precedes source verification: the producer may have finished or
         # disappeared since the receipt was committed, and timers may be past due.
         return old["decision_inputs"]["registration_receipt"]
+    if cond.kind == "human" and cond.parameters["subject"] == "task_comment":
+        cond = cond.bind(generation=cond.generation, source_watermark_seq=source_watermark)
     evidence = await registry.verify(conn, cond, scope)
     cond = evidence.condition
     adapter = registry.adapter(cond.kind)

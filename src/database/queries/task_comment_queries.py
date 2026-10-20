@@ -128,15 +128,25 @@ class TaskCommentQueriesMixin:
             await conn.execute(insert(task_comments).values(**comment, project_id=project_id))
             if author_kind == "user":
                 from src.waits.sources import record_source_event
+                from src.database.tables import wait_records
 
-                await record_source_event(
-                    conn, source_key=f"human:task_comment:{task_id}",
-                    generation=task["claim_epoch"] or 0,
-                    revision=comment["id"], outcome_ref=f"comment:{comment['id']}",
-                    occurred_at=comment["created_at"],
-                    payload={"task_id": task_id, "comment_id": comment["id"],
-                             "project_id": project_id, "author_kind": author_kind},
-                )
+                source_key = f"human:task_comment:{task_id}"
+                generations = set((await conn.execute(select(
+                    wait_records.c.source_generation,
+                ).where(wait_records.c.source_key == source_key,
+                        wait_records.c.project_id == project_id,
+                        wait_records.c.outcome == "pending"))).scalars())
+                # A hibernated owner's claim epoch advances at park. Retain its
+                # registered source identity while also recording the current one.
+                generations.add(task["claim_epoch"] or 0)
+                for generation in sorted(generations):
+                    await record_source_event(
+                        conn, source_key=source_key, generation=generation,
+                        revision=comment["id"], outcome_ref=f"comment:{comment['id']}",
+                        occurred_at=comment["created_at"],
+                        payload={"task_id": task_id, "comment_id": comment["id"],
+                                 "project_id": project_id, "author_kind": author_kind},
+                    )
         if conn is not None:
             await write(conn)
         else:

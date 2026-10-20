@@ -321,17 +321,28 @@ async def test_resume_prime_outcome_summary_ticket_all_comments_and_held_mail(
 
 async def test_resume_comments_budget_trims_oldest_preserves_newest_and_pointer(env, tmp_path):
     renderer = await resumed(env)
+    await env.db.add_task_context(
+        "owner", type="note", label="Pageable context", content="ordinary context " * 1000,
+    )
     for n in range(18):
         await env.db.add_task_comment(
             "owner", f"history-{n:02}: {'é' * 3000}", author_kind="user", author_id="human"
         )
     doc = await renderer.render_for_task("owner", session_id="new", work_dir=str(tmp_path))
-    context = next(s.body for s in doc.sections if s.key == "task_context")
+    section = next(s for s in doc.sections if s.key == "task_context")
+    context = section.body
     comments = context[context.index("**Task comments") :]
     assert len(comments.encode()) <= CONTINUATION_COMMENTS_BYTES
     assert "history-17" in comments and "history-00" not in comments
     assert "Older comments truncated" in comments and "aq task comments owner" in comments
     assert "\ufffd" not in comments
+    # Aggregate fitting can shrink ordinary context without changing the
+    # continuation's separately budgeted, chronological comment history.
+    assert section.preview is not None
+    reduced = section.preview.render("owner", 0)
+    assert "--field prime_context" in reduced
+    assert comments in reduced
+    assert "ordinary context" not in reduced
 
 
 async def test_resume_includes_every_page_of_comments_posted_while_asleep(env, tmp_path):

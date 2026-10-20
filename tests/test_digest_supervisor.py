@@ -811,3 +811,37 @@ def test_digest_hash_includes_the_full_pending_set_not_the_visible_cap():
     assert len(before["needs_you"]["items"]) == 5
     assert before["needs_you"]["omitted"] == 96
     assert facts_hash(before) != facts_hash(after)
+
+
+def human_reminders(count=12):
+    return [dict(wait_id=f"w-{i:02}", project_id="p", task_id=f"task-{i}", title="Question",
+                 subject="task_comment", age_seconds=86400 * (20 - i), created_at=BASE + i)
+            for i in reversed(range(count))]
+
+
+def test_human_reminders_are_capped_oldest_first_without_hourly_wake_or_age_churn():
+    brief = _idle_brief(waiting_on_you=human_reminders())
+    reminders = brief["waiting_on_you"]
+    assert reminders["count"] == 12 and reminders["more"] == 2
+    assert [row["wait_id"] for row in reminders["items"]] == [f"w-{i:02}" for i in range(10)]
+    assert brief["counts"]["needs_you"] == 0
+    identity = facts_hash(brief)
+    for row in reminders["items"]:
+        row["age_seconds"] += 86400 * 3
+    assert facts_hash(brief) == identity
+    assert _decide(brief, previous_facts_hash=identity).action == SKIP_UNCHANGED
+    assert _decide(brief, previous_facts_hash=None).action == SKIP_UNCHANGED
+
+
+def test_authored_and_fallback_digest_keep_daily_human_reminder_within_budget():
+    brief = _idle_brief(waiting_on_you=human_reminders())
+    authored = render_authored_digest("Needs you: no new approvals.\n" + "x" * 900,
+                                      base_url=BASE_URL, facts=brief)
+    assert "Waiting on you (12)" in authored
+    assert authored.index("Needs you") < authored.index("Waiting on you")
+    assert len(authored) <= 600 and authored.endswith(f"<{BASE_URL}/focus/inbox>")
+    deterministic = f"📊 Work completed.\nNeeds you: nothing new.\n<{BASE_URL}/focus/inbox>"
+    fallback = fallback_text(deterministic, brief)
+    assert "Waiting on you (12)" in fallback
+    assert fallback.endswith(f"<{BASE_URL}/focus/inbox>") and len(fallback) <= 600
+    assert "Waiting on you (12)" in fallback_text("", brief)

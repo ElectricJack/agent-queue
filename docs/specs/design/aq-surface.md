@@ -431,6 +431,14 @@ labelled as historical reports, not instructions or approval. Prime and `aq task
 help ask agents to keep comments concise: state what changed, decisions and blockers;
 link evidence instead of pasting logs or repeating status.
 
+Pilot workers with knowledge context enabled also fit the aggregate required
+document to the configured byte budget: ordinary context, description and
+historical handoff excerpts may shrink to explicit lossless continuation reads.
+Complete comments remain outside those excerpts, along with live repair fences,
+profile Role/Rules, pending messages, current facts, result/wait pointers and the
+completion protocol. Reassemble overrides and the pause notice before accounting;
+unpageable required content still triggers `context.required_over_budget`.
+
 Sections 1–2 render exactly the *prime-visible* profile headings —
 `## Role` bare, then `## Rules` under a `### Rules` sub-heading — and nothing
 else; `## Config`, `## Tools`, `## MCP Servers` and `## Reflection` stay

@@ -723,6 +723,45 @@ async def test_task_comment_human_subject_uses_actual_comment_schema(env):
     assert observed.result_ref == "task_comment:reply"
 
 
+async def test_human_comment_uses_committed_watermark_despite_old_writer_clock(env):
+    old = await env.db.add_task_comment("source", "Already answered", author_kind="user",
+                                        author_id="dashboard")
+    async with env.db._engine.connect() as conn:
+        watermark = await conn.scalar(select(func.max(wait_source_events.c.seq)))
+    receipt = await register(env, {"kind": "human", "subject": "task_comment", "task_id": "source"},
+                             source_watermark=watermark)
+    saved = (await records(env))[0]
+    cond = Condition.from_record(saved["condition"])
+    async with env.db._engine.connect() as conn:
+        assert (await env.registry.observe(conn, cond)).state == "unsatisfied"
+    new = await env.db.add_task_comment("source", "New answer", author_kind="user",
+                                        author_id="dashboard")
+    # The fixture's registration clock is ahead of both persisted timestamps.
+    assert old["created_at"] < NOW and new["created_at"] < NOW
+    async with env.db._engine.connect() as conn:
+        observed = await env.registry.observe(conn, cond)
+    assert observed.result_ref == f"task_comment:{new['id']}"
+    assert receipt["next_step"] == "checkpoint_then_end_turn"
+
+
+@pytest.mark.parametrize("status", ["COMPLETED", "FAILED"])
+async def test_human_comment_requires_an_open_task(env, status):
+    await source_state(env, status)
+    with pytest.raises(WaitError) as error:
+        await register(env, {"kind": "human", "subject": "task_comment", "task_id": "source"})
+    assert error.value.code == "wait.source_unresolved"
+    assert not await records(env)
+
+
+async def test_human_comment_does_not_follow_replaced_task(env):
+    await register(env, {"kind": "human", "subject": "task_comment", "task_id": "source"})
+    saved = (await records(env))[0]
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == "source").values(created_at=NOW + 2))
+        observed = await env.registry.observe(conn, Condition.from_record(saved["condition"]))
+    assert observed.state == "unavailable"
+
+
 async def seed_repo(env, project="p"):
     async with env.db._engine.begin() as conn:
         await conn.execute(
@@ -1126,6 +1165,9 @@ async def test_review_revision_and_user_decision_are_verified(env):
         assert (await env.registry.observe(conn, cond)).state == "unsatisfied"
         await conn.execute(update(doc_reviews).values(decided_by="human:local-operator"))
         assert (await env.registry.observe(conn, cond)).state == "satisfied"
+        assert cond.parameters["revision"] == 1
+        await conn.execute(update(doc_reviews).values(current_revision=2))
+        assert (await env.registry.observe(conn, cond)).state == "unavailable"
 
 
 async def test_playbook_condition_verifies_run_identity_and_revision(env):

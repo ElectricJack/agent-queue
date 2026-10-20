@@ -516,6 +516,13 @@ class AskCommunicationCommandsMixin:
             },
         }
 
+    @checked("ask_cutover_status")
+    async def _cmd_ask_cutover_status(self, args):
+        operator_only()
+        from src.asks.transport_controls import cutover_status
+
+        return await cutover_status(self, args)
+
     @checked("ask_cutover")
     async def _cmd_ask_cutover(self, args):
         operator_only()

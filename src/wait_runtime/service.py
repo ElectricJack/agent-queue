@@ -11,6 +11,7 @@ from src.waits.dispatcher import WakeDispatcher
 from src.waits.graph import recompute_from
 from src.waits.source_locking import lock_database_source
 from src.waits.decisions import WaitDecisions
+from src.waits.human import HumanWaits
 from src.wait_runtime.lifecycle import WaitLifecycle
 from src.wait_runtime.scheduler import SchedulerWaitService
 
@@ -27,6 +28,7 @@ class WaitService:
         self.listener = WaitSourceListener(self, clock=clock, owner=owner, connect=connect)
         self.timers = WaitTimerDriver(self, clock=clock)
         self.decisions = WaitDecisions(self, clock=clock)
+        self.human = HumanWaits(self, clock=clock)
         self.lifecycle = WaitLifecycle(self, clock=clock)
         self.registry.loop_handler = self.loop_escalation
         self._dispatcher = WakeDispatcher(
@@ -42,6 +44,7 @@ class WaitService:
         for name, callback in (("wait_deadline_fire", self.timers.fire),
                                ("wait_source_commit", self.source_commit),
                                ("wait_decide", self.decisions.decide),
+                               ("wait_lift", self.human.lift),
                                ("wait_register", self.lifecycle.register),
                                ("wait_graph", self.graph),
                                ("wait_ack", self.lifecycle.acknowledge),

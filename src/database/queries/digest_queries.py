@@ -664,6 +664,9 @@ class DigestSupervisorQueriesMixin:
             ask_page = await self.list_asks_snapshot(
                 conn=conn, project_ids=wanted, public=True, channel_id=channel_id, limit=100,
             )
+            from src.database.queries.wait_queries import pending_human_waits
+
+            waiting_on_you = await pending_human_waits(conn, now=now, project_ids=wanted)
             working = int(
                 await conn.scalar(
                     select(func.count())
@@ -678,6 +681,7 @@ class DigestSupervisorQueriesMixin:
             "landed": landed,
             "stuck": stuck,
             "asks": ask_page,
+            "waiting_on_you": waiting_on_you,
             "sessions_working": working,
             "sessions_total": total,
             "active_tasks": int(active_tasks),

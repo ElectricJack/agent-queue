@@ -181,14 +181,16 @@ class WakeDispatcher:
             evicted=row['decision_reason'] == 'evicted', recorded_at=now,
             **await cost_values(conn, row, continuation),
         ))
+        event_type = "wait.lifted" if outcome == "lifted_by_supervisor" else f"wait.{outcome}"
+        payload = {"wait_id": row["id"], "project_id": row["project_id"],
+                   "result_ref": result_ref, "source_seq": event.get("seq"), "decision": decision}
+        if outcome == "lifted_by_supervisor":
+            payload.update(supervisor_session_id=decision["supervisor_session_id"],
+                           message_id=decision["message_id"])
         await conn.execute(insert(events).values(
-            event_type=f"wait.{outcome}", project_id=row["project_id"],
+            event_type=event_type, project_id=row["project_id"],
             task_id=row["owner_id"] if row["owner_kind"] == "task" else None,
-            timestamp=now, payload=json.dumps({"wait_id": row["id"],
-                                             "project_id": row["project_id"],
-                                             "result_ref": result_ref,
-                                             "source_seq": event.get("seq"),
-                                             "decision": decision}),
+            timestamp=now, payload=json.dumps(payload),
         ))
         if not deliver:
             await conn.execute(update(wait_records).where(wait_records.c.id == row["id"]).values(

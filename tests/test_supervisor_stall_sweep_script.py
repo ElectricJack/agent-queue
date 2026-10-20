@@ -158,6 +158,49 @@ def test_train_repair_capacity_alarm_reaches_timed_patrol(tmp_path):
     assert "STUCK rom delegate" not in proc.stdout
 
 
+@pytest.mark.parametrize("code", [
+    "awaiting_route", "route_failed", "route_no_candidates", "route_held",
+    "router_not_ready", "router_unbound",
+])
+def test_stale_ready_unrouted_task_has_a_specific_routing_alarm(tmp_path, code):
+    responses = _scoped_responses([
+        _task("lost-route", "READY", route_source="unrouted", profile_id=None),
+    ])
+    responses["aq"]["task explain --task-id lost-route"] = {"reasons": [
+        {"code": code, "detail": "router has not written a route"},
+        {"code": "blocked_dependency", "detail": "dep 'moving' status=IN_PROGRESS"},
+    ]}
+    responses["aq"]["task get --task-id moving"] = {"status": "IN_PROGRESS"}
+    proc, calls = _run(tmp_path, responses, "--project", "rom")
+    assert proc.returncode == 0, proc.stderr
+    assert "UNROUTED-READY rom lost-route" in proc.stdout
+    assert "route_source=unrouted" in proc.stdout
+    assert "router has not written a route" in proc.stdout
+    assert "OK:" not in proc.stdout
+    assert set(_project_args(calls)) == {"rom"}
+    assert not any(call[:3] == ["aq", "task", "route"] for call in calls)
+
+
+@pytest.mark.parametrize("status,age_s,source,code", [
+    ("READY", 30, "unrouted", "awaiting_route"),
+    ("READY", 3600, "router", "route_waiting_for_compatible_agent"),
+    ("DEFINED", 3600, "unrouted", "awaiting_route"),
+    ("READY", 3600, "unrouted", "container"),
+])
+def test_routing_alarm_requires_stale_ready_unrouted_executable_work(
+    tmp_path, status, age_s, source, code,
+):
+    responses = _scoped_responses([
+        _task("t", status, age_s=age_s, route_source=source),
+    ])
+    responses["aq"]["task explain --task-id t"] = {"reasons": [
+        {"code": code, "detail": "expected wait"},
+    ]}
+    proc, _ = _run(tmp_path, responses, "--project", "rom")
+    assert proc.returncode == 0, proc.stderr
+    assert "UNROUTED-READY" not in proc.stdout
+
+
 def test_orphaned_assignment_without_session_is_reported(tmp_path):
     responses = _scoped_responses([
         _task("lost", "IN_PROGRESS", assigned_agent="idle-agent"),
@@ -822,7 +865,9 @@ DIRTY_STATUS = " M src/database/engine.py\n M src/main.py\n"
 def _deploy_log(tmp_path, *entries):
     """An auto-deploy log of (seconds ago, message) lines, oldest first."""
     log = tmp_path / "aq-auto-deploy.log"
-    stamp = lambda ago: time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - ago))
+    def stamp(ago):
+        return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - ago))
+
     log.write_text("".join(f"{stamp(ago)} {message}\n" for ago, message in entries))
     return {"AQ_AUTO_DEPLOY_LOG": str(log)}
 

@@ -1371,6 +1371,24 @@ _CRON_SCHEMAS: dict[str, EventSchema] = {
 # Spec + proposal events (Phase 6 — spec ingestion §8)
 # ---------------------------------------------------------------------------
 
+_BATCH_SCHEMAS: dict[str, EventSchema] = {
+    event_type: {
+        "required": ["project_id", "batch_id", "structure_revision", "structure_digest",
+                     "reviewer_task_id"],
+        "optional": [],
+        "types": {"project_id": str, "batch_id": str, "structure_revision": int,
+                  "structure_digest": str, "reviewer_task_id": (str, type(None))},
+        "fields": {
+            "project_id": {"type": "string", "description": "project"},
+            "batch_id": {"type": "string", "description": "held ingestion batch"},
+            "structure_revision": {"type": "integer", "description": "batch structure revision"},
+            "structure_digest": {"type": "string", "description": "batch structure digest"},
+            "reviewer_task_id": {"type": "string", "description": "assigned reviewer or null"},
+        },
+    }
+    for event_type in ("batch.held", "batch.receipt_recorded", "batch.needs_scope", "batch.released")
+}
+
 _SPEC_SCHEMAS: dict[str, EventSchema] = {
     "spec.approved": {
         "required": ["project_id", "decision_id", "packet_sha256", "review_id", "revision",
@@ -2114,6 +2132,7 @@ EVENT_SCHEMAS: dict[str, EventSchema] = {
     **_TIMER_SCHEMAS,
     **_CRON_SCHEMAS,
     **_SPEC_SCHEMAS,
+    **_BATCH_SCHEMAS,
     **_PROJECT_SCHEMAS,
     **_SWARM_SCHEMAS,
     **_PROVIDER_SCHEMAS,
