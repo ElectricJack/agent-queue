@@ -29,6 +29,7 @@ class TaskBatchProposeResponse:
             proposal_id (None | str | Unset):
             dry_run (bool | Unset):  Default: False.
             committed (bool | Unset):  Default: False.
+            already_committed (bool | Unset):  Default: False.
             task_ids (list[str] | None | Unset):
             diff (None | TaskBatchProposeResponseDiffType0 | Unset):
     """
@@ -37,6 +38,7 @@ class TaskBatchProposeResponse:
     proposal_id: None | str | Unset = UNSET
     dry_run: bool | Unset = False
     committed: bool | Unset = False
+    already_committed: bool | Unset = False
     task_ids: list[str] | None | Unset = UNSET
     diff: None | TaskBatchProposeResponseDiffType0 | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
@@ -55,6 +57,8 @@ class TaskBatchProposeResponse:
         dry_run = self.dry_run
 
         committed = self.committed
+
+        already_committed = self.already_committed
 
         task_ids: list[str] | None | Unset
         if isinstance(self.task_ids, Unset):
@@ -84,6 +88,8 @@ class TaskBatchProposeResponse:
             field_dict["dry_run"] = dry_run
         if committed is not UNSET:
             field_dict["committed"] = committed
+        if already_committed is not UNSET:
+            field_dict["already_committed"] = already_committed
         if task_ids is not UNSET:
             field_dict["task_ids"] = task_ids
         if diff is not UNSET:
@@ -110,6 +116,8 @@ class TaskBatchProposeResponse:
         dry_run = d.pop("dry_run", UNSET)
 
         committed = d.pop("committed", UNSET)
+
+        already_committed = d.pop("already_committed", UNSET)
 
         def _parse_task_ids(data: object) -> list[str] | None | Unset:
             if data is None:
@@ -150,6 +158,7 @@ class TaskBatchProposeResponse:
             proposal_id=proposal_id,
             dry_run=dry_run,
             committed=committed,
+            already_committed=already_committed,
             task_ids=task_ids,
             diff=diff,
         )

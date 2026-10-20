@@ -471,6 +471,10 @@ class OwnerRecovery:
                 "the branch cannot be compared with origin",
             )
         live_dirs = await self._live_work_dirs()
+        base_paths = await self._base_paths()
+        if row_path is not None and os.path.realpath(row_path) in base_paths:
+            evidence["ignored_base_workspace"] = row["workspace_id"]
+            row_path = None
         planned: list[dict[str, Any]] = []
         preserve: list[tuple[str, str | None, str]] = []  # (kind, worktree, sha)
         detach: list[str] = []
@@ -508,6 +512,10 @@ class OwnerRecovery:
                 )
                 if not (holds or own_detached):
                     continue
+                if os.path.realpath(path) in base_paths:
+                    raise _Refusal(
+                        CHECKOUT_IN_USE, f"{branch} is checked out in shared base {path}",
+                    )
                 if not os.path.isdir(path):
                     evidence.setdefault("missing_worktrees", []).append(path)
                     continue
@@ -716,6 +724,15 @@ class OwnerRecovery:
             return contextlib.nullcontext()
         return self.git_mutex(checkout)
 
+    async def _base_paths(self) -> set[str]:
+        """Shared repository stores are never a stopped writer's checkout."""
+        slot = workspaces.alias("recovery_slot")
+        async with self.db._engine.connect() as conn:
+            paths = await conn.scalars(select(workspaces.c.workspace_path).where(
+                select(slot.c.id).where(slot.c.base_workspace_id == workspaces.c.id).exists(),
+            ))
+            return {os.path.realpath(path) for path in paths}
+
     async def _dirty(self, path: str) -> bool:
         status = await self.git._arun(
             ["status", "--porcelain", "--", ".", f":(exclude){_LOCK_SENTINEL}"], cwd=path
@@ -814,7 +831,9 @@ class OwnerRecovery:
                     fence_token=row["fence_token"] + 1,
                     session_id=None,
                     workspace_id=None,
-                    confirmed_workspace_id=row["workspace_id"],
+                    confirmed_workspace_id=(
+                        None if evidence.get("ignored_base_workspace") else row["workspace_id"]
+                    ),
                     updated_at=now,
                 )
             )
@@ -857,6 +876,9 @@ class OwnerRecovery:
         evidence: dict[str, Any],
     ) -> None:
         if not row["workspace_id"]:
+            return
+        if evidence.get("ignored_base_workspace"):
+            evidence["workspace_unlocked"] = False
             return
         holders = [workspaces.c.locked_by_task_id == row["owner_id"]]
         agent_id = session["agent_id"] if session is not None else None

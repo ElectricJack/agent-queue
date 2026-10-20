@@ -1174,13 +1174,15 @@ def test_routine_preference_preserves_local_design_art_and_operator_rules():
                         policy_sha256=digest, classification={**NARROW_YES, "risk": "low"})
     assert narrow.value["provider"] == "opencode"
     assert narrow.value["decision"]["mode"] == "lane_preference"
-    # The shipped narrow lanes take only work classified low risk: narrow and
-    # test-verified alone no longer qualifies.  No risk answer is a medium one.
+    # Narrow, test-verified medium-risk work (an assumed medium included) may
+    # run on local OpenCode through narrow-medium; high risk never does.
     for classification in (NARROW_YES, {**NARROW_YES, "risk": "medium"}):
-        hosted = plan_route(_task(task_type="feature"), policy, _snapshot(),
+        medium = plan_route(_task(task_type="feature"), policy, _snapshot(),
                             policy_sha256=digest, classification=classification)
-        assert hosted.value["provider"] == "codex", classification
-        assert {c["harness"] for c in hosted.value["candidates"]} <= {"claude", "codex"}
+        assert medium.value["provider"] == "opencode", classification
+    hosted = plan_route(_task(task_type="feature"), policy, _snapshot(),
+                        policy_sha256=digest, classification={**NARROW_YES, "risk": "high"})
+    assert {c["harness"] for c in hosted.value["candidates"]} <= {"claude", "codex"}
     assert routine_plan(task_type="design").value["profile_id"] == "deep-high-claude"
     assert routine_plan(task_type="art").value["provider_intent"] == "pinned"
     assert routine_plan(_snapshot(out={"codex"}), task_type="art").outcome == "held"
@@ -1873,6 +1875,29 @@ def test_bugfix_escalation_names_the_failed_attempt():
         "failed_attempts": [failure],
     }
     assert "escalated_after_failure" in result.value["reason"]
+
+
+@pytest.mark.parametrize("rework", [
+    {"reason": "reopen_with_feedback", "previous_status": "COMPLETED"},
+    {"reason": "reopen_with_feedback", "previous_status": "BLOCKED"},
+    {"reason": "verification_reopen", "previous_status": "COMPLETED"},
+])
+def test_rework_after_a_passing_attempt_does_not_escalate(rework):
+    attempt = {"attempt_id": "rework", "intelligence_class": "standard-high", **rework}
+    result = _risk_plan(
+        ESCALATING_POLICY, _task(task_type="bugfix", failed_attempts=(attempt,)),
+        classification={**NARROW_NO, "risk": "very_high"},
+    )
+    assert result.value["intelligence_class"] == "standard-high"
+    assert "escalated_after_failure" not in result.value
+    failure = {"attempt_id": "hard", "intelligence_class": "standard-high",
+               "reason": "session_close_hard_failure", "previous_status": "IN_PROGRESS"}
+    escalated = _risk_plan(
+        ESCALATING_POLICY, _task(task_type="bugfix", failed_attempts=(attempt, failure)),
+        classification={**NARROW_NO, "risk": "very_high"},
+    )
+    assert escalated.value["intelligence_class"] == "deep-high"
+    assert escalated.value["escalated_after_failure"]["failed_attempts"] == [failure]
 
 
 @pytest.mark.parametrize("failed_class", ["fast-high", "deep-high"])

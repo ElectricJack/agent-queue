@@ -800,16 +800,92 @@ composition of `create_project` and `add_workspace`.
 
 #### `list_workspaces`
 
-Lists workspaces with lock status.
+Lists workspaces with lock status, owner identity and bounded checkout
+diagnostics. Read-only: it never writes a row, takes a row lock, or takes a
+Git index lock. Implementation: `src/workspace_listing.py`.
 
 **Parameters:**
 - `project_id` (optional)
+- `git` (optional bool, default `true`): probe each checkout's branch and dirty
+  state. `false` returns lock and owner facts only.
+- `deadline_seconds` (optional number, default 10, clamped to 0.5–20): the
+  budget for all diagnostics, kept under the CLI's 30s request timeout.
+
+**Bounds.** Owner facts are one read-only transaction (tasks named by locks,
+their `claimed_by_session` metadata, and unended sessions whose agent, task or
+`work_dir` match a row) under `min(5s, deadline/2)`. Checkout probes then run
+in the remaining budget, at most four at a time: a directory check in a worker
+thread and one `git --no-optional-locks status --porcelain=v1 --branch`, so a
+probe never contends with a writer's index lock. At the deadline every running
+probe is cancelled, which kills its Git child; the call itself being cancelled
+does the same. A row whose live session is mid-claim (`claim_phase` `claiming`
+or `preparing`) is not probed (`skipped_active_writer`).
+
+**Response.** `{"workspaces": [row], "diagnostics": {...}}`. Each row keeps
+`id`, `project_id`, `workspace_path`, `source_type`, `name`, `kind_id`,
+`locked_by_agent_id`, `locked_by_task_id`, `lock_mode`, `enabled` and the
+worktree annotations `role`, `slot_index`, `mode`, `branch`, `dirty`
+(`branch`/`dirty` are `null` whenever the checkout was not read — never a
+guessed "clean"), plus:
+
+- `presence`: `present` | `missing` | `unknown`.
+- `git_status`: `ok` | `missing` | `not_a_checkout` | `error` | `timeout`
+  (started, unfinished at the deadline) | `not_started` (no probe slot before
+  the deadline) | `skipped` (`git=false`) | `skipped_active_writer`;
+  `git_error` carries a bounded error text.
+- `beyond_cap`: for a slot, `slot_index >= project.max_concurrent_agents` (the
+  test `workspace_reap all_retired` uses); `null` otherwise or when unread.
+  A historical slot beyond the cap whose directory is missing and that no
+  session names is reported as such, distinct from an active slot.
+- `owner`: `lock_state` (`unlocked` | `agent_only` | `task`), `agent_id`,
+  `task_id`, `locked_at`, `facts` (`complete` | `timeout` | `unavailable`),
+  `task` (`id`, `found`, `status`, `claim_epoch`, `claimed_by_session`),
+  `session` (best-matching live session: `id`, `agent_id`, `task_id`,
+  `lifecycle`, `state`, `claim_phase`, `last_claim_epoch`, `last_activity`,
+  `work_dir`), `sessions_matched`, `fence` (`consistent` | `mismatch` |
+  `unknown`: the task's `claim_epoch` against the session's
+  `last_claim_epoch`), `session_matches_claim`, and `classification`:
+  `unlocked`, `unlocked_session_present`, `held` (lock task, its live session
+  and fence agree), `agent_held` (a pool session's between-task agent lock),
+  `preparing`, `unverified` (the lock names an owner the facts do not
+  corroborate) or `unknown` (owner facts unavailable).
+
+`diagnostics`: `complete` (false when owner facts are not `complete` or any
+row is `timeout`/`not_started`/`error`), `deadline_seconds`,
+`elapsed_seconds`, `owner_facts`, `owner_facts_error`, `git_requested`,
+`git_status_counts`, `presence_counts`, `incomplete_rows`, and `authority`.
+
+**Authority.** Lock and owner fields come from the database. A missing,
+timed-out, skipped or partial diagnostic — and `unverified` or `unknown` — is
+not evidence that a lock or worker is stale or that a workspace is free.
+Releases and reaps keep their own proofs (`workspace_doctor`,
+`workspace_reap`, `release_workspace`); nothing here feeds them.
+
+`aq project list-workspaces --json` keeps its `data` as the row list (each row
+carries its own `owner.facts` and `git_status`); the human table adds Owner
+and Checkout columns and a partial-readback footer.
 
 ---
 
 #### `remove_workspace`
 
-Deletes a workspace.
+Deletes a workspace. Both agent and task locks must be released first.
+For a missing non-slot directory, removal atomically cleans matching repository
+registrations in the same project (LINK source path or CLONE checkout base path)
+and records `workspace.registration_removed` with the path and removed repository
+IDs in the event audit log. A repository shared by another workspace is retained.
+Pinned workspaces, live sessions, child slots, designated integration repositories
+and referenced repository identities refuse cleanup; restore or repair their
+ownership/references before retrying. Filesystem contents are never deleted.
+
+`workspace_doctor` reports `missing_workspace_path` independently of the worktree
+rollout flag, with restore/remove instructions; a locked row requires owner
+verification and release first. Missing paths do not also produce misleading
+managed-exclude findings. The daily branch backstop reports missing non-slot
+workspaces and missing LINK sources once per registration/path until restored
+or changed, persisting notice state only after supervisor delivery succeeds.
+These are inventory notices rather than Git sweep failures. Repository identity
+and live branch holds remain available to sweeps of other healthy checkouts.
 
 **Parameters:**
 - `workspace_id` (required)

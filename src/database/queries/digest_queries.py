@@ -37,7 +37,7 @@ import time
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from sqlalchemy import exists, func, select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from src.database.queries.task_session_queries import live_attempt_predicate
@@ -45,9 +45,6 @@ from src.database.tables import (
     agent_questions,
     archived_tasks,
     digest_windows,
-    doc_reviews,
-    escalation_messages,
-    escalations,
     projects,
     provider_availability_transitions,
     sessions,
@@ -79,6 +76,9 @@ _IDLE_STATUSES = (
     "ASSIGNED",
     "IN_PROGRESS",
     "WAITING_INPUT",
+    "WAITING",
+    "HIBERNATED",
+    "RESUME_PENDING",
     "PAUSED",
     "BLOCKED",
 )
@@ -499,6 +499,7 @@ class DigestSupervisorQueriesMixin:
         *,
         now: float,
         project_ids: tuple[str, ...] | None = None,
+        channel_id: str | None = None,
         open_escalations: int = 0,
         active_tasks: int = 0,
         stalled_after: float = 30 * 60.0,
@@ -510,11 +511,9 @@ class DigestSupervisorQueriesMixin:
         through the brief.
         """
         since, until = window.since, window.until
-        wanted = tuple(project_ids) if project_ids else None
+        wanted = tuple(project_ids) if project_ids is not None else None
         landed: list[dict[str, Any]] = []
         stuck: list[dict[str, Any]] = []
-        needs_escalations: list[dict[str, Any]] = []
-        needs_reviews: list[dict[str, Any]] = []
 
         async with self._engine.connect() as conn:
             titles: dict[str, Any] = {}
@@ -661,74 +660,10 @@ class DigestSupervisorQueriesMixin:
                     }
                 )
 
-            escalation_query = _capped(
-                select(
-                    escalations.c.id,
-                    escalations.c.project_id,
-                    escalations.c.task_id,
-                    escalations.c.summary,
-                    escalations.c.severity,
-                    escalations.c.state,
-                    escalations.c.created_at,
-                    escalations.c.updated_at,
-                ).where(
-                    escalations.c.state.in_(_NEEDS_HUMAN_ESCALATION_STATES),
-                    # Delivery incidents belong to the supervisor's internal
-                    # inbox, and answered escalations await supervisor action.
-                    # Neither asks Jack to do anything in the digest.
-                    escalations.c.source_kind != "supervisor_delivery",
-                    # Even a later terminal/stale state cannot make an
-                    # accepted human answer become a pending human question.
-                    ~exists().where(
-                        escalation_messages.c.escalation_id == escalations.c.id,
-                        escalation_messages.c.direction == "inbound",
-                    ),
-                ),
-                escalations.c.updated_at.desc(),
+            # The same audience/pending predicate and snapshot used by the inbox.
+            ask_page = await self.list_asks_snapshot(
+                conn=conn, project_ids=wanted, public=True, channel_id=channel_id, limit=100,
             )
-            if wanted is not None:
-                escalation_query = escalation_query.where(escalations.c.project_id.in_(wanted))
-            for row in (await conn.execute(escalation_query)).all():
-                needs_escalations.append(
-                    {
-                        "id": row.id,
-                        "project_id": row.project_id,
-                        "task_id": row.task_id,
-                        "summary": _first_line(row.summary, 200),
-                        "severity": row.severity,
-                        "state": row.state,
-                        "age_minutes": int(max(0.0, now - float(row.created_at)) // 60),
-                    }
-                )
-
-            review_query = _capped(
-                select(
-                    doc_reviews.c.id,
-                    doc_reviews.c.project_id,
-                    doc_reviews.c.kind,
-                    doc_reviews.c.state,
-                    doc_reviews.c.title,
-                    doc_reviews.c.updated_at,
-                ).where(
-                    doc_reviews.c.state.in_(_NEEDS_YOU_REVIEW_STATES),
-                    doc_reviews.c.decider.in_(("user", "user_or_supervisor")),
-                ),
-                doc_reviews.c.updated_at.desc(),
-            )
-            if wanted is not None:
-                review_query = review_query.where(doc_reviews.c.project_id.in_(wanted))
-            for row in (await conn.execute(review_query)).all():
-                needs_reviews.append(
-                    {
-                        "id": row.id,
-                        "project_id": row.project_id,
-                        "kind": row.kind,
-                        "title": _first_line(row.title or "", 120),
-                        "state": row.state,
-                        "age_minutes": int(max(0.0, now - float(row.updated_at)) // 60),
-                    }
-                )
-
             working = int(
                 await conn.scalar(
                     select(func.count())
@@ -742,8 +677,7 @@ class DigestSupervisorQueriesMixin:
         return {
             "landed": landed,
             "stuck": stuck,
-            "escalations": needs_escalations,
-            "reviews": needs_reviews,
+            "asks": ask_page,
             "sessions_working": working,
             "sessions_total": total,
             "active_tasks": int(active_tasks),

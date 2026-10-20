@@ -226,10 +226,20 @@ class PoolsMixin:
         service = getattr(self, "development_integration", None)
         if service is None:
             service = DevelopmentPrimitives(self.db, data_dir=self.config.data_dir, git=self.git)
-        return await observe_admission(self.db, task_ids, service, cached_only=cached_only)
+        return await observe_admission(
+            self.db,
+            task_ids,
+            service,
+            cached_only=cached_only,
+            default_mode=self.config.integration.default_mode,
+        )
 
     async def _measure_pools(
-        self, project_ids: set[str] | None = None, *, hierarchy_modes=None, for_display=False,
+        self,
+        project_ids: set[str] | None = None,
+        *,
+        hierarchy_modes=None,
+        for_display=False,
     ) -> PoolMeasurement:
         """One :class:`PoolMeasurement` for every pool profile, this tick.
 
@@ -280,15 +290,23 @@ class PoolsMixin:
             if ":" not in p.id and getattr(p, "lifecycle", "task") == "pool"
         }
         measurement.pool_sessions = await self.db.list_sessions(lifecycle="pool")
+        task_statuses = await self.db.get_task_statuses([
+            s.task_id for s in measurement.pool_sessions if s.task_id
+        ])
         from src.routing.readiness import orchestrator_ready_projects
 
         ready_projects = await orchestrator_ready_projects(self)
         sessions_by_project: dict[str, list[SessionRecord]] = {}
         for session in measurement.pool_sessions:
+            status = task_statuses.get(session.task_id)
+            if status == TaskStatus.HIBERNATED.value or (
+                status == TaskStatus.RESUME_PENDING.value and session.state != "starting"
+            ):
+                continue  # Continuation ownership carries no live pool seat.
             if session.project_id is not None:
                 sessions_by_project.setdefault(session.project_id, []).append(session)
 
-        for project in await self.db.list_projects():
+        for project in await self.db.list_projects(include_admission=True):
             if project.status != ProjectStatus.ACTIVE:
                 continue
             if project_ids is not None and project.id not in project_ids:
@@ -297,9 +315,10 @@ class PoolsMixin:
                 continue
 
             measurement.projects[project.id] = project
+            from src.integration.admission import structural_candidates
+
             allowed = None
-            if project.hierarchical_integration_mode == "development":
-                from src.integration.admission import structural_candidates
+            if getattr(project, "_source_admission_required", True):
                 batch = await self._delivery_admission(
                     await structural_candidates(self.db, project.id),
                     **({"cached_only": True} if for_display else {}),
@@ -587,6 +606,9 @@ class PoolsMixin:
         now = time.time()
         await self._announce_bounds_rescoped(measurement)
         actions, self._pool_surplus_since = self._size_pool_actions(measurement, now)
+        from src.waits.sources import record_pool_observations
+
+        await record_pool_observations(self.db, measurement, now)
         starts, drains, starvations = place_pool_actions(
             actions=actions, candidates=measurement.candidates
         )
@@ -862,10 +884,10 @@ class PoolsMixin:
         announced = getattr(self, "_pool_bounds_rescoped_announced", None)
         if announced is None:
             announced = self._pool_bounds_rescoped_announced = set()
+        pending = []
         for key, profile in sorted(measurement.profiles.items(), key=lambda kv: kv[0].profile_id):
             if key.profile_id in announced:
                 continue
-            announced.add(key.profile_id)
             eligible = len(measurement.candidates.get(key, ()))
             max_active = profile.max_active
             min_active = profile.min_active or 0
@@ -881,10 +903,15 @@ class PoolsMixin:
                 ),
                 "previous_effective_min_active": min_active * eligible,
             }
-            await self.db.log_event(
-                "pool.bounds_rescoped",
-                payload=json.dumps(payload, separators=(",", ":"), sort_keys=True),
-            )
+            pending.append(payload)
+        if pending:
+            await self.db.log_events([
+                {"event_type": "pool.bounds_rescoped",
+                 "payload": json.dumps(payload, separators=(",", ":"), sort_keys=True)}
+                for payload in pending
+            ])
+        for payload in pending:
+            announced.add(payload["profile_id"])
             await self.bus.emit("pool.bounds_rescoped", payload)
 
     async def _emit_pool_scaled(
@@ -1373,7 +1400,12 @@ class PoolsMixin:
         # Callers may hold an old in-memory row after its worker has already
         # been reserved for a new launch. Completed teardown is idempotent.
         current = await self.db.get_session(session.id)
-        if current is None or current.state == "stopped":
+        if (
+            current is None or current.state == "stopped"
+            or current.instance_token != session.instance_token
+            or current.task_id != session.task_id
+            or current.last_claim_epoch != session.last_claim_epoch
+        ):
             return
         session = current
         # Re-check the shared exemption before timeout-driven cleanup. Death,

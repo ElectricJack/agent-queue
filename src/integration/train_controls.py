@@ -369,7 +369,8 @@ class TrainControls:
         if train is None:
             raise ValueError("the integration train is not active")
         targets = await train.targets.targets(self.clock())
-        roots = [t for t in targets if t.project_id == project_id and t.kind != "epic"]
+        roots = [t for t in targets
+                 if t.project_id == project_id and t.kind in {"root", "development"}]
         if len(roots) != 1:
             raise ValueError("project has no unique active root train target")
         target = roots[0]

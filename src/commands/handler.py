@@ -36,6 +36,7 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 from src.config import AppConfig
+from src.state_machine import InvalidTransition
 from src.logging_config import CorrelationContext
 
 # Mixin imports — each provides one domain of _cmd_* methods
@@ -44,6 +45,7 @@ from src.commands.object_loop_commands import ObjectLoopCommandsMixin
 from src.commands.claim_commands import ClaimCommandsMixin
 from src.commands.question_commands import QuestionCommandsMixin
 from src.commands.wait_commands import WaitCommandsMixin
+from src.commands.wait_v2_commands import WaitV2CommandsMixin
 from src.commands.cron_commands import CronCommandsMixin
 from src.commands.knowledge_commands import KnowledgeCommandsMixin
 from src.commands.collaboration_commands import CollaborationCommandsMixin
@@ -104,11 +106,13 @@ from src.commands.dashboard_state_commands import DashboardStateCommandsMixin
 from src.commands.escalation_commands import EscalationCommandsMixin
 from src.commands.conversation_commands import ConversationCommandsMixin
 from src.commands.review_commands import ReviewCommandsMixin
+from src.commands.ask_commands import AskCommandsMixin
 from src.commands.github_issue_commands import GitHubIssueCommandsMixin
 
 # -- dv2 phase 6 mixins ---------------------------------------------------
 from src.commands.proposal_commands import TaskProposalCommandsMixin
 from src.commands.spec_commands import SpecCommandsMixin
+from src.commands.spec_ingest_commands import SpecIngestCommandsMixin
 from src.routing.filing import GUARDED_COMMANDS, routing_choice_refusal, without_inert_choices
 
 if TYPE_CHECKING:
@@ -401,6 +405,7 @@ class CommandHandler(
     TestSelectionCommandsMixin,
     ReportCommandsMixin,
     WaitCommandsMixin,
+    WaitV2CommandsMixin,
     CronCommandsMixin,
     KnowledgeCommandsMixin,
     CollaborationCommandsMixin,
@@ -408,10 +413,12 @@ class CommandHandler(
     EscalationCommandsMixin,
     ConversationCommandsMixin,
     ReviewCommandsMixin,
+    AskCommandsMixin,
     GitHubIssueCommandsMixin,
     # -- dv2 phase 6 mixins -----------------------------------------------
     TaskProposalCommandsMixin,
     SpecCommandsMixin,
+    SpecIngestCommandsMixin,
 ):
     """Unified command execution layer for AgentQueue (Command Pattern).
 
@@ -981,7 +988,8 @@ class CommandHandler(
                 }
                 if name == "update_config"
                 else {"envelope": "<redacted-conversation-envelope>", "source": args.get("source")}
-                if name == "supervisor_inbox_post"
+                if name in {"supervisor_inbox_post", "ask_intake", "ask_button", "ask_reply",
+                            "ask_apply_input", "ask_discussion_reply"}
                 else {
                     **args,
                     "data_base64": f"<image bytes: {len(args.get('data_base64', ''))} base64 chars>",
@@ -1170,6 +1178,10 @@ class CommandHandler(
                 _emit_ok = False
                 _emit_error = f"Unknown command: {name}"
                 return {"error": f"Unknown command: {name}"}
+            except InvalidTransition as e:
+                _emit_ok = False
+                _emit_error = str(e)
+                return {"success": False, "code": e.code, "error": str(e)}
             except Exception as e:
                 logger.error(
                     "Command %s failed: args=%s err=%s",

@@ -409,6 +409,29 @@ async def test_transfer_that_wins_before_attach_prevents_writer_binding(db, tmp_
         await ownership.attach(fence, "session", "slot")
 
 
+async def test_attach_refuses_shared_base_checkout_without_recording_owner(db, tmp_path):
+    ownership = BranchOwnership(db)
+    target = BranchKey(repository_id="repo", branch="aq/task")
+    await db.create_task(Task(id="task", project_id="p", title="task", description=""))
+    fence = await ownership.acquire(target, "task", "worker")
+    await db.create_workspace(Workspace(
+        id="base", project_id="p", workspace_path=str(tmp_path / "base"),
+        locked_by_task_id="task", source_type=RepoSourceType.LINK,
+    ))
+    await db.create_workspace(Workspace(
+        id="slot", project_id="p", workspace_path=str(tmp_path / "slot"),
+        base_workspace_id="base", slot_index=0, source_type=RepoSourceType.WORKTREE,
+    ))
+
+    with pytest.raises(BranchBusy, match="shared base checkout"):
+        await ownership.attach(fence, "session", "base")
+
+    owner = await ownership.get_owner(target)
+    assert owner["handoff_state"] == "reserved"
+    assert owner["workspace_id"] is None
+    assert owner["session_id"] is None
+
+
 async def test_transfer_waits_for_bounded_reserved_mutation_exclusion(db):
     ownership = BranchOwnership(db)
     target = BranchKey(repository_id="repo", branch="aq/task")

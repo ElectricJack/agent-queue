@@ -1055,8 +1055,9 @@ class VibeCopPlugin(InternalPlugin):
             return
 
         try:
+            # Lock fields only: skip the per-checkout Git probes.
             ws_result = await self._ctx.execute_command(
-                "list_workspaces", {"project_id": project_id}
+                "list_workspaces", {"project_id": project_id, "git": False}
             )
             workspace_path: str | None = None
             for ws in ws_result.get("workspaces", []):

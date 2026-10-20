@@ -13,6 +13,7 @@ Every git-touching test runs against a real repo with a real bare
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import shutil
 import subprocess
@@ -27,7 +28,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from src.config import WorktreesConfig
-from src.git.manager import GitError, GitManager
+from src.git.manager import ForeignSlotClaim, GitError, GitManager
 from src.models import (
     KIND_MODE_WORKTREE,
     RepoSourceType,
@@ -46,6 +47,7 @@ from src.orchestrator.worktree_manager import (
 )
 from src.orchestrator.execution import ExecutionMixin
 from src.orchestrator.workspace_attachments import detach_slot_for_integration_handoff
+from tests.git_seed_helpers import clone_seed, init_bare_seed
 
 
 # ───────────────────────────────── fixtures ──────────────────────────────
@@ -62,20 +64,12 @@ def _git(args: list[str], cwd: str | Path) -> str:
     return r.stdout.strip()
 
 
-@pytest.fixture(scope="session")
-def _base_repo_seed(tmp_path_factory) -> Path:
+def _create_base_repo(tmp_path: Path) -> Path:
     """A clone of a bare origin, with one commit on ``main``."""
-    tmp_path = tmp_path_factory.mktemp("worktree-seed")
     origin = tmp_path / "origin.git"
-    subprocess.run(
-        ["git", "init", "--bare", "--initial-branch=main", str(origin)],
-        check=True,
-        capture_output=True,
-    )
+    init_bare_seed(str(origin))
     base = tmp_path / "base"
-    subprocess.run(
-        ["git", "clone", str(origin), str(base)], check=True, capture_output=True
-    )
+    clone_seed(str(origin), str(base))
     (base / "README.md").write_text("init\n")
     (base / ".gitignore").write_text("node_modules/\n")
     _git(["add", "-A"], cwd=base)
@@ -85,14 +79,34 @@ def _base_repo_seed(tmp_path_factory) -> Path:
 
 
 @pytest.fixture
-def base_repo(tmp_path: Path, _base_repo_seed: Path) -> Path:
-    """Each test owns a copy of the prepared clone and its bare origin."""
+def base_repo(tmp_path: Path) -> Path:
+    """Build a fresh clone and bare origin for this test's worktrees."""
+    return _create_base_repo(tmp_path)
+
+
+def test_fresh_repos_do_not_launch_auto_maintenance(tmp_path, monkeypatch):
+    trace = tmp_path / "git-trace.json"
+    config = tmp_path / "empty-git-config"
+    config.touch()
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(config))
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    monkeypatch.setenv("GIT_TRACE2_EVENT", str(trace))
+    seed_root = tmp_path / "seed"
+    seed_root.mkdir()
+    seed = _create_base_repo(seed_root)
+    seed_head = _git(["rev-parse", "HEAD"], cwd=seed)
     origin = tmp_path / "origin.git"
-    base = tmp_path / "base"
-    shutil.copytree(_base_repo_seed.parent / "origin.git", origin)
-    shutil.copytree(_base_repo_seed, base)
-    _git(["config", "remote.origin.url", str(origin)], cwd=base)
-    return base
+    base = _create_base_repo(tmp_path)
+    _git(["commit", "--allow-empty", "-m", "private work"], cwd=base)
+    _git(["push", "origin", "main"], cwd=base)
+    _git(["fetch", "origin"], cwd=base)
+    assert _git(["rev-parse", "main"], cwd=seed_root / "origin.git") == seed_head
+    assert _git(["rev-parse", "main"], cwd=origin) != seed_head
+    commands = [json.loads(line).get("argv", []) for line in trace.read_text().splitlines()]
+    assert not [
+        args for args in commands
+        if "--auto" in args and ("maintenance" in args or "gc" in args)
+    ]
 
 
 class FakeDB:
@@ -477,6 +491,236 @@ class TestCreateSlot:
         assert Path(slot.workspace_path).is_dir()
 
 
+class TestAbandonedMergeRecovery:
+    async def _merge(self, mgr, base_ws, kind, *, conflicted=False):
+        slot = await mgr.create_slot(base_ws, kind, 0)
+        await mgr.reset_slot_for_task(slot, FakeTask(id="tsk-prev"))
+        path = Path(slot.workspace_path)
+        _git(["switch", "-c", "merge-input"], path)
+        (path / "README.md").write_text("incoming merge edit\n")
+        (path / "binary.bin").write_bytes(b"\x00merge\xff\n")
+        _git(["add", "-A"], path)
+        _git(["commit", "-m", "merge input"], path)
+        _git(["switch", "aq/tsk-prev"], path)
+        if conflicted:
+            (path / "README.md").write_text("predecessor edit\n")
+            _git(["add", "README.md"], path)
+            _git(["commit", "-m", "predecessor"], path)
+        result = await mgr.git._arun_subprocess(
+            ["git", "merge", "--no-ff", "--no-commit", "merge-input"], cwd=str(path),
+        )
+        assert result.returncode == (1 if conflicted else 0), result.stderr
+        merge_path = Path(await mgr.git.aget_git_path(str(path), "MERGE_HEAD"))
+        assert merge_path.exists()
+        return slot, path, merge_path
+
+    @pytest.mark.parametrize("conflicted", [False, True])
+    async def test_preparation_archives_merge_before_abort(
+        self, mgr, base_ws, kind, db, conflicted,
+    ):
+        slot, path, merge_path = await self._merge(mgr, base_ws, kind, conflicted=conflicted)
+        # Diagnostics are mandatory even when normal dirty salvage is off.
+        mgr.config.salvage_dirty = False
+        original_head = _git(["rev-parse", "HEAD"], path)
+        await mgr.ensure_slot_checkout(slot, FakeTask(id="tsk-next"))
+        assert not merge_path.exists()
+        assert _git(["rev-parse", "HEAD"], path) == original_head
+        diagnostic = db.contexts[-1]
+        assert diagnostic["task_id"] == "tsk-prev"
+        assert diagnostic["type"] == "worktree_salvage"
+        assert "# MERGE_HEAD:" in diagnostic["content"]
+        assert "incoming merge edit" in diagnostic["content"]
+        assert "GIT binary patch" in diagnostic["content"]
+        assert ("# Unmerged:" in diagnostic["content"]) == conflicted
+        if conflicted:
+            assert "<<<<<<< HEAD" in diagnostic["content"]
+        applied = subprocess.run(
+            ["git", "apply", "--check", "-"], cwd=path, input=diagnostic["content"],
+            text=True, capture_output=True,
+        )
+        assert applied.returncode == 0, applied.stderr
+        await mgr.reset_slot_for_task(slot, FakeTask(id="tsk-next"))
+        assert _git(["status", "--porcelain"], path) == ""
+
+    async def test_stale_branch_holder_merge_is_archived_and_detached(
+        self, mgr, base_ws, kind, db, monkeypatch,
+    ):
+        holder, path, merge_path = await self._merge(mgr, base_ws, kind, conflicted=True)
+        destination = await mgr.create_slot(base_ws, kind, 1)
+        monkeypatch.setattr(mgr, "_slot_is_live", AsyncMock(return_value=False))
+        branch = await mgr.reset_slot_for_task(destination, FakeTask(id="tsk-prev"))
+        assert branch == "aq/tsk-prev"
+        assert not merge_path.exists()
+        assert _git(["branch", "--show-current"], path) == ""
+        assert "<<<<<<< HEAD" in db.contexts[-1]["content"]
+        assert db.contexts[-1]["task_id"] == "tsk-prev"
+
+    async def test_checkpoint_restore_clears_abandoned_merge(
+        self, mgr, base_ws, kind,
+    ):
+        from src.orchestrator.task_checkpoint import capture_checkpoint
+
+        slot = await mgr.create_slot(base_ws, kind, 0)
+        await mgr.reset_slot_for_task(slot, FakeTask(id="tsk-paused"))
+        path = Path(slot.workspace_path)
+        (path / "saved.txt").write_text("pause snapshot\n")
+        await capture_checkpoint(mgr.db, mgr.git, "tsk-paused", str(path))
+        _git(["clean", "-fd", "-e", WORKTREE_SENTINEL_NAME], path)
+        _git(["switch", "-c", "merge-input"], path)
+        (path / "merge.txt").write_text("abandoned merge\n")
+        _git(["add", "merge.txt"], path)
+        _git(["commit", "-m", "merge input"], path)
+        _git(["switch", "aq/tsk-paused"], path)
+        _git(["merge", "--no-ff", "--no-commit", "merge-input"], path)
+        await mgr.reset_slot_for_task(slot, FakeTask(id="tsk-paused"))
+        assert (path / "saved.txt").read_text() == "pause snapshot\n"
+        assert not (path / "merge.txt").exists()
+        assert not Path(await mgr.git.aget_git_path(str(path), "MERGE_HEAD")).exists()
+        assert "abandoned merge" in mgr.db.contexts[-1]["content"]
+
+    @pytest.mark.parametrize("fence", ["locked", "live", "claim", "retained", "process"])
+    async def test_stale_holder_fences_preserve_merge(
+        self, mgr, base_ws, kind, db, monkeypatch, fence,
+    ):
+        holder, path, merge_path = await self._merge(mgr, base_ws, kind, conflicted=True)
+        destination = await mgr.create_slot(base_ws, kind, 1)
+        index_path = Path(await mgr.git.aget_git_path(str(path), "index"))
+        before = index_path.read_bytes(), (path / "README.md").read_bytes(), merge_path.read_bytes()
+        if fence == "locked":
+            holder.locked_by_agent_id = "foreign-agent"
+        elif fence == "live":
+            monkeypatch.setattr(db, "list_sessions", AsyncMock(return_value=[
+                SimpleNamespace(work_dir=str(path)),
+            ]))
+        elif fence == "claim":
+            from src.claim_file import write_claim_file
+
+            write_claim_file(path, {"task_id": "foreign", "session_id": "foreign", "claim_epoch": 1})
+            monkeypatch.setattr(
+                "src.orchestrator.workspace_claim_recovery.retire_stopped_slot_claim",
+                AsyncMock(return_value=False),
+            )
+        elif fence == "retained":
+            monkeypatch.setattr(mgr, "_slot_has_retained_binding", AsyncMock(
+                side_effect=lambda workspace_id: workspace_id == holder.id,
+            ))
+        else:
+            monkeypatch.setattr(mgr, "_slot_is_live", AsyncMock(return_value=True))
+        with pytest.raises(GitError):
+            await mgr.reset_slot_for_task(destination, FakeTask(id="tsk-prev"))
+        assert before == (
+            index_path.read_bytes(), (path / "README.md").read_bytes(), merge_path.read_bytes(),
+        )
+        assert db.contexts == []
+
+    @pytest.mark.parametrize("live", [True, False])
+    async def test_acquired_slot_only_allows_its_preparing_session(
+        self, mgr, base_ws, kind, db, monkeypatch, live,
+    ):
+        slot, path, merge_path = await self._merge(mgr, base_ws, kind)
+        slot.locked_by_task_id = "tsk-next"
+        slot.locked_by_agent_id = "preparing-agent"
+        monkeypatch.setattr(db, "list_sessions", AsyncMock(return_value=[SimpleNamespace(
+            work_dir=str(path), task_id="tsk-next", agent_id="preparing-agent",
+            claim_phase="active" if live else "preparing",
+        )]))
+        if live:
+            with pytest.raises(GitError, match="live holder"):
+                await mgr.ensure_slot_checkout(slot, FakeTask(id="tsk-next"))
+            assert merge_path.exists()
+            assert db.contexts == []
+        else:
+            await mgr.ensure_slot_checkout(slot, FakeTask(id="tsk-next"))
+            assert not merge_path.exists()
+
+    async def test_acquired_slot_preserves_foreign_agent_lock(
+        self, mgr, base_ws, kind, db,
+    ):
+        slot, _, merge_path = await self._merge(mgr, base_ws, kind)
+        slot.locked_by_agent_id = "foreign-agent"
+        with pytest.raises(GitError, match="foreign agent lock"):
+            await mgr.ensure_slot_checkout(slot, FakeTask(id="tsk-next"))
+        assert merge_path.exists()
+        assert db.contexts == []
+
+    async def test_failed_archive_preserves_index_and_merge(
+        self, mgr, base_ws, kind, db, monkeypatch,
+    ):
+        slot, path, merge_path = await self._merge(mgr, base_ws, kind, conflicted=True)
+        index_path = Path(await mgr.git.aget_git_path(str(path), "index"))
+        before = index_path.read_bytes(), (path / "README.md").read_bytes(), merge_path.read_bytes()
+        monkeypatch.setattr(db, "add_task_context", AsyncMock(side_effect=RuntimeError("archive down")))
+        with pytest.raises(RuntimeError, match="archive down"):
+            await mgr.ensure_slot_checkout(slot, FakeTask(id="tsk-next"))
+        assert before == (
+            index_path.read_bytes(), (path / "README.md").read_bytes(), merge_path.read_bytes(),
+        )
+
+    async def test_operator_handoff_preserves_dirty_merge_destination(
+        self, mgr, base_ws, kind, db,
+    ):
+        slot, path, merge_path = await self._merge(mgr, base_ws, kind, conflicted=True)
+        index_path = Path(await mgr.git.aget_git_path(str(path), "index"))
+        before = index_path.read_bytes(), (path / "README.md").read_bytes(), merge_path.read_bytes()
+        with pytest.raises(GitError, match="dirty or unproved"):
+            await mgr.reset_slot_for_task(
+                slot, FakeTask(id="tsk-next"), operator_handoff=True,
+                base_branch=_git(["rev-parse", "HEAD"], path), target_branch="aq/tsk-next",
+            )
+        assert before == (
+            index_path.read_bytes(), (path / "README.md").read_bytes(), merge_path.read_bytes(),
+        )
+        assert db.contexts == []
+
+    @pytest.mark.parametrize("stale_holder", [False, True])
+    async def test_unknown_predecessor_diagnostic_belongs_to_incoming_task(
+        self, mgr, base_ws, kind, db, monkeypatch, stale_holder,
+    ):
+        slot, path, merge_path = await self._merge(mgr, base_ws, kind)
+        sentinel = mgr.read_sentinel(path)
+        sentinel.task_id = None
+        mgr.write_sentinel(path, sentinel)
+        if stale_holder:
+            destination = await mgr.create_slot(base_ws, kind, 1)
+            monkeypatch.setattr(mgr, "_slot_is_live", AsyncMock(return_value=False))
+            await mgr.reset_slot_for_task(destination, FakeTask(id="tsk-prev"))
+            incoming = "tsk-prev"
+        else:
+            await mgr.ensure_slot_checkout(slot, FakeTask(id="tsk-next"))
+            incoming = "tsk-next"
+        assert not merge_path.exists()
+        assert db.contexts[-1]["task_id"] == incoming
+
+    async def test_oversized_merge_records_explicit_diffstat_diagnostic(
+        self, mgr, base_ws, kind, db,
+    ):
+        slot, _, merge_path = await self._merge(mgr, base_ws, kind)
+        mgr.config.salvage_max_bytes = 1
+        await mgr.ensure_slot_checkout(slot, FakeTask(id="tsk-next"))
+        assert not merge_path.exists()
+        content = db.contexts[-1]["content"]
+        assert "working-tree contents were NOT archived" in content
+        assert "README.md" in content and "binary.bin" in content
+        assert "GIT binary patch" not in content
+
+    async def test_failed_abort_returns_error_with_archived_diagnostic(
+        self, mgr, base_ws, kind, db, monkeypatch,
+    ):
+        slot, _, merge_path = await self._merge(mgr, base_ws, kind)
+        run = mgr.git._arun_unlocked
+
+        async def fail_abort(args, **kwargs):
+            if args == ["merge", "--abort"]:
+                raise GitError("abort failed")
+            return await run(args, **kwargs)
+
+        monkeypatch.setattr(mgr.git, "_arun_unlocked", fail_abort)
+        with pytest.raises(GitError, match="abort failed"):
+            await mgr.ensure_slot_checkout(slot, FakeTask(id="tsk-next"))
+        assert merge_path.exists()
+        assert "incoming merge edit" in db.contexts[-1]["content"]
+
+
 class TestOperatorHandoffCheckpoint:
     async def _checkpoint(self, mgr, base_ws, kind, *, dirty=False):
         from src.orchestrator.task_checkpoint import CHECKPOINT_META, capture_checkpoint
@@ -794,6 +1038,28 @@ class TestResetSlot:
         assert _git(["branch", "--show-current"], slot.workspace_path) == branch
         assert _git(["status", "--porcelain"], slot.workspace_path) == ""
         assert str(foreign) in _git(["worktree", "list", "--porcelain"], base_ws.workspace_path)
+
+    @pytest.mark.parametrize("binding", ["claim_file", "task_lock"])
+    async def test_slot_bound_to_another_task_is_a_foreign_slot_claim(
+        self, mgr, base_ws, kind, binding,
+    ):
+        """A typed refusal, so the claim path releases the task for another slot."""
+        from src.claim_file import read_claim_file, write_claim_file
+
+        slot = await mgr.create_slot(base_ws, kind, 0)
+        foreign = {"task_id": "paused-holder", "claim_epoch": 3, "session_id": "gone"}
+        if binding == "claim_file":
+            write_claim_file(slot.workspace_path, foreign)
+        else:
+            slot.locked_by_task_id = "paused-holder"
+
+        with pytest.raises(ForeignSlotClaim) as refused:
+            await mgr.reset_slot_for_task(slot, FakeTask(), kind=kind)
+
+        assert refused.value.holder_task_id == "paused-holder"
+        assert refused.value.workspace_id == slot.id
+        if binding == "claim_file":
+            assert read_claim_file(slot.workspace_path) == foreign
 
     async def test_missing_live_slot_is_preserved(self, mgr, base_ws, kind, monkeypatch):
         slot = await mgr.create_slot(base_ws, kind, 0)
@@ -1335,7 +1601,6 @@ class TestGitManagerWorktreePrimitives:
         assert asyncio.run(GitManager().aworktree_base_path(str(d))) is None
 
 
-
 # ────────────────────── §3.2 salvage: binaries and size ──────────────────
 
 
@@ -1851,3 +2116,45 @@ class TestGitExcludeConcurrency:
 
         assert exclude.read_bytes() == original
         assert not list(exclude.parent.glob("exclude.*.tmp"))
+
+
+@pytest.mark.asyncio
+async def test_exact_available_origin_avoids_fetch(mgr, base_repo):
+    sha = _git(["rev-parse", "HEAD"], base_repo)
+    fetch = AsyncMock(side_effect=AssertionError("exact available commit needs no fetch"))
+    mgr.git.afetch_origin = fetch
+    assert await mgr._fetch_and_resolve_start_ref(
+        str(base_repo), sha, required=True,
+    ) == sha
+    fetch.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_missing_exact_origin_still_fetches(mgr, base_repo):
+    fetch = AsyncMock()
+    mgr.git.afetch_origin = fetch
+    with pytest.raises(GitError, match="cannot resolve"):
+        await mgr._fetch_and_resolve_start_ref(str(base_repo), "a" * 40, required=True)
+    fetch.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_unheld_branch_skips_peer_liveness_reads(mgr, base_ws, monkeypatch):
+    monkeypatch.setattr(mgr, "_base_of_slot_dir", AsyncMock(return_value=base_ws))
+    monkeypatch.setattr(mgr.git, "aworktree_list", AsyncMock(return_value=[{
+        "path": base_ws.workspace_path, "branch": "main",
+    }]))
+    monkeypatch.setattr(mgr.db, "list_sessions", AsyncMock(side_effect=AssertionError("no peer")))
+    monkeypatch.setattr(mgr.db, "list_workspaces", AsyncMock(side_effect=AssertionError("no peer")))
+    await mgr._detach_stale_branch_holders(Path(base_ws.workspace_path) / "slot", "aq/new")
+
+
+@pytest.mark.asyncio
+async def test_available_exact_origin_still_refreshes_mutable_child_refs(mgr, base_repo):
+    sha = _git(["rev-parse", "HEAD"], base_repo)
+    fetch = AsyncMock()
+    mgr.git.afetch_origin = fetch
+    assert await mgr._fetch_and_resolve_start_ref(
+        str(base_repo), sha, required=True, refresh_refs=True,
+    ) == sha
+    fetch.assert_awaited_once()

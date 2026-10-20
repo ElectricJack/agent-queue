@@ -543,7 +543,9 @@ class TestRestartAtTheWaitBoundary:
             "wait-kinds.artifact.json", runs=runs, waits=waits
         )
         resumed = await restarted.resume(
-            outcome.run_id, HumanDecision(decision="approve"), TRUSTED_LOCAL
+            outcome.run_id, HumanDecision(decision="approve", expected_wait_id=outcome.snapshot.wait.wait_id,
+                          expected_artifact_sha256=outcome.snapshot.artifact_sha256,
+                          decision_id="decision-approve"), TRUSTED_LOCAL
         )
         assert resumed.lifecycle is RunLifecycle.COMPLETED
         assert resumed.snapshot.current_step_id == "gate-done"
@@ -565,7 +567,9 @@ class TestRestartAtTheWaitBoundary:
             ref, "gate", event("task-completed-code"), TRUSTED_LOCAL
         )
         await engine.resume(
-            outcome.run_id, HumanDecision(decision="approve"), TRUSTED_LOCAL
+            outcome.run_id, HumanDecision(decision="approve", expected_wait_id=outcome.snapshot.wait.wait_id,
+                          expected_artifact_sha256=outcome.snapshot.artifact_sha256,
+                          decision_id="decision-approve"), TRUSTED_LOCAL
         )
         settled = len(runs.receipts)
 
@@ -573,9 +577,11 @@ class TestRestartAtTheWaitBoundary:
             "wait-kinds.artifact.json", runs=runs, waits=waits
         )
         again = await restarted.resume(
-            outcome.run_id, HumanDecision(decision="approve"), TRUSTED_LOCAL
+            outcome.run_id, HumanDecision(decision="approve", expected_wait_id=outcome.snapshot.wait.wait_id,
+                          expected_artifact_sha256=outcome.snapshot.artifact_sha256,
+                          decision_id="decision-approve"), TRUSTED_LOCAL
         )
-        assert again.outcome == "already_terminal"
+        assert again.outcome == "decision_replayed"
         assert len(runs.receipts) == settled
 
 
@@ -1142,3 +1148,48 @@ class TestRestartProcessBoundaries:
         assert resumed.lifecycle is RunLifecycle.PAUSED
         assert resumed.snapshot.agent_task_ids == ("child-created-before-kill",)
         assert "create_task" not in adapter.names
+
+
+async def test_recovery_keeps_hold(restart_db, tmp_path, caplog):
+    """Daemon restart recovery never clears or works around an ingestion hold."""
+    from sqlalchemy import select, update
+
+    from src.config import AppConfig, DatabaseConfig
+    from src.database.tables import tasks
+    from src.models import Agent, AgentProfile, AgentState, Project, Task, TaskStatus
+    from src.orchestrator import Orchestrator
+    from tests.db_fixtures import lease_dsn
+
+    db = restart_db
+    await db.create_project(Project(id="p", name="p"))
+    await db.create_profile(
+        AgentProfile(id="worker", name="w", lifecycle="pool", needs_workspace=False)
+    )
+    await db.create_agent(Agent(id="a", name="a", profile_id="worker", state=AgentState.BUSY))
+    for tid, status in (("held-ready", TaskStatus.READY), ("held-running", TaskStatus.IN_PROGRESS),
+                        ("plain", TaskStatus.IN_PROGRESS)):
+        await db.create_task(Task(id=tid, project_id="p", title=tid, description=tid,
+                                  status=status, profile_id="worker", route_source="legacy"))
+    async with db.immediate() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id.in_(["held-ready", "held-running"]))
+                           .values(held_batch_id="batch-held"))
+    orch = Orchestrator(AppConfig(
+        database=DatabaseConfig(url=lease_dsn("v2_restart_recovery")),
+        data_dir=str(tmp_path / "data"), workspace_dir=str(tmp_path / "ws"),
+    ))
+    orch.db = db
+
+    await orch._recover_stale_state()
+
+    assert (await db.get_task("plain")).status == TaskStatus.READY
+    assert (await db.get_task("held-ready")).status == TaskStatus.READY
+    # Readying held work would not release it; recovery logs and leaves it.
+    assert (await db.get_task("held-running")).status == TaskStatus.IN_PROGRESS
+    assert "ingestion-held task 'held-running' is IN_PROGRESS" in caplog.text
+    async with db._engine.connect() as conn:
+        rows = dict((await conn.execute(select(tasks.c.id, tasks.c.held_batch_id))).all())
+    assert rows == {"held-ready": "batch-held", "held-running": "batch-held", "plain": None}
+    # Held READY work stays off the scheduler's input; running work stays visible.
+    active = {t.id for t in await db.list_active_tasks(exclude_held_ready=True)}
+    assert active == {"plain", "held-running"}
+    assert await db.ingest_held_task_ids(set(rows)) == {"held-ready", "held-running"}

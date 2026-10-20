@@ -2,11 +2,19 @@
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field
+from src.models import TaskStatus
 
 from . import TaskRef
+
+
+# Preserve loose response projections and their empty legacy default while
+# exposing the lifecycle vocabulary from the enum to generated clients.
+TaskStatusValue = Annotated[str, Field(json_schema_extra={
+    "enum": ["", *(status.value for status in TaskStatus)],
+})]
 
 
 # ---------------------------------------------------------------------------
@@ -185,7 +193,7 @@ class TaskDetail(TaskDisplayFields):
     project_id: str
     title: str
     description: str = ""
-    status: str = ""
+    status: TaskStatusValue = ""
     priority: int = 0
     assigned_agent: str | None = None
     retry_count: int = 0
@@ -250,7 +258,7 @@ class TaskDict(BaseModel):
     model_config = {"extra": "allow"}
     id: str
     title: str = ""
-    status: str = ""
+    status: TaskStatusValue = ""
 
 
 # ---------------------------------------------------------------------------
@@ -880,6 +888,15 @@ class AssignmentRouteDetail(BaseModel):
     override: dict[str, Any] | None = None
 
 
+class ClaimTimingDetail(BaseModel):
+    session_id: str
+    claim_epoch: int | None = None
+    total_seconds: float
+    phases: dict[str, float] = {}
+    current_phase: str | None = None
+    result: str | None = None
+
+
 class ExplainTaskResponse(BaseModel):
     success: bool = True
     reasons: list[ExplainReason] = []
@@ -887,6 +904,7 @@ class ExplainTaskResponse(BaseModel):
     assignment_route: AssignmentRouteDetail | None = None
     provider_hold: ProviderHoldDetail | None = None
     phase_hold: PhaseHoldDetail | None = None
+    claim_timing: ClaimTimingDetail | None = None
 
 
 class ReadyTask(BaseModel):
@@ -985,6 +1003,38 @@ class TaskRouteOverrideResponse(BaseModel):
 
 class SpecApproveResponse(BaseModel):
     success: bool = True
+    decision_id: str
+    packet_sha256: str
+    snapshot_id: str
+
+
+class ApprovedSpecPacketResponse(BaseModel):
+    success: bool = True
+    project_id: str
+    decision_id: str
+    packet_sha256: str
+    review_id: str | None
+    revision: int | None
+    snapshot_id: str | None
+    spec_kind: str
+    spec_path: str
+    content_sha256: str
+    body: str
+    packet: dict[str, Any]
+    feedback: list[dict[str, Any]]
+
+
+class SpecIngestReconcileResponse(BaseModel):
+    success: bool = True
+    dispatched: int
+    errors: list[dict[str, str]]
+
+
+class SpecIngestLegacyInventoryResponse(BaseModel):
+    success: bool = True
+    assignments: list[dict[str, Any]]
+    next_after_id: str | None
+    policy: str
 
 
 class TaskBatchProposeResponse(BaseModel):
@@ -1000,6 +1050,7 @@ class TaskBatchProposeResponse(BaseModel):
     proposal_id: str | None = None
     dry_run: bool = False
     committed: bool = False
+    already_committed: bool = False
     task_ids: list[str] | None = None
     diff: dict[str, Any] | None = None
 
@@ -1019,6 +1070,7 @@ class ClaimSessionSummary(BaseModel):
     cap: int | None = None
     desired_state: str | None = None
     claim_phase: str | None = None
+    failed_preparation: dict[str, Any] | None = None
 
 
 class TaskClaimResponse(BaseModel):
@@ -1037,6 +1089,10 @@ class TaskClaimResponse(BaseModel):
     task: dict[str, Any] | None = None
     claim_epoch: int | None = None
     session: ClaimSessionSummary = ClaimSessionSummary()
+    task_id: str | None = None
+    claim_phase: str | None = None
+    claim_phase_at: float | None = None
+    claim_timing: ClaimTimingDetail | None = None
     reason: str | None = None
     error: str | None = None
     retry_after: int | None = None
@@ -1359,6 +1415,10 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "explain_task": ExplainTaskResponse,
     "project_ready": ProjectReadyResponse,
     "ensure_task": EnsureTaskResponse,
+    "ensure_spec_ingest": EnsureTaskResponse,
+    "approved_spec_packet": ApprovedSpecPacketResponse,
+    "spec_ingest_reconcile": SpecIngestReconcileResponse,
+    "spec_ingest_legacy_inventory": SpecIngestLegacyInventoryResponse,
     "get_downstream_tasks": GetDownstreamTasksResponse,
     "task_route": TaskRouteResponse,
     "task_route_override": TaskRouteOverrideResponse,
