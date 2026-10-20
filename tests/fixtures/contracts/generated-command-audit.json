@@ -6422,7 +6422,7 @@
   "get_task": {
     "mode": "typed",
     "producer": "src/commands/task_commands.py:TaskCommandsMixin._cmd_get_task",
-    "source_digest": "sha256:a280150d9273440df02b147360206c4685a921ed5c0de48b42dbe7594c897944",
+    "source_digest": "sha256:94b80ee7ce74b1ffcbef7483fdad1bf2e3c8739255b980df46248610eee8c693",
     "input_schema_source": "typed_contract",
     "schema_quality": "typed",
     "argument_reads_diagnostic_only": [
@@ -6467,9 +6467,13 @@
     "tests": [
       "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
       "tests/test_generated_command_contracts.py::test_generic_result_protocol",
-      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_task_deps_command.py::test_related_task_reads_do_not_scale_with_dependency_fanout"
     ],
-    "review_notes": " Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. "
+    "review_notes": " Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled.  Dev reconciliation (4e9a17b8c0adae80acc6cf1195b339b974b69270, merged with PR1689 source 6fe7d2ce5cf5ef8b13cca9881778737fe6751f1b): reviewed _task_dependency_rows batching of the same dependency/dependent IDs in groups of 900, missing-row omission and sorted dependent output. The helper only reads edges and tasks; it adds no mutations or authority. All six producer exits and typed read outcomes are unchanged. Original-principal dispatch, fidelity-review context/member filtering and _assert_task_in_scope still precede ordinary dependency expansion. GetTaskArgs remains task_id-only; diagnostic legacy attention flags gain no schema or mutation authority. The typed adapter retains its domain gates; resource_audit_required is unchanged and is not a new generated grant.",
+    "helper_producers": {
+      "_task_dependency_rows": "sha256:06bce0a384a0a28be0d9cd340ea5cde1ab8f4e7486caf59ba422555af985aaf1"
+    }
   },
   "get_task_dependencies": {
     "mode": "json_object",
@@ -6500,9 +6504,9 @@
       "tests/test_task_deps_command.py"
     ],
     "helper_producers": {
-      "_cmd_task_deps": "sha256:fadacb2e2f4908d958cdd4aa4b7d263533c507c36f3023dbe1beac8d9343c16d"
+      "_cmd_task_deps": "sha256:416d9481d1bf04f62ee1ae9d91aa25189f255479c45321f89b949f2f2f35d687"
     },
-    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys."
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Dev reconciliation (4e9a17b8c0adae80acc6cf1195b339b974b69270): reviewed delegated _cmd_task_deps dependency batching as recorded on task_deps. This wrapper and its producer exits are unchanged; existing project_resources, handler_gates authority remains required. Only the reviewed helper digest is refreshed."
   },
   "get_task_result": {
     "mode": "json_object",
@@ -21664,7 +21668,7 @@
   "task_deps": {
     "mode": "json_object",
     "producer": "src/commands/task_commands.py:TaskCommandsMixin._cmd_task_deps",
-    "source_digest": "sha256:fadacb2e2f4908d958cdd4aa4b7d263533c507c36f3023dbe1beac8d9343c16d",
+    "source_digest": "sha256:416d9481d1bf04f62ee1ae9d91aa25189f255479c45321f89b949f2f2f35d687",
     "input_schema_source": "explicit_tool",
     "schema_quality": "declared",
     "argument_reads_diagnostic_only": [
@@ -21697,10 +21701,13 @@
       "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
       "tests/test_generated_command_contracts.py::test_generic_result_protocol",
       "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
-      "tests/test_task_deps_command.py"
+      "tests/test_task_deps_command.py",
+      "tests/test_task_deps_command.py::test_related_task_reads_do_not_scale_with_dependency_fanout"
     ],
-    "helper_producers": {},
-    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys."
+    "helper_producers": {
+      "_task_dependency_rows": "sha256:06bce0a384a0a28be0d9cd340ea5cde1ab8f4e7486caf59ba422555af985aaf1"
+    },
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Dev reconciliation (4e9a17b8c0adae80acc6cf1195b339b974b69270): reviewed the shared _task_dependency_rows read helper replacing per-edge lookups. Blocking-edge reasons, nonblocking provenance, omission of missing rows and sorted dependents are retained; all three return branches keep explicit boolean success. Original-principal project_resources and handler_gates remain required, and the get_task_dependencies alias still delegates here. Batching only loads the existing related IDs in groups of 900; it grants no additional resource or mutation authority."
   },
   "task_failure_triage_notify": {
     "mode": "typed",
@@ -22472,14 +22479,14 @@
       "_assert_session_owns": "sha256:71e593f004f04a082031f118625f21eceebed926b1718d3c8e89d6fdc0825ec3",
       "_assert_task_in_scope": "sha256:a66da16b3047ca2247a1e612e6aede543b65effd65666764c031e5465d7d23d7",
       "_claimed_by": "sha256:2b3129637bb1d831569d97095d0483321b7b76b83a3dd993f23bc8999e15ed6c",
-      "_cmd_get_task": "sha256:a280150d9273440df02b147360206c4685a921ed5c0de48b42dbe7594c897944",
+      "_cmd_get_task": "sha256:94b80ee7ce74b1ffcbef7483fdad1bf2e3c8739255b980df46248610eee8c693",
       "_cmd_task_show": "sha256:ae32bb9c891f90a006bb0bd038e5d2413d488ef21aac767c515346450f80a4f9",
       "_task_findings_conflict": "sha256:586ac3ec4d99fdd453a487f0a93d4dde359c9f2a9e0312060b3ff8f4a4d729b9",
       "_task_findings_scope_error": "sha256:f5380416ec0bf188bc7b4d7ec48bd2abc812325fc775319abf2e5f55dc962fb6",
       "_task_findings_write_fence": "sha256:ddaf185b219090db1d81f785713a571f944b87c778789603de6d4a5b5b9f973f",
       "_task_provider_view": "sha256:bc0669889619cdd9fb0b87f490059d9d607d472e0b96ce5805fb12db1307db26"
     },
-    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. "
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled.  Dev reconciliation (4e9a17b8c0adae80acc6cf1195b339b974b69270): reviewed delegated _cmd_get_task dependency batching as recorded on get_task. This wrapper and its producer exits are unchanged; existing held_session authority remains required. Only the reviewed helper digest is refreshed."
   },
   "task_show": {
     "mode": "json_object",
@@ -22541,10 +22548,10 @@
     "helper_producers": {
       "_assert_task_in_scope": "sha256:a66da16b3047ca2247a1e612e6aede543b65effd65666764c031e5465d7d23d7",
       "_claimed_by": "sha256:2b3129637bb1d831569d97095d0483321b7b76b83a3dd993f23bc8999e15ed6c",
-      "_cmd_get_task": "sha256:a280150d9273440df02b147360206c4685a921ed5c0de48b42dbe7594c897944",
+      "_cmd_get_task": "sha256:94b80ee7ce74b1ffcbef7483fdad1bf2e3c8739255b980df46248610eee8c693",
       "_task_provider_view": "sha256:bc0669889619cdd9fb0b87f490059d9d607d472e0b96ce5805fb12db1307db26"
     },
-    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. "
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled.  Dev reconciliation (4e9a17b8c0adae80acc6cf1195b339b974b69270): reviewed delegated _cmd_get_task dependency batching as recorded on get_task. This wrapper and its producer exits are unchanged; existing project_resources, handler_gates authority remains required. Only the reviewed helper digest is refreshed."
   },
   "task_subtask_add": {
     "mode": "json_object",
