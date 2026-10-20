@@ -389,9 +389,14 @@ class RoutingQueryMixin:
         return [dict(row) for row in rows]
 
     async def get_task_on(self, conn, task_id: str) -> Task | None:
-        """Read one task row on *conn* (inside the caller's transaction)."""
+        """Lock and read the task whose route this transaction will write.
+
+        The fleet advisory lock serializes applies, but route resets do not
+        take it. Keep a reset's new preference from being overwritten by an
+        apply that already read the previous routing inputs.
+        """
         row = (
-            await conn.execute(select(tasks).where(tasks.c.id == task_id))
+            await conn.execute(select(tasks).where(tasks.c.id == task_id).with_for_update())
         ).mappings().fetchone()
         return self._row_to_task(row) if row is not None else None
 
