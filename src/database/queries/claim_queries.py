@@ -1129,9 +1129,10 @@ class ClaimQueryMixin:
         The workspace UPDATE uses ``RETURNING`` so the caller
         (``_prepare_and_activate``) does not have to re-read the slot it
         just stamped, and holder provenance goes out in one multi-row upsert
-        (spec §15).
+        (spec §15). Reserved pool holders stamp session then workspace in
+        one statement, with the workspace dependent on the holder's RETURNING.
         """
-        token = (await conn.execute(
+        holder = (
             update(sessions)
             .where(sessions.c.id == session_id)
             .values(
@@ -1140,11 +1141,13 @@ class ClaimQueryMixin:
                 claim_phase_at=now,
                 last_claim_epoch=claim_epoch,
             )
-            .returning(sessions.c.instance_token)
-        )).scalar_one()
-        project_id = select(sessions.c.project_id).where(
-            sessions.c.id == session_id
-        ).scalar_subquery()
+            .returning(sessions.c.instance_token, sessions.c.project_id)
+        )
+        chained = holder.cte("claim_holder") if agent_id and agent_reserved else None
+        if chained is None:
+            token, project_id = (await conn.execute(holder)).one()
+        else:
+            project_id = select(chained.c.project_id).scalar_subquery()
         slot = None
         if agent_id:
             if not agent_reserved:
@@ -1172,8 +1175,20 @@ class ClaimQueryMixin:
                     locked_at=now,
                 )
             )
-            row = (await conn.execute(stmt.returning(*workspaces.c))).mappings().fetchone()
-            slot = self._row_to_workspace(row) if row is not None else None
+            if chained is None:
+                row = (await conn.execute(stmt.returning(*workspaces.c))).mappings().fetchone()
+            else:
+                stamped = stmt.returning(*workspaces.c).cte("claim_workspace")
+                # RETURNING is the only way to observe the session update in
+                # this statement. Keep its token even when no workspace matches,
+                # so failed preparation retains the holder's exact identity.
+                row = (await conn.execute(
+                    select(*stamped.c, chained.c.instance_token).select_from(
+                        chained.outerjoin(stamped, literal(True))
+                    )
+                )).mappings().one()
+                token = row["instance_token"]
+            slot = self._row_to_workspace(row) if row is not None and row["id"] else None
         await self._upsert_meta_many(
             task_id, {
                 CLAIMED_BY_SESSION_KEY: session_id, "work_dir": work_dir,

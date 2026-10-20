@@ -1649,6 +1649,19 @@ class ClaimCommandsMixin:
             ):
                 nonlocal prepared_branch, stage, slot
                 if conn is None:
+                    timing = current_claim_timing.get()
+                    if timing is not None and timing.activation_stack is not None:
+                        # Retain the checkout for diagnostics, which commit in
+                        # their own transaction after activation has committed.
+                        connection = await timing.activation_stack.enter_async_context(
+                            self.db._engine.connect()
+                        )
+                        timing.persistence_connection = connection
+                        async with connection.begin():
+                            return await prepare_and_activate(
+                                conn=connection, base_branch=base_branch,
+                                target_branch=target_branch, preserve_branch=preserve_branch,
+                            )
                     async with self.db.immediate() as prepare_conn:
                         return await prepare_and_activate(
                             conn=prepare_conn, base_branch=base_branch,
@@ -1745,20 +1758,9 @@ class ClaimCommandsMixin:
                 from src.integration.admission import OrdinaryAdmissionChanged
 
                 try:
-                    timing = current_claim_timing.get()
-                    if conn is None and timing is not None and timing.activation_stack is not None:
-                        connection = await timing.activation_stack.enter_async_context(
-                            self.db._engine.connect()
-                        )
-                        timing.persistence_connection = connection
-                        async with connection.begin():
-                            activated = await self.db.activate_claim(
-                                session.id, task.id, conn=connection, **activation_args,
-                            )
-                    else:
-                        activated = await self.db.activate_claim(
-                            session.id, task.id, conn=conn, **activation_args,
-                        )
+                    activated = await self.db.activate_claim(
+                        session.id, task.id, conn=conn, **activation_args,
+                    )
                 except OrdinaryAdmissionChanged:
                     stage = "admission_recheck"
                     return None
