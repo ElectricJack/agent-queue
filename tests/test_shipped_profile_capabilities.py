@@ -18,6 +18,7 @@ import pytest
 
 from src.api.scope import (
     AGENT_COMMAND_SET,
+    _BATCH_REVIEW_COMMANDS,
     _PLAYBOOK_COMPILER_COMMANDS,
     _SPEC_INGEST_COMMANDS,
     _TRIAGE_COMMANDS,
@@ -48,6 +49,7 @@ PROFILE_IDS = sorted(p.name for p in DEFAULTS_DIR.iterdir() if (p / "profile.md"
 #: a new unreachable name fails this test, forcing a deliberate decision.
 #: Resolutions are filed for Package 1 in the child plan §14.
 EXPECTED_UNREACHABLE: dict[str, set[str]] = {
+    "fidelity-reviewer": {"approved_spec_packet", "get_downstream_tasks", "list_tasks"},
     "final-reviewer": {"pr_merge", "reopen_with_feedback"},
     "operator-claude": set(),
     "operator-codex": set(),
@@ -76,7 +78,7 @@ def _parsed(profile_id: str):
 def test_every_shipped_profile_is_covered():
     """The pin lists exactly the shipped profiles — no drift either way."""
     assert set(PROFILE_IDS) == set(EXPECTED_UNREACHABLE)
-    assert len(PROFILE_IDS) == 13
+    assert len(PROFILE_IDS) == 14
 
 
 @pytest.mark.parametrize("profile_id", [pid for pid in PROFILE_IDS if pid.startswith("worker-")])
@@ -164,6 +166,9 @@ class TestShippedProfile:
         if profile_id == "spec-ingest":
             # These commands require the live server-owned ingestion role.
             reachable = reachable | _SPEC_INGEST_COMMANDS
+        if profile_id == "fidelity-reviewer":
+            # Only the three batch commands currently have a reviewer scope path.
+            reachable = AGENT_COMMAND_SET | _BATCH_REVIEW_COMMANDS
         unreachable = set() if profile_id == "supervisor" else granted - reachable
         assert unreachable == EXPECTED_UNREACHABLE[profile_id]
 
@@ -190,7 +195,7 @@ def test_supervisor_inbox_grants_exclude_internal_intake():
 #: Shipped profiles that deliberately cannot create tasks directly. Prime must
 #: therefore *not* render its Emergent work section for them — see
 #: ``src/prime/sections.py:profile_allows_create_task``.
-NO_CREATE_TASK: set[str] = {"spec-ingest", "pr-merger"}
+NO_CREATE_TASK: set[str] = {"spec-ingest", "pr-merger", "fidelity-reviewer"}
 
 
 @pytest.mark.parametrize("profile_id", PROFILE_IDS)
