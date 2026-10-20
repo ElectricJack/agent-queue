@@ -128,6 +128,7 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["scripts/token-efficiency-report.py"], areas: ["metrics"] }
   - { paths: ["scripts/seed_layout_perf.py"], areas: ["graph-layout"] }
   - { paths: ["scripts/dashboard-perf/*.py"], areas: ["metrics"] }
+  - { paths: ["dashboard/src/pages/metrics/__tests__/waitFaultAccounting.json"], areas: ["metrics"] }
   - { paths: ["scripts/pkg5_scenarios/**"], areas: ["playbook-engine"] }
   - { paths: ["scripts/generate-playbook-schema.py"], areas: ["playbook-definition"] }
   - { paths: ["scripts/rebuild-reviewed-playbook-artifacts.py"], areas: ["shipped-playbooks"] }

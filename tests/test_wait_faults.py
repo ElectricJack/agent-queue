@@ -800,6 +800,146 @@ async def test_matrix_accounting_wait_duration_and_resume_cost_are_transition_de
     assert await records(env, wait_measurements) == [sample]
 
 
+@pytest.mark.parametrize("capacity_delay", [0, 600])
+async def test_matrix_accounting_from_park_through_sampler_api_and_display_contract(
+    hibernation_env, monkeypatch, capacity_delay,
+):
+    import json
+    from dataclasses import replace
+    from pathlib import Path
+
+    from src.api.models.metrics import MetricsSample
+    from src.config_wait_policy import parse_wait_policy
+    from src.database.queries.wait_metrics import slot_accounting, wait_metrics_snapshot
+    from src.metrics.sampler import MetricsSampler
+    from src.metrics.waits import with_wait_policy
+    from src.models import AgentProfile, Project, RepoConfig, RepoSourceType, SessionRecord, Workspace
+    from src.wait_runtime.measurements import capture_costs
+    from src.wait_runtime.resume import ResumeTransaction
+    from src.waits.registry import build_registry
+    from src.waits.resume_ack import acknowledge, mark_delivered
+
+    env = hibernation_env
+    env.registry = build_registry(clock=lambda: NOW)
+    await capture(env)
+    before = await env.db.metrics_waits_snapshot(NOW + 100)
+    assert before["released_slot_seconds_24h"] == {"condition": 0, "capacity": 0}
+    driver, handler, clock, _ = await suspension_driver(env, monkeypatch)
+    clock.now = NOW + 120
+    assert (await driver.advance(env.wait_id, handler=handler))["parked"]
+    monkeypatch.undo()
+    assert (await intent(env))["stopped_at"] == clock.now
+    await env.db.create_profile(AgentProfile(id="worker-codex", name="Worker", lifecycle="pool",
+                                            max_active=1))
+    await env.db.create_repo(RepoConfig(id="repo", project_id="p", url="https://example.test/repo",
+        source_type=RepoSourceType.CLONE, checkout_base_path="/tmp/accounting-base"))
+    await env.db.update_project("p", integration_repository_id="repo")
+    await env.db.create_workspace(Workspace(id="available", project_id="p",
+        workspace_path="/tmp/accounting-fresh", source_type=RepoSourceType.CLONE,
+        kind_id="project-repo"))
+    service = service_for(env, [NOW + 7200])
+    service.orch.config.wait_policy.hibernation_enabled = True
+    service.orch._worktrees_enabled = lambda: False
+    service.orch._pool_quarantine_state = lambda *a: (None, None)
+    service.orch._task_control_lock = lambda _: asyncio.Lock()
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == "owner").values(
+            profile_id="worker-codex", route_source="override"))
+    await env.db.transition_task("source", TaskStatus.COMPLETED)
+    assert await service.tick()
+    clock.now = NOW + 7200
+    resume = ResumeTransaction(service, clock=clock)
+    if capacity_delay:
+        # An actual running process owns the seat until its stop is observed.
+        # The production reserve path must retain this request boundary even
+        # when no seat can be granted yet; do not seed a synthetic reservation.
+        service.orch.config.swarm.global_max_active = 1
+        await env.db.create_session(SessionRecord(id="idle", project_id="p",
+            profile_id="worker-codex", harness="codex", provider="fake", name="idle",
+            lifecycle="pool", work_dir="/tmp/idle", epoch="boot", instance_token="idle-token",
+            state="running", desired_state="running", started_at=NOW, last_activity=NOW))
+        assert await resume.reserve("c", 1) is None
+        assert (await env.db.get_session("idle")).desired_state == "stopped"
+        clock.now += capacity_delay
+        await env.db.update_session("idle", state="stopped")
+
+    async def prepare(*args):
+        clock.now += 5
+        return "/tmp/accounting-fresh"
+
+    async def launch(action, task, unused, path):
+        record = SessionRecord(id="new", project_id="p", task_id="owner", agent_id=action.agent_id,
+            profile_id="worker-codex", harness="codex", provider="fake", name="new",
+            lifecycle="task", work_dir=path, epoch="new-boot", instance_token="new-token",
+            state="running", desired_state="running", last_claim_epoch=task.claim_epoch,
+            started_at=clock.now)
+        await resume.bind_launch(action, record)
+        await env.db.create_session(record)
+
+    monkeypatch.setattr(resume, "fresh_workspace", prepare)
+    service.orch._launch_session_for_task_locked = launch
+    assert (await resume.dispatch({"continuation_id": "c", "generation": 1},
+        principal=None, scope=None, handler=service.orch._command_handler))["dispatched"]
+    clock.now = NOW + 7215 + capacity_delay
+    async with env.db._engine.begin() as conn:
+        await mark_delivered(conn, continuation_id="c", session_id="new",
+                             instance_token="new-token", claim_epoch=2, now=clock.now)
+        await acknowledge(conn, {"wait_id": env.wait_id, "continuation_id": "c", "generation": 1},
+            scope=replace(env.scope, session_id="new", instance_token="new-token", claim_epoch=2),
+            now=clock.now)
+    config = AppConfig()
+    config.metrics.perf_enabled = False
+    config.wait_policy = parse_wait_policy({"metrics": {
+        "pre_rollout_turn_rate": 2, "pre_rollout_tokens_per_turn": 100,
+        "cohort": "synthetic-fault-matrix", "window": "disposable-fixture:0..7200",
+    }})
+    assert not config.wait_policy.validate()
+    raw = await env.db.metrics_waits_snapshot(clock.now)
+    assert raw["tokens_saved_counterfactual"] is None
+    assert with_wait_policy(raw, config.wait_policy)["tokens_saved_counterfactual"]["tokens"] is None
+    # Synthetic transcript readings enter through the production measurement
+    # path; an incomplete reading above cannot become claimed token savings.
+    monkeypatch.setattr("src.wait_runtime.measurements.session_turn_tokens",
+                        AsyncMock(side_effect=[7, 11]))
+    service.lifecycle.clock = clock
+    await capture_costs(service.lifecycle, env.wait_id)
+    await env.db.create_project(Project(id="q", name="Foreign"))
+    await env.db.create_task(Task(id="foreign", project_id="q", title="Foreign", description=""))
+    async with env.db._engine.begin() as conn:
+        await register_wait(conn, scope=Scope("q", "scheduler", "foreign", principal="service"),
+            condition={"kind": "timer", "due_at": NOW + 9000}, idempotency_key="foreign",
+            registry=env.registry, policy=Policy(), now=NOW + 6000, source_watermark=0,
+            decide_sleep=lambda *_: SleepDecision("in_place", "test"))
+        isolated = await wait_metrics_snapshot(conn, now=clock.now, project_id="p")
+        foreign = await wait_metrics_snapshot(conn, now=clock.now, project_id="q")
+        assert isolated["pending_in_place"] == 0 and foreign["pending_in_place"] == 1
+        assert foreign["released_slot_seconds_24h"] == {"condition": 0, "capacity": 0}
+        clipped = await slot_accounting(conn, now=clock.now, window_seconds=300, project_id="p")
+    sample = (await records(env, wait_measurements))[0]
+    assert (sample["waited_seconds"], sample["teardown_seconds"], sample["setup_seconds"],
+            sample["rebuild_seconds"]) == (7200, 120, 5, 10)
+    sampler = MetricsSampler(env.db, config, clock=clock)
+    payload = MetricsSample.model_validate(await sampler.collect()).model_dump(mode="json")
+    fixture = Path(__file__).resolve().parents[1] / (
+        "dashboard/src/pages/metrics/__tests__/waitFaultAccounting.json")
+    expected = json.loads(fixture.read_text())
+    expected["released_slot_seconds_1h"] = {"condition": 3585 - capacity_delay,
+                                             "capacity": capacity_delay}
+    expected["released_slot_seconds_24h"] = {"condition": 7080, "capacity": capacity_delay}
+    expected["wait_seconds_1h"] = 3585 - capacity_delay
+    expected["tokens_saved_counterfactual"]["tokens"] = 2 * (3585 - capacity_delay) / 60 * 100 - 18
+    assert {key: payload["waits"][key] for key in expected} == expected
+    assert clipped == {
+        "in_place_slot_seconds_1h": 0,
+        "released_slot_seconds_1h": {"condition": 0 if capacity_delay else 285,
+                                      "capacity": 285 if capacity_delay else 0},
+    }
+    reservations = await records(env, admission_reservations)
+    assert min(row["created_at"] for row in reservations) == NOW + 7200
+    assert min(row["granted_at"] for row in reservations if row["granted_at"] is not None) == (
+        NOW + 7200 + capacity_delay)
+
+
 @pytest.mark.tmux
 async def test_matrix_real_harness_wait_suppresses_mail_until_one_outcome_turn(
     env, harness_id, api, cli_home, socket_name, tmp_path,

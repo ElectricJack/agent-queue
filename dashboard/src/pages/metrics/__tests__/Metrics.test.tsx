@@ -8,6 +8,7 @@ import { __dispatchEventForTests } from "../../../ws/useEventStream";
 import type { MetricsSample, MetricsSeriesResponse } from "../../../api/metrics";
 import SustainedLagBanner, { sustainedLag } from "../SustainedLagBanner";
 import { BOUNDS_MS, type Hist } from "../histogram";
+import waitFaultAccounting from "./waitFaultAccounting.json";
 
 // ``useEventStream`` opens its singleton socket at import time; stub the
 // constructor before that module is evaluated.
@@ -152,6 +153,38 @@ describe("pure sample readers", () => {
 });
 
 describe("Metrics page", () => {
+  it("renders the persisted fault-matrix accounting without summing overlapping samples", async () => {
+    api.response = { ...api.response!, samples: [
+      sample(1000, { waits: waitFaultAccounting }),
+      sample(1001, { waits: waitFaultAccounting }),
+    ] };
+    render(page());
+    await screen.findByTestId("chart-Pending waits");
+    const tile = screen.getByText("Slot-hours released (24h)").closest("div.rounded-xl")!;
+    expect(within(tile as HTMLElement).getByText("2.13")).toBeInTheDocument();
+    expect(within(tile as HTMLElement).getByText("1.97 condition · 0.17 capacity")).toBeInTheDocument();
+    expect(screen.getByText("Tokens saved (counterfactual)")).toBeInTheDocument();
+    expect(screen.getByText("9,932")).toBeInTheDocument();
+    expect(screen.getByText(
+      "Cohort: synthetic-fault-matrix · baseline window: disposable-fixture:0..7200",
+    )).toBeInTheDocument();
+  });
+
+  it.each(["missing baseline", "incomplete overhead"])("does not claim savings for %s", async (gap) => {
+    api.response = { ...api.response!, samples: [sample(1000, { waits: {
+      ...waitFaultAccounting,
+      tokens_saved_counterfactual: gap === "missing baseline"
+        ? null : { ...waitFaultAccounting.tokens_saved_counterfactual, tokens: null },
+    } })] };
+    render(page());
+    await screen.findByTestId("chart-Pending waits");
+    const label = screen.queryByText("Tokens saved (counterfactual)");
+    if (gap === "missing baseline") expect(label).not.toBeInTheDocument();
+    else expect(within(label!.closest("div.rounded-xl") as HTMLElement).getByText("—"))
+      .toBeInTheDocument();
+    expect(screen.queryByText("9,932")).not.toBeInTheDocument();
+  });
+
   it("keeps pre-migration wait readings as gaps and tiles as dashes", async () => {
     api.response = { ...api.response!, samples: [sample(1000, { waits: null })] };
     render(page());
