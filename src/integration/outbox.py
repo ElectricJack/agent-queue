@@ -34,7 +34,7 @@ PROMOTION_EVENT_TYPES = frozenset({
 BATCH_EVENT_TYPES = frozenset({
     "batch.held", "batch.receipt_recorded", "batch.needs_scope", "batch.released",
 })
-ACTIVE_OUTBOX_EVENT_TYPES = PROMOTION_EVENT_TYPES | BATCH_EVENT_TYPES
+ACTIVE_OUTBOX_EVENT_TYPES = PROMOTION_EVENT_TYPES | BATCH_EVENT_TYPES | {"task.change_set_committed"}
 
 # Optional notifications may settle only after proving no enabled consumer;
 # always offer them to reviewed and operator-installed consumers before sinking.
@@ -42,6 +42,7 @@ UNSUBSCRIBED_EVENT_TYPES = frozenset({
     *PROMOTION_EVENT_TYPES,
     "batch.needs_scope",
     "batch.released",
+    "task.change_set_committed",
     "integration.root_delivered",
     "integration.human_blocked",
     "integration.cleanup_pending",

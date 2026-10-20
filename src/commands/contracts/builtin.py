@@ -472,6 +472,21 @@ class TaskBatchCommitValue(CommandValue):
     task_ids: list[str]
 
 
+class TaskBatchReleaseArgs(CommandArgs):
+    batch_id: str = Field(min_length=1)
+    expected_revision: int = Field(strict=True, ge=1)
+    expected_digest: str = Field(min_length=1)
+    project_id: str | None = None
+
+
+class TaskBatchReleaseValue(CommandValue):
+    batch_id: str | None = None
+    release_receipt: dict[str, Any] | None = None
+    released_task_ids: list[str] = Field(default_factory=list)
+    error_code: str | None = None
+    retryable: bool = False
+
+
 class TaskBatchValidateArgs(CommandArgs):
     """A change set, or a stored batch revision, for the L1.3 automatic checks."""
 
@@ -915,6 +930,8 @@ def _handler() -> Any:
 def _outcome_of(name: str, raw: dict[str, Any]) -> str:
     """Map each legacy return shape to a declared business outcome."""
     refused = bool(raw.get("error")) or raw.get("success") is False
+    if name == "task_batch_release":
+        return "error" if refused else "already_released" if raw.get("already_released") else "released"
     if name == "ci_baseline_status" and (raw.get("success") is True or not refused):
         # A successful verdict explains ``unknown`` (no GitHub remote, checks
         # unreadable) in ``error``; that is the next tick's problem, not a
@@ -1418,6 +1435,18 @@ PRESENTATIONS: dict[str, CommandPresentation] = {
         },
         result_labels={"task_ids": "Created tasks"},
         subject_labels={"task_graph": "the proposed task graph"},
+    ),
+    "task_batch_release": CommandPresentation(
+        title="Release a reviewed ingestion batch",
+        summary="Verify source approval, the live graph and its fidelity receipt before release.",
+        arg_labels={"batch_id": "Held batch", "expected_revision": "Expected revision",
+                    "expected_digest": "Expected digest", "project_id": "Project"},
+        outcome_labels={"released": "Released", "already_released": "Already released",
+                        "error": "Release refused"},
+        result_labels={"batch_id": "Batch", "release_receipt": "Release receipt",
+                       "released_task_ids": "Released tasks", "error_code": "Refusal code",
+                       "retryable": "Retryable"},
+        subject_labels={"task_graph": "the reviewed task graph"},
     ),
     "task_batch_review_record": CommandPresentation(
         title="Record a batch fidelity review",
@@ -1997,6 +2026,14 @@ def register_builtin_contracts(registry: ContractRegistry) -> None:
             (CreateClause(subject=EffectSubject.TASK_GRAPH),),
             IdempotencySpec(mode="keyed", key_field="proposal_id"),
             False,
+        ),
+        (
+            "task_batch_release", TaskBatchReleaseArgs, TaskBatchReleaseValue,
+            (OutcomeSpec(name="released", classification=OutcomeClass.SUCCESS),
+             OutcomeSpec(name="already_released", classification=OutcomeClass.SUCCESS),
+             OutcomeSpec(name="error", classification=OutcomeClass.FAILURE)),
+            SideEffectClass.COMPOSITE, (UpdateClause(subject=EffectSubject.TASK_GRAPH),),
+            IdempotencySpec(mode="natural"), True,
         ),
         (
             "task_batch_validate",
