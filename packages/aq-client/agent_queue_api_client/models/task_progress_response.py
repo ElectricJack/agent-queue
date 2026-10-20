@@ -10,6 +10,7 @@ from ..models.task_progress_response_display_state_type_0 import TaskProgressRes
 from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
+    from ..models.claim_readiness import ClaimReadiness
     from ..models.task_progress_response_child_state_counts_type_0 import TaskProgressResponseChildStateCountsType0
     from ..models.task_progress_response_descendant_state_counts_type_0 import (
         TaskProgressResponseDescendantStateCountsType0,
@@ -37,6 +38,7 @@ class TaskProgressResponse:
         display_reason (None | str | Unset):
         child_state_counts (None | TaskProgressResponseChildStateCountsType0 | Unset):
         descendant_state_counts (None | TaskProgressResponseDescendantStateCountsType0 | Unset):
+        claim_readiness (ClaimReadiness | None | Unset):
     """
 
     success: bool
@@ -53,9 +55,11 @@ class TaskProgressResponse:
     display_reason: None | str | Unset = UNSET
     child_state_counts: None | TaskProgressResponseChildStateCountsType0 | Unset = UNSET
     descendant_state_counts: None | TaskProgressResponseDescendantStateCountsType0 | Unset = UNSET
+    claim_readiness: ClaimReadiness | None | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
+        from ..models.claim_readiness import ClaimReadiness
         from ..models.task_progress_response_child_state_counts_type_0 import TaskProgressResponseChildStateCountsType0
         from ..models.task_progress_response_descendant_state_counts_type_0 import (
             TaskProgressResponseDescendantStateCountsType0,
@@ -115,6 +119,14 @@ class TaskProgressResponse:
         else:
             descendant_state_counts = self.descendant_state_counts
 
+        claim_readiness: dict[str, Any] | None | Unset
+        if isinstance(self.claim_readiness, Unset):
+            claim_readiness = UNSET
+        elif isinstance(self.claim_readiness, ClaimReadiness):
+            claim_readiness = self.claim_readiness.to_dict()
+        else:
+            claim_readiness = self.claim_readiness
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -139,11 +151,14 @@ class TaskProgressResponse:
             field_dict["child_state_counts"] = child_state_counts
         if descendant_state_counts is not UNSET:
             field_dict["descendant_state_counts"] = descendant_state_counts
+        if claim_readiness is not UNSET:
+            field_dict["claim_readiness"] = claim_readiness
 
         return field_dict
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
+        from ..models.claim_readiness import ClaimReadiness
         from ..models.task_progress_response_child_state_counts_type_0 import TaskProgressResponseChildStateCountsType0
         from ..models.task_progress_response_descendant_state_counts_type_0 import (
             TaskProgressResponseDescendantStateCountsType0,
@@ -237,6 +252,23 @@ class TaskProgressResponse:
 
         descendant_state_counts = _parse_descendant_state_counts(d.pop("descendant_state_counts", UNSET))
 
+        def _parse_claim_readiness(data: object) -> ClaimReadiness | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                claim_readiness_type_0 = ClaimReadiness.from_dict(data)
+
+                return claim_readiness_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(ClaimReadiness | None | Unset, data)
+
+        claim_readiness = _parse_claim_readiness(d.pop("claim_readiness", UNSET))
+
         task_progress_response = cls(
             success=success,
             parent_id=parent_id,
@@ -252,6 +284,7 @@ class TaskProgressResponse:
             display_reason=display_reason,
             child_state_counts=child_state_counts,
             descendant_state_counts=descendant_state_counts,
+            claim_readiness=claim_readiness,
         )
 
         task_progress_response.additional_properties = d

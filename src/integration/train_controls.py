@@ -96,7 +96,7 @@ class TrainControls:
         return (dict(task), dict(origins[0]), dict(repo), dict(completion) if completion else None,
                 request.completion_id)
 
-    async def _assert_root_unheld(self, conn, task):
+    async def _assert_root_unheld(self, conn, task, *, subject="root", action="recording a no-op"):
         from src.database.queries.integration_state_queries import unresolved_claim_clause
         from src.database.tables import sessions, task_metadata, workspaces
         from src.integration.lock import BranchLock
@@ -107,26 +107,26 @@ class TrainControls:
         ).limit(1)) or await conn.scalar(select(workspaces.c.id).where(
             workspaces.c.locked_by_task_id == task["id"],
         ).limit(1)):
-            raise ValueError("root still has a live writer or claimed workspace")
+            raise ValueError(f"{subject} still has a live writer or claimed workspace")
         # A claim record survives pause and close as provenance; only a holder
         # that is not durably stopped still claims the root (azure-beacon-38).
         if await conn.scalar(select(task_metadata.c.value).where(
             task_metadata.c.task_id == task["id"], task_metadata.c.key == "claimed_by_session",
             unresolved_claim_clause(),
         )):
-            raise ValueError("root still has a worker claim; reset it before recording a no-op")
+            raise ValueError(f"{subject} still has a worker claim; reset it before {action}")
         owner = await BranchLock(self.db).lock_on(conn, BranchKey(
             repository_id=task["repo_id"], branch=task["branch_name"],
         ))
         if owner and (owner["holder"] or owner["handoff_state"] != "released"):
-            raise ValueError("root still has branch ownership; release it before recording a no-op")
+            raise ValueError(f"{subject} still has branch ownership; release it before {action}")
         if await conn.scalar(select(integration_batches.c.id).where(
             integration_batches.c.id.in_(select(integration_batch_members.c.batch_id).where(
                 integration_batch_members.c.task_id == task["id"],
             )), integration_batches.c.intent != "aborted",
             integration_batches.c.lifecycle != "promoted",
         ).limit(1)):
-            raise ValueError("root belongs to an open batch")
+            raise ValueError(f"{subject} belongs to an open batch")
 
     async def record_root_noop(self, task_id, *, dry_run, expected_head_sha, operator_id, reason,
                                expected_project_id=None):
@@ -238,6 +238,112 @@ class TrainControls:
         return await EpicRefresh(self.db, self.train, clock=self.clock).refresh(
             task_id, dry_run=dry_run, operator_id=operator_id)
 
+    async def _epic_reverification_identity_on(self, conn, task_id):
+        from src.database.queries.hierarchy_queries import container_flag_exists
+        from src.database.tables import archived_tasks
+
+        task = (await conn.execute(select(tasks).where(
+            tasks.c.id == task_id,
+        ))).mappings().one_or_none()
+        if task is None or task["status"] != "COMPLETED" or not task["branch_name"]:
+            raise ValueError("aggregate reverification requires a completed, branched epic")
+        child = tasks.alias("reverify_child")
+        container = await conn.scalar(select(tasks.c.id).where(
+            tasks.c.id == task_id,
+            container_flag_exists() | select(child.c.id).where(
+                child.c.parent_task_id == task_id).exists() | select(archived_tasks.c.id).where(
+                    archived_tasks.c.parent_task_id == task_id).exists(),
+        ))
+        project = (await conn.execute(select(projects).where(
+            projects.c.id == task["project_id"],
+        ))).mappings().one()
+        repo = (await conn.execute(select(repos).where(
+            repos.c.id == project["integration_repository_id"],
+            repos.c.project_id == project["id"],
+        ))).mappings().one_or_none()
+        if (not container or project["status"] != "ACTIVE"
+                or project["hierarchical_integration_mode"] not in {"hierarchy", "train"}
+                or project["hierarchical_integration_draining"]
+                or repo is None or task["repo_id"] != repo["id"]):
+            raise ValueError("epic is not in an active designated train repository")
+        branch = task["branch_name"].removeprefix("refs/heads/")
+        if branch == repo["default_branch"].removeprefix("refs/heads/"):
+            raise ValueError("an epic cannot own the default branch")
+        origins = (await conn.execute(select(task_branch_origins).where(
+            task_branch_origins.c.task_id == task_id,
+            task_branch_origins.c.repository_id == repo["id"],
+            task_branch_origins.c.retired_at.is_(None),
+        ))).mappings().all()
+        if (len(origins) != 1 or not origins[0]["materialized"]
+                or origins[0]["branch_name"].removeprefix("refs/heads/") != branch):
+            raise ValueError("epic has no unique live materialized source origin")
+        return dict(task), dict(project), dict(repo), dict(origins[0])
+
+    async def _epic_current_completion_id(self, task_id, target):
+        requests = await load_delivery_requests(self.db, [task_id],
+            repository_id=target.repository_id, target_ref=target.target_ref, reduced=True)
+        request = requests[task_id]
+        return request.completion_id if request.completed_at is not None else None
+
+    async def reverify_epic(self, task_id, *, dry_run, operator_id,
+                            expected_head_sha=None, reason="", expected_project_id=None):
+        """Observe/request the normal train; a visited run never implies PASS."""
+        from src.git.manager import is_valid_git_oid
+
+        if not dry_run and (not is_valid_git_oid(expected_head_sha or "") or not reason.strip()):
+            raise ValueError("apply requires the preview head and a nonblank reason")
+        async with self.db._engine.connect() as conn:
+            identity = await self._epic_reverification_identity_on(conn, task_id)
+        task, _project, repo, _origin = identity
+        if expected_project_id is not None and task["project_id"] != expected_project_id:
+            raise ValueError("epic project changed after authorization; preview again")
+        target = TrainTarget(task["project_id"], repo["id"],
+                            "refs/heads/" + task["branch_name"].removeprefix("refs/heads/"), "epic")
+        observed = await self.snapshot(self.db, target)
+        if observed is None or observed.error or not observed.target_oid:
+            raise ValueError("epic branch cannot be observed")
+        before = await self.db.get_task_completion(task_id)
+        result = {"task_id": task_id, "project_id": task["project_id"],
+                  "target_ref": target.target_ref, "head_sha": observed.target_oid,
+                  "previous_completion_id": before.id if before else None,
+                  "completion_id": await self._epic_current_completion_id(task_id, target),
+                  "dry_run": dry_run}
+        if dry_run:
+            return {**result, "outcome": "preview"}
+        if observed.target_oid != expected_head_sha:
+            return {**result, "outcome": "changed"}
+        if self.train is None:
+            raise ValueError("the Git-first integration train is unavailable")
+        async with self.db.immediate() as conn:
+            await self.db.lock_hierarchy_project(conn, task["project_id"])
+            await self.db._slot_reset_claim_sessions(conn, task_id, lock=True)
+            await conn.execute(select(tasks.c.id).where(tasks.c.id == task_id).with_for_update())
+            if await self._epic_reverification_identity_on(conn, task_id) != identity:
+                raise ValueError("epic identity changed; preview again")
+            if task["assigned_agent_id"]:
+                raise ValueError("epic still has an assigned agent")
+            await self._assert_root_unheld(conn, task, subject="epic",
+                                           action="requesting aggregate reverification")
+        if not await observed.observation.is_fresh():
+            return {**result, "outcome": "changed"}
+        audit = {**result, "operator_id": operator_id, "reason": reason}
+        await self.db.log_event("integration.epic_reverification_requested",
+            project_id=task["project_id"], task_id=task_id, payload=json.dumps(audit))
+        self.train.wake(*target.key)
+        visit = await self.train.request_visit(target)
+        result.update(completion_id=await self._epic_current_completion_id(task_id, target),
+                      outcome="pending" if visit is None else "visited",
+                      state="queued" if visit is None else visit.state,
+                      detail=None if visit is None else visit.detail)
+        if visit is not None:
+            result.update(batch_id=visit.batch_id, candidate_sha=visit.candidate_sha,
+                          target_sha=visit.target_sha,
+                          blockers=(visit.detail or {}).get("blockers", []))
+        await self.db.log_event("integration.epic_reverification_observed",
+            project_id=task["project_id"], task_id=task_id,
+            payload=json.dumps({**audit, **result}))
+        return result
+
     async def abort_batch(self, batch_id, *, dry_run, operator_id, reason):
         if not dry_run and not reason.strip():
             raise ValueError("abort requires a nonblank reason")
@@ -298,6 +404,86 @@ class TrainControls:
             return remote.state is RemoteRefState.ABSENT
 
         return batch, snapshot, candidate, unchanged
+
+    async def settle_batch(self, batch_id, *, dry_run, operator_id, reason):
+        """Record promotion of a batch whose target already holds every member.
+
+        Abort refuses such a batch and its candidate may never pass checks
+        again (a cancelled run, a reused refresh candidate), so this is the
+        terminal control. Proof is exact ancestry or the delivery trailers the
+        abort refusal reads; a tree match alone never settles.
+        """
+        from src.integration.batches import BatchObservation
+        from src.integration.train_sources import DatabaseBatches
+
+        if not dry_run and not reason.strip():
+            raise ValueError("settlement requires a nonblank reason")
+        store = BatchStore(self.db, clock=self.clock)
+        batch = await store.get(batch_id)
+        if batch is None:
+            raise TrainControlError("unknown_batch", "Git-first batch is missing")
+        async with self.db._engine.connect() as conn:
+            lifecycle = await conn.scalar(select(integration_batches.c.lifecycle).where(
+                integration_batches.c.id == batch_id))
+        if batch.intent == "aborted" or lifecycle == "aborted":
+            raise ValueError("aborted batch cannot be settled")
+        if lifecycle == "promoted":
+            raise ValueError("batch is already promoted")
+        members = await store.members(batch_id)
+        if not members:
+            raise ValueError("batch has no frozen members")
+        target = TrainTarget(batch.project_id, batch.repository_id, batch.target_ref)
+        snapshot = await self.snapshot(self.db, target)
+        if snapshot is None or snapshot.error or not snapshot.target_oid:
+            raise ValueError("batch target cannot be observed")
+        ref = candidate_ref(batch.id)
+        candidate = snapshot.observation.source_heads.get(
+            "refs/remotes/origin/" + ref.removeprefix("refs/heads/")
+        )
+        observed = snapshot.observation
+        for member in members:
+            ancestor = await observed.git.ais_ancestor(
+                observed.store, member.source_sha, snapshot.target_oid, strict=True,
+            )
+            if ancestor is None:
+                raise ValueError("batch promotion cannot be observed")
+            if ancestor:
+                continue
+            proof = await snapshot.contains_source(
+                member.task_id, member.source_sha, member.base_sha)
+            if proof is None:
+                raise ValueError("batch promotion cannot be observed")
+            if not proof:
+                raise TrainControlError(
+                    "target_not_settled", f"target does not contain member {member.task_id}")
+        result = {
+            "outcome": "preview" if dry_run else "settled",
+            "batch_id": batch_id,
+            "project_id": batch.project_id,
+            "target_ref": batch.target_ref,
+            "candidate_sha": candidate,
+            "target_sha": snapshot.target_oid,
+            "intent": batch.intent,
+            "dry_run": dry_run,
+        }
+        if dry_run:
+            return result
+        if not await snapshot.is_fresh():
+            raise ValueError("batch target changed during settlement")
+        batches = self.train.batches if self.train is not None else DatabaseBatches(
+            self.db, clock=self.clock)
+        # The target, not the candidate, is what was delivered: settling the
+        # candidate would claim checks that never passed.
+        await batches.settle(batch, BatchObservation(
+            "delivered", None, snapshot.target_oid,
+            detail={"reason": "operator_settled", "operator_id": operator_id}))
+        await self.db.log_event(
+            "integration.batch_settled", project_id=batch.project_id,
+            payload=json.dumps({"batch_id": batch_id, "target_sha": snapshot.target_oid,
+                                "candidate_sha": candidate, "operator_id": operator_id,
+                                "reason": reason}),
+        )
+        return result
 
     async def set_batch_intent(self, batch_id, intent, *, dry_run, operator_id, reason=""):
         store = BatchStore(self.db, clock=self.clock)
@@ -369,7 +555,8 @@ class TrainControls:
         if train is None:
             raise ValueError("the integration train is not active")
         targets = await train.targets.targets(self.clock())
-        roots = [t for t in targets if t.project_id == project_id and t.kind != "epic"]
+        roots = [t for t in targets
+                 if t.project_id == project_id and t.kind in {"root", "development"}]
         if len(roots) != 1:
             raise ValueError("project has no unique active root train target")
         target = roots[0]

@@ -348,7 +348,9 @@ used 961 Git commands in 2.864 seconds; the warm pass used zero commands with
 - `aq integration pause-batch BATCH_ID --apply` pauses publication for an unpromoted Git-first batch.
 - `aq integration resume-batch BATCH_ID --apply` resumes a paused Git-first batch.
 - `aq integration abort-batch BATCH_ID --apply --reason REASON` aborts an unpromoted Git-first batch.
+- `aq integration settle-batch BATCH_ID --apply --reason REASON` records promotion of a batch whose target already contains every member source.
 - `aq integration refresh-epic --task EPIC_ID --apply` starts or advances the attested refresh; pending checks or repairs continue through the train.
+- `aq integration reverify-epic EPIC_ID` previews aggregate verification for a completed epic. Apply with `--apply --head HEAD_SHA --reason REASON` to request one bounded train visit, including when the old owner is released. The result names the actual visit state and blockers; `visited` does not mean checks or review passed. Read the [control specification](../specs/design/epic-aggregate-reverification.md) for the operator handoff.
 - `aq integration record-root-noop ROOT_TASK_ID` previews a no-artifact completion for an unheld no-code root; apply requires `--apply --head HEAD_SHA --reason REASON`.
 
 Removing a required check from project policy causes the next root or epic

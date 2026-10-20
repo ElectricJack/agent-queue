@@ -681,6 +681,132 @@ class TestDesiredStateCommands:
         assert entry["state"] == "running" and entry["desired_state"] == "sleeping"
 
 
+@pytest.mark.parametrize("blocker", [
+    "live", "provider_unavailable", "probe_failed", "process_probe_failed", "marked_process",
+    "missing_token",
+    "task", "claim", "preparation", "running_intent",
+])
+async def test_stopped_pool_sleep_preserves_unproven_history(
+    handler, db, provider, monkeypatch, blocker,
+):
+    from unittest.mock import AsyncMock
+
+    from src.sessions.proctable import ProcEntry
+
+    await _make_task(db)
+    row = await _make_session(
+        db, provider, task_id=None, lifecycle="pool", state="stopped", desired_state="sleeping",
+    )
+    if blocker != "live":
+        await provider.stop(SessionHandle(row.name, row.provider, row.instance_token))
+    if blocker == "provider_unavailable":
+        monkeypatch.setattr(handler, "_provider_for_session", lambda _: None)
+    elif blocker == "probe_failed":
+        monkeypatch.setattr(
+            provider, "confirm_instance_stopped", AsyncMock(side_effect=RuntimeError("partial probe")),
+        )
+    elif blocker == "marked_process":
+        monkeypatch.setattr("src.sessions.proctable.scan_by_env_marker", AsyncMock(return_value=[
+            ProcEntry(42, 1, "codex", 1, row.instance_token),
+        ]))
+    elif blocker == "process_probe_failed":
+        monkeypatch.setattr("src.sessions.proctable.scan_by_env_marker", AsyncMock(
+            side_effect=RuntimeError("incomplete process scan"),
+        ))
+    fields = {
+        "missing_token": {"instance_token": ""},
+        "task": {"task_id": "t1"},
+        "claim": {"claim_phase": "preparing"},
+        "preparation": {"failed_preparation": {"reason": "preserve evidence"}},
+        "running_intent": {"desired_state": "running"},
+    }.get(blocker, {})
+    if fields:
+        await db.update_session(row.id, **fields)
+    before = await db.get_session(row.id)
+    stop = AsyncMock(side_effect=AssertionError("sleep must not signal"))
+    monkeypatch.setattr(provider, "stop", stop)
+
+    result = await handler.execute("session_sleep", {"session_id": row.id})
+
+    assert "error" in result, result
+    assert await db.get_session(row.id) == before
+    assert (await db.get_task("t1")).status is TaskStatus.IN_PROGRESS
+    stop.assert_not_awaited()
+
+
+@pytest.mark.parametrize("change", [
+    {"instance_token": "revived-token"}, {"provider": "tmux"}, {"name": "successor"},
+    {"started_at": 200.0}, {"last_claim_epoch": 2}, {"claim_phase": "active"},
+    {"task_id": "t1"}, {"failed_preparation": {"reason": "retained"}},
+    {"desired_state": "running"}, {"state": "running"},
+], ids=[
+    "instance", "provider", "name", "generation", "epoch", "claim", "task", "prepare", "intent",
+    "revived",
+])
+async def test_stopped_pool_sleep_rechecks_identity_and_work_after_provider_proof(
+    handler, db, provider, monkeypatch, change,
+):
+    from unittest.mock import AsyncMock
+
+    await _make_task(db)
+    row = await _make_session(
+        db, provider, task_id=None, lifecycle="pool", state="stopped", desired_state="sleeping",
+    )
+    await provider.stop(SessionHandle(row.name, row.provider, row.instance_token))
+
+    async def confirm_then_change(_handle):
+        if "state" in change:
+            # Supported transitions never revive stopped rows. Fail closed
+            # even if legacy/corrupt metadata changes during provider proof.
+            from sqlalchemy import update
+
+            from src.database.tables import sessions
+
+            async with db.immediate() as conn:
+                await conn.execute(update(sessions).where(sessions.c.id == row.id).values(**change))
+        else:
+            await db.update_session(row.id, **change)
+        return True
+
+    monkeypatch.setattr(provider, "confirm_instance_stopped", confirm_then_change)
+    monkeypatch.setattr("src.sessions.proctable.scan_by_env_marker", AsyncMock(return_value=[]))
+
+    result = await handler.execute("session_sleep", {"session_id": row.id})
+
+    assert "error" in result, result
+    current = await db.get_session(row.id)
+    for key, value in change.items():
+        assert getattr(current, key) == value
+    assert current.desired_state == change.get("desired_state", "sleeping")
+
+
+async def test_live_pool_sleep_racing_completed_teardown_preserves_stopped_intent(
+    handler, db, provider, monkeypatch,
+):
+    row = await _make_session(db, provider, task_id=None, lifecycle="pool")
+    request_sleep = db.request_session_sleep
+
+    async def stop_then_sleep(observed, **kwargs):
+        await provider.stop(SessionHandle(row.name, row.provider, row.instance_token))
+        await db.update_session(row.id, state="stopped", desired_state="stopped")
+        return await request_sleep(observed, **kwargs)
+
+    monkeypatch.setattr(db, "request_session_sleep", stop_then_sleep)
+    result = await handler.execute("session_sleep", {"session_id": row.id})
+
+    assert result["success"], result
+    assert (result["state"], result["desired_state"]) == ("stopped", "stopped")
+
+
+@pytest.mark.parametrize("state", ["starting", "running", "draining"])
+async def test_pool_sleep_keeps_live_session_attached(handler, db, provider, state):
+    row = await _make_session(db, provider, task_id=None, lifecycle="pool", state=state)
+    result = await handler.execute("session_sleep", {"session_id": row.id})
+    assert result["success"], result
+    assert (result["state"], result["desired_state"]) == (state, "sleeping")
+    assert await provider.is_running(SessionHandle(row.name, row.provider, row.instance_token))
+
+
 class TestDrainAckCommand:
     async def test_marks_the_session_draining(self, handler, db, provider):
         await _make_task(db)
@@ -3317,6 +3443,103 @@ class TestEndToEndOnFakeProvider:
         assert real_orch.git.acreate_pr.await_args.kwargs["base"] == "main"
         assert (await db.get_task("t1")).pr_url == pr_url
         real_orch._phase_integrate.assert_not_awaited()
+
+    async def test_train_leaf_root_close_does_not_wait_on_a_slow_pull_request(
+        self, db, real_orch, real_handler, provider, tmp_path, monkeypatch
+    ):
+        """Regression for amber-flare-10: the root PR open gated the whole close.
+
+        It reads the project-wide delivery observation, which a busy project
+        held for minutes; the record and claim release waited behind it while
+        the caller timed out.  Past the bound the close finishes and the open
+        lands detached, once.
+        """
+        import asyncio
+        from unittest.mock import AsyncMock
+
+        from sqlalchemy import update
+
+        from src.database.tables import repos
+        from src.git.manager import RemoteRefState
+        from src.orchestrator import execution
+
+        wd = await self._setup(db, tmp_path)
+        await self._enable_hierarchy_launch(db, tmp_path)
+        await db.update_project("p1", hierarchical_integration_mode="train")
+        async with db.immediate() as conn:
+            await conn.execute(
+                update(repos).where(repos.c.id == "repo").values(
+                    url="https://github.com/o/r.git", default_branch="main"
+                )
+            )
+        task = await db.get_task("t1")
+        await real_orch._launch_session_for_task(
+            AssignAction("a1", "t1", "p1"),
+            task,
+            await db.get_profile("claude-opus"),
+            wd,
+        )
+        session = await db.get_session_for_task("t1")
+        head = "b" * 40
+        monkeypatch.setattr(real_orch, "_phase_integrate", AsyncMock(), raising=False)
+        monkeypatch.setattr(execution, "CLOSE_PUBLICATION_TIMEOUT_SECONDS", 0.05)
+        record_completion = AsyncMock(return_value=head)
+        monkeypatch.setattr("src.integration.provenance.record_worker_completion", record_completion)
+
+        async def git_run(args, *, cwd):
+            if args == ["status", "--porcelain"]:
+                return ""
+            if args == ["rev-parse", "HEAD"]:
+                return head
+            raise AssertionError(f"unexpected producer Git command: {args!r}")
+
+        pr_url = "https://github.com/o/r/pull/9"
+        github = asyncio.Event()
+
+        async def slow_create_pr(*args, **kwargs):
+            await github.wait()
+            return pr_url
+
+        real_orch.git = SimpleNamespace(
+            avalidate_checkout=AsyncMock(return_value=True),
+            ahas_remote=AsyncMock(return_value=True),
+            aget_current_branch=AsyncMock(return_value="aq/t1"),
+            als_remote_ref=AsyncMock(
+                return_value=SimpleNamespace(state=RemoteRefState.PRESENT, oid=head)
+            ),
+            areserved_paths_in_diff=AsyncMock(return_value=[]),
+            afind_open_pr=AsyncMock(),
+            arev_parse=AsyncMock(return_value=head),
+            bind_github_repository=AsyncMock(return_value="binding"),
+            acommits_ahead_of_base=AsyncMock(return_value=1),
+            acreate_pr=AsyncMock(side_effect=slow_create_pr),
+            _arun=git_run,
+        )
+        close = await asyncio.wait_for(
+            real_handler.execute(
+                "task_close",
+                {
+                    "task_id": "t1",
+                    "session_id": session.id,
+                    "outcome": "pass",
+                    "work_outcome": "shipped",
+                    "summary": "leaf root complete",
+                },
+            ),
+            10,
+        )
+
+        assert close["success"] is True
+        assert close["status"] == "COMPLETED"
+        assert len(await db.get_task_completions("t1")) == 1
+        (detached,) = execution._DETACHED_CLOSE_PUBLICATIONS
+        assert (await db.get_task("t1")).pr_url is None
+
+        github.set()
+        assert (await asyncio.wait_for(detached, 10))["pr_url"] == pr_url
+        real_orch.git.acreate_pr.assert_awaited_once()
+        assert (await db.get_task("t1")).pr_url == pr_url
+        assert len(await db.get_task_completions("t1")) == 1
 
     async def test_train_leaf_root_close_survives_a_pull_request_failure(
         self, db, real_orch, real_handler, provider, tmp_path, monkeypatch

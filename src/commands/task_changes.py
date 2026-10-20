@@ -15,9 +15,11 @@ from sqlalchemy import delete, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from src.database.queries.hierarchy_queries import LIVE_SESSION_STATES
+from src.database.queries import ingest_batch_queries as batches
 from src.database.queries.proposal_queries import detect_cycles
 from src.database.tables import (
     gates,
+    ingest_batch_members,
     projects,
     sessions,
     task_dependencies,
@@ -54,6 +56,14 @@ CREATE_FIELDS = frozenset(
         "task_type",
         "deliverables",
         "parent_id",
+        "section_anchor",
+        "primary_outcome",
+        "acceptance",
+        "constraints",
+        "owned_modules",
+        "size",
+        "placement",
+        "delivery_targets",
     }
 )
 OPERATIONS = ("tasks", "edges", "edits", "remove_edges", "comments")
@@ -66,7 +76,14 @@ class ChangeSetError(ValueError):
         self.refused = refused
 
 
-def normalize(args: dict) -> dict:
+# These fields are available only inside an authorized held-batch update.
+HELD_EDIT_FIELDS = frozenset({
+    "acceptance", "constraints", "section_anchor", "primary_outcome", "size", "owned_modules",
+    "placement", "delivery_targets", "tags", "replacement_task_id", "satisfied_by", "rewire",
+})
+
+
+def normalize(args: dict, *, held: bool = False) -> dict:
     payload = {key: args.get(key, []) for key in OPERATIONS}
     if not all(isinstance(items, list) for items in payload.values()):
         raise ChangeSetError("change set operations must be lists")
@@ -95,9 +112,30 @@ def normalize(args: dict) -> dict:
             raise ChangeSetError("tasks[].title is required")
         if not isinstance(spec.get("description"), str):
             raise ChangeSetError("tasks[].description is required (string)")
+        for key in ("section_anchor", "primary_outcome"):
+            if key in spec and (not isinstance(spec[key], str) or not spec[key].strip()):
+                raise ChangeSetError(f"{key} must be a non-empty string", f"{key}_missing")
+        if "acceptance" in spec and not (
+            isinstance(spec["acceptance"], str)
+            or isinstance(spec["acceptance"], list)
+            and all(isinstance(item, str) for item in spec["acceptance"])
+        ):
+            raise ChangeSetError("acceptance must be a string or list of strings")
+        for key in ("constraints", "owned_modules", "delivery_targets"):
+            if key in spec and (not isinstance(spec[key], list)
+                               or any(not isinstance(v, str) or not v.strip() for v in spec[key])):
+                raise ChangeSetError(f"{key} must be a list of non-empty strings")
+        if "size" in spec and spec["size"] not in ("s", "m", "l"):
+            raise ChangeSetError("size must be s, m or l")
+        if "placement" in spec and spec["placement"] not in ("child", "operational_root"):
+            raise ChangeSetError("placement must be child or operational_root")
+        if "delivery_targets" in spec and spec.get("placement") != "operational_root":
+            raise ChangeSetError("delivery_targets require placement operational_root")
+        if spec.get("placement") == "operational_root" and not spec.get("delivery_targets"):
+            raise ChangeSetError("operational_root requires delivery_targets")
     seen_edits = set()
     for edit in payload["edits"]:
-        _fields(edit, EDIT_FIELDS)
+        _fields(edit, EDIT_FIELDS | HELD_EDIT_FIELDS if held else EDIT_FIELDS)
         tid = edit.get("task_id")
         if not isinstance(tid, str) or not tid or tid in seen_edits or tid in seen:
             raise ChangeSetError("edits need unique existing task_id values")
@@ -152,6 +190,27 @@ def normalize(args: dict) -> dict:
             raise ChangeSetError("comment body must contain 1 to 16000 characters")
         if comment.get("kind", "note") not in ("note", "progress"):
             raise ChangeSetError("comment kind must be note or progress")
+    if held:
+        for edit in payload["edits"]:
+            for key in ("section_anchor", "primary_outcome"):
+                if key in edit and (not isinstance(edit[key], str) or not edit[key].strip()):
+                    raise ChangeSetError(f"{key} must be a non-empty string")
+            if "acceptance" in edit and not (
+                isinstance(edit["acceptance"], str) or isinstance(edit["acceptance"], list)
+                and all(isinstance(v, str) for v in edit["acceptance"])
+            ):
+                raise ChangeSetError("acceptance must be a string or list of strings")
+            for key in ("constraints", "owned_modules", "tags", "delivery_targets"):
+                if key in edit and (not isinstance(edit[key], list)
+                                    or any(not isinstance(v, str) or not v.strip()
+                                           for v in edit[key])):
+                    raise ChangeSetError(f"{key} must be a list of non-empty strings")
+            if "size" in edit and edit["size"] not in ("s", "m", "l"):
+                raise ChangeSetError("size must be s, m or l")
+            if "placement" in edit and edit["placement"] != "operational_root":
+                raise ChangeSetError("placement must be operational_root")
+            if edit.get("placement") == "operational_root" and not edit.get("delivery_targets"):
+                raise ChangeSetError("operational_root requires delivery_targets")
     return payload
 
 
@@ -184,8 +243,16 @@ def references(payload):
     refs = {edit["task_id"] for edit in payload["edits"]}
     refs.update(c["task_id"] for c in payload["comments"])
     refs.update(s["parent_id"] for s in payload["tasks"] + payload["edits"] if s.get("parent_id"))
+    refs.update(target for spec in payload["tasks"] for target in spec.get("delivery_targets", []))
     for edge in payload["edges"] + payload["remove_edges"]:
         refs.update((edge["from"], edge["to"]))
+    for edit in payload["edits"]:
+        refs.update(edit.get("delivery_targets", []))
+        if edit.get("replacement_task_id"):
+            refs.add(edit["replacement_task_id"])
+        for edges in (edit.get("rewire") or {}).values():
+            for edge in edges:
+                refs.update((edge["from"], edge["to"]))
     return refs - {spec["tempId"] for spec in payload["tasks"]}
 
 
@@ -347,6 +414,12 @@ def final_graph(payload, rows, expected, *, approved=False):
     for tid, pid in parent.items():
         if pid is not None:
             graph.add((tid, pid, "parent-child"))
+    for spec in payload["tasks"] + payload["edits"]:
+        if spec.get("placement") == "operational_root":
+            tid = spec.get("tempId", spec.get("task_id"))
+            if parent[tid] is not None:
+                raise ChangeSetError("operational_root cannot have a structural parent")
+            graph.update((tid, target, "delivery-of") for target in spec["delivery_targets"])
     blocking = [edge for edge in graph if edge[2] in BLOCKING_DEP_TYPES]
     if cycles := detect_cycles(blocking, payload["tasks"], []):
         raise ChangeSetError(f"proposal introduces cycle(s): {cycles}")
@@ -370,11 +443,18 @@ def final_graph(payload, rows, expected, *, approved=False):
     return parent
 
 
-async def apply(handler, conn, project_id, payload, expected, rows, project, source, *, approved=False):
+async def apply(handler, conn, project_id, payload, expected, rows, project, source, *,
+                approved=False, hold=None, hold_revision=1):
     """Apply a fully validated set, returning a receipt and deferred notifications."""
     db = handler.db
     transitions = []
-    parents = final_graph(payload, rows, expected, approved=approved)
+    # Retirement proofs have their own writer, but participate in the same
+    # final-graph proof before any writes. Their typed rewires run at archive.
+    projected = {key: list(value) for key, value in payload.items()}
+    for edit in payload["edits"]:
+        for key, edges in (edit.get("rewire") or {}).items():
+            projected[key].extend(edges)
+    parents = final_graph(projected, rows, expected, approved=approved)
     for spec in payload["tasks"] + payload["edits"]:
         if error := handler._validate_routing_class(spec.get("intelligence_class")):
             raise ChangeSetError(error)
@@ -469,10 +549,37 @@ async def apply(handler, conn, project_id, payload, expected, rows, project, sou
                 if item.get("gate_id"):
                     routing_ids.append(item["task_id"])
                 await db._upsert_meta(item["task_id"], "proposal_source", source, conn=conn)
+                spec = specs[tid]
+                if hold:
+                    role = ("operational_root" if spec.get("placement") == "operational_root"
+                            else "container" if tid in parents.values() else "leaf")
+                    joined = await batches.add_member(
+                        conn, hold, task_id=item["task_id"], member_key=tid, role=role,
+                        section_anchor=spec["section_anchor"],
+                        primary_outcome=spec.get("primary_outcome", ""), created_revision=hold_revision,
+                        acceptance=spec.get("acceptance"), constraints=spec.get("constraints", []),
+                        size=spec.get("size"),
+                    )
+                    if not joined["success"]:
+                        raise ChangeSetError(joined["error"])
+                if "owned_modules" in spec:
+                    await db._upsert_meta(item["task_id"], "owned_modules",
+                                          spec["owned_modules"], conn=conn)
                 pending.remove(tid)
 
     def real(tid):
         return mapping.get(tid, tid)
+
+    for spec in payload["tasks"] + payload["edits"]:
+        if spec.get("placement") == "operational_root":
+            targets = [real(target) for target in spec["delivery_targets"]]
+            await db._upsert_meta(real(spec.get("tempId", spec.get("task_id"))), "delivery_condition",
+                                  {"targets": targets, "kind": "delivery-of"}, conn=conn)
+            for target in targets:
+                await conn.execute(pg_insert(task_dependencies).values(
+                    task_id=real(spec.get("tempId", spec.get("task_id"))), depends_on_task_id=target,
+                    dep_type="delivery-of",
+                ).on_conflict_do_nothing())
 
     # Remove edges first, so a reversal/reparent is checked against the final
     # constraints, not the old graph. Structural membership has one writer.
@@ -555,6 +662,22 @@ async def apply(handler, conn, project_id, payload, expected, rows, project, sou
             await conn.execute(
                 update(tasks).where(tasks.c.id == tid).values(**values, updated_at=time.time())
             )
+        if hold:
+            fidelity = {key: edit[key] for key in batches.FIDELITY_FIELDS if key in edit}
+            if fidelity:
+                await batches.set_member_fidelity(conn, tid, **fidelity)
+            member_fields = {key: edit[key] for key in ("section_anchor", "primary_outcome")
+                             if key in edit}
+            if edit.get("placement") == "operational_root":
+                member_fields["role"] = "operational_root"
+            if member_fields:
+                await conn.execute(update(ingest_batch_members).where(
+                    ingest_batch_members.c.batch_id == hold,
+                    ingest_batch_members.c.task_id == tid,
+                ).values(**member_fields))
+            for key in ("owned_modules", "tags"):
+                if key in edit:
+                    await db._upsert_meta(tid, key, edit[key], conn=conn)
         action = edit.get("action")
         if action == "pause":
             _, result = await db._pause_task_on(tid, conn=conn, defer_projection=True)
@@ -631,12 +754,29 @@ async def apply(handler, conn, project_id, payload, expected, rows, project, sou
             if parent := real(parents[edit["task_id"]]):
                 archive_parents.add(parent)
                 affected.add(parent)
+            retirement = {}
+            if hold:
+                reason = edit["reason"]
+                retirement = {
+                    "disposition": "obsolete", "abandon_reason": reason,
+                    "replacement_task_id": real(edit.get("replacement_task_id")),
+                    "satisfied_by": edit.get("satisfied_by"),
+                    "rewire": {key: [{**edge, "from": real(edge["from"]),
+                                      "to": real(edge["to"])} for edge in edges]
+                               for key, edges in (edit.get("rewire") or {}).items()} or None,
+                }
+                joined = await batches.retire_member(
+                    conn, hold, edit["task_id"], reason=reason, retired_revision=hold_revision,
+                )
+                if not joined["success"]:
+                    raise ChangeSetError(joined["error"], joined["error_code"])
             result = await db._archive_task_on(
                 edit["task_id"],
                 conn=conn,
                 archive_reason=edit.get("reason"),
                 abandoned_by=author_id,
                 defer_projection=True,
+                **retirement,
             )
             if result is None:
                 raise ChangeSetError("archive task not found")
@@ -699,3 +839,211 @@ async def apply(handler, conn, project_id, payload, expected, rows, project, sou
             if tid not in archived
         },
     }
+
+
+def held_operations(operations, members, edges):
+    """Compile the reviewer's scoped operations to the ordinary atomic writer.
+
+    Member keys are stable aliases; existing ids are also accepted. Every
+    reference, including a retirement's implicit dependent rewrite, stays in
+    this batch. New tasks are never imported from another batch.
+    """
+    if not isinstance(operations, list) or not operations:
+        raise ChangeSetError("operations must be a non-empty list")
+    by_id = {m["task_id"]: m for m in members}
+    aliases = {m["member_key"]: m["task_id"] for m in members}
+    payload = {key: [] for key in OPERATIONS}
+    edits = {}
+    retiring = set()
+
+    def member(value):
+        tid = aliases.get(value, value) if isinstance(value, str) else None
+        if tid not in by_id:
+            raise ChangeSetError(f"{value!r} is not an active batch member", "membership")
+        return tid
+
+    def reference(value):
+        if value in new_keys:
+            return value
+        return member(value)
+
+    # Discover aliases before resolving references, permitting forward edges.
+    new_keys = set()
+    for op in operations:
+        if not isinstance(op, dict):
+            raise ChangeSetError("operations must contain objects")
+        specs = (op.get("tasks", []) if op.get("kind") == "split" else
+                 [op["task"]] if op.get("kind") in ("add_leaf", "combine") and "task" in op
+                 else [])
+        if not isinstance(specs, list) or any(not isinstance(s, dict) for s in specs):
+            raise ChangeSetError("new tasks must be objects")
+        refused = refused_spec_keys(specs + [op.get("changes", {})])
+        if refused:
+            raise ChangeSetError("routing.choice_forbidden", "routing.choice_forbidden",
+                                 refused=refused)
+        for spec in specs:
+            key = spec.get("tempId")
+            if not isinstance(key, str) or not key or key in new_keys or key in aliases or key in by_id:
+                raise ChangeSetError("new tasks need unique, unused tempId values", "membership")
+            new_keys.add(key)
+
+    def edit(tid, changes):
+        target = edits.setdefault(tid, {"task_id": tid})
+        for key, value in changes.items():
+            if key in target and target[key] != value:
+                raise ChangeSetError(f"conflicting {key} edits for {tid}")
+            target[key] = value
+
+    def add_task(spec, parent=None):
+        spec = dict(spec)
+        if "parent_id" not in spec:
+            spec["parent_id"] = parent
+        if not spec.get("parent_id") and spec.get("placement") != "operational_root":
+            raise ChangeSetError("New scoped leaves require a parent or operational placement",
+                                 "validation_failed")
+        if spec.get("parent_id"):
+            spec["parent_id"] = reference(spec["parent_id"])
+        spec["delivery_targets"] = [reference(t) for t in spec["delivery_targets"]] if (
+            "delivery_targets" in spec
+        ) else []
+        if not spec["delivery_targets"]:
+            spec.pop("delivery_targets")
+        payload["tasks"].append(spec)
+        return spec["tempId"]
+
+    def rewire(plan):
+        if not isinstance(plan, dict):
+            raise ChangeSetError("rewire must be an object")
+        _fields(plan, {"edges", "remove_edges"})
+        out = {}
+        for key, values in plan.items():
+            if not isinstance(values, list) or any(not isinstance(v, dict) for v in values):
+                raise ChangeSetError("rewire edges must be lists of objects")
+            out[key] = []
+            for edge in values:
+                _fields(edge, {"from", "to", "dep_type", "reason"})
+                out[key].append({**edge, "from": reference(edge.get("from")),
+                                 "to": reference(edge.get("to"))})
+        return out
+
+    def retire(tid, op, *, replacement=None, plan=None):
+        reason = op.get("reason")
+        if not isinstance(reason, str) or not reason.strip():
+            raise ChangeSetError("retire, split and combine require a reason")
+        if tid in retiring:
+            raise ChangeSetError(f"duplicate retirement for {tid}")
+        retiring.add(tid)
+        if any(m.get("parent_task_id") == tid for m in members):
+            raise ChangeSetError("retirement requires a leaf", "membership")
+        incoming = [e for e in edges if e["depends_on_task_id"] == tid
+                    and e["dep_type"] != "parent-child"]
+        # An implicit replacement must not reach or rewrite a nonmember.
+        for edge in incoming:
+            member(edge["task_id"])
+        replacement = replacement or op.get("replacement_task_id")
+        changes = {"action": "archive", "reason": reason}
+        if replacement:
+            replacement = reference(replacement)
+            changes["replacement_task_id"] = replacement
+            if plan is None and "rewire" not in op:
+                plan = {"edges": [], "remove_edges": []}
+                for edge in incoming:
+                    original = {"from": edge["task_id"], "to": tid,
+                                "dep_type": edge["dep_type"], "reason": edge.get("description")}
+                    plan["remove_edges"].append(original)
+                    plan["edges"].append({**original, "to": replacement})
+        else:
+            changes["satisfied_by"] = op.get("satisfied_by") or (
+                "Scoped batch retirement decision: " + reason
+            )
+        if plan is not None or "rewire" in op:
+            changes["rewire"] = rewire(op["rewire"] if "rewire" in op else plan)
+        edit(tid, changes)
+
+    for op in operations:
+        kind = op.get("kind")
+        if kind == "rewrite":
+            _fields(op, {"kind", "task_id", "changes"})
+            changes = op.get("changes")
+            if not isinstance(changes, dict) or not changes:
+                raise ChangeSetError("rewrite requires changes")
+            _fields(changes, {"title", "description", "priority", "tags", "acceptance",
+                              "constraints", "primary_outcome", "section_anchor", "size",
+                              "owned_modules"})
+            edit(member(op.get("task_id")), changes)
+        elif kind == "reparent":
+            _fields(op, {"kind", "task_id", "parent_id"})
+            if not op.get("parent_id"):
+                raise ChangeSetError("use move_to_root for operational placement")
+            edit(member(op.get("task_id")), {"parent_id": reference(op["parent_id"])})
+        elif kind == "move_to_root":
+            _fields(op, {"kind", "task_id", "delivery_targets"})
+            targets = op.get("delivery_targets")
+            if not isinstance(targets, list) or not targets:
+                raise ChangeSetError("move_to_root requires delivery_targets")
+            tid = member(op.get("task_id"))
+            targets = [reference(t) for t in targets]
+            payload["remove_edges"].extend({"from": tid, "to": edge["depends_on_task_id"],
+                                          "dep_type": "delivery-of"} for edge in edges
+                                         if edge["task_id"] == tid and edge["dep_type"] == "delivery-of"
+                                         and edge["depends_on_task_id"] not in targets)
+            edit(tid, {"parent_id": None,
+                 "placement": "operational_root", "delivery_targets": targets})
+        elif kind == "rewire":
+            _fields(op, {"kind", "edges", "remove_edges"})
+            for key, values in rewire({k: v for k, v in op.items() if k != "kind"}).items():
+                if any(e.get("dep_type", "blocks") not in {"blocks", "conditional-blocks"}
+                       for e in values):
+                    raise ChangeSetError("rewire only changes leaf-to-leaf execution edges")
+                payload[key].extend(values)
+        elif kind == "add_leaf":
+            _fields(op, {"kind", "task"})
+            add_task(op["task"])
+        elif kind == "retire":
+            _fields(op, {"kind", "task_id", "reason", "replacement_task_id", "satisfied_by", "rewire"})
+            retire(member(op.get("task_id")), op)
+        elif kind in {"split", "combine"}:
+            _fields(op, {"kind", "task_id", "tasks", "reason", "rewire"} if kind == "split"
+                    else {"kind", "task_ids", "task", "reason", "rewire"})
+            ids = [member(op.get("task_id"))] if kind == "split" else [
+                member(tid) for tid in op.get("task_ids", [])
+            ]
+            if not ids or len(set(ids)) != len(ids) or (kind == "combine" and len(ids) < 2):
+                raise ChangeSetError("combine requires at least two distinct members")
+            specs = op.get("tasks") if kind == "split" else [op["task"]]
+            if kind == "split" and (not isinstance(specs, list) or len(specs) < 2):
+                raise ChangeSetError("split requires at least two new leaves")
+            new = [add_task(spec, by_id[ids[0]]["parent_task_id"]) for spec in specs]
+            # Each successor inherits all still-relevant typed prerequisites.
+            for edge in edges:
+                if edge["task_id"] in ids and edge["depends_on_task_id"] not in ids and (
+                    edge["dep_type"] != "parent-child"
+                ):
+                    payload["edges"].extend({"from": key, "to": edge["depends_on_task_id"],
+                        "dep_type": edge["dep_type"], "reason": edge.get("description")} for key in new)
+                elif edge["task_id"] in ids and edge["depends_on_task_id"] in ids:
+                    payload["remove_edges"].append({"from": edge["task_id"],
+                        "to": edge["depends_on_task_id"], "dep_type": edge["dep_type"]})
+            for tid in ids:
+                plan = {"edges": [], "remove_edges": []}
+                for edge in edges:
+                    if edge["depends_on_task_id"] != tid or edge["task_id"] in ids or (
+                        edge["dep_type"] == "parent-child"
+                    ):
+                        continue
+                    original = {"from": edge["task_id"], "to": tid,
+                                "dep_type": edge["dep_type"], "reason": edge.get("description")}
+                    plan["remove_edges"].append(original)
+                    plan["edges"].extend({**original, "to": key} for key in new)
+                retire(tid, op, replacement=new[0] if kind == "combine" else None, plan=plan)
+        else:
+            raise ChangeSetError(f"unknown held-batch operation {kind!r}")
+    # Validate nested retirement plans with the same normalizer, including enum,
+    # endpoint and routing-pin checks; no implicit writes escape the membership proof.
+    for edit_row in edits.values():
+        if "rewire" in edit_row:
+            normalize({**edit_row["rewire"], "comments": [
+                {"task_id": edit_row["task_id"], "body": "Retirement plan"}
+            ]})
+    payload["edits"] = list(edits.values())
+    return normalize(payload, held=True)

@@ -10,6 +10,7 @@ from ..models.task_show_response_display_state_type_0 import TaskShowResponseDis
 from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
+    from ..models.claim_readiness import ClaimReadiness
     from ..models.claimed_by import ClaimedBy
     from ..models.epic_delivery_status import EpicDeliveryStatus
     from ..models.provider_hold_detail import ProviderHoldDetail
@@ -43,6 +44,7 @@ class TaskShowResponse:
             display_reason (None | str | Unset):
             child_state_counts (None | TaskShowResponseChildStateCountsType0 | Unset):
             descendant_state_counts (None | TaskShowResponseDescendantStateCountsType0 | Unset):
+            claim_readiness (ClaimReadiness | None | Unset):
             description (str | Unset):  Default: ''.
             status (str | Unset):  Default: ''.
             priority (int | Unset):  Default: 0.
@@ -94,6 +96,7 @@ class TaskShowResponse:
     display_reason: None | str | Unset = UNSET
     child_state_counts: None | TaskShowResponseChildStateCountsType0 | Unset = UNSET
     descendant_state_counts: None | TaskShowResponseDescendantStateCountsType0 | Unset = UNSET
+    claim_readiness: ClaimReadiness | None | Unset = UNSET
     description: str | Unset = ""
     status: str | Unset = ""
     priority: int | Unset = 0
@@ -139,6 +142,7 @@ class TaskShowResponse:
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
+        from ..models.claim_readiness import ClaimReadiness
         from ..models.claimed_by import ClaimedBy
         from ..models.epic_delivery_status import EpicDeliveryStatus
         from ..models.provider_hold_detail import ProviderHoldDetail
@@ -187,6 +191,14 @@ class TaskShowResponse:
             descendant_state_counts = self.descendant_state_counts.to_dict()
         else:
             descendant_state_counts = self.descendant_state_counts
+
+        claim_readiness: dict[str, Any] | None | Unset
+        if isinstance(self.claim_readiness, Unset):
+            claim_readiness = UNSET
+        elif isinstance(self.claim_readiness, ClaimReadiness):
+            claim_readiness = self.claim_readiness.to_dict()
+        else:
+            claim_readiness = self.claim_readiness
 
         description = self.description
 
@@ -431,6 +443,8 @@ class TaskShowResponse:
             field_dict["child_state_counts"] = child_state_counts
         if descendant_state_counts is not UNSET:
             field_dict["descendant_state_counts"] = descendant_state_counts
+        if claim_readiness is not UNSET:
+            field_dict["claim_readiness"] = claim_readiness
         if description is not UNSET:
             field_dict["description"] = description
         if status is not UNSET:
@@ -520,6 +534,7 @@ class TaskShowResponse:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
+        from ..models.claim_readiness import ClaimReadiness
         from ..models.claimed_by import ClaimedBy
         from ..models.epic_delivery_status import EpicDeliveryStatus
         from ..models.provider_hold_detail import ProviderHoldDetail
@@ -603,6 +618,23 @@ class TaskShowResponse:
             return cast(None | TaskShowResponseDescendantStateCountsType0 | Unset, data)
 
         descendant_state_counts = _parse_descendant_state_counts(d.pop("descendant_state_counts", UNSET))
+
+        def _parse_claim_readiness(data: object) -> ClaimReadiness | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                claim_readiness_type_0 = ClaimReadiness.from_dict(data)
+
+                return claim_readiness_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(ClaimReadiness | None | Unset, data)
+
+        claim_readiness = _parse_claim_readiness(d.pop("claim_readiness", UNSET))
 
         description = d.pop("description", UNSET)
 
@@ -963,6 +995,7 @@ class TaskShowResponse:
             display_reason=display_reason,
             child_state_counts=child_state_counts,
             descendant_state_counts=descendant_state_counts,
+            claim_readiness=claim_readiness,
             description=description,
             status=status,
             priority=priority,

@@ -40,6 +40,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
+from src.git.process import ProcessCleanupError
 from src.git.manager import GitError, RemoteRefState
 
 logger = logging.getLogger(__name__)
@@ -130,6 +131,8 @@ async def preserve_unpushed_work(
     try:
         if not await git.avalidate_checkout(workspace):
             return StrandedWork(status="unknown")
+    except ProcessCleanupError:
+        raise
     except Exception:  # pragma: no cover - defensive
         logger.debug("preserve_unpushed_work: checkout probe failed", exc_info=True)
         return StrandedWork(status="unknown")
@@ -144,6 +147,8 @@ async def preserve_unpushed_work(
     local_branch: str | None = None
     try:
         local_branch = (await git.aget_current_branch(workspace)) or None
+    except ProcessCleanupError:
+        raise
     except Exception:  # pragma: no cover - defensive
         local_branch = None
 

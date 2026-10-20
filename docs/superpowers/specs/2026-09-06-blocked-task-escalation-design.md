@@ -126,3 +126,18 @@ archive any notice queued by an earlier version before it can be redelivered.
 Integration parents and ordinary tasks retain their existing notifications.
 Ended-operation delegates retain the existing retirement and incident
 supersession behavior.
+
+## Amendment — 2026-10-12 (reopened recovery holds)
+
+A recovery hold belongs to its recorded execution attempt and claim epoch.
+The claim frontier, demand counts and diagnostics ignore a hold whose recorded
+attempt or epoch has changed. A status projection to READY alone does not release
+a current hold. Legacy incidents lacking an identity field retain their hold
+until an explicit control supersedes it.
+
+An accepted `reopen_with_feedback` or `restart_task` supersedes the previous
+incident in the READY transaction, including a READY-to-READY restart. It keeps
+the incident identity and previous decision in its audit history and archives
+the obsolete incident notice. A refused transition or repair reservation keeps
+the old hold. Supervisor recovery budgets are preserved; guarded `task recover`
+continues to require the exact current failure and an explicit fenced hold release.

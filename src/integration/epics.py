@@ -19,7 +19,7 @@ from src.database.tables import (
     task_gates, task_labels, task_metadata, tasks,
 )
 from src.git.manager import GitError
-from src.integration.delivery_truth import DeliveryRequest, DeliveryState
+from src.integration.delivery_truth import DeliveryRequest, DeliveryState, completion_after_rework
 from src.integration.git_truth import GitDeliveryEvidence, GitTruthSnapshot
 from src.integration.reviews import ReviewRequirements, ReviewSubject, TreeReviews, TreeVerdict
 
@@ -153,6 +153,10 @@ class EpicGraphReader:
         self.source_base_on = source_base_on
 
     async def read_on(self, conn, epic_id: str) -> EpicGraph:
+        from src.database.queries.task_queries import (
+            DEVELOPMENT_COMPLETION_ID_KEY, INTEGRATION_REWORK_AT_KEY,
+        )
+
         root = (await conn.execute(select(tasks).where(tasks.c.id == epic_id))).mappings().one()
         project = (await conn.execute(select(projects).where(
             projects.c.id == root["project_id"],
@@ -192,6 +196,7 @@ class EpicGraphReader:
         for completion in completions:
             latest.setdefault(completion["task_id"], completion)
         holds: dict[str, list[str]] = {task_id: [] for task_id in ids}
+        generations, rework = {}, {}
         containers = {row["parent_task_id"] for row in rows if row["parent_task_id"]}
         for task_id, label in await conn.execute(select(task_labels.c.task_id,
                                                       task_labels.c.label).where(
@@ -201,11 +206,16 @@ class EpicGraphReader:
         for task_id, key, value in await conn.execute(select(
             task_metadata.c.task_id, task_metadata.c.key, task_metadata.c.value,
         ).where(task_metadata.c.task_id.in_(ids),
-                task_metadata.c.key.in_(("manual_pause", "container")))):
+                task_metadata.c.key.in_(("manual_pause", "container",
+                                        DEVELOPMENT_COMPLETION_ID_KEY, INTEGRATION_REWORK_AT_KEY)))):
             if key == "manual_pause":
                 holds[task_id].append("manual_pause")
-            elif json.loads(value) is True:
+            elif key == "container" and json.loads(value) is True:
                 containers.add(task_id)
+            elif key == DEVELOPMENT_COMPLETION_ID_KEY:
+                generations[task_id] = json.loads(value)
+            elif key == INTEGRATION_REWORK_AT_KEY:
+                rework[task_id] = value
         for task_id, gate_id in await conn.execute(select(task_gates.c.task_id, gates.c.id)
                                                   .join(gates, gates.c.id == task_gates.c.gate_id)
                                                   .where(task_gates.c.task_id.in_(ids),
@@ -215,11 +225,17 @@ class EpicGraphReader:
         default_ref = "refs/heads/" + repository["default_branch"].removeprefix("refs/heads/")
         for row in rows:
             completion = latest.get(row["id"])
+            generation = generations.get(row["id"])
+            if completion and (
+                generation and generation != completion["id"]
+                or not completion_after_rework(completion["completed_at"], rework.get(row["id"]))
+            ):
+                completion = None
             request = DeliveryRequest(
                 project_id=row["project_id"], repository_id=row["repo_id"] or repository["id"],
                 target_ref=default_ref, task_id=row["id"], task_version=row["updated_at"],
                 legacy_generation=row["legacy_completion_id"], branch_name=row["branch_name"],
-                completion_id=completion["id"] if completion else None,
+                completion_id=completion["id"] if completion else generation,
                 completed_at=completion["completed_at"] if completion else None,
                 task_status=row["status"], claim_epoch=row["claim_epoch"], archived=row["archived"],
             )

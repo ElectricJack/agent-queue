@@ -167,6 +167,25 @@ class EpicDeliveryStatus(BaseModel):
     implementation_total: int = 0
 
 
+class ClaimReadinessReason(BaseModel):
+    code: str
+    detail: str
+    ref: str | None = None
+    batch_id: str | None = None
+    batch_ids: list[str] | None = None
+    epic_id: str | None = None
+    action: str | None = None
+    blocking_task_ids: list[str] | None = None
+
+
+class ClaimReadiness(BaseModel):
+    state: Literal["claimable", "waiting_on_delivery", "withheld", "unknown"]
+    claimable: bool
+    label: str
+    reason: str = ""
+    reasons: list[ClaimReadinessReason] = Field(default_factory=list)
+
+
 class TaskDisplayFields(BaseModel):
     """A container's rollup of its descendants (``src/task_graph/activity.py``).
 
@@ -178,6 +197,7 @@ class TaskDisplayFields(BaseModel):
     display_reason: str | None = None
     child_state_counts: dict[str, int] | None = None
     descendant_state_counts: dict[str, int] | None = None
+    claim_readiness: ClaimReadiness | None = None
 
 
 class TaskDetail(TaskDisplayFields):
@@ -1022,6 +1042,12 @@ class SpecIngestReconcileResponse(BaseModel):
     errors: list[dict[str, str]]
 
 
+class BatchReconcileResponse(BaseModel):
+    success: bool = True
+    recovered: list[dict[str, str]]
+    errors: list[dict[str, str]]
+
+
 class SpecIngestLegacyInventoryResponse(BaseModel):
     success: bool = True
     assignments: list[dict[str, Any]]
@@ -1048,10 +1074,35 @@ class TaskBatchProposeResponse(BaseModel):
 
 
 class TaskBatchAckResponse(BaseModel):
-    """``task_batch_update`` / ``task_batch_discard`` — bare acknowledgement."""
+    """Acknowledgement, including the current held graph after a scoped update."""
 
     success: bool = True
     diff: dict[str, Any] | None = None
+    proposal_id: str | None = None
+    batch_id: str | None = None
+    state: str | None = None
+    status: str | None = None
+    structure_revision: int | None = None
+    structure_digest: str | None = None
+    members: dict[str, str] | None = None
+    task_ids: list[str] | None = None
+    replayed: bool | None = None
+    lineage: dict[str, Any] | None = None
+    release_receipt: dict[str, Any] | None = None
+    reviewer_task_id: str | None = None
+
+
+class TaskBatchValidateResponse(BaseModel):
+    """``task_batch_validate`` — the automatic-check report; nothing is written."""
+
+    success: bool = True
+    project_id: str | None = None
+    batch_id: str | None = None
+    passed: bool = False
+    retryable: bool = False
+    hard: list[dict[str, Any]] = Field(default_factory=list)
+    advisory: list[dict[str, Any]] = Field(default_factory=list)
+    gaps: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class ClaimSessionSummary(BaseModel):
@@ -1408,8 +1459,10 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "project_ready": ProjectReadyResponse,
     "ensure_task": EnsureTaskResponse,
     "ensure_spec_ingest": EnsureTaskResponse,
+    "ensure_fidelity_review": EnsureTaskResponse,
     "approved_spec_packet": ApprovedSpecPacketResponse,
     "spec_ingest_reconcile": SpecIngestReconcileResponse,
+    "batch_reconcile": BatchReconcileResponse,
     "spec_ingest_legacy_inventory": SpecIngestLegacyInventoryResponse,
     "get_downstream_tasks": GetDownstreamTasksResponse,
     "task_route": TaskRouteResponse,
@@ -1418,6 +1471,7 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "task_batch_propose": TaskBatchProposeResponse,
     "task_batch_update": TaskBatchAckResponse,
     "task_batch_commit": TaskBatchCommitResponse,
+    "task_batch_validate": TaskBatchValidateResponse,
     "task_batch_discard": TaskBatchAckResponse,
     "task_claim": TaskClaimResponse,
     "pool_status": PoolStatusResponse,

@@ -223,6 +223,16 @@ class ReleaseWorkspaceResponse(BaseModel):
     released_from_task: str | None = None
 
 
+class WorkspaceRetireClaimResponse(BaseModel):
+    workspace_id: str
+    retired: bool = False
+    detail: str | None = None
+    holder_task_id: str | None = None
+    holder_claim_epoch: int | None = None
+    holder_session_id: str | None = None
+    reason: str | None = None
+
+
 class EditWorkspaceResponse(BaseModel):
     updated: str
     fields: list[str] = []
@@ -236,6 +246,26 @@ class FindMergeConflictWorkspacesResponse(BaseModel):
     workspaces_scanned: int = 0
     workspaces_with_conflicts: int = 0
     conflicts: list[dict[str, Any]] = []
+
+
+class WorkspaceCutoverSnapshot(BaseModel):
+    project_id: str
+    source_id: str
+    target_id: str
+    workspaces: list[dict[str, Any]]
+    sessions: list[dict[str, Any]]
+    owners: list[dict[str, Any]]
+    source: dict[str, dict[str, Any]]
+
+
+class WorkspaceCutoverResponse(BaseModel):
+    success: bool
+    error: str | None = None
+    applied: bool | None = None
+    proof: str | None = None
+    snapshot: WorkspaceCutoverSnapshot | None = None
+    retained: list[str] = []
+    retirement: str | None = None
 
 
 class QueueSyncWorkspacesResponse(BaseModel):
@@ -283,7 +313,9 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "list_workspaces": ListWorkspacesResponse,
     "remove_workspace": RemoveWorkspaceResponse,
     "release_workspace": ReleaseWorkspaceResponse,
+    "workspace_retire_claim": WorkspaceRetireClaimResponse,
     "edit_workspace": EditWorkspaceResponse,
+    "workspace_cutover": WorkspaceCutoverResponse,
     "find_merge_conflict_workspaces": FindMergeConflictWorkspacesResponse,
     "queue_sync_workspaces": QueueSyncWorkspacesResponse,
     "set_project_constraint": SetProjectConstraintResponse,

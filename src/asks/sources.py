@@ -768,7 +768,7 @@ class RecoveryAdapter(SourceAdapter):
         from src.database.queries.task_recovery_queries import recovery_ask_meaning
 
         meaning = recovery_ask_meaning(
-            row, incident, attempt, await self.db._recovery_owner(conn, row)
+            row, incident, attempt, await self.db._recovery_owner(conn, row), meta
         )
         return source_snapshot(
             source,
@@ -880,7 +880,10 @@ class FreeTextAdapter(SourceAdapter):
 
 def source_adapters(handler):
     """Constructed only by CommandHandler, with no caller-configurable action table."""
+    from src.asks.batch_scope import BatchScopeAdapter
+
     return [
+        BatchScopeAdapter(handler),
         HumanGateAdapter(handler),
         ProposalAdapter(handler),
         IntegrationAdapter(handler),

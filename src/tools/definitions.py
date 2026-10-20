@@ -56,6 +56,8 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "queue_sync_workspaces": "project",
     "workspace_doctor": "project",
     "workspace_reap": "project",
+    "workspace_cutover": "project",
+    "workspace_retire_claim": "project",
     # project onboarding from the dashboard (design 2026-09-03 §5)
     "list_project_roots": "project",
     "browse_project_root": "project",
@@ -393,6 +395,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "task_batch_update": "task",
     "task_batch_commit": "task",
     "task_batch_discard": "task",
+    "task_batch_validate": "task",
     # playbook authoring — an agent writes the markdown, validates it, then
     # installs the compiled artifact (src/playbooks/validator_command.py).
     # control plane — dv2 phase 1
@@ -441,7 +444,8 @@ _CLI_CATEGORY_OVERRIDES: dict[str, str] = {
     **{name: "ask" for name in (
         "ask_list", "ask_show", "ask_reply", "ask_prepare_decision", "ask_decide", "ask_history",
         "ask_apply_input", "ask_discussion_reply", "ask_update_context", "ask_reconcile",
-        "ask_cutover", "ask_retry_operation", "ask_repair_delivery",
+        "ask_cutover", "ask_cutover_status", "ask_retry_operation", "ask_repair_delivery",
+        "ask_legacy_reset",
     )},
     "create_task": "task",
     "list_tasks": "task",
@@ -1900,6 +1904,7 @@ _ALL_TOOL_DEFINITIONS = [
                     "type": "string",
                     "description": "Workspace name (optional)",
                 },
+                "enabled": {"type": "boolean", "description": "Enable admission (default true). Register a cutover target with false."},
                 "kind_id": {
                     "type": "string",
                     "description": (
@@ -2177,6 +2182,41 @@ _ALL_TOOL_DEFINITIONS = [
                     "description": "Project id to scope diagnosis (optional; active project when omitted).",
                 },
             },
+        },
+    },
+    {
+        "name": "workspace_cutover",
+        "description": "Preview or apply a source-preserving base switch. Apply requires the exact preview proof. Disables the old base and slots without moving or deleting any source or releasing writers.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string", "description": "Project owning both bases."},
+                "source_id": {"type": "string", "description": "Current enabled base."},
+                "target_id": {"type": "string", "description": "New disabled, idle base of the same kind."},
+                "apply": {"type": "boolean", "description": "Apply the preview (default false)."},
+                "expected_proof": {"type": "string", "description": "Exact SHA256 proof returned by preview."},
+            },
+            "required": ["project_id", "source_id", "target_id"],
+        },
+    },
+    {
+        "name": "workspace_retire_claim",
+        "description": (
+            "Remove a worktree slot's leftover .aq/claim.json when its holder "
+            "provably let go: the slot is unlocked, the holder task is completed, "
+            "paused, released or superseded, and no live session works there. "
+            "Refuses a claim that may still be live. Use when claim preparation "
+            "reports 'retains a foreign claim'."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "workspace_id": {
+                    "type": "string",
+                    "description": "Slot workspace id whose claim file to retire.",
+                },
+            },
+            "required": ["workspace_id"],
         },
     },
     {
@@ -2776,6 +2816,29 @@ _ALL_TOOL_DEFINITIONS = [
                     "description": (
                         "Required to archive PAUSED/DEFINED/READY or abandon undelivered work."
                     ),
+                },
+                "replacement": {
+                    "type": "string",
+                    "description": "Obsolete only: replacement leaf; atomically redirects dependents.",
+                },
+                "satisfied_by": {
+                    "type": "string",
+                    "description": (
+                        "Obsolete only: evidence the requirement is met; dependent edges must "
+                        "be explicitly removed or replaced through rewire. Never records a pass."
+                    ),
+                },
+                "rewire": {
+                    "type": "object",
+                    "description": (
+                        "Obsolete edge plan, validated and committed with retirement. "
+                        "Uses task change-set edges/remove_edges objects (from, to, dep_type)."
+                    ),
+                    "properties": {
+                        "edges": {"type": "array", "items": {"type": "object"}},
+                        "remove_edges": {"type": "array", "items": {"type": "object"}},
+                    },
+                    "additionalProperties": False,
                 },
             },
         },
@@ -5678,7 +5741,9 @@ _ALL_TOOL_DEFINITIONS = [
         "description": (
             "Queue a message to a session, task, profile, or user.  Messages "
             "are the single transport for user<->agent and agent<->agent "
-            "traffic; delivery is asynchronous. For an accepted collaboration thread, "
+            "traffic; delivery is asynchronous. Omitted sender identity is derived from "
+            "the authenticated live session, or user:cli for local callers. "
+            "For an accepted collaboration thread, "
             "omit the recipient to send to every other member; sender identity is server-derived."
         ),
         "input_schema": {
@@ -5702,9 +5767,9 @@ _ALL_TOOL_DEFINITIONS = [
                 "from_kind": {
                     "type": "string",
                     "enum": ["session", "user", "system"],
-                    "description": "Sender kind (default: user)",
+                    "description": "Explicit sender kind; session callers must own the identity",
                 },
-                "from_id": {"type": "string", "description": "Sender id"},
+                "from_id": {"type": "string", "description": "Explicit authorized sender id"},
                 "thread_id": {
                     "type": "string",
                     "description": "Conversation grouping key (Discord channel, chat id)",
@@ -6679,17 +6744,18 @@ _ALL_TOOL_DEFINITIONS = [
         "name": "task_batch_propose",
         "description": (
             "Propose a transactional change set of creates, edits, edge changes and comments as one "
-            "reviewable graph, without creating anything live. Tasks are "
+            "reviewable graph. Ordinary proposals stage changes for human approval. Tasks are "
             "identified by caller-chosen ``tempId``s that edges reference; "
             "edges may also point at existing task ids. The proposal is "
             "rejected up front if the shape is wrong, if it references tasks "
             "that do not exist, or if it would introduce a dependency cycle "
             "against the project's current graph. Returns a proposal_id for "
             "task_batch_update / _commit / _discard. A live spec-ingest role "
-            "holding the matching approved vault path needs no approval step: "
-            "that batch is applied live in the same call and returns its "
-            "task_ids, and a later task_batch_commit is an idempotent replay. "
-            "Those batches require epics with children and leaf dependency edges."
+            "holding the matching approved document materializes the implementation graph held "
+            "for fidelity review and returns batch_id, revision, digest and members. "
+            "task_batch_commit refuses held batches; authorized release is separate. "
+            "Design approval creates an already released epic and authoring leaf. "
+            "Ingest tasks require section_anchor; leaves also require primary_outcome and acceptance."
         ),
         "input_schema": {
             "type": "object",
@@ -6719,6 +6785,17 @@ _ALL_TOOL_DEFINITIONS = [
                             "task_id": {"type": "string"},
                             "title": {"type": "string"},
                             "description": {"type": "string"},
+                            "section_anchor": {"type": "string"},
+                            "primary_outcome": {"type": "string"},
+                            "acceptance": {
+                                "description": "Required leaf acceptance criteria or validation commands.",
+                                "anyOf": [{"type": "string"}, {"type": "array", "items": {"type": "string"}}],
+                            },
+                            "constraints": {"type": "array", "items": {"type": "string"}},
+                            "owned_modules": {"type": "array", "items": {"type": "string"}},
+                            "size": {"type": "string", "enum": ["s", "m", "l"]},
+                            "placement": {"type": "string", "enum": ["child", "operational_root"]},
+                            "delivery_targets": {"type": "array", "items": {"type": "string"}},
                             "priority": {"type": "integer"},
                             "intelligence_class": {"type": ["string", "null"]},
                             "task_type": {"type": ["string", "null"]},
@@ -6858,26 +6935,12 @@ _ALL_TOOL_DEFINITIONS = [
     {
         "name": "task_batch_update",
         "description": (
-            "Replace a pending change set, re-running final graph and state "
-            "checks as task_batch_propose. Only "
-            "proposals still in ``draft`` or ``ready`` can be updated — a "
-            "committed or discarded one is history."
+            "Update an ungated pending proposal with payload, or edit a held ingestion batch "
+            "with expected_revision and scoped operations. Only the live assigned fidelity "
+            "reviewer or project supervisor may edit held members. Atomic hard checks roll "
+            "back invalid edits; structural changes supersede old receipts. No edit releases work."
         ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "proposal_id": {"type": "string", "description": "Proposal to replace."},
-                "payload": {
-                    "type": "object",
-                    "description": (
-                        "The complete replacement change set (tasks, edits, edges, "
-                        "remove_edges, comments), in the same shape "
-                        "task_batch_propose takes."
-                    ),
-                },
-            },
-            "required": ["proposal_id", "payload"],
-        },
+        "input_schema": {},  # Replaced below by TaskBatchUpdateArgs' canonical schema.
     },
     {
         "name": "task_batch_commit",
@@ -6916,6 +6979,70 @@ _ALL_TOOL_DEFINITIONS = [
                 },
             },
             "required": ["proposal_id"],
+        },
+    },
+    {
+        "name": "task_batch_validate",
+        "description": (
+            "Run the ingestion-batch automatic checks (design §5.1) against the live "
+            "graph and write nothing. Takes the change set task_batch_propose takes, "
+            "with the ingestion fields (section_anchor, primary_outcome, acceptance, "
+            "size, owned_modules, placement, delivery_targets). Hard findings (authority, "
+            "membership, parent_not_unique, cross_project, depth_exceeded, cycle, "
+            "container_endpoint, external_target_invalid, dependency_on_ancestor, "
+            "post_landing_inside_delivery_epic, delivery_condition_cycle, "
+            "section_anchor_missing, primary_outcome_missing, acceptance_missing, "
+            "profile_pinned) fail the batch; stale_revision, active_claim and "
+            "integration_owned fail it with retryable: true. Advisory findings "
+            "(large_leaf, mixed_outcomes, broad_command, duplicate_title, redundant_edge, "
+            "unexplained_serialization, concentrated_ownership) never fail it; gaps name "
+            "advisory checks that lacked declared metadata. Checks are deterministic: no "
+            "score and no model judgement."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string", "description": "Project the batch is for."},
+                "source": {
+                    "type": "string",
+                    "description": "Proposal source; checked against a stored batch's.",
+                },
+                "tasks": {
+                    "type": "array",
+                    "items": {"type": "object"},
+                    "description": "Task specs keyed by tempId, as task_batch_propose takes.",
+                },
+                "edges": {
+                    "type": "array",
+                    "items": {"type": "object"},
+                    "description": "Edges {from, to, dep_type, reason}; from depends on to.",
+                },
+                "edits": {
+                    "type": "array",
+                    "items": {"type": "object"},
+                    "description": "Edits of existing batch members, keyed by task_id.",
+                },
+                "remove_edges": {
+                    "type": "array",
+                    "items": {"type": "object"},
+                    "description": "Edges {from, to, dep_type} the change set removes.",
+                },
+                "comments": {
+                    "type": "array",
+                    "items": {"type": "object"},
+                    "description": "Comments {task_id, body} on batch members.",
+                },
+                "batch_id": {
+                    "type": "string",
+                    "description": "Held batch whose members the change set may edit.",
+                },
+                "expected_revision": {
+                    "type": "integer",
+                    "description": "Structure revision the caller read; a mismatch is "
+                    "stale_revision.",
+                },
+            },
+            "required": ["project_id"],
         },
     },
     {
@@ -9084,21 +9211,36 @@ _ALL_TOOL_DEFINITIONS.extend([
 ])
 
 
+from src.commands.contracts.builtin import (  # noqa: E402
+    TaskBatchUpdateArgs as _TaskBatchUpdateArgs,
+    EnsureFidelityReviewArgs as _EnsureFidelityReviewArgs,
+)
 from src.commands.contracts.builtin import EnsureSpecIngestArgs as _EnsureSpecIngestArgs  # noqa: E402
+
+for _definition in _ALL_TOOL_DEFINITIONS:
+    if _definition["name"] == "task_batch_update":
+        _definition["input_schema"] = _TaskBatchUpdateArgs.model_json_schema()
 
 _TOOL_CATEGORIES.update({
     "ensure_spec_ingest": "task", "approved_spec_packet": "task",
     "spec_ingest_reconcile": "task", "spec_ingest_legacy_inventory": "task",
+    "batch_reconcile": "task", "ensure_fidelity_review": "task",
 })
 _ALL_TOOL_DEFINITIONS.extend([
     {"name": "ensure_spec_ingest",
      "description": "Ensure one role task per applied approval decision, including archived receipts.",
      "input_schema": _EnsureSpecIngestArgs.model_json_schema()},
+    {"name": "ensure_fidelity_review",
+     "description": "Ensure one fidelity-reviewer role task per held batch; service/operator only.",
+     "input_schema": _EnsureFidelityReviewArgs.model_json_schema()},
     {"name": "approved_spec_packet",
      "description": "Read the immutable document and feedback of the live held ingestion role.",
      "input_schema": _EnsureSpecIngestArgs.model_json_schema()},
     {"name": "spec_ingest_reconcile",
      "description": "Replay at most twenty pending approved-spec dispatches; operator/service only.",
+     "input_schema": {"type": "object", "properties": {}, "additionalProperties": False}},
+    {"name": "batch_reconcile",
+     "description": "Repair at most twenty held-batch dispatch, receipt and release wakeups; operator/service only.",
      "input_schema": {"type": "object", "properties": {}, "additionalProperties": False}},
     {"name": "spec_ingest_legacy_inventory",
      "description": "Inventory path-only ingestion assignments for explicit operator reconciliation.",

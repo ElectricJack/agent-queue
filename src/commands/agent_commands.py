@@ -130,21 +130,39 @@ class AgentCommandsMixin(FlockCommandsMixin):
             return None, None, f"Agent '{target}' has no unique live worker session"
         return sessions[0], sessions[0].task_id, None
 
+    async def _agent_message_sender(self, session) -> tuple[str, str]:
+        """The sender guidance to *session* is stored under, from the caller's scope.
+
+        A current named launch of the target's own project supervisor
+        (``_project_supervisor_session``) signs as its stable mailbox
+        ``session:supervisor-<project>``, so the worker's ``aq message reply``
+        returns there on the same thread.  Every other caller — the local
+        operator CLI, automation, the global supervisor, a stale or foreign
+        launch — has no project-supervisor return address and keeps the
+        ``system:supervisor`` announcement, which ``message_reply`` refuses.
+        The client never names the sender.
+        """
+        supervisor = await self._project_supervisor_session()
+        if supervisor is not None and supervisor.project_id == session.project_id:
+            return "session", f"supervisor-{supervisor.project_id}"
+        return "system", "supervisor"
+
     async def _queue_supervisor_message(
         self, session, body: str, wait: int | None, *, reply_to=None
     ) -> dict:
+        from_kind, from_id = await self._agent_message_sender(session)
         send = {
             "project_id": session.project_id,
             "to_kind": "session",
             "to_id": session.id,
-            "from_kind": "system",
-            "from_id": "supervisor",
+            "from_kind": from_kind,
+            "from_id": from_id,
             "body": body,
         }
         if reply_to is not None:
             send["thread_id"] = reply_to.thread_id
             send["reply_to_id"] = reply_to.id
-        queued = await self._cmd_message_send(send)
+        queued = await self._queue_message_notification(send)
         if "error" in queued:
             return queued
         if reply_to is not None:
@@ -152,7 +170,7 @@ class AgentCommandsMixin(FlockCommandsMixin):
             await self.db.mark_read(reply_to.id)
         if session.task_id:
             await self.db.add_task_comment(
-                session.task_id, body, author_kind="supervisor", author_id="supervisor"
+                session.task_id, body, author_kind="supervisor", author_id=from_id
             )
         if wait:
             deadline = time.monotonic() + wait
@@ -260,6 +278,7 @@ class AgentCommandsMixin(FlockCommandsMixin):
             source_type=source_type,
             name=name,
             kind_id=kind_id,
+            enabled=bool(args.get("enabled", True)),
         )
         await self.db.create_workspace(workspace)
 
@@ -397,6 +416,8 @@ class AgentCommandsMixin(FlockCommandsMixin):
                     "repo_url": k.repo_url,
                     "default_lock_mode": k.default_lock_mode,
                     "auto_attach": k.auto_attach,
+                    "mode": k.mode,
+                    "max_slots": k.max_slots,
                 }
                 for k in kinds
             ],
@@ -404,6 +425,10 @@ class AgentCommandsMixin(FlockCommandsMixin):
 
     async def _cmd_remove_workspace(self, args: dict) -> dict:
         """Delete a workspace by ID or name."""
+        from sqlalchemy.exc import IntegrityError
+
+        from src.workspace_registration import path_is_missing
+
         workspace_ref = args.get("workspace_id") or args.get("workspace")
         if not workspace_ref:
             return {"error": "workspace_id or workspace is required"}
@@ -419,12 +444,23 @@ class AgentCommandsMixin(FlockCommandsMixin):
 
         if not ws:
             return {"error": f"Workspace '{workspace_ref}' not found"}
-        if ws.locked_by_agent_id:
+        if ws.locked_by_agent_id or ws.locked_by_task_id:
             return {
-                "error": f"Workspace '{ws.id}' is locked by agent "
-                f"'{ws.locked_by_agent_id}'. Release it first."
+                "error": f"Workspace '{ws.id}' is locked by "
+                f"'{ws.locked_by_agent_id or ws.locked_by_task_id}'. Release it first."
             }
-        await self.db.delete_workspace(ws.id)
+        if not ws.is_slot and path_is_missing(ws.workspace_path):
+            try:
+                await self.db.remove_missing_workspace_registration(
+                    ws.id, expected_path=ws.workspace_path,
+                )
+            except ValueError as exc:
+                return {"error": f"Workspace '{ws.id}' cleanup refused: {exc}"}
+            except IntegrityError:
+                return {"error": f"Workspace '{ws.id}' cleanup refused: matching repository "
+                        "is still referenced; reconcile its references before removal"}
+        else:
+            await self.db.delete_workspace(ws.id)
         return {
             "deleted": ws.id,
             "name": ws.name,
@@ -513,6 +549,9 @@ class AgentCommandsMixin(FlockCommandsMixin):
                 }
             candidate = os.path.realpath(requested)
             if candidate != ws.workspace_path:
+                if ws.is_slot or await self.db.list_slots_for_base(ws.id):
+                    return {"error": "Register a new base and use workspace_cutover; "
+                                     "linked slot paths cannot be relocated in place"}
                 if not force and not os.path.isdir(candidate):
                     return {
                         "error": (
@@ -547,7 +586,13 @@ class AgentCommandsMixin(FlockCommandsMixin):
                 "enabled": ws.enabled,
             }
 
-        await self.db.update_workspace(ws.id, **updates)
+        relocated = "workspace_path" in updates or "source_type" in updates
+        changed = await self.db.update_workspace(
+            ws.id, expected_generation=ws.generation if relocated else None,
+            require_unlocked=relocated, **updates,
+        )
+        if not changed:
+            return {"error": "Workspace binding changed or is locked; edit was not applied"}
         return {
             "updated": ws.id,
             "fields": changed_fields,

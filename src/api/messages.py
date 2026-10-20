@@ -39,8 +39,10 @@ class MessageSendRequest(BaseModel):
     )
     to_id: str | None = Field(default=None, description="Recipient id")
     body: str = Field(description="Markdown message body")
-    from_id: str = Field(default="cli", description="Sender id")
-    from_kind: str = Field(default="user", description="Sender kind")
+    from_id: str | None = Field(default=None, description="Authorized sender id; omit for server default")
+    from_kind: str | None = Field(
+        default=None, description="Authorized sender kind; omit for server default"
+    )
     subject: str | None = Field(default=None)
     thread_id: str | None = Field(default=None)
     client_key: str | None = Field(default=None, min_length=1, max_length=128)
@@ -56,18 +58,19 @@ class SessionMessageRequest(BaseModel):
 
     body: str = Field(..., description="Markdown message body")
     # ``from`` is a Python keyword, hence the alias.
-    from_: str = Field(
-        default="user",
+    from_: str | None = Field(
+        default=None,
         alias="from",
-        description="Sender id, e.g. 'discord:1234' or 'cli'",
+        description="Authorized sender id; omit for server default",
     )
-    from_kind: str = Field(
-        default="user",
-        description="Sender kind: session | user | system",
+    from_kind: str | None = Field(
+        default=None,
+        description="Authorized sender kind: session | user | system; omit for server default",
     )
     thread_id: str | None = Field(default=None, description="Conversation grouping key")
     subject: str | None = Field(default=None, description="Optional subject line")
     priority: int = Field(default=100, description="Delivery ordering, lower first")
+    claim_epoch: int | None = Field(default=None, ge=0, strict=True)
 
     model_config = {"populate_by_name": True}
 
@@ -175,13 +178,21 @@ async def post_session_message(
         "system_only": project_id is None,
         "to_kind": "session",
         "to_id": name,
-        "from_kind": payload.from_kind,
-        "from_id": payload.from_,
         "body": payload.body,
         "subject": payload.subject,
         "thread_id": payload.thread_id,
         "priority": payload.priority,
     }
+    if payload.from_kind is not None:
+        args["from_kind"] = payload.from_kind
+    elif scope.kind != "session":
+        args["from_kind"] = "user"
+    if payload.from_ is not None:
+        args["from_id"] = payload.from_
+    elif scope.kind != "session":
+        args["from_id"] = "user"
+    if payload.claim_epoch is not None:
+        args["claim_epoch"] = payload.claim_epoch
     scope_err = check_command_scope("message_send", args, scope)
     if scope_err is not None:
         return JSONResponse({"error": scope_err}, status_code=403)

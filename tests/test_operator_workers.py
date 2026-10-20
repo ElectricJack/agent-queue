@@ -49,6 +49,7 @@ async def operator(command_handler_factory, monkeypatch):
                             provider="openai", name="ops", lifecycle="pool", work_dir="/tmp",
                             epoch="epoch", instance_token="instance", started_at=time.time(),
                             state="running", task_id="t", agent_id="a", last_claim_epoch=7,
+                            claim_phase="active",
                             intelligence_class="deep-high")
     await db.create_session(session)
     principal = ExecutionPrincipal(

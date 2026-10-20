@@ -59,7 +59,9 @@ def read_claim_file(work_dir: str) -> dict | None:
     return claim if isinstance(claim, dict) else None
 
 
-def remove_claim_file_if_matches(work_dir: str, task_id: str, claim_epoch: int | None) -> None:
+def remove_claim_file_if_matches(
+    work_dir: str, task_id: str, claim_epoch: int | None, *, session_id: str | None = None
+) -> None:
     """Remove a claim file only when it still belongs to this claim.
 
     Pool workers can claim again between a terminal close and its delayed
@@ -69,6 +71,8 @@ def remove_claim_file_if_matches(work_dir: str, task_id: str, claim_epoch: int |
     if claim is None:
         return
     if claim.get("task_id") != task_id or claim.get("claim_epoch") != claim_epoch:
+        return
+    if session_id is not None and claim.get("session_id") != session_id:
         return
     try:
         os.remove(os.path.join(work_dir, CLAIM_FILE))

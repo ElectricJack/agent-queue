@@ -35,6 +35,23 @@ from tests.db_fixtures import lease_dsn
 PROJECT_ID = "proj"
 
 
+@pytest.mark.parametrize("artifact", [False, True])
+async def test_pool_demand_observes_artifact_sources_only(orch, db, monkeypatch, artifact):
+    from src.scheduler import PoolKey
+
+    await ready(db, "candidate")
+    await db.create_task(Task(
+        id="source", project_id=PROJECT_ID, title="source", description="",
+        status=TaskStatus.COMPLETED, branch_name="aq/source" if artifact else None,
+    ))
+    await db.add_dependency("candidate", "source")
+    observer = AsyncMock(return_value=MagicMock(allowed=set()))
+    monkeypatch.setattr(orch, "_delivery_admission", observer)
+    measurement = await orch._measure_pools()
+    assert measurement.demand[PoolKey("worker")] == int(not artifact)
+    assert observer.await_count == int(artifact)
+
+
 @pytest.mark.parametrize("rejected", [False, True])
 async def test_pool_demand_and_claim_use_the_exact_frontier_builder(
     orch, db, monkeypatch, rejected,
@@ -2047,3 +2064,29 @@ async def test_timeout_pool_cleanup_respects_wait_but_operator_stop_wins(orch, d
     assert (await db.get_session(sid)).state == "stopped"
     await db.reconcile_agent_waits(now=now + 1)
     assert (await db.get_agent_wait(wait["id"]))["state"] == "cancelled"
+
+
+async def test_native_demand_launches_matching_workspace_and_counts_supply_once(orch, db, tmp_path):
+    from src.scheduler import PoolKey, project_pool_candidates
+
+    kind = await db.resolve_workspace_kind(PROJECT_ID, "project-repo")
+    await db.upsert_workspace_kind(replace(kind, id="native", project_id=PROJECT_ID))
+    await db.create_workspace(Workspace(id="native", project_id=PROJECT_ID,
+                                       workspace_path=str(tmp_path / "native"),
+                                       source_type=RepoSourceType.LINK, kind_id="native"))
+    await ready(db, "native-task")
+    await db.add_task_workspace_requirements("native-task", [("native", None)])
+    await orch._reconcile_pools()
+    await orch.wait_for_pool_launches()
+    rows = await db.list_sessions(lifecycle="pool")
+    assert len(rows) == 1
+    assert rows[0].work_dir == str(tmp_path / "native")
+    measurement = await orch._measure_pools()
+    key = PoolKey("worker")
+    assert measurement.supply[key].running_idle == 1
+    assert measurement.supply[key].by_project[PROJECT_ID].running_idle == 1
+    native = next(c for c in measurement.candidates[key] if c.workspace_kind == "native")
+    ordinary = next(c for c in measurement.candidates[key] if c.workspace_kind == "project-repo")
+    assert (native.ready, len(native.idle_session_ids)) == (1, 1)
+    assert (ordinary.ready, len(ordinary.idle_session_ids)) == (0, 0)
+    assert len(project_pool_candidates(measurement.candidates[key])) == 1

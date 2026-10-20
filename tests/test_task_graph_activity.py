@@ -156,3 +156,72 @@ async def test_load_activity_names_an_unfinished_predecessor_and_a_hold(db):
     assert activity["held-epic"]["display_reason"] == "Paused"
     await db.update_task("prereq", status=TaskStatus.COMPLETED)
     assert (await load_activity(db, ["epic"]))["epic"]["display_reason"] != "Waiting on prereq"
+
+
+@pytest.mark.parametrize("code", [
+    "frontier_sibling_prerequisite_not_delivered",
+    "frontier_prerequisite_not_on_default_branch", "frontier_epic_refresh_pending",
+])
+async def test_delivery_hold_shared_by_list_detail_tree_and_epic(db, tmp_path, monkeypatch, code):
+    await _tree(db, ("epic", None, TaskStatus.IN_PROGRESS), ("leaf", "epic", TaskStatus.READY))
+    detail = "Waiting to land: source.6 on dev; refresh aq/epic"
+
+    async def exclusions(ids, **kwargs):
+        assert kwargs["cached_only"] is True
+        return {tid: [{"code": code, "ref": "source.6", "detail": detail, "action": detail}]
+                for tid in ids}
+
+    monkeypatch.setattr(db, "claim_frontier_exclusions_many", exclusions)
+    orch = MagicMock(db=db)
+    handler = CommandHandler(orch, MagicMock(vault_root=str(tmp_path / "vault")))
+    handler._active_project_id = None
+    listed = await handler._cmd_list_tasks({"project_id": "p"})
+    leaf = next(row for row in listed["tasks"] if row["id"] == "leaf")
+    global_list = await handler._cmd_list_active_tasks_all_projects({})
+    global_leaf = next(row for row in global_list["by_project"]["p"] if row["id"] == "leaf")
+    assert global_leaf["claim_readiness"]["reason"] == detail
+    shown = await handler._cmd_get_task({"task_id": "leaf"})
+    for row in (leaf, shown):
+        assert row["status"] == "READY"
+        assert row["claim_readiness"]["state"] == "waiting_on_delivery"
+        assert row["claim_readiness"]["reason"] == detail
+    epic = await handler._cmd_get_task({"task_id": "epic"})
+    assert detail in epic["display_reason"]
+    assert "Waiting for a worker" not in epic["display_reason"]
+    tree = await handler._cmd_get_task_tree({"task_id": "epic"})
+    assert detail in tree["formatted"]
+    compact = await handler._cmd_get_task_tree({"task_id": "epic", "compact": True})
+    assert "1 waiting on delivery" in compact["formatted"]
+    assert detail in compact["formatted"]
+    children = await handler._cmd_task_children({"task_id": "epic"})
+    assert children["children"][0]["claim_readiness"] == leaf["claim_readiness"]
+
+
+def test_delivery_cache_miss_remains_unknown_and_unclaimable():
+    from src.task_graph.readiness import readiness_from_reasons
+
+    readiness = readiness_from_reasons([{"code": "delivery_evidence_unavailable",
+                                        "detail": "snapshot_unavailable: source.6"}])
+    assert readiness["state"] == "unknown"
+    assert readiness["label"] == "Checking delivery evidence"
+    assert not readiness["claimable"]
+
+
+async def test_readiness_uses_the_pool_routers_cached_ready_set(db):
+    from sqlalchemy import update
+    from src.database.tables import tasks
+    from src.models import AgentProfile
+    from src.task_graph.readiness import load_readiness
+
+    await db.create_profile(AgentProfile(id="worker", name="Worker"))
+    await _tree(db, ("legacy", None, TaskStatus.READY))
+    async with db._engine.begin() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == "legacy").values(
+            profile_id="worker", route_source="legacy"))
+    rows = [{"id": "legacy", "status": "READY", "project_id": "p"}]
+    assert (await load_readiness(db, rows))["legacy"]["claim_readiness"]["claimable"]
+    db._ready_router_projects = frozenset({"p"})
+    ready = (await load_readiness(db, rows))["legacy"]["claim_readiness"]
+    assert not ready["claimable"]
+    assert ready["state"] == "withheld"
+    assert ready["reasons"][0]["code"] == "frontier_route_not_claimable"

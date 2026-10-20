@@ -16,6 +16,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from src.asks.delivery import destination
 from src.asks.models import AliasReference, AskError, SourceIdentity
 from src.asks.service import new_id
+from src.asks.reset_policy import before_reset, skip_row
 from src.database.tables import (
     agent_questions,
     ask_decisions,
@@ -220,9 +221,13 @@ async def historical_feedback(db, review, conn):
 
 
 async def project_source(handler, table, row, conn):
+    if await skip_row(conn, table, row, row.get("project_id")):
+        return {"skipped": True, "discarded": True}
     source = await identity(handler, table, row, conn)
     if not source:
         return {"skipped": True}
+    if await skip_row(conn, table, row, source.project_id):
+        return {"skipped": True, "discarded": True}
     service = handler._ask_service()
     # Acquire the canonical source first; only then alias/incident/history rows.
     snap = await service.adapters.get(source.kind).snapshot(source, conn=conn)
@@ -371,6 +376,16 @@ async def scan(handler, *, apply=False, limit=100, project_id=None):
                     row = dict(raw)
                     try:
                         async with conn.begin_nested():
+                            reset_project = row.get("project_id") or project_id
+                            if not reset_project and table in (escalation_messages, operations):
+                                reset_project = await conn.scalar(select(escalations.c.project_id).where(
+                                    escalations.c.id == row["escalation_id"],
+                                ))
+                            if await skip_row(conn, table, row, reset_project):
+                                rows.append({"skipped": True, "discarded": True})
+                                examined += 1
+                                cursor["after"] = row[pk.name]
+                                continue
                             source = await identity(handler, table, row, conn)
                             result = (
                                 {"skipped": True}
@@ -464,21 +479,50 @@ async def diagnostics(conn, *, project_id=None, destination_id=None, limit=100, 
         ),
         "inflight_bindings": select(bindings.c.id).where(bindings.c.inflight_id.is_not(None)),
         "unresolved_operations": select(operations.c.id).where(
-            operations.c.status.in_(["pending", "processing", "failed", "unknown"])
+            operations.c.status.in_(["pending", "processing", "failed", "unknown"]),
+            ~select(human_asks.c.id).where(
+                human_asks.c.id == operations.c.ask_id,
+                human_asks.c.context["legacy_discarded"].as_boolean().is_(True),
+            ).exists(),
+            ~select(escalations.c.id).where(
+                escalations.c.id == operations.c.escalation_id,
+                escalations.c.terminal_outcome == "legacy_discarded",
+            ).exists(),
         ),
         "unmapped_inputs": select(escalation_messages.c.id).where(
             escalation_messages.c.direction == "inbound",
             (escalation_messages.c.ask_id.is_(None) | escalation_messages.c.input_id.is_(None)),
+            ~select(escalations.c.id).where(
+                escalations.c.id == escalation_messages.c.escalation_id,
+                (escalations.c.terminal_outcome == "legacy_discarded")
+                | before_reset(escalation_messages, escalations.c.project_id),
+            ).exists(),
+            ~select(human_asks.c.id).where(
+                human_asks.c.id == escalation_messages.c.ask_id,
+                human_asks.c.context["legacy_discarded"].as_boolean().is_(True),
+            ).exists(),
         ),
         "legacy_writes": select(legacy_outbox.c.id).where(
-            legacy_outbox.c.status.in_(["sending", "unknown"])
+            legacy_outbox.c.status.in_(["sending", "unknown"]),
+            ~select(escalations.c.id).where(
+                escalations.c.id == legacy_outbox.c.escalation_id,
+                escalations.c.terminal_outcome == "legacy_discarded",
+            ).exists(),
         ),
         "shared_writes": select(outbox.c.id).where(
-            outbox.c.owner_kind == "ask", outbox.c.state.in_(["sending", "unknown"])
+            outbox.c.owner_kind == "ask", outbox.c.state.in_(["sending", "unknown"]),
+            ~select(human_asks.c.id).where(
+                human_asks.c.id == outbox.c.ask_id,
+                human_asks.c.context["legacy_discarded"].as_boolean().is_(True),
+            ).exists(),
         ),
         "conflicts": select(cases.c.id).where(cases.c.status == "open"),
         "unverified_receipts": select(legacy_outbox.c.id).where(
             legacy_outbox.c.kind == "root",
+            ~select(escalations.c.id).where(
+                escalations.c.id == legacy_outbox.c.escalation_id,
+                escalations.c.terminal_outcome == "legacy_discarded",
+            ).exists(),
             ~select(bindings.c.id)
             .where(
                 bindings.c.receipt.op("@>")(
@@ -494,6 +538,7 @@ async def diagnostics(conn, *, project_id=None, destination_id=None, limit=100, 
     if project_id and destination_id:
         statements["unimported_review_roots"] = select(human_asks.c.id).where(
             human_asks.c.source_kind == "review",
+            human_asks.c.context["legacy_discarded"].as_boolean().is_not(True),
             ~select(bindings.c.id)
             .where(
                 bindings.c.ask_id == human_asks.c.id,
@@ -573,6 +618,7 @@ async def import_roots(handler, project_id, *, limit=100):
                     select(human_asks)
                     .where(
                         human_asks.c.project_id == project_id,
+                        human_asks.c.context["legacy_discarded"].as_boolean().is_not(True),
                         (human_asks.c.source_kind == "review")
                         | select(legacy_outbox.c.id)
                         .join(

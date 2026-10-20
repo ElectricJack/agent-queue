@@ -92,12 +92,13 @@
       ]
     },
     "claims": {
-      "description": "Task claims: claim-file parsing, claim epochs and the stale-claim fence, claim-next on close, restart-tolerant claims and claim statement budgets.",
+      "description": "Task claims: claim-file parsing, claim epochs and the stale-claim fence, claim-next on close, restart-tolerant claims, claim statement budgets and the ingestion-hold admission ratchet.",
       "modules": [
         "tests/perf/test_claim_statements.py",
         "tests/test_claim_commands.py",
         "tests/test_cli_claim_restart.py",
         "tests/test_import_cycles.py",
+        "tests/test_ingest_hold_admission.py",
         "tests/test_preparation_failure.py"
       ]
     },
@@ -319,6 +320,7 @@
         "tests/test_ask_delivery.py",
         "tests/test_ask_discussion.py",
         "tests/test_ask_intake.py",
+        "tests/test_ask_legacy_reset.py",
         "tests/test_ask_migration.py",
         "tests/test_ask_operations.py",
         "tests/test_ask_sources.py",
@@ -536,6 +538,7 @@
         "tests/test_doctor_integration_checks.py",
         "tests/test_integration_app_mode.py",
         "tests/test_integration_legacy_park_retirement.py",
+        "tests/test_integration_manual_control.py",
         "tests/test_integration_protection.py",
         "tests/test_integration_troubleshooting_doc.py",
         "tests/test_integration_trust_manifest.py"
@@ -605,7 +608,9 @@
         "tests/test_integration_ci_producers.py",
         "tests/test_integration_cleanup.py",
         "tests/test_integration_cli_controls_present.py",
+        "tests/test_integration_completed_container_recovery.py",
         "tests/test_integration_completion_recovery.py",
+        "tests/test_integration_container_completion.py",
         "tests/test_integration_contracts.py",
         "tests/test_integration_cutover.py",
         "tests/test_integration_git_truth.py",
@@ -630,6 +635,7 @@
         "tests/test_integration_stall_recovery.py",
         "tests/test_integration_state.py",
         "tests/test_integration_subjects.py",
+        "tests/test_integration_superseded_completion.py",
         "tests/test_integration_train.py",
         "tests/test_integration_train_sources.py"
       ]
@@ -772,6 +778,7 @@
         "tests/test_message_commands.py",
         "tests/test_message_delivery.py",
         "tests/test_message_queries.py",
+        "tests/test_message_sender_identity.py",
         "tests/test_session_lens.py"
       ]
     },
@@ -1214,12 +1221,14 @@
       ]
     },
     "task-dependencies": {
-      "description": "Task dependencies: idempotent dependency edges, downstream and stuck-task queries, and batch propose/commit/discard of task graphs with cycle detection.",
+      "description": "Task dependencies: idempotent dependency edges, downstream and stuck-task queries, and batch propose/commit/discard of task graphs with cycle detection, and held ingestion batch rows, receipts, fidelity reviewer dispatch and release.",
       "modules": [
         "tests/test_cli_task_change_sets.py",
         "tests/test_dependency_queries.py",
+        "tests/test_fidelity_review.py",
         "tests/test_get_downstream_tasks.py",
         "tests/test_get_stuck_tasks_command.py",
+        "tests/test_ingest_batch_queries.py",
         "tests/test_task_batch_commands.py",
         "tests/test_task_deps_command.py"
       ]
@@ -1227,6 +1236,8 @@
     "task-graph-creation": {
       "description": "Task-graph documents: the aq-graph parser, validator and creator, create_task_graph, dotted ids and parents in the creator, live graph events after commands, and containers' display activity rolled up from their descendants.",
       "modules": [
+        "tests/test_batch_checks.py",
+        "tests/test_batch_digest.py",
         "tests/test_create_task_graph_command.py",
         "tests/test_hierarchy_graph_creator.py",
         "tests/test_task_graph.py",
@@ -1263,6 +1274,7 @@
         "tests/test_reopen_with_feedback.py",
         "tests/test_stall_watch.py",
         "tests/test_state_machine.py",
+        "tests/test_task_close_accepted_tail.py",
         "tests/test_task_close_completion_recovery.py",
         "tests/test_task_close_summary_enforcement.py",
         "tests/test_task_command_authorization.py",
@@ -1628,15 +1640,18 @@
         "claims"
       ],
       "default_arm": false,
-      "digest": "sha256:419e9d29082a07949fe40455378c4205584ebe542229a4384f3e1315562c61c8",
+      "digest": "sha256:2c259da0c0e60e74da04f779395c0597090b3893b6237112bdc64626af46b463",
       "imports": [
+        "src.claim_file",
         "src.commands.handler",
         "src.config",
+        "src.database.tables",
         "src.intelligence_classes",
         "src.models",
         "src.orchestrator"
       ],
       "markers": [
+        "parametrize",
         "perf"
       ],
       "summary": "Statement/latency budgets for the claim path and pool reconcile — spec §15."
@@ -2612,9 +2627,10 @@
         "dashboard-state"
       ],
       "default_arm": true,
-      "digest": "sha256:e7830640d932164023019dc9e3b73ab44df2793c36083e13d24d1518f3ec50e3",
+      "digest": "sha256:9e0df51332f67e6da0fc2ef7be591d85fe6d3451444a76356c21beb7a65c3a42",
       "imports": [
         "src.api.graph",
+        "src.database.tables",
         "src.models"
       ],
       "markers": [],
@@ -2855,7 +2871,7 @@
         "task-archive"
       ],
       "default_arm": true,
-      "digest": "sha256:f88dfbed9b95a516b70d02e3eb2a630e458e58e7680bd1d3de65c323881db94e",
+      "digest": "sha256:c837c5b66f56eb1605e9c899307d7462564fcbc4d5fdee06ce730efeb237e6e5",
       "imports": [
         "src.commands.handler",
         "src.config",
@@ -2868,7 +2884,8 @@
         "src.integration.development",
         "src.integration.provenance",
         "src.models",
-        "src.orchestrator"
+        "src.orchestrator",
+        "src.sessions.obsolete"
       ],
       "markers": [
         "parametrize"
@@ -2880,7 +2897,7 @@
         "document-reviews"
       ],
       "default_arm": true,
-      "digest": "sha256:4d1e9756224c3f9652bdd90a3a71ceb86b3f1c2bdbd144fca45aec0a350db65f",
+      "digest": "sha256:1a40aa4ee0d3e9df661517f6d6cb5111fb8331103d39dc650f71d7ed20b3160b",
       "imports": [
         "src.api",
         "src.api.auth",
@@ -2891,8 +2908,10 @@
         "src.api.models.ask",
         "src.api.scope",
         "src.api.websocket",
+        "src.asks.delivery",
         "src.commands.contracts",
         "src.commands.contracts.ask",
+        "src.commands.contracts.models",
         "src.mcp_registration",
         "src.tools.definitions"
       ],
@@ -2991,6 +3010,29 @@
       ],
       "summary": "One verified input across gateway, backfill and legacy thread replay."
     },
+    "tests/test_ask_legacy_reset.py": {
+      "areas": [
+        "document-reviews"
+      ],
+      "default_arm": true,
+      "digest": "sha256:335d2cc74562e83b4fc4d81f74fdcf94bbe07236c63d3e0df923268e3408f486",
+      "imports": [
+        "src.api.auth",
+        "src.api.scope",
+        "src.asks.delivery",
+        "src.asks.intake",
+        "src.asks.reconcile",
+        "src.asks.reset_policy",
+        "src.database",
+        "src.database.tables",
+        "src.models",
+        "src.sessions.spec"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Project fresh starts discard history without sending or replaying decisions."
+    },
     "tests/test_ask_migration.py": {
       "areas": [
         "document-reviews"
@@ -3013,13 +3055,20 @@
         "document-reviews"
       ],
       "default_arm": true,
-      "digest": "sha256:a1f57067bd626e419ced8eb175d3bb4006911bce6aedb27fc20b33d1b0e8f665",
+      "digest": "sha256:6f0b4127864250448846026ee05bc73dddc52370b73c52f13a74f1baf8b783e5",
       "imports": [
         "src.api.models",
         "src.asks.operations",
+        "src.commands",
+        "src.commands.principal",
+        "src.commands.spec_ingest_commands",
+        "src.database.queries",
+        "src.database.queries.ingest_batch_queries",
         "src.database.queries.proposal_queries",
         "src.database.tables",
-        "src.models"
+        "src.integration.outbox",
+        "src.models",
+        "src.orchestrator"
       ],
       "markers": [
         "parametrize"
@@ -3100,17 +3149,49 @@
       "markers": [],
       "summary": "The base checkout is never handed to a session."
     },
+    "tests/test_batch_checks.py": {
+      "areas": [
+        "task-graph-creation"
+      ],
+      "default_arm": true,
+      "digest": "sha256:2b97f8bb09704741808c065761a5840a88d14a38dfc4778135cf09efe01e9b43",
+      "imports": [
+        "src.database.tables",
+        "src.task_graph",
+        "src.task_graph.batch_checks"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Batch automatic checks (held-batches spec L1.3, design §5.1)."
+    },
+    "tests/test_batch_digest.py": {
+      "areas": [
+        "task-graph-creation"
+      ],
+      "default_arm": true,
+      "digest": "sha256:6bab79ed88a8d5ed170b2ff3a2d0d31a6e2f28c66213f1ad94bb8dfc5dd8fab6",
+      "imports": [
+        "src.task_graph.batch_digest"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Review identity covers live graph semantics and survives cosmetic edits."
+    },
     "tests/test_blocked_state.py": {
       "areas": [
         "work-graph"
       ],
       "default_arm": true,
-      "digest": "sha256:011e39e49be06c9e43b0dda1e25faa7f73a1fc86d028285d567f5f03db40de35",
+      "digest": "sha256:8a6fbfd5148e701479f02ddbf31f81093f2b50da8c0427577fa6f0ea83439d10",
       "imports": [
         "src.database.queries.blocked_state",
         "src.database.queries.hierarchy_queries",
         "src.database.queries.task_queries",
         "src.database.tables",
+        "src.integration.delivery_observer",
+        "src.integration.delivery_truth",
         "src.models",
         "src.state_machine"
       ],
@@ -3145,7 +3226,7 @@
         "development-delivery"
       ],
       "default_arm": true,
-      "digest": "sha256:6e5dc5af15d2cb09fea81b1550ec6eacb89b587c73b5eb9200845d2b75b56456",
+      "digest": "sha256:ac6b0482dac99ec8da9a18da82d5ed163af0ed7baa346aeacf7983a6de5da94f",
       "imports": [
         "src.database.tables",
         "src.git.github_app",
@@ -3153,7 +3234,9 @@
         "src.integration.branch_discard",
         "src.models"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "The drain that removes branches an operator asked to discard."
     },
     "tests/test_branch_isolated_workspace.py": {
@@ -3199,11 +3282,12 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:9735d18a14c64b32ad5a47b8a28e9c175b6837ea0c9ddedab44c5dae2a1e4be8",
+      "digest": "sha256:4712135f0f3e7055ed6a73f979616acc8bdaa0b32ea92c4df58bd5dba0ae91cf",
       "imports": [
         "src.database.tables",
         "src.git.manager",
         "src.integration",
+        "src.integration.branch_discard",
         "src.integration.branch_sweep",
         "src.integration.lock",
         "src.integration.models",
@@ -3404,7 +3488,7 @@
         "ci-sentinel"
       ],
       "default_arm": true,
-      "digest": "sha256:518fd6fcdd9606babb3a554de1dc933dd7c68a36487db2dec75a87109dfd9370",
+      "digest": "sha256:3e2f70d9e5f534bcf2700bfd07f2bf28b4e3d6f15dc550ca7bc69a3c7f3f8a36",
       "imports": [
         "src.api.auth",
         "src.api.scope",
@@ -3416,7 +3500,8 @@
         "src.git.manager",
         "src.integration.completion_ci",
         "src.models",
-        "src.orchestrator"
+        "src.orchestrator",
+        "src.projects.github"
       ],
       "markers": [
         "parametrize"
@@ -3476,21 +3561,25 @@
         "claims"
       ],
       "default_arm": true,
-      "digest": "sha256:46efb5bf20f09e7ecc12aa3fc43d532791f2248ab907d7338d03b5d8e97c7f07",
+      "digest": "sha256:c11a202b432defc828dac3f24470e3abb76c6e13862c90d36d9669a7eb4235ed",
       "imports": [
+        "src.api.auth",
         "src.api.models.session",
         "src.api.models.task",
         "src.claim_file",
+        "src.claim_preparation",
         "src.claim_timing",
         "src.commands.claim_commands",
         "src.commands.handler",
         "src.config",
+        "src.database.queries.ingest_hold",
         "src.database.queries.task_queries",
         "src.database.tables",
         "src.doctor.pool_checks",
         "src.event_bus",
         "src.git.github_contracts",
         "src.git.manager",
+        "src.git.process",
         "src.integration",
         "src.integration.admission",
         "src.integration.batches",
@@ -3514,6 +3603,7 @@
         "src.orchestrator",
         "src.orchestrator.workspace_claim_recovery",
         "src.orchestrator.worktree_manager",
+        "src.preparation_failure",
         "src.scheduler",
         "src.sessions",
         "src.sessions.reconciler",
@@ -3617,7 +3707,7 @@
         "claims"
       ],
       "default_arm": true,
-      "digest": "sha256:9956615b68417252af5f6c2f9bbd47d26a93c3aefdcaad0df701c28cc3866be9",
+      "digest": "sha256:1dd33e1a808f6e3cee6a241febae15e085aa1cc397191a3ea0ebfc11810aa29a",
       "imports": [
         "src.cli.app",
         "src.cli.exceptions"
@@ -4049,7 +4139,7 @@
         "task-dependencies"
       ],
       "default_arm": true,
-      "digest": "sha256:66272db93b072836cb923f50ce7be73ffb824c4fb8f6cc7e45e29e78d5576b93",
+      "digest": "sha256:ccd58175c7e95bd53b6e7228e10d82404ec557fcb836914ad4d69add469d1819",
       "imports": [
         "src.cli.app"
       ],
@@ -4063,7 +4153,7 @@
         "task-comments"
       ],
       "default_arm": true,
-      "digest": "sha256:f704d6f04b824bfd9f602c8e49266368efa83e7d9d4ed854d36d5682a2f38150",
+      "digest": "sha256:252412a90d4ca5beda33eacb7cd1fa7a6351c68464b896c132504c2c993d0647",
       "imports": [
         "src.cli.app",
         "src.config",
@@ -4073,7 +4163,8 @@
         "src.prime.sections"
       ],
       "markers": [
-        "asyncio"
+        "asyncio",
+        "parametrize"
       ],
       "summary": "Worker findings/comments CLI and fresh-session context contracts."
     },
@@ -5420,9 +5511,11 @@
         "development-delivery"
       ],
       "default_arm": true,
-      "digest": "sha256:00f0f1038d5b31f45626c36e05acb81323f131d635a13ed45863d36b1d8ad9f7",
+      "digest": "sha256:0596c73e6955dd449533527c2273912b8e2c1e08df5ab414993f41d49ac7fc63",
       "imports": [
         "src.commands.handler",
+        "src.commands.principal",
+        "src.commands.task_commands",
         "src.config",
         "src.database",
         "src.database.queries.hierarchy_queries",
@@ -5430,6 +5523,7 @@
         "src.doctor.models",
         "src.doctor.stall_checks",
         "src.git.manager",
+        "src.integration",
         "src.integration.admission",
         "src.integration.child_delivery",
         "src.integration.delivery_observer",
@@ -5440,11 +5534,13 @@
         "src.integration.hierarchy",
         "src.integration.provenance",
         "src.integration.publishable_artifact",
+        "src.integration.repository_recovery",
         "src.integration.service",
         "src.integration.source_trailer",
         "src.integration.status",
         "src.models",
-        "src.orchestrator"
+        "src.orchestrator",
+        "src.profiles.capabilities"
       ],
       "markers": [
         "parametrize"
@@ -5495,7 +5591,7 @@
         "task-dependencies"
       ],
       "default_arm": true,
-      "digest": "sha256:42886e93ae37c3d2073de60e2fbe3db8b2322e3370e5a972420d5390fee55065",
+      "digest": "sha256:316f9ce1eb49b440f7b7151a4b7560daba09b7f4b7bfe94e5fcb69941dfaf347",
       "imports": [
         "src.database.queries.hierarchy_queries",
         "src.models"
@@ -5510,21 +5606,29 @@
         "development-delivery"
       ],
       "default_arm": true,
-      "digest": "sha256:d1a4e7bf2b98cec006c41cbb711350cc2135e58a9490376b76fe07d957dfec53",
+      "digest": "sha256:06c7336f0935b37dc2215fb582639fa266ac83fb2b456be2b8b77c01a15577f7",
       "imports": [
+        "src.commands",
+        "src.commands.principal",
+        "src.config",
         "src.database.queries.task_queries",
         "src.database.tables",
         "src.doctor.models",
         "src.git.manager",
         "src.integration.admission",
+        "src.integration.batches",
         "src.integration.delivery_branches",
         "src.integration.delivery_truth",
         "src.integration.development",
         "src.integration.models",
+        "src.integration.promotion_contracts",
         "src.integration.provenance",
+        "src.integration.repository_git",
+        "src.integration.repository_incidents",
         "src.integration.status",
         "src.models",
-        "src.prime.sections"
+        "src.prime.sections",
+        "src.profiles.capabilities"
       ],
       "markers": [
         "parametrize"
@@ -6217,8 +6321,13 @@
         "e2e-kit"
       ],
       "default_arm": true,
-      "digest": "sha256:8ca029f221fdcce9e55a6354fb9b879b2a72c4afd39204ce189c5e37a4486ad5",
-      "imports": [],
+      "digest": "sha256:0ea17f5934ba1e8bd23b0f200b3364aebd3ffe22ab1e2b09f5523fe6a65c3e46",
+      "imports": [
+        "src.api",
+        "src.api.dependencies",
+        "src.api.health",
+        "src.api.health_monitor"
+      ],
       "markers": [
         "parametrize",
         "skipif"
@@ -6782,6 +6891,31 @@
       ],
       "summary": "The fake session provider's file-driven script (provider-failover D23)."
     },
+    "tests/test_fidelity_review.py": {
+      "areas": [
+        "task-dependencies"
+      ],
+      "default_arm": true,
+      "digest": "sha256:9d62ffb4baa056bc9556a0d7143267a4d7ad39e361363f3695b103dc7311c486",
+      "imports": [
+        "src.api.auth",
+        "src.api.scope",
+        "src.asks.operations",
+        "src.commands.fidelity_review_commands",
+        "src.commands.principal",
+        "src.database.queries",
+        "src.database.queries.ingest_batch_queries",
+        "src.database.queries.proposal_queries",
+        "src.database.tables",
+        "src.models",
+        "src.profiles.capabilities",
+        "src.review_keys"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "``ensure_fidelity_review``: one role reviewer per held batch, bounded, never a release."
+    },
     "tests/test_file_command_handlers.py": {
       "areas": [
         "file-access"
@@ -6962,7 +7096,7 @@
         "task-dependencies"
       ],
       "default_arm": true,
-      "digest": "sha256:aebed13b04d4cfb7d609515c227bb888a7c26eb88635ba5279e59feace254e54",
+      "digest": "sha256:57475de4cd38858f5261598ac2220323264c829551a99fb90819b37f95ffe8db",
       "imports": [
         "src.commands.handler",
         "src.config",
@@ -6978,7 +7112,7 @@
         "task-dependencies"
       ],
       "default_arm": true,
-      "digest": "sha256:85f310aac66ed6138358e303e88de8290db15478e5c98c494ad7ab3edb4e74ed",
+      "digest": "sha256:76541d29834617b25ead4fc62ce4c991abeef7ec348f8d357c83fb9098fc4f7b",
       "imports": [
         "src.commands.handler",
         "src.config",
@@ -7102,13 +7236,14 @@
         "git-manager"
       ],
       "default_arm": true,
-      "digest": "sha256:c395ef5e8c7610083db41cabad2a3e7bfa69a61318e7d7c39e0df9361975d649",
+      "digest": "sha256:10df1072d05de1a4708d823523162b72d251d9163fcfc4d3b58188bd6206fbc8",
       "imports": [
         "src.event_bus",
         "src.git",
         "src.git.github_contracts",
         "src.git.locks",
         "src.git.manager",
+        "src.git.process",
         "src.models",
         "src.orchestrator.git_ops",
         "src.orchestrator.workspace_attachments"
@@ -7138,12 +7273,12 @@
         "git-manager"
       ],
       "default_arm": true,
-      "digest": "sha256:f3acff7ae8bc485861bea621b8e2f2aad9f84ceb343a930e68c097c9b18156ec",
+      "digest": "sha256:aa0809359057b98ffb2bc33f947be5c22e1170afcda5a3c8bff994c6966ad015",
       "imports": [],
       "markers": [
         "parametrize"
       ],
-      "summary": "Shared seed construction must finish without launching background Git writers."
+      "summary": "Git fixtures build independent repositories without filesystem snapshots."
     },
     "tests/test_github_access_architecture.py": {
       "areas": [
@@ -7613,7 +7748,7 @@
         "packaging"
       ],
       "default_arm": true,
-      "digest": "sha256:2dbe456fb5f46b16e0745d489821fbee509223ac1c97f696471a2bee3ae47f88",
+      "digest": "sha256:75918058942435fe4091afc2f13b7ecb064cd56a2a350b0143107abb1066c3b8",
       "imports": [
         "src.claim_file",
         "src.commands",
@@ -7643,6 +7778,46 @@
         "asyncio"
       ],
       "summary": "Tests for the aq-inbox plugin — auth parsing, allowlist classification, hot-reload."
+    },
+    "tests/test_ingest_batch_queries.py": {
+      "areas": [
+        "task-dependencies"
+      ],
+      "default_arm": true,
+      "digest": "sha256:353691bbbd11cc3267fd96d7f95927f07b574074ab0bd7a856472049cca9cba5",
+      "imports": [
+        "src.database.queries",
+        "src.database.queries.ingest_batch_queries",
+        "src.database.queries.proposal_queries",
+        "src.database.tables",
+        "src.models",
+        "src.reviews.service",
+        "src.task_graph.batch_digest"
+      ],
+      "markers": [],
+      "summary": "Held ingestion batch queries (implementation spec 2026-10-14 P1 L1.1)."
+    },
+    "tests/test_ingest_hold_admission.py": {
+      "areas": [
+        "claims"
+      ],
+      "default_arm": true,
+      "digest": "sha256:dd12afc3b0faad40d70c860b436bd81b0bd967759539046cadd9f9b26c6d0e6a",
+      "imports": [
+        "src.config",
+        "src.database.queries.claim_queries",
+        "src.database.queries.hierarchy_queries",
+        "src.database.queries.routing_queries",
+        "src.database.tables",
+        "src.integration.delivery_observer",
+        "src.models",
+        "src.orchestrator",
+        "src.scheduler"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Ingestion hold at every admission and activation path (ingestion design §4)."
     },
     "tests/test_install_cli.py": {
       "areas": [
@@ -8075,9 +8250,12 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:f9c6f7d296addf4dd8960bd50038812773b1913e99d7feed8bb7b3bffd6b9048",
+      "digest": "sha256:7d495a1e58b2b5a61d1d16c1b3e9a59c8adce69a7ae42958c1f7c186a45647c4",
       "imports": [
+        "src.commands",
+        "src.config",
         "src.database.tables",
+        "src.git.manager",
         "src.integration.attestation",
         "src.integration.batches",
         "src.integration.ci",
@@ -8087,8 +8265,11 @@
         "src.integration.gitops",
         "src.integration.promotion_contracts",
         "src.integration.provenance",
+        "src.integration.repository_incidents",
+        "src.integration.repository_recovery",
         "src.integration.train",
-        "src.integration.train_sources"
+        "src.integration.train_sources",
+        "src.models"
       ],
       "markers": [
         "parametrize"
@@ -8267,12 +8448,45 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:023248fa74e33353ecae752495f06a241ca179f745b3542369db2849f28ddab7",
+      "digest": "sha256:7cc1f95fe58255f68161210d3b7029185004680be3c30f5ed731b84c36b8fc65",
       "imports": [
         "src.cli.app"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "Ensure the operator integration controls are registered in the CLI."
+    },
+    "tests/test_integration_completed_container_recovery.py": {
+      "areas": [
+        "integration-trains"
+      ],
+      "default_arm": true,
+      "digest": "sha256:65697564f2b95810949d9cc3d73ea0a8309a6399c1cd069a6eca9671c0467949",
+      "imports": [
+        "src.cli.app",
+        "src.commands",
+        "src.commands.contracts.integration",
+        "src.commands.contracts.registry",
+        "src.commands.integration_commands",
+        "src.commands.principal",
+        "src.config",
+        "src.database.tables",
+        "src.event_schemas",
+        "src.git.manager",
+        "src.integration.completed_container_recovery",
+        "src.integration.delivery_truth",
+        "src.integration.models",
+        "src.integration.ownership",
+        "src.integration.repository_git",
+        "src.integration.train",
+        "src.models",
+        "src.profiles.capabilities"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Completed-container recovery with disposable PostgreSQL and real remote Git."
     },
     "tests/test_integration_completion_recovery.py": {
       "areas": [
@@ -8292,6 +8506,27 @@
         "parametrize"
       ],
       "summary": ""
+    },
+    "tests/test_integration_container_completion.py": {
+      "areas": [
+        "integration-trains"
+      ],
+      "default_arm": true,
+      "digest": "sha256:08ebc8b3db22645ebb524b4c62e516c6349ba22d43bf927cbb6a4d4906cfac0e",
+      "imports": [
+        "src.database.queries.hierarchy_queries",
+        "src.database.tables",
+        "src.git.manager",
+        "src.integration.delivery_truth",
+        "src.integration.hierarchy",
+        "src.integration.models",
+        "src.integration.ownership",
+        "src.integration.provenance",
+        "src.integration.train",
+        "src.models"
+      ],
+      "markers": [],
+      "summary": "A held writer that gains children closes at its exact final published head."
     },
     "tests/test_integration_contracts.py": {
       "areas": [
@@ -8471,7 +8706,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:4a82655ba500feffb589d36f6ffe4d48f24e09dfd51999b513a486bf495893d2",
+      "digest": "sha256:baf0cbb14b41c32aef5497ae1a53a03b80efa56f41d284ef846d377b8894704c",
       "imports": [
         "src",
         "src.api",
@@ -8492,6 +8727,7 @@
         "src.models",
         "src.task_graph",
         "src.task_graph.creator",
+        "src.task_graph.readiness",
         "src.task_names",
         "src.vault"
       ],
@@ -8573,6 +8809,32 @@
         "parametrize"
       ],
       "summary": "Adversarial lease expiry and publication races on real PostgreSQL and Git."
+    },
+    "tests/test_integration_manual_control.py": {
+      "areas": [
+        "integration-controls"
+      ],
+      "default_arm": true,
+      "digest": "sha256:f7002df4ae4889b67e4ccd00548bf6a0ed165889df2d1b556fd32da07367824a",
+      "imports": [
+        "src.commands",
+        "src.commands.contracts.integration",
+        "src.commands.integration_commands",
+        "src.commands.principal",
+        "src.config",
+        "src.database",
+        "src.database.tables",
+        "src.integration.batches",
+        "src.integration.gitops",
+        "src.integration.lock",
+        "src.integration.manual_control",
+        "src.integration.ownership",
+        "src.integration.train_sources"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Guarded manual integration over PostgreSQL and real Git."
     },
     "tests/test_integration_mode.py": {
       "areas": [
@@ -9167,12 +9429,12 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:a3623e780ca9810f6f847ef05ad71aed056cc152eede53ebd9c9d7393ef620e3",
+      "digest": "sha256:fad0804d209c5cf3d8ab546621f78cab366e7431315a8d1eaa5388fdddf88023",
       "imports": [],
       "markers": [
         "parametrize"
       ],
-      "summary": "Physical-line ownership, table and no-hidden-journal integration ratchets."
+      "summary": "Physical-line ownership and table integration ratchets."
     },
     "tests/test_integration_source_ancestry.py": {
       "areas": [
@@ -9319,6 +9581,35 @@
       ],
       "summary": "Integration subjects: the durable rows and typed ports of the reconciler."
     },
+    "tests/test_integration_superseded_completion.py": {
+      "areas": [
+        "integration-trains"
+      ],
+      "default_arm": true,
+      "digest": "sha256:576f5d5fb102c49241b309256fb3c923773dd117c203dfba8e472c61addba7e4",
+      "imports": [
+        "src.commands.contracts.integration",
+        "src.commands.handler",
+        "src.commands.principal",
+        "src.config",
+        "src.database",
+        "src.database.queries.hierarchy_queries",
+        "src.database.tables",
+        "src.git.manager",
+        "src.integration.engine",
+        "src.integration.git_truth",
+        "src.integration.provenance",
+        "src.integration.runtime_contracts",
+        "src.integration.superseded_completion",
+        "src.models",
+        "src.profiles.capabilities",
+        "src.sessions.obsolete"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Supersession proves one incident against disposable PostgreSQL and Git."
+    },
     "tests/test_integration_train.py": {
       "areas": [
         "integration-trains"
@@ -9388,7 +9679,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:0f4e59bb4f15ff93dab51c5d3184152c17adb9a88e8a494ab077e789959c2a25",
+      "digest": "sha256:80ae10f07dc32be5d22fbf4bdd0a39849d73f136c5d7a208f2b2da0093454ad2",
       "imports": [
         "src.commands",
         "src.commands.integration_commands",
@@ -9414,6 +9705,7 @@
         "src.integration.delivery_truth",
         "src.integration.epics",
         "src.integration.git_truth",
+        "src.integration.github_review_poll",
         "src.integration.gitops",
         "src.integration.hierarchy",
         "src.integration.lock",
@@ -9511,9 +9803,10 @@
         "integration-ownership"
       ],
       "default_arm": true,
-      "digest": "sha256:838042fdd1bae05d0c789cb294beff1b2aa747a251fa25c6189d2fce7cd5be79",
+      "digest": "sha256:1542ffc4878ebc0c582d8d77d7093b96b562b289621ba8b95f8fbc53c7e9be14",
       "imports": [
         "src.claim_file",
+        "src.database.queries.hierarchy_queries",
         "src.database.tables",
         "src.git.manager",
         "src.integration",
@@ -9521,6 +9814,7 @@
         "src.integration.hierarchy",
         "src.integration.models",
         "src.integration.ownership",
+        "src.integration.provenance",
         "src.models",
         "src.orchestrator",
         "src.orchestrator.stranded_work",
@@ -9940,9 +10234,14 @@
         "knowledge-records"
       ],
       "default_arm": true,
-      "digest": "sha256:63eb5e7478d7074a9851ca21a9e82e461d98029206717a117149db5df80aea24",
+      "digest": "sha256:8ad30659e5226c80e160e5cbf83658a382b73d1a72ecd68a061d5d6eaa25014c",
       "imports": [
-        "src.config"
+        "src.config",
+        "src.database.tables",
+        "src.models",
+        "src.profiles.catalog",
+        "src.profiles.inheritance",
+        "src.profiles.parser"
       ],
       "markers": [
         "usefixtures"
@@ -9968,7 +10267,7 @@
         "knowledge-records"
       ],
       "default_arm": true,
-      "digest": "sha256:9bae35bba4c1ce0824fe5e7a31ff87b7492ffcc60b93a08a29e81902dc3f4519",
+      "digest": "sha256:95d5c48327b40774516006a431484980306c14bc788e171b18d233786eb760a9",
       "imports": [
         "src.commands.principal",
         "src.config",
@@ -9979,6 +10278,7 @@
         "src.knowledge.service",
         "src.messages",
         "src.models",
+        "src.prime",
         "src.prime.models",
         "src.prime.renderer",
         "src.prime.sections",
@@ -10821,6 +11121,32 @@
         "asyncio"
       ],
       "summary": "Tests for pane_open on _cmd_message_send."
+    },
+    "tests/test_message_sender_identity.py": {
+      "areas": [
+        "messages"
+      ],
+      "default_arm": true,
+      "digest": "sha256:d3ae245fb39f3873a44ac1058f27b0858706859d6db7a997e601e05934acd44f",
+      "imports": [
+        "src.api",
+        "src.api.auth",
+        "src.api.dependencies",
+        "src.api.execute",
+        "src.api.messages",
+        "src.api.middleware",
+        "src.api.scope",
+        "src.cli.app",
+        "src.cli.client",
+        "src.commands.handler",
+        "src.config",
+        "src.database.tables",
+        "src.models"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "CLI reports, authenticated return identities and durable replies on PostgreSQL."
     },
     "tests/test_messaging_adapter.py": {
       "areas": [
@@ -11791,8 +12117,9 @@
         "task-lifecycle"
       ],
       "default_arm": true,
-      "digest": "sha256:604813a4e78edc7213f77f5c97dd88012fb79acc625852ce2263d121e0afcd6e",
+      "digest": "sha256:670696b76bdcd94bde5fa66ef83cf8f8a262fdd02500cde3a25f5ac48fecff5b",
       "imports": [
+        "src.database.tables",
         "src.models"
       ],
       "markers": [],
@@ -12789,7 +13116,7 @@
         "policy-profiles"
       ],
       "default_arm": true,
-      "digest": "sha256:ec22591f55f7859033141d1f7badc99d7dd9344660779c6d88fab43e9f593e0e",
+      "digest": "sha256:8c6a6f7f27db9766f52c7c460218f1e263f5955cc97647251bd541331741483b",
       "imports": [
         "src.api",
         "src.api.app",
@@ -12800,6 +13127,7 @@
         "src.doctor.models",
         "src.doctor.playbook_v2_checks",
         "src.event_bus",
+        "src.integration.models",
         "src.integration.promotion_steps",
         "src.models",
         "src.playbooks.artifact_store",
@@ -13134,7 +13462,7 @@
         "claims"
       ],
       "default_arm": true,
-      "digest": "sha256:cf1825d1d8b9a91e8b2ff1a2fc7895a0a33e3a509adcb8f82c842f3cd1963c2b",
+      "digest": "sha256:896bcc7de1eb158cbe78ea6695eaab6faedce0ba2429d2d849efc0c24cc72ffe",
       "imports": [
         "src.git.manager",
         "src.llm.providers.errors",
@@ -13164,17 +13492,20 @@
         "prime"
       ],
       "default_arm": true,
-      "digest": "sha256:7d948caef03804992a7b27eb3c136dcf4f7efa565487492bfc55a8f77b593ef2",
+      "digest": "sha256:f91a9590c716562833c3065d3b353ae8067ddfc7a2a02190ef20aca426677bc5",
       "imports": [
         "src.api.scope",
         "src.config",
         "src.handoffs",
+        "src.knowledge.budget",
         "src.models",
         "src.prime",
         "src.prime.budgets",
         "src.prime.models",
+        "src.prime.renderer",
         "src.prime.sections",
         "src.profiles.parser",
+        "src.records.models",
         "src.sessions.harness_parser",
         "src.sessions.harness_registry",
         "src.sessions.worker_recovery"
@@ -15316,9 +15647,10 @@
         "scheduling"
       ],
       "default_arm": true,
-      "digest": "sha256:02378da97d15204955c35bb14649db1561aaabb37a0e3b863fe2bf38b1ba8bd0",
+      "digest": "sha256:5d5af0ef64f5290395aa9b1cc09a40f5f7019bf3f7485c3241971a05b6d08a76",
       "imports": [
         "src.assignment_routing",
+        "src.database.tables",
         "src.models",
         "src.scheduler"
       ],
@@ -15606,7 +15938,7 @@
         "session-runtime"
       ],
       "default_arm": true,
-      "digest": "sha256:84d36f9a641bf6ed8ba5377ecb3bc3a623f8b4332479a0a22ccf096955bebcd3",
+      "digest": "sha256:615cee7c862f97bba456aa26738fd2fd4dc51505e8cd5bced44347444a287541",
       "imports": [
         "src.api.auth",
         "src.api.scope",
@@ -15632,6 +15964,7 @@
         "src.intelligence_classes",
         "src.mcp_registration",
         "src.models",
+        "src.orchestrator",
         "src.orchestrator.execution",
         "src.orchestrator.git_ops",
         "src.orchestrator.pools",
@@ -15887,7 +16220,7 @@
         "session-runtime"
       ],
       "default_arm": true,
-      "digest": "sha256:557ab2bb6912ca84aa32aeaa13b3fab9cfcdccbb2ac61e2dc3180aa9ac2408af",
+      "digest": "sha256:b4bf4ba090418fbd1c8240a2d837df5dd69b1f18458ace083ca25ac360330bc5",
       "imports": [
         "src.sessions",
         "src.sessions.dialogs",
@@ -15897,6 +16230,7 @@
         "src.sessions.transcripts.watcher"
       ],
       "markers": [
+        "parametrize",
         "skipif",
         "usefixtures"
       ],
@@ -16409,10 +16743,11 @@
         "supervisor"
       ],
       "default_arm": true,
-      "digest": "sha256:5e5e447232ac93f9e156ba89b9d6ff792cdf81ba1ca5a0bb2b384ac1fdb627a9",
+      "digest": "sha256:1b9d94d2e5975f98e1fa1dcab0eec7548c5d759419a85f242b8abc8775b67ee1",
       "imports": [],
       "markers": [
-        "parametrize"
+        "parametrize",
+        "skipif"
       ],
       "summary": "Project isolation of the supervisor stall sweep (scripts/operator-checks/stall-sweep.py)."
     },
@@ -16605,11 +16940,16 @@
         "task-dependencies"
       ],
       "default_arm": true,
-      "digest": "sha256:449c2cf5bad505a5225bd92a278c1b4133db75341bf427c0855dfad12b72294f",
+      "digest": "sha256:db1caf6cdf76b687cc0649cb33c6458545758315ede11f65c5fc890b2c4d6730",
       "imports": [
         "src.api.auth",
         "src.api.scope",
+        "src.asks.operations",
+        "src.commands",
         "src.commands.contracts.builtin",
+        "src.commands.proposal_commands",
+        "src.database.queries",
+        "src.database.queries.ingest_batch_queries",
         "src.database.queries.proposal_queries",
         "src.database.tables",
         "src.event_schemas",
@@ -16666,6 +17006,26 @@
         "parametrize"
       ],
       "summary": "Creation stores hints, never a resolved route (mandatory-routing spec §1, §5.3)."
+    },
+    "tests/test_task_close_accepted_tail.py": {
+      "areas": [
+        "task-lifecycle"
+      ],
+      "default_arm": true,
+      "digest": "sha256:532cff7257648c0e943341146e872d7b2375c5c42f3b3cc4bf0b5b4b91f05074",
+      "imports": [
+        "src.commands",
+        "src.commands.session_commands",
+        "src.database.queries.result_queries",
+        "src.database.queries.task_queries",
+        "src.models",
+        "src.orchestrator",
+        "src.orchestrator.execution"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "An accepted ``task close`` finishes its tail whatever its caller does (amber-flare-10)."
     },
     "tests/test_task_close_completion_recovery.py": {
       "areas": [
@@ -16790,22 +17150,31 @@
         "task-lifecycle"
       ],
       "default_arm": true,
-      "digest": "sha256:0a2347f26e6abe9656e7ed9fbd8d1b4eb987012f56d116eb2c0e9eabd893532b",
+      "digest": "sha256:6162917356b0b933b7ef09278f4367218e9a501a7a8eca9d05c38681c16ad291",
       "imports": [
+        "src",
         "src.api.auth",
         "src.api.codegen",
+        "src.claim_file",
         "src.commands.handler",
         "src.config",
+        "src.database.queries",
         "src.database.queries.claim_queries",
+        "src.database.queries.retained_workspace_queries",
         "src.database.tables",
         "src.git.manager",
+        "src.git.process",
         "src.models",
         "src.orchestrator",
         "src.orchestrator.core",
+        "src.orchestrator.retained_workspace",
         "src.orchestrator.task_checkpoint",
+        "src.orchestrator.worktree_manager",
         "src.scheduler",
+        "src.sessions",
         "src.sessions.fake",
         "src.sessions.harness_registry",
+        "src.sessions.proctable",
         "src.sessions.reconciler",
         "src.sessions.spec",
         "src.vault"
@@ -16852,7 +17221,7 @@
         "task-dependencies"
       ],
       "default_arm": true,
-      "digest": "sha256:0cac1406db902ec8925f4fc678f6c8d1d301f53710dd9b62ab7221192dabd63e",
+      "digest": "sha256:c54b5a0781ab5ed4e47b6aecceef903b2a08d760e3621de356ebd8b209252dd3",
       "imports": [
         "src.commands.handler",
         "src.config",
@@ -16933,11 +17302,13 @@
         "task-graph-creation"
       ],
       "default_arm": true,
-      "digest": "sha256:f17f4b18b489d983bec87c1c7a65251599047b865ccd818ec71a711cc7d5cb25",
+      "digest": "sha256:970486538a3c9683014993574cc790bd69227e08f55ce3381926615f3290fa7c",
       "imports": [
         "src.commands.handler",
+        "src.database.tables",
         "src.models",
-        "src.task_graph.activity"
+        "src.task_graph.activity",
+        "src.task_graph.readiness"
       ],
       "markers": [
         "parametrize"
@@ -17895,13 +18266,17 @@
         "playbook-engine"
       ],
       "default_arm": true,
-      "digest": "sha256:5efab90b8291602e1e78466c0b94078516e94379ec563261256840f25ee6eddc",
+      "digest": "sha256:b961d84cb3746a136879d36393eda5750899094abe5d9dd010affc57de8546ff",
       "imports": [
         "src.commands.contracts.models",
         "src.commands.principal",
+        "src.config",
         "src.database",
+        "src.database.tables",
         "src.doctor.models",
         "src.doctor.playbook_v2_checks",
+        "src.models",
+        "src.orchestrator",
         "src.playbooks.definition",
         "src.playbooks.engine",
         "src.playbooks.executors.base",
@@ -17957,14 +18332,16 @@
         "vault"
       ],
       "default_arm": true,
-      "digest": "sha256:df5132555656da1440e1f1bb7080a0a39117fd92927be745294ad2c48f07c46f",
+      "digest": "sha256:e0896cc27ebc4f12015e4dc2b014111e9685578bdc5887088f0d7e6c1888a08e",
       "imports": [
         "src.playbooks.required",
         "src.profiles.capabilities",
         "src.profiles.parser",
         "src.vault"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "Tests for vault directory structure initialization (vault spec §2)"
     },
     "tests/test_vault_glossary.py": {
@@ -18305,17 +18682,22 @@
         "workspaces"
       ],
       "default_arm": true,
-      "digest": "sha256:a3f558e5efe09d13afbed67337c7ac7fff923e4542b40bbe6916729d0d18dc69",
+      "digest": "sha256:0ea7e041967e324dfdb993bbbaffdb4e74b0f0e54afd5405940ba939c4e7e4f3",
       "imports": [
+        "src.claim_file",
         "src.commands.handler",
         "src.config",
         "src.database.queries.claim_queries",
+        "src.database.tables",
+        "src.integration.lock",
+        "src.integration.models",
         "src.models",
         "src.orchestrator",
         "src.orchestrator.task_checkpoint",
         "src.orchestrator.worktree_manager",
         "src.runtimes.base",
-        "src.sessions.proctable"
+        "src.sessions.proctable",
+        "src.workspace_registration"
       ],
       "markers": [
         "parametrize"
@@ -18344,11 +18726,15 @@
         "workspaces"
       ],
       "default_arm": true,
-      "digest": "sha256:7e7eca27b807b986d0fef4596464240351f842f20300869779d886bd579b5ece",
+      "digest": "sha256:1f2efec6d337e53dd24295ad6a1e9c472ac5e5bb6f32c0d87edae3b5faa675e2",
       "imports": [
-        "src.profiles.workspace_kind_parser"
+        "src.models",
+        "src.profiles.workspace_kind_parser",
+        "src.profiles.workspace_kind_registry"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "WorkspaceKind markdown frontmatter parser. See spec §4.1."
     },
     "tests/test_workspace_kind_registry.py": {
@@ -18513,12 +18899,13 @@
         "worktree-slots"
       ],
       "default_arm": true,
-      "digest": "sha256:29c81d95d63d412872297f9cf0d5fa706070d682bb6ede5ea2375156c0aa7eb6",
+      "digest": "sha256:f328b5830680809b62b45b4d33d12fc13678387115a033b0d1dd3b6c8409e3da",
       "imports": [
         "src.claim_file",
         "src.config",
         "src.event_schemas",
         "src.git.manager",
+        "src.git.process",
         "src.models",
         "src.orchestrator.execution",
         "src.orchestrator.task_checkpoint",
@@ -18571,19 +18958,25 @@
         "worktree-slots"
       ],
       "default_arm": true,
-      "digest": "sha256:9a4cfa9c523c923fc9f94cf8de210b2f6b84c6b3283bfa054ee1599a2c38a4e0",
+      "digest": "sha256:3c10ed3b803eb60174c5ac2480b81d5a0867f5fff378518e09cbf8d2e676e2ca",
       "imports": [
+        "src.claim_file",
+        "src.commands.worktree_commands",
         "src.config",
+        "src.database.tables",
         "src.git.manager",
         "src.models",
         "src.orchestrator",
         "src.orchestrator.slot_restore",
+        "src.orchestrator.workspace_binding_audit",
         "src.orchestrator.worktree_manager",
         "src.runtimes.base",
         "src.sessions.proctable",
         "src.workspace_disable"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "Worktree slot reaper + boot adoption + branch pruning (P4)."
     },
     "tests/test_worktree_slot_starvation.py": {

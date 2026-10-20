@@ -99,6 +99,7 @@ somehow declares none.
     "integration_eject",
     "integration_release_owner",
     "integration_retire_origin",
+    "integration_settle_batch",
     "integration_status",
     "integration_trust_manifest",
     "job_cancel",

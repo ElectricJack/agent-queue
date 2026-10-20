@@ -17,27 +17,37 @@ class SessionMessageRequest:
 
     Attributes:
         body (str): Markdown message body
-        from_ (str | Unset): Sender id, e.g. 'discord:1234' or 'cli' Default: 'user'.
-        from_kind (str | Unset): Sender kind: session | user | system Default: 'user'.
+        from_ (None | str | Unset): Authorized sender id; omit for server default
+        from_kind (None | str | Unset): Authorized sender kind: session | user | system; omit for server default
         thread_id (None | str | Unset): Conversation grouping key
         subject (None | str | Unset): Optional subject line
         priority (int | Unset): Delivery ordering, lower first Default: 100.
+        claim_epoch (int | None | Unset):
     """
 
     body: str
-    from_: str | Unset = "user"
-    from_kind: str | Unset = "user"
+    from_: None | str | Unset = UNSET
+    from_kind: None | str | Unset = UNSET
     thread_id: None | str | Unset = UNSET
     subject: None | str | Unset = UNSET
     priority: int | Unset = 100
+    claim_epoch: int | None | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         body = self.body
 
-        from_ = self.from_
+        from_: None | str | Unset
+        if isinstance(self.from_, Unset):
+            from_ = UNSET
+        else:
+            from_ = self.from_
 
-        from_kind = self.from_kind
+        from_kind: None | str | Unset
+        if isinstance(self.from_kind, Unset):
+            from_kind = UNSET
+        else:
+            from_kind = self.from_kind
 
         thread_id: None | str | Unset
         if isinstance(self.thread_id, Unset):
@@ -52,6 +62,12 @@ class SessionMessageRequest:
             subject = self.subject
 
         priority = self.priority
+
+        claim_epoch: int | None | Unset
+        if isinstance(self.claim_epoch, Unset):
+            claim_epoch = UNSET
+        else:
+            claim_epoch = self.claim_epoch
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -70,6 +86,8 @@ class SessionMessageRequest:
             field_dict["subject"] = subject
         if priority is not UNSET:
             field_dict["priority"] = priority
+        if claim_epoch is not UNSET:
+            field_dict["claim_epoch"] = claim_epoch
 
         return field_dict
 
@@ -78,9 +96,23 @@ class SessionMessageRequest:
         d = dict(src_dict)
         body = d.pop("body")
 
-        from_ = d.pop("from", UNSET)
+        def _parse_from_(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
 
-        from_kind = d.pop("from_kind", UNSET)
+        from_ = _parse_from_(d.pop("from", UNSET))
+
+        def _parse_from_kind(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        from_kind = _parse_from_kind(d.pop("from_kind", UNSET))
 
         def _parse_thread_id(data: object) -> None | str | Unset:
             if data is None:
@@ -102,6 +134,15 @@ class SessionMessageRequest:
 
         priority = d.pop("priority", UNSET)
 
+        def _parse_claim_epoch(data: object) -> int | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(int | None | Unset, data)
+
+        claim_epoch = _parse_claim_epoch(d.pop("claim_epoch", UNSET))
+
         session_message_request = cls(
             body=body,
             from_=from_,
@@ -109,6 +150,7 @@ class SessionMessageRequest:
             thread_id=thread_id,
             subject=subject,
             priority=priority,
+            claim_epoch=claim_epoch,
         )
 
         session_message_request.additional_properties = d
