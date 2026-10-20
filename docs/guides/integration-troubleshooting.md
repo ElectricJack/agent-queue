@@ -163,10 +163,50 @@ aq integration release-owner --owner-row-id o-a3f7… --apply
 
 `release-owner` previews by default; `--apply` explicitly preserves work and releases
 the stopped attachment. `--dry-run` and `--apply` are mutually exclusive.
+Preservation first proves the local task ref, recorded task origin, claim time
+and matching slot sentinel. An unrelated detached slot is skipped; a missing
+local ref appears as `skip_preserve` with reason `missing_local_ref`. Unpublished
+work without provenance returns `unproven_task_work`, leaving it in place.
+Detached checkouts skipped for a missing task ref or mismatched sentinel remain
+intact and their released slots are disabled, including clean checkouts, until
+their unknown commits can be reviewed. A slot whose sentinel names another task is
+never a push source, even when its detached HEAD holds commits origin lacks.
+
+`--no-push` releases without publishing anything, combined with either the preview or
+`--apply`. Nothing is proved, snapshotted or pushed, so unpublished work does not
+refuse the release with `unproven_task_work`. Each unpublished source appears in
+`evidence.unpublished` and as a `skip_preserve` step with reason `no_push`; it stays in
+its checkout or local branch ref. The row's own slot is retained and disabled, and the
+release comment names what was left behind. Use it when the work belongs elsewhere or
+will be preserved by hand:
+
+```bash
+aq integration release-owner --task-id TASK_ID --no-push            # preview
+aq integration release-owner --task-id TASK_ID --no-push --apply
+```
 It takes no `--project-id`: the task (or the owner row's repository) names the
 project, and the caller's token has to name the same one. A project's supervisor session may
 therefore run this recovery for its own work and is refused for another project's — see
 [aq-surface §7.3](../specs/design/aq-surface.md#73-elevated-scopes-and-the-commands-that-carry-no-project_id).
+
+If a task branch was contaminated by an earlier recovery, the local operator or
+live project supervisor can restore its recorded origin after releasing its
+writer. Preview supplies the origin id, current remote SHA and released fence:
+
+```bash
+aq integration restore-task-origin --task-id TASK_ID --json
+aq integration restore-task-origin --task-id TASK_ID --apply \
+  --origin-id ORIGIN_ID --expected-remote-oid BEFORE_SHA \
+  --expected-fence-token FENCE --reason "Remove unrelated slot history"
+```
+
+Apply retains the displaced head at the preview's `backup_ref`, then uses an
+exact remote lease to publish only the recorded origin (the preview's `after_sha`). A changed origin,
+fence, remote head or active writer refuses the operation. The audit events
+`integration.task_origin_restore_started` and `integration.task_origin_restored`
+record the principal and before/after SHAs. This control never resets a checkout.
+It refuses checked-out branches and other local work; an existing local ref
+matching the displaced head is repaired with an exact compare-and-swap.
 
 **Refusal reasons and how to resolve them.**
 
@@ -178,6 +218,7 @@ as the recovery result. Dry runs do not write an audit row.
 |---|---|---|
 | `writer_live` | The provider probe says the writer is still running, or a newer live session names the task. | Wait for the writer to exit, or confirm the task is truly cancelled/archived, then retry. A drain-acked pool worker holding a retired repair delegate, or still bound to a task whose close already committed, is stopped automatically (see the repair-delegate section and the paragraph below this table). |
 | `checkout_in_use` | A live session holds the worktree the branch is checked out in. | Close that session or hand it off, then retry. |
+| `unproven_task_work` | Unpublished work lacks the recorded origin, claim time, matching slot sentinel or task-ref ancestry. | Inspect the preview evidence and preserve the work under its actual task. Do not substitute the slot HEAD for a missing task ref. To release without publishing, rerun with `--no-push`. |
 | `origin_unreachable` | `git fetch` or the preservation push failed (network, auth, rate limit). | Fix connectivity or auth, then retry. |
 | `stale_fence` | The row changed between the check and the release — a new writer attached, or the fence was bumped by another recovery attempt. | Re-run; the new writer will be the one the check evaluates. |
 | `not_found` | The owner row id is wrong, or the row was already released by the time the command ran. | Preview the current task with `aq integration release-owner --task-id TASK_ID --dry-run`. |

@@ -123,6 +123,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`integration_repair_start`](integration_repair_start.md) | Integration Repair Start | Activate or durably continue one operation's bounded repair stage. |
 | [`integration_repair_timeout`](integration_repair_timeout.md) | Integration Repair Timeout | Expire the current repair stage once its absolute deadline has passed. |
 | [`integration_reserve_owner`](integration_reserve_owner.md) | Integration Reserve Owner | Authenticated hierarchical integration operational control. |
+| [`integration_restore_task_origin`](integration_restore_task_origin.md) | Integration Restore Task Origin | Authenticated hierarchical integration operational control. |
 | [`integration_resume_batch`](integration_resume_batch.md) | Integration Resume Batch | Authenticated hierarchical integration operational control. |
 | [`integration_retire_legacy_park`](integration_retire_legacy_park.md) | Retire a historical parked operation | Local operator abandons every explicitly selected source under an exact journal fence. |
 | [`integration_retire_origin`](integration_retire_origin.md) | Integration Retire Origin | Authenticated hierarchical integration operational control. |

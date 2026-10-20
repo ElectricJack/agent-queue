@@ -439,10 +439,15 @@ def integration_reevaluate_repair(ctx, operation_id, apply, head, episode, gener
 @click.option("--owner-row-id")
 @click.option("--dry-run", is_flag=True)
 @click.option("--apply", is_flag=True, help="Preserve work and release the proved stopped owner.")
+@click.option(
+    "--no-push", is_flag=True,
+    help="Release without publishing; unpublished work stays in its retained checkout.",
+)
 @click.pass_context
 @_handle_errors
 def integration_release_owner(
-    ctx: click.Context, task_id: str | None, owner_row_id: str | None, dry_run: bool, apply: bool
+    ctx: click.Context, task_id: str | None, owner_row_id: str | None, dry_run: bool,
+    apply: bool, no_push: bool,
 ) -> None:
     """Preview a stranded owner's recovery; use --apply to preserve and release."""
     if (task_id is None) == (owner_row_id is None):
@@ -450,11 +455,38 @@ def integration_release_owner(
     if dry_run and apply:
         raise click.UsageError("--dry-run and --apply are mutually exclusive")
     args: dict[str, Any] = {"dry_run": not apply}
+    if no_push:
+        args["no_push"] = True
     if task_id is not None:
         args["task_id"] = task_id
     else:
         args["owner_row_id"] = owner_row_id
     _execute(ctx, "integration_release_owner", args)
+
+
+@integration.command("restore-task-origin")
+@click.option("--task-id", required=True)
+@click.option("--origin-id")
+@click.option("--expected-remote-oid")
+@click.option("--expected-fence-token", type=int)
+@click.option("--reason", default="")
+@click.option("--apply", is_flag=True)
+@click.pass_context
+@_handle_errors
+def integration_restore_task_origin(
+    ctx, task_id, origin_id, expected_remote_oid, expected_fence_token, reason, apply,
+):
+    """Preview restoration to the recorded origin; apply with the preview's fences."""
+    if apply and (not origin_id or not expected_remote_oid
+                  or expected_fence_token is None or not reason.strip()):
+        raise click.UsageError("--apply requires --origin-id, --expected-remote-oid, "
+                               "--expected-fence-token and --reason")
+    args = {"task_id": task_id, "dry_run": not apply, "reason": reason}
+    for key, value in (("origin_id", origin_id), ("expected_remote_oid", expected_remote_oid),
+                       ("expected_fence_token", expected_fence_token)):
+        if value is not None:
+            args[key] = value
+    _execute(ctx, "integration_restore_task_origin", args)
 
 
 @integration.command("reserve-owner")
