@@ -18554,6 +18554,53 @@
         }
       }
     },
+    "/api/task/ensure-fidelity-review": {
+      "post": {
+        "tags": [
+          "task"
+        ],
+        "summary": "Ensure one fidelity-reviewer role task per held batch; service/operator only.",
+        "description": "Ensure one fidelity-reviewer role task per held batch; service/operator only.",
+        "operationId": "ensure_fidelity_review",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EnsureFidelityReviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EnsureTaskResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/task/ensure-spec-ingest": {
       "post": {
         "tags": [
@@ -20434,8 +20481,8 @@
         "tags": [
           "task"
         ],
-        "summary": "Replace a pending change set, re-running final graph and state checks as task_batch_propose. Only proposals still in ``draft`` or ``ready`` can be updated \u2014 a committed or discarded one is history.",
-        "description": "Replace a pending change set, re-running final graph and state checks as task_batch_propose. Only proposals still in ``draft`` or ``ready`` can be updated \u2014 a committed or discarded one is history.",
+        "summary": "Update an ungated pending proposal with payload, or edit a held ingestion batch with expected_revision and scoped operations. Only the live assigned fidelity reviewer or project supervisor may edit held members. Atomic hard checks roll back invalid edits; structural changes supersede old receipts. No edit releases work.",
+        "description": "Update an ungated pending proposal with payload, or edit a held ingestion batch with expected_revision and scoped operations. Only the live assigned fidelity reviewer or project supervisor may edit held members. Atomic hard checks roll back invalid edits; structural changes supersede old receipts. No edit releases work.",
         "operationId": "task_batch_update",
         "requestBody": {
           "content": {
@@ -24234,6 +24281,43 @@
             ],
             "title": "Reason",
             "description": "Required to archive PAUSED/DEFINED/READY or abandon undelivered work."
+          },
+          "replacement": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Replacement",
+            "description": "Obsolete only: replacement leaf; atomically redirects dependents."
+          },
+          "satisfied_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Satisfied By",
+            "description": "Obsolete only: evidence the requirement is met; dependent edges must be explicitly removed or replaced through rewire. Never records a pass."
+          },
+          "rewire": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rewire",
+            "description": "Obsolete edge plan, validated and committed with retirement. Uses task change-set edges/remove_edges objects (from, to, dep_type)."
           }
         },
         "type": "object",
@@ -35028,6 +35112,32 @@
         ],
         "title": "EffectiveGitIdentity",
         "description": "The identity a project's AQ-authored commits use, and where it came from.\n\n``source`` is ``project`` (its override), ``installation`` (the\n``git_identity`` default) or ``fallback`` (no default chosen yet;\n``configured`` is then false)."
+      },
+      "EnsureFidelityReviewRequest": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "title": "Project Id",
+            "description": ""
+          },
+          "batch_id": {
+            "type": "string",
+            "title": "Batch Id",
+            "description": ""
+          },
+          "structure_revision": {
+            "type": "integer",
+            "title": "Structure Revision",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "project_id",
+          "batch_id",
+          "structure_revision"
+        ],
+        "title": "EnsureFidelityReviewRequest"
       },
       "EnsureSpecIngestRequest": {
         "properties": {
@@ -74742,11 +74852,151 @@
               }
             ],
             "title": "Diff"
+          },
+          "proposal_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Proposal Id"
+          },
+          "batch_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Batch Id"
+          },
+          "state": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "State"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status"
+          },
+          "structure_revision": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Structure Revision"
+          },
+          "structure_digest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Structure Digest"
+          },
+          "members": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Members"
+          },
+          "task_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Ids"
+          },
+          "replayed": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Replayed"
+          },
+          "lineage": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lineage"
+          },
+          "release_receipt": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Release Receipt"
+          },
+          "reviewer_task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reviewer Task Id"
           }
         },
         "type": "object",
         "title": "TaskBatchAckResponse",
-        "description": "``task_batch_update`` / ``task_batch_discard`` \u2014 bare acknowledgement."
+        "description": "Acknowledgement, including the current held graph after a scoped update."
       },
       "TaskBatchCommitRequest": {
         "properties": {
@@ -75014,19 +75264,62 @@
           "proposal_id": {
             "type": "string",
             "title": "Proposal Id",
-            "description": "Proposal to replace."
+            "description": ""
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id",
+            "description": ""
           },
           "payload": {
-            "additionalProperties": true,
-            "type": "object",
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Payload",
-            "description": "The complete replacement change set (tasks, edits, edges, remove_edges, comments), in the same shape task_batch_propose takes."
+            "description": ""
+          },
+          "expected_revision": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Revision",
+            "description": ""
+          },
+          "operations": {
+            "anyOf": [
+              {
+                "items": {},
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Operations",
+            "description": ""
           }
         },
         "type": "object",
         "required": [
-          "proposal_id",
-          "payload"
+          "proposal_id"
         ],
         "title": "TaskBatchUpdateRequest"
       },

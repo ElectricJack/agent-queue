@@ -34,7 +34,7 @@ CLAIMABLE_SOURCES: tuple[str, ...] = (ROUTER, OVERRIDE, ROLE)
 #: The stage profiles a role task keeps (spec §4, D3).  ``supervisor`` and
 #: ``playbook-compiler`` are absent: they are never task routes at all.
 ROLE_PROFILE_IDS: frozenset[str] = frozenset(
-    {"triage", "spec-ingest", "reviewer", "final-reviewer"}
+    {"triage", "spec-ingest", "reviewer", "final-reviewer", "fidelity-reviewer"}
 )
 
 #: The playbook a project is bound to when nothing names another one: the

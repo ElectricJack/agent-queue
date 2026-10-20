@@ -558,6 +558,27 @@ Bulk/automatic archive keeps its terminal-only selection. Delete/archive refusal
 in the dashboard offer **Remove while keeping history and branches** where that
 control can resolve the refusal.
 
+Evidence-preserving duplicate retirement uses
+`aq task archive --task-id <id> --disposition obsolete --reason ... --replacement <leaf>`.
+In one change-set transaction, every incoming nonstructural edge is redirected
+to the replacement with its original type and explanation, the final graph is validated, and
+the duplicate is archived. A replacement must be a distinct live leaf in the
+same project; cycles, incomplete rewrites, running dependents and active
+integration ownership refuse the transaction. `--satisfied-by <evidence>`
+records why the requirement is already met; it requires an explicit `--rewire`
+JSON object with `edges` and `remove_edges` arrays when dependents exist. Their
+edge objects use `from`, `to`, and `dep_type`, as ordinary change sets do.
+Evidence never produces a passing completion or satisfies an unchanged edge.
+
+The obsolete marker records `replacement_task_id`, `satisfied_by` and the edge
+plan. Archive retains that exact marker in task comments because live metadata
+is FK-bound to the removed task row. Source identity, original status, branch
+and completion history remain archived. Branches go through the existing
+audited retirement service, which preserves tips before fenced deletion;
+empty parents settle under the existing container rules. `ObsoleteClose` also
+accepts these evidence arguments for a hierarchical leaf through the same
+transactional edge proof, while keeping the live task marked abandoned.
+
 ## 13a. Claims and pools
 
 **Implemented by the swarm work model.** Pull-based work assignment for `lifecycle: pool`

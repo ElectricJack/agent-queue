@@ -170,6 +170,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`decision_list`](decision_list.md) | Decision List | Record or read durable operator instructions on a task or integration. |
 | [`decision_record`](decision_record.md) | Decision Record | Record or read durable operator instructions on a task or integration. |
 | [`digest_request`](digest_request.md) | Digest Request | Queue one supervisor author turn per reserved digest window, releasing held windows when supervisor authoring is off. |
+| [`ensure_fidelity_review`](ensure_fidelity_review.md) | Ensure fidelity review | Create or recover the one fidelity-reviewer role task for a held batch. |
 | [`ensure_spec_ingest`](ensure_spec_ingest.md) | Ensure approved spec ingestion | Create or recover the role task receipt for an immutable approved decision. |
 | [`get_stuck_tasks`](get_stuck_tasks.md) | Read stuck tasks | Read aged active tasks, orphaned workers and failed routes in active projects. |
 | [`git_diff`](git_diff.md) | Read a Git diff | Read a project's working-tree or branch diff. |
@@ -249,6 +250,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`supervisor_inbox_post`](supervisor_inbox_post.md) | Supervisor Inbox Post | Accept verified gateway input or local test/replay provenance into the global inbox. |
 | [`supervisor_inbox_reply`](supervisor_inbox_reply.md) | Supervisor Inbox Reply | Record an explicit live global-supervisor answer and queue its Discord delivery. |
 | [`supervisor_inbox_status`](supervisor_inbox_status.md) | Supervisor Inbox Status | Read installation-wide conversation preconditions, limits, counts and intake health. |
+| [`task_batch_review_record`](task_batch_review_record.md) | Record a batch fidelity review | Attest every mapped section and whole-batch intent on the exact held graph. |
 | [`task_batch_validate`](task_batch_validate.md) | Check a task batch | Run the deterministic ingestion-batch checks against the live graph and report hard, retryable and advisory findings without writing anything. |
 | [`task_failure_triage_notify`](task_failure_triage_notify.md) | Wake supervisor failure triage | Record or reuse the durable incident for a terminal task failure and queue its single supervisor triage notice; replayed failures reuse the same incident. |
 | [`task_handoff`](task_handoff.md) | Record a task handoff | Store bounded agent assertions with current daemon facts. Auto is note-only; non-auto records a restart request, without performing a restart. |

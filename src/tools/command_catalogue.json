@@ -2108,6 +2108,33 @@
           "reason": {
             "type": "string",
             "description": "Required to archive PAUSED/DEFINED/READY or abandon undelivered work."
+          },
+          "replacement": {
+            "type": "string",
+            "description": "Obsolete only: replacement leaf; atomically redirects dependents."
+          },
+          "satisfied_by": {
+            "type": "string",
+            "description": "Obsolete only: evidence the requirement is met; dependent edges must be explicitly removed or replaced through rewire. Never records a pass."
+          },
+          "rewire": {
+            "type": "object",
+            "description": "Obsolete edge plan, validated and committed with retirement. Uses task change-set edges/remove_edges objects (from, to, dep_type).",
+            "properties": {
+              "edges": {
+                "type": "array",
+                "items": {
+                  "type": "object"
+                }
+              },
+              "remove_edges": {
+                "type": "array",
+                "items": {
+                  "type": "object"
+                }
+              }
+            },
+            "additionalProperties": false
           }
         }
       }
@@ -6115,23 +6142,284 @@
     },
     {
       "name": "task_batch_update",
-      "description": "Replace a pending change set, re-running final graph and state checks as task_batch_propose. Only proposals still in ``draft`` or ``ready`` can be updated \u2014 a committed or discarded one is history.",
+      "description": "Update an ungated pending proposal with payload, or edit a held ingestion batch with expected_revision and scoped operations. Only the live assigned fidelity reviewer or project supervisor may edit held members. Atomic hard checks roll back invalid edits; structural changes supersede old receipts. No edit releases work.",
       "input_schema": {
-        "type": "object",
+        "$defs": {
+          "HeldBatchOperation": {
+            "additionalProperties": false,
+            "description": "Scoped operation. The command checks kind-specific fields and live membership.",
+            "properties": {
+              "kind": {
+                "enum": [
+                  "rewrite",
+                  "split",
+                  "combine",
+                  "reparent",
+                  "rewire",
+                  "add_leaf",
+                  "move_to_root",
+                  "retire"
+                ],
+                "title": "Kind",
+                "type": "string"
+              },
+              "task_id": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Task Id"
+              },
+              "task_ids": {
+                "anyOf": [
+                  {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Task Ids"
+              },
+              "changes": {
+                "anyOf": [
+                  {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Changes"
+              },
+              "task": {
+                "anyOf": [
+                  {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Task"
+              },
+              "tasks": {
+                "anyOf": [
+                  {
+                    "items": {
+                      "additionalProperties": true,
+                      "type": "object"
+                    },
+                    "type": "array"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Tasks"
+              },
+              "parent_id": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Parent Id"
+              },
+              "delivery_targets": {
+                "anyOf": [
+                  {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Delivery Targets"
+              },
+              "edges": {
+                "anyOf": [
+                  {
+                    "items": {
+                      "additionalProperties": true,
+                      "type": "object"
+                    },
+                    "type": "array"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Edges"
+              },
+              "remove_edges": {
+                "anyOf": [
+                  {
+                    "items": {
+                      "additionalProperties": true,
+                      "type": "object"
+                    },
+                    "type": "array"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Remove Edges"
+              },
+              "reason": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Reason"
+              },
+              "replacement_task_id": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Replacement Task Id"
+              },
+              "satisfied_by": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Satisfied By"
+              },
+              "rewire": {
+                "anyOf": [
+                  {
+                    "additionalProperties": {
+                      "items": {
+                        "additionalProperties": true,
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "type": "object"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Rewire"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "title": "HeldBatchOperation",
+            "type": "object"
+          }
+        },
+        "additionalProperties": false,
         "properties": {
           "proposal_id": {
-            "type": "string",
-            "description": "Proposal to replace."
+            "title": "Proposal Id",
+            "type": "string"
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Project Id"
           },
           "payload": {
-            "type": "object",
-            "description": "The complete replacement change set (tasks, edits, edges, remove_edges, comments), in the same shape task_batch_propose takes."
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Payload"
+          },
+          "expected_revision": {
+            "anyOf": [
+              {
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Expected Revision"
+          },
+          "operations": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/$defs/HeldBatchOperation"
+                },
+                "minItems": 1,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Operations"
           }
         },
         "required": [
-          "proposal_id",
-          "payload"
-        ]
+          "proposal_id"
+        ],
+        "title": "TaskBatchUpdateArgs",
+        "type": "object"
       }
     },
     {
@@ -11195,6 +11483,34 @@
           "packet_sha256"
         ],
         "title": "EnsureSpecIngestArgs",
+        "type": "object"
+      }
+    },
+    {
+      "name": "ensure_fidelity_review",
+      "description": "Ensure one fidelity-reviewer role task per held batch; service/operator only.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "title": "Project Id",
+            "type": "string"
+          },
+          "batch_id": {
+            "title": "Batch Id",
+            "type": "string"
+          },
+          "structure_revision": {
+            "title": "Structure Revision",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "project_id",
+          "batch_id",
+          "structure_revision"
+        ],
+        "title": "EnsureFidelityReviewArgs",
         "type": "object"
       }
     },
@@ -17595,6 +17911,91 @@
         }
       }
     },
+    "task_batch_review_record": {
+      "name": "task_batch_review_record",
+      "description": "Attest every mapped section and whole-batch intent on the exact held graph.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "batch_id": {
+            "minLength": 1,
+            "title": "Batch Id",
+            "type": "string"
+          },
+          "expected_revision": {
+            "minimum": 1,
+            "title": "Expected Revision",
+            "type": "integer"
+          },
+          "expected_digest": {
+            "minLength": 1,
+            "title": "Expected Digest",
+            "type": "string"
+          },
+          "section_verdicts": {
+            "additionalProperties": {
+              "enum": [
+                "faithful",
+                "fixed",
+                "scope_question"
+              ],
+              "type": "string"
+            },
+            "title": "Section Verdicts",
+            "type": "object"
+          },
+          "reverse_coverage_verdict": {
+            "enum": [
+              "faithful",
+              "fixed",
+              "scope_question"
+            ],
+            "title": "Reverse Coverage Verdict",
+            "type": "string"
+          },
+          "walkthrough_verdict": {
+            "enum": [
+              "faithful",
+              "fixed",
+              "scope_question"
+            ],
+            "title": "Walkthrough Verdict",
+            "type": "string"
+          },
+          "structural_findings": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Structural Findings",
+            "type": "array"
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Project Id"
+          }
+        },
+        "required": [
+          "batch_id",
+          "expected_revision",
+          "expected_digest",
+          "section_verdicts",
+          "reverse_coverage_verdict",
+          "walkthrough_verdict",
+          "structural_findings"
+        ],
+        "title": "TaskBatchReviewRecordArgs",
+        "type": "object"
+      }
+    },
     "task_failure_triage_notify": {
       "name": "task_failure_triage_notify",
       "description": "Record or reuse the durable incident for a terminal task failure and queue its single supervisor triage notice; replayed failures reuse the same incident.",
@@ -18179,6 +18580,7 @@
     "spec_ingest_reconcile": "task",
     "spec_ingest_legacy_inventory": "task",
     "batch_reconcile": "task",
+    "ensure_fidelity_review": "task",
     "ask_list": "review",
     "ask_show": "review",
     "ask_history": "review",

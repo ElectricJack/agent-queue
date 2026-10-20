@@ -610,6 +610,8 @@ def step_profile_ids(step: Any) -> tuple[str, ...]:
         found.append(value.value)
     if isinstance(step, CommandStep) and step.command == "ensure_spec_ingest":
         found.append("spec-ingest")
+    if isinstance(step, CommandStep) and step.command == "ensure_fidelity_review":
+        found.append("fidelity-reviewer")
     return tuple(dict.fromkeys(found))
 
 

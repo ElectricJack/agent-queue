@@ -562,7 +562,12 @@ class TestGeneratedSchema:
         assert "profile_id" not in schema["required"]
         assert "pin_provider" not in schema["properties"]
         assert {"intelligence_class", "task_type"} <= schema["properties"].keys()
-        assert set(schema["properties"]["profile_id"]["anyOf"][0]["enum"]) == ROLE_PROFILE_IDS
+        # The fidelity-reviewer role (held batches L2.1) joins the AgentTaskStep
+        # Literal with its shipped profile in L5.1; until then only
+        # ``ensure_fidelity_review`` files it.
+        assert set(schema["properties"]["profile_id"]["anyOf"][0]["enum"]) == (
+            ROLE_PROFILE_IDS - {"fidelity-reviewer"}
+        )
         step = golden.steps["escalate"].model_dump()
         step.pop("profile_id")
         assert D.AgentTaskStep.model_validate(step).profile_id is None

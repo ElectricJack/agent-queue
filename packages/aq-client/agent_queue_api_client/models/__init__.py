@@ -58,6 +58,7 @@ from .archive_settings_response import ArchiveSettingsResponse
 from .archive_settings_response_422 import ArchiveSettingsResponse422
 from .archive_settings_response_blocked_item import ArchiveSettingsResponseBlockedItem
 from .archive_task_request import ArchiveTaskRequest
+from .archive_task_request_rewire_type_0 import ArchiveTaskRequestRewireType0
 from .archive_task_response import ArchiveTaskResponse
 from .archive_task_response_delivery_type_0 import ArchiveTaskResponseDeliveryType0
 from .archive_task_response_undelivered_item import ArchiveTaskResponseUndeliveredItem
@@ -412,6 +413,8 @@ from .effect_clause_dto import EffectClauseDTO
 from .effect_clause_dto_kind import EffectClauseDTOKind
 from .effective_git_identity import EffectiveGitIdentity
 from .effective_git_identity_source import EffectiveGitIdentitySource
+from .ensure_fidelity_review_request import EnsureFidelityReviewRequest
+from .ensure_fidelity_review_response_422 import EnsureFidelityReviewResponse422
 from .ensure_spec_ingest_request import EnsureSpecIngestRequest
 from .ensure_spec_ingest_response_422 import EnsureSpecIngestResponse422
 from .ensure_task_request import EnsureTaskRequest
@@ -1820,6 +1823,9 @@ from .task_attachment_response import TaskAttachmentResponse
 from .task_attachments_response import TaskAttachmentsResponse
 from .task_batch_ack_response import TaskBatchAckResponse
 from .task_batch_ack_response_diff_type_0 import TaskBatchAckResponseDiffType0
+from .task_batch_ack_response_lineage_type_0 import TaskBatchAckResponseLineageType0
+from .task_batch_ack_response_members_type_0 import TaskBatchAckResponseMembersType0
+from .task_batch_ack_response_release_receipt_type_0 import TaskBatchAckResponseReleaseReceiptType0
 from .task_batch_commit_request import TaskBatchCommitRequest
 from .task_batch_commit_response import TaskBatchCommitResponse
 from .task_batch_commit_response_422 import TaskBatchCommitResponse422
@@ -1831,7 +1837,7 @@ from .task_batch_propose_response import TaskBatchProposeResponse
 from .task_batch_propose_response_422 import TaskBatchProposeResponse422
 from .task_batch_propose_response_diff_type_0 import TaskBatchProposeResponseDiffType0
 from .task_batch_update_request import TaskBatchUpdateRequest
-from .task_batch_update_request_payload import TaskBatchUpdateRequestPayload
+from .task_batch_update_request_payload_type_0 import TaskBatchUpdateRequestPayloadType0
 from .task_batch_update_response_422 import TaskBatchUpdateResponse422
 from .task_batch_validate_request import TaskBatchValidateRequest
 from .task_batch_validate_response import TaskBatchValidateResponse
@@ -2115,6 +2121,7 @@ __all__ = (
     "ArchiveSettingsResponse422",
     "ArchiveSettingsResponseBlockedItem",
     "ArchiveTaskRequest",
+    "ArchiveTaskRequestRewireType0",
     "ArchiveTaskResponse",
     "ArchiveTaskResponseDeliveryType0",
     "ArchiveTaskResponseUndeliveredItem",
@@ -2467,6 +2474,8 @@ __all__ = (
     "EffectClauseDTOKind",
     "EffectiveGitIdentity",
     "EffectiveGitIdentitySource",
+    "EnsureFidelityReviewRequest",
+    "EnsureFidelityReviewResponse422",
     "EnsureSpecIngestRequest",
     "EnsureSpecIngestResponse422",
     "EnsureTaskRequest",
@@ -3865,6 +3874,9 @@ __all__ = (
     "TaskAttachmentsResponse",
     "TaskBatchAckResponse",
     "TaskBatchAckResponseDiffType0",
+    "TaskBatchAckResponseLineageType0",
+    "TaskBatchAckResponseMembersType0",
+    "TaskBatchAckResponseReleaseReceiptType0",
     "TaskBatchCommitRequest",
     "TaskBatchCommitResponse",
     "TaskBatchCommitResponse422",
@@ -3876,7 +3888,7 @@ __all__ = (
     "TaskBatchProposeResponse422",
     "TaskBatchProposeResponseDiffType0",
     "TaskBatchUpdateRequest",
-    "TaskBatchUpdateRequestPayload",
+    "TaskBatchUpdateRequestPayloadType0",
     "TaskBatchUpdateResponse422",
     "TaskBatchValidateRequest",
     "TaskBatchValidateResponse",

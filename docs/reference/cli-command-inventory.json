@@ -17451,6 +17451,52 @@
       }
     },
     {
+      "path": "aq system task-batch-review-record",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "task_batch_review_record",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--batch-id",
+          "--expected-revision",
+          "--expected-digest",
+          "--section-verdicts",
+          "--reverse-coverage-verdict",
+          "--walkthrough-verdict",
+          "--structural-findings"
+        ],
+        "optional": [
+          "--project-id",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [
+          "--section-verdicts",
+          "--structural-findings"
+        ],
+        "nullable": [
+          "--project-id"
+        ]
+      }
+    },
+    {
       "path": "aq system task-route-apply",
       "registration": "generated",
       "owner_kind": "core",
@@ -17771,12 +17817,17 @@
           "--abandon-undelivered",
           "--disposition",
           "--reason",
+          "--replacement",
+          "--satisfied-by",
+          "--rewire",
           "--json",
           "--brief",
           "--save-output",
           "--api-url"
         ],
-        "structured": [],
+        "structured": [
+          "--rewire"
+        ],
         "nullable": []
       }
     },
@@ -17981,19 +18032,26 @@
       "acceptance_evidence": [],
       "parameters": {
         "required": [
-          "--proposal-id",
-          "--payload"
+          "--proposal-id"
         ],
         "optional": [
+          "--project-id",
+          "--payload",
+          "--expected-revision",
+          "--operations",
           "--json",
           "--brief",
           "--save-output",
           "--api-url"
         ],
         "structured": [
-          "--payload"
+          "--payload",
+          "--operations"
         ],
-        "nullable": []
+        "nullable": [
+          "--project-id",
+          "--expected-revision"
+        ]
       }
     },
     {
@@ -18603,6 +18661,42 @@
           "--intelligence-class",
           "--parent-key",
           "--parent-title",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq task ensure-fidelity-review",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "ensure_fidelity_review",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--project-id",
+          "--batch-id",
+          "--structure-revision"
+        ],
+        "optional": [
           "--json",
           "--brief",
           "--save-output",
