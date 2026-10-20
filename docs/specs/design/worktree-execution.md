@@ -163,8 +163,11 @@ the owned continuation, rather than the branch currently checked out in the reus
 slot. A saved branch label may differ when the checkpoint explicitly identifies the
 same task and its project identity matches; legacy snapshots without a task identity
 retain the branch-label check. The checkpoint HEAD must be proved reachable
-from the owned branch tip or its proved continuation commit. If the local owned ref
-is absent, use its exact origin ref after an authorized fresh fetch; a checkpoint
+from the owned branch tip or its proved continuation commit. A checkpoint captured
+on the exact owned branch may instead hold newer commits descending from that
+proved task history. Compare the eligible saved HEAD, local owned ref and its exact
+origin ref after an authorized fresh fetch, even when both refs exist;
+keep the newest head related by ancestry, never an older local checkpoint. A checkpoint
 equal to that tip or the base is valid even with no task commits. Related local progress
 is retained, and the saved index and worktree layers are reconciled separately on
 that continuation before any reset. Child preparation uses the child's owned tip
@@ -173,6 +176,13 @@ and conflicting snapshot contents refuse without changing the checkout or snapsh
 An ownership/ancestry refusal names the saved HEAD and snapshot commit, saved branch,
 owned branch and observed tip, proved continuation, and slot HEAD. The slot HEAD is
 diagnostic evidence, never the authority for checkpoint reachability.
+
+Immediately before restoring an owned pause plan, refuse a reset whose target does
+not contain the observed origin tip. Successful authorized worker publication advances
+the task's working checkpoint SHA and generation when the tip changes, invalidating
+prior verification while preserving the immutable filing origin. Repeating the same
+publication is idempotent; delegates and active parent episodes retain their separate
+checkpoint authority.
 
 A manual pause captures only the task's own checkout. A shared slot with no recorded
 task branch is held to `aq/<task_id>`, so a slot still on another task's branch refuses
