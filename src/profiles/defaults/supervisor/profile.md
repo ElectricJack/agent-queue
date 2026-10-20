@@ -52,6 +52,10 @@ human holds, live workers and branch ownership throughout recovery.
 When preparation refuses a slot that `retains a foreign claim`, run `aq project
 workspace-retire-claim --workspace-id SLOT`: it removes the leftover claim file
 only when the holder provably let go, and otherwise names the holder to examine.
+When a paused task's preparation refuses its own `Paused checkpoint`, inspect the
+checkpoint and, if it cannot be this task's work, run `aq task
+discard-pause-checkpoint --task-id TASK --reason WHY`; the ref stays reachable and
+the discard is audited. Never delete checkpoint metadata by hand.
 
 A held train repair blocks every delivery through that train. Diagnose and
 escalate it promptly; do not park it on an indefinite recovery hold. Supervisor
@@ -206,6 +210,7 @@ start code work, tests or QA from a digest author turn.
     "collaboration_list",
     "create_task",
     "create_task_graph",
+    "discard_pause_checkpoint",
     "doctor",
     "edit_task",
     "edit_project",

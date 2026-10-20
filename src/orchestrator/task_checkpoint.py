@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import shutil
 import tempfile
 import uuid
@@ -9,6 +10,8 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from src.git.manager import GitError, GitManager, is_valid_git_oid
+
+logger = logging.getLogger(__name__)
 
 CHECKPOINT_META = "manual_pause_checkpoint"
 
@@ -176,19 +179,62 @@ async def _validate_checkpoint_task(
                        "workspace was left unchanged")
 
 
+async def _foreign_checkpoint_reason(
+    db, task_id, saved, expected_branch=None, *, owned_continuation=False,
+) -> str | None:
+    """Name a checkpoint captured from another task's slot checkout, else None.
+
+    Only a branch label mismatch qualifies: the task and project identity
+    still match, so the snapshot is this task's pause of whatever the slot
+    had checked out. Every other refusal stays with ``_validate_checkpoint_task``.
+    A retained stop's checkpoint is its release proof and is never discarded here.
+    """
+    if "retained_stop_identity" in saved:
+        return None
+    task = await db.get_task(task_id)
+    if (task is None or saved.get("task_id", task_id) != task_id
+            or saved.get("pause_project_id", task.project_id) != task.project_id):
+        return None
+    expected = expected_branch or getattr(task, "branch_name", None)
+    current = getattr(task, "branch_name", None)
+    if expected is None or owned_continuation and saved.get("task_id") == task_id:
+        return None
+    expected = expected.removeprefix("refs/heads/")
+    if current is not None and current.removeprefix("refs/heads/") != expected:
+        return None
+    if saved["branch"] == expected:
+        return None
+    return (f"Paused checkpoint branch {saved['branch']!r} is not the task's own "
+            f"branch {expected!r}; the slot held another checkout when it was paused")
+
+
 async def prepare_checkpoint(
     db, git, task_id: str, workspace: str, *, handoff_sha: str | None = None,
     owned_branch: str | None = None, owned_head: str | None = None,
     expected_branch: str | None = None,
 ) -> dict | None:
     """Validate source and destination before any reset or clean can run."""
-    saved = await db.get_task_meta(task_id, CHECKPOINT_META)
-    if not saved:
+    raw = await db.get_task_meta(task_id, CHECKPOINT_META)
+    if not raw:
         return None
-    saved = _retained_stop_restoration(saved, task_id)
+    saved = _retained_stop_restoration(raw, task_id)
     if saved.get("branch") is None:
         raise GitError("Paused checkpoint has detached HEAD and no proved branch; "
                        "retain the checkpoint for guarded recovery; workspace was left unchanged")
+    reason = await _foreign_checkpoint_reason(
+        db, task_id, saved, expected_branch, owned_continuation=owned_branch is not None,
+    )
+    if reason is not None:
+        # Restoring would switch to a branch this task never owned; blocking
+        # would refuse every later preparation. Keep the ref, audit, continue.
+        try:
+            await db.discard_task_pause_checkpoint(
+                task_id, reason=reason, actor="checkpoint-preparation", expected=raw,
+            )
+        except ValueError as exc:
+            raise GitError(f"{exc}; workspace was left unchanged") from exc
+        logger.warning("Discarded foreign paused checkpoint for %s: %s", task_id, reason)
+        return None
     # An owned continuation proves reachability below, even when the snapshot
     # predates a branch rename. Task and project identity still must match.
     await _validate_checkpoint_task(

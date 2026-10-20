@@ -18648,6 +18648,53 @@
         }
       }
     },
+    "/api/task/discard-pause-checkpoint": {
+      "post": {
+        "tags": [
+          "task"
+        ],
+        "summary": "Discard a task's paused Git checkpoint so preparation stops restoring it, e.g. one captured from another task's slot checkout. Its ref and commit stay reachable and are recorded in a manual_pause_checkpoint_discarded audit entry.",
+        "description": "Discard a task's paused Git checkpoint so preparation stops restoring it, e.g. one captured from another task's slot checkout. Its ref and commit stay reachable and are recorded in a manual_pause_checkpoint_discarded audit entry.",
+        "operationId": "discard_pause_checkpoint",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DiscardPauseCheckpointRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DiscardPauseCheckpointResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/task/edit": {
       "post": {
         "tags": [
@@ -33582,6 +33629,77 @@
           "config_generation"
         ],
         "title": "DigestWindowRecord"
+      },
+      "DiscardPauseCheckpointRequest": {
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "title": "Task Id",
+            "description": "Task whose checkpoint to discard"
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason",
+            "description": "Why the checkpoint is discarded (audited)"
+          }
+        },
+        "type": "object",
+        "required": [
+          "task_id",
+          "reason"
+        ],
+        "title": "DiscardPauseCheckpointRequest"
+      },
+      "DiscardPauseCheckpointResponse": {
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "title": "Task Id"
+          },
+          "discarded": {
+            "type": "boolean",
+            "title": "Discarded"
+          },
+          "branch": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Branch"
+          },
+          "ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ref"
+          },
+          "commit": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Commit"
+          }
+        },
+        "type": "object",
+        "required": [
+          "task_id",
+          "discarded"
+        ],
+        "title": "DiscardPauseCheckpointResponse"
       },
       "DiscordCutoverStatus": {
         "properties": {

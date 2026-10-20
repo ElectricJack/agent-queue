@@ -1178,6 +1178,40 @@ class TaskQueryMixin:
                 created_at=time.time(),
             ))
 
+    async def discard_task_pause_checkpoint(
+        self, task_id: str, *, reason: str, actor: str, expected: dict | None = None,
+    ) -> dict | None:
+        """Drop the checkpoint metadata, keeping its ref and commit in an audit row.
+
+        With *expected*, delete only that exact checkpoint (compare-and-delete):
+        a changed value raises ``ValueError`` and nothing is removed. Returns the
+        discarded checkpoint, or None when the task has none.
+        """
+        async with self.immediate() as conn:
+            raw = await conn.scalar(select(task_metadata.c.value).where(
+                task_metadata.c.task_id == task_id,
+                task_metadata.c.key == "manual_pause_checkpoint",
+            ).with_for_update())
+            if raw is None:
+                if expected is not None:
+                    raise ValueError("Paused checkpoint changed during discard")
+                return None
+            current = json.loads(raw)
+            if expected is not None and current != expected:
+                raise ValueError("Paused checkpoint changed during discard")
+            await conn.execute(delete(task_metadata).where(
+                task_metadata.c.task_id == task_id,
+                task_metadata.c.key == "manual_pause_checkpoint",
+            ))
+            await conn.execute(insert(task_context).values(
+                id=str(uuid.uuid4())[:12], task_id=task_id,
+                type="manual_pause_checkpoint_discarded",
+                label="Paused checkpoint discarded; its ref keeps the work",
+                content=json.dumps({"actor": actor, "reason": reason, "checkpoint": current}),
+                created_at=time.time(),
+            ))
+            return current
+
     async def record_task_pause_preparations_stopped(
         self, task_id: str, snapshot: dict, identities: list[dict]
     ) -> dict:

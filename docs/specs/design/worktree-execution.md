@@ -174,6 +174,20 @@ An ownership/ancestry refusal names the saved HEAD and snapshot commit, saved br
 owned branch and observed tip, proved continuation, and slot HEAD. The slot HEAD is
 diagnostic evidence, never the authority for checkpoint reachability.
 
+A manual pause captures only the task's own checkout. A shared slot with no recorded
+task branch is held to `aq/<task_id>`, so a slot still on another task's branch refuses
+the pause instead of saving that checkout. A checkpoint that names a branch other than
+the task's own and carries no other proof (legacy captures with no task identity, or
+a recorded branch that no longer matches) is foreign: preparation discards it before
+any Git change and prepares normally. The discard deletes the metadata under a
+compare-and-delete fence and appends `task_context(type=manual_pause_checkpoint_discarded)`
+with the actor, the reason and the whole checkpoint; the pause ref keeps the work. A
+checkpoint from another task or project still refuses, and so does a retained-stop
+checkpoint, because it proves release. An explicitly supplied stale plan is never
+discarded. Operators and supervisors discard a checkpoint with
+`aq task discard-pause-checkpoint --task-id <id> --reason <why>`, which writes the
+same audit record. Never delete the metadata row by hand.
+
 Stack preparation compares an existing local child tip with the freshly observed
 published child tip in the observation store. Equal tips use the published tip;
 if the published tip is an ancestor of the local tip, preparation retains the

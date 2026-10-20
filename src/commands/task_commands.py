@@ -4355,6 +4355,30 @@ class TaskCommandsMixin:
         await self._emit_task_graph_change("task.updated", task)
         return {"task_id": task_id, "status": task.status.value}
 
+    async def _cmd_discard_pause_checkpoint(self, args: dict) -> dict:
+        task_id = args["task_id"]
+        reason = (args.get("reason") or "").strip()
+        if not reason:
+            return {"error": "reason is required"}
+        error = await self._task_control_scope_error(task_id)
+        if error:
+            return error
+        if await self.db.get_task(task_id) is None:
+            return {"error": f"Task '{task_id}' not found"}
+        actor = (self._current_scope or {}).get("session_id") or "local-operator"
+        # Under the pause/resume lock: never race a capture or a resume.
+        async with self.orchestrator._task_control_lock(task_id):
+            discarded = await self.db.discard_task_pause_checkpoint(
+                task_id, reason=reason, actor=actor,
+            )
+        if discarded is None:
+            return {"error": f"Task '{task_id}' has no paused checkpoint"}
+        return {
+            "task_id": task_id, "discarded": True,
+            "branch": discarded.get("branch"), "ref": discarded.get("ref"),
+            "commit": discarded.get("commit"),
+        }
+
     async def _cmd_stop_task(self, args: dict) -> dict:
         error = await self.orchestrator.stop_task(args["task_id"])
         if error:
