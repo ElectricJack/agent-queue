@@ -20,6 +20,23 @@ def _client(result):
     return client
 
 
+@pytest.mark.parametrize("apply", [False, True])
+def test_redrive_child_explicit_source_adoption(apply):
+    from src.cli.app import cli
+
+    client = _client({"success": True, "outcome": "would_advance"})
+    argv = ["integration", "redrive-child", "epic.1", "--adopt-source"]
+    if apply:
+        argv += ["--apply", "--head", "a" * 40, "--reason", "recover old completion"]
+    with patch("src.cli.integration._get_client", return_value=client):
+        result = CliRunner().invoke(cli, argv)
+    assert result.exit_code == 0, result.output
+    command, args = client.execute.call_args.args
+    assert command == "integration_redrive_child"
+    assert args["adopt_source"] is True
+    assert args["dry_run"] is not apply
+
+
 @pytest.mark.parametrize("target", [["--task-id", "task"], ["--owner-row-id", "owner"]])
 @pytest.mark.parametrize("flags", [[], ["--dry-run"], ["--apply"]])
 def test_release_owner_defaults_to_preview(target, flags):

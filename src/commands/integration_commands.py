@@ -2005,6 +2005,7 @@ class IntegrationCommandsMixin:
             expected_head_sha=request.expected_head_sha,
             reason=request.reason,
             operator_id=principal,
+            adopt_source=request.adopt_source,
         )
         return {
             "success": result["outcome"] in {"would_advance", "advanced", "nothing_to_redrive"},

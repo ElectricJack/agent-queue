@@ -5296,6 +5296,7 @@
           "task_id"
         ],
         "optional": [
+          "--adopt-source",
           "--apply",
           "--head",
           "--reason",

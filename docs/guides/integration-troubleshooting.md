@@ -33,6 +33,20 @@ inspected through `aq integration redrive-root ROOT_ID`. Preview first; apply
 uses the exact head and reason and repeats the proof. Changed remote ancestry,
 source identity, live writers or human holds are blockers, never retry overrides.
 
+For an older completed code leaf reporting `missing_git_provenance`, a local
+operator or live project supervisor can preview source recovery:
+
+```bash
+aq integration redrive-child CHILD_ID --adopt-source
+aq integration redrive-child CHILD_ID --adopt-source --apply --head FULL_PREVIEWED_OID --reason "Recover missing completion source"
+```
+
+This retains the existing passing generation after proving its published branch
+matches its checkpoint and materialized parent origin. A conflicting recorded
+source, missing passing completion or live writer refuses recovery. Adoption
+lets the train evaluate the source; its usual review, check and containment
+requirements still apply.
+
 ## Human holds and repair progress
 
 A human-held parent Subject reports its gate id and current version. After

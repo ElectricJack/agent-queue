@@ -8354,7 +8354,7 @@
         "integration-promotion"
       ],
       "default_arm": true,
-      "digest": "sha256:80f718dcd8cdf0414682d113c4f21b040b30bb261f197be0ed31eab9bb3abd29",
+      "digest": "sha256:2b7a12870890f7e0d857338b064ff92e4741d563bbba7213ab57e6eb42ed100c",
       "imports": [
         "src.commands.integration_commands",
         "src.config",
@@ -8365,8 +8365,11 @@
         "src.integration.child_delivery",
         "src.integration.collecting_parent_recovery",
         "src.integration.collection",
+        "src.integration.delivery_observer",
+        "src.integration.git_truth",
         "src.integration.hierarchy",
         "src.integration.models",
+        "src.integration.provenance",
         "src.integration.repository_git",
         "src.integration.suspended_parent_recovery",
         "src.models",

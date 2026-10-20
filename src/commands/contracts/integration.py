@@ -425,6 +425,7 @@ class IntegrationAuthorizeRootArgs(IntegrationRedriveRootArgs):
 
 class IntegrationRedriveChildArgs(CommandArgs):
     task_id: str = Field(min_length=1)
+    adopt_source: bool = False
     #: Diagnose only.  Applying needs the head the dry run reported and a reason.
     dry_run: bool = True
     expected_head_sha: str | None = Field(default=None, min_length=1)
@@ -446,7 +447,7 @@ class IntegrationRedriveChildArgs(CommandArgs):
         return self
 
 
-class IntegrationRecoverCompletedContainerArgs(IntegrationRedriveChildArgs):
+class IntegrationRecoverCompletedContainerArgs(IntegrationRedriveRootArgs):
     project_id: str = Field(min_length=1)
     repository_id: str = Field(min_length=1)
     branch: str = Field(min_length=1)
@@ -486,7 +487,7 @@ class IntegrationRecoverCompletedContainerValue(CommandValue):
     reason: str | None = None
 
 
-class IntegrationReopenCollectionArgs(IntegrationRedriveChildArgs):
+class IntegrationReopenCollectionArgs(IntegrationRedriveRootArgs):
     """Dry run by default; applying names the parent branch head the dry run reported."""
 
 
@@ -761,6 +762,7 @@ class IntegrationRedriveChildValue(CommandValue):
     remote_head_sha: str | None = None
     tree_sha: str | None = None
     evidence_id: str | None = None
+    completion_id: str | None = None
     collection: str | None = None
     checkpoint: dict[str, Any] | None = None
     reason: str | None = None
