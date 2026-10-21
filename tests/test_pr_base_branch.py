@@ -22,7 +22,6 @@ import pytest
 
 from src.commands.handler import CommandHandler
 from src.config import DatabaseConfig, AppConfig, DiscordConfig
-from src.database import Database
 from src.git.manager import GitError, PullRequestIdentity
 from src.git.github_contracts import GitHubRepositoryBinding
 from src.models import (
@@ -54,14 +53,9 @@ PR_IDENTITY = PullRequestIdentity(
 
 
 @pytest.fixture
-async def orch(request, tmp_path):
-    """SQLite always; PostgreSQL when ``POSTGRES_TEST_DSN`` is set (CI).
-
-    Both halves write through the database — task metadata on the merge,
-    gate rows on the sweep — so both dialects run.
-    """
-    db = Database(lease_dsn("base.db"))
-    await db.initialize()
+async def orch(request, tmp_path, reuse_database):
+    """Real PostgreSQL for task metadata on merges and gate rows on sweeps."""
+    db = await reuse_database("base.db")
     cfg = AppConfig(
         discord=DiscordConfig(bot_token="t", guild_id="1"),
         workspace_dir=str(tmp_path / "w"),
@@ -96,7 +90,6 @@ async def orch(request, tmp_path):
         )
     )
     yield o
-    await db.close()
 
 
 async def _task_with_pr(db, task_id: str = "t1") -> str:

@@ -20,6 +20,7 @@ from src.database.tables import (
 )
 from src.task_graph.integration_dependencies import declare
 from src.integration.repair import RepairService
+from tests.test_epic_pr_review_evidence import review_git_template as review_git_template
 from tests.test_epic_pr_review_evidence import case  # noqa: F401 -- pytest fixture
 from tests.test_integration_repair import _boundary, _policy, db  # noqa: F401 -- pytest fixture
 

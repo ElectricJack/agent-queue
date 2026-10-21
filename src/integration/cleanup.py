@@ -1147,6 +1147,7 @@ class IntegrationCleanupService:
                                             item_count=len(items))
 
     async def _train_context(self, batch):
+        from src.integration.batches import Batch, BatchStore
         from src.integration.git_truth import GitTruth
 
         if self.git is None or self.candidate_store is None:
@@ -1162,6 +1163,16 @@ class IntegrationCleanupService:
             store, project_id=batch["project_id"], repository_id=batch["repository_id"],
             repository_url=repository.url, target_ref=batch["target_ref"],
         )
+        default_ref = "refs/heads/" + repository.default_branch.removeprefix("refs/heads/")
+        frozen_batch = Batch.from_row(batch)
+        if (batch["target_ref"] != default_ref and batch["trigger"] != "promotion"
+                and not (frozen_batch.epic_sync or frozen_batch.epic_refresh)):
+            root = snapshot.for_target(default_ref)
+            members = await BatchStore(self.db).members(batch["id"])
+            if (members and not root.error and root.target_oid
+                    and all([await root.contains_source(m.task_id, m.source_sha, m.base_sha)
+                             is True for m in members])):
+                snapshot = root
         return _TrainCleanupContext(store, snapshot)
 
     async def _cleanup_train_ref(self, row, batch, repository, binding):

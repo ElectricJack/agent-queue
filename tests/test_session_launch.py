@@ -199,6 +199,37 @@ async def test_cancelled_launch_cleans_up_registration(db):
     assert (await db.get_session(record.id)).state == "stopped"
 
 
+async def test_codex_project_trust_is_recorded_before_provider_start(db, tmp_path):
+    # nimble-harbor-12: the trust row must exist before Codex paints its TUI.
+    repo = tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True)
+    config = tmp_path / "codex-home" / "config.toml"
+    record, spec = registration(lifecycle="pool")
+    spec = replace(
+        spec, work_dir=str(repo), codex_project_trust=True,
+        env={**spec.env, "CODEX_HOME": str(config.parent)},
+    )
+    provider = FakeProvider()
+    original = provider.start
+    seen: list[str] = []
+
+    async def start(spec):
+        seen.append(config.read_text() if config.exists() else "")
+        return await original(spec)
+
+    provider.start = start
+    await launch_session(db, provider, spec, record)
+    assert seen == [f'[projects."{repo.resolve()}"]\ntrust_level = "trusted"\n']
+
+
+async def test_launch_without_codex_project_trust_leaves_config_alone(db, tmp_path):
+    config = tmp_path / "codex-home" / "config.toml"
+    record, spec = registration(lifecycle="pool")
+    spec = replace(spec, env={**spec.env, "CODEX_HOME": str(config.parent)})
+    await launch_session(db, FakeProvider(), spec, record)
+    assert not config.exists()
+
+
 async def test_running_acknowledgement_preserves_first_claim(db):
     await db.create_agent(Agent(id="a", name="Agent", profile_id="worker"))
     await db.create_task(Task(id="t", project_id="p", title="Work", description="",
@@ -301,8 +332,9 @@ _START_SITES = {
     ("src/dashboard_server/proxy.py", "exchange.start"): 1,
     ("src/dashboard_server/proxy.py", "self.start"): 1,
     ("src/discord/adapter.py", "self._bot.start"): 1,
-    # Freezes an epic refresh batch; the train visits it without launching an agent.
-    ("src/integration/train_sources.py", "EpicRefresh(self.db, clock=self.clock).start"): 1,
+    # Freezes an epic refresh batch (conflicting root PR, collected-epic aggregate
+    # readiness); the train visits it without launching an agent.
+    ("src/integration/train_sources.py", "EpicRefresh(self.db, clock=self.clock).start"): 2,
     # Changelog section boundaries use re.Match offsets, never agent launches.
     ("src/integration/promotion_notes.py", "following.start"): 1,
     ("src/integration/promotion_notes.py", "match.start"): 3,
@@ -362,11 +394,11 @@ _PROCESS_SITES = {
     ("src/git/github_cli.py", "GhRunner.run", "create_subprocess_exec"): 1,
     # Whole-source proof pipes git diff into git patch-id; neither starts an agent.
     ("src/git/manager.py", "GitManager.apatch_id", "create_subprocess_exec"): 2,
-    # Pinned proposal inputs use a bounded, binary git cat-file reader, never an agent.
+    # Binary blob reads retain their dedicated bounded reader.
     ("src/git/manager.py", "GitManager.aread_blob", "create_subprocess_exec"): 1,
-    ("src/git/manager.py", "GitManager._arun_git_result_unlocked", "create_subprocess_exec"): 1,
-    ("src/git/manager.py", "GitManager._arun_subprocess", "create_subprocess_exec"): 1,
-    ("src/git/manager.py", "GitManager._arun_unlocked", "create_subprocess_exec"): 1,
+    # Git and workspace setup now share bounded process-group cleanup. This
+    # primitive owns command writers; provider agent launches stay above.
+    ("src/git/process.py", "run_owned_process", "create_subprocess_exec"): 1,
     # Authenticated acquisition, push and credential-free import share this Git-only spawn.
     ("src/git/manager.py", "GitManager._spawn_isolated_git", "create_subprocess_exec"): 1,
     ("src/integration/regeneration.py", "_run", "create_subprocess_exec"): 1,
@@ -380,7 +412,6 @@ _PROCESS_SITES = {
     ("src/jobs/service.py", "JobService.launch", "create_subprocess_exec"): 1,
     ("src/jobs/windows_owner.py", "run", "spawn"): 1,
     ("src/llm/cli.py", "ask_cli", "create_subprocess_exec"): 1,
-    ("src/orchestrator/worktree_manager.py", "WorktreeSlotManager._run_setup", "create_subprocess_exec"): 1,
     ("src/plugins/internal/files.py", "_run_subprocess", "create_subprocess_exec"): 1,
     ("src/plugins/internal/vibecop.py", "VibeCopRunner._run", "create_subprocess_exec"): 1,
     ("src/plugins/internal/vibecop.py", "VibeCopRunner.status", "create_subprocess_exec"): 3,

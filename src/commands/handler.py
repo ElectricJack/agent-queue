@@ -107,11 +107,15 @@ from src.commands.dashboard_state_commands import DashboardStateCommandsMixin
 from src.commands.escalation_commands import EscalationCommandsMixin
 from src.commands.conversation_commands import ConversationCommandsMixin
 from src.commands.review_commands import ReviewCommandsMixin
+from src.commands.ask_commands import AskCommandsMixin
 from src.commands.github_issue_commands import GitHubIssueCommandsMixin
 
 # -- dv2 phase 6 mixins ---------------------------------------------------
 from src.commands.proposal_commands import TaskProposalCommandsMixin
 from src.commands.spec_commands import SpecCommandsMixin
+from src.commands.spec_ingest_commands import SpecIngestCommandsMixin
+from src.commands.batch_check_commands import BatchCheckCommandsMixin
+from src.commands.fidelity_review_commands import FidelityReviewCommandsMixin
 from src.routing.filing import GUARDED_COMMANDS, routing_choice_refusal, without_inert_choices
 
 if TYPE_CHECKING:
@@ -414,10 +418,14 @@ class CommandHandler(
     EscalationCommandsMixin,
     ConversationCommandsMixin,
     ReviewCommandsMixin,
+    AskCommandsMixin,
     GitHubIssueCommandsMixin,
     # -- dv2 phase 6 mixins -----------------------------------------------
     TaskProposalCommandsMixin,
     SpecCommandsMixin,
+    SpecIngestCommandsMixin,
+    BatchCheckCommandsMixin,
+    FidelityReviewCommandsMixin,
 ):
     """Unified command execution layer for AgentQueue (Command Pattern).
 
@@ -961,6 +969,7 @@ class CommandHandler(
         """
         from src.task_templates import task_template_scope
 
+        request_started = time.monotonic()
         with task_template_scope(self.config.data_dir), CorrelationContext(
             command=name, component="command_handler"
         ):
@@ -1021,7 +1030,8 @@ class CommandHandler(
                 }
                 if name == "update_config"
                 else {"envelope": "<redacted-conversation-envelope>", "source": args.get("source")}
-                if name == "supervisor_inbox_post"
+                if name in {"supervisor_inbox_post", "ask_intake", "ask_button", "ask_reply",
+                            "ask_apply_input", "ask_discussion_reply"}
                 else {
                     **args,
                     "data_base64": f"<image bytes: {len(args.get('data_base64', ''))} base64 chars>",
@@ -1050,7 +1060,7 @@ class CommandHandler(
             # ``_resolve_project_id_in_args`` and by handler bodies (e.g. an
             # embedded body/plan being popped for storage), and the raw values
             # never appear on the bus regardless.
-            _emit_started_at = time.monotonic()
+            _emit_started_at = request_started
             _emit_args_snapshot = dict(args) if isinstance(args, dict) else {}
             if private_call:
                 _emit_args_snapshot = dict(log_args)
@@ -1246,6 +1256,7 @@ class CommandHandler(
                 return {"success": False, "error_code": "command_runtime_error",
                         "error": str(e) if not principal.enforced else "Command execution failed"}
             finally:
+                dispatch_ms = (time.monotonic() - request_started) * 1000
                 # Ensure scope does not leak across commands.
                 _current_scope_var.reset(_scope_token)
                 _principal_var.reset(_principal_token)
@@ -1283,3 +1294,11 @@ class CommandHandler(
                             await bus.emit("command.invoked", payload)
                 except Exception:  # pragma: no cover -- defensive
                     logger.debug("command.invoked emit failed for %s", name, exc_info=True)
+                finally:
+                    total_ms = (time.monotonic() - request_started) * 1000
+                    log = logger.warning if total_ms >= 1000 else logger.debug
+                    log(
+                        "command timing name=%s ok=%s duration_ms=%.1f "
+                        "dispatch_ms=%.1f event_ms=%.1f",
+                        name, _emit_ok, total_ms, dispatch_ms, total_ms - dispatch_ms,
+                    )

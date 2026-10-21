@@ -65,11 +65,15 @@ def sync_detailed(
     client: AuthenticatedClient | Client,
     body: TaskBatchUpdateRequest,
 ) -> Response[TaskBatchAckResponse | TaskBatchUpdateResponse422]:
-    """Replace a pending change set, re-running final graph and state checks as task_batch_propose. Only
-    proposals still in ``draft`` or ``ready`` can be updated — a committed or discarded one is history.
+    """Update an ungated pending proposal with payload, or edit a held ingestion batch with
+    expected_revision and scoped operations. Only the live assigned fidelity reviewer or project
+    supervisor may edit held members. Atomic hard checks roll back invalid edits; structural changes
+    supersede old receipts. No edit releases work.
 
-     Replace a pending change set, re-running final graph and state checks as task_batch_propose. Only
-    proposals still in ``draft`` or ``ready`` can be updated — a committed or discarded one is history.
+     Update an ungated pending proposal with payload, or edit a held ingestion batch with
+    expected_revision and scoped operations. Only the live assigned fidelity reviewer or project
+    supervisor may edit held members. Atomic hard checks roll back invalid edits; structural changes
+    supersede old receipts. No edit releases work.
 
     Args:
         body (TaskBatchUpdateRequest):
@@ -98,11 +102,15 @@ def sync(
     client: AuthenticatedClient | Client,
     body: TaskBatchUpdateRequest,
 ) -> TaskBatchAckResponse | TaskBatchUpdateResponse422 | None:
-    """Replace a pending change set, re-running final graph and state checks as task_batch_propose. Only
-    proposals still in ``draft`` or ``ready`` can be updated — a committed or discarded one is history.
+    """Update an ungated pending proposal with payload, or edit a held ingestion batch with
+    expected_revision and scoped operations. Only the live assigned fidelity reviewer or project
+    supervisor may edit held members. Atomic hard checks roll back invalid edits; structural changes
+    supersede old receipts. No edit releases work.
 
-     Replace a pending change set, re-running final graph and state checks as task_batch_propose. Only
-    proposals still in ``draft`` or ``ready`` can be updated — a committed or discarded one is history.
+     Update an ungated pending proposal with payload, or edit a held ingestion batch with
+    expected_revision and scoped operations. Only the live assigned fidelity reviewer or project
+    supervisor may edit held members. Atomic hard checks roll back invalid edits; structural changes
+    supersede old receipts. No edit releases work.
 
     Args:
         body (TaskBatchUpdateRequest):
@@ -126,11 +134,15 @@ async def asyncio_detailed(
     client: AuthenticatedClient | Client,
     body: TaskBatchUpdateRequest,
 ) -> Response[TaskBatchAckResponse | TaskBatchUpdateResponse422]:
-    """Replace a pending change set, re-running final graph and state checks as task_batch_propose. Only
-    proposals still in ``draft`` or ``ready`` can be updated — a committed or discarded one is history.
+    """Update an ungated pending proposal with payload, or edit a held ingestion batch with
+    expected_revision and scoped operations. Only the live assigned fidelity reviewer or project
+    supervisor may edit held members. Atomic hard checks roll back invalid edits; structural changes
+    supersede old receipts. No edit releases work.
 
-     Replace a pending change set, re-running final graph and state checks as task_batch_propose. Only
-    proposals still in ``draft`` or ``ready`` can be updated — a committed or discarded one is history.
+     Update an ungated pending proposal with payload, or edit a held ingestion batch with
+    expected_revision and scoped operations. Only the live assigned fidelity reviewer or project
+    supervisor may edit held members. Atomic hard checks roll back invalid edits; structural changes
+    supersede old receipts. No edit releases work.
 
     Args:
         body (TaskBatchUpdateRequest):
@@ -157,11 +169,15 @@ async def asyncio(
     client: AuthenticatedClient | Client,
     body: TaskBatchUpdateRequest,
 ) -> TaskBatchAckResponse | TaskBatchUpdateResponse422 | None:
-    """Replace a pending change set, re-running final graph and state checks as task_batch_propose. Only
-    proposals still in ``draft`` or ``ready`` can be updated — a committed or discarded one is history.
+    """Update an ungated pending proposal with payload, or edit a held ingestion batch with
+    expected_revision and scoped operations. Only the live assigned fidelity reviewer or project
+    supervisor may edit held members. Atomic hard checks roll back invalid edits; structural changes
+    supersede old receipts. No edit releases work.
 
-     Replace a pending change set, re-running final graph and state checks as task_batch_propose. Only
-    proposals still in ``draft`` or ``ready`` can be updated — a committed or discarded one is history.
+     Update an ungated pending proposal with payload, or edit a held ingestion batch with
+    expected_revision and scoped operations. Only the live assigned fidelity reviewer or project
+    supervisor may edit held members. Atomic hard checks roll back invalid edits; structural changes
+    supersede old receipts. No edit releases work.
 
     Args:
         body (TaskBatchUpdateRequest):

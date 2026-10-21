@@ -325,7 +325,7 @@ async def test_message_pointer_arrives_while_scheduler_git_work_is_blocked(orch,
         assert stored.last_notified_at is not None
         nudge.assert_awaited_once_with(
             kind="session", target_id=msg.to_id, project_id=None,
-            text=f"Handle `aq message status {msg.id} --json`.",
+            text=f"Handle `aq message status {msg.id} --json` (running it marks the message read).",
         )
     finally:
         scheduler.cancel()

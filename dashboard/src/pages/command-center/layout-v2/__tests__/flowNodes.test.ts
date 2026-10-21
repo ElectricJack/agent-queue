@@ -272,6 +272,18 @@ describe("toFlowElements", () => {
     expect(byId(second, "a")).not.toBe(byId(first, "a"));
   });
 
+  it("rebuilds a READY card when only its delivery hold changes", () => {
+    const tiles = { nodes: [n("a", "card", 0, 0, { agg_children: 0 })],
+      edges: [], stubs: [], stub_overflow: [], workers: [], gates: [], layout_version: 1 };
+    const wire = (value: unknown) => mergeTiles(emptyStore(), ["0:0"], JSON.parse(JSON.stringify(value)) as never);
+    const first = toFlowElements(wire(tiles), ctx);
+    const claim_readiness = { state: "waiting_on_delivery", claimable: false,
+      label: "Waiting on delivery", reason: "Land source.6 on dev" };
+    const next = toFlowElements(wire({ ...tiles, nodes: [{ ...tiles.nodes[0], claim_readiness }] }), ctx, first.cache);
+    expect(next.nodes[0]).not.toBe(first.nodes[0]);
+    expect((next.nodes[0]!.data as { task: unknown }).task).toMatchObject({ claim_readiness });
+  });
+
   it("rebuilds a card when descendant activity changes while lifecycle stays IN_PROGRESS", () => {
     const tiles = {
       nodes: [n("a", "collapsed", 0, 0, { status: "IN_PROGRESS", display_state: "waiting", child_state_counts: { waiting: 2 } })],
@@ -494,6 +506,9 @@ describe("relationsByTask (reason-line neighbours, spec §3.4)", () => {
       leaf("t1", 2, { priority: 80 }), leaf("t2", 3, { priority: 80 }),
       leaf("held", 4, { priority: 1, is_blocked: true }),
       leaf("run", 5, { priority: 1, status: "IN_PROGRESS" }),
+      leaf("delivery", 7, { priority: 1, claim_readiness: {
+        state: "waiting_on_delivery", claimable: false, label: "Waiting on delivery", reason: "Land source on dev",
+      } }),
       // A parent is never claimable (claim_queries' has_children rule), so a
       // READY epic neither ranks nor pushes a leaf down the frontier.
       n("epic", "card", 6, 0, { priority: 1 }),
@@ -502,6 +517,7 @@ describe("relationsByTask (reason-line neighbours, spec §3.4)", () => {
     expect(rel.get("p50")?.readyAhead).toBe(1);
     expect(rel.get("t1")?.readyAhead).toBeNull();
     expect(rel.get("held")?.readyAhead ?? null).toBeNull();
+    expect(rel.get("delivery")?.readyAhead ?? null).toBeNull();
     expect(rel.get("run")?.readyAhead ?? null).toBeNull();
     expect(rel.get("epic")?.readyAhead ?? null).toBeNull();
   });

@@ -14,15 +14,19 @@ The shipped bugfix rule starts at `standard-high` and escalates to `deep-high`
 after one substantive failure. The plan and applied route record
 `escalated_after_failure`, including the source and target classes and the
 failed attempt identities, classes, timestamps and reasons. Failed worker
-closes (other than explicitly transient failures), verification failures and
-review rejection via `reopen_with_feedback` count. Infrastructure transitions
-such as session launch/close errors, lost workers and provider outages do not.
-Unknown Git observations, authorization failures and failed delivery pushes
-are infrastructure failures; a blocked close alone is not a work verdict.
+closes (other than explicitly transient failures) and verification failures
+count. Infrastructure transitions such as session launch/close errors, lost
+workers and provider outages do not. Unknown Git observations, authorization
+failures and failed delivery pushes are infrastructure failures; a blocked
+close alone is not a work verdict. Rework after a passing attempt is not a
+capability failure either: `reopen_with_feedback`, and any reopen of a
+COMPLETED task, re-plans the route at the same class without journaling a
+failure, and the planner ignores journal rows with that reason or a COMPLETED
+`previous_status` (rows written before this rule).
 
 Transitions journal qualifying failures in `routing_failed_attempts` task
 metadata, in the same transaction as the guarded status write. An attempt
-counts once, including a failure followed by review feedback. The journal
+counts once; review feedback after a failure adds nothing. The journal
 survives retry-count resets and infrastructure restarts, so an escalated task
 does not fall back to standard after a later infrastructure incident.
 On retry/reopen, router-owned routes return to `unrouted` before the task can
@@ -114,6 +118,25 @@ compatible alternative with free observed capacity by the existing pressure
 score. With no free candidate, preserve queued routing by pressure. Headroom is
 an observation used to rank preference, never an admission reservation.
 
+`balance.usage_mode: headroom` optionally weights each candidate's capacity by
+its provider's remaining quota below or at the soft limit. The default,
+`soft_limit`, retains the existing scoring and policy digest. In headroom mode,
+the binding window is the fullest fresh, unreset window for that provider;
+its factor is `1 - used_percent / 100`. Windows whose reset time has passed
+are excluded, as are stale readings. Unknown quota or percentage-only readings
+without freshness evidence have a neutral factor of 1. No reset-time pacing
+or comparison of absolute quotas between providers is inferred.
+
+Above `usage_soft_percent`, the existing soft-limit penalty applies unchanged
+and the additional headroom factor is 1. Class, lane, preference and reserved
+cell rules still apply before pressure selection. With equal slots and steady
+20% / 70% usage, routine work without a harness preference spreads in the
+80:30 ratio of effective capacity as routed backlog grows. Scores, decision
+evidence and the route reason name `usage_headroom_factor` and the binding
+window/scope/reset; `aq task explain` exposes that persisted reason. This is
+an opt-in policy mechanism; enabling it in an installed routing policy still
+requires the normal reviewed artifact activation.
+
 Apply recomputes this selection under the existing route lock. Persisted reasons
 and decision evidence name selected class/profile/provider, load and headroom,
 availability, quota freshness/age and snapshot age, including why a preferred
@@ -162,7 +185,11 @@ Quarantine reports `launch_backoff` and expiry, rather than captured stderr.
 
 `task_route_apply` refreshes eligibility and load inside the existing fleet
 advisory-lock transaction, checks provider/harness/lifecycle/class compatibility,
-and reselects on current routed backlog. It stores the bounded apply observation
+and locks the task row before reading its fresh routing inputs. A concurrent
+`task_route --prefer ... --prefer-mode strict` either precedes that read or
+clears the applied route afterwards; an older apply cannot overwrite the new
+preference with a route to another harness.
+It then reselects on current routed backlog. It stores the bounded apply observation
 in the route record. Context supplied by a caller is never trusted for eligibility
 or admission. Concurrent decisions observe previously committed routes; claim
 and guarded route writes continue to protect held tasks.

@@ -71,6 +71,60 @@ async def test_workers_read_project_knowledge_but_only_edit_own(context):
     )["sequence"] == 2
 
 
+async def test_pool_bearer_resolves_live_task_for_reads_writes_and_task_visibility(context):
+    service, worker, _, _ = context
+    pool = replace(worker, task_id=None)
+    pool = replace(pool, policy=replace(
+        pool.policy, aq_commands=pool.policy.aq_commands | {"record_search"},
+    ))
+    record = await create(service, pool)
+    shown = await service.show(identity=ident(record), principal=pool, project_id="p")
+    assert shown["record_id"] == record["record_id"]
+    assert "edit" in shown["allowed_actions"]
+    records = RecordService(service.db, service.config)
+    own_task = await records.show(
+        identity=f"task:{worker.task_id}", principal=pool, project_id="p",
+    )
+    assert own_task["task"]["id"] == worker.task_id
+    found = await records.search(principal=pool, project_id="p", kind="task")
+    assert [item["task_id"] for item in found["items"]] == [worker.task_id]
+    # A resolved bearer and a task-bound caller have the same ownership key.
+    updated = await service.update(
+        identity=ident(record), principal=worker, project_id="p", claim_epoch=1,
+        if_revision=record["revision_id"], patch={"body": "Same author"},
+        idempotency_key="bound-edit",
+    )
+    assert updated["sequence"] == 2
+
+
+@pytest.mark.parametrize("change", ["idle", "non-pool", "wrong-task", "wrong-project", "epoch"])
+async def test_pool_task_resolution_preserves_scope_and_claim_fences(context, change):
+    service, worker, other, _ = context
+    pool = replace(worker, task_id=None)
+    async with service.db.immediate() as conn:
+        if change == "idle":
+            await conn.execute(update(sessions).where(sessions.c.id == worker.session_id)
+                               .values(task_id=None))
+        elif change == "non-pool":
+            await conn.execute(update(sessions).where(sessions.c.id == worker.session_id)
+                               .values(lifecycle="task"))
+        elif change == "epoch":
+            await conn.execute(update(sessions).where(sessions.c.id == worker.session_id)
+                               .values(last_claim_epoch=2))
+    if change == "wrong-task":
+        pool = replace(pool, task_id=other.task_id)
+    project = "q" if change == "wrong-project" else "p"
+    with pytest.raises(RecordError) as exc:
+        await service.create(
+            snapshot=snapshot(), principal=pool, project_id=project, claim_epoch=1,
+            idempotency_key="refused-pool",
+        )
+    assert exc.value.code == (
+        "record.not_found" if change == "wrong-project" else
+        "record.stale_claim" if change == "epoch" else "record.forbidden"
+    )
+
+
 async def test_denied_unknown_and_global_have_no_private_tokens(context):
     service, worker, _, supervisor = context
     foreign = await service.create(

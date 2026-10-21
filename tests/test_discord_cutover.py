@@ -7,11 +7,9 @@ import pytest
 from sqlalchemy import delete, update
 
 from src.config import AppConfig, DiscordConfig
-from src.database import Database
 from src.database.tables import escalation_deliveries, escalations
 from src.discord.cutover import LegacyBinding, LegacyConversationMigrator, run_discord_cutover
 from src.models import Project, Task
-from tests.db_fixtures import lease_dsn
 
 
 class EmptyDB:
@@ -54,15 +52,13 @@ def fake_bot(discord, channels):
 
 
 @pytest.fixture
-async def db():
-    database = Database(lease_dsn("discord-cutover"))
-    await database.initialize()
+async def db(reuse_database):
+    database = await reuse_database("discord-cutover")
     await database.create_project(Project(id="p", name="Project"))
     await database.create_task(
         Task(id="t", project_id="p", title="Needs a decision", description="Wait for a human")
     )
     yield database
-    await database.close()
 
 
 async def add_question(db, question_id, *, state, answer=None, requires_human=True):

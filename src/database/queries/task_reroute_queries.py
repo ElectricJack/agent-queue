@@ -20,7 +20,11 @@ from typing import Any
 from sqlalchemy import and_, case, func, insert, select, update
 
 from src.database.queries.blocked_state import apply_label_filters
-from src.database.queries.claim_queries import _frontier_predicates, route_claimable_in
+from src.database.queries.claim_queries import (
+    _frontier_predicates,
+    pool_primary_kind,
+    route_claimable_in,
+)
 from src.database.tables import messages, sessions, task_reroutes, tasks
 from src.models import TaskStatus
 
@@ -347,7 +351,7 @@ class TaskRerouteQueryMixin:
     ) -> list[dict]:
         """Queued tasks on *profile_ids* the sweep may move, in claim order.
 
-        ``READY`` unblocked unassigned rows, plus every ``PAUSED`` row on an
+        ``READY`` unblocked rows and stopped ``BLOCKED`` rows, plus every ``PAUSED`` row on an
         automatic backoff (``resume_after`` set -- never an operator hold) so
         the caller can tell a provider pause (``task_metadata
         ['provider_pause']``) from a legacy one.  *task_ids* narrows to
@@ -356,7 +360,7 @@ class TaskRerouteQueryMixin:
         ids = sorted(set(profile_ids))
         if not ids and task_ids is None:
             return []
-        conditions = [tasks.c.assigned_agent_id.is_(None)]
+        conditions = [_unheld()]
         if ids:
             conditions.append(tasks.c.profile_id.in_(ids))
         if task_ids is not None:
@@ -370,9 +374,10 @@ class TaskRerouteQueryMixin:
             paused = and_(
                 tasks.c.status == TaskStatus.PAUSED.value, tasks.c.resume_after.is_not(None)
             )
-            conditions.append(ready | paused)
+            blocked = tasks.c.status == TaskStatus.BLOCKED.value
+            conditions.append(ready | blocked | paused)
         stmt = (
-            select(tasks)
+            select(tasks, pool_primary_kind().label("workspace_kind"))
             .where(and_(*conditions))
             .order_by(tasks.c.priority.asc(), tasks.c.created_at.asc(), tasks.c.id.asc())
         )
@@ -414,6 +419,7 @@ class TaskRerouteQueryMixin:
                 tasks.c.intelligence_class,
                 tasks.c.provider_intent,
                 tasks.c.route,
+                pool_primary_kind().label("workspace_kind"),
             )
             .where(
                 tasks.c.status == TaskStatus.READY.value,

@@ -56,10 +56,14 @@ async def test_spec_approve_flips_frontmatter_and_emits_event(handler):
     approved = [e for e in _emitted(handler) if e[0] == "spec.approved"]
     assert approved
     # The command resolves the spec path; compare against the resolved form.
-    assert approved[-1][1] == {
-        "project_id": "p1",
-        "spec_path": str(spec_path.resolve()),
-    }
+    payload = approved[-1][1]
+    assert payload["project_id"] == "p1"
+    assert payload["spec_path"] == str(spec_path.resolve())
+    assert payload["decision_id"] == r["decision_id"]
+    assert payload["packet_sha256"] == r["packet_sha256"]
+    assert payload["review_id"] is None and payload["revision"] is None
+    assert payload["spec_kind"] == "design"
+
 
 
 async def test_spec_approve_rejects_path_escape(handler):
@@ -136,3 +140,46 @@ async def test_spec_approve_preserves_comments_and_order(handler):
     assert fm_body.index("title:") < fm_body.index("status:")
     assert fm_body.index("status:") < fm_body.index("owner:")
     assert "status: approved" in text
+
+
+async def test_standalone_snapshot_pins_bytes_provenance_and_same_body_reuses_decision(handler):
+    import hashlib
+    from sqlalchemy import select
+    from src.database.tables import ask_decisions, approved_document_snapshots
+
+    await handler.execute("create_project", {"id": "p1", "name": "p1"})
+    path = Path(handler.config.vault_root) / "projects/p1/specs/exact.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    body = "\r\n# Café\r\n  Preserve whitespace.  \r\n".encode()
+    path.write_bytes(b"---\r\nstatus: draft\r\nspec_kind: implementation\r\n---" + body)
+    args = {"project_id": "p1", "spec_path": str(path)}
+    first = await handler.execute("spec_approve", args)
+    assert first["success"], first
+    replay = await handler.execute("spec_approve", args)
+    assert replay["success"] and replay["decision_id"] == first["decision_id"], replay
+    async with handler.db._engine.connect() as conn:
+        snapshot = await handler.db.get_approved_document_snapshot(first["snapshot_id"], conn=conn)
+        assert snapshot["body"] == body
+        assert snapshot["body_sha256"] == hashlib.sha256(body).hexdigest()
+        assert snapshot["approval_provenance"]["principal_id"] == "human:local-operator"
+        assert len((await conn.execute(select(ask_decisions))).all()) == 1
+    path.write_bytes(b"---\nstatus: approved\nspec_kind: implementation\n---\nChanged body\n")
+    changed = await handler.execute("spec_approve", args)
+    assert changed["success"] and changed["decision_id"] != first["decision_id"]
+    async with handler.db._engine.connect() as conn:
+        assert len((await conn.execute(select(approved_document_snapshots))).all()) == 2
+        assert (await handler.db.get_approved_document_snapshot(first["snapshot_id"], conn=conn))["body"] == body
+
+
+async def test_review_binding_survives_frontmatter_removal(handler):
+    await handler.execute("create_project", {"id": "p1", "name": "p1"})
+    submitted = await handler.execute("review_submit", {
+        "project_id": "p1", "kind": "spec", "title": "Reviewed source", "content": "# Reviewed",
+    })
+    assert submitted["success"], submitted
+    review = await handler.db.get_review(submitted["review_id"])
+    path = Path(handler.config.vault_root) / review["vault_path"]
+    path.write_text("---\nstatus: approved\n---\nCaller edited mirror")
+    result = await handler.execute("spec_approve", {"project_id": "p1", "spec_path": str(path)})
+    assert not result["success"] and result["error_code"] == "review_gate", result
+    assert submitted["review_id"] in result["error"]

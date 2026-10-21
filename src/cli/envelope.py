@@ -51,6 +51,9 @@ _LEGACY_WARNING = (
 # `emit(..., entity=...)`. Centrally defined so no command hand-rolls its
 # own trimming.
 BRIEF_PROJECTIONS: dict[str, tuple[str, ...]] = {
+    "ask": ("success", "view", "identity_hash", "items", "count", "snapshot_at", "next_cursor", "source_health",
+            "ask", "expected", "actions", "preview", "decision_id", "application_state",
+            "input_id", "receipt", "created"),
     "task": ("id", "title", "status", "priority", "project_id", "assigned_agent"),
     "session": ("id", "task_id", "state", "harness", "last_activity"),
     "gate": ("id", "gate_type", "status", "task_id"),

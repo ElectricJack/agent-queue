@@ -7,10 +7,13 @@ import json
 import math
 from typing import Any
 
-from sqlalchemy import and_, func, literal, or_, select, union_all, update
+from sqlalchemy import and_, case, func, literal, or_, select, union_all, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-from src.database.tables import digest_windows, outbound_deliveries, supervisor_report_requests
+from src.database.tables import (
+    ask_external_bindings, digest_windows, human_asks, human_communication_modes, outbound_deliveries,
+    projects, supervisor_report_requests,
+)
 from src.delivery.dispatch import MAX_BATCH
 from src.delivery.message import operation_marker
 from src.digest.render import sanitise
@@ -58,13 +61,16 @@ class OutboundQueriesMixin:
         payload: dict[str, Any],
         due_at: float,
         now: float,
+        ask_fields: dict | None = None,
     ) -> tuple[dict, bool]:
         """Freeze the route/body at reservation; a conflicting replay is refused.
 
         Called only by domain commands, never an arbitrary Discord-post surface.
         """
-        if owner_kind not in ("morning", "conversation") or not owner_id or not dedup_key:
+        if owner_kind not in ("morning", "conversation", "ask") or not owner_id or not dedup_key:
             raise ValueError("a morning/conversation owner and dedup key are required")
+        if (owner_kind == "ask") != bool(ask_fields):
+            raise ValueError("Ask delivery requires its indexed binding/version identity")
         if not all(math.isfinite(value) for value in (due_at, now)):
             raise ValueError("delivery times must be finite")
         if (
@@ -95,6 +101,7 @@ class OutboundQueriesMixin:
                 await conn.execute(
                     pg_insert(outbound_deliveries)
                     .values(
+                        **(ask_fields or {}),
                         id=delivery_id,
                         owner_kind=owner_kind,
                         owner_id=owner_id,
@@ -180,6 +187,7 @@ class OutboundQueriesMixin:
         lease_seconds: float = 120,
         limit: int = 5,
         include_digest: bool = True,
+        prefer_priority: bool | None = None,
     ) -> list[dict]:
         """Claim oldest eligible messages across tables under one short transaction."""
         if not lease_owner or lease_seconds <= 0 or not 1 <= limit <= MAX_BATCH:
@@ -189,7 +197,30 @@ class OutboundQueriesMixin:
                 outbound_deliveries.c.id,
                 outbound_deliveries.c.due_at,
                 literal("outbound").label("outbox"),
-            ).where(_due(outbound_deliveries, outbound_deliveries.c.state, now))
+                case((outbound_deliveries.c.owner_kind.in_(("ask", "conversation")), 0),
+                     else_=1).label("priority"),
+            ).where(
+                _due(outbound_deliveries, outbound_deliveries.c.state, now),
+                ~select(projects.c.id).where(
+                    projects.c.id == outbound_deliveries.c.project_id,
+                    projects.c.status == "PAUSED",
+                ).exists(),
+                ~select(human_asks.c.id).join(projects, projects.c.id == human_asks.c.project_id)
+                    .where(human_asks.c.id == outbound_deliveries.c.payload['ask_id'].as_string(),
+                           projects.c.status == 'PAUSED').exists(),
+                or_(outbound_deliveries.c.owner_kind != "ask", select(ask_external_bindings.c.id)
+                    .join(human_communication_modes, and_(
+                        human_communication_modes.c.project_id == ask_external_bindings.c.project_id,
+                        human_communication_modes.c.destination == ask_external_bindings.c.destination,
+                    )).where(
+                        ask_external_bindings.c.id == outbound_deliveries.c.binding_id,
+                        ask_external_bindings.c.active,
+                        human_communication_modes.c.mode == "channel",
+                        human_communication_modes.c.generation == outbound_deliveries.c.mode_generation,
+                        or_(ask_external_bindings.c.inflight_id.is_(None),
+                            ask_external_bindings.c.inflight_id == outbound_deliveries.c.id),
+                    ).exists()),
+            )
         ]
         if include_digest:
             candidates.append(
@@ -197,6 +228,7 @@ class OutboundQueriesMixin:
                     digest_windows.c.id,
                     digest_windows.c.due_at,
                     literal("digest").label("outbox"),
+                    literal(1).label("priority"),
                 ).where(
                     _due(digest_windows, digest_windows.c.send_status, now),
                     digest_windows.c.payload.is_not(None),
@@ -211,7 +243,11 @@ class OutboundQueriesMixin:
                 (
                     await conn.execute(
                         select(queue)
-                        .order_by(queue.c.due_at, queue.c.outbox, queue.c.id)
+                        .order_by(
+                            (literal(0) if prefer_priority is None else
+                             queue.c.priority if prefer_priority else queue.c.priority.desc()),
+                            queue.c.due_at, queue.c.outbox, queue.c.id,
+                        )
                         .limit(limit)
                     )
                 )

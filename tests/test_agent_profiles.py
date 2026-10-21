@@ -17,7 +17,6 @@ from pathlib import Path
 import pytest
 
 from src.config import AgentProfileConfig, AppConfig, DatabaseConfig, load_config
-from src.database import Database
 from src.models import (
     Agent,
     AgentProfile,
@@ -38,11 +37,9 @@ from tests.assignment_routing_helpers import route_source_for
 
 
 @pytest.fixture
-async def db(tmp_path):
-    database = Database(lease_dsn("test.db"))
-    await database.initialize()
+async def db(tmp_path, reuse_database):
+    database = await reuse_database("test.db")
     yield database
-    await database.close()
 
 
 @pytest.fixture

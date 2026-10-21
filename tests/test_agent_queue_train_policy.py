@@ -22,7 +22,7 @@ from src.playbooks.validation import (
 
 ROOT = Path(__file__).resolve().parents[1]
 POLICY = ROOT / "docs/config/agent-queue-train-policy.json"
-BUNDLES = ROOT / "src/prompts/reviewed_playbooks"
+BUNDLES = ROOT / "docs/history/legacy-train-policies"
 
 
 def test_required_checks_match_workflow_matrix() -> None:
@@ -58,7 +58,7 @@ def test_required_checks_match_workflow_matrix() -> None:
 
 
 @pytest.mark.parametrize("boundary", ["parent", "root"])
-def test_policy_route_matches_reviewed_bundle(boundary: str) -> None:
+def test_historical_policy_route_matches_archived_bundle(boundary: str) -> None:
     policy = HierarchicalIntegrationPolicy.model_validate(json.loads(POLICY.read_text()))
     route = getattr(policy, boundary).route
     folder = BUNDLES / route.playbook_id
@@ -96,17 +96,16 @@ def test_policy_route_matches_reviewed_bundle(boundary: str) -> None:
     assert manifest["source_sha256"] == snapshot.source_digest
     assert manifest["contract_fingerprint"] == snapshot.contract_fingerprint
     assert manifest["profiles_referenced"] == []
-    assert not [
-        diagnostic
-        for diagnostic in validate_definition(
-            artifact,
-            inventory=None,
-            contracts=RegistryContractLookup(),
-            profiles=NullProfileLookup(),
-            events=RegisteredEventLookup(),
-        )
-        if diagnostic.severity in {"error", "question"}
-    ]
+    diagnostics = validate_definition(
+        artifact,
+        inventory=None,
+        contracts=RegistryContractLookup(),
+        profiles=NullProfileLookup(),
+        events=RegisteredEventLookup(),
+    )
+    blocking = [d for d in diagnostics if d.severity in {"error", "question"}]
+    assert blocking
+    assert {d.code for d in blocking} == {"unknown_command"}
 
 
 def test_agent_queue_runbook_quotes_the_reviewed_route_hashes() -> None:

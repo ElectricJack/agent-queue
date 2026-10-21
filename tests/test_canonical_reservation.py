@@ -15,7 +15,6 @@ from src.commands.principal import (
     principal_context,
 )
 from src.commands.task_commands import TaskCommandsMixin
-from src.database import Database
 from src.database.tables import (
     integration_branch_owners,
     task_branch_origins,
@@ -24,13 +23,11 @@ from src.database.tables import (
 from src.integration.canonical_reservation import reserve_canonical_task_branch
 from src.models import Project, RepoConfig, RepoSourceType, Task, TaskStatus
 from src.profiles.capabilities import DENY_ALL
-from tests.db_fixtures import lease_dsn
 
 
 @pytest.fixture
-async def db(tmp_path):
-    database = Database(lease_dsn("canonical-reservation.db"))
-    await database.initialize()
+async def db(reuse_database):
+    database = await reuse_database("canonical-reservation.db")
     await database.create_project(Project(id="p", name="Project"))
     await database.create_repo(
         RepoConfig(

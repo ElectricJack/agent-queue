@@ -1123,6 +1123,16 @@ class TestSubstrateLoaderDefaults:
         assert cfg.sessions.provider == SessionsConfig().provider
         assert cfg.sessions.lease_ttl_seconds == 90
 
+    def test_idle_claim_timeout_defaults_loads_and_rejects_negative(self, tmp_path):
+        from src.config import SessionsConfig
+
+        assert SessionsConfig().idle_claim_timeout_seconds == 900
+        cfg = self._load(tmp_path, sessions={"idle_claim_timeout_seconds": 120})
+        assert cfg.sessions.idle_claim_timeout_seconds == 120
+        assert not SessionsConfig(idle_claim_timeout_seconds=0).validate()
+        errors = SessionsConfig(idle_claim_timeout_seconds=-1).validate()
+        assert any(error.field == "idle_claim_timeout_seconds" for error in errors)
+
     def test_sessions_explicit_values_override_defaults(self, tmp_path):
         cfg = self._load(
             tmp_path,
@@ -1141,10 +1151,31 @@ class TestSubstrateLoaderDefaults:
     def test_worktrees_explicit_values_override_defaults(self, tmp_path):
         cfg = self._load(
             tmp_path,
-            worktrees={"enabled": False, "salvage_max_bytes": 1234},
+            worktrees={"enabled": False, "salvage_max_bytes": 1234,
+                       "slot_reset_git_timeout_seconds": 900,
+                       "slot_reset_git_timeouts": {"matter-engine-cpp": 1800}},
         )
         assert cfg.worktrees.enabled is False
         assert cfg.worktrees.salvage_max_bytes == 1234
+        assert cfg.worktrees.slot_reset_git_timeout_seconds == 900
+        assert cfg.worktrees.slot_reset_git_timeouts == {"matter-engine-cpp": 1800}
+
+
+@pytest.mark.parametrize("seconds", [0, -1, True, "600", 0.5, None])
+def test_slot_reset_git_timeout_requires_positive_integer(seconds):
+    from src.config import WorktreesConfig
+
+    errors = WorktreesConfig(slot_reset_git_timeout_seconds=seconds).validate()
+    assert any(error.field == "slot_reset_git_timeout_seconds" for error in errors)
+
+
+@pytest.mark.parametrize("overrides", [None, [], {"": 600}, {"project": 0},
+                                       {"project": True}, {"project": "1800"}])
+def test_slot_reset_git_overrides_require_project_ids_and_positive_integers(overrides):
+    from src.config import WorktreesConfig
+
+    errors = WorktreesConfig(slot_reset_git_timeouts=overrides).validate()
+    assert any(error.field == "slot_reset_git_timeouts" for error in errors)
 
 
 @pytest.mark.parametrize("compact,checkpoint,cadence", [

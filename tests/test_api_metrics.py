@@ -15,21 +15,17 @@ from src.api.auth import LOCAL_SCOPE, RequestScope
 from src.api.metrics import MAX_POINTS, build_metrics_router, choose_step
 from src.api.models.metrics import MetricsSample, PerfMetrics
 from src.api.websocket import _FORWARDED_PREFIXES, _metrics_event_allowed
-from src.database import Database
 from src.metrics.histogram import new_hist, observe
 from src.metrics.perf import PerfRegistry
 from src.metrics.sampler import METRIC_TICK_EVENT, aggregate_samples
-from tests.db_fixtures import lease_dsn
 
 BASE = 1_700_000_000.0
 
 
 @pytest.fixture
-async def db(tmp_path):
-    database = Database(lease_dsn("m.db"))
-    await database.initialize()
+async def db(reuse_database):
+    database = await reuse_database("m.db")
     yield database
-    await database.close()
 
 
 @pytest.fixture

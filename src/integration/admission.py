@@ -9,10 +9,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 
-from sqlalchemy import select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.exc import DBAPIError
 
-from src.database.queries.blocked_state import blocked_predicate
 from src.database.tables import (
     archived_tasks,
     gates,
@@ -33,6 +32,86 @@ from src.integration.delivery_truth import (
 )
 from src.integration.delivery_observer import DeliveryTarget
 from src.integration.publishable_artifact import legacy_artifact
+
+
+class OrdinaryAdmissionChanged(Exception):
+    """Artifact-free activation lost its graph or policy fence."""
+
+
+def source_has_artifact(source):
+    """Any current or recorded artifact requires the full delivery observer."""
+    completion = task_completion_records.alias("admission_completion")
+    return or_(
+        source.c.branch_name.is_not(None),
+        source.c.pr_url.is_not(None),
+        select(completion.c.id).where(
+            completion.c.task_id == source.c.id,
+            completion.c.commits != "[]",
+        ).exists(),
+        legacy_artifact(source),
+    )
+
+
+def ordinary_activation_guard(task_id):
+    """Lock artifact-free sources and policy without adding a SQL round trip.
+
+    SKIP LOCKED makes concurrent source/config writers a retry. The source
+    count prevents a skipped row from masquerading as an absent prerequisite.
+    The caller already holds the candidate task, serializing graph edits.
+    """
+    edge = task_dependencies.alias("ordinary_edge")
+    source_ids = select(edge.c.depends_on_task_id).where(
+        edge.c.task_id == task_id, edge.c.dep_type == "blocks",
+    )
+    sources = select(tasks).where(tasks.c.id.in_(source_ids)).order_by(
+        tasks.c.id,
+    ).with_for_update(read=True, skip_locked=True).cte("ordinary_sources")
+    project_id = select(tasks.c.project_id).where(tasks.c.id == task_id).scalar_subquery()
+    policy = select(projects).where(projects.c.id == project_id).with_for_update(
+        read=True, skip_locked=True,
+    ).cte("ordinary_policy")
+    return and_(
+        select(policy.c.id).where(
+            policy.c.hierarchical_integration_mode != "development",
+        ).exists(),
+        select(func.count()).select_from(sources).scalar_subquery()
+        == select(func.count()).select_from(source_ids.subquery()).scalar_subquery(),
+        ~select(sources.c.id).where(source_has_artifact(sources)).exists(),
+    )
+
+
+def source_admission_required(task):
+    """Conservative SQL guard for the ordinary, artifact-free claim path.
+
+    Development always observes its delivery policy. Other projects need the
+    PR observer when any blocks source has a branch, PR or recorded artifact.
+    This is a request hint only; activation locks and rechecks the same inputs.
+    """
+    source = tasks.alias("admission_source")
+    edge = task_dependencies.alias("admission_edge")
+    return or_(
+        select(projects.c.id).where(
+            projects.c.id == task.c.project_id,
+            projects.c.hierarchical_integration_mode == "development",
+        ).correlate(task).exists(),
+        select(edge.c.task_id).select_from(edge.join(
+            source, source.c.id == edge.c.depends_on_task_id,
+        )).where(
+            edge.c.task_id == task.c.id,
+            edge.c.dep_type == "blocks",
+            source_has_artifact(source),
+        ).correlate(task).exists(),
+    )
+
+
+def project_admission_required(project):
+    candidate = tasks.alias("admission_candidate")
+    return select(candidate.c.id).where(
+        candidate.c.project_id == project.c.id,
+        candidate.c.status == "READY",
+        candidate.c.assigned_agent_id.is_(None),
+        source_admission_required(candidate),
+    ).exists()
 
 
 async def _inputs(db, candidate_ids, conn):
@@ -286,9 +365,12 @@ class AdmissionSnapshot:
     lock_ids: set[str] = field(default_factory=set)
     required: dict[str, set[str]] = field(default_factory=dict)
     changed: bool = False
+    pr: object = None
 
     async def is_fresh(self, task_id=None):
         required = self.required.get(task_id, set()) if task_id else None
+        if self.pr is not None and not await self.pr.is_fresh(task_id):
+            return False
         return all(
             [
                 await snapshot.is_fresh()
@@ -335,21 +417,36 @@ class AdmissionSnapshot:
                     return False
                 raise
         current = await _inputs(self.db, self.candidate_ids, conn)
-        return self.inputs == current[-1]
+        return self.inputs == current[-1] and (
+            self.pr is None
+            or await self.pr.matches(
+                conn=conn,
+                lock=lock,
+                task_id=task_id,
+            )
+        )
 
 
-async def observe_admission(db, candidate_ids, service, *, cached_only=False):
+async def observe_admission(
+    db, candidate_ids, service, *, cached_only=False, default_mode="pull_request"
+):
     """One batch for readiness, pool demand, explanation and actual claims.
 
     Only diagnostics set ``cached_only``. Writers retain fresh Git observations
     and remote-ref guards; both paths recheck the current database inputs.
     """
     candidate_ids = set(candidate_ids)
+    from src.integration.pr_admission import observe_pr_admission
+
+    pr = await observe_pr_admission(
+        db, candidate_ids, service, default_mode=default_mode, cached_only=cached_only,
+    )
     async with db._engine.connect() as conn:
         dev_ids, required, requests, obsolete, repo_rows, inputs = await _inputs(
             db, candidate_ids, conn
         )
     batch = AdmissionSnapshot(db, candidate_ids, candidate_ids - dev_ids, inputs)
+    batch.pr = pr
     batch.lock_ids = set(requests)
     batch.required = required
     evidence = {}
@@ -425,16 +522,24 @@ async def observe_admission(db, candidate_ids, service, *, cached_only=False):
                     )
     if not await batch.matches():
         batch.changed = True
-        batch.allowed -= dev_ids
+        batch.allowed.clear()
+    batch.allowed &= batch.pr.allowed
+    batch.lock_ids |= batch.pr.lock_ids
+    batch.changed |= batch.pr.changed
+    for tid, reasons in batch.pr.reasons.items():
+        batch.reasons.setdefault(tid, []).extend(reasons)
     return batch
 
 
 async def structural_candidates(db, project_id, *, page_size=128):
-    """Keyset page past withheld candidates in the existing fairness order."""
+    """Observe READY candidates even when generated gates still hold them.
+
+    Source admission may retire its owned gate links. The final frontier still
+    applies every graph, gate, container, route and hold constraint.
+    """
     from sqlalchemy import tuple_
 
     from src.database.queries.blocked_state import apply_label_filters
-    from src.database.queries.claim_queries import _frontier_where
 
     ids, cursor = [], None
     async with db._engine.connect() as conn:
@@ -444,7 +549,11 @@ async def structural_candidates(db, project_id, *, page_size=128):
                     tasks.c.id,
                     tasks.c.priority,
                     tasks.c.created_at,
-                ).where(_frontier_where(project_id), ~blocked_predicate()),
+                ).where(
+                    tasks.c.project_id == project_id,
+                    tasks.c.status == "READY",
+                    tasks.c.assigned_agent_id.is_(None),
+                ),
                 exclude_hold=True,
             )
             if cursor:

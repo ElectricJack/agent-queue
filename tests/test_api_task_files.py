@@ -12,10 +12,8 @@ from httpx import ASGITransport, AsyncClient
 
 from src.api import dependencies as deps
 from src.api.task_files import build_task_files_router
-from src.database import Database
 from src.git.manager import GitManager
 from src.models import Project, RepoSourceType, Task, TaskStatus, Workspace
-from tests.db_fixtures import lease_dsn
 
 
 def _run(cmd: list[str], cwd: Path) -> None:
@@ -42,10 +40,9 @@ def repo(tmp_path):
 
 
 @pytest.fixture
-async def wired(tmp_path, repo):
+async def wired(tmp_path, repo, reuse_database):
     """Yields (client_factory, db, repo) — httpx.ASGITransport, no TestClient."""
-    db = Database(lease_dsn("aq.db"))
-    await db.initialize()
+    db = await reuse_database("aq.db")
     await db.create_project(Project(id="proj", name="P", repo_default_branch="main"))
     await db.create_task(Task(
         id="task1", project_id="proj", title="t", description="",
@@ -74,7 +71,6 @@ async def wired(tmp_path, repo):
         yield _client, db, repo
     finally:
         deps._orchestrator = prev_orch
-        await db.close()
 
 
 async def test_files_returns_diff_stats(wired):

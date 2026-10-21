@@ -518,6 +518,16 @@ def _register_all():
 
     # -- Document reviews ----------------------------------------------------
 
+    from .formatters import (
+        format_ask_list, format_ask_detail, format_ask_preview, format_ask_receipt,
+    )
+    for name, renderer in {
+        "ask_list": format_ask_list, "ask_show": format_ask_detail,
+        "ask_prepare_decision": format_ask_preview, "ask_reply": format_ask_receipt,
+        "ask_decide": format_ask_receipt, "ask_history": format_ask_receipt,
+    }.items():
+        FORMATTERS[name] = FormatterSpec(render=renderer, extract=None, many=False, entity="ask")
+
     FORMATTERS["review_show"] = FormatterSpec(
         render=format_review_detail,
         extract=None,

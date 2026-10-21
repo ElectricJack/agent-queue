@@ -118,8 +118,41 @@ class DiscordInboundRouter:
             return None
         return normalise_tag(await resolve(str(parent_message_id)))
 
+    async def _route_shared(self, message, *, bot_user_id, source):
+        observed = self.observe(message, bot_user_id=bot_user_id)
+        if (observed.author_is_bot or observed.is_own_message or observed.is_webhook
+                or observed.is_dm or observed.is_edit):
+            return self._ignore("not_human", message)
+        envelope = {
+            "transport": "discord", "guild_id": observed.guild_id,
+            "channel_id": observed.channel_id, "external_message_id": observed.external_message_id,
+            "external_root_message_id": observed.external_message_id,
+            "external_thread_id": observed.thread_id, "author_id": observed.author_id,
+            "text": observed.text, "received_at": observed.received_at,
+            "mentions_bot": observed.mentions_bot,
+            "reference_message_id": str(message.reference.message_id)
+                if getattr(message, "reference", None) and message.reference.message_id else None,
+        }
+        with principal_context(ExecutionPrincipal.service("discord-gateway")):
+            result = await self._handler.execute("ask_intake", {"envelope": envelope, "source": source})
+        if result.get("success"):
+            return "posted:created" if result.get("created") else "posted:replayed"
+        return "refused:" + result.get("error_code", "ask.intake_failed")
+
     async def route(self, message: Any, *, bot_user_id: int | None, source: str = "gateway") -> str:
         """Escalations stop routing even on failure; conversations fail closed."""
+        # Once channel ownership transfers, admission precedes every consumer.
+        # A failed shared route never falls through to legacy escalation intake.
+        enabled = getattr(self._handler.db, "ask_channel_enabled", None)
+        if enabled is not None:
+            try:
+                active = await enabled(channel_id=str(self._config.discord.channel_id),
+                                       guild_id=str(self._config.discord.guild_id))
+                if active is True:
+                    return await self._route_shared(message, bot_user_id=bot_user_id, source=source)
+            except Exception:
+                logger.warning("shared human intake failed", exc_info=True)
+                return "refused:ask.intake_failed"
         try:
             # Keep the existing boolean entry point and its exact ignore
             # diagnostics while this opt-in feature is off.

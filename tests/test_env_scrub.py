@@ -131,6 +131,8 @@ class TestPatterns:
             "CLAUDE_CODE_SESSION_ID": "claude-session",
             "CLAUDE_PID": "123",
             "CLAUDE_EFFORT": "high",
+            "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": "20",
+            "CLAUDE_FUTURE_CONTROL": "parent-policy",
             "ANTHROPIC_AUTH_TOKEN": "session-token",
             "CODEX_SANDBOX": "seatbelt",
             "CODEX_CI": "1",
@@ -145,6 +147,16 @@ class TestPatterns:
             assert key not in result.env
         assert result.env["ANTHROPIC_API_KEY"] == "api-key"
         assert result.env["CODEX_API_KEY"] == "api-key"
+
+    @pytest.mark.parametrize("enabled", [True, False])
+    def test_inherited_claude_controls_cannot_be_allowlisted(self, enabled):
+        result = scrub_env(
+            {"CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": "20"},
+            enabled=enabled,
+            allowlist=["CLAUDE*"],
+        )
+        assert result.env == {}
+        assert result.dropped == ["CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"]
 
 
 class TestAllowlist:

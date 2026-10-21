@@ -12,11 +12,9 @@ from tests.db_fixtures import lease_dsn
 
 
 @pytest.fixture
-async def db(tmp_path):
-    database = Database(lease_dsn("plugins.db"))
-    await database.initialize()
+async def db(reuse_database):
+    database: Database = await reuse_database("plugins.db")
     yield database
-    await database.close()
 
 
 @pytest.fixture

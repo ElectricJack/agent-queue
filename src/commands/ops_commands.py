@@ -480,10 +480,10 @@ class OpsCommandsMixin:
                     )
                     service_tier = codex_service_tier_for(profile, class_config)
 
+            from src.scheduler import project_pool_candidates
+
             projects = []
-            for cand in sorted(
-                measurement.candidates.get(key, []), key=lambda c: c.project_id
-            ):
+            for cand in project_pool_candidates(measurement.candidates.get(key, [])):
                 if view is not None and cand.project_id != view:
                     continue
                 local = sup.by_project.get(cand.project_id) or PoolProjectSupply()

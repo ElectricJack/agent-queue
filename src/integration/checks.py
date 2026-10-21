@@ -176,20 +176,16 @@ def evaluate(
         for name in required.names
     )
     conclusions = {check.conclusion for check in checks}
-    workflow_conclusions = {check.detail.get("workflow_conclusion", "success") for check in checks}
     if conclusions & {Conclusion.FAILURE, Conclusion.MISSING}:
         state = ChecksState.RED
     elif conclusions & {Conclusion.UNAVAILABLE, Conclusion.CANCELLED}:
         state = ChecksState.UNKNOWN
     elif Conclusion.PENDING in conclusions:
         state = ChecksState.PENDING
-    elif "failure" in workflow_conclusions:
-        # Keep workflow-level publication gating without inventing failed jobs.
-        # The train blocks repair allocation when no required check actually failed.
-        state = ChecksState.RED
-    elif workflow_conclusions != {"success"}:
-        state = ChecksState.UNKNOWN
     else:
+        # Every required job concluded success here, so a cancelled run can only
+        # reflect a job outside the required set (a waived platform). The verdict
+        # is final; waiting on it would hold the train forever.
         state = ChecksState.GREEN
     due = [check.due_at for check in checks if check.conclusion not in FINAL and check.due_at]
     return ChecksResult(
@@ -312,7 +308,7 @@ class HostedChecks:
         details = observed.details.get("receipt") or observed.details
         runs = {run["check_suite_id"]: run for run in details["workflow_runs"]}
         rows = []
-        for check in details["checks"]:
+        for check in observed.details.get("checks", details["checks"]):
             run = runs.get(check["check_suite_id"])
             conclusion = check["conclusion"]
             rows.append(

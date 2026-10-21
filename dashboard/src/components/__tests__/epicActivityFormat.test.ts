@@ -25,3 +25,16 @@ describe("epic activity text", () => {
     expect(epicLeafProgress({ COMPLETED: 1, IN_PROGRESS: 1, DEFINED: 2 })).toMatchObject({ done: 1, total: 4 });
   });
 });
+
+it("keeps delivery holds and unavailable evidence out of ready counts", () => {
+  const readiness = { state: "waiting_on_delivery" as const, claimable: false,
+    label: "Waiting on delivery", reason: "Land source.6 on dev" };
+  expect(displayedTaskStatus({ status: "READY", claim_readiness: readiness })).toBe("WAITING_ON_DELIVERY");
+  expect(displayedTaskStatus({ status: "READY", claim_readiness: { ...readiness, state: "unknown" } })).toBe("WITHHELD");
+  expect(displayedTaskStatus({ status: "READY", claim_readiness: { ...readiness, state: "claimable", claimable: true } })).toBe("READY");
+});
+
+it("preserves epic activity when the container itself is outside the leaf frontier", () => {
+  expect(displayedTaskStatus({ status: "READY", display_state: "waiting", child_state_counts: { waiting: 2 },
+    claim_readiness: { state: "withheld", claimable: false, label: "Withheld", reason: "Has children" } })).toBe("WAITING");
+});

@@ -21,6 +21,27 @@ are inherited. This is separation on one OS account, not a sandbox.
 Publisher snapshots are standalone clones, so a foreign project whose snapshot
 has no virtual environment needs a `resources.test_interpreters` pin.
 
+The `test` preset accepts explicit serial execution as `-n 0`, `-n0`,
+`--numprocesses 0` or `--numprocesses=0`. These normalize to `-n 0` when
+xdist is available; when it is missing or explicitly disabled, the worker-count
+option is omitted. Nonzero and malformed worker-count overrides remain refused
+with `jobs.preset_denied`. Serial execution retains the usual slot admission,
+full-suite weight, workspace pin and durable producer/wait semantics.
+
+Full-suite pytest jobs use shared admission, with weight
+`max(1, test_slots - resources.jobs.full_suite_reserved_slots)`; the reserve
+defaults to two and must be a positive integer. On small boxes the full suite
+still gets one slot, so a one-slot box cannot run focused work concurrently.
+The immutable contract records `test_scope: full`; focused pytest records
+`test_scope: focused`. Both managed and foreground full suites take the same
+one-capacity full-suite lock before any shared slots. Only one managed full suite
+is admitted at a time; further full suites queue without blocking focused jobs.
+A full suite waiting for sufficient weighted capacity retains its queue position.
+True exclusive presets (E2E and device rendering) retain their exclusion semantics.
+Previously accepted jobs keep their original contracts and locks until completion.
+`aq test --aq-status` attributes held slots to task, project and managed job id,
+and identifies full-suite holders and the full-suite lock separately.
+
 The server-owned E2E wrapper runs `scripts/e2e-env.sh --reset` followed by
 `scripts/e2e-smoke.sh` from the submitted workspace (`contract.cwd`), for both
 live trees and commit snapshots. Its own installed file location does not select

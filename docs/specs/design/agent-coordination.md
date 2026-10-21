@@ -343,6 +343,7 @@ many* pool sessions exist per **profile**, fleet-wide (`_reconcile_pools` in
 deficit/fair-share caps as push), *which project* each of them launches into
 (`place_pool_actions`, where per-project caps, workspace capacity, quarantine and the
 `min_per_project` warm floor apply — see
+[shared pool fairness](shared-pool-fairness.md) for project shares and repair priority, and
 `docs/superpowers/specs/2026-09-08-global-worker-pools-design.md`), and *which* work is
 admissible (project state, budget);
 a pool session only decides *which admissible task it takes next*, because the consumer

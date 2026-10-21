@@ -16,7 +16,7 @@ pytestmark = pytest.mark.migration
 
 
 async def test_private_values_upgrade_from_prior_schema_and_current_metadata():
-    revision = importlib.import_module("migrations.versions.a00000000095_playbook_private_values")
+    revision = importlib.import_module("migrations.versions.a00000000103_playbook_private_values")
     db = Database(lease_dsn("private_values_migration"))
     await db.initialize()
     try:
@@ -52,7 +52,7 @@ async def test_iteration_paths_upgrade_preserves_legacy_rows_and_matches_metadat
     from tests.test_playbook_run_repository import ARTIFACT, make_receipt, make_snapshot, seed_artifact
     from tests.test_playbook_wait_repository import make_wait
 
-    revision = importlib.import_module("migrations.versions.a00000000096_playbook_iteration_paths")
+    revision = importlib.import_module("migrations.versions.a00000000104_playbook_iteration_paths")
     db = Database(lease_dsn("iteration_paths_migration"))
     await db.initialize()
     try:
@@ -95,7 +95,7 @@ async def test_iteration_paths_upgrade_preserves_legacy_rows_and_matches_metadat
 
 
 async def test_observation_snapshots_upgrade_prior_and_current_metadata():
-    revision = importlib.import_module("migrations.versions.a00000000097_observation_snapshots")
+    revision = importlib.import_module("migrations.versions.a00000000105_observation_snapshots")
     db = Database(lease_dsn("observation_snapshots_migration"))
     await db.initialize()
     try:
@@ -134,7 +134,7 @@ async def test_playbook_state_upgrade_prior_and_current_preserves_journals():
     from sqlalchemy import insert, select
     from src.database import tables as t
 
-    revision = importlib.import_module("migrations.versions.a00000000098_playbook_state")
+    revision = importlib.import_module("migrations.versions.a00000000106_playbook_state")
     db = Database(lease_dsn("playbook_state_migration"))
     await db.initialize()
     try:
@@ -179,7 +179,7 @@ async def test_playbook_state_upgrade_prior_and_current_preserves_journals():
 async def test_message_provenance_upgrade_preserves_legacy_messages_and_readback():
     from src.models import Project
 
-    revision = importlib.import_module("migrations.versions.a00000000099_message_provenance")
+    revision = importlib.import_module("migrations.versions.a00000000107_message_provenance")
     db = Database(lease_dsn("message_provenance_migration"))
     await db.initialize()
     try:
@@ -213,7 +213,7 @@ async def test_message_provenance_upgrade_preserves_legacy_messages_and_readback
 
 
 async def test_playbook_jobs_upgrade_prior_and_current_metadata():
-    revision = importlib.import_module("migrations.versions.a00000000100_playbook_jobs")
+    revision = importlib.import_module("migrations.versions.a00000000108_playbook_jobs")
     db = Database(lease_dsn("playbook_jobs_migration"))
     await db.initialize()
     try:

@@ -28,6 +28,7 @@ from src.database.tables import (
     workspaces,
 )
 from src.git.manager import RemoteRefState, is_valid_git_oid
+from src.integration.row_query import select_row
 from src.integration.records import ParentEpisodeRecords
 from src.integration.owner_guards import parent_engine_guard
 from src.integration.writers import OperationSafety
@@ -144,25 +145,16 @@ async def extensions_on(conn, operation, checkpoint, *, include_covered=False):
                 if item.get("extension") == edge
             ]
             if covered:
-                receipt = (
-                    (
-                        await conn.execute(
-                            select(task_delivery_receipts).where(
-                                task_delivery_receipts.c.id == covered[0].get("receipt_id"),
-                                task_delivery_receipts.c.parent_operation_id == operation["id"],
-                                task_delivery_receipts.c.parent_episode_id
-                                == checkpoint["episode_id"],
-                                task_delivery_receipts.c.target_task_id
-                                == operation["parent_task_id"],
-                                task_delivery_receipts.c.repository_id
-                                == checkpoint["repository_id"],
-                                task_delivery_receipts.c.target_branch == checkpoint["branch"],
-                                task_delivery_receipts.c.disposition == "code",
-                            )
-                        )
-                    )
-                    .mappings()
-                    .one_or_none()
+                receipt = await select_row(
+                    conn,
+                    task_delivery_receipts,
+                    task_delivery_receipts.c.id == covered[0].get("receipt_id"),
+                    task_delivery_receipts.c.parent_operation_id == operation["id"],
+                    task_delivery_receipts.c.parent_episode_id == checkpoint["episode_id"],
+                    task_delivery_receipts.c.target_task_id == operation["parent_task_id"],
+                    task_delivery_receipts.c.repository_id == checkpoint["repository_id"],
+                    task_delivery_receipts.c.target_branch == checkpoint["branch"],
+                    task_delivery_receipts.c.disposition == "code",
                 )
                 if (
                     len(covered) != 1
@@ -486,16 +478,10 @@ class ParentHeadRecovery:
         return result | {"outcome": "recovered"}
 
     async def _proof_on(self, conn, request, *, stage_ordinal=None, gap_base=None):
-        hint = (
-            (
-                await conn.execute(
-                    select(integration_repair_operations).where(
-                        integration_repair_operations.c.id == request.operation_id,
-                    )
-                )
-            )
-            .mappings()
-            .one_or_none()
+        hint = await select_row(
+            conn,
+            integration_repair_operations,
+            integration_repair_operations.c.id == request.operation_id,
         )
         if hint is None or hint["target_kind"] != "parent":
             raise ValueError("operation is not a parent repair")
@@ -511,20 +497,13 @@ class ParentHeadRecovery:
             raise ValueError("project is paused or draining")
         if parent["status"] != "PAUSED" or parent["assigned_agent_id"] is not None:
             raise ValueError("parent must be an unassigned paused aggregate")
-        stage = (
-            (
-                await conn.execute(
-                    select(integration_repair_stages)
-                    .where(
-                        integration_repair_stages.c.operation_id == operation["id"],
-                        integration_repair_stages.c.ordinal
-                        == (operation["active_stage"] if stage_ordinal is None else stage_ordinal),
-                    )
-                    .with_for_update()
-                )
-            )
-            .mappings()
-            .one_or_none()
+        stage = await select_row(
+            conn,
+            integration_repair_stages,
+            integration_repair_stages.c.operation_id == operation["id"],
+            integration_repair_stages.c.ordinal
+            == (operation["active_stage"] if stage_ordinal is None else stage_ordinal),
+            lock=True,
         )
         subject = stage["current_subject"] if stage else None
         if (
@@ -544,19 +523,7 @@ class ParentHeadRecovery:
         repair_head = subject["head_sha"]
         delegate = None
         for table in (tasks, archived_tasks):
-            delegate = (
-                (
-                    await conn.execute(
-                        select(table)
-                        .where(
-                            table.c.id == stage["repair_task_id"],
-                        )
-                        .with_for_update()
-                    )
-                )
-                .mappings()
-                .one_or_none()
-            )
+            delegate = await select_row(conn, table, table.c.id == stage["repair_task_id"], lock=True)
             if delegate is not None:
                 break
         if (
@@ -701,19 +668,12 @@ class ParentHeadRecovery:
             ):
                 raise ValueError("empty repair completion lacks its exact accepted-close identity")
             authoring["accepted_close"] = accepted_close
-        owner = (
-            (
-                await conn.execute(
-                    select(integration_branch_owners)
-                    .where(
-                        integration_branch_owners.c.repository_id == checkpoint["repository_id"],
-                        integration_branch_owners.c.ref == checkpoint["branch"],
-                    )
-                    .with_for_update()
-                )
-            )
-            .mappings()
-            .one_or_none()
+        owner = await select_row(
+            conn,
+            integration_branch_owners,
+            integration_branch_owners.c.repository_id == checkpoint["repository_id"],
+            integration_branch_owners.c.ref == checkpoint["branch"],
+            lock=True,
         )
         if (
             owner is None
@@ -728,18 +688,8 @@ class ParentHeadRecovery:
             raise ValueError("branch has an active writer or unrelated reservation")
         workspace = None
         if owner["confirmed_workspace_id"]:
-            workspace = (
-                (
-                    await conn.execute(
-                        select(workspaces)
-                        .where(
-                            workspaces.c.id == owner["confirmed_workspace_id"],
-                        )
-                        .with_for_update()
-                    )
-                )
-                .mappings()
-                .one_or_none()
+            workspace = await select_row(
+                conn, workspaces, workspaces.c.id == owner["confirmed_workspace_id"], lock=True
             )
             if workspace is None or workspace["project_id"] != parent["project_id"]:
                 raise ValueError("confirmed parent workspace is unavailable")
@@ -926,19 +876,7 @@ class ParentHeadRecovery:
         if (advanced or collection_recovery or empty_verification) and operation[
             "verifier_task_id"
         ]:
-            verifier = (
-                (
-                    await conn.execute(
-                        select(tasks)
-                        .where(
-                            tasks.c.id == operation["verifier_task_id"],
-                        )
-                        .with_for_update()
-                    )
-                )
-                .mappings()
-                .one_or_none()
-            )
+            verifier = await select_row(conn, tasks, tasks.c.id == operation["verifier_task_id"], lock=True)
             if (
                 verifier is None
                 or verifier["project_id"] != parent["project_id"]
@@ -1371,23 +1309,16 @@ class ParentHeadRecovery:
         if len(intents) != 1:
             return None
         intent = dict(intents[0])
-        receipt = (
-            (
-                await conn.execute(
-                    select(task_delivery_receipts)
-                    .where(
-                        task_delivery_receipts.c.id == intent["receipt_id"],
-                        task_delivery_receipts.c.parent_operation_id == operation["id"],
-                        task_delivery_receipts.c.parent_episode_id == checkpoint["episode_id"],
-                        task_delivery_receipts.c.target_task_id == operation["parent_task_id"],
-                        task_delivery_receipts.c.repository_id == checkpoint["repository_id"],
-                        task_delivery_receipts.c.target_branch == checkpoint["branch"],
-                    )
-                    .with_for_update()
-                )
-            )
-            .mappings()
-            .one_or_none()
+        receipt = await select_row(
+            conn,
+            task_delivery_receipts,
+            task_delivery_receipts.c.id == intent["receipt_id"],
+            task_delivery_receipts.c.parent_operation_id == operation["id"],
+            task_delivery_receipts.c.parent_episode_id == checkpoint["episode_id"],
+            task_delivery_receipts.c.target_task_id == operation["parent_task_id"],
+            task_delivery_receipts.c.repository_id == checkpoint["repository_id"],
+            task_delivery_receipts.c.target_branch == checkpoint["branch"],
+            lock=True,
         )
         if receipt is None or not self.parent._trusted_code_receipt(receipt):
             return None

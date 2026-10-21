@@ -102,6 +102,11 @@ remove tasks (including terminal rows) and sessions and restore swarm/provider/
 playbook switches. Failed cleanup prevents further use of that world, and fixture
 teardown always destroys its owned resources. No daemon is shared across workers.
 
+S16 and shared-world cleanup explicitly restore the required provider-failover
+policy, then wait up to 15 seconds for `/ready` to confirm the restoration in
+its background snapshot. A persistent readiness failure still fails cleanup
+and prevents reuse. Probe failures include the failed checks' diagnostic data.
+
 Each item has its own 540-second pytest limit. The scenario step has an
 eleven-minute deadline and a cache-miss dependency install has a separate
 twelve-minute deadline; the 26-minute job budget is their sum plus setup and
@@ -561,9 +566,13 @@ launch, and a canary nobody works holds that provider's launches for
 ### Readiness is not liveness
 
 `GET /api/health` is a static stub: it answers `{"status": "ok"}` as soon as
-uvicorn is listening and never touches the database. `GET /ready` runs the
-daemon's own health provider, so its `checks.database` entry is a real query
-through the engine the daemon is using.
+uvicorn is listening and never touches the database. `GET /ready` reads the
+daemon's background health snapshot, whose `checks.database` entry comes from a
+query through the engine the daemon is using. The kit requires overall readiness
+and a successful database check. A stale or unavailable snapshot cannot pass.
+Reusing a daemon and the final smoke preflight wait up to 15 seconds for an
+initializing, stale or timed-out snapshot to recover. An expired wait refuses
+scenarios and reports the snapshot state; a real database error fails immediately.
 
 The kit gates on `/ready`, through `scripts/e2e/probe.py`:
 

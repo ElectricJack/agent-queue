@@ -42,10 +42,10 @@
       "activation_id": null,
       "artifact": {
         "playbook_id": "agent-queue-parent-integration",
-        "artifact_sha256": "sha256:6bac753c97dddfb8683ebab844c1b9af8ed273d00e334d7d29a75e3e5c10042c",
+        "artifact_sha256": "sha256:6b0d8f4ad2432eec5a09934ce89cd37f115e1f41f0e9cb7616bc5b96ff2b60ec",
         "schema_generation": 2,
-        "contract_fingerprint": "sha256:840b9ffe5c9a42814ae0ee6f8aa17f1b586bead5e8efd80723c7c34976ce748f",
-        "source_digest": "sha256:685a1b0e6bdad948b759c11083692408bca7342c170782483e3e971dccc82dc1",
+        "contract_fingerprint": "sha256:38729405995357c816ceaa7c46825b437ec99ff83a57b3f8bd8f10897505f442",
+        "source_digest": "sha256:a9a971a014a9409f5a21b602ed23df8126551b480a44f6d104a70bce2e677ec4",
         "compiler_build": "playbook-v2-compiler/1",
         "compiled_at": null,
         "version": 1
@@ -98,10 +98,10 @@
       "activation_id": null,
       "artifact": {
         "playbook_id": "agent-queue-root-train",
-        "artifact_sha256": "sha256:f17f082f3e2e1aae663a61e42ca0be904e46885dcf22a6f7e19f4ffd5b0b0e0e",
+        "artifact_sha256": "sha256:0b01412a51b1e122fa4f7fd85a79380a2e0e0f3d05b04a4cb5ff2116f172b8bb",
         "schema_generation": 2,
-        "contract_fingerprint": "sha256:365c5f42781909921f64f205484f5fad3df3e340f07184b5f84b4bc44767ddc2",
-        "source_digest": "sha256:5732246f323dfa2f9ac2b8ebe1419d387fcb2f3d19e272142486c14093efa2b9",
+        "contract_fingerprint": "sha256:33581303bf8556083f103154d1b94b810df3c398a49c2dbe90bcf68d37697e41",
+        "source_digest": "sha256:4a490651f6c86fb7cef3a1be29f94e5708795736977bc94cb2d39c17d6adf1a5",
         "compiler_build": "playbook-v2-compiler/1",
         "compiled_at": null,
         "version": 1

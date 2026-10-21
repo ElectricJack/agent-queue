@@ -809,8 +809,8 @@ detail) into `_fail_session_launch`; the exit path is
   take) and `unknown`, because none of them proves the work is safe.
 * **The hand-off note** is `task_metadata['provider_failover_handoff']` plus a
   system comment (`system:provider-failover`), and `aq prime` renders it in
-  the task-context section on its own, so a later re-route comment cannot push
-  it out of the five recent comments. It names the saved commit, tells the next
+  the task-context section on its own with terminal context, alongside the full
+  comment history. It names the saved commit, tells the next
   worker to continue from the branch tip rather than restart, and keeps the
   stopped session's last ~80 screen lines (`screen_tail`, captured before the
   stop, at most 8 KiB of UTF-8). Prime quotes only the last whole lines within
@@ -1070,6 +1070,11 @@ recorded, undoable re-route bounded by the D15 per-task limits.
   `tasks.route.candidates`, in the router's order, so a spill never breaks a lane (an
   integration repair never spills to OpenCode, art design never leaves Codex); only a
   legacy task with no candidates keeps the same-class search above.
+  Supply, demand and workspace room are matched to the task's primary repository
+  kind, using the claim path's `pool_primary_kind`. An idle worker or free
+  workspace of another kind cannot serve it. Per-kind placement rows must not
+  overwrite each other; profile, project and global launch limits remain shared
+  across kinds, including moves planned by either pass of the sweep.
 * **S6 — a project's preferred provider.** When `projects.preferred_provider` is set,
   only rungs on that provider are targets. Spill never moves a task off it: a task whose
   source is on the preferred provider with no other same-class pool on that provider

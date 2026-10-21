@@ -20,7 +20,6 @@ from sqlalchemy import insert
 
 from src.commands.contracts.models import CommandResult
 from src.commands.principal import TRUSTED_LOCAL
-from src.database import Database
 from src.database.tables import playbook_artifacts
 from src.playbooks.engine import (
     EventArrived,
@@ -48,21 +47,18 @@ from tests.playbook_v2_engine_helpers import (
     event,
     load_artifact,
 )
-from tests.db_fixtures import lease_dsn
 
 POSTGRES_TEST_DSN = ensure_worker_postgres_dsn()
 NOW = 1_000_000.0
 
 
 @pytest.fixture
-async def db(request, tmp_path):
-    database = Database(lease_dsn("test.db"))
-    await database.initialize()
+async def db(reuse_database):
+    database = await reuse_database("test.db")
     database.set_playbook_private_values(PrivateValueService(
         database._engine, active_key_id="test", keys={"test": b"x" * 32},
     ))
     yield database
-    await database.close()
 
 
 async def seed_artifact(database, ref) -> None:
@@ -392,7 +388,9 @@ async def test_a_suspension_writes_the_wait_row_in_the_same_boundary(db):
 async def test_resuming_a_wait_clears_its_row_and_advances_the_run(db):
     engine, _adapter, ref = await build_for(db, "wait-kinds.artifact.json")
     outcome = await engine.run_rule(ref, "gate", event("task-completed-code"), TRUSTED_LOCAL)
-    resumed = await engine.resume(outcome.run_id, HumanDecision(decision="approve"), TRUSTED_LOCAL)
+    resumed = await engine.resume(outcome.run_id, HumanDecision(decision="approve", expected_wait_id=outcome.snapshot.wait.wait_id,
+                          expected_artifact_sha256=outcome.snapshot.artifact_sha256,
+                          decision_id="decision-approve"), TRUSTED_LOCAL)
     assert resumed.lifecycle is RunLifecycle.COMPLETED
     assert await db.list_active(outcome.run_id) == []
     stored = await db.load_run(outcome.run_id)

@@ -87,10 +87,9 @@ def facts_hash(facts: dict[str, Any]) -> str:
                 (fact.get("task_id", ""), fact.get("reason", ""))
                 for fact in facts.get("stuck", {}).get("items", [])
             ],
-            "escalations": [
-                item.get("id", "") for item in needs.get("escalations", {}).get("items", [])
-            ],
-            "reviews": [item.get("id", "") for item in needs.get("reviews", {}).get("items", [])],
+            "asks": needs.get("identity_hash", "unavailable"),
+            "ask_count": needs.get("count"),
+            "ask_health": needs.get("source_health", "refreshing"),
             "counts": facts.get("counts", {}),
         },
         sort_keys=True,
@@ -101,10 +100,8 @@ def facts_hash(facts: dict[str, Any]) -> str:
 
 def needs_you_count(facts: dict[str, Any]) -> int:
     """How many things in this window are waiting on Jack."""
-    needs = facts.get("needs_you") or {}
-    return len(needs.get("escalations", {}).get("items", [])) + len(
-        needs.get("reviews", {}).get("items", [])
-    )
+    return int((facts.get("needs_you") or {}).get("count", 0))
+
 
 
 def quiet_at(now: float, timezone: str, quiet: ReportQuietHoursConfig | None) -> bool:
@@ -177,6 +174,8 @@ def decide_window(
     if quiet_now:
         return WindowDecision(action=SKIP_QUIET_HOURS, reason=SKIP_QUIET_HOURS)
     unchanged = bool(previous_facts_hash) and previous_facts_hash == facts_hash(facts)
+    if (facts.get("needs_you") or {}).get("source_health", "refreshing") != "healthy":
+        return WindowDecision(action=HOLD, reason="asks_refreshing", consecutive_skips=0)
     if needs_you_count(facts) > 0:
         return WindowDecision(action=HOLD, reason="needs_you", consecutive_skips=0)
     if not unchanged and has_activity:
@@ -245,6 +244,8 @@ def fallback_text(deterministic: str, facts: dict[str, Any]) -> str:
     the one-line needs-you form is composed from the frozen counts rather than
     invented prose.
     """
+    if (facts.get("needs_you") or {}).get("source_health", "refreshing") != "healthy":
+        return compose([f"{GLYPH_DIGEST} Needs you is refreshing; open the inbox for current requests."], DIGEST)
     if deterministic.strip():
         return deterministic
     counts = facts.get("counts", {})
@@ -255,7 +256,11 @@ def fallback_text(deterministic: str, facts: dict[str, Any]) -> str:
         line = f"{GLYPH_DIGEST} Needs you: {needs} waiting {noun}; {working} sessions working."
     else:
         line = f"{GLYPH_DIGEST} {working} sessions working."
-    return compose([line], DIGEST)
+    waits = (facts.get("waiting_on_delivery") or {}).get("items", [])
+    lines = [line]
+    if waits:
+        lines.append(f"Waiting on delivery: {waits[0]['task_id']}: {waits[0]['reason']}")
+    return compose(lines, DIGEST)
 
 
 def _capped(rows: list[dict[str, Any]], cap: int) -> dict[str, Any]:
@@ -267,8 +272,7 @@ def bounded_facts(
     window: Any,
     landed: list[dict[str, Any]],
     stuck: list[dict[str, Any]],
-    escalations: list[dict[str, Any]],
-    reviews: list[dict[str, Any]],
+    asks: dict[str, Any],
     sessions_working: int,
     sessions_total: int,
     active_tasks: int,
@@ -276,6 +280,7 @@ def bounded_facts(
     overdue_deliveries: int = 0,
     previous_facts_hash: str | None = None,
     deadline: float | None = None,
+    waiting_on_delivery: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """The frozen brief for one window: counts exact, lists capped and counted."""
     return {
@@ -287,7 +292,8 @@ def bounded_facts(
         "counts": {
             "landed": len(landed),
             "stuck": len(stuck),
-            "needs_you": len(escalations) + len(reviews),
+            "waiting_on_delivery": len(waiting_on_delivery or []),
+            "needs_you": asks["count"],
             "sessions_working": int(sessions_working),
             "active_tasks": int(active_tasks),
             "open_escalations": int(open_escalations),
@@ -295,9 +301,11 @@ def bounded_facts(
         },
         "landed": _capped(landed, MAX_LANDED),
         "stuck": _capped(stuck, MAX_STUCK),
+        "waiting_on_delivery": _capped(waiting_on_delivery or [], MAX_STUCK),
         "needs_you": {
-            "escalations": _capped(escalations, MAX_NEEDS_YOU),
-            "reviews": _capped(reviews, MAX_NEEDS_YOU),
+            **asks,
+            "items": asks["items"][:MAX_NEEDS_YOU],
+            "omitted": max(0, asks["count"] - min(MAX_NEEDS_YOU, len(asks["items"]))),
         },
         "sessions": {"working": int(sessions_working), "total": int(sessions_total)},
         "previous_facts_hash": previous_facts_hash or "",

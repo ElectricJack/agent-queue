@@ -10,6 +10,7 @@ from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
     from ..models.claim_session_summary import ClaimSessionSummary
+    from ..models.claim_timing_detail import ClaimTimingDetail
     from ..models.task_claim_response_task_type_0 import TaskClaimResponseTaskType0
 
 
@@ -34,6 +35,10 @@ class TaskClaimResponse:
             claim_epoch (int | None | Unset):
             session (ClaimSessionSummary | Unset): The calling session's claim bookkeeping, echoed back on every
                 ``task_claim`` reply.
+            task_id (None | str | Unset):
+            claim_phase (None | str | Unset):
+            claim_phase_at (float | None | Unset):
+            claim_timing (ClaimTimingDetail | None | Unset):
             reason (None | str | Unset):
             error (None | str | Unset):
             retry_after (int | None | Unset):
@@ -46,6 +51,10 @@ class TaskClaimResponse:
     task: None | TaskClaimResponseTaskType0 | Unset = UNSET
     claim_epoch: int | None | Unset = UNSET
     session: ClaimSessionSummary | Unset = UNSET
+    task_id: None | str | Unset = UNSET
+    claim_phase: None | str | Unset = UNSET
+    claim_phase_at: float | None | Unset = UNSET
+    claim_timing: ClaimTimingDetail | None | Unset = UNSET
     reason: None | str | Unset = UNSET
     error: None | str | Unset = UNSET
     retry_after: int | None | Unset = UNSET
@@ -54,6 +63,7 @@ class TaskClaimResponse:
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
+        from ..models.claim_timing_detail import ClaimTimingDetail
         from ..models.task_claim_response_task_type_0 import TaskClaimResponseTaskType0
 
         success = self.success
@@ -77,6 +87,32 @@ class TaskClaimResponse:
         session: dict[str, Any] | Unset = UNSET
         if not isinstance(self.session, Unset):
             session = self.session.to_dict()
+
+        task_id: None | str | Unset
+        if isinstance(self.task_id, Unset):
+            task_id = UNSET
+        else:
+            task_id = self.task_id
+
+        claim_phase: None | str | Unset
+        if isinstance(self.claim_phase, Unset):
+            claim_phase = UNSET
+        else:
+            claim_phase = self.claim_phase
+
+        claim_phase_at: float | None | Unset
+        if isinstance(self.claim_phase_at, Unset):
+            claim_phase_at = UNSET
+        else:
+            claim_phase_at = self.claim_phase_at
+
+        claim_timing: dict[str, Any] | None | Unset
+        if isinstance(self.claim_timing, Unset):
+            claim_timing = UNSET
+        elif isinstance(self.claim_timing, ClaimTimingDetail):
+            claim_timing = self.claim_timing.to_dict()
+        else:
+            claim_timing = self.claim_timing
 
         reason: None | str | Unset
         if isinstance(self.reason, Unset):
@@ -122,6 +158,14 @@ class TaskClaimResponse:
             field_dict["claim_epoch"] = claim_epoch
         if session is not UNSET:
             field_dict["session"] = session
+        if task_id is not UNSET:
+            field_dict["task_id"] = task_id
+        if claim_phase is not UNSET:
+            field_dict["claim_phase"] = claim_phase
+        if claim_phase_at is not UNSET:
+            field_dict["claim_phase_at"] = claim_phase_at
+        if claim_timing is not UNSET:
+            field_dict["claim_timing"] = claim_timing
         if reason is not UNSET:
             field_dict["reason"] = reason
         if error is not UNSET:
@@ -138,6 +182,7 @@ class TaskClaimResponse:
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         from ..models.claim_session_summary import ClaimSessionSummary
+        from ..models.claim_timing_detail import ClaimTimingDetail
         from ..models.task_claim_response_task_type_0 import TaskClaimResponseTaskType0
 
         d = dict(src_dict)
@@ -177,6 +222,50 @@ class TaskClaimResponse:
             session = UNSET
         else:
             session = ClaimSessionSummary.from_dict(_session)
+
+        def _parse_task_id(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        task_id = _parse_task_id(d.pop("task_id", UNSET))
+
+        def _parse_claim_phase(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        claim_phase = _parse_claim_phase(d.pop("claim_phase", UNSET))
+
+        def _parse_claim_phase_at(data: object) -> float | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(float | None | Unset, data)
+
+        claim_phase_at = _parse_claim_phase_at(d.pop("claim_phase_at", UNSET))
+
+        def _parse_claim_timing(data: object) -> ClaimTimingDetail | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                claim_timing_type_0 = ClaimTimingDetail.from_dict(data)
+
+                return claim_timing_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(ClaimTimingDetail | None | Unset, data)
+
+        claim_timing = _parse_claim_timing(d.pop("claim_timing", UNSET))
 
         def _parse_reason(data: object) -> None | str | Unset:
             if data is None:
@@ -229,6 +318,10 @@ class TaskClaimResponse:
             task=task,
             claim_epoch=claim_epoch,
             session=session,
+            task_id=task_id,
+            claim_phase=claim_phase,
+            claim_phase_at=claim_phase_at,
+            claim_timing=claim_timing,
             reason=reason,
             error=error,
             retry_after=retry_after,

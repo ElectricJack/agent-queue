@@ -49,6 +49,7 @@ class TaskBrief(BaseModel):
 def _category_modules() -> tuple[object, ...]:
     from src.api.models import (
         agent,
+        ask,
         collaboration,
         cron,
         dashboard,
@@ -94,6 +95,7 @@ def _category_modules() -> tuple[object, ...]:
         project_onboarding,
         review,
         agent,
+        ask,
         dashboard,
         git,
         memory,

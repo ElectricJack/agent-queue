@@ -280,6 +280,8 @@ class WorkspaceKindStore:
             "is_git_repo": k.is_git_repo,
             "auto_attach": k.auto_attach,
         }
+        if k.max_slots is not None:
+            fm["max_slots"] = k.max_slots
         if k.repo_url:
             fm["repo_url"] = k.repo_url
         if k.default_lock_mode:

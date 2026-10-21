@@ -8,15 +8,12 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from src.commands.handler import CommandHandler
-from src.database import Database
 from src.models import Project, WorkspaceKind
-from tests.db_fixtures import lease_dsn
 
 
 @pytest.fixture
-async def setup(tmp_path):
-    db = Database(lease_dsn("test.db"))
-    await db.initialize()
+async def setup(reuse_database):
+    db = await reuse_database("test.db")
     await db.create_project(Project(id="p1", name="test"))
 
     # Add a project-scoped kind for the create_task tests.
@@ -47,7 +44,6 @@ async def setup(tmp_path):
     handler._active_project_id = "p1"
 
     yield handler, db
-    await db.close()
 
 
 class TestRequiresKinds:

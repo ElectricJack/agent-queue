@@ -1,6 +1,6 @@
 """Core authorization, independent of transport capability audit/off settings."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from hashlib import sha256
 from enum import Enum
 
@@ -156,6 +156,10 @@ async def authorize_on(
     instance = sha256(session["instance_token"].encode()).hexdigest()[:16]
     actor = f"session:{session['id']}:instance:{instance}"
     if not principal.elevated:
+        # Pool bearer scopes live across claims and have no fixed task. Resolve
+        # only from the authenticated live session, never from command arguments.
+        if principal.task_id is None and session["lifecycle"] == "pool":
+            principal = replace(principal, task_id=session["task_id"])
         if not principal.task_id or session["task_id"] != principal.task_id:
             raise RecordError("record.forbidden")
         task = (

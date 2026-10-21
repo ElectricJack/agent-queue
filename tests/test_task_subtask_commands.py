@@ -12,7 +12,6 @@ import pytest
 from src.api.auth import RequestScope
 from src.commands.handler import CommandHandler
 from src.config import AppConfig, DatabaseConfig
-from src.database import Database
 from src.models import Agent, AgentProfile, Project, SessionRecord, Task, TaskStatus
 from src.orchestrator import Orchestrator
 from tests.db_fixtures import lease_dsn
@@ -21,9 +20,8 @@ pytestmark = pytest.mark.asyncio
 
 
 @pytest.fixture
-async def env(tmp_path):
-    db = Database(lease_dsn("subtasks.db"))
-    await db.initialize()
+async def env(tmp_path, reuse_database):
+    db = await reuse_database("subtasks.db")
     for pid in ("p", "other"):
         await db.create_project(Project(id=pid, name=pid))
     await db.create_profile(AgentProfile(id="worker", name="Worker", needs_workspace=False))
@@ -69,7 +67,6 @@ async def env(tmp_path):
     handler = CommandHandler(orch, config)
     scope = RequestScope(kind="session", session_id="session", project_id="p")
     yield SimpleNamespace(db=db, handler=handler, scope=scope, orch=orch)
-    await db.close()
 
 
 async def run(env, command, args=None, *, scope=None):

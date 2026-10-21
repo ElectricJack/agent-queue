@@ -1,0 +1,41 @@
+import { beforeEach, expect, it, vi } from "vitest";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { DiscussionPanel } from "../DiscussionPanel";
+import { askData } from "../../../testUtils/asks";
+const wire = vi.hoisted(() => ({ send: vi.fn() }));
+vi.mock("../../../api/asks", () => ({ useReplyAsk: () => ({ mutateAsync: wire.send, isPending: false }) }));
+beforeEach(() => wire.send.mockReset().mockResolvedValue({ success: true }));
+it("labels drafts, preserves a failed save and reuses its request identity on retry", async () => {
+  wire.send.mockRejectedValueOnce(new Error("Supervisor unavailable"));
+  const dirty = vi.fn(); render(<DiscussionPanel data={askData()} onDraftChange={dirty} />);
+  fireEvent.change(screen.getByLabelText("Discussion question"), { target: { value: "Explain the tradeoff" } });
+  expect(screen.getByText("Draft — not saved")).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Save discussion" }));
+  expect(await screen.findByRole("alert")).toHaveTextContent("Supervisor unavailable");
+  expect(screen.getByLabelText("Discussion question")).toHaveValue("Explain the tradeoff");
+  fireEvent.click(screen.getByRole("button", { name: "Save discussion" }));
+  await waitFor(() => expect(screen.getByLabelText("Discussion question")).toHaveValue(""));
+  expect(wire.send.mock.calls[0]![0]).toEqual(wire.send.mock.calls[1]![0]);
+  expect(wire.send.mock.calls[0]![0]).toMatchObject({ intent: "discuss", expected: askData().expected });
+  expect(dirty).toHaveBeenLastCalledWith(false);
+});
+it("labels historical answers and promotes text into an editable formal draft", () => {
+  const data = askData(); const promote = vi.fn();
+  data.history = [{ id: "entry-one", entry_kind: "discussion", direction: "outbound", text: "Use receipts", source_version: { revision: 1 } }];
+  data.inputs = [{ id: "input-one", status: { state: "historical" }, source_version: { revision: 1 } }];
+  render(<DiscussionPanel data={data} onPromote={promote} />);
+  expect(screen.getByText(/Answer historical · revision 1/)).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Edit as formal feedback" }));
+  expect(promote).toHaveBeenCalledWith("Use receipts", "entry-one");
+  expect(wire.send).not.toHaveBeenCalled();
+});
+it("requires an explicit discard and warns when navigating with a draft", () => {
+  const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+  render(<><DiscussionPanel data={askData()} /><a href="/elsewhere">Leave</a></>);
+  fireEvent.change(screen.getByLabelText("Discussion question"), { target: { value: "Keep me" } });
+  expect(fireEvent.click(screen.getByText("Leave"))).toBe(false);
+  expect(confirm).toHaveBeenCalled();
+  expect(screen.getByLabelText("Discussion question")).toHaveValue("Keep me");
+  fireEvent.click(screen.getByRole("button", { name: "Discard draft" }));
+  expect(screen.getByLabelText("Discussion question")).toHaveValue(""); confirm.mockRestore();
+});

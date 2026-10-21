@@ -54,6 +54,74 @@ def index_playbook_sources(vault_root: Path) -> dict[str, str]:
     return sources
 
 
+def resync_system_source(
+    store: ArtifactStore,
+    vault_root: Path,
+    playbook_id: str,
+    artifact_sha256: str,
+    expected_source_hash: str,
+) -> dict:
+    """Restore retained, digest-verified source without compiling or activating.
+
+    Explicit repair only. Preserve the previous bytes beside the source and
+    refuse an edited source or any path outside the system playbook directory.
+    """
+    from src.playbooks.definition import source_digest
+
+    directory = vault_root.resolve() / "system" / "playbooks"
+    path = directory / f"{playbook_id}.md"
+    if (
+        not playbook_id
+        or path.name != f"{playbook_id}.md"
+        or path.is_symlink()
+        or path.resolve().parent != directory.resolve()
+        or not directory.resolve().is_relative_to(vault_root.resolve())
+    ):
+        raise ValueError("invalid system playbook source path")
+    definition = store.load(artifact_sha256)
+    if definition.id != playbook_id or definition.scope.type != "system":
+        raise ValueError("artifact does not belong to this system playbook")
+    source = store.load_source(artifact_sha256).encode("utf-8")
+    previous = path.read_bytes()
+    previous_hash = source_digest(previous.decode("utf-8"))
+    if previous_hash != expected_source_hash:
+        raise ValueError("conflict: vault_changed_underneath")
+    result = {
+        "success": True,
+        "playbook_id": playbook_id,
+        "artifact_sha256": artifact_sha256,
+        "source_hash": definition.source_hash,
+        "previous_source_hash": previous_hash,
+        "source_path": str(path),
+        "backup_path": None,
+        "changed": previous != source,
+    }
+    if previous == source:
+        return result
+    backup = path.with_name(f"{path.name}.bak-{uuid4().hex}")
+    staging = path.with_name(f".{path.name}.tmp-{uuid4().hex}")
+    try:
+        with os.fdopen(
+            os.open(backup, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600), "wb"
+        ) as handle:
+            handle.write(previous)
+            handle.flush()
+            os.fsync(handle.fileno())
+        with os.fdopen(
+            os.open(staging, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600), "wb"
+        ) as handle:
+            handle.write(source)
+            handle.flush()
+            os.fsync(handle.fileno())
+        if path.read_bytes() != previous:
+            raise ValueError("conflict: vault_changed_underneath")
+        os.replace(staging, path)
+    finally:
+        staging.unlink(missing_ok=True)
+    result["backup_path"] = str(backup)
+    return result
+
+
 class ArtifactStore:
     """Store canonical artifact bytes beneath ``<compiled_root>/artifacts``."""
 

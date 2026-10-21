@@ -5,17 +5,14 @@ from sqlalchemy import insert
 
 from src.commands.playbook_v2_commands import PlaybookV2CommandsMixin
 from src.config import PlaybooksConfig
-from src.database import Database
 from src.database.tables import playbook_pending_events
 from src.commands.principal import ExecutionPrincipal, principal_context
 from tests.test_api_playbook_v2_commands import _backend_fixture
-from tests.db_fixtures import lease_dsn
 
 
 @pytest.fixture
-async def handler(tmp_path):
-    db = Database(lease_dsn("delete.db"))
-    await db.initialize()
+async def handler(reuse_database):
+    db = await reuse_database("delete.db")
     _, ref, _ = _backend_fixture()
     await db.upsert_playbook_artifact(ref, scope="system", scope_identifier="",
                                      path="/artifact.json", size_bytes=1)
@@ -29,7 +26,6 @@ async def handler(tmp_path):
     instance.db = db
     instance.config = SimpleNamespace(playbooks=PlaybooksConfig(enabled=True))
     yield instance, ref
-    await db.close()
 
 
 async def test_delete_removes_only_exact_disabled_scope(handler):

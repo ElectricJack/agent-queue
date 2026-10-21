@@ -82,6 +82,33 @@ def test_builtin_audit_is_complete():
             assert digest == expected, (name, helper)
 
 
+@pytest.mark.parametrize(("command", "requirements"), [
+    ("approved_spec_packet", ("held_session",)),
+    ("review_feedback_complete", ("project_resources", "handler_gates")),
+    ("discard_pause_checkpoint", ("project_resources", "handler_gates")),
+    ("workspace_clear_sentinel", ("project_resources", "handler_gates")),
+    ("workspace_retire_claim", ("project_resources", "handler_gates")),
+    *[(name, ("system_scope",)) for name in (
+        "batch_reconcile", "gate_reopen", "playbook_source_resync",
+        "repair_repository_checkout", "repair_workspace_checkout",
+        "spec_ingest_legacy_inventory", "spec_ingest_reconcile", "workspace_cutover",
+    )],
+])
+def test_frozen_main_generated_producers_have_explicit_resource_authority(command, requirements):
+    assert resource_requirements(command) == requirements
+
+
+@pytest.mark.parametrize("command", [
+    "batch_reconcile", "gate_reopen", "playbook_source_resync", "repair_repository_checkout",
+    "repair_workspace_checkout", "spec_ingest_legacy_inventory", "spec_ingest_reconcile",
+    "workspace_cutover",
+])
+async def test_new_system_producers_reject_project_playbook_authority(command):
+    result = await authorize_resources(command, {}, principal(), db=object(), generated=True)
+    assert result["success"] is False
+    assert result["error_code"] == "resource_scope_denied"
+
+
 @pytest.mark.parametrize(("value", "outcome"), [
     ({"success": True, "error": "a business observation"}, "success"),
     ({"success": False, "payload": [1, "kept"]}, "failure"),

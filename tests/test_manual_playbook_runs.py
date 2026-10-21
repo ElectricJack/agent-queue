@@ -62,9 +62,8 @@ async def _activate_pipeline(db: Database, compiled_root: str):
 
 
 @pytest.fixture
-async def manual_handler(tmp_path):
-    db = Database(lease_dsn("manual-playbook.db"))
-    await db.initialize()
+async def manual_handler(tmp_path, reuse_database):
+    db = await reuse_database("manual-playbook.db")
     await db.create_project(Project(id=PROJECT_ID, name="Manual playbook"))
     await db.create_project(Project(id=OTHER_PROJECT_ID, name="Other project"))
     await db.create_profile(
@@ -89,7 +88,6 @@ async def manual_handler(tmp_path):
         yield handler, db
     finally:
         set_handler_provider(None)
-        await db.close()
 
 
 @pytest.mark.asyncio

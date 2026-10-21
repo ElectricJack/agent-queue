@@ -100,6 +100,15 @@ without requiring a published task branch. Missing base, changed source or faile
 provenance publication refuses close with the claim and workspace retained.
 Branchless and non-Git outcomes keep their existing completion behavior.
 
+Single and batched writes retain each ref's immutable publication result until a
+final authorized readback proves the exact deterministic metadata OID. An uncertain
+transfer followed by that exact OID succeeds. Otherwise the refusal names the ref,
+expected OID, final observation and publication observation, including a bounded,
+credential-scrubbed transfer error even when the transfer's readback itself failed
+or reported another OID. A publication result alone cannot override the final
+readback. Batched failures remain scoped to their own completion identity; no
+generation/source/claim binding or create-only lease changes for diagnostics.
+
 For an unheld Git root, `aq integration record-root-noop TASK_ID` previews an
 explicit no-artifact completion. A local operator or a live named supervisor of
 the owning project can apply it with the exact previewed `--head` and a nonblank
@@ -147,6 +156,13 @@ reports `blocked` and projects the delivery reason, including
 `missing_git_provenance`, with its task and target in integration status. Legacy
 generations still require explicit provenance migration; branch observation is
 never substituted for immutable completion evidence.
+
+An operator or live authorized supervisor may explicitly retain an unlabelled
+completed epic leaf through `integration redrive-child --adopt-source`. This
+dry-run-first recovery binds the existing passing generation to its verified
+published checkpoint source, with an exact-head apply and an audited reason.
+The admission and writer fences are specified in [work-graph](work-graph.md).
+It supplies source identity only; Git containment and train gates still decide delivery.
 
 The git-first evaluator reports an explicit `no_change` state for a passing
 completion whose recorded commit list is empty, whose immutable retained Git

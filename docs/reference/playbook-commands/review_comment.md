@@ -14,13 +14,14 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/generated.py`](../../../src/commands/contracts/generated.py) |
-| Contract fingerprint | `sha256:16c3bf43b10b9d72657c25c272d681231942933bd91eec7e603ce67f62e4af99` |
+| Contract fingerprint | `sha256:993fa0eeb7cefd4f73def3a6e5358a2c2733e3d1dcc4bc529a6205ed393a2eba` |
 
 ## Parameters
 
 | Parameter | Type | Required | Default | Description |
 |---|---|---|---|---|
 | `review_id` | `string` | yes | — | — |
+| `source_discussion_id` | `string` | no | — | — |
 | `revision` | `integer` | yes | — | — |
 | `quote` | `string` | no | — | — |
 | `heading_path` | `string[]` | no | — | — |
@@ -49,7 +50,7 @@ This command declares no effect clause, so the playbook graph falls back to its 
 
 | Effect | Subject | Condition |
 |---|---|---|
-| Composite using review_id, revision, quote, heading_path, body | — | always |
+| Composite using review_id, source_discussion_id, revision, quote, heading_path, body | — | always |
 
 <!-- aq:generated:end -->
 

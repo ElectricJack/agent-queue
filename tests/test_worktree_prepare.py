@@ -606,6 +606,19 @@ class TestRecoveryDoesNotDestroySlots:
         finally:
             await o.shutdown()
 
+    async def test_path_aliases_share_the_registered_git_mutex(self, tmp_path, base_repo):
+        o = await _orch(tmp_path, worktrees_enabled=True)
+        try:
+            slot, _cache = await self._slot_with_work(o, base_repo)
+            base_lock = o._git_mutex(str(base_repo))
+            assert o._git_mutex(str(base_repo) + "/") is base_lock
+            assert o._resolve_git_lock(str(slot) + "/") is base_lock
+            o._worktree_base_paths.clear()
+            o._register_slot_bases([await o.db.get_workspace_for_task("tsk-1")], str(base_repo) + "/")
+            assert o._resolve_git_lock(str(slot)) is base_lock
+        finally:
+            await o.shutdown()
+
     async def test_recovery_rebuilds_the_slot_to_base_lock_map(
         self, tmp_path, base_repo
     ):

@@ -35,6 +35,7 @@ GRAPH_COMMANDS = {
     "playbook_graph_layout_save",
     "playbook_activation_health",
     "playbook_activate",
+    "playbook_source_resync",
     "playbook_artifact_diff",
     "playbook_pending_events",
     "playbook_pending_event_action",

@@ -13,7 +13,6 @@ from __future__ import annotations
 import pytest
 
 from src.config import AppConfig
-from src.database import Database
 from src.escalations.facts import KIND_ROOT, EscalationFacts
 from src.escalations.plan import plan_deliveries
 from src.models import AgentProfile, Project, Task, TaskStatus
@@ -32,7 +31,6 @@ from src.providers.snapshot import ProviderUsageSnapshot
 from src.sessions.harness_parser import Harness
 from src.sessions.harness_registry import HarnessRegistry
 from src.sessions.provider import SessionDiedDuringStartup
-from tests.db_fixtures import lease_dsn
 from tests.assignment_routing_helpers import route_source_for
 
 T0 = 1_789_958_640.0
@@ -76,15 +74,13 @@ PROJECT_PROFILES = {"alpha": "std-codex", "beta": "std-codex", "gamma": "std-cla
 
 
 @pytest.fixture
-async def db():
-    database = Database(lease_dsn("provider-escalation.db"))
-    await database.initialize()
+async def db(reuse_database):
+    database = await reuse_database("provider-escalation.db")
     await database.create_profile(AgentProfile(id="std-codex", name="c", harness="codex"))
     await database.create_profile(AgentProfile(id="std-claude", name="c", harness="claude"))
     for pid in PROJECT_PROFILES:
         await database.create_project(Project(id=pid, name=pid))
     yield database
-    await database.close()
 
 
 def registry() -> HarnessRegistry:

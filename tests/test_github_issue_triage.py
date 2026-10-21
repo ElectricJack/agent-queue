@@ -13,6 +13,7 @@ from src.git.github_contracts import GitHubAccessError, GitHubRepositoryBinding
 from src.intelligence_classes import load_intelligence_classes
 from src.models import AgentProfile, Project, Task, TaskStatus
 from src.vault import ensure_default_intelligence_classes
+from tests.test_review_commands import decide
 
 
 class Issues:
@@ -202,7 +203,7 @@ async def _submit_report(handler, db, number: int) -> str:
 async def test_approval_files_one_fix_with_issue_closing_pr_instruction(env):
     handler, db, _ = env
     review_id = await _submit_report(handler, db, 11)
-    decision = await handler.execute("review_decide", {
+    decision = await decide(handler, {
         "review_id": review_id, "revision": 1, "decision": "approve",
     })
     assert decision["state"] == "approved"
@@ -221,7 +222,7 @@ async def test_approval_works_after_investigation_is_archived(env):
     review_id = await _submit_report(handler, db, 17)
     await db.update_task("issue-investigation-17", status=TaskStatus.COMPLETED)
     assert await db.archive_task("issue-investigation-17")
-    await handler.execute("review_decide", {
+    await decide(handler, {
         "review_id": review_id, "revision": 1, "decision": "approve",
     })
     result = await handler.execute("github_issue_fix_approved", {
@@ -241,7 +242,7 @@ async def test_unrelated_approved_review_is_ignored(env):
         "title": "Other report", "content": "This report is unrelated to issue triage.",
     })
     assert submitted["success"] is True
-    await handler.execute("review_decide", {
+    await decide(handler, {
         "review_id": submitted["review_id"], "revision": 1, "decision": "approve",
     })
     result = await handler.execute("github_issue_fix_approved", {
@@ -253,23 +254,23 @@ async def test_unrelated_approved_review_is_ignored(env):
 async def test_request_changes_and_reject_without_close_keep_issue_open(env, monkeypatch):
     handler, db, issues = env
     changed_id = await _submit_report(handler, db, 12)
-    changed = await handler.execute("review_decide", {
+    changed = await decide(handler, {
         "review_id": changed_id, "revision": 1,
         "decision": "request_changes", "note": "Add a test plan.",
     })
     assert changed["state"] == "changes_requested"
-    assert await db.find_task_by_dedup_key("agent-queue", f"review-revision:{changed_id}:1")
+    assert await db.find_task_by_dedup_key("agent-queue", f"review-revision:{changed['decision_id']}")
 
     rejected_id = await _submit_report(handler, db, 13)
-    rejected = await handler.execute("review_decide", {
+    rejected = await decide(handler, {
         "review_id": rejected_id, "revision": 1,
         "decision": "reject", "note": "Use the smaller guard change instead.",
     })
     assert rejected["state"] == "rejected"
     response_task = await db.find_task_by_dedup_key(
-        "agent-queue", f"review-revision:{rejected_id}:1"
+        "agent-queue", f"review-revision:{rejected['decision_id']}"
     )
-    assert response_task and "Do not close by default" in response_task.description
+    assert response_task and "only on an explicit human instruction" in response_task.description
     ignored = await handler.execute("github_issue_rejection", {
         "project_id": "agent-queue", "review_id": rejected_id, "revision": 1,
     })
@@ -290,13 +291,13 @@ async def test_request_changes_and_reject_without_close_keep_issue_open(env, mon
 async def test_reject_with_explicit_close_posts_jacks_reason(env, monkeypatch):
     handler, db, issues = env
     review_id = await _submit_report(handler, db, 14)
-    rejected = await handler.execute("review_decide", {
+    rejected = await decide(handler, {
         "review_id": review_id, "revision": 1,
         "decision": "reject", "note": "Please close this issue because the behavior is intended.",
     })
     assert rejected["state"] == "rejected"
     response_task = await db.find_task_by_dedup_key(
-        "agent-queue", f"review-revision:{review_id}:1"
+        "agent-queue", f"review-revision:{rejected['decision_id']}"
     )
     monkeypatch.setattr(handler, "_scoped_held_task_id", AsyncMock(return_value=response_task.id))
     result = await handler.execute("github_issue_close_rejected", {"review_id": review_id})
@@ -310,16 +311,16 @@ async def test_reject_with_explicit_close_posts_jacks_reason(env, monkeypatch):
 async def test_reject_saying_not_to_close_cannot_close_issue(env, monkeypatch):
     handler, db, issues = env
     review_id = await _submit_report(handler, db, 15)
-    await handler.execute("review_decide", {
+    rejected = await decide(handler, {
         "review_id": review_id, "revision": 1, "decision": "reject",
         "note": "Do not close this issue; revise the proposed fix instead.",
     })
     commented = await handler.execute("review_comment", {
         "review_id": review_id, "revision": 1, "body": "Please close this issue.",
     })
-    assert commented["success"] is True
+    assert commented["success"] is False and commented["error_code"] == "review_closed"
     response_task = await db.find_task_by_dedup_key(
-        "agent-queue", f"review-revision:{review_id}:1"
+        "agent-queue", f"review-revision:{rejected['decision_id']}"
     )
     monkeypatch.setattr(handler, "_scoped_held_task_id", AsyncMock(return_value=response_task.id))
     result = await handler.execute("github_issue_close_rejected", {"review_id": review_id})
@@ -334,7 +335,7 @@ async def test_reject_saying_not_to_close_cannot_close_issue(env, monkeypatch):
 async def test_rejection_event_closes_only_on_jacks_explicit_current_decision(env):
     handler, db, issues = env
     review_id = await _submit_report(handler, db, 16)
-    await handler.execute("review_decide", {
+    await decide(handler, {
         "review_id": review_id, "revision": 1, "decision": "reject",
         "note": "Please close this issue because it is a duplicate.",
     })

@@ -60,12 +60,10 @@ class Clock:
 
 
 @pytest.fixture
-async def db():
-    database = Database(lease_dsn("escalation_delivery"))
-    await database.initialize()
+async def db(reuse_database):
+    database = await reuse_database("escalation_delivery")
     await database.create_project(Project(id="p", name="Project"))
     yield database
-    await database.close()
 
 
 async def make_incident(db: Database, **overrides):

@@ -12,6 +12,7 @@ import pytest
 from src.commands.playbook_v2_commands import PlaybookV2CommandsMixin
 from src.database import Database
 from src.playbooks.artifact_store import ArtifactStore
+from src.playbooks.definition import source_digest
 from src.playbooks.profiles import shipped_profile_lookup
 from src.playbooks.required import (
     DEFAULT_SYSTEM_PLAYBOOK_IDS,
@@ -57,6 +58,127 @@ async def _reconciler(tmp_path):
     handler = _Handler(tmp_path, db)
     reconciler = RequiredPlaybookReconciler(config=handler.config, db=db, handler=handler)
     return db, handler, reconciler
+
+
+async def test_source_resync_survives_install_and_restart_without_activation_changes(tmp_path):
+    from pathlib import Path
+
+    from src.api.models.playbook_v2 import PlaybookSourceResyncResponse
+
+    db, handler, reconciler = await _reconciler(tmp_path)
+    try:
+        await reconciler.reconcile()
+        playbook_id = "default-assignment-routing"
+        row = await _system_row(db, playbook_id)
+        path = tmp_path / "vault/system/playbooks" / f"{playbook_id}.md"
+        reviewed = (reviewed_bundle_source() / playbook_id / "source.md").read_bytes()
+        drifted = reviewed + b"\nOld authored policy.\n"
+        path.write_bytes(drifted)
+        (path.parent / f"{path.name}.bak").write_bytes(b"ancient backup")
+        before = await db.list_playbook_activations(enabled_only=False)
+        health = await handler._cmd_playbook_activation_health({"playbook_id": playbook_id})
+        assert health["activations"][0]["source_drift"] is True
+        args = {
+            "playbook_id": playbook_id,
+            "artifact_sha256": row["active_artifact_sha256"],
+            "expected_source_hash": source_digest(drifted.decode()),
+        }
+        result = await handler._cmd_playbook_source_resync(args)
+        PlaybookSourceResyncResponse.model_validate(result)
+        assert result["success"] and result["changed"]
+        assert Path(result["backup_path"]).read_bytes() == drifted
+        assert path.read_bytes() == reviewed
+        assert await db.list_playbook_activations(enabled_only=False) == before
+        args["expected_source_hash"] = result["source_hash"]
+        again = await handler._cmd_playbook_source_resync(args)
+        assert again["success"] and not again["changed"] and again["backup_path"] is None
+        assert install_initial_playbooks(str(tmp_path)) == []
+        await _read_only_restart(tmp_path, db)
+        health = await handler._cmd_playbook_activation_health({"playbook_id": playbook_id})
+        assert health["activations"][0]["source_drift"] is False
+        assert path.read_bytes() == reviewed
+    finally:
+        await db.close()
+
+
+@pytest.mark.parametrize(
+    "failure", ["source_conflict", "inactive", "missing", "corrupt", "symlink"]
+)
+async def test_source_resync_refuses_unverified_or_changed_inputs(tmp_path, failure):
+    db, handler, reconciler = await _reconciler(tmp_path)
+    try:
+        await reconciler.reconcile()
+        playbook_id = "default-assignment-routing"
+        row = await _system_row(db, playbook_id)
+        sha = row["active_artifact_sha256"]
+        path = tmp_path / "vault/system/playbooks" / f"{playbook_id}.md"
+        previous = path.read_bytes()
+        args = {
+            "playbook_id": playbook_id,
+            "artifact_sha256": sha,
+            "expected_source_hash": source_digest(previous.decode()),
+        }
+        if failure == "source_conflict":
+            args["expected_source_hash"] = "sha256:" + "0" * 64
+        elif failure == "inactive":
+            args["artifact_sha256"] = "sha256:" + "0" * 64
+        elif failure == "missing":
+            handler._store.source_path_for(sha).unlink()
+        elif failure == "corrupt":
+            handler._store.source_path_for(sha).write_text("corrupt")
+        else:
+            target = tmp_path / "outside.md"
+            target.write_bytes(previous)
+            path.unlink()
+            path.symlink_to(target)
+        result = await handler._cmd_playbook_source_resync(args)
+        assert result["success"] is False
+        assert path.read_bytes() == previous
+        assert not list(path.parent.glob("*.bak-*"))
+    finally:
+        await db.close()
+
+
+async def test_source_resync_refuses_plain_workers_even_with_a_grant(tmp_path):
+    from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_context
+    from src.profiles.capabilities import CapabilityPolicy
+
+    handler = _Handler(tmp_path, SimpleNamespace())
+    principal = ExecutionPrincipal(
+        kind=PrincipalKind.SESSION,
+        policy=CapabilityPolicy(aq_commands=frozenset({"playbook_source_resync"})),
+    )
+    with principal_context(principal):
+        result = await handler._cmd_playbook_source_resync({})
+    assert result["success"] is False and "elevated" in result["error"]
+
+
+@pytest.mark.parametrize("customized", [False, True])
+async def test_explicit_repair_advances_only_the_unchanged_previous_source(tmp_path, customized):
+    db, handler, reconciler = await _reconciler(tmp_path)
+    try:
+        await reconciler.reconcile()
+        playbook_id = "default-assignment-routing"
+        path = tmp_path / "vault/system/playbooks" / f"{playbook_id}.md"
+        reviewed = path.read_text(encoding="utf-8")
+        previous = reviewed + "\nPrevious release.\n"
+
+        def older_body(body):
+            _compiled_before_the_grants_moved(body)
+            body["source_hash"] = source_digest(previous)
+
+        older = _shipped_variant(playbook_id, older_body)
+        sha = await _store_variant(db, handler, older)
+        handler._store.put_source(sha, previous)
+        await _activate(db, playbook_id, sha)
+        current = previous + "\nOperator edit.\n" if customized else previous
+        path.write_text(current, encoding="utf-8")
+        await reconciler.reconcile(repair=True)
+        assert path.read_text(encoding="utf-8") == (current if customized else reviewed)
+        assert bool(list(path.parent.glob("*.bak-*"))) is not customized
+        await _read_only_restart(tmp_path, db)
+    finally:
+        await db.close()
 
 
 @pytest.mark.parametrize("empty_vault", [False, True], ids=["absent", "empty"])

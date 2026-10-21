@@ -57,9 +57,13 @@ from typing import Any, Final
 from sqlalchemy import select
 
 from src.database.tables import (
+    ask_decision_previews,
+    ask_decisions,
+    conversation_inputs,
     escalation_messages,
     escalations,
     gates,
+    human_asks,
     integration_batches,
     integration_branch_owners,
     integration_candidate_resolutions,
@@ -115,6 +119,20 @@ def _row_resolver(table) -> Resolver:
         return await _project_id_of(db, table, value)
 
     return resolve
+
+
+async def _publication_delegation_project(db, value: str) -> Ownership:
+    """A delegation grant lives on its target owner row, keyed by lease holder."""
+    async with db._engine.connect() as conn:
+        row = (
+            await conn.execute(
+                select(integration_branch_owners.c.delegation).where(
+                    integration_branch_owners.c.owner_id == f"publication-delegation:{value}",
+                    integration_branch_owners.c.delegation.is_not(None),
+                ).limit(1)
+            )
+        ).mappings().first()
+    return (False, None) if row is None else (True, row["delegation"].get("project_id"))
 
 
 def _entity_resolver(getter: str) -> Resolver:
@@ -266,11 +284,31 @@ async def _message_view_project(db, message_id: str, args: dict) -> Ownership:
 
 
 # Tagged objects need both arguments; their IDs never gain an untyped resolver.
+def _context_resolver(resolver: Resolver) -> ContextResolver:
+    """Limit a row resolver to commands that use this argument's identity."""
+
+    async def resolve(db, value: str, args: dict) -> Ownership:
+        return await resolver(db, value)
+
+    return resolve
+
+
+# Tagged objects need both arguments; shared argument names stay command-scoped.
 CONTEXT_TARGET_RESOLVERS: Final[dict[tuple[str, str], ContextResolver]] = {
     ("message_status", "message_id"): _message_view_project,
     ("message_reply", "message_id"): _message_view_project,
     ("decision_record", "object_id"): _decision_object_project,
     ("decision_list", "object_id"): _decision_object_project,
+    ("ask_decide", "preview_id"): _context_resolver(_foreign_resolver(
+        ask_decision_previews, ask_decision_previews.c.ask_id, "ask_id"
+    )),
+    ("ask_retry_operation", "decision_id"): _context_resolver(_foreign_resolver(
+        ask_decisions, ask_decisions.c.ask_id, "ask_id"
+    )),
+    **{
+        (command, "input_id"): _context_resolver(_row_resolver(conversation_inputs))
+        for command in ("ask_show", "ask_apply_input", "ask_discussion_reply")
+    },
 }
 
 
@@ -286,7 +324,6 @@ TARGET_RESOLVERS: Final[dict[str, Resolver]] = {
     "workflow_id": _entity_resolver("get_workflow"),
     "review_id": _entity_resolver("get_review"),
     "question_id": _entity_resolver("get_agent_question"),
-    "message_id": _entity_resolver("get_message"),
     "reply_to_id": _entity_resolver("get_message"),
     "run_id": _playbook_run_project,
     "artifact_sha256": _playbook_artifact_project,
@@ -322,8 +359,10 @@ TARGET_RESOLVERS: Final[dict[str, Resolver]] = {
     "event_id": _row_resolver(integration_outbox),
     "escalation_id": _row_resolver(escalations),
     "gate_id": _row_resolver(gates),
+    "ask_id": _row_resolver(human_asks),
     "job_id": _row_resolver(jobs),
     "repository_id": _row_resolver(repos),
+    "publication_delegation_id": _publication_delegation_project,
     "selection_id": _row_resolver(test_selections),
     "subject_id": _row_resolver(integration_subjects),
     "promotion_id": _row_resolver(test_selection_promotions),

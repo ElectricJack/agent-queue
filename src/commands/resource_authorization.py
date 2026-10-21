@@ -36,6 +36,8 @@ playbook_v2_import playbook_v2_validate playbook_v2_propose playbook_v2_shadow_c
 playbook_delete playbook_artifacts get_playbook_source update_playbook_source
 set_playbook_enabled playbook_graph_layout_save playbook_v2_graph playbook_graph_view
 show_playbook_graph playbook_artifact_diff
+batch_reconcile gate_reopen playbook_source_resync repair_repository_checkout
+repair_workspace_checkout spec_ingest_legacy_inventory spec_ingest_reconcile workspace_cutover
 run_command shutdown restart_daemon update_and_restart
 """.split())
 
@@ -53,6 +55,7 @@ prime subagent_event task_claim session_drain_ack operator_execute operator_pref
 HELD_COMMANDS = frozenset("""
 task_close task_heartbeat task_set task_comment task_comment_edit task_comment_delete
 benchmark_stage_record artifact_verify object_checkpoint_read task_handoff
+approved_spec_packet
 """.split())
 
 # Each of these producers confines its primary query/mutation to project_id, or
@@ -81,6 +84,7 @@ skip_task spec_approve task_batch_discard task_batch_propose task_batch_update t
 task_comments task_deps task_progress task_recent_activity task_recover task_route
  task_route_override task_show task_subtask_add task_subtask_get task_subtask_update
  task_subtasks token_audit workflow_pipeline_view workspace_doctor workspace_reap
+ discard_pause_checkpoint workspace_clear_sentinel workspace_retire_claim
 """.split())
 
 # These commands already implement a nontrivial resource language: mailboxes,
@@ -93,6 +97,7 @@ review_attachment_add review_attachment_list review_comment review_decide review
 review_dispatch review_import_edits review_list review_reopen review_show review_submit
 review_withdraw create_task_graph formula_cook task_batch_propose task_batch_update
 dashboard_state_get dashboard_state_list dashboard_state_put dashboard_state_reset
+review_feedback_complete
 """.split())
 
 # Session callers retain the independently verified domain gates. These
@@ -108,6 +113,7 @@ run_playbook dry_run_playbook playbook_activate
 digest_facts digest_preview digest_status bind_project_repository
 edit_intelligence_class delete_intelligence_class list_profiles list_intelligence_classes
 test_selection_policy_show
+review_feedback_complete
 """.split()) | PUBLIC_COMMANDS | SESSION_COMMANDS | HELD_COMMANDS
 
 # Explicit read audit, not a command-name heuristic. Unannotated effects remain

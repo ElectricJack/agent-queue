@@ -9,7 +9,6 @@ import pytest
 from sqlalchemy import delete, func, insert, select, update
 
 from src.collaboration import CollaborationError
-from src.database import Database
 from src.database.tables import (
     archived_tasks,
     collaboration_messages,
@@ -18,15 +17,13 @@ from src.database.tables import (
     tasks,
 )
 from src.models import Agent, AgentState, Project, SessionRecord, Task, TaskStatus
-from tests.db_fixtures import lease_dsn
 
 NOW = 1_800_000_000.0
 
 
 @pytest.fixture
-async def env():
-    db = Database(lease_dsn("collaboration"))
-    await db.initialize()
+async def env(reuse_database):
+    db = await reuse_database("collaboration")
     await db.create_project(Project(id="p", name="P"))
     await db.create_project(Project(id="q", name="Q"))
     for task_id in ("one", "two", "three", "four", "foreign", "done"):
@@ -68,7 +65,6 @@ async def env():
     async with db._engine.begin() as conn:
         await conn.execute(update(tasks).values(claim_epoch=1))
     yield SimpleNamespace(db=db)
-    await db.close()
 
 
 async def create(env, *, task_ids=("one", "two"), key="thread", **values):

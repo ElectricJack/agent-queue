@@ -77,6 +77,12 @@ origin without automatically merging its conflicting parent. Admission proves
 the repair's exact passing published tip descends from every frozen input,
 then merges any newly proven parent/prerequisite before activating the child.
 
+When the local child ref is an ancestor of its published head, construct the
+overlay from the published head and let the fenced checkout preparation
+fast-forward the local branch. Retain a local descendant's unpublished commits;
+refuse when neither head descends from the other. Stack observation itself does
+not move the local branch or alter the immutable filing origin.
+
 The lower Git preparation boundary aborts an unsuccessful merge and emits a
 named conflict only after verifying the original HEAD and a clean index. Both
 pool and push preparation route that diagnostic through the same reservation.

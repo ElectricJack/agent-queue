@@ -14,7 +14,7 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/generated.py`](../../../src/commands/contracts/generated.py) |
-| Contract fingerprint | `sha256:f540e41328f146700d639829848c7025b250cf8c5e1ed834f579f064a91b6218` |
+| Contract fingerprint | `sha256:c38a0aa975ca97e2a38baa4df2cf30bfd37bc630bc6932de072733f335a8a345` |
 
 ## Parameters
 
@@ -22,8 +22,12 @@
 |---|---|---|---|---|
 | `review_id` | `string` | yes | — | — |
 | `revision` | `integer` | yes | — | — |
-| `decision` | `"approve" \| "request_changes" \| "reject"` | yes | — | — |
+| `decision` | `"approve" \| "request_changes" \| "reject" \| "decline" \| "fold_in"` | yes | — | — |
 | `note` | `string` | no | — | — |
+| `preview_id` | `string` | no | — | — |
+| `expected` | `object` | no | — | — |
+| `idempotency_key` | `string` | no | — | — |
+| `dispositions` | `object[]` | no | — | — |
 | `responder_class` | `string` | no | — | After request_changes or reject: intelligence-class hint for the new revision task, which the project's router routes. A responder profile is not accepted. |
 
 This generated contract exposes the **playbook** input-schema view. MCP/CLI/API retain their legacy **transport** view.
@@ -49,7 +53,7 @@ This command declares no effect clause, so the playbook graph falls back to its 
 
 | Effect | Subject | Condition |
 |---|---|---|
-| Composite using review_id, revision, decision, note, responder_class | — | always |
+| Composite using review_id, revision, decision, note, preview_id, expected, idempotency_key, dispositions, responder_class | — | always |
 
 <!-- aq:generated:end -->
 

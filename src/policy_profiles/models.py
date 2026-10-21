@@ -14,6 +14,7 @@ Placement = Literal["project", "global", "skip"]
 PolicyType = Literal[
     "playbook", "agent_settings", "promotion_flow", "ci_test", "routing", "template",
     "intelligence_class", "pool", "project_settings",
+    "integration_settings",
 ]
 
 
@@ -74,6 +75,22 @@ class PlaybookPolicy(Strict):
 class PromotionPolicy(Strict):
     type: Literal["promotion_flow"] = "promotion_flow"
     flow: list[dict[str, Any]]
+
+
+class IntegrationSettings(Strict):
+    """Portable inputs, never a source installation's activation identities."""
+
+    type: Literal["integration_settings"] = "integration_settings"
+    version: Literal[1] = 1
+    engine: Literal["shadow", "active"]
+    integration_mode: Literal["pull_request"] = "pull_request"
+    hierarchical_integration_mode: Literal["disabled", "observe", "hierarchy", "train"]
+    integration_repository_id: str | None = None
+    default_branch: str
+    # Placeholders may stand for check-name arrays until materialization. The
+    # ordinary integration policy validator validates the resolved structure.
+    policy: dict[str, Any] | None = None
+    promotion_flow: list[dict[str, Any]] | None = None
 
 
 class PathAreas(Strict):
@@ -182,7 +199,8 @@ Payload = Annotated[
     | TemplatePolicy
     | IntelligenceClassPolicy
     | PoolPolicy
-    | ProjectPolicy,
+    | ProjectPolicy
+    | IntegrationSettings,
     Field(discriminator="type"),
 ]
 PAYLOAD = TypeAdapter(Payload)
@@ -269,7 +287,9 @@ class DiffItem(Strict):
     current_checksum: str | None = None
     diff: str = ""
     destinations: list[str] = []
-    state: Literal["copy", "pending review", "pending configuration", "system template"] = "copy"
+    state: Literal[
+        "copy", "pending review", "pending configuration", "system template", "configure integration"
+    ] = "copy"
 
 
 class ExportRequest(Strict):

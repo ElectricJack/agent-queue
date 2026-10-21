@@ -8,13 +8,11 @@ import pytest
 
 from src.commands.principal import PrincipalKind, current_principal
 from src.config import AppConfig, DiscordConversationConfig
-from src.database import Database
 from src.discord.bot import AgentQueueBot
 from src.discord.escalation_intake import DiscordEscalationIntake, IntakeOutcome
 from src.discord.inbound import DiscordInboundRouter
 from src.discord.intake_diagnostics import IgnoreCounter
 from src.models import Project
-from tests.db_fixtures import lease_dsn
 from tests.test_escalation_intake import (
     BOT_USER_ID,
     CHANNEL,
@@ -89,12 +87,10 @@ def router(handler, *, config=None, intake=None, cutover="complete", outbox=True
 
 
 @pytest.fixture
-async def db():
-    database = Database(lease_dsn("discord-inbound-router"))
-    await database.initialize()
+async def db(reuse_database):
+    database = await reuse_database("discord-inbound-router")
     await database.create_project(Project(id="p", name="Project P"))
     yield database
-    await database.close()
 
 
 async def test_mention_posts_only_with_gateway_principal_and_observed_envelope(caplog):

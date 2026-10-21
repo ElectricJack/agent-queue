@@ -14,7 +14,6 @@ import subprocess
 import pytest
 
 from src.config import AppConfig
-from src.database import Database
 from src.models import AgentProfile, Project, SessionRecord
 from src.providers.availability import (
     AUTH_PROBE,
@@ -35,7 +34,6 @@ from src.providers.snapshot import ProviderUsageSnapshot
 from src.sessions.harness_parser import Harness
 from src.sessions.harness_registry import HarnessRegistry
 from src.sessions.provider import SessionDiedDuringStartup
-from tests.db_fixtures import lease_dsn
 
 T0 = 1_789_958_640.0
 
@@ -79,13 +77,11 @@ class Probe:
 
 
 @pytest.fixture
-async def db():
-    database = Database(lease_dsn("provider-evidence.db"))
-    await database.initialize()
+async def db(reuse_database):
+    database = await reuse_database("provider-evidence.db")
     await database.create_profile(AgentProfile(id="std-codex", name="c", harness="codex"))
     await database.create_profile(AgentProfile(id="std-claude", name="c", harness="claude"))
     yield database
-    await database.close()
 
 
 def registry() -> HarnessRegistry:

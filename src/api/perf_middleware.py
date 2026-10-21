@@ -133,10 +133,11 @@ class RouteLatencyMiddleware:
 class _Probe:
     """One request's observations; every method is safe to call from the request path."""
 
-    __slots__ = ("accepted", "label", "recorded", "reg", "started", "status", "stream")
+    __slots__ = ("accepted", "label", "recorded", "reg", "started", "status", "stream", "scope")
 
     def __init__(self, reg: PerfRegistry, label: str, started: float, *, stream: bool) -> None:
         self.reg = reg
+        self.scope: Any = {}
         self.label = label
         self.started = started
         #: Every WebSocket is a stream; an HTTP response becomes one when its
@@ -155,9 +156,8 @@ class _Probe:
             if kind not in ("http", "websocket"):
                 return None
             reg = registry if registry is not None else perf_registry()
-            if not reg.enabled:
-                return None
             probe = cls(reg, route_label(scope), started, stream=kind == "websocket")
+            probe.scope = scope
         except Exception:  # instrumentation must never fail a request
             logger.debug("route latency: request not instrumented", exc_info=True)
             return None
@@ -199,7 +199,9 @@ class _Probe:
         if self.recorded:
             return
         self.recorded = True
-        self._call("observe_stream_handshake", self.label, self._elapsed_ms(), accepted=accepted)
+        elapsed_ms = self._elapsed_ms()
+        self._log_timing(elapsed_ms, status=self.status, handshake=True)
+        self._call("observe_stream_handshake", self.label, elapsed_ms, accepted=accepted)
         if accepted:
             self.accepted = True
             self._call("stream_opened", self.label)
@@ -208,7 +210,17 @@ class _Probe:
         if self.recorded:
             return
         self.recorded = True
-        self._call("observe_route", self.label, self._elapsed_ms(), status)
+        elapsed_ms = self._elapsed_ms()
+        self._log_timing(elapsed_ms, status=status)
+        self._call("observe_route", self.label, elapsed_ms, status)
+
+    def _log_timing(self, elapsed_ms: float, *, status=None, handshake=False) -> None:
+        log = logger.warning if elapsed_ms >= 1000 else logger.debug
+        log(
+            "request timing route=%s status=%s duration_ms=%.1f handshake=%s request_id=%s",
+            self.label, status, elapsed_ms, handshake,
+            (self.scope.get("state") or {}).get("request_id"),
+        )
 
     def _elapsed_ms(self) -> float:
         return (time.perf_counter() - self.started) * 1000.0

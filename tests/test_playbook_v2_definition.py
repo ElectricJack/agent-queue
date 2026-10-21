@@ -55,8 +55,8 @@ def test_daily_cron_trigger_accepts_only_valid_local_times():
 
 #: §4.7 — pinned so a Pydantic upgrade that reorders dumps fails loudly rather
 #: than silently invalidating every stored artifact hash.
-# Refreshed with the intentional list_tasks observation contract change in the golden.
-GOLDEN_DIGEST = "sha256:c0e872de4f4f399efe2662343f439b7354d691bd7e817574e230e5ed14146826"
+# Refreshed with the combined list_tasks observation and gate_create contract changes in the golden.
+GOLDEN_DIGEST = "sha256:b894e6bc791942583a9ab4afa8a0731d9f036d20e7f0136bbc00103933cb2bd9"
 
 
 @pytest.fixture
@@ -562,7 +562,12 @@ class TestGeneratedSchema:
         assert "profile_id" not in schema["required"]
         assert "pin_provider" not in schema["properties"]
         assert {"intelligence_class", "task_type"} <= schema["properties"].keys()
-        assert set(schema["properties"]["profile_id"]["anyOf"][0]["enum"]) == ROLE_PROFILE_IDS
+        # The fidelity-reviewer role (held batches L2.1) joins the AgentTaskStep
+        # Literal with its shipped profile in L5.1; until then only
+        # ``ensure_fidelity_review`` files it.
+        assert set(schema["properties"]["profile_id"]["anyOf"][0]["enum"]) == (
+            ROLE_PROFILE_IDS - {"fidelity-reviewer"}
+        )
         step = golden.steps["escalate"].model_dump()
         step.pop("profile_id")
         assert D.AgentTaskStep.model_validate(step).profile_id is None

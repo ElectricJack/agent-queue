@@ -660,10 +660,17 @@ class PromoteCommandsMixin:
 
         request = PromoteRequestArgs.model_validate(args)
         try:
+            if request.allow_breaking_migration and (
+                current_principal() or TRUSTED_LOCAL
+            ).kind is not PrincipalKind.LOCAL:
+                raise PromotionRefusal("breaking_migration_override_forbidden",
+                                       "Only a local operator may override migration admission.")
             project, repository, raw, flow = await self._promotion_inputs(
                 request.project_id, command="integration_backmerge_source" if backmerge else "promote_request"
             )
             step = _find_step(flow, request.step_id)
+            if request.allow_breaking_migration and (backmerge or not step_has_version(step)):
+                raise PromotionRefusal("step_not_versioned", "Migration override requires a tagged release.")
             manifest = await self._promotion_manifest(repository)
             validation = FlowSchema.validate(
                 raw, default_branch=repository.default_branch, manifest=manifest
@@ -796,6 +803,14 @@ class PromoteCommandsMixin:
                     metadata = notes_metadata(authored_notes, step["notes"]["kind"], version)
                     if metadata.get("source_digest") != notes_input["source_digest"]:
                         raise PromotionRefusal("notes_stale", "Notes do not cover the pinned source set.")
+                admission = None
+                if not backmerge and step_has_version(step):
+                    from src.integration.promotion_migrations import migration_admission
+
+                    admission = await migration_admission(
+                        ops, repo, step, source, previous,
+                        {**requester, "recorded_at": time.time()} if request.allow_breaking_migration else None,
+                    )
                 now = time.time()
                 meta = {
                     "request_id": request_id,
@@ -813,6 +828,7 @@ class PromoteCommandsMixin:
                     "requester": requester,
                     "notes_sha256": notes_sha,
                     "notes_input": notes_input,
+                    **({"migration_admission": admission} if admission is not None else {}),
                 }
                 if hotfix:
                     meta.update(kind="hotfix", hotfix_task_id=request.from_task)
@@ -832,7 +848,8 @@ class PromoteCommandsMixin:
                     if observed.state is RemoteRefState.PRESENT:
                         raise PromotionRefusal("tag_exists", f"Tag {tag} already exists.")
                 body = step_pr_body(step, source, request_id, notes_input, authored_notes,
-                                    origin_ref=(backmerge or hotfix or {}).get("origin_ref"))
+                                    origin_ref=(backmerge or hotfix or {}).get("origin_ref"),
+                                    migration_admission=admission)
                 digest = hashlib.sha256(f"{project.id}:{request_id}".encode()).hexdigest()
                 batch = Batch(
                     "promotion-" + digest, project.id, repository.id, target_ref, created_at=now
@@ -922,7 +939,9 @@ class PromoteCommandsMixin:
                     "pr_url": pr_url,
                 }, project.id, repository.id, target_ref)
         except (PromotionRefusal, NotesRefusal, PromotionSourceRefusal) as exc:
-            return {"success": False, "outcome": exc.outcome, "error": str(exc)}
+            return {"success": False, "outcome": exc.outcome, "error": str(exc),
+                    **({"migration_admission": exc.migration_admission}
+                       if hasattr(exc, "migration_admission") else {})}
         except (GitError, GitHubAccessError, OSError, ValueError) as exc:
             return _unavailable(exc)
 

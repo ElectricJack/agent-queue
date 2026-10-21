@@ -8,18 +8,14 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import event
 
 from src.api.graph import build_graph_router
-from src.database import Database
 from src.models import Agent, AgentState, Project, Task, TaskStatus
-from tests.db_fixtures import lease_dsn
 
 
 @pytest.fixture
-async def db(tmp_path):
-    database = Database(lease_dsn("g.db"))
-    await database.initialize()
+async def db(reuse_database):
+    database = await reuse_database("g.db")
     await database.create_project(Project(id="p1", name="P1"))
     yield database
-    await database.close()
 
 
 @pytest.fixture
@@ -174,3 +170,27 @@ async def test_graph_rolls_up_nested_waiting_work(db, client_factory):
         assert nodes[task_id]["child_state_counts"] == {"waiting": 1}
         assert nodes[task_id]["descendant_state_counts"] == {"DEFINED": 1}
     assert nodes["leaf"]["display_state"] is None
+
+
+async def test_graph_carries_delivery_readiness_and_epic_reason(db, client_factory, monkeypatch):
+    from sqlalchemy import update
+    from src.database.tables import tasks
+
+    for tid, status in (("epic", TaskStatus.IN_PROGRESS), ("leaf", TaskStatus.READY)):
+        await db.create_task(Task(id=tid, project_id="p1", title=tid, description="", status=status))
+    async with db._engine.begin() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == "leaf").values(parent_task_id="epic"))
+
+    async def exclusions(ids, **kwargs):
+        return {tid: [{"code": "frontier_epic_refresh_pending", "ref": "epic",
+                       "detail": "Refresh epic aq/epic after source.6 lands on dev"}] for tid in ids}
+
+    monkeypatch.setattr(db, "claim_frontier_exclusions_many", exclusions)
+    async with client_factory() as ac:
+        response = await ac.get("/api/projects/p1/graph")
+    assert response.status_code == 200
+    rows = {row["id"]: row for row in response.json()["tasks"]}
+    assert rows["leaf"]["status"] == "READY"
+    assert rows["leaf"]["claim_readiness"]["claimable"] is False
+    assert "aq/epic" in rows["leaf"]["claim_readiness"]["reason"]
+    assert "source.6" in rows["epic"]["display_reason"]

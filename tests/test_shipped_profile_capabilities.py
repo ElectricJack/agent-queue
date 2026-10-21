@@ -19,6 +19,7 @@ import pytest
 from src.api.scope import (
     AGENT_COMMAND_SET,
     _PLAYBOOK_COMPILER_COMMANDS,
+    _SPEC_INGEST_COMMANDS,
     _TRIAGE_COMMANDS,
 )
 from src.commands.operator_authority import OPERATOR_READS, OPERATOR_WRITES
@@ -54,7 +55,7 @@ EXPECTED_UNREACHABLE: dict[str, set[str]] = {
     "playbook-compiler": set(),
     "pr-merger": {"pr_merge"},
     "reviewer": {"reopen_with_feedback"},
-    "spec-ingest": {"get_downstream_tasks", "task_batch_commit", "task_batch_propose"},
+    "spec-ingest": set(),
     "supervisor": set(),
     "triage": {"edit_task"},
     "worker-claude": {"pr_merge"},
@@ -163,6 +164,9 @@ class TestShippedProfile:
         parsed = _parsed(profile_id)
         granted = set(parsed.capabilities["aq_commands"])
         reachable = OPERATOR_REACHABLE if "operator_execute" in granted else REACHABLE
+        if profile_id == "spec-ingest":
+            # These commands require the live server-owned ingestion role.
+            reachable = reachable | _SPEC_INGEST_COMMANDS
         unreachable = set() if profile_id == "supervisor" else granted - reachable
         assert unreachable == EXPECTED_UNREACHABLE[profile_id]
 
@@ -180,6 +184,11 @@ def test_supervisor_inbox_grants_exclude_internal_intake():
     } <= granted
     assert "supervisor_inbox_post" not in granted
     assert granted <= _builtin_command_names()
+
+
+def test_supervisor_can_diagnose_and_repair_repository_checkouts():
+    granted = set(_parsed("supervisor").capabilities["aq_commands"])
+    assert {"project_doctor", "repair_repository_checkout", "repair_workspace_checkout"} <= granted
 
 
 # ---------------------------------------------------------------------------

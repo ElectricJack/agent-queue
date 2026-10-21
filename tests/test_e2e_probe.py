@@ -34,6 +34,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -109,15 +110,112 @@ def test_classify_treats_a_body_that_is_not_the_readiness_envelope_as_unreachabl
     assert probe.classify(body)[0] == probe.UNREACHABLE
 
 
+@pytest.mark.parametrize("state", ["initializing", "timeout", "stale"])
+async def test_probe_obeys_real_background_snapshot_readiness(monkeypatch, state):
+    """Exercise the actual API contract, including timeout's empty DB verdict."""
+    import asyncio
+
+    from src.api import dependencies as deps
+    from src.api.health import ready
+    from src.api.health_monitor import HealthMonitor
+
+    blocked = False
+    now = [0.0]
+
+    async def provider():
+        if blocked:
+            await asyncio.Event().wait()
+        return READY_BODY["checks"]
+
+    monitor = HealthMonitor(provider, timeout=0.01, clock=lambda: now[0])
+    monkeypatch.setattr(deps, "_health_provider", provider)
+    monkeypatch.setattr(deps, "_health_monitor", monitor)
+    if state == "timeout":
+        blocked = True
+        await monitor.refresh()
+    elif state == "stale":
+        await monitor.refresh()
+        now[0] = monitor.max_age + 1
+
+    response = await ready()
+    assert response.status_code == 503
+    code, message = probe.classify(json.loads(response.body))
+    assert code == probe.BUSY
+    assert state in message
+    assert "database check failed" not in message
+
+    blocked = False
+    await monitor.refresh()
+    response = await ready()
+    assert response.status_code == 200
+    assert probe.classify(json.loads(response.body))[0] == probe.READY
+
+
+def test_probe_refuses_failed_policy_readiness_with_a_working_database():
+    body = {"ready": False, "checks": {
+        **READY_BODY["checks"], "required_playbooks": {"ok": False},
+    }}
+    code, message = probe.classify(body)
+    assert code == probe.UNUSABLE
+    assert "required_playbooks" in message
+
+
+def test_probe_refuses_missing_overall_readiness():
+    assert probe.classify({"checks": READY_BODY["checks"]})[0] == probe.UNUSABLE
+
+
+@pytest.fixture
+def probe_clock(monkeypatch):
+    now = [0.0]
+
+    def sleep(seconds):
+        assert seconds > 0
+        now[0] += seconds
+
+    monkeypatch.setattr(probe, "time", SimpleNamespace(monotonic=lambda: now[0], sleep=sleep))
+    return now
+
+
+def test_wait_requires_recovered_evidence_within_deadline(monkeypatch, probe_clock):
+    results = iter([(probe.BUSY, "health snapshot unavailable: timeout"),
+                    (probe.READY, "database ok")])
+    monkeypatch.setattr(probe, "fetch", lambda *args: next(results))
+    assert probe.wait_until_ready("http://test", timeout=10, wait=15)[0] == probe.READY
+    assert probe_clock[0] == 0.25
+
+
+def test_wait_expires_without_accepting_busy_snapshot(monkeypatch, probe_clock):
+    def fetch(url, timeout):
+        assert 0 < timeout <= 1
+        return probe.BUSY, "health snapshot unavailable: timeout"
+
+    monkeypatch.setattr(probe, "fetch", fetch)
+    assert probe.wait_until_ready("http://test", timeout=10, wait=1)[0] == probe.BUSY
+    assert probe_clock[0] == 1
+
+
+@pytest.mark.parametrize("body", [BROKEN_BODY, {
+    "ready": False, "checks": {
+        **READY_BODY["checks"], "required_playbooks": {"ok": False},
+    },
+}])
+def test_wait_does_not_retry_confirmed_failures(monkeypatch, probe_clock, body):
+    monkeypatch.setattr(probe, "fetch", lambda *args: probe.classify(body))
+    assert probe.wait_until_ready("http://test", timeout=10, wait=15)[0] == probe.UNUSABLE
+    assert probe_clock[0] == 0
+
+
 # ---------------------------------------------------------------------------
 # A stub daemon: /api/health always 200, /ready configurable.
 # ---------------------------------------------------------------------------
 
 
 class _StubDaemon:
-    def __init__(self, ready_body: dict, ready_status: int):
+    def __init__(self, ready_body: dict, ready_status: int, *, recovery=None):
         self.ready_body = ready_body
         self.ready_status = ready_status
+        self.recovery = recovery
+        self.ready_requests = 0
         outer = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -125,7 +223,11 @@ class _StubDaemon:
                 if self.path == "/api/health":
                     payload, status = {"status": "ok"}, 200
                 elif self.path == "/ready":
+                    outer.ready_requests += 1
                     payload, status = outer.ready_body, outer.ready_status
+                    if outer.recovery is not None:
+                        outer.ready_body, outer.ready_status = outer.recovery
+                        outer.recovery = None
                 else:
                     payload, status = {"error": "not found"}, 404
                 body = json.dumps(payload).encode()
@@ -173,6 +275,41 @@ def test_fetch_reports_ready_against_a_healthy_daemon():
         assert probe.fetch(stub.url, timeout=10)[0] == probe.READY
 
 
+def test_restored_policy_waits_for_ready_snapshot_after_activation(monkeypatch):
+    from functools import partial
+
+    from scripts.e2e import smoke
+
+    disabled = {"ready": False, "checks": {
+        **READY_BODY["checks"],
+        "required_playbooks": {"ok": False, "disabled": ["provider-failover"]},
+    }}
+    with _StubDaemon(disabled, 503, recovery=(READY_BODY, 200)) as stub:
+        monkeypatch.setattr(smoke, "API_URL", stub.url)
+        monkeypatch.setattr(smoke, "wait_for", partial(smoke.wait_for, interval=0.01))
+        smoke.wait_for_restored_readiness()
+        assert stub.recovery is None
+        assert stub.ready_requests == 2
+
+
+def test_probe_cli_keeps_failed_policy_diagnosis_without_database_reset_hint():
+    disabled = {"ready": False, "checks": {
+        **READY_BODY["checks"],
+        "required_playbooks": {"ok": False, "disabled": ["provider-failover"]},
+    }}
+    with _StubDaemon(disabled, 503) as stub:
+        result = subprocess.run(
+            [sys.executable, str(PROBE), "--url", stub.url, "--wait", "15"],
+            capture_output=True, text=True, check=False, timeout=5,
+        )
+    assert result.returncode == probe.UNUSABLE
+    assert "required_playbooks" in result.stderr
+    assert "provider-failover" in result.stderr
+    assert "disabled" in result.stderr
+    assert "database check failed" not in result.stderr
+    assert "reset" not in result.stderr
+
+
 def test_fetch_reports_unreachable_when_nothing_is_listening():
     code, message = probe.fetch(f"http://127.0.0.1:{_free_port()}", timeout=2)
     assert code == probe.UNREACHABLE
@@ -198,6 +335,22 @@ def test_probe_cli_prints_the_hint_only_for_an_unusable_database():
     # --quiet exists for shell conditionals: exit code only.
     assert quiet.returncode == probe.UNUSABLE
     assert quiet.stderr == ""
+
+
+def test_probe_cli_bounds_snapshot_wait_and_reports_its_actual_cause():
+    body = {"ready": False, "checks": {
+        "database": {"ok": False},
+        "health_snapshot": {"ok": False, "reason": "timeout"},
+    }}
+    with _StubDaemon(body, 503) as stub:
+        result = subprocess.run(
+            [sys.executable, str(PROBE), "--url", stub.url, "--wait", "0.1"],
+            capture_output=True, text=True, check=False, timeout=5,
+        )
+    assert result.returncode == probe.BUSY
+    assert "health snapshot unavailable: timeout" in result.stderr
+    assert "database check failed" not in result.stderr
+    assert "reset" not in result.stderr
 
 
 # ---------------------------------------------------------------------------
@@ -287,6 +440,20 @@ def test_daemon_start_refuses_to_report_success_for_an_unusable_daemon(
     assert started.returncode != 0
     assert "not usable" in started.stderr
     assert 'relation "agents" does not exist' in started.stderr
+
+
+def test_daemon_start_waits_for_busy_snapshot_to_recover(tmp_path, fake_daemon_process):
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "daemon.pid").write_text(str(fake_daemon_process.pid))
+    body = {"ready": False, "checks": {
+        "database": {"ok": False},
+        "health_snapshot": {"ok": False, "reason": "timeout"},
+    }}
+    with _StubDaemon(body, 503, recovery=(READY_BODY, 200)) as stub:
+        started = _run(E2E_DAEMON, "start", env=_kit_env(home, stub.url, stub.port))
+    assert started.returncode == 0, started.stderr
+    assert "already running" in started.stdout
 
 
 def test_smoke_refuses_to_run_the_scenarios_against_an_unusable_database(

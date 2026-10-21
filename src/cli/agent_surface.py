@@ -431,7 +431,7 @@ def task_claim(ctx: click.Context, task_id, claim_next, wait) -> None:
     "--outcome",
     type=click.Choice(["pass", "fail"]),
     default=None,
-    help="Overall task outcome (required unless --obsolete).",
+    help="Overall task outcome (required unless --obsolete, --no-change or --done).",
 )
 @click.option(
     "--obsolete",
@@ -441,7 +441,28 @@ def task_claim(ctx: click.Context, task_id, claim_next, wait) -> None:
         "Releases safe branch owners; needs TASK_ID and --reason."
     ),
 )
-@click.option("--reason", default=None, help="Why the task is obsolete (with --obsolete).")
+@click.option(
+    "--no-change",
+    "no_change",
+    is_flag=True,
+    help=(
+        "Operator/supervisor one-shot close: nothing needed doing. Works from any state "
+        "(stops a live writer, clears stale claims) in one call; needs TASK_ID and --reason."
+    ),
+)
+@click.option(
+    "--done",
+    is_flag=True,
+    help=(
+        "Operator/supervisor one-shot close: the work already landed elsewhere. Works from "
+        "any state in one call; needs TASK_ID and --reason."
+    ),
+)
+@click.option(
+    "--reason",
+    default=None,
+    help="Why the task is closed (with --obsolete, --no-change or --done).",
+)
 @click.option("--summary", default=None, help="Summary for the reviewer/dashboard/vault note.")
 @click.option(
     "--failure-class",
@@ -492,6 +513,8 @@ def task_close(
     task_id,
     outcome,
     obsolete,
+    no_change,
+    done,
     reason,
     summary,
     failure_class,
@@ -522,26 +545,42 @@ def task_close(
     The task goes to COMPLETED as abandoned, its branch owners are released
     through the release-owner safety proof. A live integration Subject must
     settle before retirement.
+
+    ``--no-change`` and ``--done`` are the same one-shot operator close for
+    work that needed nothing or already landed: from any non-terminal state,
+    in one call, a live writer is stopped (the task goes PAUSED, never READY),
+    stale claims, workspace locks and the agent binding are cleared, a no-op
+    or shipped completion record is written and the task goes to COMPLETED.
     """
     api_url = ctx.obj.get("api_url") if ctx.obj else None
-    if obsolete:
+    chosen = [
+        name
+        for name, flag in (("obsolete", obsolete), ("no_change", no_change), ("done", done))
+        if flag
+    ]
+    if len(chosen) > 1:
+        raise click.UsageError("choose one of --obsolete, --no-change or --done")
+    if chosen:
+        flag = "--" + chosen[0].replace("_", "-")
         if outcome:
-            raise click.UsageError("--obsolete is its own outcome; drop --outcome")
+            raise click.UsageError(f"{flag} is its own outcome; drop --outcome")
         if not task_id:
-            raise click.UsageError("--obsolete needs TASK_ID")
+            raise click.UsageError(f"{flag} needs TASK_ID")
         if not (reason or "").strip():
-            raise click.UsageError("--obsolete needs --reason")
+            raise click.UsageError(f"{flag} needs --reason")
 
-        async def _close_obsolete():
+        async def _close_operator():
             async with _get_client(api_url) as client:
                 return await client.execute(
-                    "task_close", {"task_id": task_id, "obsolete": True, "reason": reason}
+                    "task_close", {"task_id": task_id, chosen[0]: True, "reason": reason}
                 )
 
-        emit(ctx, _run(_close_obsolete()))
+        emit(ctx, _run(_close_operator()))
         return
     if not outcome:
-        raise click.UsageError("--outcome is required (or --obsolete --reason for superseded work)")
+        raise click.UsageError(
+            "--outcome is required (or --obsolete / --no-change / --done with --reason)"
+        )
     resolved_epoch = resolve_claim_epoch(claim_epoch)
     args: dict = {"outcome": outcome}
     if task_id:

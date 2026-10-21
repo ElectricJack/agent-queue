@@ -62,15 +62,84 @@ class GetProjectResponse(BaseModel):
     git_identity: EffectiveGitIdentity | None = None
 
 
+class WorkspaceOwnerTask(BaseModel):
+    id: str
+    found: bool
+    status: str | None = None
+    claim_epoch: int | None = None
+    claimed_by_session: str | None = None
+
+
+class WorkspaceOwnerSession(BaseModel):
+    id: str | None = None
+    agent_id: str | None = None
+    task_id: str | None = None
+    lifecycle: str | None = None
+    state: str | None = None
+    claim_phase: str | None = None
+    last_claim_epoch: int | None = None
+    last_activity: float | None = None
+    work_dir: str | None = None
+
+
+class WorkspaceOwner(BaseModel):
+    """Owner identity as the database proves it (``src/workspace_listing.py``)."""
+
+    lock_state: str
+    agent_id: str | None = None
+    task_id: str | None = None
+    locked_at: float | None = None
+    #: ``complete`` | ``timeout`` | ``unavailable``.
+    facts: str
+    task: WorkspaceOwnerTask | None = None
+    session: WorkspaceOwnerSession | None = None
+    sessions_matched: int | None = None
+    #: ``consistent`` | ``mismatch`` | ``unknown``; ``None`` when not applicable.
+    fence: str | None = None
+    session_matches_claim: bool | None = None
+    #: ``unlocked`` | ``unlocked_session_present`` | ``held`` | ``agent_held``
+    #: | ``preparing`` | ``unverified`` | ``unknown``.
+    classification: str
+
+
 class WorkspaceSummary(BaseModel):
     id: str
     project_id: str
     workspace_path: str
     source_type: str = ""
     name: str | None = None
+    kind_id: str | None = None
     locked_by_agent_id: str | None = None
     locked_by_task_id: str | None = None
+    lock_mode: str | None = None
     enabled: bool = True
+    role: str | None = None
+    slot_index: int | None = None
+    mode: str | None = None
+    #: ``None`` whenever the checkout could not be read; never a guessed value.
+    branch: str | None = None
+    dirty: bool | None = None
+    #: ``present`` | ``missing`` | ``unknown``.
+    presence: str | None = None
+    #: ``ok`` | ``missing`` | ``not_a_checkout`` | ``error`` | ``timeout`` |
+    #: ``not_started`` | ``skipped`` | ``skipped_active_writer``.
+    git_status: str | None = None
+    git_error: str | None = None
+    beyond_cap: bool | None = None
+    owner: WorkspaceOwner | None = None
+
+
+class WorkspaceListDiagnostics(BaseModel):
+    complete: bool
+    deadline_seconds: float
+    elapsed_seconds: float
+    owner_facts: str
+    owner_facts_error: str | None = None
+    git_requested: bool
+    git_status_counts: dict[str, int] = {}
+    presence_counts: dict[str, int] = {}
+    incomplete_rows: int = 0
+    authority: str
 
 
 class ListProjectsResponse(SnapshotValue):
@@ -139,6 +208,7 @@ class AddWorkspaceResponse(BaseModel):
 
 class ListWorkspacesResponse(BaseModel):
     workspaces: list[WorkspaceSummary] = []
+    diagnostics: WorkspaceListDiagnostics | None = None
 
 
 class RemoveWorkspaceResponse(BaseModel):
@@ -154,6 +224,25 @@ class ReleaseWorkspaceResponse(BaseModel):
     released_from_task: str | None = None
 
 
+class WorkspaceRetireClaimResponse(BaseModel):
+    workspace_id: str
+    retired: bool = False
+    detail: str | None = None
+    holder_task_id: str | None = None
+    holder_claim_epoch: int | None = None
+    holder_session_id: str | None = None
+    reason: str | None = None
+
+
+class WorkspaceClearSentinelResponse(BaseModel):
+    workspace_id: str
+    cleared: bool = False
+    detail: str | None = None
+    holder_task_id: str | None = None
+    branch: str | None = None
+    reason: str | None = None
+
+
 class EditWorkspaceResponse(BaseModel):
     updated: str
     fields: list[str] = []
@@ -167,6 +256,26 @@ class FindMergeConflictWorkspacesResponse(BaseModel):
     workspaces_scanned: int = 0
     workspaces_with_conflicts: int = 0
     conflicts: list[dict[str, Any]] = []
+
+
+class WorkspaceCutoverSnapshot(BaseModel):
+    project_id: str
+    source_id: str
+    target_id: str
+    workspaces: list[dict[str, Any]]
+    sessions: list[dict[str, Any]]
+    owners: list[dict[str, Any]]
+    source: dict[str, dict[str, Any]]
+
+
+class WorkspaceCutoverResponse(BaseModel):
+    success: bool
+    error: str | None = None
+    applied: bool | None = None
+    proof: str | None = None
+    snapshot: WorkspaceCutoverSnapshot | None = None
+    retained: list[str] = []
+    retirement: str | None = None
 
 
 class QueueSyncWorkspacesResponse(BaseModel):
@@ -193,6 +302,33 @@ class ReleaseProjectConstraintResponse(BaseModel):
     remaining_fields: list[str] = []
 
 
+class RepairRepositoryCheckoutResponse(BaseModel):
+    success: bool = True
+    project_id: str
+    repository_id: str
+    changed: bool = False
+    preview: bool = True
+    before: dict[str, Any]
+    after: dict[str, Any]
+    event_id: int | None = None
+
+
+class RepairWorkspaceCheckoutResponse(BaseModel):
+    success: bool = True
+    project_id: str
+    workspace_id: str
+    changed: bool = False
+    preview: bool = True
+    proof: str
+    before: dict[str, Any]
+    after: dict[str, Any]
+    slots: list[dict[str, Any]]
+    identity: dict[str, Any]
+    authorized_origin: str | None = None
+    reason: str
+    event_id: int | None = None
+
+
 class SetActiveProjectResponse(BaseModel):
     active_project: str | None = None
     name: str | None = None
@@ -203,6 +339,8 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "list_projects": ListProjectsResponse,
     "create_project": CreateProjectResponse,
     "project_doctor": ProjectDoctorResponse,
+    "repair_repository_checkout": RepairRepositoryCheckoutResponse,
+    "repair_workspace_checkout": RepairWorkspaceCheckoutResponse,
     "edit_project": EditProjectResponse,
     "bind_project_repository": BindProjectRepositoryResponse,
     "delete_project": DeleteProjectResponse,
@@ -214,7 +352,10 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "list_workspaces": ListWorkspacesResponse,
     "remove_workspace": RemoveWorkspaceResponse,
     "release_workspace": ReleaseWorkspaceResponse,
+    "workspace_retire_claim": WorkspaceRetireClaimResponse,
+    "workspace_clear_sentinel": WorkspaceClearSentinelResponse,
     "edit_workspace": EditWorkspaceResponse,
+    "workspace_cutover": WorkspaceCutoverResponse,
     "find_merge_conflict_workspaces": FindMergeConflictWorkspacesResponse,
     "queue_sync_workspaces": QueueSyncWorkspacesResponse,
     "set_project_constraint": SetProjectConstraintResponse,

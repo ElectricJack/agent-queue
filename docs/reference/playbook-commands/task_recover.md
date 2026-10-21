@@ -14,7 +14,7 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/generated.py`](../../../src/commands/contracts/generated.py) |
-| Contract fingerprint | `sha256:5e9616275ab13c919c6d03a343d5ad5272936e001f09691d9daf25ad20bd4332` |
+| Contract fingerprint | `sha256:6c115598e0a741e7004694c0213ec6fcfca2e023141847638c05c33d6dad86c4` |
 
 ## Parameters
 
@@ -22,8 +22,9 @@
 |---|---|---|---|---|
 | `task_id` | `string` | yes | — | Task ID |
 | `incident_id` | `string` | yes | — | Exact recovery incident ID from the supervisor notification |
-| `decision` | `"retry" \| "hold"` | yes | — | — |
-| `expected_hold_at` | `number` | no | — | Release a cleared hold by retrying this incident; exact decided_at of the prior hold. All recovery guards and remaining budgets still apply. |
+| `decision` | `"retry" \| "hold" \| "release"` | yes | — | — |
+| `operator_release` | `boolean` | no | — | Local operator or live global supervisor only: release the exact prior hold. With decision release, preserve task state and integration controls; with retry, authorize a reviewed nonautomatic failure while retaining all ownership, liveness, gate and budget guards. Requires expected_hold_at. |
+| `expected_hold_at` | `number` | no | — | Exact decided_at of the prior hold. Required for operator_release; normal retry releases retain automatic recovery guards and remaining budgets. |
 | `reason` | `string` | yes | — | Diagnosis and rationale for this decision |
 
 This generated contract exposes the **playbook** input-schema view. MCP/CLI/API retain their legacy **transport** view.
@@ -49,7 +50,7 @@ This command declares no effect clause, so the playbook graph falls back to its 
 
 | Effect | Subject | Condition |
 |---|---|---|
-| Composite using task_id, incident_id, decision, expected_hold_at, reason | — | always |
+| Composite using task_id, incident_id, decision, operator_release, expected_hold_at, reason | — | always |
 
 <!-- aq:generated:end -->
 

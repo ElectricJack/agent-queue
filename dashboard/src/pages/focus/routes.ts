@@ -43,3 +43,7 @@ export function focusConversationHref(conversationId: string): string {
 export function isFocusPath(pathname: string): boolean {
   return pathname === FOCUS_ROOT || pathname.startsWith(`${FOCUS_ROOT}/`);
 }
+
+export function focusAskHref(askId: string): string {
+  return `${FOCUS_ROOT}/asks/${encodeURIComponent(askId)}`;
+}

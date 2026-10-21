@@ -91,6 +91,10 @@ CATEGORIES: dict[str, CategoryMeta] = {
             "Branch, commit, push, PR, merge, and remote URL operations for project repositories"
         ),
     ),
+    "ci": CategoryMeta(
+        name="ci",
+        description="Required CI evidence and completed task audits",
+    ),
     "project": CategoryMeta(
         name="project",
         description=(

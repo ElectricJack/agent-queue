@@ -15,11 +15,11 @@ from typing import Literal
 from sqlalchemy import literal, select
 
 from src.database.tables import (
-    archived_tasks, gates, projects, repos, task_completion_records, task_dependencies,
+    archived_tasks, events, gates, projects, repos, task_completion_records, task_dependencies,
     task_gates, task_labels, task_metadata, tasks,
 )
 from src.git.manager import GitError
-from src.integration.delivery_truth import DeliveryRequest, DeliveryState
+from src.integration.delivery_truth import DeliveryRequest, DeliveryState, completion_after_rework
 from src.integration.git_truth import GitDeliveryEvidence, GitTruthSnapshot
 from src.integration.reviews import ReviewRequirements, ReviewSubject, TreeReviews, TreeVerdict
 
@@ -109,6 +109,36 @@ class EpicReadiness:
         return tuple(source for source in self.sources if source.state == DeliveryState.PENDING)
 
 
+async def abandoned_archive_ids(conn, rows, *, project_id: str) -> set[str]:
+    """Archived lineage explicitly retired from delivery, retaining its history.
+
+    Plain delivery archives and active work remain required. A subtree archive
+    records one decision at its root, atomically with the archived rows. Older
+    commands wrote the same event after commit, so retained decisions work too.
+    """
+    abandoned = set()
+    for task_id, payload in await conn.execute(select(events.c.task_id, events.c.payload).where(
+        events.c.project_id == project_id, events.c.task_id.in_([row["id"] for row in rows]),
+        events.c.event_type == "task.delivery_abandoned",
+    )):
+        try:
+            decision = json.loads(payload)
+        except (TypeError, ValueError):
+            continue
+        if isinstance(decision, dict) and decision.get("disposition") in {"obsolete", "retire"}:
+            abandoned.add(task_id)
+    by_id = {row["id"]: row for row in rows}
+    excluded = set()
+    for initial in rows:
+        row = initial
+        while row is not None and row["archived"]:
+            if row["id"] in abandoned:
+                excluded.add(initial["id"])
+                break
+            row = by_id.get(row["parent_task_id"])
+    return excluded
+
+
 class EpicGraphReader:
     """Read ordinary current task/completion/hold inputs in one caller transaction.
 
@@ -123,6 +153,10 @@ class EpicGraphReader:
         self.source_base_on = source_base_on
 
     async def read_on(self, conn, epic_id: str) -> EpicGraph:
+        from src.database.queries.task_queries import (
+            DEVELOPMENT_COMPLETION_ID_KEY, INTEGRATION_REWORK_AT_KEY,
+        )
+
         root = (await conn.execute(select(tasks).where(tasks.c.id == epic_id))).mappings().one()
         project = (await conn.execute(select(projects).where(
             projects.c.id == root["project_id"],
@@ -153,6 +187,7 @@ class EpicGraphReader:
             ))).mappings().one()
             rows.append(parent)
         ids = [row["id"] for row in rows]
+        abandoned = await abandoned_archive_ids(conn, rows, project_id=root["project_id"])
         completions = (await conn.execute(select(task_completion_records).where(
             task_completion_records.c.task_id.in_(ids),
         ).order_by(task_completion_records.c.completed_at.desc(),
@@ -161,6 +196,7 @@ class EpicGraphReader:
         for completion in completions:
             latest.setdefault(completion["task_id"], completion)
         holds: dict[str, list[str]] = {task_id: [] for task_id in ids}
+        generations, rework = {}, {}
         containers = {row["parent_task_id"] for row in rows if row["parent_task_id"]}
         for task_id, label in await conn.execute(select(task_labels.c.task_id,
                                                       task_labels.c.label).where(
@@ -170,11 +206,16 @@ class EpicGraphReader:
         for task_id, key, value in await conn.execute(select(
             task_metadata.c.task_id, task_metadata.c.key, task_metadata.c.value,
         ).where(task_metadata.c.task_id.in_(ids),
-                task_metadata.c.key.in_(("manual_pause", "container")))):
+                task_metadata.c.key.in_(("manual_pause", "container",
+                                        DEVELOPMENT_COMPLETION_ID_KEY, INTEGRATION_REWORK_AT_KEY)))):
             if key == "manual_pause":
                 holds[task_id].append("manual_pause")
-            elif json.loads(value) is True:
+            elif key == "container" and json.loads(value) is True:
                 containers.add(task_id)
+            elif key == DEVELOPMENT_COMPLETION_ID_KEY:
+                generations[task_id] = json.loads(value)
+            elif key == INTEGRATION_REWORK_AT_KEY:
+                rework[task_id] = value
         for task_id, gate_id in await conn.execute(select(task_gates.c.task_id, gates.c.id)
                                                   .join(gates, gates.c.id == task_gates.c.gate_id)
                                                   .where(task_gates.c.task_id.in_(ids),
@@ -184,15 +225,23 @@ class EpicGraphReader:
         default_ref = "refs/heads/" + repository["default_branch"].removeprefix("refs/heads/")
         for row in rows:
             completion = latest.get(row["id"])
+            generation = generations.get(row["id"])
+            if completion and (
+                generation and generation != completion["id"]
+                or not completion_after_rework(completion["completed_at"], rework.get(row["id"]))
+            ):
+                completion = None
             request = DeliveryRequest(
                 project_id=row["project_id"], repository_id=row["repo_id"] or repository["id"],
                 target_ref=default_ref, task_id=row["id"], task_version=row["updated_at"],
                 legacy_generation=row["legacy_completion_id"], branch_name=row["branch_name"],
-                completion_id=completion["id"] if completion else None,
+                completion_id=completion["id"] if completion else generation,
                 completed_at=completion["completed_at"] if completion else None,
                 task_status=row["status"], claim_epoch=row["claim_epoch"], archived=row["archived"],
             )
-            required = await self.required_on(conn, row) if self.required_on else True
+            required = row["id"] not in abandoned and (
+                await self.required_on(conn, row) if self.required_on else True
+            )
             base = await self.source_base_on(conn, row) if self.source_base_on else None
             nodes.append(EpicNode(
                 request, row["parent_task_id"], "refs/heads/" + row["branch_name"].removeprefix(
@@ -236,7 +285,7 @@ class EpicReadinessEvaluator:
         target = snapshot.for_target(node.branch_ref)
         if target.observation.error or not target.target_oid:
             return EpicReadiness(graph, task_id, "unknown", blockers=(
-                (task_id, target.observation.error or "missing_target"),))
+                (task_id, target.observation.error or "target_ref_missing"),))
         for child in graph.children(task_id):
             if child.holds:
                 held = True

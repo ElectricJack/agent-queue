@@ -3,9 +3,22 @@ import {
   parseOptionalInt,
   parseOptionalFloat,
   projectToForm,
+  supervisorEnabledPayload,
 } from "../Config";
 
 describe("Config.tsx form helpers", () => {
+  it("supervisorEnabledPayload sends the switch only when it differs from the server", () => {
+    expect(supervisorEnabledPayload({ supervisor_enabled: false }, { supervisor_enabled: false }))
+      .toEqual({});
+    expect(supervisorEnabledPayload({}, { supervisor_enabled: false })).toEqual({});
+    expect(supervisorEnabledPayload({ supervisor_enabled: true }, { supervisor_enabled: true }))
+      .toEqual({});
+    expect(supervisorEnabledPayload({ supervisor_enabled: null }, { supervisor_enabled: true }))
+      .toEqual({ supervisor_enabled: true });
+    expect(supervisorEnabledPayload({ supervisor_enabled: true }, { supervisor_enabled: false }))
+      .toEqual({ supervisor_enabled: false });
+  });
+
   it("parseOptionalInt parses, trims, and nulls on empty/invalid", () => {
     expect(parseOptionalInt(" 4 ")).toBe(4);
     expect(parseOptionalInt("")).toBeNull();

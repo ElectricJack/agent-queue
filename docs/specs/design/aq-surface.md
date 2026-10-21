@@ -110,6 +110,13 @@ branch back — a fence still held by the stopped writer — restart is refused 
 leaves the task as it found it, naming `reserve-owner` (and `release-owner` for
 the held fence) as the recovery.
 
+A retained Git cache incident that holds a project's new-batch admission is lifted by
+`aq integration clear-retained-recovery --project-id <p> [--incident-id <id>]`, a
+supervisor/operator control. It reruns the full `fsck` under the cache's repository
+transaction and clears only an incident whose cache is clean, including an `exhausted`
+one; a dirty cache stays held (`not_clean`). See
+[integration-repository-recovery.md](integration-repository-recovery.md).
+
 For READY/BLOCKED tasks with `slot_reset_failure`, `aq task resume` clears the
 preparation backoff and retries. A historical claim from a terminal session does
 not prevent recovery once the session provider confirms that exact writer has
@@ -268,8 +275,10 @@ include a safe `details.failure_kind` (HTTP exception class or response-validati
 category); read timeouts also include `details.read_timeout_seconds`. Diagnostics
 never include raw exception messages or response bodies. `pool status` and `task
 explain` have a 120-second read budget because they may measure the entire fleet,
-including separate bounded prerequisite reads for each project. Other commands
-retain their existing timeout budgets.
+including separate bounded prerequisite reads for each project. `integration
+release-owner` has a 300-second read budget for provider confirmation and remote
+Git verification, including dry runs. Other commands retain their existing timeout
+budgets.
 
 The two structured-output exceptions are protocols rather than ordinary command results:
 `aq logs --json` (and `aq --json logs`) emits JSON Lines until the bounded read or follow
@@ -299,6 +308,23 @@ before terminating its own launched instance. Child-handle polling and signaling
 must not target a reused PID, and cleanup removes `daemon.pid` only while it still
 names that child. A daemon that becomes healthy during diagnostics proceeds through
 the usual post-start readiness checks.
+
+HTTP requests and command dispatches emit timing diagnostics: DEBUG for fast
+completion and WARNING at one second or more. HTTP logs use registered route
+templates and the request ID, include authentication/dispatch time, and measure
+only the handshake for SSE and WebSocket streams. Timing logs remain available
+when performance metric collection is disabled. Command logs separate dispatch
+from the awaited `command.invoked` event delivery, so a completed handler followed
+by a slow subscriber is visible. Slow database query and pool-checkout logs carry
+the current request/command context and duration; pool logs also report occupancy.
+They never include SQL text, bind values, request bodies or credentials. Failed
+queries are observed as well as successful queries.
+
+Task detail and dependency reads batch related task rows in groups of up to 900
+IDs rather than acquiring a connection per edge. Edge types, reasons, provenance,
+and live task statuses retain their existing meanings. A single READY task
+read scopes prerequisite observation to that task, avoiding a project-wide Git
+evidence pass while retaining the same cached-evidence eligibility rules.
 
 ### 4.2 `--brief` lite projections
 
@@ -413,6 +439,22 @@ LLM calls and no writes.
 
 Slots 7–8 exist in the section model from day one so the memory comeback is a renderer
 change, not a protocol change.
+
+Task Context includes every comment on the current task, newest first, with author,
+timestamp and the complete quoted body. Read all project-scoped comment pages; neither
+the comment count nor body length is capped in prime. Worker context previews apply to
+other context, with comment history appended in full outside that budget. Comments remain
+labelled as historical reports, not instructions or approval. Prime and `aq task comment`
+help ask agents to keep comments concise: state what changed, decisions and blockers;
+link evidence instead of pasting logs or repeating status.
+
+Pilot workers with knowledge context enabled also fit the aggregate required
+document to the configured byte budget: ordinary context, description and
+historical handoff excerpts may shrink to explicit lossless continuation reads.
+Complete comments remain outside those excerpts, along with live repair fences,
+profile Role/Rules, pending messages, current facts, result/wait pointers and the
+completion protocol. Reassemble overrides and the pause notice before accounting;
+unpageable required content still triggers `context.required_over_budget`.
 
 Sections 1–2 render exactly the *prime-visible* profile headings —
 `## Role` bare, then `## Rules` under a `### Rules` sub-heading — and nothing

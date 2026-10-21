@@ -13,9 +13,12 @@ from __future__ import annotations
 import json
 import time
 from collections.abc import Collection, Mapping
+from dataclasses import dataclass
 
 from sqlalchemy import (
     Float,
+    String,
+    Numeric,
     and_,
     case,
     cast,
@@ -44,6 +47,7 @@ from src.database.queries.hierarchy_queries import (
     open_epic_refresh_batches,
 )
 from src.database.queries.session_queries import _row_to_session
+from src.database.queries.ingest_hold import IngestHeld, not_ingest_held
 from src.database.queries.task_queries import (
     ManualPauseActive,
     TransitionResult,
@@ -54,6 +58,7 @@ from src.database.tables import (
     agents,
     integration_batches,
     integration_branch_owners,
+    integration_repair_operations,
     integration_repair_stages,
     projects,
     sessions,
@@ -65,13 +70,39 @@ from src.database.tables import (
     task_session_attempts,
     task_workspace_requirements,
     tasks,
+    workspace_kinds,
     workspaces,
 )
 from src.models import AgentProfile, AgentState, SessionRecord, Task, TaskEvent, TaskStatus, Workspace
+from src.git.process import PREPARE_CLEANUP_HOLD
 from src.routing.sources import CLAIMABLE_SOURCES, LEGACY, claimable_sources
 
 
 _frontier_child = tasks.alias("frontier_child")
+
+# Every claim builds the frontier predicates afresh. An alias proxies every
+# column (with its foreign keys) of its table, so creating these per call made
+# thousands of cyclic objects per claim and drove the gen2 collections that
+# formed the claim latency tail. Aliases are immutable; the builders share them.
+_URGENT_OPERATION = integration_repair_operations.alias("urgent_operation")
+_URGENT_STAGE = integration_repair_stages.alias("urgent_stage")
+_CLAIM_STACK_ORIGIN = task_branch_origins.alias("claim_stack_origin")
+_CLAIM_STACK_REPAIR = tasks.alias("claim_stack_repair")
+_CLAIM_STACK_COMPLETION = task_completion_records.alias("claim_stack_completion")
+
+@dataclass(frozen=True)
+class ClaimWorkspaceProof:
+    """Holder identity protected by locks in one still-open transaction."""
+
+    connection: object
+    transaction: object
+    session_id: str
+    task_id: str
+    epoch: int
+    instance_token: str
+    agent_id: str
+    receipt: str
+    workspace: Workspace
 
 #: Task statuses a pool claim can end in that no further close changes.
 SETTLED_POOL_CLAIM_STATUSES = (TaskStatus.COMPLETED.value, TaskStatus.FAILED.value)
@@ -84,6 +115,32 @@ SETTLED_POOL_CLAIM_STATUSES = (TaskStatus.COMPLETED.value, TaskStatus.FAILED.val
 ACCEPTED_CLOSE_KEY = "accepted_close"
 
 
+def active_train_repair_bindings():
+    """Current active batch-repair delegate identities, independent of titles."""
+    operation = _URGENT_OPERATION
+    stage = _URGENT_STAGE
+    return select(
+        stage.c.repair_task_id, operation.c.id.label("operation_id"), operation.c.batch_id,
+    ).select_from(stage.join(
+        operation, operation.c.id == stage.c.operation_id,
+    )).where(
+        stage.c.ordinal == operation.c.active_stage,
+        stage.c.writer_kind == "repair_delegate",
+        stage.c.state.in_(("active", "awaiting_completion")),
+        operation.c.target_kind == "batch",
+        operation.c.state.in_(("active", "escalated")),
+    )
+
+
+def active_train_repair_tasks():
+    bindings = active_train_repair_bindings()
+    return bindings.with_only_columns(bindings.selected_columns.repair_task_id)
+
+
+def active_train_repair(task_id=tasks.c.id):
+    return task_id.in_(active_train_repair_tasks())
+
+
 def _frontier_predicates(hierarchy_mode: ProjectIntegrationMode | None = None):
     """Named acceptance predicates shared by claiming and diagnostics."""
     recovery = task_metadata.alias("frontier_recovery")
@@ -93,6 +150,18 @@ def _frontier_predicates(hierarchy_mode: ProjectIntegrationMode | None = None):
         (recovery.c.key == "supervisor_recovery_incident", recovery.c.value),
         else_=literal("{}"),
     ), JSONB)
+    latest_attempt = (
+        select(task_session_attempts.c.id)
+        .where(
+            task_session_attempts.c.task_id == tasks.c.id,
+            task_session_attempts.c.project_id == tasks.c.project_id,
+            task_session_attempts.c.started_at >= tasks.c.created_at,
+        )
+        .order_by(task_session_attempts.c.started_at.desc(), task_session_attempts.c.id.desc())
+        .limit(1)
+        .correlate(tasks)
+        .scalar_subquery()
+    )
     return {
         # Legacy control-plane profiles stay visible for rerouting but never
         # win a pool worker's claim.
@@ -100,12 +169,21 @@ def _frontier_predicates(hierarchy_mode: ProjectIntegrationMode | None = None):
         "dependency_blocked": tasks.c.is_blocked == 0,
         "already_assigned": tasks.c.assigned_agent_id.is_(None),
         "plan_subtask": tasks.c.is_plan_subtask == 0,
-        # Recovery decisions outlive status projection and daemon restarts.
+        "ingest_held": not_ingest_held(),
+        # Holds fence only their recorded execution identity; legacy fields fail closed.
         # retry_allowed is false for an accepted retry too; only hold blocks.
         "recovery_hold": ~exists(select(literal(1)).where(
             recovery.c.task_id == tasks.c.id,
             recovery.c.key == "supervisor_recovery_incident",
             incident["decision"].astext == "hold",
+            or_(
+                ~incident.has_key("attempt_id"),  # noqa: W601 - PostgreSQL JSONB operator
+                incident["attempt_id"].astext.is_not_distinct_from(latest_attempt),
+            ),
+            or_(
+                ~incident.has_key("claim_epoch"),  # noqa: W601 - PostgreSQL JSONB operator
+                incident["claim_epoch"].astext == cast(tasks.c.claim_epoch, String),
+            ),
         )),
         "origin_not_materialized": materialized_origin_when_hierarchical(hierarchy_mode),
         "sibling_prerequisite_not_delivered": (
@@ -199,23 +277,24 @@ def _frontier_where(
     hierarchy_mode: ProjectIntegrationMode | None = None,
     *,
     router_ready: bool | None = None,
+    workspace_kind: str | None = None,
 ):
-    """The frontier predicate, for one project.
+    """The frontier for one project, with optional pre-read hierarchy constants.
 
-    *hierarchy_mode* is this project's already-read
-    ``hierarchical_integration_mode`` / ``integration_repository_id`` pair.
-    Supplying it folds the two hierarchy predicates' ``projects`` lookups
-    into constants instead of re-asking the same one-row question once per
-    candidate row; ``None`` keeps the self-contained correlated form.
-
-    *router_ready* adds :func:`route_claimable` for a project whose router
-    is (not) ready; ``None`` leaves routing out, for the structural reads
-    (development admission's candidates, diagnostics) that are not a claim.
+    A supplied *hierarchy_mode* folds project lookups away; ``None`` keeps
+    correlated lookups. *router_ready* adds :func:`route_claimable`, while
+    ``None`` leaves routing out for structural reads such as diagnostics.
     """
+    filters = claim_frontier_predicates(hierarchy_mode=hierarchy_mode)
+    if workspace_kind is not None:
+        filters["workspace_requirement"] = and_(
+            pool_primary_kind_valid(project_id=project_id, kind_id=workspace_kind),
+            pool_primary_kind_matches(workspace_kind),
+        )
     predicates = [
         tasks.c.project_id == project_id,
         tasks.c.status == TaskStatus.READY.value,
-        *_frontier_predicates(hierarchy_mode).values(),
+        *filters.values(),
     ]
     if router_ready is not None:
         predicates.append(route_claimable(router_ready))
@@ -436,6 +515,12 @@ CLAIM_PREPARATION_METADATA_KEYS = (
     # for the wait, so it goes stale at exactly the same boundary as the
     # ladder it throttles.
     "branch_fenced",
+    # The last permanent preparation failure's description and identity
+    # (``PREPARE_FAILURE``): diagnosis of the ladder above, never its budget.
+    "prepare_failure",
+    # An older deployment wrote this duplicate diagnostic. Retire it only
+    # after the same guarded successful activation as the canonical record.
+    "claim_preparation_failure",
     "stack_prerequisites_conflict",
     "stack_preparation_changed",
 )
@@ -448,27 +533,13 @@ _NUMERIC_TEXT = r"^-?[0-9]+(\.[0-9]+)?$"
 
 
 def numeric_meta_value(column, *, default: str = "0"):
-    """``column`` cast to ``Float``, with non-numeric text read as *default*.
+    """Cast numeric metadata to ``Float``; malformed JSON text uses *default*.
 
-    ``task_metadata.value`` is free-form JSON text: ``json.dumps`` writes a
-    bare ``0`` for the number and ``"0"`` -- quotes included -- for the
-    string, and nothing in the schema stops a caller storing either.  A bare
-    ``cast(value, Float)`` therefore raises
-    ``invalid input syntax for type double precision`` on the *whole
-    statement* the moment one malformed row is scanned.
-
-    That is not a hypothetical.  On 2026-09-07 two rows holding ``"0"`` made
-    every ``select_ready_for_profile`` call in one project raise for ~18
-    hours: no pool worker could claim anything, and because the failure was
-    a database error rather than an empty result, the queue looked idle
-    rather than broken.
-
-    The ``CASE`` is what makes this safe rather than merely likely to work:
-    PostgreSQL does not guarantee evaluation order between a regex guard and
-    a cast sitting in the same ``AND``, so the guard has to be *inside* the
-    expression being cast.  A malformed row then reads as *default* -- for a
-    backoff deadline, "expired", which fails open to claimable rather than
-    silently withholding work.
+    Metadata stores JSON, so a number and a quoted numeric string differ.
+    Guard the cast *inside* CASE: PostgreSQL may evaluate AND terms in any
+    order, making a separate regex predicate unsafe. Non-numeric backoff
+    deadlines read as zero (expired), rather than breaking the entire query.
+    See the numeric-metadata regression tests for the quoted-zero outage.
     """
     return cast(
         case((column.op("~")(_NUMERIC_TEXT), column), else_=literal(default)),
@@ -476,10 +547,47 @@ def numeric_meta_value(column, *, default: str = "0"):
     )
 
 
+def pool_primary_kind():
+    """One repository kind per pool task; vault-only keeps the legacy default."""
+    requirements = task_workspace_requirements.alias("pool_primary_requirement")
+    return select(case(
+        (func.count() > 1, None),
+        else_=func.coalesce(func.min(requirements.c.kind_id), "project-repo"),
+    )).where(
+        requirements.c.task_id == tasks.c.id,
+        requirements.c.kind_id != "vault",
+    ).correlate(tasks).scalar_subquery()
+
+
+def pool_primary_kind_matches(kind_id):
+    requirements = task_workspace_requirements.alias("pool_primary_requirement")
+    return select(and_(
+        func.count() <= 1, func.coalesce(func.min(requirements.c.kind_id), "project-repo") == kind_id,
+    )).where(
+        requirements.c.task_id == tasks.c.id, requirements.c.kind_id != "vault",
+    ).correlate(tasks).scalar_subquery()
+
+
+def pool_primary_kind_valid(*, project_id=None, kind_id=None):
+    """Resolve the project override before checking its execution capabilities."""
+    kind = workspace_kinds.alias("pool_execution_kind")
+    def capabilities(scope):
+        return select(and_(kind.c.writable, kind.c.lockable, kind.c.is_git_repo,
+                           kind.c.mode.in_(("worktree", "exclusive-clone")))).where(
+            kind.c.id == (pool_primary_kind() if kind_id is None else kind_id),
+            kind.c.project_id == scope,
+        ).correlate(tasks).scalar_subquery()
+
+    # A false project override must shadow a true system kind. Two unique
+    # key lookups avoid a correlated sort in the ordered frontier query.
+    return func.coalesce(capabilities(tasks.c.project_id if project_id is None else project_id),
+                         capabilities("__system__")).is_(True)
+
+
 def _claim_preparation_predicates():
-    origin = task_branch_origins.alias("claim_stack_origin")
-    repair = tasks.alias("claim_stack_repair")
-    completion = task_completion_records.alias("claim_stack_completion")
+    origin = _CLAIM_STACK_ORIGIN
+    repair = _CLAIM_STACK_REPAIR
+    completion = _CLAIM_STACK_COMPLETION
     latest_outcome = (
         select(completion.c.outcome).where(completion.c.task_id == repair.c.id)
         .order_by(completion.c.completed_at.desc()).limit(1).correlate(repair).scalar_subquery()
@@ -496,10 +604,7 @@ def _claim_preparation_predicates():
             origin.c.stack_snapshot.op("?")("preparation_conflict"),
             ~repair_passed,
         )),
-        "workspace_requirement": ~exists(select(literal(1)).where(
-            task_workspace_requirements.c.task_id == tasks.c.id,
-            task_workspace_requirements.c.kind_id.notin_(("project-repo", "vault")),
-        )),
+        "workspace_requirement": pool_primary_kind_valid(),
         "claim_prepare_backoff": ~exists(select(literal(1)).where(
             task_metadata.c.task_id == tasks.c.id,
             task_metadata.c.key == PREPARE_BACKOFF_UNTIL_KEY,
@@ -508,13 +613,17 @@ def _claim_preparation_predicates():
     }
 
 
-def claim_frontier_predicates(hierarchy_modes=None):
+def claim_frontier_predicates(hierarchy_modes=None, *, hierarchy_mode=None):
     """All profile-independent acceptance filters, including candidate preparation."""
     predicates = {
-        **_frontier_predicates(),
+        **_frontier_predicates(hierarchy_mode),
         **_claim_preparation_predicates(),
         "hold_label": apply_label_filters(select(tasks.c.id), exclude_hold=True).whereclause,
     }
+    # Single-project callers already supplied every hierarchy constant. Keep
+    # those predicates; a multi-project CASE would reintroduce correlated fallbacks.
+    if hierarchy_mode is not None:
+        return predicates
     predicates["sibling_prerequisite_not_delivered"] = delivered_prerequisites_for_projects(
         hierarchy_modes, cross_parent=False
     )
@@ -541,6 +650,7 @@ FRONTIER_PREDICATE_DETAILS = {
     "dependency_blocked": "is_blocked must be false",
     "already_assigned": "assigned_agent_id must be empty",
     "plan_subtask": "is_plan_subtask must be false",
+    "ingest_held": "member of ingestion batch {batch_id} awaiting fidelity review",
     "recovery_hold": "the supervisor recovery hold needs an explicit fenced release",
     "origin_not_materialized": (
         "materialized_origin_when_hierarchical(): requires a materialized origin in the "
@@ -576,21 +686,39 @@ class ClaimQueryMixin:
 
     async def claim_frontier_exclusions(
         self, task_id: str, *, router_ready: bool | None = None, cached_only: bool = False,
+        hierarchy_modes=None,
     ) -> list[dict]:
         """Evaluate the real claim filters for one READY task, without scheduler guesses.
 
         *router_ready* adds the route filter (:func:`route_claimable`) for a
         project whose router is (not) ready.
         """
+        return (await self.claim_frontier_exclusions_many(
+            [task_id], router_ready=router_ready, cached_only=cached_only,
+            hierarchy_modes=hierarchy_modes, single_task_id=task_id,
+        )).get(task_id, [])
+
+    async def claim_frontier_exclusions_many(
+        self, task_ids, *, router_ready=None, cached_only=False,
+        hierarchy_modes=None, project_ids=None, single_task_id=None, router_ready_projects=None,
+    ) -> dict[str, list[dict]]:
+        """Batch the same predicate evaluation used by explain; never fetch Git for display."""
+        if not task_ids:
+            return {}
         from src.integration.delivery_observer import hierarchy_frontier_modes
 
         unavailable = {}
-        modes = await hierarchy_frontier_modes(
-            self, task_id=task_id, cached_only=cached_only,
+        modes = hierarchy_modes if hierarchy_modes is not None else await hierarchy_frontier_modes(
+            self, project_ids=project_ids, task_id=single_task_id, cached_only=cached_only,
             **({"display_unavailable": unavailable} if cached_only else {}),
         )
         predicates = claim_frontier_predicates(modes)
-        if router_ready is not None:
+        if router_ready_projects is not None:
+            predicates["route_not_claimable"] = or_(
+                and_(tasks.c.project_id.in_(router_ready_projects), route_claimable(True)),
+                and_(tasks.c.project_id.not_in(router_ready_projects), route_claimable(False)),
+            )
+        elif router_ready is not None:
             predicates["route_not_claimable"] = route_claimable(router_ready)
         display_predicates = {}
         if unavailable:
@@ -614,84 +742,118 @@ class ClaimQueryMixin:
                 }
             }
         async with self._engine.connect() as conn:
-            row = (await conn.execute(
+            rows = (await conn.execute(
                 select(
+                    tasks.c.id, tasks.c.project_id, tasks.c.held_batch_id,
                     *(predicate.label(name) for name, predicate in predicates.items()),
                     *(predicate.label("display_" + name)
                       for name, predicate in display_predicates.items()),
                 )
-                .where(tasks.c.id == task_id, tasks.c.status == TaskStatus.READY.value)
-            )).mappings().one_or_none()
-        if row is None:
-            return []
-        exclusions = [
-            {
-                "code": ("delivery_evidence_unavailable"
-                         if name in display_predicates and row["display_" + name]
-                         else f"frontier_{name}"),
-                "detail": (
-                    "Delivery evidence has not loaded yet; claim frontier eligibility "
-                    f"for {name} is unknown (snapshot_unavailable)"
-                    if name in display_predicates and row["display_" + name]
-                    else "Pool claim frontier excludes this READY task: "
-                    + FRONTIER_PREDICATE_DETAILS[name]
-                ),
-                "ref": task_id,
-            }
-            for name in predicates if not row[name]
-        ]
-        if not row["epic_refresh_pending"]:
-            async with self._engine.connect() as conn:
-                batches = (await conn.execute(
-                    open_epic_refresh_batches().where(tasks.c.id == task_id)
-                    .order_by(integration_batches.c.id)
-                )).scalars().all()
-            for exclusion in exclusions:
-                if exclusion["code"] == "frontier_epic_refresh_pending" and batches:
-                    exclusion["batch_id"] = batches[0]
-                    exclusion["batch_ids"] = batches
-                    exclusion["detail"] += "; blocking epic-refresh batch: " + ", ".join(batches)
-        if not row["prerequisite_not_on_default_branch"]:
-            from src.database.tables import task_dependencies
+                .where(tasks.c.id.in_(task_ids), tasks.c.status == TaskStatus.READY.value)
+             )).mappings().all()
+        batches_by_task = {}
+        cross_sources = {}
+        refresh_ids = [row["id"] for row in rows if not row["epic_refresh_pending"]]
+        cross_ids = [row["id"] for row in rows if not row["prerequisite_not_on_default_branch"]]
+        async with self._engine.connect() as conn:
+            if refresh_ids:
+                batch_rows = await conn.execute(open_epic_refresh_batches()
+                    .add_columns(tasks.c.id.label("task_id")).correlate(None)
+                    .where(tasks.c.id.in_(refresh_ids)).order_by(integration_batches.c.id))
+                for batch, tid in batch_rows:
+                    batches_by_task.setdefault(tid, []).append(batch)
+            if cross_ids:
+                from src.database.tables import task_dependencies
 
-            source = tasks.alias("explain_cross_source")
-            dependent = tasks.alias("explain_cross_dependent")
-            mode = next(iter(modes.values()), None)
-            async with self._engine.connect() as conn:
-                sources = (await conn.execute(select(source.c.id, source.c.parent_task_id)
+                source = tasks.alias("explain_cross_source")
+                dependent = tasks.alias("explain_cross_dependent")
+                source_rows = await conn.execute(select(dependent.c.id, source.c.id,
+                                                        source.c.parent_task_id)
                     .select_from(task_dependencies.join(source,
                         source.c.id == task_dependencies.c.depends_on_task_id)
                         .join(dependent, dependent.c.id == task_dependencies.c.task_id))
-                    .where(dependent.c.id == task_id, task_dependencies.c.dep_type == "blocks",
+                    .where(dependent.c.id.in_(cross_ids), task_dependencies.c.dep_type == "blocks",
                            source.c.status == "COMPLETED",
                            source.c.parent_task_id.is_distinct_from(dependent.c.parent_task_id)
-                           | source.c.parent_task_id.is_(None)))).all()
-            missing = set().union(*(entry["default"] for entry in unavailable.values()))
-            exclusions.extend({
-                "code": ("delivery_evidence_unavailable" if tid in missing
-                         else "prerequisite_not_on_default_branch"),
-                "ref": tid, "epic_id": parent,
-                "detail": (f"Prerequisite {tid}: delivery evidence has not loaded yet; "
-                           "default-branch delivery is unknown (snapshot_unavailable)"
-                           if tid in missing else f"Prerequisite {tid} (epic {parent or tid}) "
-                           "is not proven on the default branch"),
+                           | source.c.parent_task_id.is_(None)).order_by(source.c.id))
+                for tid, sid, parent in source_rows:
+                    cross_sources.setdefault(tid, []).append((sid, parent))
+        result = {}
+        for row in rows:
+            task_id = row["id"]
+            exclusions = [
+                {
+                    "code": ("delivery_evidence_unavailable"
+                             if name in display_predicates and row["display_" + name]
+                             else f"frontier_{name}"),
+                    "detail": (
+                        "Delivery evidence has not loaded yet; claim frontier eligibility "
+                        f"for {name} is unknown (snapshot_unavailable)"
+                        if name in display_predicates and row["display_" + name]
+                        else "Pool claim frontier excludes this READY task: "
+                        + FRONTIER_PREDICATE_DETAILS[name].format(batch_id=row["held_batch_id"])
+                    ),
+                    "ref": task_id,
                 }
-                for tid, parent in sources if mode is None or tid not in mode.default_prerequisite_ids)
-        if cached_only:
-            for exclusion in exclusions:
-                if exclusion["code"] in {
-                    "frontier_sibling_prerequisite_not_delivered",
-                    "frontier_prerequisite_not_on_default_branch",
-                    "frontier_epic_refresh_pending",
-                    "prerequisite_not_on_default_branch",
-                }:
-                    exclusion["detail"] += (
-                        "; delivery read is cache-only; missing or stale evidence withholds work"
-                    )
-        return exclusions
+                for name in predicates if not row[name]
+            ]
+            if not row["epic_refresh_pending"]:
+                batches = batches_by_task.get(task_id, [])
+                for exclusion in exclusions:
+                    if exclusion["code"] == "frontier_epic_refresh_pending" and batches:
+                        exclusion["batch_id"] = batches[0]
+                        exclusion["batch_ids"] = batches
+                        exclusion["detail"] += "; blocking epic-refresh batch: " + ", ".join(batches)
+            if not row["prerequisite_not_on_default_branch"]:
+                mode = modes.get(row["project_id"])
+                sources = cross_sources.get(task_id, [])
+                missing = set().union(*(entry["default"] for entry in unavailable.values()))
+                exclusions.extend({
+                    "code": ("delivery_evidence_unavailable" if tid in missing
+                             else "prerequisite_not_on_default_branch"),
+                    "ref": tid, "epic_id": parent,
+                    "detail": (f"Prerequisite {tid}: delivery evidence has not loaded yet; "
+                               "default-branch delivery is unknown (snapshot_unavailable)"
+                               if tid in missing else f"Prerequisite {tid} (epic {parent or tid}) "
+                               "is not proven on the default branch"),
+                    }
+                    for tid, parent in sources if mode is None or tid not in mode.default_prerequisite_ids)
+            if cached_only:
+                for exclusion in exclusions:
+                    if exclusion["code"] in {
+                        "frontier_sibling_prerequisite_not_delivered",
+                        "frontier_prerequisite_not_on_default_branch",
+                        "frontier_epic_refresh_pending",
+                        "prerequisite_not_on_default_branch",
+                    }:
+                        exclusion["detail"] += (
+                            "; delivery read is cache-only; missing or stale evidence withholds work"
+                        )
+            result[task_id] = exclusions
+        delivery_rows = [row for row in rows if any(
+            item["code"] in {
+                "frontier_sibling_prerequisite_not_delivered",
+                "frontier_prerequisite_not_on_default_branch", "frontier_epic_refresh_pending",
+            } for item in result[row["id"]]
+        )]
+        if delivery_rows:
+            from src.task_graph.readiness import delivery_details
+
+            details = await delivery_details(self, delivery_rows, modes)
+            for tid, items in details.items():
+                for reason in result[tid]:
+                    matches = [item for item in items if item["code"] == reason["code"]]
+                    if reason["code"] == "prerequisite_not_on_default_branch":
+                        matches = [item for item in matches if item["ref"] == reason["ref"]]
+                    if matches:
+                        reason["action"] = "; ".join(item["detail"] for item in matches)
+                        reason["blocking_task_ids"] = sorted({item["ref"] for item in matches
+                                                               if item.get("ref")})
+                        reason["detail"] += "; " + reason["action"]
+        return result
 
     async def take_claim_slot(self, conn, session_id: str, *, now: float, cap: int | None):
-        """CAS the session into ``claiming``; ``(kind, session_or_None)``.
+        """CAS into ``claiming``; return kind, session and registered workspace binding.
 
         The happy path is **one** statement: ``UPDATE … RETURNING`` hands
         back the row it just took, so the re-read below only runs when the
@@ -711,7 +873,17 @@ class ClaimQueryMixin:
         )
         row = None
         if supports_returning(conn):
-            row = (await conn.execute(stmt.returning(*sessions.c))).mappings().fetchone()
+            binding = select(func.jsonb_build_object(
+                "kind_id", workspaces.c.kind_id, "enabled", workspaces.c.enabled,
+                "slot_index", workspaces.c.slot_index,
+                "base_workspace_id", workspaces.c.base_workspace_id,
+            )).where(
+                workspaces.c.project_id == sessions.c.project_id,
+                workspaces.c.workspace_path == sessions.c.work_dir,
+            ).correlate(sessions).scalar_subquery()
+            row = (await conn.execute(stmt.returning(
+                *sessions.c, binding.label("workspace_binding"),
+            ))).mappings().fetchone()
             took = row is not None
         else:
             took = (await conn.execute(stmt)).rowcount == 1
@@ -722,39 +894,70 @@ class ClaimQueryMixin:
                 .fetchone()
             )
         if row is None:
-            return "not_found", None
+            return "not_found", None, None
         record = _row_to_session(row)
         if took:
-            return "slot", record
+            return "slot", record, row["workspace_binding"]
         if (record.claim_phase != "active" and record.claim_refusal
                 and record.claim_refusal["retry_at"] > now):
-            return "claim_refusal", record
+            return "claim_refusal", record, None
         if record.claim_phase in ("active", "preparing", "claiming"):
-            return record.claim_phase, record
+            return record.claim_phase, record, None
         if record.desired_state != "running":
-            return "drain_requested", record
+            return "drain_requested", record, None
         if cap is not None and record.claims >= cap:
-            return "session_exhausted", record
+            return "session_exhausted", record, None
         if record.task_id:
-            return "active", record
-        return "not_found", record
+            return "active", record, None
+        return "not_found", record, None
 
-    async def claim_preparation_is_current(
+    async def completed_claim_preparation_state(self, session_id: str, task_id: str):
+        """Read a deferred response's current session and task in one snapshot.
+
+        A refused preparation may have released its session's task binding, so
+        join the exact recorded task rather than ``sessions.task_id``.
+        """
+        stmt = (select(sessions, tasks)
+                .select_from(sessions.join(tasks, tasks.c.id == task_id))
+                .where(sessions.c.id == session_id))
+        async with self._engine.connect() as conn:
+            row = (await conn.execute(stmt)).fetchone()
+        if row is None:
+            return None, None
+        mapping = row._mapping
+        return (_row_to_session({c.name: mapping[c] for c in sessions.c}),
+                self._row_to_task({c.name: mapping[c] for c in tasks.c}))
+
+    async def get_project_for_claim(self, project_id, *, conn):
+        """Read integration demand with the existing admission-loop project read."""
+        from src.integration.admission import project_admission_required
+
+        row = (await conn.execute(select(
+            projects, project_admission_required(projects).label("source_admission"),
+        ).where(projects.c.id == project_id))).mappings().one_or_none()
+        if row is None:
+            return None
+        project = self._row_to_project(row)
+        project._source_admission_required = row["source_admission"]
+        return project
+
+    async def claim_preparation_state(
         self, session_id: str, task_id: str, claim_epoch: int, *, conn=None
-    ) -> bool:
-        """Verify the task and pool-session fences before filesystem work.
+    ):
+        """Return the preparation fence and its current project in one read.
 
         Slot reset and claim-file creation happen outside the claim
         transaction, so this read must prove both rows are still current.
-        Joining their two predicates avoids two independent round trips on
-        every successful pool claim.
-
-        *conn* lets the caller pair this with its ``get_project`` re-read on
-        one checkout — the two run back to back under the task control lock.
+        The project must be fresh after a long poll. Joining it here avoids
+        another projects SELECT without reusing the admission loop's old row.
+        An absent project is distinct from a stale preparation fence.
         """
+        from src.integration.admission import source_admission_required
+
         stmt = (
-            select(literal(1))
-            .select_from(tasks.join(sessions, sessions.c.task_id == tasks.c.id))
+            select(projects, source_admission_required(tasks).label("source_admission"))
+            .select_from(tasks.join(sessions, sessions.c.task_id == tasks.c.id)
+                         .outerjoin(projects, projects.c.id == tasks.c.project_id))
             .where(
                 tasks.c.id == task_id,
                 tasks.c.status == TaskStatus.IN_PROGRESS.value,
@@ -765,9 +968,14 @@ class ClaimQueryMixin:
             )
         )
         if conn is not None:
-            return (await conn.execute(stmt)).scalar_one_or_none() is not None
-        async with self._engine.connect() as owned:
-            return (await owned.execute(stmt)).scalar_one_or_none() is not None
+            row = (await conn.execute(stmt)).mappings().fetchone()
+        else:
+            async with self._engine.connect() as owned:
+                row = (await owned.execute(stmt)).mappings().fetchone()
+        project = self._row_to_project(row) if row and row["id"] else None
+        if project is not None:
+            project._source_admission_required = row["source_admission"]
+        return row is not None, project
 
     async def release_claim_slot(self, conn, session_id: str) -> None:
         await conn.execute(
@@ -793,81 +1001,45 @@ class ClaimQueryMixin:
         hierarchy_mode: ProjectIntegrationMode | None = None,
         allowed_task_ids: set[str] | None = None,
         excluded_task_ids: set[str] | None = None,
+        workspace_kind: str = "project-repo",
     ) -> str | None:
-        """The §10 work query.  Postgres takes the row FOR UPDATE SKIP LOCKED.
+        """Select the §10 frontier with FOR UPDATE SKIP LOCKED.
 
-        Development callers supply a request-scoped ``allowed_task_ids`` set
-        from async git admission; SQL performs only structural selection.
-        *excluded_task_ids* withholds specific rows a caller has just decided
-        against from a fresh observation outside SQL -- the claim path's
-        source-CI delivery gate (``src/integration/source_delivery.py``).  It
-        is a request-scoped decision like the allow set, never a persisted
-        one: whoever computes it re-proves it on the next attempt.
+        Allow/exclude sets are request-scoped Git admission decisions, re-proven
+        on each attempt. A pre-read *hierarchy_mode* only filters candidates:
+        the task is re-fenced under lock and preparation re-reads the project.
 
-        *hierarchy_mode* is the caller's already-read project row, reduced to
-        the two constants the hierarchy predicates need (see
-        :class:`ProjectIntegrationMode`).  It is only ever a *frontier*
-        filter: whichever candidate this returns is re-fenced under the task
-        lock afterwards, and ``_prepare_and_activate_locked`` re-reads the
-        project before acting on its mode, so a mode edit that lands inside a
-        long ``--wait`` window cannot be acted on from a stale read here.
+        Prefer active train repairs, then this agent's affinity rows, then all admissible rows.
+        scans order by priority/created_at so an index can stop at LIMIT 1.
+        A CASE affinity sort instead evaluated every candidate's frontier
+        subqueries (~10,100 shared buffers versus 10–14 at the §15.2 scale).
+        The second scan must include unpinned work even when all pinned rows
+        are locked; a restricting InitPlan would incorrectly report no work.
+        Targeted claims skip the affinity probe because only one row can match.
 
-        Two statements, not one, and the reason is the ``ORDER BY``.  Affinity
-        is a *soft* preference -- the frontier does not exclude a task pinned
-        to another agent -- and it used to be expressed as the leading sort
-        key, ``CASE WHEN affinity_agent_id = :agent THEN 0 ELSE 1 END``.  The
-        agent id is a runtime parameter, so no index can supply that order:
-        PostgreSQL had to evaluate the whole frontier predicate for every
-        candidate row and top-N sort the result, which at the §15.2 scale
-        (5,000 tasks, 2,499 on the frontier) meant 2,500 rows materialised,
-        the correlated ``NOT EXISTS`` subplans in :func:`_frontier_where`
-        evaluated 2,500 times, and ~10,100 shared buffers per claim -- for a
-        ``LIMIT 1``.
-
-        Sorting by ``priority, created_at`` alone *is* index-orderable, so
-        each half below is an index-ordered scan that stops at the first
-        admissible row (10-14 shared buffers, measured on PostgreSQL 18 at
-        that same scale).  Splitting the preference across two statements
-        preserves it exactly:
-
-        * the first statement is the frontier restricted to tasks pinned to
-          this agent -- if any admissible pinned task exists, the old sort
-          would have returned the best of them, and so does this;
-        * the second is the frontier with no affinity term at all -- reached
-          only when the first found nothing, which is exactly when the old
-          sort's leading key was constant and the answer was the best row
-          overall.
-
-        ``SKIP LOCKED`` falls through the same way it always did: a pinned row
-        another claimer holds is skipped by the first statement, and if every
-        pinned row is held the second statement still considers unpinned work.
-        That fall-through is the reason this is two statements rather than one
-        with the probe hoisted into an ``InitPlan`` and used to *restrict* the
-        frontier -- that shape is a statement cheaper and measures the same,
-        but it answers ``no_ready_work`` when every pinned row is momentarily
-        locked, and the caller then parks on the ``task.ready`` waiter for the
-        rest of its ``--wait`` window rather than taking the unpinned work
-        that was there all along.
-
-        A targeted claim (*task_id* given) skips the probe: with a single
-        candidate row, preferring it over itself is a no-op.
-
-        Only routed work is claimable (mandatory routing §9.1): the task's
-        own ``profile_id`` must be this pool's, and its ``route_source`` one
-        the project accepts -- ``router``, ``override`` or ``role``, plus
-        ``legacy`` while *router_ready* is false.  There is no project
-        default widening an unrouted task onto any pool.
+        Routing requires the task's own profile and an accepted route source
+        (router/override/role, plus legacy before router readiness); no project
+        default admits unrouted work. See :func:`route_claimable`.
         """
         profile_ok = tasks.c.profile_id == profile_id
-        preparation_predicates = _claim_preparation_predicates()
+        # Each probe evaluates these predicates against its own DB snapshot.
+        # Reuse the SQL expression tree within this attempt: rebuilding the
+        # same aliased tables for all three probes dominates Python overhead.
+        frontier = _frontier_where(
+            project_id, hierarchy_mode, router_ready=bool(router_ready),
+            workspace_kind=workspace_kind,
+        )
+        routing = _pool_routing_predicates(
+            operator=operator, enforce_routing=enforce_routing,
+            intelligence_class=intelligence_class,
+        )
 
-        def candidate(*, pinned: bool):
+        def candidate(*, pinned: bool, repair_only: bool = False):
             stmt = (
                 select(tasks.c.id)
                 .where(
-                    _frontier_where(project_id, hierarchy_mode, router_ready=bool(router_ready)),
+                    frontier,
                     profile_ok,
-                    *preparation_predicates.values(),
                 )
                 .order_by(tasks.c.priority.asc(), tasks.c.created_at.asc())
                 .limit(1)
@@ -878,18 +1050,22 @@ class ClaimQueryMixin:
                 stmt = stmt.where(tasks.c.id.not_in(excluded_task_ids))
             if pinned:
                 stmt = stmt.where(tasks.c.affinity_agent_id == agent_id)
-            stmt = apply_label_filters(stmt, exclude_hold=True)
-            stmt = stmt.where(*_pool_routing_predicates(
-                operator=operator, enforce_routing=enforce_routing,
-                intelligence_class=intelligence_class,
-            ))
+            if repair_only:
+                # The uncorrelated existence gate avoids scanning ordinary
+                # tasks when there is no active repair anywhere in the fleet.
+                stmt = stmt.where(active_train_repair_tasks().exists(), active_train_repair())
+            stmt = stmt.where(*routing)
             if task_id is not None:
                 stmt = stmt.where(tasks.c.id == task_id)
             return stmt.with_for_update(of=tasks, skip_locked=True)
 
         if task_id is None:
-            row = (await conn.execute(candidate(pinned=True))).fetchone()
-            if row:
+            # COALESCE probes repairs then affinity lazily in one round trip.
+            row = (await conn.execute(select(func.coalesce(
+                candidate(pinned=False, repair_only=True).scalar_subquery(),
+                candidate(pinned=True).scalar_subquery(),
+            )))).fetchone()
+            if row and row[0] is not None:
                 return row[0]
         row = (await conn.execute(candidate(pinned=False))).fetchone()
         return row[0] if row else None
@@ -897,7 +1073,7 @@ class ClaimQueryMixin:
     async def take_task(self, conn, task_id: str, *, agent_id: str, now: float) -> Task | None:
         """Fence + epoch bump + status write in **one** statement (spec §15).
 
-        The fence (``READY``, unblocked, unassigned) rides the same UPDATE as
+        The fence (``READY``, unblocked, unassigned, no ingestion hold) rides the same UPDATE as
         the epoch bump and the ``IN_PROGRESS`` write, so exactly one racer
         can match it; a matched row proves the pre-state, which is what lets
         ``_apply_transition`` skip its pre-read (``assume_pre_state``).  The
@@ -944,6 +1120,7 @@ class ClaimQueryMixin:
                 tasks.c.status == TaskStatus.READY.value,
                 tasks.c.is_blocked == 0,
                 tasks.c.assigned_agent_id.is_(None),
+                not_ingest_held(),
                 ~container_flag_exists(),
                 ~exists(
                     select(literal(1)).where(
@@ -1001,10 +1178,11 @@ class ClaimQueryMixin:
 
         The workspace UPDATE uses ``RETURNING`` so the caller
         (``_prepare_and_activate``) does not have to re-read the slot it
-        just stamped, and both metadata keys go out in one multi-row upsert
-        (spec §15).
+        just stamped, and holder provenance goes out in one multi-row upsert
+        (spec §15). Reserved pool holders stamp session then workspace in
+        one statement, with the workspace dependent on the holder's RETURNING.
         """
-        await conn.execute(
+        holder = (
             update(sessions)
             .where(sessions.c.id == session_id)
             .values(
@@ -1013,7 +1191,13 @@ class ClaimQueryMixin:
                 claim_phase_at=now,
                 last_claim_epoch=claim_epoch,
             )
+            .returning(sessions.c.instance_token, sessions.c.project_id)
         )
+        chained = holder.cte("claim_holder") if agent_id and agent_reserved else None
+        if chained is None:
+            token, project_id = (await conn.execute(holder)).one()
+        else:
+            project_id = select(chained.c.project_id).scalar_subquery()
         slot = None
         if agent_id:
             if not agent_reserved:
@@ -1028,12 +1212,12 @@ class ClaimQueryMixin:
                 update(workspaces)
                 .where(
                     workspaces.c.project_id
-                    == select(sessions.c.project_id)
-                    .where(sessions.c.id == session_id)
-                    .scalar_subquery(),
+                    == project_id,
                     workspaces.c.workspace_path == work_dir,
                     workspaces.c.enabled.is_(True),
                     workspaces.c.locked_by_agent_id == agent_id,
+                    or_(workspaces.c.locked_by_task_id.is_(None),
+                        workspaces.c.locked_by_task_id == task_id),
                 )
                 .values(
                     locked_by_agent_id=agent_id,
@@ -1041,10 +1225,29 @@ class ClaimQueryMixin:
                     locked_at=now,
                 )
             )
-            row = (await conn.execute(stmt.returning(*workspaces.c))).mappings().fetchone()
-            slot = self._row_to_workspace(row) if row is not None else None
+            if chained is None:
+                row = (await conn.execute(stmt.returning(*workspaces.c))).mappings().fetchone()
+            else:
+                stamped = stmt.returning(*workspaces.c).cte("claim_workspace")
+                # RETURNING is the only way to observe the session update in
+                # this statement. Keep its token even when no workspace matches,
+                # so failed preparation retains the holder's exact identity.
+                row = (await conn.execute(
+                    select(*stamped.c, chained.c.instance_token).select_from(
+                        chained.outerjoin(stamped, literal(True))
+                    )
+                )).mappings().one()
+                token = row["instance_token"]
+            slot = self._row_to_workspace(row) if row is not None and row["id"] else None
         await self._upsert_meta_many(
-            task_id, {CLAIMED_BY_SESSION_KEY: session_id, "work_dir": work_dir}, conn=conn
+            task_id, {
+                CLAIMED_BY_SESSION_KEY: session_id, "work_dir": work_dir,
+                "claim_workspace": {
+                    "workspace_id": slot.id, "generation": slot.generation,
+                    "session_id": session_id, "instance_token": token,
+                    "claim_epoch": claim_epoch,
+                } if slot is not None else None,
+            }, conn=conn
         )
         await self._start_task_session_attempt(
             conn,
@@ -1054,12 +1257,122 @@ class ClaimQueryMixin:
         )
         return slot
 
-    async def lock_claim_for_activation(self, conn, session_id, task_id, *, epoch: int):
+    async def lock_claim_workspace(self, conn, session_id, task_id, **kwargs) -> Workspace | None:
+        proof = await self.lock_claim_workspace_proof(conn, session_id, task_id, **kwargs)
+        return proof.workspace if proof else None
+
+    async def lock_claim_workspace_proof(
+        self, conn, session_id, task_id, *, epoch: int,
+        instance_token: str | None = None, expected_workspace: Workspace | None = None,
+        lock_task_status: bool = True,
+        allow_retained_preparation: bool = False,
+    ) -> ClaimWorkspaceProof | None:
+        """Lock session, task, then workspace and prove the exact holder receipt.
+
+        Reset holds a task key-share lock so dependency/status changes remain
+        possible. Activation upgrades it and rechecks admission and metadata.
+        Session and workspace identity stay locked throughout filesystem work.
+        Retained-handoff recovery may prove a drained session's disabled slot;
+        this opt-in preserves every receipt check and does not admit activation.
+        """
+        holder = (await conn.execute(select(sessions).where(
+            sessions.c.id == session_id, sessions.c.task_id == task_id,
+            sessions.c.claim_phase == "preparing",
+            sessions.c.desired_state.in_(("running", "stopped"))
+            if allow_retained_preparation else sessions.c.desired_state == "running",
+            sessions.c.state == "running", sessions.c.last_claim_epoch == epoch,
+        ).with_for_update())).mappings().one_or_none()
+        if (holder is None or not holder["agent_id"] or not holder["work_dir"]
+                or (instance_token is not None and holder["instance_token"] != instance_token)):
+            return None
+        assignment = await self._lock_activation_task(
+            conn, task_id, epoch=epoch, lock_task_status=lock_task_status,
+        )
+        if (assignment is None
+                or assignment.project_id != holder["project_id"]
+                or assignment.assigned_agent_id != holder["agent_id"]):
+            return None
+        # Metadata is read after both identity locks, avoiding a stale
+        # pre-wait snapshot if a cleanup recorder held the task first.
+        cleanup = exists(select(task_metadata.c.task_id).where(
+            task_metadata.c.task_id == task_id, task_metadata.c.key == PREPARE_CLEANUP_HOLD,
+        ))
+        receipt_value = select(task_metadata.c.value).where(
+            task_metadata.c.task_id == task_id, task_metadata.c.key == "claim_workspace",
+        ).scalar_subquery()
+        rows = (await conn.execute(select(
+            workspaces, cleanup.label("cleanup_hold"), receipt_value.label("workspace_receipt"),
+        ).where(
+            workspaces.c.workspace_path == holder["work_dir"],
+        ).order_by(workspaces.c.id).with_for_update())).mappings().all()
+        candidates = [row for row in rows if (
+            row["project_id"] == holder["project_id"]
+            and (row["enabled"] or allow_retained_preparation)
+            and row["locked_by_agent_id"] == holder["agent_id"]
+            and row["locked_by_task_id"] == task_id
+        )]
+        if len(candidates) != 1:
+            return None
+        row = candidates[0]
+        if row["cleanup_hold"]:
+            return None
+        raw = row["workspace_receipt"]
+        try:
+            receipt = json.loads(raw) if raw is not None else None
+        except (TypeError, ValueError):
+            return None
+        if receipt != {
+            "workspace_id": row["id"], "generation": row["generation"],
+            "session_id": session_id, "instance_token": holder["instance_token"],
+            "claim_epoch": epoch,
+        }:
+            return None
+        if any(other["id"] != row["id"] and (
+            other["locked_by_agent_id"] is not None or other["locked_by_task_id"] is not None
+        ) for other in rows):
+            return None
+        if expected_workspace is not None and (
+            row["id"] != expected_workspace.id
+            or row["generation"] != expected_workspace.generation
+            or row["project_id"] != expected_workspace.project_id
+            or row["workspace_path"] != expected_workspace.workspace_path
+            or row["base_workspace_id"] != expected_workspace.base_workspace_id
+            or row["slot_index"] != expected_workspace.slot_index
+        ):
+            return None
+        return ClaimWorkspaceProof(
+            conn, conn.get_transaction(), session_id, task_id, epoch,
+            holder["instance_token"], holder["agent_id"], raw, self._row_to_workspace(row),
+        )
+
+    async def _lock_activation_task(self, conn, task_id, *, epoch, lock_task_status=True):
+        cleanup = exists(select(task_metadata.c.task_id).where(
+            task_metadata.c.task_id == task_id, task_metadata.c.key == PREPARE_CLEANUP_HOLD,
+        ))
+        receipt = select(task_metadata.c.value).where(
+            task_metadata.c.task_id == task_id, task_metadata.c.key == "claim_workspace",
+        ).scalar_subquery()
+        return (await conn.execute(select(
+            tasks.c.id, tasks.c.branch_name, tasks.c.project_id, tasks.c.assigned_agent_id,
+            cleanup.label("cleanup_hold"), receipt.label("workspace_receipt"),
+            not_ingest_held().label("not_ingest_held"),
+        ).where(
+            tasks.c.id == task_id, tasks.c.status == TaskStatus.IN_PROGRESS.value,
+            tasks.c.claim_epoch == epoch,
+        ).with_for_update(read=not lock_task_status, key_share=True))).one_or_none()
+
+    async def lock_claim_for_activation(
+        self, conn, session_id, task_id, *, epoch: int, lock_task_status: bool = True,
+    ):
         """Lock session then task before a caller acquires managed ref exclusion.
 
         Task identity is immutable here, so FOR NO KEY UPDATE excludes status
         changes while permitting the slot reset's separate salvage transaction
         to take FK key-share locks when inserting task context or metadata.
+        The returned hold predicate observes the locked row without another query.
+        During reset, ``lock_task_status=False`` uses FOR KEY SHARE instead:
+        dependency/gate changes may invalidate admission, and activation must
+        observe them rather than deadlocking their blocked-state propagation.
         """
         holder = (await conn.execute(
             select(sessions.c.id).where(
@@ -1073,11 +1386,12 @@ class ClaimQueryMixin:
         if holder is None:
             return None
         return (await conn.execute(
-            select(tasks.c.id, tasks.c.branch_name).where(
+            select(tasks.c.id, tasks.c.branch_name,
+                   not_ingest_held().label("not_ingest_held")).where(
                 tasks.c.id == task_id,
                 tasks.c.status == TaskStatus.IN_PROGRESS.value,
                 tasks.c.claim_epoch == epoch,
-            ).with_for_update(key_share=True)
+            ).with_for_update(read=not lock_task_status, key_share=True)
         )).fetchone()
 
     async def activate_claim(
@@ -1085,12 +1399,18 @@ class ClaimQueryMixin:
         branch_name: str | None = None,
         clear_preparation_metadata: bool = False,
         admission=None,
+        ordinary_admission_guard: bool = False,
+        instance_token: str | None = None,
+        expected_workspace: Workspace | None = None,
+        workspace_proof: ClaimWorkspaceProof | None = None,
     ) -> SessionRecord | None:
         """Flip ``preparing`` -> ``active``; the updated row, or ``None``.
 
         PostgreSQL's ``RETURNING`` supplies the response row without a re-read.
         All writes follow the session/task locks and admission guards; a
         rejected activation changes neither the branch nor diagnostics.
+        An ingestion hold added during preparation raises ``IngestHeld`` under
+        the task lock, so the command can release preparation with that reason.
 
         *branch_name* records the slot reset's branch in ``tasks.branch_name``
         in the activation transaction. A failed preparation leaves no branch
@@ -1107,9 +1427,29 @@ class ClaimQueryMixin:
             # activation in that order as well to avoid a PostgreSQL deadlock.
             # Share the task row lock with pause. An EXISTS predicate alone
             # can observe a pre-pause PostgreSQL statement snapshot.
-            claim = await self.lock_claim_for_activation(c, session_id, task_id, epoch=epoch)
-            if claim is None:
+            proof = workspace_proof
+            if proof is None:
+                proof = await self.lock_claim_workspace_proof(
+                    c, session_id, task_id, epoch=epoch, instance_token=instance_token,
+                    expected_workspace=expected_workspace,
+                )
+            if (proof is None or proof.connection is not c
+                    or proof.transaction is not c.get_transaction()
+                    or not proof.transaction.is_active
+                    or (proof.session_id, proof.task_id, proof.epoch) != (session_id, task_id, epoch)
+                    or (instance_token is not None and proof.instance_token != instance_token)
+                    or (expected_workspace is not None and proof.workspace != expected_workspace)):
                 return None
+            # Session/workspace locks from the proof cannot cross transactions.
+            # The task's weaker reset lock allowed status, assignment and
+            # metadata to change; read these again under the activation lock.
+            claim = await self._lock_activation_task(c, task_id, epoch=epoch)
+            if (claim is None or claim.cleanup_hold or claim.workspace_receipt != proof.receipt
+                    or claim.project_id != proof.workspace.project_id
+                    or claim.assigned_agent_id != proof.agent_id):
+                return None
+            if not claim.not_ingest_held:
+                raise IngestHeld()
             if admission is not None and (
                 not await admission.matches(conn=c, lock=True, task_id=task_id)
                 or (await c.execute(select(blocked_predicate()).where(
@@ -1138,39 +1478,61 @@ class ClaimQueryMixin:
                     claim_failure_reason=None,
                     claim_failure_at=None,
                     claim_refusal=None,
+                    failed_preparation=None,
                 )
             )
-            row = (await c.execute(stmt.returning(*sessions.c))).mappings().fetchone()
-            if row is None:
-                return None
-            # A claim only becomes usable after preparation has succeeded and
-            # this session row has atomically moved to ``active``.  Clear an
-            # earlier prepare/release warning at that exact point so it never
-            # shadows a live task in the dashboard or recovery logic, and --
-            # when the caller asks -- the preparation ladder that became
-            # stale at the same boundary, in the same statement.
+            if ordinary_admission_guard:
+                from src.integration.admission import (
+                    OrdinaryAdmissionChanged,
+                    ordinary_activation_guard,
+                )
+
+                stmt = stmt.where(
+                    ordinary_activation_guard(task_id),
+                    apply_label_filters(select(tasks.c.id).where(
+                        tasks.c.id == task_id, ~blocked_predicate(),
+                    ), exclude_hold=True).exists(),
+                )
+            activated = stmt.returning(*sessions.c).cte("activated_claim")
+            # These writes depend on the successful session CAS, so an
+            # activation rejected by any guard changes no task diagnostics.
+            accepted = exists(select(activated.c.id))
             stale_keys = ["needs_attention"]
+            # Evaluate the receipt in the accepted write, after acquiring the
+            # task lock. Folding a read into the earlier locking SELECT could
+            # retain its pre-wait snapshot; a separate read costs a round trip.
+            stop = cast(case(
+                (task_metadata.c.key == "retained_workspace_stop", task_metadata.c.value),
+                else_="{}",
+            ), JSONB)
+            captured_epoch = stop["identity"]["task"]["claim_epoch"]
+            integer_epoch = and_(
+                func.jsonb_typeof(captured_epoch) == "number",
+                captured_epoch.astext.op("~")(r"^-?[0-9]+$"),
+            )
+            completed_older_stop = and_(
+                task_metadata.c.key == "retained_workspace_stop",
+                stop["cleanup_pending"] == cast(literal("false"), JSONB),
+                cast(case((integer_epoch, captured_epoch.astext)), Numeric) < epoch,
+            )
             if clear_preparation_metadata:
                 stale_keys.extend(CLAIM_PREPARATION_METADATA_KEYS)
-            await c.execute(
-                delete(task_metadata).where(
-                    task_metadata.c.task_id == task_id,
-                    task_metadata.c.key.in_(stale_keys),
-                )
-            )
+            clear = delete(task_metadata).where(
+                task_metadata.c.task_id == task_id,
+                or_(task_metadata.c.key.in_(stale_keys), completed_older_stop),
+                accepted,
+            ).cte("clear_preparation")
+            statement = select(activated).add_cte(clear)
             if branch_name and claim.branch_name != branch_name:
-                # Written only past every activation guard, and under the row
-                # lock taken above: an activation that bails leaves the branch
-                # exactly as it found it, so no failed prepare can publish a
-                # branch the task never got.  Only a differing value is
-                # written: a hierarchy claim's branch already comes from the
-                # origin chain, and a no-op UPDATE would touch a task whose
-                # materialized origin is deliberately frozen.
-                await c.execute(
-                    update(tasks)
-                    .where(tasks.c.id == task_id)
-                    .values(branch_name=branch_name, updated_at=now)
-                )
+                branch = update(tasks).where(tasks.c.id == task_id, accepted).values(
+                    branch_name=branch_name, updated_at=now,
+                ).cte("prepared_branch")
+                statement = statement.add_cte(branch)
+            row = (await c.execute(statement)).mappings().one_or_none()
+            if row is None:
+                if ordinary_admission_guard:
+                    raise OrdinaryAdmissionChanged()
+                return None
             return _row_to_session(row)
 
         if conn is not None:
@@ -1192,6 +1554,7 @@ class ClaimQueryMixin:
         preparation_expired_before=None,
         expected_task_id=None,
         expected_claim_epoch=None,
+        expected_instance_token=None,
         expected_task_status=None,
         expected_task_claim_epoch=None,
         drain_after_release=False,
@@ -1231,6 +1594,8 @@ class ClaimQueryMixin:
             and task_id != expected_task_id
             or expected_claim_epoch is not None
             and row["last_claim_epoch"] != expected_claim_epoch
+            or expected_instance_token is not None
+            and row["instance_token"] != expected_instance_token
         ):
             return out
         # An attached integration owner is durable evidence that this exact
@@ -1239,27 +1604,24 @@ class ClaimQueryMixin:
         # pool reconciler can otherwise destroy the evidence a repair or
         # integration close needs.  Lock the owner row in this transaction so
         # the decision composes with ownership handoff on Postgres too.
-        if agent_id:
-            protected_owner = (
-                await conn.execute(
-                    select(integration_branch_owners.c.id)
-                    .join(
-                        workspaces,
-                        integration_branch_owners.c.workspace_id == workspaces.c.id,
-                    )
-                    .where(
-                        integration_branch_owners.c.session_id == session_id,
-                        integration_branch_owners.c.fence.is_(None),
-                        integration_branch_owners.c.handoff_state.in_(
-                            ("attached", "handoff_pending")
-                        ),
-                        workspaces.c.locked_by_agent_id == agent_id,
-                    )
-                    .with_for_update()
-                )
-            ).first()
-            if protected_owner is not None:
-                return out
+        cleanup = exists(select(task_metadata.c.task_id).where(
+            task_metadata.c.task_id == task_id, task_metadata.c.key == PREPARE_CLEANUP_HOLD,
+        ))
+        owner = select(integration_branch_owners.c.id).join(
+            workspaces, integration_branch_owners.c.workspace_id == workspaces.c.id,
+        ).where(
+            integration_branch_owners.c.session_id == session_id,
+            integration_branch_owners.c.fence.is_(None),
+            integration_branch_owners.c.handoff_state.in_(("attached", "handoff_pending")),
+            workspaces.c.locked_by_agent_id == agent_id,
+        ).limit(1).with_for_update().scalar_subquery() if agent_id else literal(None)
+        # Observe cleanup only after acquiring the session lock; a subquery
+        # in the locking SELECT could retain its pre-wait statement snapshot.
+        protection = (await conn.execute(select(
+            cleanup.label("cleanup_hold"), owner.label("owner_id"),
+        ))).one()
+        if protection.cleanup_hold or protection.owner_id is not None:
+            return out
         epoch = None
         if task_id:
             if preserve_terminal_task:
@@ -1329,6 +1691,21 @@ class ClaimQueryMixin:
                 if expected_task_status is not None and out.row is None:
                     return out
                 epoch = (out.row or {}).get("claim_epoch")
+                if out.row is None and task_status is TaskStatus.READY and agent_id:
+                    # A status projection may have requeued this task before
+                    # teardown. The transition above then matches nothing,
+                    # but dropping the session must not strand its assignment.
+                    # Only this exact claim can be cleared; a successor stays held.
+                    epoch = (await conn.execute(
+                        update(tasks).where(
+                            tasks.c.id == task_id,
+                            tasks.c.status == TaskStatus.READY.value,
+                            tasks.c.assigned_agent_id == agent_id,
+                            tasks.c.claim_epoch == row["last_claim_epoch"],
+                        ).values(assigned_agent_id=None).returning(tasks.c.claim_epoch)
+                    )).scalar_one_or_none()
+                    if epoch is not None:
+                        out.ready.append((task_id, context))
                 if needs_attention:
                     await self._upsert_meta(task_id, "needs_attention", needs_attention, conn=conn)
                 if out.row is not None:
@@ -1373,14 +1750,16 @@ class ClaimQueryMixin:
 
             await release_session_leases_on(self, conn, session_id, task_id)
         if agent_id:
-            # Clear the task lock unconditionally — even a session that held no
-            # task (e.g. released mid-``claiming``) must not leave a stale
-            # ``locked_by_task_id`` on its agent's workspace.  A task that
-            # became non-live underneath an active worker must also release
-            # the agent lock, so the slot can serve the next claim.
+            # Release only this claim's task lock (or its idle agent lock).
+            # Misplaced agent bindings must not erase another task's lock
+            # when preparation discovers and refuses that mismatch.
             await conn.execute(
                 update(workspaces)
-                .where(workspaces.c.locked_by_agent_id == agent_id)
+                .where(
+                    workspaces.c.locked_by_agent_id == agent_id,
+                    or_(workspaces.c.locked_by_task_id.is_(None),
+                        workspaces.c.locked_by_task_id == task_id),
+                )
                 .values(
                     locked_by_agent_id=None if release_workspace_lock else workspaces.c.locked_by_agent_id,
                     locked_by_task_id=None,
@@ -1416,7 +1795,9 @@ class ClaimQueryMixin:
     async def _after_release(self, out: TransitionResult) -> None:
         await self.log_blocked_flips(out.flipped)
         await self._notify_settled(out.settled)
-        await self._notify_ready(out.ready)
+        # _apply_transition records these through _note_frontier_entry, whose
+        # INSERT SELECT already excludes ingestion-held tasks on the write connection.
+        await self._notify_ready(out.ready, frontier_checked=True)
 
     async def release_claim(
         self,
@@ -1429,6 +1810,7 @@ class ClaimQueryMixin:
         needs_attention=None,
         expected_task_id=None,
         expected_claim_epoch=None,
+        expected_instance_token=None,
         expected_task_status=None,
         expected_task_claim_epoch=None,
         drain_after_release=False,
@@ -1448,6 +1830,7 @@ class ClaimQueryMixin:
             needs_attention=needs_attention,
             expected_task_id=expected_task_id,
             expected_claim_epoch=expected_claim_epoch,
+            expected_instance_token=expected_instance_token,
             expected_task_status=expected_task_status,
                 expected_task_claim_epoch=expected_task_claim_epoch,
             drain_after_release=drain_after_release,
@@ -2261,7 +2644,10 @@ class ClaimQueryMixin:
         self, project_id: str, *, allowed_task_ids=None, router_ready: bool | None = None,
         hierarchy_mode: ProjectIntegrationMode | None = None,
         pool_profiles: Mapping[str, AgentProfile] | None = None,
-    ) -> dict[str | None, int]:
+        include_repair_counts: bool = False,
+        by_workspace_kind: bool = False,
+    ) -> (dict[str | None, int] | dict[str | None, tuple[int, int]]
+          | dict[tuple[str | None, str], int] | dict[tuple[str | None, str], tuple[int, int]]):
         """Count structural work, restricted to verified development admission when supplied.
 
         *router_ready* counts only claimable work (:func:`route_claimable`),
@@ -2271,6 +2657,9 @@ class ClaimQueryMixin:
         *pool_profiles* restricts sizing demand to the fixed class and operator
         role each pool can execute. A stale route must not start a session that
         cannot claim its task. Structural callers may omit this snapshot.
+        With *include_repair_counts*, values are ``(ready, train_repairs)``;
+        both counts use the same frontier and one database round trip.
+        With *by_workspace_kind*, keys are ``(profile_id, primary_kind)``.
         """
         if hierarchy_mode is None:
             from src.integration.delivery_observer import hierarchy_frontier_modes
@@ -2278,14 +2667,27 @@ class ClaimQueryMixin:
             hierarchy_mode = (await hierarchy_frontier_modes(
                 self, project_ids={project_id}
             )).get(project_id)
-        stmt = select(tasks.c.profile_id, func.count()).where(
+        columns = [tasks.c.profile_id, func.count()]
+        primary_kind = pool_primary_kind()
+        if by_workspace_kind:
+            columns.insert(1, primary_kind.label("workspace_kind"))
+        if include_repair_counts:
+            columns.append(func.count().filter(active_train_repair()))
+        stmt = select(*columns).where(
             _frontier_where(project_id, hierarchy_mode, router_ready=router_ready),
         ).group_by(tasks.c.profile_id)
+        if by_workspace_kind:
+            stmt = stmt.group_by(primary_kind)
         if allowed_task_ids is not None:
             stmt = stmt.where(tasks.c.id.in_(allowed_task_ids))
         if pool_profiles is not None:
             stmt = stmt.where(_pool_profiles_predicate(pool_profiles))
-        stmt = apply_label_filters(stmt, exclude_hold=True)
         async with self._engine.connect() as conn:
             rows = (await conn.execute(stmt)).fetchall()
+        if by_workspace_kind:
+            if include_repair_counts:
+                return {(pid, kind): (int(n), int(repairs)) for pid, kind, n, repairs in rows}
+            return {(pid, kind): int(n) for pid, kind, n in rows}
+        if include_repair_counts:
+            return {pid: (int(n), int(repairs)) for pid, n, repairs in rows}
         return {pid: int(n) for pid, n in rows}

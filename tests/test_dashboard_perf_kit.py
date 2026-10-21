@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import logging
 import os
 import signal
 import subprocess
 import sys
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -299,6 +301,16 @@ def test_seed_main_refuses_before_connecting(tmp_path, monkeypatch, capsys):
 # --- experiment.py ---------------------------------------------------------
 
 
+@pytest.fixture
+def isolated_experiment(monkeypatch):
+    exp = load_script("experiment")
+    # Patch a private namespace so background threads and logging keep real clocks.
+    monkeypatch.setattr(exp, "time", SimpleNamespace(
+        time=time.time, monotonic=time.monotonic, sleep=time.sleep,
+    ))
+    return exp
+
+
 def complete_manifest():
     return {
         "mode": "loaded", "repetitions": 3, "clients": [1, 3],
@@ -453,8 +465,8 @@ def test_client_count_summaries_scope_to_their_own_browser_windows():
 
 @pytest.mark.parametrize("ended", [12.0, 12.25])
 def test_series_collection_waits_for_publication_and_keeps_only_the_completion_bucket(
-        monkeypatch, ended):
-    exp = load_script("experiment")
+        monkeypatch, ended, isolated_experiment):
+    exp = isolated_experiment
     clock = [0.0]
     monkeypatch.setattr(exp.time, "monotonic", lambda: clock[0])
     monkeypatch.setattr(exp.time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds))
@@ -477,8 +489,8 @@ def test_series_collection_waits_for_publication_and_keeps_only_the_completion_b
                       "repetition_end_ts": ended, "boundary_sample_ts": 13.0, "wait_s": 0.5}
 
 
-def test_series_collection_refuses_stale_telemetry_at_the_deadline(monkeypatch):
-    exp = load_script("experiment")
+def test_series_collection_refuses_stale_telemetry_at_the_deadline(monkeypatch, isolated_experiment):
+    exp = isolated_experiment
     clock, sleeps = [0.0], []
     monkeypatch.setattr(exp.time, "monotonic", lambda: clock[0])
 
@@ -495,11 +507,10 @@ def test_series_collection_refuses_stale_telemetry_at_the_deadline(monkeypatch):
 
 @pytest.mark.parametrize("mode", ["idle", "loaded"])
 def test_repetition_retains_terminal_direct_probes_outside_the_browser_verdict(
-        tmp_path, monkeypatch, mode):
-    from types import SimpleNamespace
+        tmp_path, monkeypatch, mode, isolated_experiment):
     from src.metrics.histogram import merge_hists, new_hist, observe
 
-    exp = load_script("experiment")
+    exp = isolated_experiment
     # Wall time advances only at the measurement boundaries; polling uses a
     # separate monotonic clock and cannot stretch either browser/workload window.
     ended = 25.25 if mode == "loaded" else 12.25
@@ -531,6 +542,9 @@ def test_repetition_retains_terminal_direct_probes_outside_the_browser_verdict(
     monkeypatch.setattr(exp, "Workload", Workload)
 
     def harness(cmd, **kwargs):
+        # Unrelated logging (such as the loop watchdog) must not consume the
+        # experiment's two boundary timestamps through the shared time module.
+        logging.makeLogRecord({"msg": "unrelated clock consumer"})
         assert cmd[cmd.index("--observe-ms") + 1] == "120000"
         clients = int(cmd[cmd.index("--clients") + 1])
         a, b = (2.0, 7.0) if clients == 1 else (8.0, 12.25)

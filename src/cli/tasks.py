@@ -881,6 +881,7 @@ def task_details_alias(ctx: click.Context, task_id: str) -> None:
 @task.command("set")
 @click.argument("task_id")
 @click.option("--branch", default=None, help="Set the task's branch name")
+@click.option("--repair-batch", default=None, help="Supervisor/operator: assign this task to repair an open batch")
 @click.option("--pr-url", default=None, help="Set the task's PR URL")
 @click.option("--work-dir", default=None, help="Record the task's working directory")
 @click.option("--note", default=None, help="Append a legacy note to task context")
@@ -907,6 +908,7 @@ def task_set(
     ctx: click.Context,
     task_id: str,
     branch: str | None,
+    repair_batch: str | None,
     pr_url: str | None,
     work_dir: str | None,
     note: str | None,
@@ -942,6 +944,8 @@ def task_set(
     args: dict[str, Any] = {"task_id": task_id}
     if branch is not None:
         args["branch"] = branch
+    if repair_batch is not None:
+        args["repair_batch"] = repair_batch
     if pr_url is not None:
         args["pr_url"] = pr_url
     if work_dir is not None:
@@ -993,7 +997,11 @@ def task_set(
 def task_comment(
     ctx: click.Context, task_id: str, body: str, kind: str, claim_epoch: int | None
 ) -> None:
-    """Append an attributed comment to a task's durable history."""
+    """Append an attributed comment to a task's durable history.
+
+    Keep comments concise: state what changed, decisions, and blockers.
+    Link evidence files; do not paste logs or repeat status.
+    """
     api_url = ctx.obj.get("api_url") if ctx.obj else None
     args: dict[str, Any] = {"task_id": task_id, "body": body, "kind": kind}
     epoch = resolve_claim_epoch(claim_epoch)

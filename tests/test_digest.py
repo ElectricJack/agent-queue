@@ -320,3 +320,15 @@ def test_a_fleet_facts_wording_is_scoped_to_its_own_key():
     assert highlight_key(first) != highlight_key(second)
     result = build_digest(inputs(facts=(first, second)))
     assert len(result.eligibility.facts) == 2
+
+
+def test_delivery_wait_is_named_in_activity_digest_but_does_not_invent_activity():
+    waits = ({"task_id": "consumer.4", "project_id": "p", "reason": "Land source.6 on dev"},)
+    assert not build_digest(inputs(waiting_on_delivery=waits)).send
+    result = build_digest(inputs(facts=(fact(),), waiting_on_delivery=waits))
+    assert result.send
+    assert "1 waiting on delivery" in result.text
+    assert "consumer.4" in result.text and "source.6 on dev" in result.text
+    hidden = build_digest(inputs(facts=(fact(),), waiting_on_delivery=waits),
+                          project_ids=frozenset({"other"}))
+    assert "source.6" not in hidden.text

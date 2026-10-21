@@ -19,12 +19,13 @@ from src.commands.contracts import CONTRACTS
 from src.commands.contracts.builtin import set_handler_provider
 from src.commands.principal import ExecutionPrincipal
 from src.database.queries.proposal_queries import get_proposal
-from src.models import AgentProfile
+from src.models import AgentProfile, TaskStatus
 from src.playbooks.definition import load_definition_json
 from src.playbooks.engine import PlaybookEngine
 from src.playbooks.executors.base import EngineServices
 from src.playbooks.run_state import RunLifecycle
 from src.reviews.service import ReviewHooks, ReviewService
+from tests.test_review_feedback import accept, prepared
 from tests.playbook_v2_engine_helpers import (
     InMemoryArtifactStore,
     RecordingRunRepository,
@@ -207,13 +208,14 @@ async def test_an_approval_without_proposal_identity_never_invokes_the_commit(ha
     assert await handler._db.list_tasks(project_id=PROJECT) == []
 
 
-async def test_a_refused_ensure_task_ends_the_spec_ingest_run_failed(handler, pipeline):
-    """No project row: ``ensure_task`` is refused, and the run must say so."""
+async def test_a_refused_ensure_spec_ingest_ends_the_spec_ingest_run_failed(handler, pipeline):
+    """No project row: ``ensure_spec_ingest`` is refused, and the run must say so."""
     engine, runs, principal = pipeline
 
     result = await engine.dispatch_event(
         {"event_type": "spec.approved", "event_id": "spec-1", "project_id": PROJECT,
-         "spec_path": "projects/p1/specs/x.md"},
+         "spec_path": "projects/p1/specs/x.md", "decision_id": "missing",
+         "packet_sha256": "0" * 64, "review_id": None, "revision": None, "spec_kind": "design"},
         principal,
     )
 
@@ -222,7 +224,10 @@ async def test_a_refused_ensure_task_ends_the_spec_ingest_run_failed(handler, pi
 
 
 @pytest.mark.parametrize("kind", ["spec", "plan"])
-async def test_review_approval_ingests_once_at_deep_high(handler, pipeline, kind):
+@pytest.mark.parametrize("lifecycle", [
+    "active", "completed", "failed", "obsolete", "archived-completed", "archived-obsolete",
+])
+async def test_review_approval_ingests_once_at_deep_high(handler, pipeline, kind, lifecycle):
     from src.vault import ensure_default_intelligence_classes
 
     ensure_default_intelligence_classes(handler.config.data_dir)
@@ -249,26 +254,70 @@ async def test_review_approval_ingests_once_at_deep_high(handler, pipeline, kind
         content="---\nspec_kind: implementation\n---\n# Specification\n",
         submitted_by="human:local-operator",
     )
-    await svc.decide(
-        review_id=submitted["review_id"], revision=1, decision="approve",
-        note="Approved", decided_by="human:local-operator",
+    args, preview = await prepared(
+        handler, submitted["review_id"], note="Approved",
+        dispositions=[{"feedback_key": "overall_note", "disposition": "no_change",
+                       "reason": "Approval acknowledgment; no implementation change requested."}],
     )
+    approved = await accept(handler, args, preview)
+    assert approved["success"], approved
+    assert approved["application_state"] == "applied", approved
     payload = next(call.args[1] for call in handler.orchestrator.bus.emit.call_args_list
                    if call.args[0] == "spec.approved")
     path = Path(payload["spec_path"])
     assert path.is_absolute()
     assert "status: approved" in path.read_text()
-    for event_id in ("review-approval-1", "review-approval-replay"):
-        result = await engine.dispatch_event(
-            {"event_type": "spec.approved", "event_id": event_id, **payload}, principal,
-        )
-        assert _lifecycles(runs, result) == [RunLifecycle.COMPLETED]
+    result = await engine.dispatch_event(
+        {"event_type": "spec.approved", "event_id": "review-approval-1", **payload}, principal,
+    )
+    assert _lifecycles(runs, result) == [RunLifecycle.COMPLETED]
     [task] = await handler.db.list_tasks(project_id=PROJECT)
     assert task.profile_id == "spec-ingest"
     assert task.intelligence_class == "deep-high"
-    assert task.dedup_key == f"spec-ingest:{path}"
-    assert f"spec_path: {path}" in task.description
+    assert task.dedup_key == f"spec-ingest:decision:{payload['decision_id']}"
+    review = await handler.db.get_review(submitted["review_id"])
+    assert f"spec_path: {review['vault_path']}" in task.description
     assert "spec_kind" in task.description
+    # The executable recording must deliver the policy, not just its source Markdown.
+    assert "docs/guides/reviews.md" in task.description
+    assert "every predecessor goal as kept, changed or dropped" in task.description
+    assert "Jack's explicit sign-off for the goal and replacement revision" in task.description
+    assert "do not commit affected work" in task.description
+
+    # A supervisor settling an unnecessary ingest must not commission another
+    # task when approval is delivered again under a fresh event identity.
+    if "obsolete" in lifecycle:
+        closed = await handler.execute("task_close", {
+            "task_id": task.id, "obsolete": True, "reason": "Spec already ingested manually",
+        })
+        assert closed["success"], closed
+        assert (await handler.db.get_task(task.id)).status == TaskStatus.COMPLETED
+    elif lifecycle != "active":
+        status = TaskStatus.FAILED if lifecycle == "failed" else TaskStatus.COMPLETED
+        await handler.db.update_task(task.id, status=status)
+    archived = lifecycle.startswith("archived-")
+    if archived:
+        assert await handler.db.archive_task(task.id)
+    replay = await engine.dispatch_event(
+        {"event_type": "spec.approved", "event_id": "review-approval-replay", **payload},
+        principal,
+    )
+    assert _lifecycles(runs, replay) == [RunLifecycle.COMPLETED]
+    assert {t.id for t in await handler.db.list_tasks(project_id=PROJECT)} == (
+        set() if archived else {task.id}
+    )
+    ingest_args = {
+        key: payload[key] for key in ("project_id", "decision_id", "packet_sha256")
+    }
+    # Receipt reuse still requires the exact approved identity, including
+    # after the task row has left the active table.
+    for override in ({"packet_sha256": "0" * 64}, {"decision_id": "other"},
+                     {"project_id": "other"}):
+        refused = await handler.execute("ensure_spec_ingest", {**ingest_args, **override})
+        assert not refused["success"], refused
+        assert refused["code"] == "ask.not_found", refused
+    reused = await handler.execute("ensure_spec_ingest", ingest_args)
+    assert reused == {"success": True, "task_id": task.id, "created": False}
 
 
 async def test_a_refused_gate_create_ends_the_proposal_run_failed(handler, pipeline):
@@ -282,3 +331,53 @@ async def test_a_refused_gate_create_ends_the_proposal_run_failed(handler, pipel
 
     assert result.rules_selected == ("proposal-ready-gate",)
     assert _lifecycles(runs, result) == [RunLifecycle.FAILED]
+
+
+async def test_dispatch_retries_failed_run_until_transactional_task_receipt(handler, pipeline):
+    import asyncio
+    from sqlalchemy import update
+    from src.asks.operations import get_operation
+    from src.database.tables import escalation_actions
+    from src.vault import ensure_default_intelligence_classes
+
+    engine, runs, principal = pipeline
+    await handler.execute("create_project", {"id": PROJECT, "name": PROJECT})
+    path = Path(handler.config.vault_root) / f"projects/{PROJECT}/specs/retry.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("---\nstatus: draft\nspec_kind: implementation\n---\n# Exact approved body")
+    approved = await handler.execute("spec_approve", {"project_id": PROJECT, "spec_path": str(path)})
+    assert approved["success"], approved
+    payload = next(c.args[1] for c in handler.orchestrator.bus.emit.call_args_list
+                   if c.args[0] == "spec.approved")
+    # The role profile is unavailable: a delivered event and a terminal failed
+    # pipeline run cannot be mistaken for its task receipt.
+    first = await engine.dispatch_event({"event_type": "spec.approved",
+                                         "event_id": str(payload["seq"]), **payload}, principal)
+    assert _lifecycles(runs, first) == [RunLifecycle.FAILED]
+    async with handler.db.immediate() as conn:
+        op = await get_operation(conn, approved["decision_id"], "ingestion")
+        assert op["status"] == "pending" and "task_id" not in op["receipt"]
+        await conn.execute(update(escalation_actions).where(escalation_actions.c.id == op["id"])
+                           .values(retry_at=0))
+    ensure_default_intelligence_classes(handler.config.data_dir)
+    handler.orchestrator.intelligence_classes.reload(handler.config.data_dir)
+    await handler.db.create_profile(AgentProfile(
+        id="spec-ingest", name="Ingest", harness="codex", default_class="deep-high",
+    ))
+    path.unlink()  # The sweep must not reread the mirror.
+    retry = await handler.execute("spec_ingest_reconcile", {})
+    assert retry["success"] and retry["errors"] == [], retry
+    payload2 = [c.args[1] for c in handler.orchestrator.bus.emit.call_args_list
+                if c.args[0] == "spec.approved"][-1]
+    assert payload2["seq"] != payload["seq"]
+    second = await engine.dispatch_event({"event_type": "spec.approved",
+                                          "event_id": str(payload2["seq"]), **payload2}, principal)
+    assert _lifecycles(runs, second) == [RunLifecycle.COMPLETED]
+    args = {key: payload[key] for key in ("project_id", "decision_id", "packet_sha256")}
+    results = await asyncio.gather(*(handler.execute("ensure_spec_ingest", args) for _ in range(2)))
+    assert all(r["success"] and not r["created"] for r in results), results
+    assert len({r["task_id"] for r in results}) == 1
+    assert len(await handler.db.list_tasks(project_id=PROJECT)) == 1
+    async with handler.db._engine.connect() as conn:
+        receipt = await get_operation(conn, approved["decision_id"], "ingestion")
+        assert receipt["status"] == "succeeded" and receipt["receipt"]["task_id"] == results[0]["task_id"]

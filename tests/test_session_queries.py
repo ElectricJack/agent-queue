@@ -11,20 +11,16 @@ import time
 import pytest
 from sqlalchemy import insert, update
 
-from src.database import Database
 from src.database.queries.session_queries import InvalidSessionTransition
 from src.database.tables import integration_batches, playbook_artifacts, playbook_v2_runs
 from src.models import Project, ProjectStatus, SessionRecord, Task, TaskStatus
-from tests.db_fixtures import lease_dsn
 
 
 @pytest.fixture
-async def db(tmp_path):
-    database = Database(lease_dsn("test.db"))
-    await database.initialize()
+async def db(tmp_path, reuse_database):
+    database = await reuse_database("test.db")
     await database.create_project(Project(id="p1", name="P1"))
     yield database
-    await database.close()
 
 
 def _session(**overrides) -> SessionRecord:
@@ -172,7 +168,7 @@ class TestClaimRefusal:
             "sess1", result="prepare_failed", reason="checkout", now=100,
         )
         async with db.immediate() as conn:
-            kind, row = await db.take_claim_slot(conn, "sess1", now=101, cap=None)
+            kind, row, _binding = await db.take_claim_slot(conn, "sess1", now=101, cap=None)
         assert kind == "claim_refusal"
         assert row.claim_phase == phase
         assert row.claim_refusal == saved.claim_refusal

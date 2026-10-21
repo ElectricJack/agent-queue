@@ -45,6 +45,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 DEFAULT_EXCLUDED_COMMANDS = {
+    "ask_intake", "ask_button",
     "reconcile_agent_cron",
     "cron_delivery_begin",
     "cron_delivery_finish",

@@ -342,3 +342,42 @@ class TestSettlementFanOutIsolation:
         # p2's task.completed still went out after p1 blew up.
         assert any("p1" in t for t in calls) and any("p2" in t for t in calls)
         assert len(orch.bus.emit.await_args_list) == 2, emitted
+
+
+async def test_held_container_never_settles(db):
+    """Design §4: an ingestion-held container stays open after its children finish.
+
+    Neither the event path (child completion) nor the backstop sweep nor the
+    stale-status leg settles it, and settling never clears the hold.
+    """
+    kids = await family(db, n=1)
+    await mktask(db, "stale", status=TaskStatus.IN_PROGRESS)
+    await mktask(db, "stale-kid", status=TaskStatus.READY)
+    await db.add_dependency("stale-kid", "stale", "parent-child")
+    async with db.immediate() as conn:
+        # A stranded BLOCKED container whose only child already finished.
+        await conn.execute(update(tasks).where(tasks.c.id == "stale")
+                           .values(status=TaskStatus.BLOCKED.value))
+        await conn.execute(update(tasks).where(tasks.c.id == "stale-kid")
+                           .values(status=TaskStatus.COMPLETED.value))
+        await conn.execute(update(tasks).where(tasks.c.id.in_(["p", "stale"]))
+                           .values(held_batch_id="batch-held"))
+    await db.transition_task(kids[0], TaskStatus.COMPLETED)
+    assert (await db.get_task("p")).status == TaskStatus.IN_PROGRESS
+    assert "p" not in await db.settle_candidates()
+    assert "stale" not in await db.stale_container_candidates()
+    async with db.immediate() as conn:
+        await db.settle_containers({"p", "stale"}, conn=conn)
+    assert (await db.get_task("p")).status == TaskStatus.IN_PROGRESS
+    assert (await db.get_task("stale")).status == TaskStatus.BLOCKED
+    async with db._engine.connect() as conn:
+        held = await conn.execute(select(tasks.c.id, tasks.c.held_batch_id)
+                                  .where(tasks.c.id.in_(["p", "stale"])))
+        assert dict(held.all()) == {"p": "batch-held", "stale": "batch-held"}
+    # Released, the same container settles on the next sweep.
+    async with db.immediate() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == "p").values(held_batch_id=None))
+    assert "p" in await db.settle_candidates()
+    async with db.immediate() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == "stale").values(held_batch_id=None))
+    assert "stale" in await db.stale_container_candidates()

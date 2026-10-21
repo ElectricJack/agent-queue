@@ -39,6 +39,7 @@ from src.integration.train import (
 )
 from tests import test_integration_gitops
 from tests.test_integration_gitops import commit, git
+from tests.test_integration_gitops import git_history_template as git_history_template
 
 #: The real Git/PostgreSQL repository substrate, re-exported for the fixture below.
 setup = test_integration_gitops.setup
@@ -223,6 +224,56 @@ async def test_no_open_batch_is_idle_and_reports_the_fetched_target():
     t = train(Targets(ROOT), Batches(), {ROOT.key: lane(Service())})
     visit = await t.visit(ROOT)
     assert (visit.state, visit.batch_id, visit.target_sha) == ("idle", None, TARGET_SHA)
+
+
+async def test_explicitly_retired_target_drops_finished_status_after_running_visit_settles():
+    epic = TrainTarget("p", "r", "refs/heads/epic", "epic")
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def blocked_snapshot():
+        entered.set()
+        await release.wait()
+        return await lane(Service()).snapshot()
+
+    targets = Targets(ROOT, epic)
+    targets.retired_targets = set()
+    t = train(targets, Batches(), {
+        ROOT.key: lane(Service()), epic.key: lane(Service(), fetch=blocked_snapshot),
+    })
+    await t.tick()
+    await entered.wait()
+    targets.items = [ROOT]
+    targets.retired_targets = {epic.key}
+    await t.tick()
+    assert any(row["target_ref"] == epic.target_ref and row["running"] for row in t.status())
+    release.set()
+    await t.drain()
+    await t.tick()
+    await t.drain()
+    assert [row["target_ref"] for row in t.status()] == [ROOT.target_ref]
+
+
+@pytest.mark.parametrize("blockers,observes", [
+    (("selection_deferred",), True),
+    (("repository_recovery",), False),
+    (("selection_deferred", "repository_recovery"), False),
+])
+async def test_epic_selection_deferral_observes_aggregate_without_bypassing_refusals(
+    blockers, observes,
+):
+    epic = TrainTarget("p", "r", "refs/heads/epic", kind="epic")
+    selected = BatchSelection(blockers=tuple({"code": code} for code in blockers))
+    batches = Batches()
+    batches.open_batch = AsyncMock(return_value=selected)
+    complete = AsyncMock(return_value=())
+    service = Service()
+    epic_lane = replace(lane(service), complete_epic=complete)
+    t = train(Targets(epic), batches, {epic.key: epic_lane})
+    visit = await t.visit(epic)
+    assert visit.state == "blocked"
+    assert visit.detail["blockers"] == list(selected.blockers)
+    assert complete.await_count == int(observes)
+    assert service.calls == 0
 
 
 async def test_contained_candidate_settles_without_checks_or_repair():
@@ -610,9 +661,10 @@ def test_default_branch_sync_conflict_brief_honors_policy_scope(scope):
     assert "src/example.py" in brief
     assert "t-1" in brief and "t-2" in brief and "t-3" in brief
 
+@pytest.mark.parametrize("sync", [False, True])
 @pytest.mark.parametrize("state", ["testing", "unknown"])
 @pytest.mark.parametrize("lost", ["released", "expired"])
-async def test_train_restores_ready_repair_without_waiting_for_red_checks(db, state, lost):
+async def test_train_restores_ready_repair_without_waiting_for_red_checks(db, state, lost, sync):
     from src.database.queries.claim_queries import _frontier_where
     from src.database.queries.hierarchy_queries import ProjectIntegrationMode
     from src.database.tables import tasks
@@ -628,8 +680,11 @@ async def test_train_restores_ready_repair_without_waiting_for_red_checks(db, st
     repair = OrdinaryRepairService(db, locks=locks, clock=lambda: now[0])
     ref = candidate_ref("batch-retry")
     target = BranchKey(repository_id="r", branch=ref)
-    filed = await repair.allocate("batch-retry", target_ref=ref, head_sha=CANDIDATE,
-                                  authorize=AsyncMock(return_value=True), ttl_seconds=10)
+    filed = await repair.allocate(
+        "batch-retry", target_ref=ref, head_sha=CANDIDATE,
+        authorize=AsyncMock(return_value=True), ttl_seconds=10,
+        sync_default_branch={"ref": "refs/heads/main", "sha": "e" * 40} if sync else None,
+    )
     task_id = filed["task_id"]
     original = await repair.input(task_id)
     await db.update_task(task_id, status=TaskStatus.READY)
@@ -700,6 +755,9 @@ async def conflicting_batch_env(setup):
     db, ops, _subject, _fence, repo, base, _head, _green = setup
     await db.create_project(Project(id="p", name="Project"))
     await db.create_repo(RepoConfig(id="r", project_id="p", source_type=RepoSourceType.LINK))
+    await db.update_project(
+        "p", integration_repository_id="r", hierarchical_integration_mode="train",
+    )
     left = commit(repo.store, {"new.txt": "left\n"}, base=base)
     right = commit(repo.store, {"new.txt": "right\n"}, base=base)
     store = BatchStore(db)
@@ -831,7 +889,7 @@ async def test_conflict_after_target_move_publishes_and_briefs_the_real_partial_
     }, repairs)
     visit = await t.visit(ROOT)
     partial = visit.detail["head"]
-    assert visit.state == "repair" and visit.repair["outcome"] == "filed"
+    assert visit.state == "repair" and visit.repair["outcome"] == "filed", visit
     assert visit.repair["attempt_count"] == 2 and visit.repair["task_id"] != previous_task
     assert visit.candidate_sha == partial != repaired
     assert visit.detail["replaced_candidate_sha"] == repaired
@@ -1034,6 +1092,20 @@ async def test_one_target_failure_is_recorded_and_others_continue():
     assert status["p"]["state"] == "unknown" and status["p"]["errors"] == 1
     assert status["p"]["detail"]["reason"] == "RuntimeError"
     assert status["q"]["state"] == "delivered"
+
+
+async def test_train_progress_deadline_changes_only_when_observed_work_changes():
+    service = Service("held", "held", "held", "delivered")
+    t = train(Targets(ROOT), Batches({ROOT.key: (batch(), MEMBERS)}),
+              {ROOT.key: lane(service)})
+    now = [100.0]
+    t.clock = lambda: now[0]
+    # A restart's first observation cannot erase an old durable batch deadline.
+    for timestamp, expected in ((100, 0), (200, 0), (300, 0), (400, 400)):
+        now[0] = timestamp
+        await t.tick()
+        await t.drain()
+        assert t.status()[0].get("progress_at", 0) == expected
 
 
 def _rate_limited(retry_at=None):

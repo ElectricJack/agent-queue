@@ -69,6 +69,11 @@ class SurfaceCommandsMixin:
         if "error" in info:
             return info
 
+        # The reviewer projection is complete: expanding ordinary detail here
+        # would disclose unrelated parents, children and provenance.
+        if "batch_member" in info:
+            return info
+
         from src.operator_decisions import OperatorDecisions
 
         info["success"] = True
@@ -222,12 +227,22 @@ class SurfaceCommandsMixin:
         ``tasks.assigned_agent_id``, and the fence in ``tasks.claim_epoch``.
         A task counts as claimed when at least one of the session or agent is
         set — a released claim clears both, and ``claim_epoch`` alone is just
-        the historical high-water mark.
+        the historical high-water mark.  A session record whose holder is
+        durably stopped is provenance, not a claim (``unresolved_claim_clause``).
         """
         task = await self.db.get_task(task_id)
         if task is None:
             return None
         session_id = await self.db.get_task_meta(task_id, "claimed_by_session")
+        if session_id:
+            holder = await self.db.get_session(session_id)
+            if (
+                holder is not None
+                and holder.state == "stopped"
+                and holder.desired_state == "stopped"
+                and holder.instance_token
+            ):
+                session_id = None
         agent_id = task.assigned_agent_id
         if not session_id and not agent_id:
             return None
@@ -246,7 +261,7 @@ class SurfaceCommandsMixin:
 
         Supported fields: ``description`` (optional ``expected_description`` CAS),
         ``branch``, ``pr_url``, ``work_dir``, ``note``,
-        ``labels_add``, ``labels_remove``, ``meta``.
+        ``labels_add``, ``labels_remove``, ``meta``, ``repair_batch`` (operator assignment).
 
         ``work_dir`` is recorded as task metadata (``task_metadata`` key
         ``"work_dir"``) rather than a proper workspace binding — the
@@ -260,6 +275,10 @@ class SurfaceCommandsMixin:
 
         if any(str(key).startswith("manual_pause") for key in (args.get("meta") or {})):
             return {"success": False, "error": "manual_pause is reserved; use pause_task/resume_task."}
+        if "retained_workspace_stop" in (args.get("meta") or {}):
+            return {"success": False, "error": "retained_workspace_stop is reserved; use stop_task."}
+        if "integration_batch_repair" in (args.get("meta") or {}):
+            return {"success": False, "error": "integration_batch_repair is reserved; use --repair-batch."}
 
         if {"notes_input", "promotion_prepare", "promotion_hotfix", "backmerge",
             "backmerge_result", "promotion_intent", "promotion_result",
@@ -306,6 +325,17 @@ class SurfaceCommandsMixin:
                     )
                 }
         fields_changed: list[str] = []
+        if "repair_batch" in args:
+            from src.git.manager import GitError
+            from src.integration.batch_repair_publication import BatchRepairAssignments
+
+            if self.config.integration.git_first != "active":
+                return {"success": False, "error": "batch repair assignment requires Git-first active mode"}
+            try:
+                await BatchRepairAssignments(self.db).assign(task, args["repair_batch"])
+            except GitError as exc:
+                return {"success": False, "error": str(exc)}
+            fields_changed.append("repair_batch")
         if "description" in args:
             from src.database.queries.task_comment_queries import TaskFindingsConflict
 
@@ -462,7 +492,39 @@ class SurfaceCommandsMixin:
                 doc = renderer.with_context(doc, bundle)
             except RecordError as exc:
                 if exc.code not in ACCESS_REFUSAL_CODES:
-                    return exc.result()
+                    result = exc.result()
+                    if exc.code == "context.required_over_budget":
+                        from src.knowledge.budget import ContextBudget
+
+                        # Counts and configured limits only; do not expose the
+                        # undelivered instruction bodies through diagnostics.
+                        accounting = (
+                            bundle.budget if bundle is not None
+                            else ContextBudget.from_config(self.config).account(doc.to_markdown())
+                        )
+                        section_bytes = {
+                            s.key: len(s.body.encode("utf-8")) for s in doc.sections
+                        }
+                        largest = sorted(section_bytes.items(), key=lambda item: -item[1])[:3]
+                        requested = accounting["requested"]
+                        available = max(0, requested["input_tokens"]
+                                        - requested["output_tokens"] - requested["wrapper_tokens"])
+                        result["error"] = (
+                            f"{exc.code}: required body {len(doc.to_markdown().encode('utf-8'))} "
+                            f"bytes exceeds {available} available "
+                            f"(input ceiling {requested['input_tokens']}, "
+                            f"output/wrapper reserve "
+                            f"{requested['output_tokens'] + requested['wrapper_tokens']}); "
+                            "largest required sections (UTF-8 bytes, excluding headings): "
+                            + ", ".join(f"{key}={size}" for key, size in largest)
+                        )
+                        result.update(
+                            context_budget=accounting,
+                            required_body_bytes=len(doc.to_markdown().encode("utf-8")),
+                            required_section_bytes=section_bytes,
+                            source=doc.source,
+                        )
+                    return result
                 # Context is an enrichment, so a refused or unavailable scope
                 # degrades: prime still delivers its full ordinary body, with a
                 # code-only note in place of the context section. The grant

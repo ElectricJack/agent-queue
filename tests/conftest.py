@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from hypothesis import settings
 
 from src.models import TaskContext  # noqa: F401  (re-exported for test modules)
 from src.config import DatabaseConfig
@@ -17,6 +18,13 @@ from tests.db_fixtures import lease_dsn
 # Fresh per-test SQLite databases use the migration template cache. Individual
 # migration tests can request ``disable_schema_cache`` to exercise Alembic.
 os.environ.setdefault("AQ_SCHEMA_CACHE", "1")
+
+# CI explores the same examples on every run. Opt into a longer, randomized
+# local search with HYPOTHESIS_PROFILE=deep; deadlines are deliberately disabled
+# because a shared test box's latency is not a correctness invariant.
+settings.register_profile("ci", max_examples=40, derandomize=True, database=None, deadline=None)
+settings.register_profile("deep", max_examples=500, deadline=None)
+settings.load_profile(os.environ.get("HYPOTHESIS_PROFILE", "ci"))
 
 
 def _resolve_base_dsn() -> str | None:

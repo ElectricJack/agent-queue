@@ -14,7 +14,7 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/generated.py`](../../../src/commands/contracts/generated.py) |
-| Contract fingerprint | `sha256:d41ac499f53c01c5f6e73dcad9ed7b687bc33de6fa323f098f8c1a6f65dd4217` |
+| Contract fingerprint | `sha256:9110b58b86df804b593bd73d1a9a1b32d6e5e0853cc4b00cabcb72d9742ae5bb` |
 
 ## Parameters
 
@@ -38,7 +38,9 @@
 | `claim_next` | `boolean` | no | — | After closing, immediately claim the next ready task matching this session's profile (pool worker loop, swarm-work-model §10). |
 | `wait` | `integer` | no | — | Seconds to long-poll for the next claim when claim_next is set (optional, clamped to swarm.claim_wait_max). |
 | `obsolete` | `boolean` | no | `false` | Close the task as obsolete/superseded instead of with an outcome (operator or supervisor only; needs task_id and reason, not outcome). |
-| `reason` | `string` | no | — | Why the task is obsolete (required with obsolete). |
+| `no_change` | `boolean` | no | `false` | One-shot operator close: nothing needed doing (work_outcome no-op). Works from any state; operator or supervisor only; needs task_id and reason, not outcome. |
+| `done` | `boolean` | no | `false` | One-shot operator close: the work already landed (work_outcome shipped). Works from any state; operator or supervisor only; needs task_id and reason, not outcome. |
+| `reason` | `string` | no | — | Why the task is closed (required with obsolete, no_change or done). |
 
 This generated contract exposes the **playbook** input-schema view. MCP/CLI/API retain their legacy **transport** view.
 Schema source: `explicit_tool`; quality: `declared`; coarse effect: `destructive`.
@@ -63,7 +65,7 @@ This command declares no effect clause, so the playbook graph falls back to its 
 
 | Effect | Subject | Condition |
 |---|---|---|
-| Composite using task_id, outcome, failure_class, work_outcome, commit, notes, changes, verification, tests, commands, deliverable_unmet, summary, abandon_children, skip_open_subtasks, claim_epoch, claim_next, wait, obsolete, reason | — | always |
+| Composite using task_id, outcome, failure_class, work_outcome, commit, notes, changes, verification, tests, commands, deliverable_unmet, summary, abandon_children, skip_open_subtasks, claim_epoch, claim_next, wait, obsolete, no_change, done, reason | — | always |
 
 <!-- aq:generated:end -->
 

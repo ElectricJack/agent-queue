@@ -12,16 +12,13 @@ from src.database import Database
 from src.database.queries.escalation_queries import EscalationConflict, EscalationStateError
 from src.database.tables import escalation_deliveries, escalation_messages, messages
 from src.models import Project, Task, TaskStatus
-from tests.db_fixtures import lease_dsn
 
 
 @pytest.fixture
-async def db():
-    database = Database(lease_dsn("escalations"))
-    await database.initialize()
+async def db(reuse_database):
+    database = await reuse_database("escalations")
     await database.create_project(Project(id="p", name="Project"))
     yield database
-    await database.close()
 
 
 def incident(*, ident: str = "attempt-1", escalation_id: str = "esc-1") -> dict:

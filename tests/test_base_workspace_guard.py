@@ -17,7 +17,6 @@ import time
 
 import pytest
 
-from src.database import Database
 from src.doctor.models import Severity
 from src.doctor.workspace_checks import run_check
 from src.models import (
@@ -41,12 +40,10 @@ def _now() -> float:
 
 
 @pytest.fixture
-async def db(tmp_path):
-    database = Database(lease_dsn("base.db"))
-    await database.initialize()
+async def db(reuse_database):
+    database = await reuse_database("base.db")
     await database.create_project(Project(id="p1", name="p1"))
     yield database
-    await database.close()
 
 
 async def _base(db, path: str, ws_id: str = "ws-base") -> Workspace:

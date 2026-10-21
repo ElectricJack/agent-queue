@@ -163,12 +163,15 @@ class ReviewCommandsMixin:
             self.db,
             self.config.vault_root,
             ReviewHooks(
-                emit=self._emit_review_event,
+                emit=self._emit_review_application_event,
                 resolve_gate=lambda gate_id, by, resolution: self.orchestrator._resolve_gate_and_emit(
                     gate_id, resolved_by=by, resolution=resolution
                 ),
                 changes_requested=self._on_review_changes_requested,
+                file_feedback=self._file_review_feedback,
+                record_playbook=self._record_review_decision_playbook,
             ),
+            input_config=self.config,
         )
 
     async def _review_attachment_access(
@@ -245,8 +248,9 @@ class ReviewCommandsMixin:
             except HTTPException as exc:
                 return _error("bad_image", str(exc.detail))
             async with self.db.immediate() as conn:
-                locked = await self.db.lock_review_for_dispatch(review["id"], conn=conn)
-                if locked is None or locked["state"] != "in_review" or locked["current_revision"] != revision:
+                locked = await self.db.lock_review_for_mutation(review["id"], conn)
+                if (locked is None or locked["state"] != "in_review"
+                        or locked["current_revision"] != revision or locked["pending_decision_id"]):
                     return _error("stale_revision", "only the current open review revision accepts images")
                 if error := await self._review_attachment_access(review, revision, write=True):
                     return error
@@ -415,6 +419,25 @@ class ReviewCommandsMixin:
         if not isinstance(content, str):
             return _error("not_utf8", "content must be UTF-8 text")
         review_id = args.get("review_id")
+        held = None
+        response = None
+        if self._is_worker():
+            held, error = await self._worker_held_task()
+            if error:
+                return error
+            if args.get("task_id") not in (None, held.id):
+                return _error("not_your_task", "task_id must be the task this worker holds")
+            response = await self.db.get_task_meta(held.id, "review_response")
+            if isinstance(response, dict):
+                assigned_id = response["review_id"]
+                if review_id and review_id != assigned_id:
+                    return _error(
+                        "not_your_task",
+                        f"this revision task must update review {assigned_id}; use "
+                        f"aq review submit --review-id {assigned_id} --file <draft.md> "
+                        '--changes "<comment dispositions and evidence>"',
+                    )
+                review_id = assigned_id
         try:
             if review_id:
                 review, error = await self._review_for_caller(review_id)
@@ -430,10 +453,6 @@ class ReviewCommandsMixin:
                         return _error("object_result_language", error)
                 submitted_task_id: str | None = None
                 if self._is_worker():
-                    held, error = await self._worker_held_task()
-                    if error:
-                        return error
-                    response = await self.db.get_task_meta(held.id, "review_response")
                     is_response_task = (
                         isinstance(response, dict)
                         and response.get("review_id") == review["id"]
@@ -657,10 +676,9 @@ class ReviewCommandsMixin:
     ) -> dict | None:
         """Store an approved revision's pinned artifact; activate it if asked.
 
-        Runs after the approval committed, as the decider, so activation is
-        subject to exactly the checks ``playbook_activate`` applies to them.
-        Nothing here can undo the approval: a failure is reported in the
-        outcome (and by ``aq doctor --check reviews.playbook_artifacts``).
+        Runs as a recoverable child of the accepted decision before gate release.
+        A failed store or activation retains the pending review; reconciliation
+        resumes from the pinned artifact and activation receipts.
         """
         row = await self.db.get_review_revision(review["id"], revision)
         pin = PlaybookPin.from_revision(row) if row else None
@@ -794,6 +812,17 @@ class ReviewCommandsMixin:
                 attachments = (await self._cmd_review_attachment_list({
                     "review_id": review["id"], "revision": viewed_revision,
                 }))["attachments"]
+            if not self._is_worker():
+                from dataclasses import asdict
+                from src.asks.models import SourceIdentity
+                from src.asks.service import version_of
+                async with self.db.immediate() as conn:
+                    publication = await self._ask_service().publish(
+                        SourceIdentity(review["project_id"], "review", review["id"], {"id": review["id"]}),
+                        conn=conn,
+                    )
+                    shown["ask"] = {"id": publication.ask["id"],
+                                    "expected": asdict(version_of(publication.ask))}
             return {
                 "success": True,
                 **shown,
@@ -890,7 +919,7 @@ class ReviewCommandsMixin:
         # Authors can already be archived, and a task comment alone never
         # reaches the project supervisor. Queue a durable recovery notice.
         try:
-            notice = await self._cmd_message_send({
+            notice = await self._queue_message_notification({
                 "project_id": review["project_id"], "to_kind": "session",
                 "to_id": f"supervisor-{review['project_id']}", "from_kind": "system",
                 "from_id": f"review:{review['id']}",
@@ -972,6 +1001,14 @@ class ReviewCommandsMixin:
             )
 
     async def _cmd_review_decide(self, args: dict) -> dict:
+        from src.asks.models import AskError
+        try:
+            args = self._ask_decision_args(args)
+        except AskError as exc:
+            return _error(exc.code, str(exc))
+        if set(args) - {"review_id", "revision", "decision", "note", "responder_class",
+                        "responder_profile", "preview_id", "expected", "idempotency_key", "dispositions"}:
+            return _error("ask.not_decider", "Unexpected decision fields; authority is server-owned")
         review, error = await self._review_for_caller(args.get("review_id"))
         if error:
             return error
@@ -979,7 +1016,7 @@ class ReviewCommandsMixin:
         if error:
             return error
         decision = args.get("decision")
-        if decision not in {"approve", "request_changes", "reject"}:
+        if decision not in {"approve", "request_changes", "reject", "fold_in", "decline"}:
             return _error("not_in_review", "decision must be approve, request_changes or reject")
         responder_class = args.get("responder_class")
         if args.get("responder_profile") is not None:
@@ -1023,34 +1060,19 @@ class ReviewCommandsMixin:
                     responder_class=responder_class,
                     responder_profile=None,
                     responder_profile_source="router",
+                    preview_id=args.get("preview_id"), expected=args.get("expected"),
+                    idempotency_key=args.get("idempotency_key"), dispositions=args.get("dispositions"),
                 )
-            playbook = None
-            if decision == "approve":
-                playbook = await self._review_record_playbook(
-                    review, args.get("revision"), label
-                )
-                body = (
-                    f"Review {review['id']} approved: {review['kind']} document "
-                    f"{review['vault_path']}."
-                )
-                if playbook is not None:
-                    body = f"{body}\n\n{playbook_outcome_text(playbook)}"
-                notice = await self._cmd_message_send({
-                    "project_id": review["project_id"],
-                    "to_kind": "session",
-                    "to_id": f"supervisor-{review['project_id']}",
-                    "from_kind": "system",
-                    "from_id": f"review:{review['id']}",
-                    "subject": f"Review {review['id']} approved",
-                    "body": body,
-                })
-                if not notice.get("success"):
-                    logger.error("review %s: supervisor approval notice failed: %s", review["id"], notice)
-            return {"success": True, **result, **({"playbook": playbook} if playbook else {})}
+            return {"success": result["application_state"] == "applied", **result}
         except ReviewError as error:
             return _error(error.code, error.message)
 
     async def _cmd_review_comment(self, args: dict) -> dict:
+        if (
+            args.get("source_discussion_id")
+            and (current_principal() or TRUSTED_LOCAL).kind is not PrincipalKind.LOCAL
+        ):
+            return _error("human_only", "Only a human can promote discussion into formal feedback")
         review, error = await self._review_for_caller(args.get("review_id"))
         if error:
             return error
@@ -1077,6 +1099,7 @@ class ReviewCommandsMixin:
                     heading_path=list(args.get("heading_path") or []),
                     body=str(args.get("body") or ""),
                     author=label,
+                    source_discussion_id=args.get("source_discussion_id"),
                 ),
             }
         except ReviewError as error:
@@ -1350,72 +1373,93 @@ class ReviewCommandsMixin:
         except ReviewError as error:
             return _error(error.code, error.message)
 
-    async def _on_review_changes_requested(
-        self, review: dict, revision: dict, feedback: str
-    ) -> None:
-        """Create one task to answer the feedback on this review revision."""
-        key = f"review-revision:{review['id']}:{revision['revision']}"
-        if await self.db.find_task_by_dedup_key(review["project_id"], key) is not None:
-            return
+    async def _emit_review_application_event(self, event_type, payload):
+        if "seq" not in payload:
+            return await self._emit_review_event(event_type, payload)
+        # Durable decision operations already persisted their event; propagate failures.
+        await self.orchestrator.bus.emit(event_type, payload)
+
+    async def _record_review_decision_playbook(self, decision):
+        domain = decision["packet"]["domain"]
+        pin = domain["playbook"]
+        # Storage and activation have their own exact artifact source receipts.
+        stored = await self.db.get_playbook_artifact_row(pin["artifact_sha256"])
+        activations = await self.db.list_playbook_activations()
+        activated = any(a["playbook_id"] == pin["playbook_id"]
+                        and a["enabled"] and a["scope"] == pin["scope"]
+                        and (a.get("scope_identifier") or "") == (pin.get("scope_identifier") or "")
+                        and a.get("active_artifact_sha256") == pin["artifact_sha256"] for a in activations)
+        if stored and (activated or not pin.get("activate_on_approval")):
+            return {"stored": True, "activated": activated, "playbook_id": pin["playbook_id"],
+                    "scope": pin["scope"], "scope_identifier": pin.get("scope_identifier"),
+                    "next_step": _activate_command(pin),
+                    "activate_on_approval": bool(pin.get("activate_on_approval")),
+                    "artifact_sha256": pin["artifact_sha256"]}
+        return await self._review_record_playbook(
+            domain["review"], decision["review_revision"], decision["actor_id"],
+        )
+
+    async def _file_review_feedback(self, decision, before_create, after_create):
+        from src.asks.models import AskError
+        from src.asks.operations import task_key
+
+        domain = decision["packet"]["domain"]
+        review = domain["review"]
         author_id = review.get("author_task_id")
         author = await self.db.get_task(author_id) if author_id else None
         archived = await self.db.get_archived_task(author_id) if author_id and author is None else None
-        parent_id = (author.parent_task_id if author else archived.get("parent_task_id") if archived else None)
-        if parent_id is not None and await self.db.get_task(parent_id) is None:
+        parent_id = author.parent_task_id if author else archived.get("parent_task_id") if archived else None
+        parent = await self.db.get_task(parent_id) if parent_id else None
+        if parent is None or parent.status in {TaskStatus.COMPLETED, TaskStatus.FAILED}:
             parent_id = None
-        # The revision task carries the decision's class as a hint and is
-        # routed by the project's router (mandatory-routing spec §5.3).  A
-        # profile a decision recorded before that is not a route any more.
-        class_id = revision.get("responder_class") or None
-        comments = [
-            c for c in await self.db.list_review_comments(review["id"])
-            if c["resolved_in_revision"] is None
-        ]
+        revision = domain["task_kind"] == "revision"
         lines = [
-            feedback,
-            "",
-            "Revision route: chosen by the project's router"
-            + (f" (class hint {class_id})." if class_id else "."),
-            "",
-            "Unresolved inline comments:",
+            f"Frozen review decision {decision['id']} for {review['id']} revision {decision['review_revision']}.",
+            f"Packet SHA-256: {decision['packet_sha256']}",
+            f"Original author task: {author_id or '(none)'}. Parent fallback: {parent_id or 'project root'}.",
+            f"Route: chosen by the project's router (class hint {domain['responder_class']}).",
+            "", "Overall note (verbatim):",
+            decision["overall_note"], "", "Feedback acceptance items:",
         ]
-        if comments:
-            for comment in comments:
-                anchor = " > ".join(comment["heading_path"] or []) or "document"
-                if comment["quote"]:
-                    anchor += f" — quote: {comment['quote']}"
-                lines.extend([f"- {comment['id']} [{anchor}]", f"  {comment['body']}"])
-        else:
-            lines.append("(none)")
+        for item in domain["feedback"]:
+            anchor = " / ".join(item["original_anchor"].get("heading_path") or [])
+            if item["original_anchor"].get("quote"):
+                anchor += f" — quote: {item['original_anchor']['quote']}"
+            lines.extend([f"{item['feedback_key']} ({item['disposition']})",
+                          f"Original author: {item['original_author']}; revision {item['original_revision']}",
+                          f"Anchor: {anchor}", item["original_text"], ""])
         lines.extend([
-            "", render_task_template("review-revision", review_id=review["id"]),
+            "Return a new revision for final approval; do not autoapprove it." if revision else
+                "Complete the accepted follow-ups; approved document bytes remain immutable.",
+            f"Use aq review submit --review-id {review['id']} --file <draft.md> --changes <summary>"
+                if revision else "Use a new amendment review for changes to approved requirements.",
+            "Author --resolves is a proposed response, not decider acceptance.",
+            "At passing close, each feedback acceptance row needs its own completion evidence.",
         ])
-        if review["state"] == "rejected":
+        if revision:
+            lines.append(render_task_template("review-revision", review_id=review["id"]))
+        # Keep the historical reject-and-revise issue behavior explicit.
+        if domain["effective_option"] == "reject":
             from src.commands.github_issue_commands import INVESTIGATION_KEY
 
             author_key = author.dedup_key if author else archived.get("dedup_key") if archived else ""
             if (author_key or "").startswith(INVESTIGATION_KEY):
                 lines.append(render_task_template("review-rejected-issue", review_id=review["id"]))
-
-        async def record(conn, task_id, _parent_id):
-            await self.db._upsert_meta(task_id, "review_response", {
-                "review_id": review["id"], "revision": revision["revision"],
-                "profile_source": "router",
-            }, conn=conn)
-
-        created = await self._cmd_create_task(
-            {
-                "project_id": review["project_id"],
-                "title": f"Revise {review['title']} (review {review['id']})",
-                "description": "\n".join(lines),
-                **({"intelligence_class": class_id} if class_id else {}),
-                "parent_id": parent_id,
-                "root": parent_id is None,
-                "dedup_key": key,
-                "_after_create_on": record,
-            }
-        )
+            else:
+                lines.append(f"Close an associated issue only on an explicit human instruction; "
+                             f"use aq github-issue close-rejected --review-id {review['id']}.")
+        created = await self._cmd_create_task({
+            "project_id": review["project_id"],
+            "title": f"{'Revise' if revision else 'Follow up on'} {review['title']} (review {review['id']})",
+            "description": "\n".join(lines), "parent_id": parent_id, "root": parent_id is None,
+            "dedup_key": task_key(decision), "_created_by_kind": "review_response",
+            "_created_by_id": decision["id"],
+            **({"intelligence_class": domain["responder_class"]} if domain["responder_class"] else {}),
+            "_before_create_on": before_create, "_after_create_on": after_create,
+        })
         if not created.get("success"):
-            raise RuntimeError(
-                f"review {review['id']} response task creation failed: {created.get('error')}"
-            )
+            raise AskError("ask.application_unknown", f"Feedback task filing failed: {created}")
+        return created
+
+    async def _on_review_changes_requested(self, review, revision, feedback):
+        raise ReviewError("ask.stale_source", "Feedback work requires a frozen decision operation")

@@ -16,6 +16,7 @@ from urllib.parse import quote
 from pydantic import BaseModel, ConfigDict, ValidationError
 from sqlalchemy import insert, select, update
 
+from src.integration.row_query import select_row
 from src.integration.engine import root_engine_guard
 
 from src.database.tables import (
@@ -544,24 +545,20 @@ class IntegrationAttestationService:
 
     @staticmethod
     async def _subject_still_current_on(conn: Any, failure: dict[str, Any]) -> bool:
-        operation = (
-            await conn.execute(
-                select(integration_repair_operations).where(
-                    integration_repair_operations.c.id == failure["operation_id"]
-                )
-            )
-        ).mappings().one_or_none()
+        operation = await select_row(
+            conn,
+            integration_repair_operations,
+            integration_repair_operations.c.id == failure["operation_id"],
+        )
         if operation is None or operation["state"] not in ACTIVE_OPERATION_STATES:
             return False
         subject = failure["subject"]
         if failure["target_kind"] == "parent":
-            checkpoint = (
-                await conn.execute(
-                    select(task_integration_checkpoints).where(
-                        task_integration_checkpoints.c.task_id == subject["parent_task_id"]
-                    )
-                )
-            ).mappings().one_or_none()
+            checkpoint = await select_row(
+                conn,
+                task_integration_checkpoints,
+                task_integration_checkpoints.c.task_id == subject["parent_task_id"],
+            )
             return bool(
                 checkpoint is not None
                 and operation["parent_task_id"] == subject["parent_task_id"]
@@ -863,13 +860,12 @@ class IntegrationAttestationService:
             await self.db.lock_hierarchy_project(conn, state["project_id"])
             if not await self._publication_subject_current_on(conn, state):
                 return "stale", {}
-            row = (
-                await conn.execute(
-                    select(integration_attestation_publications)
-                    .where(integration_attestation_publications.c.id == identity["id"])
-                    .with_for_update()
-                )
-            ).mappings().one_or_none()
+            row = await select_row(
+                conn,
+                integration_attestation_publications,
+                integration_attestation_publications.c.id == identity["id"],
+                lock=True,
+            )
             if row is None:
                 await conn.execute(
                     insert(integration_attestation_publications).values(
@@ -964,13 +960,12 @@ class IntegrationAttestationService:
             await self.db.lock_hierarchy_project(conn, state["project_id"])
             if not await self._publication_subject_current_on(conn, state):
                 return False
-            row = (
-                await conn.execute(
-                    select(integration_attestation_publications)
-                    .where(integration_attestation_publications.c.id == claim["id"])
-                    .with_for_update()
-                )
-            ).mappings().one_or_none()
+            row = await select_row(
+                conn,
+                integration_attestation_publications,
+                integration_attestation_publications.c.id == claim["id"],
+                lock=True,
+            )
             if row is None or any(row[key] != value for key, value in identity.items()):
                 return False
             if row["state"] == "published":
@@ -1006,16 +1001,13 @@ class IntegrationAttestationService:
             await self.db.lock_hierarchy_project(conn, state["project_id"])
             if not await self._publication_subject_current_on(conn, state):
                 return None
-            row = (
-                await conn.execute(
-                    select(integration_attestation_publications)
-                    .where(
-                        integration_attestation_publications.c.id == identity["id"],
-                        integration_attestation_publications.c.state == "published",
-                    )
-                    .with_for_update()
-                )
-            ).mappings().one_or_none()
+            row = await select_row(
+                conn,
+                integration_attestation_publications,
+                integration_attestation_publications.c.id == identity["id"],
+                integration_attestation_publications.c.state == "published",
+                lock=True,
+            )
             if row is None or any(row[key] != value for key, value in identity.items()):
                 return None
             return dict(row)
@@ -1023,42 +1015,31 @@ class IntegrationAttestationService:
     async def _publication_subject_current_on(
         self, conn: Any, state: dict[str, Any]
     ) -> bool:
-        batch = (
-            await conn.execute(
-                select(integration_batches)
-                .where(integration_batches.c.id == state["batch_id"])
-                .with_for_update()
-            )
-        ).mappings().one_or_none()
-        candidate = (
-            await conn.execute(
-                select(integration_candidate_revisions)
-                .where(
-                    integration_candidate_revisions.c.batch_id == state["batch_id"],
-                    integration_candidate_revisions.c.revision == state["revision"],
-                )
-                .with_for_update()
-            )
-        ).mappings().one_or_none()
-        operation = (
-            await conn.execute(
-                select(integration_repair_operations)
-                .where(integration_repair_operations.c.id == state["operation_id"])
-                .with_for_update()
-            )
-        ).mappings().one_or_none()
+        batch = await select_row(
+            conn, integration_batches, integration_batches.c.id == state["batch_id"], lock=True
+        )
+        candidate = await select_row(
+            conn,
+            integration_candidate_revisions,
+            integration_candidate_revisions.c.batch_id == state["batch_id"],
+            integration_candidate_revisions.c.revision == state["revision"],
+            lock=True,
+        )
+        operation = await select_row(
+            conn,
+            integration_repair_operations,
+            integration_repair_operations.c.id == state["operation_id"],
+            lock=True,
+        )
         stage = None
         if operation is not None:
-            stage = (
-                await conn.execute(
-                    select(integration_repair_stages)
-                    .where(
-                        integration_repair_stages.c.operation_id == operation["id"],
-                        integration_repair_stages.c.ordinal == operation["active_stage"],
-                    )
-                    .with_for_update()
-                )
-            ).mappings().one_or_none()
+            stage = await select_row(
+                conn,
+                integration_repair_stages,
+                integration_repair_stages.c.operation_id == operation["id"],
+                integration_repair_stages.c.ordinal == operation["active_stage"],
+                lock=True,
+            )
         return bool(
             batch is not None
             and candidate is not None

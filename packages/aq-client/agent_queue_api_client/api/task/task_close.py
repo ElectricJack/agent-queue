@@ -69,7 +69,10 @@ def sync_detailed(
     task close`. With `obsolete` (and `reason`, no `outcome`) an operator or supervisor instead retires
     superseded work: the task goes to COMPLETED as abandoned and is never published, its branch owners
     are released through the release-owner safety proof and it is dropped from parked development
-    batches, so it can then be deleted.
+    batches, so it can then be deleted. `no_change` and `done` are the same one-shot operator close for
+    work that needed nothing or already landed: from any non-terminal state, in one call, a live writer
+    is stopped (PAUSED, never READY), stale claims, workspace locks and the agent binding are cleared, a
+    no-op or shipped completion record is written and the task goes to COMPLETED.
 
      Close a task with an outcome. This is the ONLY way a session-run task reaches COMPLETED — process
     exit is a failure signal, never success. Records outcome metadata, runs the completion pipeline
@@ -77,7 +80,10 @@ def sync_detailed(
     task close`. With `obsolete` (and `reason`, no `outcome`) an operator or supervisor instead retires
     superseded work: the task goes to COMPLETED as abandoned and is never published, its branch owners
     are released through the release-owner safety proof and it is dropped from parked development
-    batches, so it can then be deleted.
+    batches, so it can then be deleted. `no_change` and `done` are the same one-shot operator close for
+    work that needed nothing or already landed: from any non-terminal state, in one call, a live writer
+    is stopped (PAUSED, never READY), stale claims, workspace locks and the agent binding are cleared, a
+    no-op or shipped completion record is written and the task goes to COMPLETED.
 
     Args:
         body (TaskCloseRequest):
@@ -112,7 +118,10 @@ def sync(
     task close`. With `obsolete` (and `reason`, no `outcome`) an operator or supervisor instead retires
     superseded work: the task goes to COMPLETED as abandoned and is never published, its branch owners
     are released through the release-owner safety proof and it is dropped from parked development
-    batches, so it can then be deleted.
+    batches, so it can then be deleted. `no_change` and `done` are the same one-shot operator close for
+    work that needed nothing or already landed: from any non-terminal state, in one call, a live writer
+    is stopped (PAUSED, never READY), stale claims, workspace locks and the agent binding are cleared, a
+    no-op or shipped completion record is written and the task goes to COMPLETED.
 
      Close a task with an outcome. This is the ONLY way a session-run task reaches COMPLETED — process
     exit is a failure signal, never success. Records outcome metadata, runs the completion pipeline
@@ -120,7 +129,10 @@ def sync(
     task close`. With `obsolete` (and `reason`, no `outcome`) an operator or supervisor instead retires
     superseded work: the task goes to COMPLETED as abandoned and is never published, its branch owners
     are released through the release-owner safety proof and it is dropped from parked development
-    batches, so it can then be deleted.
+    batches, so it can then be deleted. `no_change` and `done` are the same one-shot operator close for
+    work that needed nothing or already landed: from any non-terminal state, in one call, a live writer
+    is stopped (PAUSED, never READY), stale claims, workspace locks and the agent binding are cleared, a
+    no-op or shipped completion record is written and the task goes to COMPLETED.
 
     Args:
         body (TaskCloseRequest):
@@ -150,7 +162,10 @@ async def asyncio_detailed(
     task close`. With `obsolete` (and `reason`, no `outcome`) an operator or supervisor instead retires
     superseded work: the task goes to COMPLETED as abandoned and is never published, its branch owners
     are released through the release-owner safety proof and it is dropped from parked development
-    batches, so it can then be deleted.
+    batches, so it can then be deleted. `no_change` and `done` are the same one-shot operator close for
+    work that needed nothing or already landed: from any non-terminal state, in one call, a live writer
+    is stopped (PAUSED, never READY), stale claims, workspace locks and the agent binding are cleared, a
+    no-op or shipped completion record is written and the task goes to COMPLETED.
 
      Close a task with an outcome. This is the ONLY way a session-run task reaches COMPLETED — process
     exit is a failure signal, never success. Records outcome metadata, runs the completion pipeline
@@ -158,7 +173,10 @@ async def asyncio_detailed(
     task close`. With `obsolete` (and `reason`, no `outcome`) an operator or supervisor instead retires
     superseded work: the task goes to COMPLETED as abandoned and is never published, its branch owners
     are released through the release-owner safety proof and it is dropped from parked development
-    batches, so it can then be deleted.
+    batches, so it can then be deleted. `no_change` and `done` are the same one-shot operator close for
+    work that needed nothing or already landed: from any non-terminal state, in one call, a live writer
+    is stopped (PAUSED, never READY), stale claims, workspace locks and the agent binding are cleared, a
+    no-op or shipped completion record is written and the task goes to COMPLETED.
 
     Args:
         body (TaskCloseRequest):
@@ -191,7 +209,10 @@ async def asyncio(
     task close`. With `obsolete` (and `reason`, no `outcome`) an operator or supervisor instead retires
     superseded work: the task goes to COMPLETED as abandoned and is never published, its branch owners
     are released through the release-owner safety proof and it is dropped from parked development
-    batches, so it can then be deleted.
+    batches, so it can then be deleted. `no_change` and `done` are the same one-shot operator close for
+    work that needed nothing or already landed: from any non-terminal state, in one call, a live writer
+    is stopped (PAUSED, never READY), stale claims, workspace locks and the agent binding are cleared, a
+    no-op or shipped completion record is written and the task goes to COMPLETED.
 
      Close a task with an outcome. This is the ONLY way a session-run task reaches COMPLETED — process
     exit is a failure signal, never success. Records outcome metadata, runs the completion pipeline
@@ -199,7 +220,10 @@ async def asyncio(
     task close`. With `obsolete` (and `reason`, no `outcome`) an operator or supervisor instead retires
     superseded work: the task goes to COMPLETED as abandoned and is never published, its branch owners
     are released through the release-owner safety proof and it is dropped from parked development
-    batches, so it can then be deleted.
+    batches, so it can then be deleted. `no_change` and `done` are the same one-shot operator close for
+    work that needed nothing or already landed: from any non-terminal state, in one call, a live writer
+    is stopped (PAUSED, never READY), stale claims, workspace locks and the agent binding are cleared, a
+    no-op or shipped completion record is written and the task goes to COMPLETED.
 
     Args:
         body (TaskCloseRequest):

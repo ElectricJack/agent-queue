@@ -6,10 +6,8 @@ import asyncio
 
 import pytest
 
-from src.database import Database
 from src.database.queries.task_subtask_queries import MAX_SUBTASKS_PER_TASK
 from src.models import Project, Task, TaskStatus
-from tests.db_fixtures import lease_dsn
 
 PROJECT_ID = "proj"
 
@@ -17,12 +15,10 @@ pytestmark = pytest.mark.asyncio
 
 
 @pytest.fixture
-async def db(tmp_path):
-    database = Database(lease_dsn("test.db"))
-    await database.initialize()
+async def db(tmp_path, reuse_database):
+    database = await reuse_database("test.db")
     await database.create_project(Project(id=PROJECT_ID, name="p"))
     yield database
-    await database.close()
 
 
 async def mktask(db, tid, status=TaskStatus.IN_PROGRESS, **kw):

@@ -19,6 +19,7 @@ from src.database.tables import (
     workspaces,
 )
 from src.git.manager import GitError, RemoteRefState
+from src.integration.row_query import select_row
 from src.models import TaskStatus
 from src.review_keys import is_review_completion
 from src.sessions.provider import SessionHandle
@@ -180,44 +181,10 @@ async def reconcile_closed_integration_owners(
             )
             async with db.immediate() as conn:
                 await db.lock_hierarchy_project(conn, project_id)
-                current = (
-                    (
-                        await conn.execute(
-                            select(owners).where(owners.c.id == owner["id"]).with_for_update()
-                        )
-                    )
-                    .mappings()
-                    .one_or_none()
-                )
-                ws = (
-                    (
-                        await conn.execute(
-                            select(workspaces)
-                            .where(workspaces.c.id == workspace.id)
-                            .with_for_update()
-                        )
-                    )
-                    .mappings()
-                    .one_or_none()
-                )
-                stopped = (
-                    (
-                        await conn.execute(
-                            select(sessions).where(sessions.c.id == session.id).with_for_update()
-                        )
-                    )
-                    .mappings()
-                    .one_or_none()
-                )
-                task = (
-                    (
-                        await conn.execute(
-                            select(tasks).where(tasks.c.id == owner["owner_id"]).with_for_update()
-                        )
-                    )
-                    .mappings()
-                    .one_or_none()
-                )
+                current = await select_row(conn, owners, owners.c.id == owner["id"], lock=True)
+                ws = await select_row(conn, workspaces, workspaces.c.id == workspace.id, lock=True)
+                stopped = await select_row(conn, sessions, sessions.c.id == session.id, lock=True)
+                task = await select_row(conn, tasks, tasks.c.id == owner["owner_id"], lock=True)
                 ended_attempt = (
                     await conn.execute(
                         select(task_session_attempts.c.id)

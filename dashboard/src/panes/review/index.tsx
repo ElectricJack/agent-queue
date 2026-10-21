@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ComponentProps 
 import { createPortal } from "react-dom";
 import type { ExtraProps } from "react-markdown";
 
-import { useCommentReview, useDecideReview, useImportReviewEdits, useReopenReview, useReview, type ReviewAttachment } from "../../api/reviews";
+import { useCommentReview, useImportReviewEdits, useReopenReview, useReview, type ReviewAttachment } from "../../api/reviews";
 import WithdrawReviewModal from "../../pages/reviews/WithdrawReviewModal";
 import MarkdownPreview from "../../components/MarkdownPreview";
 import { useRawEventSubscription } from "../../ws/useEventStream";
@@ -13,7 +13,10 @@ import { extractToc, parseFrontmatter, resolveTitle, stripLeadingH1 } from "../s
 import { anchorFromSelection, headingPathAt, partitionComments, type Anchor } from "./anchoring";
 import { CommentMargin, type ReviewComment } from "./CommentMargin";
 import { CommentPopover } from "./CommentPopover";
-import { DecisionBar, type ResponseRoute, type ReviewDecision } from "./DecisionBar";
+import { DecisionBar, type ResponseRoute } from "./DecisionBar";
+import { useAsk, type AskDetailData } from "../../api/asks";
+import { DiscussionPanel } from "./DiscussionPanel";
+import { confirmDraftNavigation, useDraftWarning } from "../../components/asks/useDraftWarning";
 import type { ReviewArgs } from "./manifest";
 import { RevisionHeader, type RevisionSummary } from "./RevisionHeader";
 import { ReviewAttachments } from "./ReviewAttachments";
@@ -35,6 +38,7 @@ type ReviewRecord = {
 };
 
 type ReviewResponse = {
+  ask?: { id: string };
   review: ReviewRecord;
   revision: { revision: number; content: string; changes_note?: string | null };
   revisions: RevisionSummary[];
@@ -104,8 +108,21 @@ function DiffBlocks({ blocks }: { blocks: ReviewResponse["diff"] }) {
   );
 }
 
-function ReviewPaneContent({ reviewId, setShortcuts }: { reviewId: string; setShortcuts?: PaneViewProps<ReviewArgs>["setShortcuts"] }) {
-  const [selectedRevision, setSelectedRevision] = useState<number | null>(null);
+function ReviewPaneContent({ reviewId, setShortcuts, askData }: {
+  reviewId: string; setShortcuts?: PaneViewProps<ReviewArgs>["setShortcuts"]; askData?: AskDetailData;
+}) {
+  const [selectedRevision, setSelectedRevision] = useState<number | null>(() => {
+    const revision = Number(new URLSearchParams(window.location.search).get("revision"));
+    return Number.isInteger(revision) && revision > 0 ? revision : null;
+  });
+  const [formalDraft, setFormalDraft] = useState("");
+  const [sourceDiscussion, setSourceDiscussion] = useState<string | undefined>();
+  const [popoverDraft, setPopoverDraft] = useState("");
+  const [discussionDraft, setDiscussionDraft] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const dirty = Boolean(formalDraft || popoverDraft || discussionDraft);
+  useDraftWarning(dirty);
   const [showDiff, setShowDiff] = useState(false);
   const [selection, setSelection] = useState<CommentTarget | null>(null);
   const [commentTarget, setCommentTarget] = useState<CommentTarget | null>(null);
@@ -124,7 +141,8 @@ function ReviewPaneContent({ reviewId, setShortcuts }: { reviewId: string; setSh
   const response = query.data as unknown as ReviewResponse | undefined;
   const viewedRevision = selectedRevision ?? response?.review.current_revision;
   const comment = useCommentReview();
-  const decide = useDecideReview();
+  const askQuery = useAsk(askData ? "" : response?.ask?.id ?? "");
+  const currentAsk = askData ?? askQuery.data;
   const importEdits = useImportReviewEdits();
   const reopen = useReopenReview();
 
@@ -147,6 +165,15 @@ function ReviewPaneContent({ reviewId, setShortcuts }: { reviewId: string; setSh
   const title = response
     ? resolveTitle({ frontmatter: parsed.data, body: parsed.content, fallbackName: response.review.title })
     : "Review";
+  useEffect(() => {
+    const anchor = new URLSearchParams(window.location.search).get("anchor") || window.location.hash.slice(1);
+    if (!anchor || !content) return;
+    const frame = requestAnimationFrame(() => {
+      const target = bodyRef.current?.querySelector<HTMLElement>(`#${CSS.escape(anchor)}`);
+      target?.scrollIntoView({ block: "start" });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [content, viewedRevision]);
   const partitioned = useMemo(
     () => partitionComments(response?.comments ?? [], renderedBody, response?.review.current_revision ?? viewedRevision ?? 1),
     [response?.comments, renderedBody, response?.review.current_revision, viewedRevision],
@@ -188,6 +215,7 @@ function ReviewPaneContent({ reviewId, setShortcuts }: { reviewId: string; setSh
   const closeComment = useCallback(() => {
     setCommentTarget(null);
     setSelection(null);
+    setPopoverDraft("");
   }, []);
 
   const openSectionComment = useCallback((anchor: Anchor, button: HTMLButtonElement) => {
@@ -215,15 +243,25 @@ function ReviewPaneContent({ reviewId, setShortcuts }: { reviewId: string; setSh
     });
   }, [viewedRevision]);
 
-  const submitDecision = useCallback(async (
-    decision: ReviewDecision, note: string, responderClass: string,
-  ) => {
-    if (!response || viewedRevision == null) return;
-    await decide.mutateAsync({
-      review_id: response.review.id, revision: viewedRevision, decision, ...(note ? { note } : {}),
-      ...(decision !== "approve" && responderClass ? { responder_class: responderClass } : {}),
-    });
-  }, [decide, response, viewedRevision]);
+  const saveDrafts = async () => {
+    if (discussionDraft) throw new Error("Save or discard the discussion draft first.");
+    setSaving(true); setSaveError(null);
+    try {
+      if (popoverDraft && commentTarget) {
+        await submitComment(commentTarget, popoverDraft);
+        closeComment();
+      }
+      if (formalDraft) {
+        await comment.mutateAsync({ review_id: reviewId, revision: viewedRevision!,
+          body: formalDraft, ...(sourceDiscussion ? { source_discussion_id: sourceDiscussion } : {}) });
+        setFormalDraft(""); setSourceDiscussion(undefined);
+      }
+      await query.refetch();
+    } catch (caught) {
+      setSaveError(caught instanceof Error ? caught.message : "Feedback save failed. Your draft is preserved.");
+      throw caught;
+    } finally { setSaving(false); }
+  };
 
   useEffect(() => {
     if (!setShortcuts) return;
@@ -272,25 +310,25 @@ function ReviewPaneContent({ reviewId, setShortcuts }: { reviewId: string; setSh
     },
   }), [renderedBody, openSectionComment]);
 
+  if (query.error && !response) {
+    return <div role="alert" className="p-5 text-sm text-red-300">Could not load this review.
+      <button className="min-h-11 px-3" onClick={() => void query.refetch()}>Retry</button></div>;
+  }
   if (query.isLoading || !response) {
     return <div className="p-5 text-sm text-gray-500">Loading review…</div>;
   }
-  if (query.error) {
-    return <div role="alert" className="p-5 text-sm text-red-300">Could not load this review.</div>;
-  }
-
-  const disabledReason = response.vault_state === "diverged"
+  const disabledReason = query.error ? "Refresh the review before deciding" : response.vault_state === "diverged"
     ? "edited outside the review"
     : revisedSinceOpen || viewedRevision! < response.review.current_revision
       ? "revised since you opened it — reload"
-      : response.review.decider === "user_or_supervisor"
-        ? "delegated to supervisor"
-        : response.review.state !== "in_review"
+      : response.review.state !== "in_review"
           ? "this review is closed"
           : null;
 
   return (
     <div className="@container/review flex h-full min-h-0 flex-col bg-gray-950 text-gray-100">
+      {query.error && <p role="alert" className="p-3">Review refresh failed. Your draft is preserved.
+        <button className="min-h-11 px-3" onClick={() => void query.refetch()}>Retry</button></p>}
       {response.review.held_while_paused && (
         <p className="px-4 py-2 text-sm text-gray-400">
           held while paused — notifications will be released when the project resumes.
@@ -319,6 +357,8 @@ function ReviewPaneContent({ reviewId, setShortcuts }: { reviewId: string; setSh
         revisions={response.revisions}
         revision={viewedRevision!}
         onRevisionChange={(revision) => {
+          if (!confirmDraftNavigation()) return;
+          setFormalDraft(""); setPopoverDraft(""); setDiscussionDraft(false); closeComment();
           setSelectedRevision(revision);
           setShowDiff(false);
           setRevisedSinceOpen(false);
@@ -411,20 +451,44 @@ function ReviewPaneContent({ reviewId, setShortcuts }: { reviewId: string; setSh
               reference={commentTarget.reference}
               returnFocus={commentTarget.returnFocus}
               onClose={closeComment}
+              onDraftChange={setPopoverDraft}
               onSubmit={(body) => submitComment(commentTarget, body)}
             />
           )}
         </div>
         <CommentMargin anchored={partitioned.anchored} earlier={partitioned.earlier} />
       </div>
-      <DecisionBar key={`${reviewId}:${viewedRevision}`} disabledReason={disabledReason} onDecide={submitDecision} pending={decide.isPending} approveButtonRef={approveRef} responseRoute={response.response_route} />
+      <section aria-label="Comments for revision" className="space-y-2 border-t border-gray-800 p-3">
+        <h2 className="font-semibold">Comments for revision {viewedRevision} · {(response.comments ?? []).length} saved</h2>
+        <label className="block text-sm">Formal feedback
+          <textarea value={formalDraft} disabled={saving} onChange={e => setFormalDraft(e.target.value)}
+            className="mt-1 block w-full rounded border border-gray-700 bg-gray-900 p-2" />
+        </label>
+        <p role="status">{saving ? "Saving feedback…" : formalDraft || popoverDraft ? "Draft — not saved" : ""}</p>
+        {saveError && <p role="alert" className="text-red-300">{saveError}</p>}
+        <button type="button" disabled={saving || !(formalDraft || popoverDraft)}
+          className="min-h-11 rounded bg-indigo-700 px-3 py-2 disabled:opacity-50"
+          onClick={() => void saveDrafts().catch(() => {})}>Save feedback</button>
+        <button type="button" disabled={saving} className="min-h-11 px-3 py-2"
+          onClick={() => { setFormalDraft(""); setSourceDiscussion(undefined); closeComment(); }}>Discard feedback draft</button>
+      </section>
+      {currentAsk && <>
+        <DiscussionPanel key={`${reviewId}:${viewedRevision}`} data={{ ...currentAsk, document: { ...currentAsk.document, revision: viewedRevision },
+          actions: currentAsk.actions.map(action => action.action === "discuss" && viewedRevision !== response.review.current_revision
+            ? { ...action, enabled: false, disabled_reason: "Open the current revision to start a discussion" } : action),
+        }} onDraftChange={setDiscussionDraft}
+          onPromote={(text, id) => { setFormalDraft(text); setSourceDiscussion(id); }} />
+        <DecisionBar key={`decision:${reviewId}:${viewedRevision}`} approveRef={approveRef} responseRoute={response.response_route} data={currentAsk} disabledReason={disabledReason} draftBlocked={dirty}
+          pendingSave={saving || comment.isPending} saveDraft={saveDrafts} />
+      </>}
+      {!currentAsk && <p role="status" className="p-3">Decision context is refreshing; approval is unavailable.</p>}
     </div>
   );
 }
 
 /** Full-width route surface and pane implementation share the same reader. */
-export function ReviewPane({ reviewId }: { reviewId: string }) {
-  return <ReviewPaneContent reviewId={reviewId} />;
+export function ReviewPane({ reviewId, askData }: { reviewId: string; askData?: AskDetailData }) {
+  return <ReviewPaneContent reviewId={reviewId} askData={askData} />;
 }
 
 export default function ReviewPaneView({ args, setShortcuts }: PaneViewProps<ReviewArgs>) {
