@@ -8778,7 +8778,7 @@
   "integration_release_withheld_source": {
     "mode": "typed",
     "producer": "src/commands/integration_commands.py:IntegrationCommandsMixin._cmd_integration_release_withheld_source",
-    "source_digest": "sha256:58046d15c1f371e9809503500863d84fff4620270eb0e55642faae2299b04925",
+    "source_digest": "sha256:0f3965dce3abbc83d738a1701c7c14a81f012e58e9f7f3e2d5890a0524344112",
     "input_schema_source": "typed_contract",
     "schema_quality": "typed",
     "effect": "destructive",
@@ -8819,7 +8819,7 @@
       "tests/test_integration_contracts.py",
       "tests/test_operator_workers.py"
     ],
-    "review_notes": "Dev ff25a7d71: typed operational control, original-principal integration_operator gate; human authority required for apply. TrainControls checks exact source/target, reason, acceptance, live writers, holds and repair budget; repeated apply is idempotent. Producer maps domain/authority failures through _failure and emits explicit success for completed preview/apply. Generated invocation remains disabled."
+    "review_notes": "Dev ff25a7d71: typed operational control, original-principal integration_operator gate. Candidate dd03f9ffb updates only this handler's docstring to describe owning-supervisor/local-operator apply authority; operator workers still require an exact human decision. TrainControls checks exact source/target, reason, acceptance, live writers, holds and repair budget; repeated apply is idempotent. Producer return branches and argument handling are unchanged: domain/authority failures use _failure and completed preview/apply emits explicit success. Generated invocation remains disabled."
   },
   "integration_reopen_collection": {
     "mode": "typed",
