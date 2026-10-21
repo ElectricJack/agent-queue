@@ -5280,33 +5280,32 @@ async def development_admission(handler, db, tmp_path):
         )
     )
     await db.update_project(
-        PROJECT_ID, hierarchical_integration_mode="development", integration_repository_id="repo"
+        PROJECT_ID, hierarchical_integration_mode="development", integration_repository_id="repo",
+        hierarchical_integration_policy={"prerequisite_branches": "wait-for-parent"},
     )
     await mktask(
         db, "prerequisite", status=TaskStatus.COMPLETED, repo_id="repo", branch_name="prerequisite"
     )
-    await db.save_task_completion(
-        TaskCompletion(
-            id="close-1",
-            task_id="prerequisite",
-            outcome="pass",
-            commits=[head],
-            completed_at=time.time(),
-        )
-    )
     # As a worker close does: the exact final source is retained in git.
     from src.integration.provenance import CompletedSource, CompletionIdentity, GitProvenance
 
-    await GitProvenance(GitManager(), str(source), repository_url=str(remote)).write_completion(
-        CompletedSource(CompletionIdentity(PROJECT_ID, "repo", "prerequisite", "close-1"), head)
-    )
+    async def retain(task_id, completion_id, oid):
+        await db.save_task_completion(TaskCompletion(
+            id=completion_id, task_id=task_id, outcome="pass", commits=[oid],
+            completed_at=time.time(),
+        ))
+        await GitProvenance(GitManager(), str(source), repository_url=str(remote)).write_completion(
+            CompletedSource(CompletionIdentity(PROJECT_ID, "repo", task_id, completion_id), oid)
+        )
+
+    await retain("prerequisite", "close-1", head)
     handler.orchestrator.git = GitManager()
     service = DevelopmentPrimitives(db, data_dir=tmp_path / "truth", git=handler.orchestrator.git)
     handler.orchestrator.development_integration = service
     await mktask(db, "dependent", profile_id="worker", repo_id="repo")
     await db.add_dependency("dependent", "prerequisite")
     return SimpleNamespace(
-        git=git, source=source, remote=remote, base=base, head=head, service=service
+        git=git, source=source, remote=remote, base=base, head=head, service=service, retain=retain,
     )
 
 
@@ -5519,6 +5518,44 @@ async def _cloned_pool_session(db, tmp_path, env, sid, agent_id):
     return sid, work_dir
 
 
+@pytest.mark.parametrize("source_parent", [None, "other-epic"])
+async def test_default_stack_claims_retained_cross_epic_or_root_source(
+    handler, db, tmp_path, development_admission, source_parent,
+):
+    from src.database.tables import task_dependencies
+
+    env = development_admission
+    await _stacked_dependent(handler, db, tmp_path, env)
+    await db.update_project(PROJECT_ID, hierarchical_integration_policy={})
+    if source_parent:
+        await mktask(db, source_parent, status=TaskStatus.IN_PROGRESS, repo_id="repo",
+                     branch_name="aq/other-epic")
+        env.git(env.source, "push", "origin", f"{env.base}:refs/heads/aq/other-epic")
+    async with db.immediate() as conn:
+        # Retained completion provenance is sufficient without a checkpoint locator.
+        await conn.execute(delete(task_integration_checkpoints).where(
+            task_integration_checkpoints.c.task_id == "prerequisite",
+        ))
+        await conn.execute(delete(task_dependencies).where(
+            task_dependencies.c.task_id == "prerequisite",
+            task_dependencies.c.dep_type == "parent-child",
+        ))
+        await conn.execute(update(tasks).where(tasks.c.id == "prerequisite").values(
+            parent_task_id=source_parent,
+        ))
+    if source_parent:
+        await db.add_dependency("prerequisite", source_parent, "parent-child")
+    env.git(env.source, "push", "origin", ":prerequisite")
+    sid, work_dir = await _cloned_pool_session(db, tmp_path, env, "s1", "agent-1")
+    result = await settled_claim(scoped(handler, sid), {"next": True})
+    assert result["result"] == "claimed", result
+    assert result["task"]["id"] == "dependent"
+    env.git(work_dir, "merge-base", "--is-ancestor", env.head, "HEAD")
+    assert env.git(env.remote, "rev-parse", "aq/epic") == env.base
+    assert env.git(env.remote, "rev-parse", "main") == env.base
+    assert json.loads((work_dir / ".aq/claim.json").read_text())["task_id"] == "dependent"
+
+
 async def test_unavailable_stack_evidence_withholds_only_stacked_work(
     handler, db, tmp_path, development_admission, monkeypatch
 ):
@@ -5687,10 +5724,7 @@ async def test_conflicting_multiple_stacked_prerequisites_cannot_activate_claim(
         git(env.source, "fetch", str(repo), env.base, env.head, second)
         git(env.source, "push", "--force", "origin", f"{env.head}:refs/heads/prerequisite",
             f"{second}:refs/heads/second-prerequisite")
-        await db.save_task_completion(TaskCompletion(
-            id="generated-first", task_id="prerequisite", outcome="pass", commits=[env.head],
-            completed_at=time.time(),
-        ))
+        await env.retain("prerequisite", "generated-first", env.head)
     await mktask(db, "epic", status=TaskStatus.IN_PROGRESS, repo_id="repo",
                  branch_name="aq/epic")
     git(env.source, "push", "origin", f"{env.base}:refs/heads/aq/epic",
@@ -5706,16 +5740,7 @@ async def test_conflicting_multiple_stacked_prerequisites_cannot_activate_claim(
         git(env.source, "push", "origin", "second-prerequisite")
     await mktask(db, "second-prerequisite", status=TaskStatus.COMPLETED, repo_id="repo",
                  branch_name="second-prerequisite")
-    await db.save_task_completion(TaskCompletion(
-        id="close-second", task_id="second-prerequisite", outcome="pass", commits=[second],
-    ))
-    if conflict_kind == "incarnation":
-        from src.integration.provenance import CompletedSource, CompletionIdentity, GitProvenance
-
-        await GitProvenance(handler.orchestrator.git, str(env.source),
-                            repository_url=str(env.remote)).write_completion(CompletedSource(
-            CompletionIdentity(PROJECT_ID, "repo", "second-prerequisite", "close-second"), second,
-        ))
+    await env.retain("second-prerequisite", "close-second", second)
     for tid in ("dependent", "prerequisite", "second-prerequisite"):
         await db.add_dependency(tid, "epic", "parent-child")
     await db.add_dependency("dependent", "second-prerequisite")
@@ -5755,7 +5780,7 @@ async def test_conflicting_multiple_stacked_prerequisites_cannot_activate_claim(
         regeneration_inputs = []
 
         async def clean_merge(args, **kwargs):
-            if "merge-tree" in args:
+            if "merge-tree" in args and "--name-only" not in args:
                 # The observer is a no-checkout clone. Install the fixture's
                 # generated attribute so its driver resolves the text overlap.
                 attributes = Path(kwargs["cwd"]) / ".git/info/attributes"
@@ -6062,9 +6087,7 @@ async def test_existing_child_parent_conflict_recovers_exact_inputs(
         repo, env.base, env.head, child = _catalogue_branches(fixture)
         git(env.source, "fetch", str(repo), env.base, env.head, child)
         git(env.source, "push", "--force", "origin", f"{env.head}:refs/heads/prerequisite")
-        await db.save_task_completion(TaskCompletion(
-            id="generated-source", task_id="prerequisite", outcome="pass", commits=[env.head],
-        ))
+        await env.retain("prerequisite", "generated-source", env.head)
     else:
         git(env.source, "checkout", "-b", "aq/dependent", env.base)
         (env.source / ("child-work" if kind in {
@@ -7687,9 +7710,17 @@ async def test_pr_preparation_rechecks_remote_identity_and_actual_checkout(
 
     manager.reset_slot_for_task = move_after_observation
     handler.orchestrator._worktree_slots = MagicMock(return_value=manager)
-    result = await settled_claim(scoped(handler, sid), {"next": True})
+    worker = scoped(handler, sid)
+    result = await worker._cmd_task_claim({"next": True})
+    if result["result"] == "claim_in_progress":
+        # This fixture invalidates every reset. Await that attempt's refusal;
+        # another claim request would deliberately start another moving target.
+        preparation = worker.orchestrator.claim_preparations[
+            (sid, result["task_id"], result["claim_epoch"])
+        ]
+        result = await asyncio.wait_for(asyncio.shield(preparation), timeout=10)
     assert result["result"] != "claimed", result
-    assert (await db.get_task("dependent")).status is not TaskStatus.IN_PROGRESS
+    assert (await db.get_task("dependent")).status is not TaskStatus.IN_PROGRESS, result
     assert not (work_dir / ".aq/claim.json").exists()
 
 

@@ -8,17 +8,21 @@ a live writer or an unresolved prerequisite withholds delivery instead.
 from __future__ import annotations
 
 import hashlib
+import heapq
 import json
 import time
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from types import SimpleNamespace
 
-from sqlalchemy import exists, insert, literal, or_, select, update
+from sqlalchemy import exists, func, insert, literal, or_, select, update
 from sqlalchemy.exc import DBAPIError
 
 from src.task_templates import render_task_template
 from src.database.tables import (
+    gates,
+    integration_review_evidence,
+    operator_decisions,
     projects,
     repos,
     sessions,
@@ -27,6 +31,8 @@ from src.database.tables import (
     task_dependencies,
     task_integration_checkpoints,
     task_metadata,
+    task_gates,
+    task_labels,
     tasks,
 )
 from src.git.manager import GitError, RemoteRefState, is_valid_git_oid
@@ -111,7 +117,7 @@ async def verify_preparation(origin, *, conn=None, finalize=False):
 
 
 def stacked_policy(project) -> bool:
-    """Explicit project choice wins; agent-queue opts in by default."""
+    """Stack completed sources by default; preserve every authored opt-out."""
 
     def value(key, default=None):
         return (
@@ -122,12 +128,22 @@ def stacked_policy(project) -> bool:
 
     policy = value("hierarchical_integration_policy") or {}
     choice = policy.get("prerequisite_branches")
-    return choice == "stacked" or choice is None and value("id") == "agent-queue"
+    return choice in {None, "stacked"}
 
 
 async def _inputs(conn, project_id, task_id=None):
+    from src.database.queries.task_queries import (
+        DEVELOPMENT_COMPLETION_ID_KEY, INTEGRATION_REWORK_AT_KEY,
+    )
+    from src.integration.delivery_truth import completion_after_rework
+
     dependent, source = tasks.alias("stack_child"), tasks.alias("stack_source")
     checkpoint = task_integration_checkpoints
+    completion = select(task_completion_records).distinct(
+        task_completion_records.c.task_id,
+    ).order_by(task_completion_records.c.task_id,
+               task_completion_records.c.completed_at.desc(),
+               task_completion_records.c.id.desc()).subquery("stack_completion")
     query = (
         select(
             dependent.c.id.label("dependent"),
@@ -138,6 +154,17 @@ async def _inputs(conn, project_id, task_id=None):
             source.c.status,
             source.c.claim_epoch,
             source.c.updated_at,
+            completion.c.id.label("completion_id"),
+            completion.c.outcome.label("completion_outcome"),
+            completion.c.completed_at.label("completed_at"),
+            select(task_metadata.c.value).where(
+                task_metadata.c.task_id == source.c.id,
+                task_metadata.c.key == DEVELOPMENT_COMPLETION_ID_KEY,
+            ).scalar_subquery().label("current_generation"),
+            select(task_metadata.c.value).where(
+                task_metadata.c.task_id == source.c.id,
+                task_metadata.c.key == INTEGRATION_REWORK_AT_KEY,
+            ).scalar_subquery().label("rework_at"),
             exists(
                 select(literal(1)).where(
                     task_metadata.c.task_id == source.c.id,
@@ -151,8 +178,8 @@ async def _inputs(conn, project_id, task_id=None):
             checkpoint.c.checkpoint_sha,
             checkpoint.c.generation,
             checkpoint.c.version,
-            checkpoint.c.repository_id,
-            checkpoint.c.branch,
+            func.coalesce(checkpoint.c.repository_id, source.c.repo_id).label("repository_id"),
+            func.coalesce(checkpoint.c.branch, source.c.branch_name).label("branch"),
         )
         .select_from(
             task_dependencies.join(
@@ -160,6 +187,7 @@ async def _inputs(conn, project_id, task_id=None):
                 dependent.c.id == task_dependencies.c.task_id,
             )
             .join(source, source.c.id == task_dependencies.c.depends_on_task_id)
+            .outerjoin(completion, completion.c.task_id == source.c.id)
             .outerjoin(
                 checkpoint,
                 checkpoint.c.task_id == source.c.id,
@@ -167,19 +195,188 @@ async def _inputs(conn, project_id, task_id=None):
         )
         .where(
             dependent.c.project_id == project_id,
-            dependent.c.parent_task_id.is_not(None),
             source.c.project_id == project_id,
-            source.c.parent_task_id == dependent.c.parent_task_id,
+            source.c.repo_id == dependent.c.repo_id,
             task_dependencies.c.dep_type == "blocks",
         )
     )
     if task_id is not None:
         query = query.where(dependent.c.id == task_id)
-    return tuple(dict(row) for row in (await conn.execute(query)).mappings())
+    rows = tuple(dict(row) for row in (await conn.execute(query)).mappings())
+    blocked = await _unauthorized_sources(conn, {row["task_id"] for row in rows})
+    result = []
+    for row in rows:
+        current = json.loads(row.pop("current_generation") or "null")
+        completed_at = row.pop("completed_at")
+        rework = row.pop("rework_at")
+        valid = (current is None or current == row["completion_id"]) and (
+            completed_at is not None and completion_after_rework(completed_at, rework)
+        )
+        result.append({**row, "completion_current": valid,
+                       "authorized": row["task_id"] not in blocked})
+    return tuple(result)
 
+
+async def _unauthorized_sources(conn, ids):
+    """Carry existing explicit decisions through prerequisites and their parents.
+
+    Missing review paperwork is not a hold. Only actual holds, open decisions
+    and the latest rejection of the current source constrain its consumers.
+    """
+    if not ids:
+        return set()
+    closure = (
+        select(
+            tasks.c.id.label("source_id"),
+            tasks.c.id,
+            tasks.c.parent_task_id,
+        )
+        .where(tasks.c.id.in_(ids))
+        .cte("stack_authorization", recursive=True)
+    )
+    closure = closure.union(
+        select(
+            closure.c.source_id,
+            tasks.c.id,
+            tasks.c.parent_task_id,
+        ).select_from(
+            closure.join(
+                tasks,
+                (tasks.c.id == closure.c.parent_task_id)
+                | exists(
+                    select(task_dependencies.c.task_id)
+                    .where(
+                        task_dependencies.c.task_id == closure.c.id,
+                        task_dependencies.c.depends_on_task_id == tasks.c.id,
+                        task_dependencies.c.dep_type == "blocks",
+                    )
+                    .correlate(closure, tasks)
+                ),
+            )
+        )
+    )
+    review = (
+        select(integration_review_evidence.c.verdict)
+        .where(
+            integration_review_evidence.c.source_task_id == closure.c.id,
+            integration_review_evidence.c.repository_id
+            == task_integration_checkpoints.c.repository_id,
+            integration_review_evidence.c.generation == task_integration_checkpoints.c.generation,
+            integration_review_evidence.c.reviewed_head_sha
+            == task_integration_checkpoints.c.checkpoint_sha,
+        )
+        .order_by(
+            integration_review_evidence.c.created_at.desc(), integration_review_evidence.c.id.desc()
+        )
+        .limit(1)
+        .scalar_subquery()
+    )
+    released = operator_decisions.alias("stack_released_decision")
+    decision = exists(
+        select(operator_decisions.c.id).where(
+            operator_decisions.c.object_kind == "task",
+            operator_decisions.c.object_id == closure.c.id,
+            operator_decisions.c.effect == "hold",
+            ~exists(
+                select(released.c.id).where(
+                    released.c.releases == operator_decisions.c.id, released.c.effect == "release"
+                )
+            ),
+        )
+    )
+    held = (
+        decision
+        | exists(
+            select(task_labels.c.task_id).where(
+                task_labels.c.task_id == closure.c.id, task_labels.c.label.like("hold:%")
+            )
+        )
+        | exists(
+            select(task_metadata.c.task_id).where(
+                task_metadata.c.task_id == closure.c.id, task_metadata.c.key == "manual_pause"
+            )
+        )
+        | exists(
+            select(task_gates.c.task_id)
+            .join(gates, gates.c.id == task_gates.c.gate_id)
+            .where(
+                task_gates.c.task_id == closure.c.id,
+                gates.c.status == "open",
+                gates.c.gate_type.in_(("human", "review")),
+            )
+        )
+    )
+    return set(
+        (
+            await conn.execute(
+                select(closure.c.source_id)
+                .select_from(
+                    closure.outerjoin(
+                        task_integration_checkpoints,
+                        task_integration_checkpoints.c.task_id == closure.c.id,
+                    )
+                )
+                .where(held | (review == "rejected"))
+            )
+        ).scalars()
+    )
+
+
+async def ordered_sources(conn, ids):
+    """Dependency topology first, stable task ID among independent sources."""
+    edges = {}
+    for task_id, prerequisite in await conn.execute(
+        select(
+            task_dependencies.c.task_id,
+            task_dependencies.c.depends_on_task_id,
+        ).where(task_dependencies.c.dep_type == "blocks")
+    ):
+        edges.setdefault(task_id, set()).add(prerequisite)
+    ancestors, visiting = {}, set()
+
+    def collect(task_id):
+        if task_id in visiting:
+            raise StackPreparationChanged("prerequisite dependency cycle")
+        if task_id in ancestors:
+            return ancestors[task_id]
+        visiting.add(task_id)
+        required = set()
+        for prerequisite in edges.get(task_id, ()):
+            required |= collect(prerequisite)
+            if prerequisite in ids:
+                required.add(prerequisite)
+        visiting.remove(task_id)
+        ancestors[task_id] = required
+        return required
+
+    pending = {tid: set(collect(tid)) for tid in ids}
+    ready = [tid for tid, required in pending.items() if not required]
+    heapq.heapify(ready)
+    result = []
+    while ready:
+        tid = heapq.heappop(ready)
+        result.append(tid)
+        for other, required in pending.items():
+            if tid in required:
+                required.remove(tid)
+                if not required:
+                    heapq.heappush(ready, other)
+    return result
 
 def _identity(row):
-    return {key: value for key, value in row.items() if key != "dependent"}
+    return {key: value for key, value in row.items() if key != "dependent"} | {"retained": True}
+
+
+def _binding(proof):
+    # The immutable completion binds its final OID. A checkpoint is only a
+    # locator and cannot replace that OID or make its absence a new gate.
+    return None if proof is None else {
+        key: value for key, value in proof.items() if key != "checkpoint_sha"
+    }
+
+
+def _bindings(proofs):
+    return {tid: _binding(proof) for tid, proof in proofs.items()}
 
 
 @dataclass(frozen=True)
@@ -244,7 +441,7 @@ class StackView:
             return unavailable(snapshot.error or "target_ref_missing", target)
         branches = {target}
         branches.update(proof["branch_name"].removeprefix("refs/heads/")
-                        for proof in self.proofs.values())
+                        for proof in self.proofs.values() if not proof.get("retained"))
         branches.update(branch for branch, _ in self.delivered_refs.values())
         branches.update(self.watched_refs)
         now = time.monotonic()
@@ -292,6 +489,8 @@ class StackView:
             ):
                 return changed(branch, expected)
         for proof in self.proofs.values():
+            if proof.get("retained"):
+                continue
             branch = proof["branch_name"].removeprefix("refs/heads/")
             ref = refs[branch]
             if ref.state is RemoteRefState.PRESENT and ref.oid == proof["checkpoint_sha"]:
@@ -312,7 +511,7 @@ class StackView:
         return {
             tid: proof
             for tid, proof in self.proofs.items()
-            if (ids is None or tid in ids) and current.get(tid) == proof
+            if (ids is None or tid in ids) and _binding(current.get(tid)) == _binding(proof)
         }
 
     def required(self, task_id):
@@ -324,15 +523,6 @@ async def observe_stacks(observer, project_id, *, task_id=None, max_age=0, snaps
     """Observe prerequisites; preparation and refresh need Git even for an empty set."""
     async with observer.db._engine.connect() as conn:
         rows = await _inputs(conn, project_id, task_id)
-        parents = dict(
-            (
-                await conn.execute(
-                    select(tasks.c.id, tasks.c.branch_name).where(
-                        tasks.c.id.in_({row["parent_task_id"] for row in rows})
-                    )
-                )
-            ).all()
-        )
         repository = (
             (
                 await conn.execute(
@@ -363,62 +553,36 @@ async def observe_stacks(observer, project_id, *, task_id=None, max_age=0, snaps
         project_id, repository["id"], repository["url"],
     ):
         raise GitError("stack observation belongs to another repository")
-    if view.snapshot.error:
+    if view.snapshot.error or observer.truth is None:
         return view
+    from src.integration.git_truth import GitTruthSnapshot
+    from src.integration.provenance import CompletionIdentity
+
+    truth = GitTruthSnapshot(observer.truth, view.snapshot, cached_only=cached_only)
     for row in rows:
         proof = _identity(row)
-        head, ref = row["checkpoint_sha"], row["branch_name"]
-        if (
-            row["status"] != "COMPLETED"
-            or row["abandoned"]
-            or not is_valid_git_oid(head or "")
-            or not ref
-            or row["repository_id"] != repository["id"]
-            or row["repo_id"] != repository["id"]
-            or row["branch"] != ref
-        ):
+        if (row["status"] != "COMPLETED" or row["abandoned"] or not row["authorized"]
+                or not row["completion_current"]
+                or row["completion_outcome"] != "pass" or not row["completion_id"]
+                or row["repository_id"] != repository["id"]
+                or row["repo_id"] != repository["id"]
+                or row["branch"] != row["branch_name"]):
             continue
-        remote = "refs/remotes/origin/" + ref.removeprefix("refs/heads/")
-        remote_head = view.snapshot.source_heads.get(remote)
-        if remote_head != head:
-            # Cleaned source refs remain usable only with current completion delivery proof.
-            parent = parents.get(row["parent_task_id"])
-            if remote_head is not None or not parent or observer.truth is None:
-                continue
-            from src.integration.delivery_truth import DeliveryState, load_delivery_requests
-            from src.integration.git_truth import GitTruthSnapshot
-
-            parent_ref = "refs/heads/" + parent.removeprefix("refs/heads/")
-            delivered = GitTruthSnapshot(observer.truth, view.snapshot,
-                                         cached_only=cached_only).for_target(parent_ref)
-            requests = await load_delivery_requests(
-                observer.db,
-                (row["task_id"],),
-                repository_id=repository["id"],
-                target_ref=parent_ref,
-                reduced=True,
+        try:
+            identity = CompletionIdentity(
+                project_id, repository["id"], row["task_id"], row["completion_id"],
             )
-            request = requests.get(row["task_id"])
-            if request is None:
+            if cached_only and observer.truth._record_key(
+                view.snapshot, identity,
+            ) not in observer.truth._completions:
                 continue
-            evidence = await delivered.is_delivered(request)
-            if evidence.state is not DeliveryState.CONTAINED or evidence.source_oid != head:
-                continue
-            view.delivered_refs[row["task_id"]] = (
-                parent_ref.removeprefix("refs/heads/"),
-                delivered.target_oid,
-            )
-        if observer.truth is not None:
-            try:
-                exact = await observer.truth.exact(view.snapshot, head, cached_only=cached_only)
-            except (GitError, OSError, ValueError):
-                exact = False
-        elif cached_only:
-            exact = False
-        else:
-            exact = await observer.git.arev_parse(view.snapshot.store, head + "^{commit}") == head
-        if exact:
-            view.proofs[row["task_id"]] = proof
+            record = await truth.read_completion(identity)
+            head = record["source_oid"] if record is not None else None
+            if (is_valid_git_oid(head or "")
+                    and await observer.truth.exact(view.snapshot, head, cached_only=cached_only)):
+                view.proofs[row["task_id"]] = {**proof, "checkpoint_sha": head}
+        except (GitError, OSError, ValueError):
+            continue
     return view
 
 
@@ -428,8 +592,15 @@ async def merge_heads(git, store, base, heads, *, stamp, regenerations=None):
     from src.integration.regeneration import DEFAULT_REGENERATE_COMMAND, merge_generated_tree
 
     store = Path(store)
+    unique = list(dict.fromkeys(heads))
+    retained = []
+    for head in unique:
+        if any([await git.ais_ancestor(store, head, other, strict=True)
+                for other in unique if other != head]):
+            continue
+        retained.append(head)
     current = base
-    for head in heads:
+    for head in retained:
         rebuilt = []
         result = await git.arun_git_result(
             ["--no-replace-objects", "merge-base", "--is-ancestor", head, current],
@@ -546,11 +717,12 @@ class StackedBranches:
 
         task = await self.db.get_task(task_id)
         project = await self.db.get_project(task.project_id) if task else None
-        if (task is None or task.parent_task_id is None or self.observer is None
+        if (task is None or self.observer is None
                 or not stacked_policy(project) and parent_base is None):
             return None
         view = await observe_stacks(
-            self.observer, task.project_id, task_id=task_id, require_snapshot=True,
+            self.observer, task.project_id, task_id=task_id,
+            require_snapshot=parent_base is not None,
         )
         ids = view.required(task_id)
         if not ids and parent_base is None:
@@ -576,6 +748,8 @@ class StackedBranches:
                     tasks.c.id == task.parent_task_id,
                 )
             )
+        if any(not row["authorized"] for row in view.rows):
+            raise StackPreparationChanged("prerequisite source has an explicit hold or rejection")
         if set(proofs) != ids:
             # Delivered sources may have had their task refs cleaned up. The
             # established parent proof remains a valid preparation route.
@@ -584,9 +758,9 @@ class StackedBranches:
             raise StackPreparationChanged("prerequisite stack is incomplete or reopened")
         old = origin["stack_snapshot"]
         pending = (old or {}).get("preparation_conflict")
-        parent_head = parent_base or view.snapshot.source_heads.get(
-            "refs/remotes/origin/" + (parent or "").removeprefix("refs/heads/"),
-        )
+        parent_head = parent_base or (view.snapshot.source_heads.get(
+            "refs/remotes/origin/" + parent.removeprefix("refs/heads/"),
+        ) if parent else view.snapshot.target_oid)
         dependent_ref = task.branch_name.removeprefix("refs/heads/")
         dependent_head = view.snapshot.source_heads.get("refs/remotes/origin/" + dependent_ref)
         published_child_head = dependent_head
@@ -670,7 +844,9 @@ class StackedBranches:
                 })
             repair_head = candidate
             view.watched_refs[repair_ref] = repair_head
-        heads = [proofs[tid]["checkpoint_sha"] for tid in sorted(ids)]
+        async with self.db._engine.connect() as conn:
+            order = await ordered_sources(conn, ids)
+        heads = [proofs[tid]["checkpoint_sha"] for tid in order]
         regenerations = []
         if (len(heads) == 1 and parent_base is None and not pending and parent_head
                 and await self.observer.git.ais_ancestor(
@@ -697,6 +873,9 @@ class StackedBranches:
                     if "\t" in line and line.split("\t", 1)[0].endswith((" 1", " 2", " 3"))
                 })
                 await reserve_conflict({"files": sorted(files), "reason": str(exc)})
+        if not all([await self.observer.git.ais_ancestor(
+                view.snapshot.store, head, base, strict=True) for head in heads]):
+            raise StackPreparationChanged("prepared base does not contain every prerequisite")
         overlay = base
         if dependent_head and task.status is not TaskStatus.COMPLETED:
             try:
@@ -820,10 +999,10 @@ class StackedBranches:
             )
         )
         return (
-            proofs == stack["prerequisites"]
+            _bindings(proofs) == _bindings(stack["prerequisites"])
             and not stack.get("hold")
             and all(
-                proof["status"] == "COMPLETED" and not proof["abandoned"]
+                proof["status"] == "COMPLETED" and not proof["abandoned"] and proof["authorized"]
                 for proof in proofs.values()
             )
             and (
@@ -842,22 +1021,6 @@ class StackedBranches:
             return True
         observed = snapshot.observation
         for proof in stack["prerequisites"].values():
-            remote = "refs/remotes/origin/" + proof["branch_name"].removeprefix("refs/heads/")
-            remote_head = observed.source_heads.get(remote)
-            if remote_head != proof["checkpoint_sha"]:
-                if remote_head is not None:
-                    return False
-                async with self.db._engine.connect() as conn:
-                    parent = await conn.scalar(
-                        select(tasks.c.branch_name).where(tasks.c.id == proof["parent_task_id"])
-                    )
-                parent_head = observed.source_heads.get(
-                    "refs/remotes/origin/" + (parent or "").removeprefix("refs/heads/")
-                )
-                if not parent_head or not await observed.git.ais_ancestor(
-                    observed.store, proof["checkpoint_sha"], parent_head, strict=True
-                ):
-                    return False
             if not await observed.git.ais_ancestor(
                 observed.store,
                 proof["checkpoint_sha"],
@@ -866,6 +1029,50 @@ class StackedBranches:
             ):
                 return False
         return True
+
+    async def running_blocker(self, task_id, *, workspace=None):
+        """Report changed inputs; accept an author's real merges without resetting work."""
+        async with self.db._engine.connect() as conn:
+            origin = await self._origin(task_id, conn)
+            if not origin or not origin["stack_snapshot"] or await self.current(task_id, conn=conn):
+                return None
+            project_id = await conn.scalar(select(tasks.c.project_id).where(tasks.c.id == task_id))
+        blocker = {
+            "code": "stack_stale_input", "task_id": task_id,
+            "error": "Prerequisite inputs changed. Preserve your work and merge the current "
+                     "required sources before closing; wait for reopened or held sources.",
+        }
+        if workspace is None or self.observer is None:
+            return blocker
+        view = await observe_stacks(self.observer, project_id, task_id=task_id)
+        ids = view.required(task_id)
+        blocker["required_sources"] = {
+            tid: proof["checkpoint_sha"] for tid, proof in view.proofs.items()
+        }
+        async with self.db._engine.connect() as conn:
+            proofs = await view.verified_on(conn, ids)
+        if set(proofs) != ids or origin["stack_snapshot"].get("repair_task_id"):
+            return blocker
+        # Git ancestry is the satisfaction rule, including when the source's
+        # generation changed but its source is already in the author's branch.
+        git = self.observer.git
+        for proof in proofs.values():
+            if await git.ais_ancestor(workspace, proof["checkpoint_sha"], "HEAD", strict=True) is not True:
+                return blocker
+        if not await view.fresh():
+            return blocker
+        async with self.db.immediate() as conn:
+            if await view.verified_on(conn, ids) != proofs:
+                return blocker
+            old = origin["stack_snapshot"]
+            updated = {key: value for key, value in old.items() if key != "hold"}
+            updated["prerequisites"] = proofs
+            result = await conn.execute(update(task_branch_origins).where(
+                task_branch_origins.c.id == origin["id"],
+                task_branch_origins.c.retired_at.is_(None),
+                task_branch_origins.c.stack_snapshot == old,
+            ).values(stack_snapshot=updated))
+        return None if result.rowcount == 1 else blocker
 
     async def _idle(self, conn, task_id):
         row = (await conn.execute(select(tasks).where(tasks.c.id == task_id))).mappings().one()
@@ -983,7 +1190,9 @@ class StackedBranches:
             *sorted({head, *(proofs[tid]["checkpoint_sha"] for tid in ids),
                      *(proof["checkpoint_sha"] for proof in old["prerequisites"].values())}),
         )
-        heads = [proofs[tid]["checkpoint_sha"] for tid in sorted(ids)]
+        async with self.db._engine.connect() as conn:
+            order = await ordered_sources(conn, ids)
+        heads = [proofs[tid]["checkpoint_sha"] for tid in order]
         for tid, previous in old["prerequisites"].items():
             if not await gitops.is_ancestor(repo, previous["checkpoint_sha"],
                                            proofs[tid]["checkpoint_sha"]):
@@ -1165,7 +1374,7 @@ class StackedBranches:
         from src.integration.lock import BranchLock
         from src.integration.models import BranchKey
         from src.models import Task, TaskStatus, TaskType
-        from src.task_names import child_task_id
+        from src.task_names import child_task_id, fresh_root_id
 
         previous_stack = old or {}
         if previous_stack.get("repair_task_id"):
@@ -1177,12 +1386,15 @@ class StackedBranches:
             current = await self._origin(task["id"], conn)
             if current["stack_snapshot"] != old:
                 return "changed"
-            if preparation_conflict and {
+            if preparation_conflict and _bindings({
                 row["task_id"]: _identity(row)
                 for row in await _inputs(conn, task["project_id"], task["id"])
-            } != proofs:
+            }) != _bindings(proofs):
                 return "changed"
-            repair_id, _capped = await child_task_id(conn, task["parent_task_id"])
+            parent_id = task["parent_task_id"]
+            repair_id = (await child_task_id(conn, parent_id))[0] if parent_id else (
+                await fresh_root_id(conn)
+            )
             repair_task = Task(
                 id=repair_id,
                 project_id=task["project_id"],
@@ -1225,27 +1437,28 @@ class StackedBranches:
             branch = await reserve_branch_name(
                 conn, task_id=repair_id, title="Repair prerequisite stack", is_epic=False
             )
-            await self.db.set_parent(
-                repair_id,
-                task["parent_task_id"],
-                conn=conn,
-                integration_authorized=True,
-                completed_parent_for_repair=True,
-            )
             hierarchy = HierarchyIntegration(self.db)
-            parent_checkpoint = await hierarchy._locked_checkpoint(conn, task["parent_task_id"])
-            generation = parent_checkpoint["generation"] + 1
-            await hierarchy._bump_checkpoint(
-                conn, task["parent_task_id"], parent_checkpoint["generation"], generation
-            )
-            repair_task.parent_task_id = task["parent_task_id"]
+            generation = 0
+            if parent_id:
+                await self.db.set_parent(
+                    repair_id, parent_id, conn=conn, integration_authorized=True,
+                    completed_parent_for_repair=True,
+                )
+                parent_checkpoint = await hierarchy._locked_checkpoint(conn, parent_id)
+                generation = parent_checkpoint["generation"] + 1
+                await hierarchy._bump_checkpoint(
+                    conn, parent_id, parent_checkpoint["generation"], generation,
+                )
+                repair_task.parent_task_id = parent_id
             await hierarchy._maybe_create_routing_gate(conn, repair_task, self.routing_policy)
             reserved = await hierarchy._reserve_origin(
                 conn,
                 task_id=repair_id,
                 repository_id=origin["repository_id"],
                 parent_task_id=task["parent_task_id"],
-                parent_ref=origin["parent_ref"],
+                parent_ref=origin["parent_ref"] or await conn.scalar(select(
+                    repos.c.default_branch,
+                ).where(repos.c.id == origin["repository_id"])),
                 base_sha=head,
                 generation=generation,
             )
@@ -1462,7 +1675,7 @@ class EpicRefresh:
             return None
         project = await self.db.get_project(task.project_id)
         policy = (project.hierarchical_integration_policy or {})
-        if policy.get("cross_epic_prerequisites") == "completed":
+        if stacked_policy(project) or policy.get("cross_epic_prerequisites") == "completed":
             return None
         source = tasks.alias("refresh_child_source")
         async with self.db._engine.connect() as conn:

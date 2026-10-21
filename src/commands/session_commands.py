@@ -1342,6 +1342,13 @@ class SessionCommandsMixin:
                 "error": error,
             }
 
+        if outcome == "pass" and work_dir:
+            from src.integration.stacked_branches import StackedBranches
+
+            blocker = await StackedBranches(self.db).running_blocker(task.id, workspace=work_dir)
+            if blocker:
+                return {"success": False, **blocker}
+
         # Gate passing closes on the worker's subtask checklist before writes;
         # failing closes must not be blocked on housekeeping. Decide here whether
         # to skip open subtasks, but write only after the final refusal point
@@ -1990,6 +1997,9 @@ class SessionCommandsMixin:
             except Exception:
                 logger.debug("heartbeat: agent update failed", exc_info=True)
 
+        from src.integration.stacked_branches import StackedBranches
+
+        blocker = await StackedBranches(self.db).running_blocker(task.id)
         ttl = self.config.sessions.lease_ttl_seconds
         return {
             "success": True,
@@ -1997,4 +2007,5 @@ class SessionCommandsMixin:
             "session_id": session.id if session else None,
             "heartbeat_at": now,
             "lease_expires_at": now + ttl if ttl > 0 else None,
+            **({"blockers": [blocker]} if blocker else {}),
         }

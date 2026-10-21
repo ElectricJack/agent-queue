@@ -3607,7 +3607,10 @@ async def test_train_member_with_stale_origin_and_inherited_target_needs_no_repa
 
 
 async def cross_epic_world(world):
-    """Two epics whose child dependency spans different branch histories."""
+    """Two epics exercising the explicit waiting-for-delivery policy."""
+    await world.db.update_project("p", hierarchical_integration_policy={
+        "prerequisite_branches": "wait-for-parent",
+    })
     epic = await completed(world, "epic", done=False)
     await completed(world, "other", done=False)
     prerequisite = await completed(world, "prerequisite", parent="other")

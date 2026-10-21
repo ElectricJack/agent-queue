@@ -158,16 +158,30 @@ The git-first path still rebuilds on target movement. It does not implement
 these policy gaps are tracked separately from cadence and settling.
 
 The project policy `hierarchical_integration_policy.prerequisite_branches` accepts
-`stacked` or `wait-for-parent`. The `agent-queue` project defaults to `stacked`;
-other projects default to `wait-for-parent`.
+`stacked` or `wait-for-parent`. Every project defaults to `stacked`; an explicitly
+authored `wait-for-parent` choice remains in force.
 
-In stacked mode, a child with completed `blocks` prerequisites under the same
-parent can start as soon as Git proves their checkpointed heads on their own
-task branches. One prerequisite supplies the child's base directly; multiple
-prerequisites are merged over the epic head. The origin records this stack
-separately from its immutable filing base. Preparation preserves existing child
-commits under the managed writer fence. Scheduler, pool demand, explain and
-claim consume the same verified frontier rule.
+In stacked mode, completed passing `blocks` prerequisites in the same repository
+can supply sources from siblings, another epic or a root task. They do not wait
+for parent assembly or default-branch delivery. Git's retained completion names
+the immutable final source; deleting or moving its task branch does not change
+that generation. Preparation includes the current parent/default base and every
+required source, ordered by dependency topology then stable task ID. Contained
+heads are deduplicated, fast-forwards are allowed, and divergent inputs use real
+merge commits. Every required source must be an ancestor of the prepared head.
+The origin records this stack separately from its immutable filing base.
+Preparation preserves existing child commits under the managed writer fence.
+Scheduler, pool demand, explain and
+claim consume the same verified frontier rule. Cross-repository dependencies
+continue to use their artifact contract and cannot contribute a Git stack.
+
+Explicit holds, required human decisions and current reviewer rejections travel
+through prerequisite sources and their owning epics. An open epic or a missing
+epic review row alone adds no gate. Reopening or replacing a prerequisite
+invalidates the consumed generation. A running worker receives `stack_stale_input`
+on heartbeat and on a passing close until it merges the current required sources.
+Its checkout and authored commits are preserved; ancestry of those sources
+satisfies the stack without a separate review or proof submission.
 
 A batch carries prerequisites before their dependents, or proves the absent
 prerequisites already reached its target. It tests the exact combined candidate.
@@ -203,10 +217,10 @@ shared parent first. Preparation merges that exact parent head into the child.
 Both modes preserve the filing origin and exclude unrelated default-branch
 commits. Unknown or stale evidence leaves the child unclaimable.
 
-A completed prerequisite in another epic, or a root prerequisite, must reach
-the project's default branch before its dependent becomes claimable. Git proves
-the exact completion source by ancestry, an `AQ-Source` trailer or whole-source
-patch equivalence. `aq task explain` names an unproven prerequisite and its epic
+With an explicit `wait-for-parent` choice, a completed prerequisite in another
+epic, or a root prerequisite, must reach the project's default branch before its
+dependent becomes claimable. The configured delivery observer proves the exact
+completion source. `aq task explain` names an unproven prerequisite and its epic
 with `prerequisite_not_on_default_branch`. Pool demand and claims use the same
 proof.
 
@@ -222,8 +236,9 @@ The project integration policy defaults to
 `cross_epic_prerequisites: default_branch`; an explicit `completed` value restores
 the legacy rule that completion alone releases cross-epic dependencies.
 
-Before starting a cross-epic dependent, its epic must contain the proven sources.
-A refresh brings them from the default branch through a frozen train batch.
+In `wait-for-parent` mode, before starting a cross-epic dependent, its epic must
+contain the proven sources. A refresh brings them from the default branch through
+a frozen train batch.
 Publication needs the epic's lease,
 checks on the exact candidate and attestation. Checks or an occupied lease keep
 the refresh pending; a content conflict files ordinary repair work on the epic
@@ -234,8 +249,9 @@ Preparation preserves the child's existing
 commits and records its actual refreshed parent head and default head in the
 filing origin's `base_refresh` annotation. The original `base_sha` stays fixed.
 Preparation requires the epic to contain each proven cross-epic source; unrelated
-default-branch commits arriving during CI do not force another refresh. It refreshes
-before constructing a sibling prerequisite stack, so both inputs reach the child.
+default-branch commits arriving during CI do not force another refresh. The
+default stacked mode instead merges those exact sources directly into the child
+over its current epic base, without requiring an epic refresh.
 Status includes each epic's `ahead` and `behind` commit counts against the default
 branch, or an unknown distance when Git cannot observe it.
 

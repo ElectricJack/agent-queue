@@ -736,7 +736,9 @@ def cross_parent_prerequisites_on_default(mode: ProjectIntegrationMode | None = 
     With no observation, a completed cross-parent source remains unproven.
     """
     source, cross_edge = _cross_parent_prerequisites()
-    ids = mode.default_prerequisite_ids if mode else ()
+    ids = mode.default_prerequisite_ids if mode else frozenset()
+    if mode is not None and mode.stacked:
+        ids |= mode.stackable_prerequisite_ids
     unproven = ~(source.c.id == any_(literal(list(ids), type_=ARRAY(Text)))) if ids else true()
     return ~(_cross_parent_delivery_enabled(mode) & exists(cross_edge.where(unproven)))
 
@@ -763,7 +765,9 @@ def epic_refresh_ready(mode: ProjectIntegrationMode | None = None):
     An ordinary sibling collection, including a failed or held one, cannot
     withhold a child whose epic already contains every proven source.
     """
-    _, cross_edge = _cross_parent_prerequisites()
+    source, cross_edge = _cross_parent_prerequisites()
+    if mode is not None and mode.stacked:
+        cross_edge = cross_edge.where(~source.c.id.in_(mode.stackable_prerequisite_ids))
     parent = _CONTAINMENT_PARENT
     has_epic = exists(select(literal_column("1")).where(
         parent.c.id == tasks.c.parent_task_id, parent.c.branch_name.is_not(None),
