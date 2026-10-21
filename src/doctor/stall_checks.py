@@ -1105,7 +1105,6 @@ async def _find_unadmitted_parents(ctx: DoctorContext) -> list[dict]:
     from src.database import tables as t
     from src.database.queries.integration_train_queries import (
         _ACTIVE_BATCH_LIFECYCLES,
-        _root_delivery_receipt_conditions,
     )
     from src.integration.reviews import ReviewEvidenceProducer
     from src.integration.delivery_observer import prerequisite_observer
@@ -1137,10 +1136,6 @@ async def _find_unadmitted_parents(ctx: DoctorContext) -> list[dict]:
             t.integration_batches, t.integration_batches.c.id == t.integration_batch_members.c.batch_id,
         ).where(t.integration_batch_members.c.task_id == t.tasks.c.id,
                 t.integration_batches.c.lifecycle.in_(_ACTIVE_BATCH_LIFECYCLES))),
-        (True if observer is not None else ~exists(select(t.task_delivery_receipts.c.id).where(
-            t.task_delivery_receipts.c.source_task_id == t.tasks.c.id,
-            *_root_delivery_receipt_conditions(t.repos.c.id, t.repos.c.default_branch),
-        ))),
     ).order_by(t.tasks.c.updated_at, t.tasks.c.id).limit(100)
     producer = ReviewEvidenceProducer(ctx.db, None)
     findings = []

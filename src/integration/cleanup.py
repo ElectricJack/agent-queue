@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import inspect
+import json
 import logging
 import os
 import time
@@ -35,7 +36,6 @@ from src.database.tables import (
     integration_repair_stages,
     integration_root_intent_members,
     task_completion_records,
-    task_delivery_receipts,
     tasks,
     sessions,
     workspaces,
@@ -243,6 +243,10 @@ class IntegrationCleanupService:
             if kind in {"remote_ref", "local_ref"}:
                 return await self._cleanup_train_ref(row, batch, repository, binding)
             return "failed", "unknown train cleanup kind"
+        if batch and batch["lifecycle"] != "aborted":
+            hold = await self._delivery_hold(row, batch)
+            if hold:
+                return "retryable", hold
         if kind in {"source_pr", "audit_pr"}:
             return await self._cleanup_pr(row, binding)
         if kind == "remote_ref":
@@ -252,6 +256,45 @@ class IntegrationCleanupService:
         if kind == "worktree":
             return await self._cleanup_worktree(row)
         return "failed", "unknown cleanup kind"
+
+    async def _delivery_hold(self, row, batch):
+        """Historical batch state and receipts cannot authorize cleanup.
+
+        Source identities still have to be delivered to the current default
+        target. Unknown observers, rewinds and replacement generations retain
+        resources; the existing owner and exact-ref guards apply afterwards.
+        """
+        from src.integration.delivery_observer import delivery_targets, prerequisite_observer
+
+        observer = prerequisite_observer(self.db)
+        if observer is None:
+            return "cleanup requires current Git delivery evidence"
+        async with self.db._engine.connect() as conn:
+            ids = set((await conn.execute(select(integration_batch_members.c.task_id).where(
+                integration_batch_members.c.batch_id == batch["id"],
+            ))).scalars())
+            branch_ids = set()
+            if row.get("target_ref"):
+                branch = self._short_head(row["target_ref"])
+                for table in (tasks, archived_tasks):
+                    branch_ids.update((await conn.execute(select(table.c.id).where(
+                        table.c.project_id == batch["project_id"],
+                        table.c.repo_id == batch["repository_id"],
+                        table.c.branch_name.in_((branch, "refs/heads/" + branch)),
+                    ))).scalars())
+            ids |= branch_ids
+        if not ids:
+            return "cleanup has no current source identities"
+        view = await observer.observe(ids, target_loader=delivery_targets)
+        await view.fresh()
+        async with self.db._engine.connect() as conn:
+            verified = await view.verified_on(conn, ids)
+        if any(tid not in verified or not verified[tid].satisfied
+               or verified[tid].lifecycle_exclusion for tid in ids):
+            return "cleanup source delivery is unknown or pending on the current target"
+        if any(verified[tid].source_oid != row["expected_sha"] for tid in branch_ids):
+            return "cleanup source generation changed"
+        return None
 
     async def _cleanup_pr(
         self, row: dict[str, Any], binding: GitHubRepositoryBinding
@@ -877,24 +920,9 @@ class IntegrationCleanupService:
                 .mappings()
                 .all()
             )
-            receipts = {
-                row["id"]: dict(row)
-                for row in (
-                    await conn.execute(
-                        select(task_delivery_receipts).where(
-                            task_delivery_receipts.c.batch_id == batch_id,
-                            task_delivery_receipts.c.candidate_revision
-                            == batch["current_revision"],
-                        )
-                    )
-                )
-                .mappings()
-                .all()
-            }
             if (
                 not members
                 or len(members) != len(reservations)
-                or any(row["receipt_id"] not in receipts for row in reservations)
             ):
                 return CleanupMaterializationResult(outcome="invariant_error", batch_id=batch_id)
             if any(
@@ -909,7 +937,7 @@ class IntegrationCleanupService:
                     .values(cleanup_state="conflict", updated_at=observed_at)
                 )
                 return CleanupMaterializationResult(outcome="conflict", batch_id=batch_id)
-            items = self._items(batch, publication, members, reservations, receipts, observed_at)
+            items = self._items(batch, publication, members, reservations, observed_at)
             items.extend(await self._descendant_ref_items(
                 conn, batch, publication, members, observed_at,
                 existing_refs={item["target_ref"] for item in items if item.get("target_ref")},
@@ -1631,26 +1659,24 @@ class IntegrationCleanupService:
         ).scalar_one_or_none()
         if promoted_at is None:
             return []
-        receipt_rows = (
+        completion_rows = (
             await conn.execute(
-                select(task_delivery_receipts.c.source_task_id,
-                       task_delivery_receipts.c.target_task_id,
-                       task_delivery_receipts.c.reviewed_head_sha)
+                select(task_completion_records.c.task_id, task_completion_records.c.commits)
                 .where(
-                    task_delivery_receipts.c.source_task_id.in_(descendants),
-                    task_delivery_receipts.c.repository_id == batch["repository_id"],
-                    task_delivery_receipts.c.disposition.in_(("code", "noop")),
-                    task_delivery_receipts.c.created_at <= promoted_at,
+                    task_completion_records.c.task_id.in_(descendants),
+                    task_completion_records.c.completed_at <= promoted_at,
                 )
-                .order_by(task_delivery_receipts.c.created_at.desc(),
-                          task_delivery_receipts.c.id.desc())
+                .distinct(task_completion_records.c.task_id)
+                .order_by(task_completion_records.c.task_id,
+                          task_completion_records.c.completed_at.desc(),
+                          task_completion_records.c.id.desc())
             )
         ).mappings().all()
         heads = {}
-        for receipt in receipt_rows:
-            row, _ = descendants[receipt["source_task_id"]]
-            if receipt["target_task_id"] == row["parent_task_id"]:
-                heads.setdefault(receipt["source_task_id"], receipt["reviewed_head_sha"])
+        for completion in completion_rows:
+            commits = json.loads(completion["commits"])
+            if commits:
+                heads[completion["task_id"]] = commits[-1]
         common = {
             "batch_id": batch["id"],
             "project_id": batch["project_id"],
@@ -1694,7 +1720,7 @@ class IntegrationCleanupService:
             })
         return items
 
-    def _items(self, batch, publication, members, reservations, receipts, now):
+    def _items(self, batch, publication, members, reservations, now):
         common = {
             "batch_id": batch["id"],
             "project_id": batch["project_id"],

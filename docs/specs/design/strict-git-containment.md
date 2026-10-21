@@ -126,6 +126,34 @@ The final `policy_docs` retirement ratchet must cover all entries before activat
 | `src/database/tables.py` | Receipt schema, foreign keys, receipt primitive enum | policy_docs; separately gated post-rollback migration |
 | `src/database/legacy_sqlite_import.py` | Offline historical import table inventory | policy_docs; historical import is not runtime authority |
 
+### Admission consumer disposition (S4)
+
+`AdmissionView` freezes eligible IDs, reasons and hierarchy evidence once per
+request. Scheduler, pool demand, task explain, dependency readiness and verified
+wait admission project that view. Claims gather fresh evidence before locks and
+recheck graph, route, completion generation, repository, target and project policy
+under their existing claim fences. Configured pool bounds and warm floors remain
+capacity policy, separately represented from eligible task demand.
+
+The admission-owned receipt fallbacks in `hierarchy_queries`, `claim_queries`,
+`blocked_state`, `task_graph/readiness`, `hierarchy`, `removal_guard`,
+`source_repairs`, `drain_owners` and `doctor/stall_checks` are removed. SQL blocked
+state projects source completion for `delivery-of`; the view separately proves
+current default-target containment. A missing truthful observer withholds only
+Git-gated candidates and cannot restore receipt eligibility. Cleanup materializes
+historical resource identities without treating receipt presence as delivery and
+revalidates current default-target proof before destructive legacy cleanup.
+
+Shared inventory entries remain explicit transition work: `integration_train_queries`
+and `root_pull_requests` still contain legacy root selection/diagnostic receipt
+reads owned jointly with dispatch; `observe` and `parent_source` retain the old
+parent episode/recovery protocol owned with close_merge/policy_docs;
+`epic_delivery` retains the shadow display projection owned with dashboard. These
+paths are not declared inactive or retired by S4. Their owning stages must remove
+the remaining authority before the final policy_docs retirement ratchet permits
+activation. Receipt IDs retained on cleanup items and failed delivery diagnostics
+are historical operation identity, never positive eligibility proof.
+
 Actual SQL writes are `integration_delivery_queries._finalize_integration_promotion_on`,
 `records.RecordsPrimitives.record_receipt_on`, `records.ParentEpisodeRecords.record_disposition`,
 `child_delivery.ChildDelivery._reissue_receipt`, `truth_reconciler.GitTruthReconciler._repair`,
