@@ -111,9 +111,7 @@ class WaitSourceListener:
     async def _dispatch(self, conn, event):
         dispatcher = self.service.dispatcher
         lifecycle = getattr(self.service, "lifecycle", None)
-        if lifecycle is not None and getattr(
-            self.service.orch.config.wait_policy, 'hibernation_enabled', False,
-        ):
+        if lifecycle is not None:
             await lifecycle.resume.recovery_event(conn, event)
         if event["source_key"].startswith("resource_invalidation:"):
             after = ""
@@ -183,7 +181,7 @@ class WaitSourceListener:
 
     async def tick(self):
         async with self._tick_lock:
-            if not self.service.enabled or not await self.service.lease():
+            if not await self.service.processing_enabled() or not await self.service.lease():
                 return False
             # Own short READ COMMITTED connection, before graph/owner/source locks.
             watermark = await self.db.wait_source_watermark()

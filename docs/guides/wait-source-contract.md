@@ -118,10 +118,12 @@ runtime adopts and maintains effective priority and verifies the same strict gua
 
 ## Listener and deadline consumer composition
 
-`WaitService` in `src/waits/service.py` is installed next to the review notifier in
-`main.py`, cancelled on shutdown, and recovery-ticked by the orchestrator. It never
-connects, leases, dispatches or fires while `wait_policy.v2_enabled` is false. No
-activation defaults change here. v1 reconciliation remains intact until cutover.
+`WaitService` in `src/wait_runtime/service.py` is installed next to the review notifier in
+`main.py`, cancelled on shutdown, and recovery-ticked by the orchestrator. Flags
+gate new admissions per project. Existing registered waits and
+continuations continue dispatch and recovery when flags are disabled; an empty
+disabled service opens no listener connection. See the
+[cutover runbook](hibernation-cutover-runbook.md) for rollback ordering.
 
 The dedicated asyncpg listener subscribes to both channels before taking the fenced
 watermark. The `source` cursor's 30-second lease elects **both** source and timer
@@ -167,8 +169,10 @@ task status is unchanged; downstream handlers must use actual settlement states.
 ## Admission service and consumer dispatch
 
 `SchedulerWaitService` installs `scheduler_wait_sync` at the existing wait-reconciler
-cycle site. Both `v2_enabled` and `scheduler_waits_enabled` must be true; defaults
-remain false. Its candidate list carries no trusted verdict: every task and typed
+cycle site. Both `v2_enabled` and `scheduler_waits_enabled` must be true for
+new admissions in the resolved project policy; shipped defaults are true.
+Disabling retracts scheduler waits and reservations. Its candidate list carries
+no trusted verdict: every task and typed
 constraint is read again. `AdmissionReader` is the resource reader supplied to
 `build_registry(resource_reader=...)` for listener and dispatcher verification.
 It binds the actual task/project, repository, route/class/profile, configuration,
@@ -205,8 +209,8 @@ and their integration checks. No installed policy is changed by this implementat
 `src/wait_runtime/service.py` now composes the listener, dispatcher, scheduler
 admission deadlines, hibernation transaction, resume transaction and pool eviction.
 The database-only condition, graph and receipt code remains in `src/waits`; it does
-not import command, session or orchestrator packages. All v2 feature flags remain
-false by default.
+not import command, session or orchestrator packages. Cutover defaults enable
+all three feature flags and refuse raw version 1 registration bodies.
 
 A task suspension retains its claim, token and workspace until the exact provider
 instance is stopped, the task branch is published, and the checkout is detached.

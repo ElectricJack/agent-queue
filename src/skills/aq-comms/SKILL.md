@@ -55,8 +55,8 @@ aq message status <message-id>
 
 When the guidance answers a worker's message, pass that message's id with
 `--reply-to <message-id>`. The guidance then joins the message's thread, which
-is what a worker's durable message wait (`aq wait register --kind message
---ref <thread>`) waits for; guidance sent without it never satisfies that wait:
+is what a worker's verified message condition waits for; guidance sent without it
+never satisfies that wait:
 
 ```bash
 aq agent message <task-id> "Filed: fresh-ember and .1-.9." --reply-to <message-id>
@@ -112,7 +112,7 @@ aq message send --to session:supervisor-<pid> --project <pid> \
   --from-kind session --from-id <held-session-UUID> \
   --thread-id <unique-thread> --body "Blocked: <task and decision needed>" --json
 aq wait register --kind message --ref <unique-thread> \
-  --after-seq <sent-message-created_seq> --idempotency-key <stable-key> --timeout 3600
+  --after-seq <sent-message-created_seq> --idempotency-key <stable-key>
 ```
 
 Register once and end the turn; consume the returned wait ID when notified.
@@ -253,15 +253,16 @@ thread id as the referral:
 
 ```bash
 aq wait register --kind message --ref <thread-id> --after-seq <cursor> \
-  --idempotency-key turn-1-retry --timeout 3600
+  --idempotency-key turn-1-retry
 ```
 
-The wait resolves on the first collaboration message after your cursor. It
-also resolves in terminal in four ways that never require a re-register:
-`peer_failed` (a peer went FAILED or BLOCKED), `peer_gone` (all peers are
-terminal, archived, or missing), `thread_closed` (the thread reached a
-terminal state, or the deadline passed), and `partner_not_running` (no peer is
-running after a 120-second grace). See [agent-waits.md](/docs/guides/agent-waits.md)
-for the full wait contract and doctor checks.
+The verified wait resolves on a source outcome after your cursor. Register once
+and end the turn. AQ chooses sleep and delivers the outcome; inspect its result
+reference before continuing. An unavailable peer or source is an explicit outcome,
+not proof the requested work succeeded. Operational deadlines escalate to the
+supervisor without resetting wait age or waking the worker. Human waits have no
+automatic deadline; the supervisor decides or lifts with explicit evidence.
+See [agent-waits.md](/docs/guides/agent-waits.md) for the checkpoint and
+acknowledgement protocol.
 
 Full worker guide: [agent-collaboration.md](/docs/guides/agent-collaboration.md).
