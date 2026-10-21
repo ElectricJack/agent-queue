@@ -1152,6 +1152,7 @@
       "description": "Agent sessions: spec building (names, argv, env, prompt delivery), executable checks, the session provider contract, the session reconciler and exit classifier, session queries and commands, and the completion protocol.",
       "modules": [
         "tests/test_cli_session_history.py",
+        "tests/test_codex_trust.py",
         "tests/test_env_scrub.py",
         "tests/test_fake_session_script.py",
         "tests/test_handoffs.py",
@@ -4358,6 +4359,20 @@
         "parametrize"
       ],
       "summary": "Codex tiers launch the requested current model families at the class effort."
+    },
+    "tests/test_codex_trust.py": {
+      "areas": [
+        "session-runtime"
+      ],
+      "default_arm": true,
+      "digest": "sha256:d0a18bb4bc3eacaaa0aa9ea174f4b592ef9fbddde0c90a22c86d19fc9d509f4a",
+      "imports": [
+        "src.sessions.codex_trust"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Pre-trusting a Codex session's project in ``config.toml`` (nimble-harbor-12)."
     },
     "tests/test_collaboration.py": {
       "areas": [
@@ -16745,7 +16760,7 @@
         "session-runtime"
       ],
       "default_arm": true,
-      "digest": "sha256:b00f9790f3fa53db7cf7f6e86e5c4102a87e18af318b005303515cb1e22d32a2",
+      "digest": "sha256:117baae2c5c0fee006a5c4bea87406bbbda0d3e63800dfe9009658b04c0e2591",
       "imports": [
         "src.cli",
         "src.cli.agent_surface",
@@ -16757,6 +16772,7 @@
         "src.sessions.env",
         "src.sessions.harness_parser",
         "src.sessions.harness_registry",
+        "src.sessions.provider",
         "src.sessions.spec",
         "src.vault"
       ],
