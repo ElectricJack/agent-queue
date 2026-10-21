@@ -51,7 +51,8 @@ PROFILE_DEFAULTS = REPO_ROOT / "src" / "profiles" / "defaults"
 #: Frontmatter id -> the shipped Markdown it was compiled from. Retired policies
 #: retain their reviewed source for audit, outside the auto-installed defaults.
 SHIPPED_SOURCES: dict[str, str] = {
-    "stuck-task-watch": "src/prompts/default_playbooks/stuck-task-watch.md",
+    "stuck-task-watch": "src/prompts/reviewed_playbooks/stuck-task-watch/source.md",
+    "stuck-task-watch-reminder": "src/prompts/reviewed_playbooks/stuck-task-watch-reminder/source.md",
     "object-loop": "src/prompts/project_playbooks/matter-engine-cpp/object-loop.md",
     "supervisor-hourly-report": "src/prompts/reviewed_playbooks/supervisor-hourly-report/source.md",
     "default-pipeline": "src/prompts/default_playbooks/default-pipeline.md",

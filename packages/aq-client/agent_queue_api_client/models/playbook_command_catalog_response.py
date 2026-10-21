@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, Any, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from attrs import define as _attrs_define
 
@@ -21,11 +21,17 @@ class PlaybookCommandCatalogResponse:
         success (bool | Unset):  Default: True.
         commands (list[PlaybookCommandCatalogEntryDTO] | Unset):
         count (int | Unset):  Default: 0.
+        total (int | Unset):  Default: 0.
+        offset (int | Unset):  Default: 0.
+        next_offset (int | None | Unset):
     """
 
     success: bool | Unset = True
     commands: list[PlaybookCommandCatalogEntryDTO] | Unset = UNSET
     count: int | Unset = 0
+    total: int | Unset = 0
+    offset: int | Unset = 0
+    next_offset: int | None | Unset = UNSET
 
     def to_dict(self) -> dict[str, Any]:
         success = self.success
@@ -39,6 +45,16 @@ class PlaybookCommandCatalogResponse:
 
         count = self.count
 
+        total = self.total
+
+        offset = self.offset
+
+        next_offset: int | None | Unset
+        if isinstance(self.next_offset, Unset):
+            next_offset = UNSET
+        else:
+            next_offset = self.next_offset
+
         field_dict: dict[str, Any] = {}
 
         field_dict.update({})
@@ -48,6 +64,12 @@ class PlaybookCommandCatalogResponse:
             field_dict["commands"] = commands
         if count is not UNSET:
             field_dict["count"] = count
+        if total is not UNSET:
+            field_dict["total"] = total
+        if offset is not UNSET:
+            field_dict["offset"] = offset
+        if next_offset is not UNSET:
+            field_dict["next_offset"] = next_offset
 
         return field_dict
 
@@ -69,10 +91,26 @@ class PlaybookCommandCatalogResponse:
 
         count = d.pop("count", UNSET)
 
+        total = d.pop("total", UNSET)
+
+        offset = d.pop("offset", UNSET)
+
+        def _parse_next_offset(data: object) -> int | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(int | None | Unset, data)
+
+        next_offset = _parse_next_offset(d.pop("next_offset", UNSET))
+
         playbook_command_catalog_response = cls(
             success=success,
             commands=commands,
             count=count,
+            total=total,
+            offset=offset,
+            next_offset=next_offset,
         )
 
         return playbook_command_catalog_response

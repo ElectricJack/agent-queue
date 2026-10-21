@@ -17,6 +17,7 @@ import re
 import time
 import weakref
 from collections.abc import Iterable, Mapping
+from contextlib import nullcontext
 from dataclasses import dataclass, field, replace
 from functools import partial
 from pathlib import Path
@@ -409,7 +410,7 @@ def prerequisite_observer(db):
 
 
 async def hierarchy_frontier_modes(
-    db, *, project_ids=None, task_id=None, cached_only=False, display_unavailable=None,
+    db, *, project_ids=None, task_id=None, cached_only=False, display_unavailable=None, conn=None,
 ):
     """Share revalidated Git prerequisites across scheduler, pool and claim reads.
 
@@ -452,7 +453,7 @@ async def hierarchy_frontier_modes(
         try:
             modes[project.id] = await asyncio.wait_for(_project_frontier_mode(
                 db, observer, project, mode, task_id=task_id, cached_only=cached_only,
-                display_unavailable=display_unavailable,
+                display_unavailable=display_unavailable, conn=conn,
             ), timeout)
         except TimeoutError:
             # Fail closed for this read: no Git-proven prerequisite admits work,
@@ -476,7 +477,7 @@ FRONTIER_DISPLAY_TIMEOUT_SECONDS = 10.0
 
 
 async def _project_frontier_mode(
-    db, observer, project, mode, *, task_id, cached_only, display_unavailable=None,
+    db, observer, project, mode, *, task_id, cached_only, display_unavailable=None, conn=None,
 ):
     from dataclasses import replace
 
@@ -499,8 +500,8 @@ async def _project_frontier_mode(
     else:
         fresh = await view.fresh()
     if fresh:
-        async with db._engine.connect() as conn:
-            verified_mode = await view.mode(mode, conn=conn)
+        async with db._engine.connect() if conn is None else nullcontext(conn) as read:
+            verified_mode = await view.mode(mode, conn=read)
     stackable = frozenset()
     if mode.stacked:
         from src.integration.stacked_branches import observe_stacks
@@ -509,8 +510,8 @@ async def _project_frontier_mode(
                                            max_age=observer.READ_MAX_AGE,
                                            **({"cached_only": True} if cached_only else {}))
         if await stack_view.fresh():
-            async with db._engine.connect() as conn:
-                stackable = frozenset(await stack_view.verified_on(conn))
+            async with db._engine.connect() if conn is None else nullcontext(conn) as read:
+                stackable = frozenset(await stack_view.verified_on(read))
     return replace(verified_mode, stackable_prerequisite_ids=stackable)
 
 
@@ -567,7 +568,11 @@ def _for_target(snapshot: DeliverySnapshot, target: DeliveryTarget) -> DeliveryS
     """
     if snapshot.target_ref == target.target_ref:
         return snapshot
-    if snapshot.error not in {None, "missing_target"}:
+    if snapshot.acquisition_error:
+        return replace(snapshot, target_ref=target.target_ref, target_oid=None,
+                       error="target_ref_missing" if target.target_ref in
+                       snapshot.absent_target_refs else snapshot.acquisition_error)
+    if snapshot.error not in {None, "target_ref_missing"}:
         return replace(snapshot, target_ref=target.target_ref, target_oid=None)
     oid = snapshot.source_heads.get(
         "refs/remotes/origin/" + target.target_ref.removeprefix("refs/heads/"))
@@ -575,7 +580,7 @@ def _for_target(snapshot: DeliverySnapshot, target: DeliveryTarget) -> DeliveryS
         return replace(snapshot, target_ref=target.target_ref, target_oid=None,
                        error="snapshot_git_error: invalid_target")
     return replace(snapshot, target_ref=target.target_ref, target_oid=oid,
-                   error=None if oid else "missing_target")
+                   error=None if oid else "target_ref_missing")
 
 
 class DeliveryObserver:
@@ -599,7 +604,9 @@ class DeliveryObserver:
         self.db = db
         self.git = git
         self.truth = truth
-        self.request_loader = partial(load_delivery_requests, reduced=truth is not None)
+        # Git truth proves a sourceless completed container from its children.
+        self.request_loader = partial(load_delivery_requests, reduced=truth is not None,
+                                      containers=truth is not None)
         self.target_loader = partial(delivery_targets, reduced=truth is not None)
         self.data_dir = Path(data_dir) / "development-integration"
         self._recent: dict[DeliveryTarget, tuple[float, DeliverySnapshot]] = {}
@@ -642,10 +649,11 @@ class DeliveryObserver:
         # fetched alone; observers sharing a store read with their own transport.
         snapshot = replace(snapshot, git=self.git, _cache={}, _identities={}, _freshness={})
         own = _for_target(snapshot, target)
-        if snapshot.error in {None, "missing_target"} and self not in flight.recorded:
+        if (snapshot.error in {None, "target_ref_missing"} and not snapshot.acquisition_error
+                and self not in flight.recorded):
             flight.recorded.add(self)
             self._remember(target, snapshot, stamp)
-        elif own.error in {None, "missing_target"} and (
+        elif own.error in {None, "target_ref_missing"} and (
                 target not in self._recent or self._recent[target][0] < stamp):
             # A joiner's own ref, outside the targets its first caller covered.
             self._recent[target] = (stamp, own)
@@ -820,7 +828,7 @@ class DeliveryObserver:
             dependent_parent, dependent_parent.c.id == dependent.c.parent_task_id,
         )).where(
             dependent.c.project_id == project_id,
-            dependent.c.status.in_(("READY", "IN_PROGRESS")),
+            dependent.c.status.in_(("READY", "IN_PROGRESS", "RESUME_PENDING")),
             tasks.c.status == "COMPLETED", task_dependencies.c.dep_type == "blocks",
         )
         if task_id is not None:

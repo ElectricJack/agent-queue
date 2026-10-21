@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any, Literal
 
 from pydantic import BaseModel
+from src.observations.models import SnapshotValue
 
 
 class ProjectSummary(BaseModel):
@@ -141,7 +142,7 @@ class WorkspaceListDiagnostics(BaseModel):
     authority: str
 
 
-class ListProjectsResponse(BaseModel):
+class ListProjectsResponse(SnapshotValue):
     projects: list[ProjectSummary] = []
 
 
@@ -230,6 +231,15 @@ class WorkspaceRetireClaimResponse(BaseModel):
     holder_task_id: str | None = None
     holder_claim_epoch: int | None = None
     holder_session_id: str | None = None
+    reason: str | None = None
+
+
+class WorkspaceClearSentinelResponse(BaseModel):
+    workspace_id: str
+    cleared: bool = False
+    detail: str | None = None
+    holder_task_id: str | None = None
+    branch: str | None = None
     reason: str | None = None
 
 
@@ -343,6 +353,7 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "remove_workspace": RemoveWorkspaceResponse,
     "release_workspace": ReleaseWorkspaceResponse,
     "workspace_retire_claim": WorkspaceRetireClaimResponse,
+    "workspace_clear_sentinel": WorkspaceClearSentinelResponse,
     "edit_workspace": EditWorkspaceResponse,
     "workspace_cutover": WorkspaceCutoverResponse,
     "find_merge_conflict_workspaces": FindMergeConflictWorkspacesResponse,

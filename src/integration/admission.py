@@ -8,6 +8,7 @@ snapshot per repository, and supplies an ephemeral allowed set to consumers.
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
+from functools import lru_cache
 
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.exc import DBAPIError
@@ -31,7 +32,7 @@ from src.integration.delivery_truth import (
     settlement_fields,
 )
 from src.integration.delivery_observer import DeliveryTarget
-from src.integration.publishable_artifact import legacy_artifact
+from src.integration.publishable_artifact import LEGACY_ARTIFACT_KEY, legacy_artifact
 
 
 class OrdinaryAdmissionChanged(Exception):
@@ -63,11 +64,15 @@ def ordinary_activation_guard(task_id):
     source_ids = select(edge.c.depends_on_task_id).where(
         edge.c.task_id == task_id, edge.c.dep_type == "blocks",
     )
-    sources = select(tasks).where(tasks.c.id.in_(source_ids)).order_by(
+    sources = select(tasks.c.id, tasks.c.branch_name, tasks.c.pr_url).where(
+        tasks.c.id.in_(source_ids),
+    ).order_by(
         tasks.c.id,
     ).with_for_update(read=True, skip_locked=True).cte("ordinary_sources")
     project_id = select(tasks.c.project_id).where(tasks.c.id == task_id).scalar_subquery()
-    policy = select(projects).where(projects.c.id == project_id).with_for_update(
+    policy = select(projects.c.id, projects.c.hierarchical_integration_mode).where(
+        projects.c.id == project_id,
+    ).with_for_update(
         read=True, skip_locked=True,
     ).cte("ordinary_policy")
     return and_(
@@ -80,6 +85,7 @@ def ordinary_activation_guard(task_id):
     )
 
 
+@lru_cache(maxsize=32)
 def source_admission_required(task):
     """Conservative SQL guard for the ordinary, artifact-free claim path.
 
@@ -104,14 +110,49 @@ def source_admission_required(task):
     )
 
 
+@lru_cache(maxsize=32)
 def project_admission_required(project):
+    # Cache immutable SQL expression trees, never admission results. Every
+    # execution still reads the current transaction's database snapshot.
     candidate = tasks.alias("admission_candidate")
-    return select(candidate.c.id).where(
+    source = tasks.alias("project_admission_source")
+    edge = task_dependencies.alias("project_admission_edge")
+    ready = (
         candidate.c.project_id == project.c.id,
         candidate.c.status == "READY",
         candidate.c.assigned_agent_id.is_(None),
-        source_admission_required(candidate),
-    ).exists()
+    )
+    return or_(
+        and_(
+            project.c.hierarchical_integration_mode == "development",
+            select(candidate.c.id).where(*ready).exists(),
+        ),
+        # Unfinished prerequisites already block the frontier. A branch on
+        # one must not turn every unrelated claim into a whole-project Git
+        # admission pass. Completed sources still need observation, including
+        # dependents held by generated gates. Preparation/activation retain
+        # the stronger per-task guard against concurrent source changes.
+        # Keep this as a join so PostgreSQL can start with completed sources
+        # instead of evaluating a correlated artifact predicate per candidate.
+        select(candidate.c.id).select_from(candidate.join(
+            edge, edge.c.task_id == candidate.c.id,
+        ).join(source, source.c.id == edge.c.depends_on_task_id)).where(
+            *ready, edge.c.dep_type == "blocks", source.c.status == "COMPLETED",
+            or_(
+                source.c.branch_name.is_not(None), source.c.pr_url.is_not(None),
+                source.c.id.in_(select(task_completion_records.c.task_id).where(
+                    task_completion_records.c.commits != "[]",
+                )),
+                # This is only a hint: even a historical legacy marker may
+                # request observation. The authoritative reader still fences
+                # it to the current completion. Hash these sparse ID sets once
+                # instead of probing both tables for every completed source.
+                source.c.id.in_(select(task_metadata.c.task_id).where(
+                    task_metadata.c.key == LEGACY_ARTIFACT_KEY,
+                )),
+            ),
+        ).exists(),
+    )
 
 
 async def _inputs(db, candidate_ids, conn):

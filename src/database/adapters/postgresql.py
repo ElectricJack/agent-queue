@@ -97,11 +97,14 @@ from src.database.queries.transcript_queries import TranscriptQueryMixin
 from src.database.queries.workflow_queries import WorkflowQueryMixin
 from src.database.queries.workspace_kinds_queries import WorkspaceKindQueryMixin
 from src.database.queries.workspace_queries import WorkspaceQueryMixin
+from src.database.queries.wait_source_queries import WaitSourceQueriesMixin
 
 logger = logging.getLogger(__name__)
 
 
 class PostgreSQLDatabaseAdapter(
+    WaitSourceQueriesMixin,
+
     AskQueriesMixin,
     AskDeliveryQueriesMixin,
     AskInputQueriesMixin,

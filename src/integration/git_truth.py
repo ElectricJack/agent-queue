@@ -269,13 +269,19 @@ class GitTruthSnapshot:
         if not target_ref.startswith("refs/heads/"):
             raise ValueError("target must be a full branch ref")
         observation = self.observation
+        if observation.acquisition_error:
+            return replace(self, observation=replace(
+                observation, target_ref=target_ref, target_oid=None,
+                error="target_ref_missing" if target_ref in observation.absent_target_refs
+                else observation.acquisition_error,
+            ))
         oid = observation.source_heads.get(
             "refs/remotes/origin/" + target_ref.removeprefix("refs/heads/")
         )
         return replace(self, observation=replace(
             observation, target_ref=target_ref, target_oid=oid,
-            error=observation.error if observation.error not in {None, "missing_target"} else (
-                None if is_valid_git_oid(oid) else "missing_target"
+            error=observation.error if observation.error not in {None, "target_ref_missing"} else (
+                None if is_valid_git_oid(oid) else "target_ref_missing"
             ),
         ))
 
@@ -570,7 +576,7 @@ async def is_delivered(
     ):
         return answer(DeliveryState.UNKNOWN, "scope_mismatch")
     if observed.error or not observed.target_oid:
-        return answer(DeliveryState.UNKNOWN, observed.error or "missing_target")
+        return answer(DeliveryState.UNKNOWN, observed.error or "target_ref_missing")
     if request.task_status != "COMPLETED":
         return answer(DeliveryState.PENDING, "task_not_completed")
     step = "completion_identity"
@@ -592,6 +598,16 @@ async def is_delivered(
                                    repository_url=observed.repository_url)
         step = "completion_provenance"
         record = await snapshot.read_completion(identity)
+        if record is None and request.container_children and not request.has_recorded_source:
+            # A container closes with no artifact of its own: Git proves it
+            # delivered once every child is. Short of that, its missing
+            # provenance stays unknown for the recovery path, as before.
+            step = "container_children"
+            for child, base in request.container_children:
+                if not (await is_delivered(snapshot, child, source_base=base)).satisfied:
+                    break
+            else:
+                return answer(DeliveryState.CONTAINED, "children_contained")
         if record is None:
             return answer(DeliveryState.UNKNOWN, MISSING_PROVENANCE)
         step = "source_identity"

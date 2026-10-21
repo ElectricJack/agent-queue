@@ -54,7 +54,7 @@ try:  # POSIX only — the runtime target is WSL2; see ``_exclude_lock``.
 except ImportError:  # pragma: no cover - Windows dev boxes
     fcntl = None  # type: ignore[assignment]
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from src.config import WorktreesConfig
 from src.git.github_contracts import GitHubAccessError
@@ -657,6 +657,13 @@ class WorktreeSlotManager:
                         await self._ref_exists(str(slot_dir), default_ref)
                         and head == await self.git.arev_parse(str(slot_dir), default_ref)
                     )
+                if actual == "HEAD" and not detached_predecessor:
+                    # A finished predecessor's branch may be gone (delivered
+                    # and deleted) and origin/<default> may have moved on;
+                    # neither proof above can then hold for its clean slot.
+                    detached_predecessor = await self._finished_predecessor(
+                        slot_ws, sentinel, task,
+                    )
                 if actual != sentinel.branch and not detached_predecessor:
                     raise GitError(f"slot {slot_ws.id} branch disagrees with its source sentinel; "
                                    "checkout left unchanged")
@@ -859,17 +866,148 @@ class WorktreeSlotManager:
             raise GitError(f"merge abort did not clear {checkout}")
         logger.warning("Archived and aborted abandoned merge in slot %s", slot_ws.id)
 
-    async def _slot_has_retained_binding(self, workspace_id: str) -> bool:
+    async def _finished_predecessor(
+        self, slot_ws: Workspace, sentinel: WorktreeSentinel, task,
+    ) -> bool:
+        """Whether a detached slot's sentinel names a predecessor that is over.
+
+        The caller has already proved the slot carries no foreign lock or
+        claim file.  The predecessor must be terminal, hold no integration
+        owner or job pin on the slot, and have left a clean tree; its
+        sentinel is kept so the reset still salvages committed work under
+        the predecessor's id.
+        """
+        from src.agent_waits import TERMINAL_TASK_STATUSES
+
+        if not sentinel.task_id or sentinel.task_id == task.id:
+            return False
+        predecessor = await self.db.get_task(sentinel.task_id)
+        status = getattr(predecessor, "status", None)
+        if getattr(status, "value", status) not in TERMINAL_TASK_STATUSES:
+            return False
+        # The claimant's own owner row is attached to the slot before the
+        # reset re-runs this preflight; only a foreign binding retains it.
+        if await self._slot_has_retained_binding(slot_ws.id, excluding_owner=task.id):
+            return False
+        if await self.git.ahas_uncommitted_changes(slot_ws.workspace_path, strict=True) is not False:
+            return False
+        logger.warning(
+            "Reclaiming slot %s from finished task %s (%s); sentinel branch %s is stale",
+            slot_ws.id, sentinel.task_id, getattr(status, "value", status), sentinel.branch,
+        )
+        return True
+
+    @guard_workspace("slot_ws")
+    async def release_task_sentinel(self, slot_ws: Workspace, task_id: str) -> bool:
+        """Return a finished task's slot sentinel to the free form.
+
+        Only once the task let go of the checkout: HEAD is detached, the tree
+        is clean and every commit is published under a remote ref.  A slot
+        still on its branch keeps its sentinel for the forensic retry path.
+        Returns whether the sentinel was released.
+        """
+        slot_dir = Path(slot_ws.workspace_path)
+        sentinel = self.read_sentinel(slot_dir)
+        if sentinel is None or sentinel.task_id != task_id:
+            return False
+        if not await self._head_is_released(slot_dir, require_detached=True):
+            return False
+        self.write_sentinel(slot_dir, replace(
+            sentinel, task_id=None, branch=None, assigned_at=None,
+        ))
+        return True
+
+    async def _head_is_released(self, slot_dir: Path, *, require_detached: bool) -> bool:
+        """A clean tree whose HEAD is contained in a remote ref."""
+        try:
+            if require_detached and await self.git.aget_current_branch(str(slot_dir)) != "HEAD":
+                return False
+            if await self.git.ahas_uncommitted_changes(str(slot_dir), strict=True) is not False:
+                return False
+            published = await self.git._arun(
+                ["for-each-ref", "--contains", "HEAD", "--count=1",
+                 "--format=%(refname)", "refs/remotes"],
+                cwd=str(slot_dir),
+            )
+        except GitError:
+            return False
+        return bool(published.strip())
+
+    @guard_workspace("slot_ws")
+    async def clear_terminal_sentinel(self, slot_ws: Workspace) -> dict:
+        """Return a slot's sentinel to the free form once the task it names is over.
+
+        The supervisor's control (``workspace_clear_sentinel``) for a slot
+        whose sentinel outlived its task on a path that never released it.
+        Clears only when the workspace row holds no task lock, no claim file
+        or live session claims the slot, the named task is terminal or gone,
+        nothing retains the slot (integration owner or job pin), and the tree
+        is clean with HEAD published under a remote ref, so the reset that
+        follows has nothing to salvage under the predecessor's name.  The
+        branch may still be checked out: the next reset moves it.
+        """
+        from src.agent_waits import TERMINAL_TASK_STATUSES
+        from src.claim_file import CLAIM_FILE
+
+        slot_dir = Path(slot_ws.workspace_path)
+        sentinel = self.read_sentinel(slot_dir)
+        if sentinel is None:
+            return {"cleared": False, "refusal": "slot has no readable sentinel"}
+        holder = sentinel.task_id
+        if not holder:
+            return {"cleared": False, "holder_task_id": None, "detail": "sentinel names no task"}
+
+        def refuse(reason: str) -> dict:
+            return {"cleared": False, "holder_task_id": holder, "refusal": reason}
+
+        current = await self.db.get_workspace(slot_ws.id)
+        if current is None or not current.is_slot:
+            return refuse("workspace is no longer a slot")
+        if current.locked_by_task_id:
+            return refuse(f"slot is locked by task {current.locked_by_task_id}")
+        if (slot_dir / CLAIM_FILE).exists():
+            return refuse("slot retains a claim file; see workspace_retire_claim")
+        task = await self.db.get_task(holder)
+        status = getattr(getattr(task, "status", None), "value", getattr(task, "status", None))
+        if task is not None and status not in TERMINAL_TASK_STATUSES:
+            return refuse(f"task {holder} is {status}, not terminal")
+        for session in await self.db.list_sessions(live_only=True):
+            if (session.work_dir and _norm_path(session.work_dir) == _norm_path(slot_dir)
+                    and (getattr(session, "task_id", None)
+                         or getattr(session, "claim_phase", None))):
+                return refuse(f"live session {session.id} holds a claim in the slot")
+        if await self._slot_has_retained_binding(slot_ws.id):
+            return refuse("slot retains an integration owner or job pin")
+        if not await self._head_is_released(slot_dir, require_detached=False):
+            return refuse("tree is dirty or HEAD is not published under a remote ref")
+        self.write_sentinel(slot_dir, replace(
+            sentinel, task_id=None, branch=None, assigned_at=None,
+        ))
+        reason = f"task {holder} is {status}" if task is not None else f"task {holder} is gone"
+        logger.warning("Cleared slot %s sentinel naming %s (%s)", slot_ws.id, holder, reason)
+        await self._emit("worktree.sentinel_cleared", {
+            "project_id": slot_ws.project_id, "workspace_id": slot_ws.id,
+            "path": str(slot_dir), "holder_task_id": holder,
+            "branch": sentinel.branch, "reason": reason,
+        })
+        return {"cleared": True, "holder_task_id": holder, "branch": sentinel.branch,
+                "reason": reason}
+
+    async def _slot_has_retained_binding(
+        self, workspace_id: str, *, excluding_owner: str | None = None,
+    ) -> bool:
         if not hasattr(self.db, "_engine"):
             return False
-        from sqlalchemy import exists, or_, select
+        from sqlalchemy import exists, or_, select, true
         from src.database.tables import integration_branch_owners, job_workspace_pins
 
+        owners = integration_branch_owners.c
         async with self.db._engine.connect() as conn:
             return bool(await conn.scalar(select(or_(
                 exists().where(
-                    integration_branch_owners.c.workspace_id == workspace_id,
-                    integration_branch_owners.c.handoff_state.in_(("attached", "handoff_pending")),
+                    owners.workspace_id == workspace_id,
+                    owners.handoff_state.in_(("attached", "handoff_pending")),
+                    owners.owner_id != excluding_owner if excluding_owner else true(),
                 ),
                 exists().where(job_workspace_pins.c.workspace_id == workspace_id),
             ))))
@@ -1033,9 +1171,7 @@ class WorktreeSlotManager:
             if target_branch is not None:
                 await self._detach_stale_branch_holders(slot_dir, branch, incoming_task_id=task.id)
             if preserve_branch:
-                await self.git.aprepare_child_branch(
-                    str(slot_dir), branch, base_branch, lock_held=True,
-                )
+                await self._prepare_slot_branch(slot_dir, branch, base_branch)
             elif target_branch is not None:
                 await self.git._arun_unlocked(
                     ["switch", "-C", branch, start_ref], cwd=str(slot_dir)
@@ -1185,6 +1321,14 @@ class WorktreeSlotManager:
             default = await self._default_branch(base_path, project_id=project_id)
             await self.git._arun_unlocked(
                 ["switch", "--detach", f"origin/{default}"], cwd=str(slot_dir)
+            )
+            # Build output the task branch ignored may be unignored at the
+            # default tip.  Left behind, it dirties the detached slot, so the
+            # sentinel is never released and the next preparation refuses it
+            # once the default moves on (aq-design-tour prime-nexus-13).
+            # Still no ``-x``: caches the default ignores survive.
+            await self.git._arun_unlocked(
+                ["clean", "-fd", "-e", WORKTREE_SENTINEL_NAME], cwd=str(slot_dir)
             )
             logger.info("Detached clean pushed branch %s from slot %s", branch, slot_dir)
         except GitError as exc:
@@ -1523,7 +1667,30 @@ class WorktreeSlotManager:
         start_sha = await self.git.arev_parse(str(slot_dir), start_ref)
         if start_sha is None:
             raise GitError("task branch start commit is unavailable")
-        await self.git.aprepare_child_branch(str(slot_dir), branch, start_sha, lock_held=True)
+        await self._prepare_slot_branch(slot_dir, branch, start_sha)
+
+    async def _prepare_slot_branch(self, slot_dir: Path, branch: str, parent_sha: str) -> None:
+        """Switch a slot to *branch*, drop files its HEAD no longer ignores, then merge.
+
+        The reset's ``clean -fd`` keeps whatever the slot's previous HEAD
+        ignored, so warm caches survive (design §3.4: never ``-x``).  A branch
+        whose base predates that ``.gitignore`` sees them as untracked: the
+        parent merge refuses to overwrite them, or the agent commits them.  The
+        same clean on the switched HEAD removes exactly those files.  The
+        caller holds the repository lock.  Not for the checkpoint path, whose
+        restored untracked files are the task's own work.
+        """
+        run, cwd = self.git._arun_unlocked, str(slot_dir)
+        local, remote = f"refs/heads/{branch}", f"refs/remotes/origin/{branch}"
+        refs = (await run(
+            ["for-each-ref", "--format=%(refname)", "--", local, remote], cwd=cwd,
+        )).splitlines()
+        if local in refs:
+            await run(["switch", branch], cwd=cwd)
+        else:
+            await run(["switch", "-c", branch, remote if remote in refs else parent_sha], cwd=cwd)
+        await run(["clean", "-fd", "-e", WORKTREE_SENTINEL_NAME], cwd=cwd)
+        await self.git.aprepare_child_branch(cwd, branch, parent_sha, lock_held=True)
 
     async def _detach_stale_branch_holders(
         self, slot_dir: Path, branch: str, *, incoming_task_id: str | None = None,

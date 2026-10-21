@@ -16,6 +16,7 @@ import time
 from sqlalchemy import delete, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
+from src.waits.sources import insert_message_with_source_event
 from src.database.queries.task_queries import (
     FRONTIER_REJECTION_KEY, STALE_OPEN_ATTENTION, STALE_OPEN_DETAIL_KEY,
 )
@@ -144,7 +145,7 @@ class LifecycleQueryMixin:
             await self._upsert_meta(task_id, "needs_attention", STALE_OPEN_ATTENTION, conn=conn)
             await self._upsert_meta(task_id, STALE_OPEN_DETAIL_KEY, detail, conn=conn)
             project_id = row["project_id"]
-            await conn.execute(
+            await insert_message_with_source_event(conn,
                 pg_insert(messages)
                 .values(
                     id=stale_open_message_id(

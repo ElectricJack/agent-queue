@@ -565,3 +565,39 @@ async def test_create_app_registers_the_middleware_outermost(tmp_path):
         assert routes["GET /openapi.json"]["status"] == {"kind": "sum", "2xx": 1, "4xx": 1}
     finally:
         install_registry(None)
+
+
+@pytest.mark.parametrize("stream", [False, True])
+async def test_slow_request_logs_cover_auth_time_and_exclude_stream_lifetime(
+    registry, monkeypatch, caplog, stream
+):
+    """Timing runs outside dispatch and reports a stream's headers, once."""
+    clock = [0.0]
+    monkeypatch.setattr(perf_middleware.time, "perf_counter", lambda: clock[0])
+    registry.enabled = False  # operational logs also work without metric collection
+
+    async def app(scope, receive, send):
+        clock[0] = 1.25  # includes time spent before an endpoint runs
+        await send({"type": "http.response.start", "status": 200, "headers": (
+            [(b"content-type", b"text/event-stream")] if stream else []
+        )})
+        clock[0] = 80.0  # a long-lived stream must not produce an 80s route warning
+        await send({"type": "http.response.body", "body": b"ok"})
+
+    async def send(message):
+        pass
+
+    caplog.set_level("WARNING", logger=perf_middleware.__name__)
+    await RouteLatencyMiddleware(app, registry=registry)(
+        {"type": "http", "method": "POST", "path": "/private-task?secret=value",
+         "state": {"request_id": "read-timing-123"}},
+        None, send,
+    )
+    messages = [r.message for r in caplog.records if "request timing" in r.message]
+    assert len(messages) == 1
+    assert f"duration_ms={1250.0 if stream else 80000.0:.1f}" in messages[0]
+    assert f"handshake={stream}" in messages[0]
+    assert "private-task" not in messages[0]
+    assert "secret" not in messages[0]
+    assert "request_id=read-timing-123" in messages[0]
+    assert registry.snapshot()["api"]["routes"] == {}

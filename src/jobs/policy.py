@@ -93,6 +93,25 @@ def validate_args(
         raise JobError("jobs.preset_denied")
     if len(args) > 256 or sum(len(a) for a in args) > 32768:
         raise JobError("jobs.preset_denied")
+    # Zero lowers resource use. Normalize it before composing argv so serial
+    # requests also work without xdist (whose -n option is then unavailable).
+    serial = False
+    normalized = []
+    submitted = iter(args)
+    for arg in submitted:
+        if arg in {"-n", "--numprocesses"}:
+            workers = next(submitted, None)
+        elif arg.startswith("-n"):
+            workers = arg[2:]
+        elif arg.startswith("--numprocesses="):
+            workers = arg.split("=", 1)[1]
+        else:
+            normalized.append(arg)
+            continue
+        if not preset.pytest or workers != "0":
+            raise JobError("jobs.preset_denied")
+        serial = True
+    args = normalized
     # Pytest plugins/config and ruff config can load arbitrary code. This is
     # resource separation, not a sandbox; still refuse resource-cap overrides
     # and explicit paths outside the pinned workspace.
@@ -110,7 +129,7 @@ def validate_args(
         arg == "-pno:xdist" or (arg == "-p" and next_arg == "no:xdist")
         for arg, next_arg in zip(args, [*args[1:], ""])
     ):
-        args = [*args, "-n", str(worker_cap)]
+        args = [*args, "-n", "0" if serial else str(worker_cap)]
     return [*preset.argv, *args]
 
 
@@ -141,13 +160,20 @@ def _next_admission(rows: list[dict], now: float, capacity: int, per_owner_activ
     if any(r["job_class"] == "exclusive" for r in active):
         return None
     used = sum(r["weight"] for r in active)
+    full_active = any(r.get("contract", {}).get("test_scope") == "full" for r in active)
     counts = {}
     for row in active:
         counts[row["owner_id"]] = counts.get(row["owner_id"], 0) + 1
     for row in sorted((r for r in rows if r["state"] == "queued"), key=lambda r: queue_key(r, now)):
+        # A second full suite waits on its own lane; it must not form a
+        # weighted frontier in front of focused jobs using the reserved slots.
+        if full_active and row.get("contract", {}).get("test_scope") == "full":
+            continue
         if row["job_class"] == "exclusive":
             return row if not active else None
-        if counts.get(row["owner_id"], 0) >= per_owner_active:
+        if counts.get(row["owner_id"], 0) >= (
+            1 if row.get("owner_kind") == "playbook" else per_owner_active
+        ):
             continue
         if used + row["weight"] <= capacity:
             return row

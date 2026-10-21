@@ -33,6 +33,7 @@ from src.models import (
     Task, TaskStatus, Workspace, WorkspaceKind,
 )
 from src.orchestrator import Orchestrator
+from src.sessions.obsolete import ObsoleteClose
 from tests.pg_dsn import ensure_worker_postgres_dsn
 from tests.db_fixtures import lease_dsn
 
@@ -753,6 +754,17 @@ async def test_release_requires_flag_and_exact_hold(env):
                                    expected_hold_at=held["decided_at"])
 
 
+async def test_hold_result_returns_decided_at_for_operator_release(env):
+    current = await incident(env)
+    held = await decide(env, current, "hold")
+    stored = await env.db.get_task_meta("t", "supervisor_recovery_incident")
+    assert held["decided_at"] == stored["decided_at"], held
+    released = await decide(env, current, "release", operator_release=True,
+                            expected_hold_at=held["decided_at"])
+    assert "error" not in released, released
+    after = await env.db.get_task_meta("t", "supervisor_recovery_incident")
+    assert released["decided_at"] == after["decided_at"] > held["decided_at"]
+
 async def bind_train_repair(env):
     async with env.db.immediate() as conn:
         await conn.execute(insert(integration_repair_operations).values(
@@ -978,6 +990,38 @@ async def test_hold_decision_is_durable_and_does_not_restart(env):
     assert "error" in await decide(env, current)
     assert (await env.db.get_task("t")).status == TaskStatus.BLOCKED
     assert (await env.db.get_task_meta("t", "supervisor_recovery_incident"))["decision"] == "hold"
+
+
+@pytest.mark.parametrize("held", [False, True])
+@pytest.mark.parametrize("disposition", ["done", "obsolete"])
+async def test_operator_close_resolves_open_recovery_incident(env, held, disposition):
+    current = await incident(env)
+    if held:
+        assert "error" not in await decide(env, current, "hold")
+    closed = await ObsoleteClose(env.db, release_owner=None).close(
+        "t", reason="Shipped by hand", principal="operator:test", disposition=disposition,
+    )
+    assert closed["outcome"] == "closed"
+    retired = await env.db.get_task_meta("t", "supervisor_recovery_incident")
+    context = "closed_done" if disposition == "done" else "closed_obsolete"
+    assert retired["decision"] == "superseded"
+    assert retired["decided_by"] == f"system:{context}"
+    assert retired["id"] == current["id"] and retired["reason"] == current["reason"]
+    rows = {row["id"]: row for row in await queued_messages(env)}
+    assert rows["msg-" + current["id"]]["archived_at"] is not None
+    explained = await env.handler.execute("task_explain", {"task_id": "t"})
+    assert "recovery_incident" not in json.dumps(explained)
+
+
+async def test_recover_racing_completion_refuses_cleanly(env):
+    current = await incident(env)
+    # The close won the row lock but left the incident open (pre-fix state).
+    await env.db.update_task("t", status=TaskStatus.COMPLETED)
+    result = await decide(env, current, "hold")
+    assert result["success"] is False
+    assert result["error_code"] == "task_recovery.refused"
+    assert "COMPLETED" in result["error"]
+    assert await env.db.get_task_meta("t", "supervisor_recovery_incident") == current
 
 
 async def test_recorded_recovery_hold_excludes_task_projected_back_to_ready(env):
@@ -1374,6 +1418,51 @@ async def test_slot_reset_resume_supersedes_old_recovery_hold(env):
     assert superseded["decision"] == "superseded"
     assert "slot_reset_retry" in superseded["decision_reason"]
     assert await env.db.claim_frontier_exclusions("t") == []
+
+
+async def test_paused_slot_reset_resumes_claimable_after_hold_release(env):
+    """swift-crest-94: pause over a failed slot reset, release the hold, resume.
+
+    The snapshot restored BLOCKED and the restore cleared its attention, so
+    the row sat outside the pools with nothing naming it until a supervisor
+    forced READY.  Resuming it is the slot-reset retry.
+    """
+    current = await incident(env, reason="slot_reset_failed")
+    held, _ = await supervisor_handoff_hold(env, current)
+    await env.db.update_task("t", route_source="override")
+    await env.db.set_task_meta("t", "slot_reset_failure", {
+        "reason": "reset failed", "attempt": 5, "retry": "manual",
+    })
+    await env.orch.pause_task("t")
+    released = await decide(env, current, "release", operator_release=True,
+                            expected_hold_at=held["decided_at"])
+    assert released["decision"] == "release", released
+    assert (await env.db.get_task("t")).status is TaskStatus.PAUSED
+
+    result = await env.handler.execute("resume_task", {"task_id": "t"})
+
+    assert "error" not in result, result
+    assert (await env.db.get_task("t")).status is TaskStatus.READY
+    assert await env.db.get_task_meta("t", "needs_attention") is None
+    assert await env.db.get_task_meta("t", "manual_pause") is None
+    assert await env.db.claim_frontier_exclusions("t") == []
+    assert await env.db.count_ready_by_profile("p") == {"worker": 1}
+
+
+async def test_paused_slot_reset_resume_refuses_unproven_old_writer(env):
+    await stopped_attempt(env, reason="slot_reset_failed")
+    await env.db.update_task("t", route_source="override")
+    await env.db.set_task_meta("t", "slot_reset_failure", {"reason": "reset failed"})
+    await env.orch.pause_task("t")
+    env.orch.session_providers = SimpleNamespace(create=lambda *_: SimpleNamespace(
+        stop=AsyncMock(), confirm_stopped=AsyncMock(return_value=False),
+    ))
+
+    result = await env.handler.execute("resume_task", {"task_id": "t"})
+
+    assert "error" in result, result
+    assert (await env.db.get_task("t")).status is TaskStatus.PAUSED
+    assert await env.db.get_task_meta("t", "manual_pause") is not None
 
 
 @pytest.mark.parametrize("command", ["restart_task", "reopen_with_feedback"])

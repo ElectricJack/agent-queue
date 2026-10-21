@@ -1597,22 +1597,37 @@ class TestIndependentDelivery:
         bad = await _send(db, to_id="bad")
         good = await _send(db, to_id="good")
         manager = FakeSessionManager()
+        armed = []
+
+        class RecordingAsyncio:
+            # Every recipient keeps the production deadline; only the hung one
+            # has its own armed scope expired, so real SQL on the healthy
+            # recipient never races a shortened wall-clock timeout.
+            def __getattr__(self, name):
+                return getattr(asyncio, name)
+
+            def timeout(self, delay):
+                armed.append(asyncio.timeout(delay))
+                return armed[-1]
 
         async def activity(*, kind, target_id, project_id):
             if target_id == "bad":
                 if failure == "exception":
                     raise RuntimeError("provider failure")
+                armed[-1].reschedule(asyncio.get_running_loop().time())
                 await asyncio.Event().wait()
             return "idle"
 
         monkeypatch.setattr(manager, "activity", activity)
-        monkeypatch.setattr("src.messages.delivery.RECIPIENT_TIMEOUT_SECONDS", 0.5)
+        monkeypatch.setattr("src.messages.delivery.asyncio", RecordingAsyncio())
         result = await make_engine(db, manager).run_delivery_pass()
         assert result["delivered"] == 0
         assert (await db.get_message(bad.id)).delivered_at is None
         assert (await db.get_message(good.id)).delivered_at is None
         assert good.id in manager.nudges[0][3]
         assert (await db.get_message(good.id)).notification_attempts == 1
+        # Only the hung recipient's deadline fired.
+        assert sum(scope.expired() for scope in armed) == (failure == "timeout")
 
     async def test_concurrent_delivery_pass_cannot_duplicate_transport(self, db, monkeypatch):
         msg = await _send(db)

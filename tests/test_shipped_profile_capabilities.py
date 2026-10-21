@@ -63,7 +63,10 @@ EXPECTED_UNREACHABLE: dict[str, set[str]] = {
     "worker-opencode": {"pr_merge"},
 }
 
-REACHABLE = AGENT_COMMAND_SET | _TRIAGE_COMMANDS | _PLAYBOOK_COMPILER_COMMANDS
+# These catalogues have an existing empty-argument, capability-gated exception
+# in check_command_scope, before the role-specific command sets.
+REACHABLE = (AGENT_COMMAND_SET | _TRIAGE_COMMANDS | _PLAYBOOK_COMPILER_COMMANDS
+             | {"doctor_catalog", "playbook_commands"})
 #: An operator template's setup grants are dispatched through ``operator_execute``
 #: under a request-local grant, never by its session token directly.
 OPERATOR_REACHABLE = REACHABLE | OPERATOR_READS | OPERATOR_WRITES
@@ -138,9 +141,12 @@ class TestShippedProfile:
         assert set(harness) <= HARNESS_TOOL_NAMES
 
     def test_every_aq_command_is_a_real_command(self, profile_id):
-        """No aspirational names: each one resolves to a dispatchable handler."""
+        """Every grant names a handler or an explicitly defined read scope."""
         parsed = _parsed(profile_id)
-        unknown = sorted(set(parsed.capabilities["aq_commands"]) - _builtin_command_names())
+        from src.profiles.capabilities import AQ_FEATURE_CAPABILITIES
+
+        unknown = sorted(set(parsed.capabilities["aq_commands"]) -
+                         (_builtin_command_names() | AQ_FEATURE_CAPABILITIES))
         assert unknown == []
 
     def test_policy_is_constructible_and_not_legacy(self, profile_id):
@@ -180,7 +186,9 @@ def test_supervisor_inbox_grants_exclude_internal_intake():
         "supervisor_inbox_status",
     } <= granted
     assert "supervisor_inbox_post" not in granted
-    assert granted <= _builtin_command_names()
+    from src.profiles.capabilities import AQ_FEATURE_CAPABILITIES
+
+    assert granted <= _builtin_command_names() | AQ_FEATURE_CAPABILITIES
 
 
 def test_supervisor_can_diagnose_and_repair_repository_checkouts():

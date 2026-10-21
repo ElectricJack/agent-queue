@@ -11,6 +11,39 @@ must not suppress this observation. Other admission refusals retain authority.
 The full recursive readiness evaluator continues to enforce child
 completion and containment, project/task holds, source identity, checks and reviews.
 
+Once a closed epic's required children are contained, aggregate readiness first
+refreshes its private branch from the current default branch when it is behind.
+This also runs immediately after the last child batch publishes and on idle
+visits after a restart. The refresh uses the ordinary immutable epic-refresh
+batch, exact candidate checks, attestation and fenced publication; it never
+certifies the epic itself. An open batch, paused or aborted refresh, missing Git
+evidence or a hold retains its existing authority. Verification resumes on the
+refreshed head and still requires its current checks and tree review. No root PR
+or successful old-head trust lookup is needed to start the refresh.
+Conclusive failing aggregate checks retain the existing bounded baseline-sync
+and repair path rather than starting a second repair through a refresh batch.
+
+Discovery retains completed containers as epic targets even when their child
+origins have retired or the container's own live origin is missing. A root
+container owes the same aggregate visit as a nested one; it never waits for a
+nonexistent parent integration run. Missing provenance remains a visible
+readiness blocker, never permission to manufacture a completion. Current root
+delivery proof and observed retirement of the private ref suppress obsolete
+visits under the existing rules.
+For a legacy container without a live origin or its own completion, delivery of
+every current child plus ancestry of its observed private tip in the default
+branch also suppresses an obsolete visit. A contained private tip alone cannot
+excuse undelivered children or an unproved aggregate completion.
+
+A managed root with a branch/checkpoint and completed children must display
+pending aggregate verification or unavailable delivery evidence until current
+delivery is proved. Its stored COMPLETED status describes implementation only.
+Doctor's completed-undelivered inventory and stall sweep also report every live
+completed root whose observed branch tip is not contained in the default branch,
+including roots accounted for by a pending PR, batch or historical disposition.
+Those records explain the pending work; they do not hide it. Unknown ancestry
+remains unknown, and diagnostics never authorize delivery or branch deletion.
+
 `integration_reverify_epic` / `aq integration reverify-epic TASK` is an operator
 or live project supervisor control using the existing integration authority.
 Preview requires an active designated train repository, a completed container,

@@ -52,6 +52,14 @@ human holds, live workers and branch ownership throughout recovery.
 When preparation refuses a slot that `retains a foreign claim`, run `aq project
 workspace-retire-claim --workspace-id SLOT`: it removes the leftover claim file
 only when the holder provably let go, and otherwise names the holder to examine.
+When it refuses because the slot's `branch disagrees with its source sentinel`
+and the sentinel names a finished task, run `aq project workspace-clear-sentinel
+--workspace-id SLOT --if-task-terminal`: it frees the sentinel only when that task
+is terminal and the slot is unheld, clean and published.
+When a paused task's preparation refuses its own `Paused checkpoint`, inspect the
+checkpoint and, if it cannot be this task's work, run `aq task
+discard-pause-checkpoint --task-id TASK --reason WHY`; the ref stays reachable and
+the discard is audited. Never delete checkpoint metadata by hand.
 
 A held train repair blocks every delivery through that train. Diagnose and
 escalate it promptly; do not park it on an indefinite recovery hold. Supervisor
@@ -72,8 +80,10 @@ hold idle for source mapping, integration controls or delivery paperwork. Read
 the project's integration mode first: with the train off, train controls are
 not prerequisites for worker publication and close. Resolve actual command
 refusals through their owner; preserve human holds and integration ownership.
-If execution needs an answer, give concrete guidance or one bounded durable
-message wait; never an indefinite hold with no retries.
+If execution needs an answer, give concrete guidance or register one verified
+message condition. Human waits have no deadline. AQ escalates stalled non-human
+conditions; use wait_decide to extend, reroute, cancel or wake, or wait_lift with
+verified response evidence. Preserve the original age and sleeping worker.
 
 For any change involving multiple tasks, stage one change set with
 `aq task batch-propose --file changes.yaml --project PROJECT --dry-run`, inspect
@@ -162,6 +172,13 @@ start code work, tests or QA from a digest author turn.
     "NotebookEdit"
   ],
   "aq_commands": [
+    "wait_get",
+    "wait_list",
+    "wait_explain",
+    "wait_graph",
+    "wait_decide",
+    "wait_lift",
+    "waits.fleet_summary",
     "task_batch_propose",
     "task_batch_update",
     "task_batch_commit",
@@ -206,6 +223,7 @@ start code work, tests or QA from a digest author turn.
     "collaboration_list",
     "create_task",
     "create_task_graph",
+    "discard_pause_checkpoint",
     "doctor",
     "edit_task",
     "edit_project",
@@ -239,6 +257,7 @@ start code work, tests or QA from a digest author turn.
     "integration_recover_completed_container",
     "integration_abort_batch",
     "integration_settle_batch",
+    "integration_release_withheld_source",
     "integration_pause_batch",
     "integration_resume_batch",
     "integration_eject",
@@ -252,7 +271,10 @@ start code work, tests or QA from a digest author turn.
     "integration_authorize_root",
     "integration_supersede_completion",
     "integration_release_owner",
+    "integration_restore_task_origin",
     "integration_reserve_owner",
+    "integration_delegate_publication",
+    "integration_revoke_publication",
     "integration_clear_retained_recovery",
     "integration_release_stale_owners",
     "integration_reevaluate_repair",
@@ -353,6 +375,7 @@ start code work, tests or QA from a digest author turn.
     "task_subtask_get",
     "task_subtask_update",
     "task_subtasks",
+    "workspace_clear_sentinel",
     "workspace_retire_claim"
   ],
   "plugin_tools": [

@@ -381,6 +381,135 @@ def test_the_check_step_reports_where_every_kind_of_data_lives(tmp_path):
     assert {"Configuration", "Secrets", "Vault", "Worktrees", "Daemon log", "Database"} <= labels
 
 
+@pytest.mark.parametrize("material", [None, "not-base64", "eA==", "valid"])
+def test_install_checks_protected_routing_key_before_starting(tmp_path, monkeypatch, material):
+    import base64
+
+    variable = "AQ_INSTALL_TEST_PRIVATE_KEY"
+    monkeypatch.delenv(variable, raising=False)
+    home = home_with_config(
+        tmp_path,
+        body=(
+            f"messaging_platform: none\ndatabase:\n  url: {VALID_DSN}\n"
+            "playbooks:\n  enabled: true\n  private_value_active_key_id: k1\n"
+            f"  private_value_key_env:\n    k1: {variable}\n"
+        ),
+    )
+    env_with_password(home)
+    encoded = base64.b64encode(b"x" * 32).decode() if material == "valid" else material
+    if encoded is not None:
+        # load_config reads this file exactly as daemon startup does.
+        monkeypatch.setenv(variable, encoded)
+        with (home / ".env").open("a") as stream:
+            stream.write(f"{variable}={encoded}\n")
+        monkeypatch.delenv(variable)
+    before = (home / ".env").read_bytes()
+    daemon = FakeDaemon()
+
+    result = run(registry_for(home, daemon), tmp_path, capabilities=(CAPABILITY_DAEMON,))
+
+    check = step(result, STEP_CHECK)
+    if material == "valid":
+        assert result.outcome is InstallOutcome.READY
+        assert check.detail["playbook_private_value_key"]["ok"] is True
+    else:
+        assert result.outcome is InstallOutcome.FAILED
+        assert check.state is StepState.FAILED
+        assert "private_storage_key_unavailable" in check.summary
+        assert "playbooks.private_value_key_env" in check.remediation
+        assert daemon.commands == []
+    assert (home / ".env").read_bytes() == before
+    assert find_secrets(result.to_dict()) == []
+    if encoded:
+        assert encoded not in json.dumps(result.to_dict())
+
+
+def test_install_provisions_unconfigured_storage_and_preserves_it_on_rerun(tmp_path):
+    import base64
+
+    home = home_with_config(
+        tmp_path,
+        body=(
+            f"messaging_platform: none\ndatabase:\n  url: {VALID_DSN}\n"
+            "playbooks:\n  enabled: true\n"
+            "  v2_max_result_bytes: 12345\n"
+        ),
+    )
+    env_with_password(home)
+    result = run(registry_for(home, FakeDaemon()), tmp_path)
+    assert result.outcome is InstallOutcome.READY
+    assert step(result, STEP_CONFIG).detail["private_storage_provisioned"] is True
+    playbooks = load_yaml(home / "config.yaml")["playbooks"]
+    variable = playbooks["private_value_key_env"][playbooks["private_value_active_key_id"]]
+    env_body = (home / ".env").read_text()
+    encoded = next(
+        line.split("=", 1)[1]
+        for line in env_body.splitlines()
+        if line.startswith(variable + "=")
+    )
+    assert len(base64.b64decode(encoded, validate=True)) == 32
+    assert (home / ".env").stat().st_mode & 0o777 == 0o600
+    assert "AQ_DB_PASSWORD=local-development" in env_body
+    assert playbooks["v2_max_result_bytes"] == 12345
+    assert encoded not in (home / "config.yaml").read_text()
+    assert encoded not in json.dumps(result.to_dict())
+    assert encoded not in (tmp_path / "install-state.json").read_text()
+
+    rerun = run(registry_for(home, FakeDaemon()), tmp_path)
+    assert rerun.outcome is InstallOutcome.READY
+    assert load_yaml(home / "config.yaml")["playbooks"] == playbooks
+    assert (home / ".env").read_text() == env_body
+
+
+def test_install_does_not_generate_keys_when_playbooks_disabled(tmp_path):
+    home = home_with_config(
+        tmp_path,
+        body=f"messaging_platform: none\ndatabase:\n  url: {VALID_DSN}\n"
+        "playbooks:\n  enabled: false\n",
+    )
+    env_with_password(home)
+    before = (home / ".env").read_bytes()
+    result = run(registry_for(home, FakeDaemon()), tmp_path)
+    assert result.outcome is InstallOutcome.READY
+    assert (home / ".env").read_bytes() == before
+    assert load_yaml(home / "config.yaml")["playbooks"] == {"enabled": False}
+
+
+def test_dry_run_does_not_provision_unconfigured_private_storage(tmp_path):
+    home = home_with_config(
+        tmp_path,
+        body=f"messaging_platform: none\ndatabase:\n  url: {VALID_DSN}\n"
+        "playbooks:\n  enabled: true\n",
+    )
+    env_with_password(home)
+    before_config = (home / "config.yaml").read_bytes()
+    before_env = (home / ".env").read_bytes()
+
+    result = run(registry_for(home, FakeDaemon()), tmp_path, dry_run=True)
+
+    assert step(result, STEP_CONFIG).state is StepState.SKIPPED
+    assert (home / "config.yaml").read_bytes() == before_config
+    assert (home / ".env").read_bytes() == before_env
+
+
+@pytest.mark.parametrize(
+    "partial",
+    ["  private_value_active_key_id: lost\n", "  private_value_key_env:\n    old: LOST_VARIABLE\n"],
+)
+def test_install_flags_partial_key_configuration_without_generating(tmp_path, partial):
+    home = home_with_config(
+        tmp_path,
+        body=f"messaging_platform: none\ndatabase:\n  url: {VALID_DSN}\n"
+        f"playbooks:\n  enabled: true\n{partial}",
+    )
+    env_with_password(home)
+    before = (home / ".env").read_bytes()
+    result = run(registry_for(home, FakeDaemon()), tmp_path)
+    assert step(result, STEP_CHECK).state is StepState.FAILED
+    assert "private_storage_key_unavailable" in step(result, STEP_CHECK).summary
+    assert (home / ".env").read_bytes() == before
+
+
 def test_a_fresh_install_records_that_no_project_root_is_configured(tmp_path):
     """`project_roots` is a fact of the run, not an absent key.
 

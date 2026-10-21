@@ -780,9 +780,10 @@ async def test_disabled_pool_stays_listed_and_is_sized_to_zero(pool_handler):
     assert (restored["min_active"], restored["max_active"]) == (1, 2)
 
 
-async def test_pool_status_includes_live_instance_detail(pool_handler):
+async def test_pool_status_includes_live_instance_detail(pool_handler, monkeypatch):
     """The dashboard needs the actual worker behind each aggregate row."""
     import time
+    from types import SimpleNamespace
 
     from src.models import SessionRecord
 
@@ -805,6 +806,9 @@ async def test_pool_status_includes_live_instance_detail(pool_handler):
         )
     )
 
+    # Database and pool measurement latency must not change the elapsed time
+    # asserted here. Replace only this command module's clock.
+    monkeypatch.setattr("src.commands.ops_commands.time", SimpleNamespace(time=lambda: now))
     result = await pool_handler._cmd_pool_status({"project_id": PROJECT_ID})
     instance = result["pools"][0]["instances"][0]
     assert instance == {
@@ -814,8 +818,8 @@ async def test_pool_status_includes_live_instance_detail(pool_handler):
         "state": "running",
         "task_id": None,
         "task_title": None,
-        "idle_seconds": pytest.approx(12, abs=2),
-        "started_at": pytest.approx(now - 30, abs=2),
+        "idle_seconds": 12,
+        "started_at": now - 30,
         "quarantine_reason": None,
     }
 

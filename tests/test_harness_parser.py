@@ -674,6 +674,16 @@ class TestShippedDialogRulesMatchTheirScreens:
                 "trust-directory",
                 "  Do you trust the contents of this directory?\n\n› 1. Yes, continue\n",
             ),
+            (
+                # Codex 0.162 renamed the screen (nimble-harbor-12).
+                "codex",
+                "trust-directory",
+                (
+                    "  Trust this folder? Codex can read, edit, and run files here, subject to your\n"
+                    "  permission settings.\n\n› 1. Trust and continue\n"
+                    "  2. Back to Agent Command Center\n"
+                ),
+            ),
             ("codex", "login-required", "  Sign in with ChatGPT to use Codex\n"),
             ("codex", "login-required", "  Run `codex login` to authenticate\n"),
             ("gemini", "trust-folder", " Do you trust the files in this folder?\n"),
@@ -720,6 +730,7 @@ class TestShippedInputPromptSignatures:
             ("codex", "login-required", "Run codex login to authenticate\n"),
             ("codex", "usage-limit", "You've hit your usage limit\n"),
             ("codex", "trust-or-permission", "Hooks need review\n"),
+            ("codex", "trust-or-permission", "Trust this folder? Codex can read, edit, and run\n"),
             ("codex", "press-enter-to-continue", "Press Enter to continue\n"),
             ("claude", "numbered-menu", "❯ 1. Continue\n"),
             ("claude", "menu-navigation", "Use ↑/↓ to move, press enter to confirm\n"),

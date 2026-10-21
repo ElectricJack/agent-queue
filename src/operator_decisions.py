@@ -56,6 +56,31 @@ async def related_on(conn, kind: str, identity: str) -> set[tuple[str, str]]:
     return refs
 
 
+#: ``source`` of an operator release of one source an aborted batch withholds.
+#: ``decision_record`` accepts only chat/discord/cli, so no note forges it.
+WITHHELD_RELEASE_SOURCE = "integration_release_withheld_source"
+
+
+def withheld_release_ref(task_id, source_sha):
+    return task_id + "@" + source_sha
+
+
+def withheld_release(batch_identity, task_id, source_sha):
+    """The release control's audit note for one exact frozen (task, source)."""
+    note = t.operator_decisions.alias("withheld_release")
+    return select(note.c.id).where(
+        note.c.object_kind == "batch", note.c.object_id == batch_identity,
+        note.c.effect == "note", note.c.source == WITHHELD_RELEASE_SOURCE,
+        note.c.source_ref == withheld_release_ref(task_id, source_sha),
+    ).exists()
+
+
+async def note_on(conn, values: dict) -> None:
+    """Append a daemon-authored note inside the caller's transaction."""
+    await conn.execute(insert(t.operator_decisions).values(
+        **values, id=str(uuid.uuid4()), releases=None))
+
+
 async def history_on(conn, project_id: str, refs=None) -> list[dict]:
     table = t.operator_decisions
     query = select(table).where(table.c.project_id == project_id)

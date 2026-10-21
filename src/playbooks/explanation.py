@@ -98,6 +98,9 @@ def canonical_effect(contract: CommandContract[Any, Any]) -> ExplanationEffect:
     """
     execution = contract.execution
     fields = ", ".join(execution.args_model.model_fields) or "no arguments"
+    if execution.argument_mode == "json_object":
+        schema = execution.args_model.model_json_schema()
+        fields = ", ".join(schema.get("properties", {})) or "a JSON object"
     return ExplanationEffect(
         operation=execution.side_effect.value,
         text=f"{execution.side_effect.value.replace('_', ' ').capitalize()} using {fields}",
@@ -143,6 +146,10 @@ def _event_value(reference: str, event_type: str | None) -> ExplanationValue:
 
 
 def _value(raw: Any, *, event_type: str | None, loop_name: str | None) -> ExplanationValue:
+    if isinstance(raw, Mapping) and raw.get("type") in {"filter", "map", "len", "diff"}:
+        from src.playbooks.graph_projection import project_value
+
+        return ExplanationValue(kind="template", text=project_value(raw)["display"])
     if isinstance(raw, list) and len(raw) == 1:
         return _value(raw[0], event_type=event_type, loop_name=loop_name)
     if not isinstance(raw, str):

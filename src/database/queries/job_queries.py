@@ -7,14 +7,18 @@ import logging
 import time
 from sqlalchemy import delete, func, insert, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+from src.waits.sources import insert_message_with_source_event
 from src.database.tables import (
     agent_waits,
     jobs,
     job_outbox,
     job_workspace_pins,
+    job_input_pins,
+    playbook_v2_runs,
     messages,
     tasks,
     workspaces,
+    wait_records,
 )
 from src.jobs.policy import JobError, TERMINAL, TRANSITIONS
 
@@ -26,6 +30,16 @@ def unpinned_workspace():
 
 
 class JobQueriesMixin:
+    async def find_script_job(self, run_id, step_id, iteration_path, attempt):
+        """Read the unique submission identity, including after a lost reply."""
+        async with self._engine.connect() as conn:
+            row = (await conn.execute(select(jobs).where(
+                jobs.c.owner_kind == "playbook", jobs.c.playbook_run_id == run_id,
+                jobs.c.playbook_step_id == step_id, jobs.c.iteration_path == iteration_path,
+                jobs.c.attempt == attempt,
+            ))).mappings().first()
+            return dict(row) if row else None
+
     async def list_task_job_results(self, task_id: str, *, limit: int = 10) -> list[dict]:
         """Recent terminal results for prime, with no delivery acknowledgement."""
         async with self._engine.connect() as conn:
@@ -116,10 +130,19 @@ class JobQueriesMixin:
                         )
                         .limit(1)
                     )
+                    if not waiting:
+                        waiting = await conn.scalar(select(wait_records.c.id).where(
+                            wait_records.c.project_id == job["project_id"],
+                            wait_records.c.owner_kind == "task",
+                            wait_records.c.owner_id == job["owner_id"],
+                            wait_records.c.condition_kind == "job",
+                            wait_records.c.condition["job_id"].as_string() == job["id"],
+                            wait_records.c.outcome.in_(("pending", "satisfied")),
+                        ).limit(1))
                     if job["owner_kind"] == "task" and owner_exists and not waiting:
                         if not messaging_enabled:
                             continue
-                        await conn.execute(
+                        await insert_message_with_source_event(conn,
                             pg_insert(messages)
                             .values(
                                 id=intent["key"],
@@ -160,9 +183,15 @@ class JobQueriesMixin:
         log_budget=2 * 1024**3,
         reservation=64 * 1024**2,
         wait_identity: dict | None = None,
+        wait_registration=None,
+        private_rows=(),
     ) -> dict:
         async with self._engine.begin() as conn:
-            if wait_identity:
+            if wait_registration is not None:
+                if wait_identity is not None:
+                    raise ValueError("select one wait registration protocol")
+                await wait_registration.prepare(conn, values)
+            elif wait_identity:
                 # Match registration/reconciliation: session -> task -> producer/workspace.
                 owner = await self._wait_owner(conn, **wait_identity)
                 if owner["owner_kind"] != "task" or owner["owner_id"] != values["task_id"]:
@@ -176,7 +205,14 @@ class JobQueriesMixin:
                 per_task_queued=per_task_queued,
                 log_budget=log_budget,
                 reservation=reservation,
+                allow_waiting_replay=wait_registration is not None,
             )
+            if private_rows and row["id"] == values["id"]:
+                from src.database.tables import playbook_private_values
+
+                await conn.execute(insert(playbook_private_values), list(private_rows))
+            if wait_registration is not None:
+                return {**row, "wait": await wait_registration.register(conn, row)}
             if wait_identity:
                 wait = await self.register_agent_wait_in_transaction(
                     conn,
@@ -199,6 +235,7 @@ class JobQueriesMixin:
         per_task_queued=10,
         log_budget=2 * 1024**3,
         reservation=64 * 1024**2,
+        allow_waiting_replay=False,
     ) -> dict:
         if values["owner_kind"] == "task":
             task = (
@@ -214,7 +251,9 @@ class JobQueriesMixin:
                 not task
                 or task["project_id"] != values["project_id"]
                 or task["claim_epoch"] != values["claim_epoch"]
-                or task["status"] != "IN_PROGRESS"
+                or task["status"] not in (
+                    ("IN_PROGRESS", "WAITING") if allow_waiting_replay else ("IN_PROGRESS",)
+                )
             ):
                 raise JobError("jobs.stale_claim")
         # Serialize host-wide quota/reservation and replay before quotas.
@@ -237,6 +276,9 @@ class JobQueriesMixin:
             if existing["request_hash"] != values["request_hash"]:
                 raise JobError("jobs.idempotency_conflict")
             return dict(existing)
+        if values["owner_kind"] == "task" and task["status"] != "IN_PROGRESS":
+            # WAITING permits a lost-receipt replay, never a second producer.
+            raise JobError("jobs.stale_claim")
         queued = await conn.scalar(
             select(func.count()).select_from(jobs).where(jobs.c.state == "queued")
         )
@@ -259,6 +301,22 @@ class JobQueriesMixin:
         )
         if reserved + reservation > log_budget:
             raise JobError("jobs.output_capacity")
+        if values["owner_kind"] == "playbook":
+            run = (await conn.execute(select(playbook_v2_runs).where(
+                playbook_v2_runs.c.run_id == values["playbook_run_id"]
+            ).with_for_update())).mappings().first()
+            if (not run or run["artifact_sha256"] != values["artifact_digest"]
+                    or run["mode"] != "live" or run["lifecycle"] != "running"
+                    or run["current_step_id"] != values["playbook_step_id"]):
+                raise JobError("jobs.playbook_owner_invalid")
+            row = (await conn.execute(insert(jobs).values(
+                **values, output_reservation_bytes=reservation
+            ).returning(jobs))).mappings().one()
+            await conn.execute(insert(job_input_pins).values(
+                job_id=row["id"], input_root=values["input_root"],
+                input_digest=values["input_ref"], created_at=values["submitted_at"],
+            ))
+            return dict(row)
         await conn.execute(
             select(func.pg_advisory_xact_lock(109795, func.hashtext(values["workspace_id"])))
         )
@@ -336,7 +394,7 @@ class JobQueriesMixin:
             ]
 
     async def transition_job(
-        self, job_id: str, version: int, state: str, *, cleaned=False, **fields
+        self, job_id: str, version: int, state: str, *, cleaned=False, private_rows=(), **fields
     ) -> dict | None:
         async with self._engine.begin() as conn:
             row = (
@@ -346,12 +404,19 @@ class JobQueriesMixin:
             )
             if not row or row["state_version"] != version or row["state"] in TERMINAL:
                 return None
-            if state not in TRANSITIONS[row["state"]]:
+            late_script_cancel = (row["owner_kind"] == "playbook"
+                                  and row["state"] == "cancelling" and state == "succeeded")
+            if state not in TRANSITIONS[row["state"]] and not late_script_cancel:
                 raise ValueError(f"invalid job transition {row['state']} -> {state}")
             if state in TERMINAL:
                 fields.setdefault("ended_at", time.time())
                 if not fields.get("result"):
                     raise ValueError("terminal job needs immutable result")
+            if private_rows:
+                from src.database.tables import playbook_private_values
+
+                await conn.execute(pg_insert(playbook_private_values).values(list(private_rows))
+                                   .on_conflict_do_nothing(index_elements=["value_id"]))
             updated = (
                 (
                     await conn.execute(
@@ -365,6 +430,13 @@ class JobQueriesMixin:
                 .one()
             )
             if state in TERMINAL:
+                from src.waits.sources import record_source_event
+
+                await record_source_event(
+                    conn, source_key=f"job:{job_id}", generation=1, revision=str(version + 1),
+                    outcome_ref=f"job:{job_id}", occurred_at=fields["ended_at"],
+                    payload={"job_id": job_id, "state": state, "task_id": row["task_id"]},
+                )
                 await conn.execute(
                     pg_insert(job_outbox)
                     .values(
@@ -425,6 +497,10 @@ class JobQueriesMixin:
                 .where(
                     jobs.c.state.in_(TERMINAL),
                     jobs.c.cleanup_blocked.is_(False),
+                    (jobs.c.owner_kind != "playbook") | ~select(playbook_v2_runs.c.run_id).where(
+                        playbook_v2_runs.c.run_id == jobs.c.playbook_run_id,
+                        playbook_v2_runs.c.lifecycle.in_(("running", "paused", "cancelling")),
+                    ).exists(),
                     (jobs.c.output_retention != "expired") | (jobs.c.ended_at < result_cutoff),
                 )
                 .order_by(jobs.c.ended_at, jobs.c.id)
@@ -447,6 +523,31 @@ class JobQueriesMixin:
             )
             if pinned:
                 return False
+            job = (await conn.execute(select(jobs).where(jobs.c.id == job_id)
+                                      .with_for_update())).mappings().first()
+            if not job or job["state"] not in TERMINAL or job["cleanup_blocked"]:
+                return False
+            if job["owner_kind"] == "playbook":
+                unsettled = await conn.scalar(select(playbook_v2_runs.c.run_id).where(
+                    playbook_v2_runs.c.run_id == job["playbook_run_id"],
+                    playbook_v2_runs.c.lifecycle.in_(("running", "paused", "cancelling")),
+                ))
+                if unsettled:
+                    return False
+                from src.database.tables import playbook_private_values
+                from src.playbooks.private_values import REFERENCE_KEY
+
+                result = job["result"] or {}
+                refs = [job["contract"]["request_ref"], result.get("binding_ref", {})]
+                refs.extend(result.get("output_refs", {}).values())
+                await conn.execute(delete(playbook_private_values).where(
+                    playbook_private_values.c.owner_kind == "run",
+                    playbook_private_values.c.owner_id == job["playbook_run_id"],
+                    playbook_private_values.c.value_id.in_([
+                        ref[REFERENCE_KEY] for ref in refs if REFERENCE_KEY in ref
+                    ]),
+                ))
+            await conn.execute(delete(job_input_pins).where(job_input_pins.c.job_id == job_id))
             await conn.execute(delete(job_outbox).where(job_outbox.c.job_id == job_id))
             await conn.execute(delete(jobs).where(jobs.c.id == job_id, jobs.c.state.in_(TERMINAL)))
             return True
@@ -463,3 +564,33 @@ class JobQueriesMixin:
                 .where(workspaces.c.id == workspace_id)
                 .values(job_pin_count=workspaces.c.job_pin_count - 1)
             )
+
+    async def pause_script_job(self, job_id, reason):
+        """Keep the job active and pinned; CAS-fence the engine's older snapshot."""
+        from dataclasses import replace
+        from src.playbooks.run_state import RunSnapshot, RunLifecycle
+        from src.database.queries.playbook_run_queries import _run_columns
+
+        async with self._engine.begin() as conn:
+            job = (await conn.execute(select(jobs).where(jobs.c.id == job_id)
+                                      .with_for_update())).mappings().one()
+            if job["state"] in TERMINAL:
+                return
+            run = (await conn.execute(select(playbook_v2_runs).where(
+                playbook_v2_runs.c.run_id == job["playbook_run_id"]
+            ).with_for_update())).mappings().one()
+            await conn.execute(update(jobs).where(jobs.c.id == job_id).values(
+                cleanup_blocked=True, infra_reason=reason))
+            if run["lifecycle"] not in {"running", "paused", "cancelling"}:
+                return
+            if run["lifecycle"] == "paused" and run["error_code"] == reason:
+                return
+            snapshot = RunSnapshot.from_body(json.loads(run["snapshot"]),
+                                             version=run["snapshot_version"])
+            snapshot = replace(snapshot, lifecycle=RunLifecycle.PAUSED,
+                               error=reason, error_code=reason, updated_at=time.time(),
+                               version=snapshot.version + 1)
+            payload = json.dumps(snapshot.to_body(), separators=(",", ":")).encode()
+            await conn.execute(update(playbook_v2_runs).where(
+                playbook_v2_runs.c.run_id == job["playbook_run_id"]
+            ).values(**_run_columns(snapshot, payload), snapshot_version=snapshot.version))

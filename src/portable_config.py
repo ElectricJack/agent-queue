@@ -33,7 +33,7 @@ PORTABLE_CONFIG_SECTIONS = frozenset(
     {
         "agents_config", "integration", "scheduling", "monitoring",
         "archive", "auto_task", "llm_logging", "pricing",
-        "surface", "state_machine", "work_graph",
+        "surface", "state_machine", "work_graph", "wait_policy",
         # Only limits and policy switches (artifact/result/snapshot sizes,
         # pending-event and retention policy) -- no path, no credential.
         "playbooks", "swarm", "resources", "metrics",

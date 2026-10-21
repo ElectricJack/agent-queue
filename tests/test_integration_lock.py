@@ -482,3 +482,25 @@ async def test_body_timeout_inside_exclusion_is_not_relabelled(env):
             raise TimeoutError("git fetch timed out")
     assert not isinstance(raised.value, BranchLockTimeout)
     assert str(raised.value) == "git fetch timed out"
+
+
+@pytest.mark.parametrize("connection_owned", [False, True])
+async def test_repair_exclusion_budget_is_bounded_by_lease(env, connection_owned):
+    from src.integration.lock import BranchLockTimeout
+
+    fence = await env.lock.acquire(TARGET, "repair", ttl_seconds=0.05, role="repair")
+    ownership = BranchOwnership(env.db, clock=lambda: env.now)
+    with pytest.raises(BranchLockTimeout) as raised:
+        if connection_owned:
+            async with env.db.immediate() as conn:
+                async with ownership.mutation_exclusion_on(
+                    conn, fence, expected_role="repair", timeout_seconds=1,
+                ):
+                    await asyncio.Event().wait()
+        else:
+            async with ownership.mutation_exclusion(
+                fence, expected_role="repair", timeout_seconds=1,
+            ):
+                await asyncio.Event().wait()
+    assert raised.value.seconds < 0.1
+    assert (await env.lock.get(TARGET)).grant() == fence
