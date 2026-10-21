@@ -15548,7 +15548,7 @@
   "promote_cancel": {
     "mode": "typed",
     "producer": "src/commands/promote_commands.py:PromoteCommandsMixin._cmd_promote_cancel",
-    "source_digest": "sha256:2d75efa7dc0a08fcd8dc9901d979fbe8de6eb9dd3ce35ab42bd66ead3cdbe012",
+    "source_digest": "sha256:707bf4782ae31ddec91c4944e32098b1187c61faf34cf1f2856104e422b59a38",
     "input_schema_source": "typed_contract",
     "schema_quality": "typed",
     "argument_reads_diagnostic_only": [],
