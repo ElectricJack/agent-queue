@@ -23,6 +23,19 @@ LANDING_REVISION = "8e73e088fa5050621a165b9d13f90ef88334572d"
 BASELINE_ENGINE_LINES = 82_627
 BASELINE_OWNED_LINES = 140_499
 REPLACEMENT_ALLOWANCE = 15_000
+# One approved batch exception, not a new replacement allowance. Remove its
+# manifest opt-in when azure-ridge-72 restores the original transition cap.
+TRANSITION_BATCH_EXCEPTION = {
+    "batch_id": "train-77f0d8e451f6aed08d608e443031047a",
+    "decision_message_id": "msg-edb5f857de344716a38857406fa69958",
+    "decision_record": "record:2720bdbe-7521-427e-8e72-1f40a3ff9818",
+    "measured_source_revision": "d00e25221856145f24777f8b016a008b4e954bca",
+    "original_owned_total_cap": 155_499,
+    "measured_owned_total": 156_792,
+    "delta": 1_293,
+    "restore_task": "azure-ridge-72",
+    "expires_at": "s4_modules",
+}
 FINAL_ENGINE_CAP = 11_999
 FINAL_TOTAL_CAP = 19_999
 FINAL_TABLE_CAP = 10
@@ -432,13 +445,27 @@ def inventory(root: Path, manifest: dict) -> dict:
             "unknown_sinks": unknown_sinks, "legacy_sinks": legacy_sinks}
 
 
+def transition_owned_cap(manifest: dict) -> int:
+    """Accept only the recorded batch decision; never derive a cap from counts."""
+    original = BASELINE_OWNED_LINES + REPLACEMENT_ALLOWANCE
+    exception = manifest.get("transition_exception")
+    if exception is None:
+        return original
+    if exception != TRANSITION_BATCH_EXCEPTION:
+        raise ValueError("unapproved integration transition exception")
+    return original + TRANSITION_BATCH_EXCEPTION["delta"]
+
+
 def budget_errors(report: dict, manifest: dict) -> list[str]:
     phase = manifest["phase"]
     if phase not in {"transition", "s4_modules", "final"}:
         return [f"unknown budget phase: {phase}"]
     if phase == "transition":
         engine_cap = BASELINE_ENGINE_LINES + REPLACEMENT_ALLOWANCE
-        total_cap = BASELINE_OWNED_LINES + REPLACEMENT_ALLOWANCE
+        try:
+            total_cap = transition_owned_cap(manifest)
+        except ValueError as exc:
+            return [str(exc)]
         table_cap = 45  # replacement reshapes the existing five, adds no table
     else:
         engine_cap, total_cap, table_cap = FINAL_ENGINE_CAP, FINAL_TOTAL_CAP, FINAL_TABLE_CAP

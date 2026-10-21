@@ -1043,10 +1043,22 @@
     "phase": "transition",
     "fixed_replacement_allowance": 15000,
     "engine_cap": 97627,
-    "owned_total_cap": 155499,
+    "owned_total_cap": 156792,
     "table_cap": 45,
     "expires_at": "s4_modules",
-    "automatic_baseline_increase": false
+    "automatic_baseline_increase": false,
+    "original_owned_total_cap": 155499,
+    "batch_exception": {
+      "batch_id": "train-77f0d8e451f6aed08d608e443031047a",
+      "decision_message_id": "msg-edb5f857de344716a38857406fa69958",
+      "decision_record": "record:2720bdbe-7521-427e-8e72-1f40a3ff9818",
+      "measured_source_revision": "d00e25221856145f24777f8b016a008b4e954bca",
+      "original_owned_total_cap": 155499,
+      "measured_owned_total": 156792,
+      "delta": 1293,
+      "restore_task": "azure-ridge-72",
+      "expires_at": "s4_modules"
+    }
   },
   "landing_delta": {
     "owned_lines": -2431,

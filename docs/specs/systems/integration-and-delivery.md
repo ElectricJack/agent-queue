@@ -576,6 +576,17 @@ All of these were verified in the code on 2026-10-20 unless marked otherwise.
    - about 15 legacy tables are retained with an empty drop set.
 
    The `tests/integration_ownership.json` size budget is still in phase `transition`.
+   Decision `msg-edb5f857de344716a38857406fa69958` authorizes one temporary
+   owned-line exception for batch `train-77f0d8e451f6aed08d608e443031047a`:
+   155,499 → 156,792, exactly the measured excess of 1,293 at source
+   `d00e25221856145f24777f8b016a008b4e954bca`. The source inventory and all
+   ownership classifications remain unchanged. The manifest records the exact
+   batch, decision and measurement; the budget rejects a changed exception or
+   any further growth. Historical baselines, the 15,000 replacement allowance,
+   engine/table caps and final retirement caps remain fixed. `s4_modules` and
+   `final` ignore this exception; `azure-ridge-72` owns its earlier removal and
+   restoration of 155,499 after this batch is delivered. This decision does not
+   change retry history, integration authority, required CI or cutover holds.
 4. **Dead or never-wired code:**
    - `shadow.py` is imported only by tests.
    - `GENERATED_MERGE_CONFIG` has no caller.

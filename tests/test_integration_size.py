@@ -1,8 +1,9 @@
 """Physical-line ownership and table integration ratchets.
 
 During replacement the *fixed* recorded baseline permits 15,000 overlapping
-lines. Set the manifest phase to s4_modules when retiring the legacy modules;
-that immediately enforces the final caps, with no allowance to carry forward.
+lines, plus the explicitly recorded one-time batch exception. Set the manifest
+phase to s4_modules when retiring the legacy modules; that immediately enforces
+the final caps, with no allowance to carry forward.
 """
 
 from __future__ import annotations
@@ -12,6 +13,8 @@ from copy import deepcopy
 import hashlib
 import json
 from pathlib import Path
+import runpy
+import sys
 
 import pytest
 
@@ -104,7 +107,9 @@ def test_recorded_ownership_report_and_landing_delta(manifest):
     assert recorded["complete_baseline"] == manifest["baseline"]
     assert recorded["actual_landing"] == manifest["landing"]
     assert recorded["shared_definitions"] == manifest["shared"]
-    assert recorded["transition"]["owned_total_cap"] == 155_499
+    assert recorded["transition"]["original_owned_total_cap"] == 155_499
+    assert recorded["transition"]["owned_total_cap"] == ownership.transition_owned_cap(manifest)
+    assert recorded["transition"]["batch_exception"] == manifest["transition_exception"]
     assert recorded["transition"]["expires_at"] == "s4_modules"
     assert recorded["landing_delta"]["owned_lines"] == -2_431
     assert recorded["landing_delta"]["remaining_owned_allowance"] == 17_431
@@ -327,6 +332,7 @@ def test_operator_decision_storage_keeps_stack_authorization_charged(report, man
 def test_transition_budget_cannot_reset_to_current_counts(manifest):
     copy = deepcopy(manifest)
     copy["phase"] = "transition"
+    copy.pop("transition_exception", None)
     baseline = copy["baseline"]
     result = {"groups": {"engine": baseline["groups"]["engine"] + 15_001},
               "total": baseline["total"] + 15_001,
@@ -338,6 +344,72 @@ def test_transition_budget_cannot_reset_to_current_counts(manifest):
     copy["baseline"]["total"] += 99_999
     copy["baseline"]["groups"]["engine"] += 99_999
     assert ownership.budget_errors(result, copy) == errors
+
+
+def test_batch_exception_is_exact_and_has_no_remaining_headroom(report, manifest):
+    exception = manifest["transition_exception"]
+    assert exception == ownership.TRANSITION_BATCH_EXCEPTION
+    assert exception["original_owned_total_cap"] == 155_499
+    measured = exception["measured_owned_total"]
+    assert measured == 156_792
+    assert exception["delta"] == measured - 155_499 == 1_293
+    assert ownership.transition_owned_cap(manifest) == measured
+    too_large = {**report, "total": measured + 1}
+    assert ownership.budget_errors(too_large, manifest) == [
+        "owned total: 156,793 exceeds 156,792 in transition",
+    ]
+    # Changing the historical snapshot still cannot enlarge the exception.
+    copy = deepcopy(manifest)
+    copy["baseline"]["total"] += 99_999
+    assert ownership.budget_errors(too_large, copy) == ownership.budget_errors(too_large, manifest)
+    copy.pop("transition_exception")
+    assert ownership.transition_owned_cap(copy) == 155_499
+    assert ownership.budget_errors({**report, "total": measured}, copy) == [
+        "owned total: 156,792 exceeds 155,499 in transition",
+    ]
+    # The exception is an upper bound: later genuine reductions still pass.
+    assert ownership.budget_errors({**report, "total": measured - 1}, manifest) == []
+
+
+@pytest.mark.parametrize("field,value", [
+    ("batch_id", "another-batch"),
+    ("decision_message_id", "another-decision"),
+    ("measured_source_revision", "another-source"),
+    ("delta", 1_294),
+    ("measured_owned_total", 156_793),
+    ("original_owned_total_cap", 155_500),
+])
+def test_batch_exception_cannot_be_reused_or_enlarged(manifest, field, value):
+    copy = deepcopy(manifest)
+    copy["transition_exception"][field] = value
+    assert ownership.budget_errors({}, copy) == ["unapproved integration transition exception"]
+
+
+@pytest.mark.parametrize("phase", ["transition", "s4_modules", "final"])
+def test_cutover_evidence_uses_the_enforced_caps(manifest, report, monkeypatch, phase):
+    copy = deepcopy(manifest)
+    copy["phase"] = phase
+    monkeypatch.setattr(ownership, "load_manifest", lambda: copy)
+    monkeypatch.setattr(ownership, "inventory", lambda *_: report)
+    monkeypatch.setitem(sys.modules, "integration_ownership", ownership)
+    monkeypatch.setattr(sys, "path", list(sys.path))
+    script = runpy.run_path(str(ROOT / "scripts/integration-cutover-evidence.py"))
+    result = script["ownership"]()
+    assert result["budget_errors"] == ownership.budget_errors(report, copy)
+    transition = phase == "transition"
+    assert result["owned_cap_in_phase"] == (156_792 if transition else 19_999)
+    assert result["engine_cap_in_phase"] == (97_627 if transition else 11_999)
+    assert result["table_cap_in_phase"] == (45 if transition else 10)
+    assert result["transition_exception"] == (copy["transition_exception"] if transition else None)
+    ledger = json.loads((ROOT / "docs/gates/git-first-cutover/ledger.json").read_text())
+    ledger["ownership"] = result
+    rendered = script["render"](ledger)
+    if transition:
+        assert "156,792 transition cap" in rendered
+        assert copy["transition_exception"]["decision_message_id"] in rendered
+    else:
+        assert f"19,999 {phase} cap" in rendered
+        assert "one-time batch exception: none" in rendered
 
 
 @pytest.mark.parametrize("phase", ["s4_modules", "final"])
