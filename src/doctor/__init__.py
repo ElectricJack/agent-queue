@@ -45,6 +45,7 @@ from src.doctor.skill_checks import skill_checks
 from src.doctor.stall_checks import stall_checks
 from src.doctor.task_checks import task_checks
 from src.doctor.workspace_checks import workspace_checks
+from src.doctor.wait_checks import wait_checks
 
 __all__ = [
     "RESERVED_CHECK_IDS",
@@ -82,6 +83,7 @@ __all__ = [
     "stall_checks",
     "task_checks",
     "workspace_checks",
+    "wait_checks",
 ]
 
 
@@ -145,5 +147,7 @@ def default_registry() -> DoctorRegistry:
     for check in service_checks():
         registry.register(check)
     for check in record_checks():
+        registry.register(check)
+    for check in wait_checks():
         registry.register(check)
     return registry

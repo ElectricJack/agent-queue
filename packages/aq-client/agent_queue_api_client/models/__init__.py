@@ -791,7 +791,9 @@ from .job_logs_response import JobLogsResponse
 from .job_logs_response_chunks_item import JobLogsResponseChunksItem
 from .job_logs_response_gaps_item import JobLogsResponseGapsItem
 from .job_response import JobResponse
+from .job_response_decision_type_0 import JobResponseDecisionType0
 from .job_response_job import JobResponseJob
+from .job_response_wait_type_1 import JobResponseWaitType1
 from .job_result_args import JobResultArgs
 from .job_result_response import JobResultResponse
 from .job_result_response_result_type_0 import JobResultResponseResultType0
@@ -2971,7 +2973,9 @@ __all__ = (
     "JobLogsResponseChunksItem",
     "JobLogsResponseGapsItem",
     "JobResponse",
+    "JobResponseDecisionType0",
     "JobResponseJob",
+    "JobResponseWaitType1",
     "JobResultArgs",
     "JobResultResponse",
     "JobResultResponseResultType0",

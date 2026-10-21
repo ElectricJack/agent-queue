@@ -524,16 +524,19 @@ async def test_wait_runtime_is_dormant_and_service_bound(runtime_env):
     env = runtime_env
     service = runtime(env, enabled=False)
     service.listener.connect = AsyncMock(side_effect=AssertionError("disabled listener connected"))
-    await service.run()
+    background = asyncio.create_task(service.run())
+    await asyncio.sleep(0)
+    assert not background.done()
+    background.cancel()
+    await asyncio.gather(background, return_exceptions=True)
     assert not await service.tick()
     assert not await records(env, wait_listener_cursors)
     assert (await service.command("wait_source_commit", {
         "source_key": "task:source", "generation": 0, "revision": "disabled",
         "outcome_ref": "test", "payload": {},
-    }))["error_code"] == "wait.disabled"
+    }))["success"]
     with principal_context(ExecutionPrincipal.service("waits-listener")):
-        with pytest.raises(ValueError, match="disabled"):
-            await service.orch._command_handler.wait_listener_lease(service.listener)
+        assert await service.orch._command_handler.wait_listener_lease(service.listener)
     with pytest.raises(ValueError, match="service principal"):
         await service.orch._command_handler.wait_listener_drain(service.listener, 0)
 

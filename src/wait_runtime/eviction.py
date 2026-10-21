@@ -61,7 +61,7 @@ async def request_evictions(orch, starts):
     """Separate checkpoint requests from starts so they cannot over-admit."""
     ordinary = [action for action in starts if action.reason != 'evict']
     service = getattr(orch, 'wait_service', None)
-    if not service or not orch.config.wait_policy.hibernation_enabled:
+    if not service:
         return ordinary
     for action in starts:
         if action.reason != 'evict':

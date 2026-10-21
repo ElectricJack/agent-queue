@@ -1,4 +1,4 @@
-"""Dormant composition root for the listener, timer and downstream lifecycle owners."""
+"""Composition root for verified waits and restart-safe continuation draining."""
 
 from __future__ import annotations
 
@@ -34,7 +34,6 @@ class WaitService:
         from src.wait_runtime.legacy_bridge import LegacyWaitBridge
 
         self.legacy_bridge = LegacyWaitBridge(self, clock=clock)
-        self._bridge_started = False
         self._bridge_lock = asyncio.Lock()
         self.registry.loop_handler = self.loop_escalation
         self._dispatcher = WakeDispatcher(
@@ -96,7 +95,23 @@ class WaitService:
 
     @property
     def enabled(self):
-        return getattr(getattr(self.orch.config, "wait_policy", None), "v2_enabled", False) is True
+        from src.waits.policy import enabled
+
+        return enabled(self.orch.config)
+
+    async def processing_enabled(self):
+        """Flags gate new work, never abandon registered waits on rollback."""
+        if self.enabled:
+            return True
+        from sqlalchemy import exists, or_, select
+        from src.database.tables import continuations, wait_records
+
+        async with self.orch.db._engine.connect() as conn:
+            return bool(await conn.scalar(select(or_(
+                exists(select(wait_records.c.id).where(wait_records.c.cleared_at.is_(None))),
+                exists(select(continuations.c.id).where(continuations.c.resume_state.not_in(
+                    ("acknowledged", "failed", "cancelled")))),
+            ))))
 
     @property
     def dispatcher(self):
@@ -128,26 +143,29 @@ class WaitService:
         ).values(fired_at=now))
 
     async def tick(self):
-        if self.enabled:
-            await self.startup_bridge()
+        if await self.processing_enabled():
+            if self.enabled:
+                await self.startup_bridge()
             await self.lifecycle.tick()
             return await self.listener.tick()
         return False
 
     async def run(self):
+        # Configuration is hot reloadable. Stay dormant without opening a
+        # listener, but retain the service task for a later project canary.
+        while not await self.processing_enabled():
+            await asyncio.sleep(self.listener.renewal_seconds)
         if self.enabled:
             await self.startup_bridge()
-            await self.listener.run()
+        await self.listener.run()
 
     async def startup_bridge(self):
-        """One attempt per process; durable receipts permit restart recovery."""
+        """Durable project receipts permit restart and newly enabled canary recovery."""
         from sqlalchemy import exists, select
         from src.database.tables import projects, wait_bridge_progress
         from src.waits.decision import project_policy
 
         async with self._bridge_lock:
-            if self._bridge_started:
-                return
             async with self.orch.db._engine.connect() as conn:
                 pids = list((await conn.execute(select(projects.c.id).where(~exists(
                     select(wait_bridge_progress.c.identity).where(
@@ -164,4 +182,3 @@ class WaitService:
                     })
                     if not result.get('success'):
                         return
-            self._bridge_started = True

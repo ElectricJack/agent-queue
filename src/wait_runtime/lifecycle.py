@@ -27,67 +27,79 @@ class WaitLifecycle:
         self.medians = {}
 
     async def register(self, args, *, principal, scope, handler):
+        watermark = await self.db.wait_source_watermark()
+        now = self.clock()
+        async with self.db._engine.begin() as conn:
+            return await self.register_in_transaction(
+                conn, args, scope=scope, source_watermark=watermark, now=now,
+            )
+
+    async def register_in_transaction(self, conn, args, *, scope, source_watermark, now):
+        """Share verified registration effects with atomic producer commands.
+
+        A caller already holding owner/source locks must first acquire the graph
+        fence and prefetch the watermark before opening its transaction.
+        """
         policy = project_policy(self.orch.config.wait_policy, scope.project_id) if scope else None
         if scope is None:
             raise WaitError("wait.out_of_scope", "registration needs a bound owner")
         if args["condition"]["kind"] == "human" and not policy.hibernation_enabled:
             raise WaitError("wait.disabled", "human waits require hibernation support")
-        watermark = await self.db.wait_source_watermark()
-        now = self.clock()
-        async with self.db._engine.begin() as conn:
-            await lock_graph(conn)
-            anchor = await ceiling_anchor(conn, scope, now=now, policy=policy)
-            if scope.project_id not in self.medians:
-                self.medians[scope.project_id] = await measurement_medians(
-                    conn, scope.project_id, now=now,
-                )
-            task_profile = await conn.scalar(select(tasks.c.profile_id).where(
-                tasks.c.id == scope.owner_id,
-            )) if scope.owner_kind == 'task' else None
-            pressure = getattr(self.orch, '_wait_slot_pressure', {}).get(
-                (scope.project_id, task_profile), 0,
+        await lock_graph(conn)
+        anchor = await ceiling_anchor(conn, scope, now=now, policy=policy)
+        if scope.project_id not in self.medians:
+            self.medians[scope.project_id] = await measurement_medians(
+                conn, scope.project_id, now=now,
             )
-            def measured_decision(cond, evidence):
-                return decide_sleep(measured_inputs(
-                    cond, evidence, policy=policy, medians=self.medians[scope.project_id],
-                    pressure=pressure, anchor=anchor, now=now,
-                ))
+        task_profile = await conn.scalar(select(tasks.c.profile_id).where(
+            tasks.c.id == scope.owner_id,
+        )) if scope.owner_kind == 'task' else None
+        pressure = getattr(self.orch, '_wait_slot_pressure', {}).get(
+            (scope.project_id, task_profile), 0,
+        )
+        def measured_decision(cond, evidence):
+            return decide_sleep(measured_inputs(
+                cond, evidence, policy=policy, medians=self.medians[scope.project_id],
+                pressure=pressure, anchor=anchor, now=now,
+            ))
 
-            receipt = await register_wait(
-                conn, scope=scope, condition=args["condition"],
-                idempotency_key=args["idempotency_key"], registry=self.service.registry,
-                policy=policy, source_watermark=watermark, now=now,
-                ceiling_anchor_at=anchor,
-                decide_sleep=measured_decision,
-                observe_sleep_inputs=lambda cond, evidence: measured_decision(cond, evidence).inputs,
-                claimed=args.get("claimed"),
-                escalate_after_seconds=args.get("escalate_after_seconds"),
-            )
-            if not receipt["success"] or scope.owner_kind != "task":
-                return receipt
-            wait = (await conn.execute(select(wait_records).where(
-                wait_records.c.id == receipt["wait_id"],
-            ))).mappings().one()
-            task = (await conn.execute(select(tasks).where(
-                tasks.c.id == scope.owner_id,
-            ))).mappings().one()
-            if wait["sleep_decision"] == "hibernate":
-                if not policy.hibernation_enabled:
-                    raise WaitError("wait.disabled", "forced hibernation is not enabled")
-                intent = await begin_suspension(
-                    conn, wait, task, now=now, budget=policy.transition_budget_seconds,
-                )
-                receipt = {**receipt, "continuation_id": intent["id"],
-                           "generation": intent["suspension_generation"]}
-                await conn.execute(update(wait_records).where(
-                    wait_records.c.id == wait["id"],
-                ).values(decision_inputs={**wait["decision_inputs"],
-                                          "registration_receipt": receipt}))
-            else:
-                await execute_task_status_mutation(conn, update(tasks).where(
-                    tasks.c.id == task["id"], tasks.c.status == "IN_PROGRESS",
-                ).values(status="WAITING", updated_at=now))
+        receipt = await register_wait(
+            conn, scope=scope, condition=args["condition"],
+            idempotency_key=args["idempotency_key"], registry=self.service.registry,
+            policy=policy, source_watermark=source_watermark, now=now,
+            ceiling_anchor_at=anchor,
+            decide_sleep=measured_decision,
+            observe_sleep_inputs=lambda cond, evidence: measured_decision(cond, evidence).inputs,
+            claimed=args.get("claimed"),
+            escalate_after_seconds=args.get("escalate_after_seconds"),
+        )
+        if not receipt["success"] or scope.owner_kind != "task":
             return receipt
+        wait = (await conn.execute(select(wait_records).where(
+            wait_records.c.id == receipt["wait_id"],
+        ))).mappings().one()
+        if wait["cleared_at"] is not None or wait["outcome"] != "pending":
+            return receipt
+        task = (await conn.execute(select(tasks).where(
+            tasks.c.id == scope.owner_id,
+        ))).mappings().one()
+        if wait["sleep_decision"] == "hibernate":
+            if not policy.hibernation_enabled:
+                raise WaitError("wait.disabled", "forced hibernation is not enabled")
+            intent = await begin_suspension(
+                conn, wait, task, now=now, budget=policy.transition_budget_seconds,
+            )
+            receipt = {**receipt, "continuation_id": intent["id"],
+                       "generation": intent["suspension_generation"]}
+            await conn.execute(update(wait_records).where(
+                wait_records.c.id == wait["id"],
+            ).values(decision_inputs={**wait["decision_inputs"],
+                                      "registration_receipt": receipt}))
+        else:
+            await execute_task_status_mutation(conn, update(tasks).where(
+                tasks.c.id == task["id"], tasks.c.status == "IN_PROGRESS",
+            ).values(status="WAITING", updated_at=now))
+        return receipt
 
     async def sleep_decide(self, args, *, principal, scope, handler):
         from src.waits.conditions import Condition
@@ -143,7 +155,8 @@ class WaitLifecycle:
         """One checkpoint request; retain the registered source and its edges."""
         from src.waits.ownership import fence_owner
 
-        if not getattr(self.orch.config.wait_policy, 'hibernation_enabled', False):
+        policy = project_policy(self.orch.config.wait_policy, wait['project_id'])
+        if not policy.hibernation_enabled:
             return {'success': True, 'suspended': False, 'reason': 'flag'}
         if wait['sleep_decision'] != 'in_place' or wait['outcome'] != 'pending':
             return {'success': True, 'suspended': False}
@@ -195,8 +208,6 @@ class WaitLifecycle:
 
     async def tick(self):
         self.medians.clear()
-        if not getattr(self.orch.config.wait_policy, 'hibernation_enabled', False):
-            return
         async with self.db._engine.connect() as conn:
             ids = list((await conn.execute(select(continuations.c.wait_id).join(
                 wait_records, wait_records.c.id == continuations.c.wait_id,
@@ -224,8 +235,6 @@ class WaitLifecycle:
         await self.resume_pending()
 
     async def resume_pending(self):
-        if not getattr(self.orch.config.wait_policy, 'hibernation_enabled', False):
-            return
         async with self.db._engine.connect() as conn:
             ready = [dict(row) for row in (await conn.execute(select(continuations).join(
                 tasks, tasks.c.id == continuations.c.task_id,

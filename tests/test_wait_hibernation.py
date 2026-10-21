@@ -202,7 +202,7 @@ async def test_eviction_transition_budget_uses_intent_time_and_reclaimed_owner_i
     assert not (await intent(env))["summary_degraded"]
 
 
-async def test_command_is_concrete_but_activation_remains_required(env):
+async def test_checkpoint_remains_available_during_flag_rollback(env):
     handler = CommandHandler(
         SimpleNamespace(
             db=env.db,
@@ -224,8 +224,6 @@ async def test_command_is_concrete_but_activation_remains_required(env):
     )
     with principal_context(principal):
         args = dict(wait_id=env.wait_id, summary="next: inspect result", claim_epoch=1)
-        assert (await handler.execute("wait_checkpoint", args))["error_code"] == "wait.disabled"
-        handler.config.wait_policy.v2_enabled = True
         result = await handler.execute("wait_checkpoint", args)
     assert result["success"], result
     facts = (await intent(env))["facts"]

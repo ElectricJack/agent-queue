@@ -3543,7 +3543,7 @@
       "default": {
         "branch_admission_deadline_seconds": 1800,
         "hibernate_margin": 2.0,
-        "hibernation_enabled": false,
+        "hibernation_enabled": true,
         "in_place_ceiling_seconds": 1800,
         "kinds": {
           "batch": {
@@ -3607,10 +3607,10 @@
         "projects": {},
         "resume_cost_minutes": 10.0,
         "resume_launch_attempts": 2,
-        "scheduler_waits_enabled": false,
+        "scheduler_waits_enabled": true,
         "transition_budget_seconds": 120,
-        "v1_bodies": "translate",
-        "v2_enabled": false
+        "v1_bodies": "refuse",
+        "v2_enabled": true
       },
       "properties": {
         "branch_admission_deadline_seconds": {
@@ -3622,7 +3622,7 @@
           "type": "number"
         },
         "hibernation_enabled": {
-          "default": false,
+          "default": true,
           "type": "boolean"
         },
         "in_place_ceiling_seconds": {
@@ -3839,7 +3839,7 @@
           "type": "integer"
         },
         "scheduler_waits_enabled": {
-          "default": false,
+          "default": true,
           "type": "boolean"
         },
         "transition_budget_seconds": {
@@ -3847,11 +3847,11 @@
           "type": "integer"
         },
         "v1_bodies": {
-          "default": "translate",
+          "default": "refuse",
           "type": "string"
         },
         "v2_enabled": {
-          "default": false,
+          "default": true,
           "type": "boolean"
         }
       },

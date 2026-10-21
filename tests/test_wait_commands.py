@@ -252,6 +252,7 @@ async def test_upgrade_refusal_is_explicit_and_has_v2_example(commands):
     )
     assert result["error_code"] == "wait.upgrade_required"
     assert result["example"]["condition"]["task_id"] == "producer-task"
+    assert result["detail"]["example"]["schema_version"] == 2
 
 
 async def test_explicit_v2_body_requires_condition_and_stays_disabled(commands):
@@ -269,7 +270,7 @@ async def test_explicit_v2_body_requires_condition_and_stays_disabled(commands):
         ),
     )
     assert disabled["error_code"] == "wait.disabled"
-    assert not getattr(getattr(AppConfig(), "wait_policy", None), "v2_enabled", False)
+    assert AppConfig().wait_policy.v2_enabled
 
 
 async def test_missing_runtime_refuses_without_creating_rows(commands, env):
@@ -892,6 +893,7 @@ async def test_human_registration_requires_hibernation_before_any_wait_write(env
 
     config = AppConfig()
     config.wait_policy.v2_enabled = True
+    config.wait_policy.hibernation_enabled = False
     lifecycle = WaitLifecycle(SimpleNamespace(orch=SimpleNamespace(db=env.db, config=config)))
     with pytest.raises(WaitError) as error:
         await lifecycle.register(dict(condition=dict(kind="human", subject="task_comment",

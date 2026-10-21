@@ -18,6 +18,7 @@ from src.database.tables import (
     messages,
     tasks,
     workspaces,
+    wait_records,
 )
 from src.jobs.policy import JobError, TERMINAL, TRANSITIONS
 
@@ -129,6 +130,15 @@ class JobQueriesMixin:
                         )
                         .limit(1)
                     )
+                    if not waiting:
+                        waiting = await conn.scalar(select(wait_records.c.id).where(
+                            wait_records.c.project_id == job["project_id"],
+                            wait_records.c.owner_kind == "task",
+                            wait_records.c.owner_id == job["owner_id"],
+                            wait_records.c.condition_kind == "job",
+                            wait_records.c.condition["job_id"].as_string() == job["id"],
+                            wait_records.c.outcome.in_(("pending", "satisfied")),
+                        ).limit(1))
                     if job["owner_kind"] == "task" and owner_exists and not waiting:
                         if not messaging_enabled:
                             continue
@@ -173,10 +183,15 @@ class JobQueriesMixin:
         log_budget=2 * 1024**3,
         reservation=64 * 1024**2,
         wait_identity: dict | None = None,
+        wait_registration=None,
         private_rows=(),
     ) -> dict:
         async with self._engine.begin() as conn:
-            if wait_identity:
+            if wait_registration is not None:
+                if wait_identity is not None:
+                    raise ValueError("select one wait registration protocol")
+                await wait_registration.prepare(conn, values)
+            elif wait_identity:
                 # Match registration/reconciliation: session -> task -> producer/workspace.
                 owner = await self._wait_owner(conn, **wait_identity)
                 if owner["owner_kind"] != "task" or owner["owner_id"] != values["task_id"]:
@@ -190,11 +205,14 @@ class JobQueriesMixin:
                 per_task_queued=per_task_queued,
                 log_budget=log_budget,
                 reservation=reservation,
+                allow_waiting_replay=wait_registration is not None,
             )
             if private_rows and row["id"] == values["id"]:
                 from src.database.tables import playbook_private_values
 
                 await conn.execute(insert(playbook_private_values), list(private_rows))
+            if wait_registration is not None:
+                return {**row, "wait": await wait_registration.register(conn, row)}
             if wait_identity:
                 wait = await self.register_agent_wait_in_transaction(
                     conn,
@@ -217,6 +235,7 @@ class JobQueriesMixin:
         per_task_queued=10,
         log_budget=2 * 1024**3,
         reservation=64 * 1024**2,
+        allow_waiting_replay=False,
     ) -> dict:
         if values["owner_kind"] == "task":
             task = (
@@ -232,7 +251,9 @@ class JobQueriesMixin:
                 not task
                 or task["project_id"] != values["project_id"]
                 or task["claim_epoch"] != values["claim_epoch"]
-                or task["status"] != "IN_PROGRESS"
+                or task["status"] not in (
+                    ("IN_PROGRESS", "WAITING") if allow_waiting_replay else ("IN_PROGRESS",)
+                )
             ):
                 raise JobError("jobs.stale_claim")
         # Serialize host-wide quota/reservation and replay before quotas.
@@ -255,6 +276,9 @@ class JobQueriesMixin:
             if existing["request_hash"] != values["request_hash"]:
                 raise JobError("jobs.idempotency_conflict")
             return dict(existing)
+        if values["owner_kind"] == "task" and task["status"] != "IN_PROGRESS":
+            # WAITING permits a lost-receipt replay, never a second producer.
+            raise JobError("jobs.stale_claim")
         queued = await conn.scalar(
             select(func.count()).select_from(jobs).where(jobs.c.state == "queued")
         )

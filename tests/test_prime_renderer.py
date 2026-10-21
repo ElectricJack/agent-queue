@@ -1318,6 +1318,9 @@ _CLI_TO_COMMAND: dict[str, str | None] = {
     "aq job submit": "job_submit",
     "aq wait register": "wait_register",
     "aq wait show": "wait_get",
+    "aq wait checkpoint": "wait_checkpoint",
+    "aq wait decide": "wait_decide",
+    "aq wait lift": "wait_lift",
 }
 
 

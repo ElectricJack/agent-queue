@@ -91,7 +91,7 @@ class WaitCommandsMixin:
             if args.get("schema_version") == 2 and not args.get("condition"):
                 return _error("wait.condition_required", "version 2 requires a typed condition")
             values = WaitRegisterArgs.model_validate(args)
-            if values.schema_version == 2 or self._wait_v2_enabled():
+            if values.schema_version == 2 or self._wait_v2_enabled(args.get("project_id")):
                 return await self._wait_v2_register(values, args)
             identity = await self._wait_identity(args, mutation=True)
             match = typed_match(values.kind, values.ref, values.after_seq, values.due_at)
@@ -117,9 +117,8 @@ class WaitCommandsMixin:
             from src.commands.contracts.wait import WaitGetArgs
 
             values = WaitGetArgs.model_validate(args)
-            if values.schema_version == 2 or self._wait_v2_enabled():
-                if await self._wait_v2_row(values.wait_id):
-                    return await self._wait_v2_get(values, args)
+            if await self._wait_v2_row(values.wait_id):
+                return await self._wait_v2_get(values, args)
             filters = await self._wait_read_filter(args)
             row = await self.db.get_agent_wait(values.wait_id)
             if row is None:
@@ -153,7 +152,7 @@ class WaitCommandsMixin:
 
     async def _cmd_wait_list(self, args):
         try:
-            if args.get("schema_version") == 2 or self._wait_v2_enabled():
+            if args.get("schema_version") == 2 or self._wait_v2_enabled(args.get("project_id")):
                 return await self._wait_v2_list(args)
             filters = await self._wait_read_filter(args)
             limit, offset = int(args.get("limit", 100)), int(args.get("offset", 0))
@@ -169,9 +168,8 @@ class WaitCommandsMixin:
             from src.commands.contracts.wait import WaitCancelArgs
 
             values = WaitCancelArgs.model_validate(args)
-            if values.schema_version == 2 or self._wait_v2_enabled():
-                if await self._wait_v2_row(values.wait_id):
-                    return await self._wait_v2_cancel(args)
+            if await self._wait_v2_row(values.wait_id):
+                return await self._wait_v2_cancel(args)
             principal = current_principal()
             if (
                 principal is not None

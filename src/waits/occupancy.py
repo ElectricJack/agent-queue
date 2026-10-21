@@ -7,8 +7,6 @@ from src.database.tables import sessions, tasks, wait_records
 async def evictable_sessions(db, config):
     from src.waits.holding import execution_waits
 
-    if getattr(getattr(config, "wait_policy", None), "v2_enabled", False) is not True:
-        return frozenset()
     async with db._engine.connect() as conn:
         return frozenset((await conn.execute(execution_waits().with_only_columns(
             sessions.c.id, maintain_column_froms=True,
@@ -28,8 +26,6 @@ async def continuation_occupancy(db, config):
     """
     from src.database.tables import admission_reservations, continuations
 
-    if getattr(getattr(config, "wait_policy", None), "v2_enabled", False) is not True:
-        return frozenset(), {}
     async with db._engine.connect() as conn:
         rows = (await conn.execute(select(
             tasks.c.project_id, admission_reservations.c.scope,

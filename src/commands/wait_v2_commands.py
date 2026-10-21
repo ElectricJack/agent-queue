@@ -4,7 +4,8 @@
 ``(args, *, principal, scope, handler)``. All names and arguments are contracted;
 scope is derived here, never taken from an agent's request. Owners must repeat
 the claim/generation fence inside their mutation transaction. Missing handlers
-refuse before any mutation, and v2 writes require the explicit activation flag.
+refuse before any mutation. Activation gates new registrations per project;
+persisted waits retain their recovery and acknowledgement paths during rollback.
 """
 
 from __future__ import annotations
@@ -47,8 +48,21 @@ def service_source_commit(handler, service):
 
 
 class WaitV2CommandsMixin:
+    async def repair_wait_orphans(self, *, project_id=None):
+        """Doctor's mutating command boundary; never a public worker tool."""
+        from src.waits.recovery import repair_orphans
+
+        principal = current_principal()
+        if principal and principal.kind != PrincipalKind.LOCAL and not principal.elevated:
+            raise WaitError("wait.out_of_scope", "orphan repair requires operator authority")
+        if principal and principal.project_id:
+            if project_id and project_id != principal.project_id:
+                raise WaitError("wait.out_of_scope", "orphan repair requires project authority")
+            project_id = principal.project_id
+        return await repair_orphans(self.db, project_id=project_id)
+
     async def _record_continuation_prime_delivery(self, session_id):
-        if not self._wait_v2_enabled() or not session_id:
+        if not session_id:
             return
         import time
         from src.database.tables import continuations
@@ -71,7 +85,7 @@ class WaitV2CommandsMixin:
                                      claim_epoch=session.last_claim_epoch, now=time.time())
 
     async def _wait_mutation_fence(self, name, principal, *, mutating):
-        if (not mutating or not self._wait_v2_enabled() or principal is None
+        if (not mutating or principal is None
                 or principal.kind != PrincipalKind.SESSION):
             return None
         from src.waits.fencing import mutation_fence
@@ -92,8 +106,6 @@ class WaitV2CommandsMixin:
 
     async def wait_escalation_create(self, conn, args):
         """Internal escalation_create boundary, atomic with deadline/loop registration."""
-        if not self._wait_v2_enabled():
-            raise WaitError("wait.disabled", "verified wait writes are disabled")
         with principal_context(ExecutionPrincipal.service("waits-driver")):
             return await self._create_escalation(args, conn=conn)
 
@@ -115,8 +127,6 @@ class WaitV2CommandsMixin:
         if (principal is None or principal.kind != PrincipalKind.SERVICE
                 or listener.service.orch is not self.orchestrator):
             raise WaitError("wait.out_of_scope", "listener requires its service principal")
-        if not release and not self._wait_v2_enabled():
-            raise WaitError("wait.disabled", "verified wait writes are disabled")
 
     async def wait_listener_lease(self, listener, *, release=False):
         """Internal service mutation boundary; never an agent command or tool."""
@@ -128,8 +138,12 @@ class WaitV2CommandsMixin:
         self._wait_listener_authorize(listener)
         return await listener.drain(watermark)
 
-    def _wait_v2_enabled(self):
-        return getattr(getattr(self.config, "wait_policy", None), "v2_enabled", False) is True
+    def _wait_v2_enabled(self, project_id=None):
+        from src.waits.policy import enabled
+
+        principal = current_principal()
+        project_id = getattr(principal, "project_id", None) or project_id
+        return enabled(self.config, project_id)
 
     async def _wait_v2_row(self, wait_id):
         async with self.db._engine.connect() as conn:
@@ -204,7 +218,7 @@ class WaitV2CommandsMixin:
             PrincipalKind.SERVICE,
         }:
             return refusal("wait.out_of_scope", "registration requires an authenticated owner")
-        if not self._wait_v2_enabled():
+        if not self._wait_v2_enabled(args.get("project_id")):
             return refusal("wait.disabled", "verified wait registration is disabled")
         if principal.kind != PrincipalKind.SERVICE and (values.owner_kind or values.owner_id):
             return refusal("wait.out_of_scope", "owner scope is server-derived")
@@ -213,6 +227,11 @@ class WaitV2CommandsMixin:
                 return refusal(
                     "wait.upgrade_required",
                     "use a schema_version=2 condition",
+                    detail={"example": {
+                        "schema_version": 2,
+                        "condition": {"kind": "task", "task_id": "producer-task"},
+                        "idempotency_key": "settlement",
+                    }},
                     example={
                         "schema_version": 2,
                         "condition": {"kind": "task", "task_id": "producer-task"},
@@ -293,8 +312,6 @@ class WaitV2CommandsMixin:
         return {"success": True, "waits": rows, "count": len(rows)}
 
     async def _wait_v2_cancel(self, args):
-        if not self._wait_v2_enabled():
-            return refusal("wait.disabled", "verified wait writes are disabled")
         filters = await self._wait_v2_read_filter(args)
         scope = await self._wait_v2_authorize_target(
             args,
@@ -448,11 +465,6 @@ class WaitV2CommandsMixin:
                 scope = await self._wait_v2_authorize_target(
                     params, holder=name in {"wait_checkpoint", "wait_ack"}
                 )
-            if (
-                name not in {"wait_explain", "wait_graph", "wait_legacy_bridge"}
-                and not self._wait_v2_enabled()
-            ):
-                return refusal("wait.disabled", "verified wait writes are disabled")
             return await self._wait_v2_invoke(name, params, scope=scope)
         except (WaitError, LegacyWaitError) as exc:
             code = "wait.out_of_scope" if exc.code == "out_of_scope" else exc.code

@@ -48,8 +48,6 @@ class SchedulerWaitService:
     def authorize(self, principal):
         if principal is None or principal.kind != PrincipalKind.SERVICE:
             raise WaitError("wait.out_of_scope", "scheduler waits require a service principal")
-        if not enabled(self.orchestrator.config):
-            raise WaitError("wait.disabled", "scheduler waits are disabled")
 
     async def sync(self, args, *, principal, scope=None, handler=None):
         self.authorize(principal)
@@ -79,6 +77,7 @@ class SchedulerWaitService:
             reservations = {r["task_id"]: dict(r) for r in (await conn.execute(
                 select(admission_reservations).where(
                     admission_reservations.c.project_id == project_id,
+                    admission_reservations.c.task_id.is_not(None),
                     admission_reservations.c.state.in_(("pending", "overdue", "granted")),
                 ).order_by(admission_reservations.c.id).with_for_update()
             )).mappings()}
@@ -87,7 +86,14 @@ class SchedulerWaitService:
                 wait_deadlines.c.deadline_type == "reservation",
             ))).mappings()]
             desired = set()
+            if not enabled(self.orchestrator.config, project_id):
+                for reservation in reservations.values():
+                    await conn.execute(update(admission_reservations).where(
+                        admission_reservations.c.id == reservation["id"],
+                    ).values(state="cancelled"))
             for task in candidates:
+                if not enabled(self.orchestrator.config, project_id):
+                    continue
                 audit = bool(args.get('initial_audit') or any(
                     r['owner_id'] == task['id'] and
                     (r['decision_inputs'] or {}).get('legacy_audit') for r in previous))
@@ -230,8 +236,8 @@ class SchedulerWaitService:
 
     async def deadline_locked(self, conn, due, row, *, now, handler):
         """Compose with the listener's lease/task/wait/deadline transaction."""
-        if not enabled(self.orchestrator.config):
-            raise WaitError("wait.disabled", "scheduler waits are disabled")
+        if not enabled(self.orchestrator.config, row["project_id"]):
+            return {"success": True, "fired": False, "reason": "disabled"}
         task = (await conn.execute(select(tasks).where(
             tasks.c.id == row["owner_id"],
         ).with_for_update())).mappings().first()
@@ -307,7 +313,7 @@ class SchedulerWaitService:
 
 async def scheduler_tick(handler):
     o = getattr(handler, "orchestrator", None)
-    if o is None or not enabled(getattr(o, "config", None)):
+    if o is None:
         return
     service = getattr(o, "wait_scheduler_service", None) or SchedulerWaitService(o)
     handlers = getattr(o, "wait_v2_handlers", None)

@@ -441,7 +441,8 @@ def test_project_policy_applies_canary_rollout_flags():
     from src.config_wait_policy import WaitPolicyConfig, WaitProjectOverrides
     from src.waits.decision import project_policy
 
-    policy = WaitPolicyConfig(projects={'canary': WaitProjectOverrides(v2_enabled=True)})
+    policy = WaitPolicyConfig(v2_enabled=False, hibernation_enabled=False,
+                              projects={'canary': WaitProjectOverrides(v2_enabled=True)})
     assert project_policy(policy, 'canary').v2_enabled
     assert not project_policy(policy, 'canary').hibernation_enabled
     assert project_policy(policy, 'other') is policy and not policy.v2_enabled

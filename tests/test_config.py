@@ -4,13 +4,13 @@ import yaml
 from src.config import DatabaseConfig, WaitPolicyConfig, load_config
 
 
-def test_wait_policy_defaults_are_disabled_and_match_approved_policy():
+def test_wait_policy_cutover_defaults_and_approved_policy():
     policy = WaitPolicyConfig()
     assert policy.validate() == []
-    assert not policy.v2_enabled
-    assert not policy.hibernation_enabled
-    assert not policy.scheduler_waits_enabled
-    assert policy.v1_bodies == "translate"
+    assert policy.v2_enabled
+    assert policy.hibernation_enabled
+    assert policy.scheduler_waits_enabled
+    assert policy.v1_bodies == "refuse"
     assert policy.in_place_ceiling_seconds == 1800
     assert policy.hibernate_margin == 2.0
     assert policy.resume_cost_minutes == 10
@@ -39,6 +39,8 @@ def test_wait_policy_project_overrides_inherit_each_field_and_isolate_canary(tmp
         "messaging_platform": "none",
         "database": {"url": "postgresql://u:p@localhost/aq_cfg_test"},
         "wait_policy": {
+            "v2_enabled": False,
+            "scheduler_waits_enabled": False,
             "resume_cost_minutes": 20,
             "hibernation_enabled": True,
             "kinds": {"task": {"escalate_after_seconds": 12000}},

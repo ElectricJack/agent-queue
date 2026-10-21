@@ -4,10 +4,11 @@ from sqlalchemy import Text, cast, select, update
 
 from src.database.tables import admission_reservations as reservations, projects, tasks
 
-def enabled(config):
-    policy = getattr(config, "wait_policy", None)
-    return (getattr(policy, "v2_enabled", False) is True
-            and getattr(policy, "scheduler_waits_enabled", False) is True)
+from src.waits.policy import enabled as policy_enabled
+
+
+def enabled(config, project_id=None):
+    return policy_enabled(config, project_id, scheduler=True)
 
 
 class SchedulerPolicy:
@@ -38,7 +39,7 @@ def reserved_statement(candidate, project_id, profile_id):
 
 
 async def claim_candidate(handler, conn, **kwargs):
-    active = enabled(handler.config)
+    active = enabled(handler.config, kwargs.get("project_id"))
     if active and kwargs.get("task_id") is None:
         reserved = await handler.db.select_reserved_for_profile(conn, **kwargs)
         if reserved:

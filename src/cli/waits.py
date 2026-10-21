@@ -103,20 +103,7 @@ def wait_register(
     """Register one condition and end the turn until its result pointer arrives."""
     if not kind and not condition and not producer_task:
         raise click.UsageError("--kind or --condition is required")
-    version = (
-        int(schema_version)
-        if schema_version
-        else 2
-        if (
-            condition
-            or producer_task
-            or sha
-            or claimed is not None
-            or escalate_after_seconds is not None
-            or kind not in {"task", "job", "message", "timer"}
-        )
-        else 1
-    )
+    version = int(schema_version) if schema_version else 2
     if version == 1 and any(
         value is not None
         for value in (

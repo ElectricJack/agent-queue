@@ -5,6 +5,7 @@ import asyncio
 from pathlib import Path
 from sqlalchemy import select
 from src.agent_waits import WaitError
+from src.waits.conditions import WaitError as VerifiedWaitError
 from pydantic import ValidationError
 from src.commands.principal import current_principal, PrincipalKind
 from src.jobs.policy import JobError
@@ -213,6 +214,18 @@ class JobCommandsMixin:
             identity = await self._wait_identity(args, mutation=True) if args.get("wait") else None
             project_id = scope.get("project_id") or args["project_id"]
             task_id = scope_task_id or args["task_id"]
+            wait_registration = None
+            if identity and self._wait_v2_enabled(project_id):
+                from src.wait_runtime.job_wait import AtomicJobWait
+
+                service = getattr(self.orchestrator, "wait_service", None)
+                if service is None:
+                    raise VerifiedWaitError("wait.unavailable", "verified wait service unavailable")
+                wait_scope = await self._wait_v2_scope(args, mutation=True)
+                wait_registration = AtomicJobWait(
+                    service.lifecycle, wait_scope, await self.db.wait_source_watermark(),
+                )
+                identity = None
             task = await self.db.get_task(task_id)
             if not task or task.project_id != project_id:
                 raise JobError("jobs.not_found")
@@ -247,22 +260,26 @@ class JobCommandsMixin:
                 idempotency_key=args["idempotency_key"],
                 trusted_band=1 if scope.get("elevated") else 2,
                 wait_identity=identity,
+                wait_registration=wait_registration,
                 attempt_id=args.get("attempt_id"),
             )
             wait = result.pop("wait", None)
             response = {"success": True, "job": result}
             if wait:
-                from src.agent_waits import wait_next_step
+                if wait_registration is not None:
+                    receipt = wait.pop("registration_receipt")
+                    response.update(wait=wait, **{key: receipt[key] for key in (
+                        "wait_id", "decision", "continuation_id", "generation", "next_step",
+                    ) if key in receipt})
+                else:
+                    from src.agent_waits import wait_next_step
 
-                response.update(
-                    wait=wait,
-                    next_step=wait_next_step(wait),
-                )
+                    response.update(wait=wait, next_step=wait_next_step(wait))
             return response
-        except (JobError, WaitError, ValidationError, KeyError, ValueError) as exc:
+        except (JobError, WaitError, VerifiedWaitError, ValidationError, KeyError, ValueError) as exc:
             code = (
                 exc.code
-                if isinstance(exc, WaitError)
+                if isinstance(exc, (WaitError, VerifiedWaitError))
                 else (str(exc) if isinstance(exc, JobError) else "jobs.invalid")
             )
             return {

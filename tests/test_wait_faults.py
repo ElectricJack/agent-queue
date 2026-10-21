@@ -718,10 +718,12 @@ async def test_matrix_live_legacy_wait_and_waiting_input_restart_preserve_deadli
     from tests.test_wait_legacy_bridge import legacy
 
     service = service_for(env, [NOW])
+    service.orch.config.wait_policy.hibernation_enabled = False
     bridge = service.legacy_bridge
     await legacy(bridge, created=NOW - 7000, expires=NOW + 17)
     first = await bridge.adopt_agent_wait("old", handler=service.orch._command_handler)
     service = service_for(env, [NOW + 10])
+    service.orch.config.wait_policy.hibernation_enabled = False
     replay = await service.legacy_bridge.adopt_agent_wait(
         "old", handler=service.orch._command_handler)
     assert first["wait_id"] == replay["wait_id"] and replay["replayed"]
@@ -915,6 +917,10 @@ async def test_matrix_accounting_from_park_through_sampler_api_and_display_contr
             profile_id="worker-codex", route_source="override"))
     await env.db.transition_task("source", TaskStatus.COMPLETED)
     assert await service.tick()
+    # Rollback flags stop new admission, while this parked continuation drains.
+    service.orch.config.wait_policy.v2_enabled = False
+    service.orch.config.wait_policy.hibernation_enabled = False
+    service.orch.config.wait_policy.scheduler_waits_enabled = False
     clock.now = NOW + 7200
     resume = ResumeTransaction(service, clock=clock)
     if capacity_delay:

@@ -107,14 +107,14 @@ class WaitMetricsConfig:
 class WaitPolicyConfig:
     """Wait defaults and project overlays, read at decision time.
 
-    Rollout flags remain off until cutover. Registry consumers snapshot flags
+    Cutover defaults enable verified waits. Registry consumers snapshot flags
     once per cycle, so hot reload cannot change an in-flight transaction.
     """
 
-    v2_enabled: bool = False
-    hibernation_enabled: bool = False
-    scheduler_waits_enabled: bool = False
-    v1_bodies: str = "translate"
+    v2_enabled: bool = True
+    hibernation_enabled: bool = True
+    scheduler_waits_enabled: bool = True
+    v1_bodies: str = "refuse"
     in_place_ceiling_seconds: int = 1800
     hibernate_margin: float = 2.0
     resume_cost_minutes: float = 10.0

@@ -157,8 +157,6 @@ class HibernationTransaction:
         requires that proof. This also captures shell edits after checkpoint. The
         claim/epoch/token/folder remain owned until both stop AND push succeed.
         """
-        if not self.orch.config.wait_policy.hibernation_enabled:
-            raise WaitError("wait.disabled", "hibernation is disabled")
         async with self.db._engine.connect() as conn:
             task_id = await conn.scalar(select(wait_records.c.owner_id).where(
                 wait_records.c.id == wait_id,

@@ -36,7 +36,8 @@ def test_wait_policy_schema_exposes_nested_policies_canary_flags_and_hot_reload(
     assert policy["additionalProperties"] is False
     props = policy["properties"]
     for name in ("v2_enabled", "hibernation_enabled", "scheduler_waits_enabled"):
-        assert props[name]["default"] is False
+        assert props[name]["default"] is True
+    assert props["v1_bodies"]["default"] == "refuse"
     assert props["kinds"]["default"]["task"] == {
         "escalate_after_seconds": 14400, "expected_duration_seconds": 3600,
     }
