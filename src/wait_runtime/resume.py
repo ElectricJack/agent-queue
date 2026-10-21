@@ -74,7 +74,7 @@ class ResumeTransaction:
                 reservation_id = await conn.scalar(select(admission_reservations.c.id).where(
                     admission_reservations.c.continuation_id == intent['id'],
                     admission_reservations.c.state.in_(('pending', 'overdue')),
-                ))
+                ).with_for_update())
                 if reservation_id is None:
                     reservation_id = str(uuid.uuid4())
                     await conn.execute(insert(admission_reservations).values(
@@ -107,7 +107,9 @@ class ResumeTransaction:
             await self.db._insert_agent_on(conn, agent)
             await conn.execute(update(admission_reservations).where(
                 admission_reservations.c.id == reservation_id,
-            ).values(state='granted', granted_at=now))
+            ).values(state='granted', granted_at=now,
+                     scope={**observed.binding['scope'], 'generation': generation},
+                     effective_priority=task['effective_priority']))
             await conn.execute(update(continuations).where(continuations.c.id == intent['id']).values(
                 resume_state='reserved', version=intent['version'] + 1,
                 launch_attempts=intent['launch_attempts'] + 1,

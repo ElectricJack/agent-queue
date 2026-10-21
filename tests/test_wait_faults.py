@@ -1037,3 +1037,56 @@ async def test_matrix_real_harness_wait_suppresses_mail_until_one_outcome_turn(
     finally:
         await provider.stop(handle)
 
+
+async def test_continuation_incident_rejects_forged_bindings(hibernation_env):
+    from src.waits.registry import build_registry
+
+    env = hibernation_env
+    env.registry = build_registry(clock=lambda: NOW)
+    service = service_for(env, [NOW])
+    handler = service.orch._command_handler
+    args = {
+        "project_id": "p", "task_id": "owner", "task_title": "Owner",
+        "source_kind": "continuation", "source_identity": "continuation:c:stop_uncertain",
+        "incident_key": "continuation:c:stop_uncertain", "severity": "high",
+        "summary": "Stop uncertain", "investigation": "Provider did not confirm stop",
+        "decision_requested": "Repair the retained writer",
+    }
+    for overrides in (
+        {"task_id": "source"},
+        {"source_identity": "continuation:missing:stop_uncertain"},
+        {"source_identity": "continuation:c:unsupported"},
+        {"incident_key": "different-incident"},
+    ):
+        async with env.db._engine.begin() as conn:
+            result = await handler.wait_escalation_create(conn, {**args, **overrides})
+        assert result["error_code"] == "invalid_binding", result
+    assert not await records(env, escalations)
+    # The public command cannot acquire internal wait-driver authority.
+    result = await handler.execute("escalation_create", args)
+    assert result["error_code"] == "invalid_binding", result
+
+
+@pytest.mark.parametrize("reason", [
+    "stop_uncertain", "push_failed", "detach_uncertain", "resume_launch_failed",
+    "resume_workspace_failed", "resume_stop_uncertain", "resume_detach_uncertain", "paused",
+])
+async def test_continuation_incident_binds_runtime_hold_and_replay(hibernation_env, reason):
+    from src.waits.registry import build_registry
+
+    env = hibernation_env
+    env.registry = build_registry(clock=lambda: NOW)
+    handler = service_for(env, [NOW]).orch._command_handler
+    identity = f"continuation:c:{reason}"
+    args = {
+        "project_id": "p", "task_id": "owner", "source_kind": "continuation",
+        "source_identity": identity, "incident_key": identity, "severity": "high",
+        "summary": reason, "investigation": "Retain the writer until recovery",
+        "decision_requested": "Repair the infrastructure hold",
+    }
+    async with env.db._engine.begin() as conn:
+        created = await handler.wait_escalation_create(conn, args)
+        replay = await handler.wait_escalation_create(conn, args)
+    assert created["success"] and created["created"], created
+    assert replay["success"] and not replay["created"], replay
+    assert len(await records(env, escalations)) == 1

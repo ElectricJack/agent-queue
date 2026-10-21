@@ -27,6 +27,11 @@ _LIVE_SESSION_STATES = frozenset({"starting", "running", "draining"})
 _FORBIDDEN_AUTHORITY_ARGS = frozenset(
     {"actor", "actor_id", "human", "verified_actor", "supervisor_owner", "thread_id"}
 )
+#: Infrastructure holds the hibernation and resume transactions may record.
+_CONTINUATION_HOLD_REASONS = frozenset({
+    "stop_uncertain", "push_failed", "detach_uncertain", "resume_launch_failed",
+    "resume_workspace_failed", "resume_stop_uncertain", "resume_detach_uncertain", "paused",
+})
 
 #: The states ``escalation_resolve`` may close.  ``resolving`` is the supervisor
 #: acting on a recorded answer; ``reply_received`` is one answer ago and walks
@@ -223,7 +228,8 @@ class EscalationCommandsMixin:
                 wait_records.c.owner_kind == "task",
                 wait_records.c.owner_id == task_id,
             ))).mappings().first()
-            if (prefix != "continuation" or not separator or not separator2 or not reason
+            if (prefix != "continuation" or not separator or not separator2
+                    or reason not in _CONTINUATION_HOLD_REASONS
                     or not intent or args["incident_key"] != args["source_identity"]):
                 return _error("invalid_binding", "continuation incident does not match its intent")
         if args["source_kind"] == "wait":
