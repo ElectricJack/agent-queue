@@ -641,6 +641,7 @@
         "tests/test_integration_contracts.py",
         "tests/test_integration_cutover.py",
         "tests/test_integration_dispatch_waits.py",
+        "tests/test_integration_failure_groups.py",
         "tests/test_integration_git_truth.py",
         "tests/test_integration_gitops.py",
         "tests/test_integration_hierarchy.py",
@@ -8893,6 +8894,21 @@
         "parametrize"
       ],
       "summary": "Reduced parent readiness over real Git and ordinary PostgreSQL task inputs."
+    },
+    "tests/test_integration_failure_groups.py": {
+      "areas": [
+        "integration-trains"
+      ],
+      "default_arm": true,
+      "digest": "sha256:b31f435b155b73778f7257ce477e23e02648efdce2f0f62f934f82abd6aa8508",
+      "imports": [
+        "src.integration.failure_groups",
+        "src.integration.models"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Recorded red-run normalization, build precedence and frozen-diff attribution."
     },
     "tests/test_integration_finished_owners.py": {
       "areas": [
