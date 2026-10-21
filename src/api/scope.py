@@ -259,8 +259,8 @@ def _forbids_project_id(command: str) -> bool:
     rather than listed, so a contract that gains or loses the field moves with
     it.
 
-    An unregistered command (``delete_project``, ``edit_project``, the project
-    and agent controls — none of them carry a contract) forbids nothing, so the
+    A command without a typed dispatch contract (``delete_project``,
+    ``edit_project``, the project and agent controls) forbids nothing, so the
     gate keeps injecting for them: there is no model to reject the key, and the
     project row itself is what such a command acts on.  A contractless command
     that acts on *another* project's row has to fence it in its handler, because
@@ -279,7 +279,9 @@ def _forbids_project_id(command: str) -> bool:
     from src.commands.contracts import CONTRACTS
 
     registration = CONTRACTS.get(command)
-    if registration is None:
+    if registration is None or registration.contract.execution.argument_mode == "json_object":
+        # Discovery-only generated models are not the handler's dispatch model.
+        # Their catalogue presence must not suppress legacy project injection.
         return False
     args_model = registration.contract.execution.args_model
     return "project_id" not in args_model.model_fields
@@ -304,6 +306,10 @@ def check_command_scope(command: str, args: dict, scope: RequestScope) -> str | 
     if command in GATEWAY_COMMANDS:
         return "out of scope: ask intake requires the authenticated daemon gateway"
     if scope.kind == "local":
+        return None
+    if command in {"doctor_catalog", "playbook_commands"}:
+        # Registered schemas/audits carry no project data. Preserve the strict
+        # empty argument schema; capability enforcement still applies at dispatch.
         return None
     if command in OPERATOR_COMMANDS and not (
         command in GLOBAL_CONTROL_COMMANDS and scope.elevated and scope.project_id is None
@@ -1023,7 +1029,7 @@ def _canonicalise_reroute_args(
     return None
 
 
-async def check_request_scope(
+async def _check_request_scope(
     command: str, args: dict, scope: RequestScope, *, db=None,
 ) -> str | None:
     """Apply the normal scope, with narrowly verified triage capabilities.
@@ -1236,3 +1242,23 @@ async def check_request_scope(
     args["project_id"] = project_id
     args["session_id"] = scope.session_id
     return None
+
+
+async def check_request_scope(
+    command: str, args: dict, scope: RequestScope, *, db=None,
+) -> str | None:
+    """Keep transport grants and share resource ownership with every dispatcher."""
+    error = await _check_request_scope(command, args, scope, db=db)
+    if error is not None or scope.kind == "local" or db is None:
+        return error
+    from src.commands.principal import ExecutionPrincipal, PrincipalKind
+    from src.commands.resource_authorization import authorize_resources
+    from src.profiles.capabilities import DENY_ALL
+
+    principal = ExecutionPrincipal(
+        kind=PrincipalKind.SESSION, policy=DENY_ALL, session_id=scope.session_id,
+        task_id=scope.task_id, project_id=scope.project_id, elevated=scope.elevated,
+        session_instance_token=scope.session_instance_token,
+    )
+    refusal = await authorize_resources(command, args, principal, db=db)
+    return refusal["error"] if refusal is not None else None

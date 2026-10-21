@@ -106,7 +106,11 @@ async def test_execute_plugin_exception_records_failure_and_returns_error(
 
     result = await handler.execute("notes.write", {"body": "hello"})
 
-    assert result == {"error": "Plugin command failed: plugin blew up"}
+    assert result == {
+        "success": False,
+        "error_code": "command_runtime_error",
+        "error": "Plugin command failed: plugin blew up",
+    }
     assert registry.successes == []
     assert registry.failures == [("notes", "plugin blew up")]
 
@@ -139,7 +143,11 @@ async def test_execute_github_plugin_failure_preserves_safe_details_in_logs_and_
     result = await handler.execute("git_push", {})
 
     safe_error = "GitHub CLI request failed (credentials, HTTP 401)"
-    assert result == {"error": f"Plugin command failed: {safe_error}"}
+    assert result == {
+        "success": False,
+        "error_code": "command_runtime_error",
+        "error": f"Plugin command failed: {safe_error}",
+    }
     assert registry.failures == [("git_push", safe_error)]
     payload = _invoked_payloads(handler.orchestrator.bus.emit)[0]
     assert payload["ok"] is False
@@ -160,7 +168,11 @@ async def test_execute_returns_unknown_command_when_no_handler_or_plugin(
 
     result = await handler.execute("no_such_command", {})
 
-    assert result == {"error": "Unknown command: no_such_command"}
+    assert result == {
+        "success": False,
+        "error_code": "unknown_command",
+        "error": "Unknown command: no_such_command",
+    }
     payloads = _invoked_payloads(handler.orchestrator.bus.emit)
     assert payloads[0]["ok"] is False
     assert payloads[0]["error"] == "Unknown command: no_such_command"
@@ -179,7 +191,11 @@ async def test_execute_wraps_a_raising_builtin_handler_in_the_error_convention(
 
     result = await handler.execute("probe_boom", {})
 
-    assert result == {"error": "handler exploded"}
+    assert result == {
+        "success": False,
+        "error_code": "command_runtime_error",
+        "error": "handler exploded",
+    }
     payloads = _invoked_payloads(handler.orchestrator.bus.emit)
     assert payloads[0]["ok"] is False
     assert payloads[0]["error"] == "ValueError: handler exploded"

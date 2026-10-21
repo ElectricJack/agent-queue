@@ -77,12 +77,13 @@ class ToolCommandsMixin:
         if tool_name:
             defn = registry.get_tool_definition(tool_name)
             if not defn:
-                return {"error": f"Unknown tool: '{tool_name}'."}
+                return {"success": False, "error": f"Unknown tool: '{tool_name}'."}
             cat = registry.get_tool_category(tool_name)
             if not cat:
-                return {"error": f"'{tool_name}' is a core tool (already loaded)."}
+                return {"success": False, "error": f"'{tool_name}' is a core tool (already loaded)."}
             if not self.has_command(tool_name):
                 return {
+                    "success": False,
                     "error": (
                         f"Tool '{tool_name}' is defined but not currently "
                         f"executable: {_missing_backend_hint(tool_name)}. "
@@ -95,6 +96,7 @@ class ToolCommandsMixin:
 
                 return denial_result(tool_name)
             return {
+                "success": True,
                 "loaded": cat,
                 "tools_added": [tool_name],
                 "single_tool": True,
@@ -103,18 +105,20 @@ class ToolCommandsMixin:
 
         # Category mode
         if not category:
-            return {"error": "Provide 'category' or 'tool_name'."}
+            return {"success": False, "error": "Provide 'category' or 'tool_name'."}
 
         names = registry.get_category_tool_names(category)
         if names is None:
             available = [c["name"] for c in registry.get_categories()]
             return {
+                "success": False,
                 "error": f"Unknown category: {category}. Available: {', '.join(available)}",
             }
         available, unavailable = self._executable_tool_names(names)
         if not available:
             reasons = ", ".join(sorted({_missing_backend_hint(n) for n in unavailable}))
             return {
+                "success": False,
                 "error": (
                     f"Category '{category}' has no executable tools right now: "
                     f"{reasons}. Do not call {', '.join(sorted(unavailable))}."
@@ -122,7 +126,7 @@ class ToolCommandsMixin:
                 "unavailable": sorted(unavailable),
             }
 
-        result = {
+        result = {"success": True,
             "loaded": category,
             "tools_added": available,
             "message": f"{len(available)} {category} tools are now available.",
@@ -143,7 +147,7 @@ class ToolCommandsMixin:
         """
         description = args.get("description", "")
         if not description:
-            return {"error": "description is required"}
+            return {"success": False, "error": "description is required"}
 
         top_k = args.get("top_k", 5)
 
@@ -161,7 +165,7 @@ class ToolCommandsMixin:
         idx = registry.tool_index
         if idx and idx.ready:
             results = await idx.search(description, top_k=top_k)
-            return {"query": description, "matches": results}
+            return {"success": True, "query": description, "matches": results}
 
         # Fallback: keyword matching if embeddings aren't available
         all_tools = registry.get_all_tools()
@@ -177,4 +181,4 @@ class ToolCommandsMixin:
             {"name": t["name"], "description": t.get("description", ""), "score": s}
             for s, t in scored[:top_k]
         ]
-        return {"query": description, "matches": matches, "method": "keyword"}
+        return {"success": True, "query": description, "matches": matches, "method": "keyword"}

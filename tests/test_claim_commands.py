@@ -1637,8 +1637,10 @@ class TestClaim:
         await mktask(db, "foreign", status=TaskStatus.IN_PROGRESS)
         sid, wd = await pool_session(db, tmp_path)
         prepare = handler._prepare_and_activate_locked
+        races = []
 
         async def raced(*args, **kwargs):
+            races.append(kwargs.get("slot"))
             if disagreement == "instance":
                 await db.update_session(sid, instance_token="successor")
             else:
@@ -1652,8 +1654,14 @@ class TestClaim:
             return await prepare(*args, **kwargs)
 
         monkeypatch.setattr(handler, "_prepare_and_activate_locked", raced)
-        result = await settled_claim(scoped(handler, sid), {"next": True})
+        # The race under test is this one reserved generation. If a slow
+        # runner outlived the response window, settled_claim's follow-up
+        # would retry the held preparation as the successor launch (slot
+        # None, predecessor receipt) and record that retry's own refusal.
+        monkeypatch.setattr("src.commands.claim_commands._PREPARATION_RESPONSE_SECONDS", 60)
+        result = await scoped(handler, sid)._cmd_task_claim({"next": True})
         assert result["result"] == "prepare_failed"
+        assert len(races) == 1 and races[0] is not None
         assert (await db.get_session(sid)).claim_phase != "active"
         assert (await db.get_task("t1")).branch_name is None
         assert read_claim_file(wd) is None
@@ -1661,8 +1669,19 @@ class TestClaim:
         if disagreement == "task":
             assert (await db.get_workspace("ws-agent-1")).locked_by_task_id == "foreign"
         if disagreement == "instance":
-            assert (await db.get_session(sid)).task_id == "t1"
-            assert (await db.get_task("t1")).status is TaskStatus.IN_PROGRESS
+            # The superseded preparation leaves the successor launch's
+            # reservation exactly as it found it.
+            successor = await db.get_session(sid)
+            assert successor.instance_token == "successor"
+            assert (successor.task_id, successor.claim_phase, successor.last_claim_epoch) == (
+                "t1", "preparing", 1,
+            )
+            assert successor.claim_failure_count == 0
+            held = await db.get_task("t1")
+            assert (held.status, held.claim_epoch, held.assigned_agent_id) == (
+                TaskStatus.IN_PROGRESS, 1, "agent-1",
+            )
+            assert (await db.get_workspace("ws-agent-1")).locked_by_task_id == "t1"
 
     async def test_activation_rechecks_resumed_generation_before_publishing_branch(
         self, handler, db, tmp_path,
@@ -3134,7 +3153,7 @@ class TestClaim:
 
         result = await handler._cmd_pause_task({"task_id": "t1"})
 
-        assert result == {"task_id": "t1", "status": "PAUSED"}
+        assert result == {"success": True, "task_id": "t1", "status": "PAUSED"}
         assert provider.stop.call_args.args[0].instance_token == "t"
         assert at_unlock == [(None, "t1")]  # retired before capacity was announced
         slot = await db.get_workspace("ws-agent-1")

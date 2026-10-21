@@ -1,6 +1,6 @@
 ---
 playbook_id: promotion-request
-artifact_sha256: sha256:8d2d2bfabd668543c500c291c801a293d7c4d9bc1a38088b657cfb0e26091607
+artifact_sha256: sha256:e23b9ec529926ed9c6207b9f5843d77942bb9690bc9694d8c4b19938f1445a85
 source_sha256: sha256:1fe223117055fe42e0e70be6a00ea4827c834b21e886f461c7c9e4b62dc53d26
 contract_fingerprint: sha256:cda051fbaf920279cbbe2655e5651b41f4a1f7d53709328002fea78ecb88333e
 questions_resolved: 0

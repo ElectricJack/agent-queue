@@ -1,6 +1,6 @@
 ---
 playbook_id: default-pipeline
-artifact_sha256: sha256:c4ab0bead50c2cb773f7fe901632468296e952bbbb5cdfc274e97c330adfb273
+artifact_sha256: sha256:7d48f95da0d74c368d2271ef99a367c23ceac40fd67291c9ab02081491fa25dd
 source_sha256: sha256:e626ced6fc6a9bf2d2c6994ff1c189c788ea920b3cbb069f54eac8a976858f14
 contract_fingerprint: sha256:a0f47bce57968a66c1be8eefe5e1f3c6174773fd8d384c34ef4a5f6d52126fcd
 questions_resolved: 0

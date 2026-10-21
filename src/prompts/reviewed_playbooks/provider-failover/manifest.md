@@ -1,6 +1,6 @@
 ---
 playbook_id: provider-failover
-artifact_sha256: sha256:b130c149b5cd6a89dc23c0fe1610f131699fe31e1c1137095c0fd111918452c1
+artifact_sha256: sha256:e4c946b8eddf8fcbac5ed552887091e1eb822dd851a1647f624bb84276724607
 source_sha256: sha256:d62f4ab216823ede9c2e6471f06415d226f8fa5038fe281242d6218b0ba76769
 contract_fingerprint: sha256:d412e6351df6d6e6e56ccce2023b408e6865fe1a1f5d771747d0678468fae622
 questions_resolved: 0

@@ -403,7 +403,7 @@ def _argument_properties() -> dict[str, set[str]]:
 def _unpinnable_target_commands() -> dict[str, frozenset[str]]:
     """The gap class: command -> the project-owned targets its schema names.
 
-    Every member is granted to the supervisor, has no contract registration,
+    Every member is granted to the supervisor, has no typed dispatch contract,
     and names at least one target reference — so a per-project supervisor token
     can point it at another project's row and nothing in the scope layer reads
     the ``project_id`` it injects.  Some of those targets
@@ -416,8 +416,10 @@ def _unpinnable_target_commands() -> dict[str, frozenset[str]]:
 
     properties = _argument_properties()
     found: dict[str, frozenset[str]] = {}
+    typed = CONTRACTS.typed_contracts()
     for command in sorted(_supervisor_granted_commands()):
-        if CONTRACTS.get(command) is not None:
+        # Generated catalogue entries do not change the legacy scope gate.
+        if command in typed:
             continue
         names = properties.get(command, set())
         targets = frozenset(
@@ -609,7 +611,10 @@ async def test_matching_scope_reads_succeed_and_foreign_reads_are_refused(matrix
     foreign = await matrix.execute(command, {"task_id": "t2", "_scope": _scope()})
     assert foreign["success"] is False
     assert foreign["result"] == "out_of_scope"
-    assert "outside this session's scope" in foreign["error"]
+    if command == "task_show":
+        assert "outside this session's scope" in foreign["error"]
+    else:
+        assert foreign["error_code"] == "resource_scope_denied"
 
 
 @pytest.mark.parametrize("command", _READS + ["message_inbox"])

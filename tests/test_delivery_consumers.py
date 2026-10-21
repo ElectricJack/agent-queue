@@ -1888,4 +1888,3 @@ async def test_concurrent_guarded_writers_share_fetches_and_need_current_proof(
                                                     delivery=view)
         assert refused.value.code == "delivery_target_fixed"
     assert (await db.get_task("reopened")).status is TaskStatus.COMPLETED
-
