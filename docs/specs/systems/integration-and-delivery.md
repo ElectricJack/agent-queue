@@ -586,7 +586,7 @@ All of these were verified in the code on 2026-10-20 unless marked otherwise.
    - `GENERATED_MERGE_CONFIG` has no caller.
    - `reconciler_shadow` and `publisher_stall_after` have no effect.
    - `core.py:_dispatch_integration_repair_stage` is dead.
-   - `WriterPrimitives` and `ParentPrimitiveAdapters` are used only by tests.
+   - `WriterPrimitives` is used only by tests.
    - `orchestrator.promotion_service`, `root_promotion_service`,
      `integration_release_service`, `parent_subject_runtime` and
      `development_subject_runtime` are always `None`, yet `IntegrationService` still
@@ -597,8 +597,11 @@ All of these were verified in the code on 2026-10-20 unless marked otherwise.
      command.
    - `ENDED_LIFECYCLES` lists `"failed"`, which nothing writes.
 5. **Operator-only recovery modules accumulate.** Each answers one historical incident:
-   `preserved_repair`, `parent_repair_heads`, `repair_rebind`, `detached_repair_rebind`,
-   `noop_repair`, `published_repair_handoff`, `source_repairs` and `delegate_release`.
+   `parent_repair_heads`, `noop_repair`, `published_repair_handoff`, `source_repairs`
+   and `delegate_release`. On 2026-10-21, `stark-willow-95.24` removed the unreachable
+   `preserved_repair`, `repair_rebind`, `detached_repair_rebind` implementations and
+   `ParentPrimitiveAdapters`; their command handlers were already retired. The parent
+   policy facts and historical refusal markers remain readable.
 6. **Tail latency.** The 2026-10-19 retrospective (vault; review `rev-quick-pinnacle`,
    withdrawn) measured pass-to-`dev` over 22 September to 20 October:
 
