@@ -1324,6 +1324,14 @@ class WorktreeSlotManager:
             await self.git._arun_unlocked(
                 ["switch", "--detach", f"origin/{default}"], cwd=str(slot_dir)
             )
+            # Build output the task branch ignored may be unignored at the
+            # default tip.  Left behind, it dirties the detached slot, so the
+            # sentinel is never released and the next preparation refuses it
+            # once the default moves on (aq-design-tour prime-nexus-13).
+            # Still no ``-x``: caches the default ignores survive.
+            await self.git._arun_unlocked(
+                ["clean", "-fd", "-e", WORKTREE_SENTINEL_NAME], cwd=str(slot_dir)
+            )
             logger.info("Detached clean pushed branch %s from slot %s", branch, slot_dir)
         except GitError as exc:
             logger.warning("Could not check whether %s is safely pushed: %s", branch, exc)
