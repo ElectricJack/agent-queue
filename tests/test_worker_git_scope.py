@@ -792,6 +792,152 @@ async def _issue(w, **changes):
     return await w.handler.execute("integration_delegate_publication", {**w.request, **changes})
 
 
+@pytest.fixture
+async def assigned_batch_git(delegated_git):
+    from src.git.manager import RemoteRefResult, RemoteRefState
+    from src.integration.batches import Batch, BatchMember, BatchStore, candidate_ref
+
+    w = delegated_git
+    w.batch = await BatchStore(w.db).freeze(
+        Batch("manual-repair", "p", "delegated-repo", "refs/heads/aq/epic/aggregate"),
+        (BatchMember(task_id="source", source_sha="a" * 40, source_base_sha="b" * 40),),
+        trees={"source": "c" * 40},
+    )
+    w.batch_branch = candidate_ref(w.batch.id).removeprefix("refs/heads/")
+    assigned = await w.handler.execute("task_set", {"task_id": "t1", "repair_batch": w.batch.id})
+    assert assigned["success"], assigned
+    w.git.als_remote_ref.return_value = RemoteRefResult(RemoteRefState.PRESENT, oid="a" * 40)
+    return w
+
+
+@pytest.mark.parametrize("command", ["git_push", "push_branch"])
+@pytest.mark.parametrize("explicit", [False, True])
+async def test_assigned_batch_fixer_publishes_candidate_without_renaming_task(
+    assigned_batch_git, command, explicit,
+):
+    w = assigned_batch_git
+    args = {_BRANCH_KEY[command]: w.batch_branch} if explicit else {}
+    assert await check_request_scope(command, dict(args), w.scope, db=w.db) is None
+    result = await w.handler.execute(command, w.scoped(**args))
+    assert result.get("oid") == _TIP, result
+    w.git.apush_validated_delivery.assert_awaited_once_with(
+        w.work_dir, "a" * 40, _TIP, w.batch_branch,
+        expected_remote_oid="a" * 40, repository_url=_REPOSITORY,
+        event_bus=w.handler._bus, project_id="p", identity_policy=ANY,
+        inherited_oids=("a" * 40,),
+    )
+    assert (await w.db.get_task("t1")).branch_name == "aq/calm-ember-48"
+    assert (await w.db.get_task_meta("t1", "integration_batch_repair"))["batch_id"] == w.batch.id
+
+
+async def test_batch_assignment_cannot_be_self_granted_or_spoofed(delegated_git):
+    w = delegated_git
+    for args in ({"repair_batch": "manual-repair"},
+                 {"meta": {"integration_batch_repair": {"batch_id": "manual-repair"}}}):
+        result = await w.handler.execute("task_set", w.scoped(task_id="t1", **args))
+        assert result.get("success") is False, result
+    assert await w.db.get_task_meta("t1", "integration_batch_repair") is None
+    await w.db.update_task("t1", description="Repair aq/batches/arbitrary directly and push there")
+    assert await check_request_scope(
+        "git_push", {"branch": "aq/batches/arbitrary"}, w.scope, db=w.db,
+    ) == "out of scope: branch mismatch"
+
+
+async def test_batch_assignment_rejects_foreign_repository_and_reassignment_revokes_old_ref(assigned_batch_git):
+    from src.integration.batches import Batch, BatchMember, BatchStore, candidate_ref
+
+    w = assigned_batch_git
+    store = BatchStore(w.db)
+    await store.freeze(Batch("next-repair", "p", "delegated-repo", "refs/heads/aq/epic/next"),
+                       (BatchMember("source-next", "a" * 40, "b" * 40),),
+                       trees={"source-next": "c" * 40})
+    for args in ({"repair_batch": "missing"}, {"repair_batch": ""}):
+        result = await w.handler.execute("task_set", {"task_id": "t1", **args})
+        assert result.get("success") is False, result
+    await w.db.update_task("t1", repo_id=None)
+    result = await w.handler.execute("task_set", {"task_id": "t1", "repair_batch": w.batch.id})
+    assert result.get("success") is False
+    await w.db.update_task("t1", repo_id="delegated-repo")
+    result = await w.handler.execute("task_set", {"task_id": "t1", "repair_batch": "next-repair"})
+    assert result["success"], result
+    assert await check_request_scope(
+        "git_push", {"branch": w.batch_branch}, w.scope, db=w.db,
+    ) == "out of scope: branch mismatch"
+    assert await check_request_scope(
+        "git_push", {"branch": candidate_ref("next-repair").removeprefix("refs/heads/")},
+        w.scope, db=w.db,
+    ) is None
+
+
+@pytest.mark.parametrize("command,args", [
+    ("git_push", {"branch": "main"}),
+    ("git_push", {"branch": "aq/batches/other"}),
+    ("git_create_pr", {"title": "fix"}),
+])
+async def test_batch_assignment_grants_only_candidate_push(assigned_batch_git, command, args):
+    w = assigned_batch_git
+    if command == "git_create_pr":
+        args = {**args, "branch": w.batch_branch}
+    assert await check_request_scope(command, dict(args), w.scope, db=w.db) == "out of scope: branch mismatch"
+    result = await w.handler.execute(command, w.scoped(**args))
+    assert "not this session's task branch" in result["error"]
+    _assert_no_network(w.git)
+
+
+@pytest.mark.parametrize("failure", ["diverged", "remote_moved", "missing", "unavailable", "writer", "aborted", "claim", "inactive"])
+async def test_assigned_batch_push_refuses_stale_or_unsafe_publication(assigned_batch_git, failure):
+    from sqlalchemy import update
+
+    from src.database.tables import integration_batches
+    from src.git.manager import RemoteRefResult, RemoteRefState
+    from src.integration.lock import BranchLock
+    from src.integration.models import BranchKey
+
+    w = assigned_batch_git
+    args = {"branch": w.batch_branch}
+    if failure == "diverged":
+        w.git.ais_ancestor.return_value = False
+    elif failure == "remote_moved":
+        args["expected_remote_oid"] = "d" * 40
+    elif failure in {"missing", "unavailable"}:
+        w.git.als_remote_ref.return_value = RemoteRefResult(
+            RemoteRefState.ABSENT if failure == "missing" else RemoteRefState.ERROR,
+        )
+    elif failure == "writer":
+        await BranchLock(w.db).acquire(
+            BranchKey(repository_id="delegated-repo", branch=w.batch_branch), "another-task",
+        )
+    elif failure == "aborted":
+        async with w.db.immediate() as conn:
+            await conn.execute(update(integration_batches).where(
+                integration_batches.c.id == w.batch.id,
+            ).values(intent="aborted"))
+    elif failure == "claim":
+        await w.db.update_task("t1", claim_epoch=1)
+    elif failure == "inactive":
+        w.handler.config.integration.git_first = "shadow"
+    result = await w.handler.execute("git_push", w.scoped(**args))
+    assert "error" in result, result
+    _assert_no_network(w.git)
+
+
+async def test_assigned_batch_push_rechecks_claim_after_policy_resolution(assigned_batch_git, monkeypatch):
+    from src.plugins.internal.git import GitPlugin
+
+    w = assigned_batch_git
+    original = GitPlugin._publish_policy
+
+    async def lose_claim(*args, **kwargs):
+        policy = await original(*args, **kwargs)
+        await w.db.update_task("t1", claim_epoch=1)
+        return policy
+
+    monkeypatch.setattr(GitPlugin, "_publish_policy", lose_claim)
+    result = await w.handler.execute("git_push", w.scoped(branch=w.batch_branch))
+    assert "current held claim" in result["error"], result
+    _assert_no_network(w.git)
+
+
 @pytest.mark.parametrize("command", ["git_push", "push_branch"])
 async def test_delegated_publication_uses_pinned_source_and_consumes_audited_grant(
     delegated_git, command,

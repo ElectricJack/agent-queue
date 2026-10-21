@@ -261,7 +261,7 @@ class SurfaceCommandsMixin:
 
         Supported fields: ``description`` (optional ``expected_description`` CAS),
         ``branch``, ``pr_url``, ``work_dir``, ``note``,
-        ``labels_add``, ``labels_remove``, ``meta``.
+        ``labels_add``, ``labels_remove``, ``meta``, ``repair_batch`` (operator assignment).
 
         ``work_dir`` is recorded as task metadata (``task_metadata`` key
         ``"work_dir"``) rather than a proper workspace binding — the
@@ -277,6 +277,8 @@ class SurfaceCommandsMixin:
             return {"success": False, "error": "manual_pause is reserved; use pause_task/resume_task."}
         if "retained_workspace_stop" in (args.get("meta") or {}):
             return {"success": False, "error": "retained_workspace_stop is reserved; use stop_task."}
+        if "integration_batch_repair" in (args.get("meta") or {}):
+            return {"success": False, "error": "integration_batch_repair is reserved; use --repair-batch."}
 
         if {"notes_input", "promotion_prepare", "promotion_hotfix", "backmerge",
             "backmerge_result", "promotion_intent", "promotion_result",
@@ -323,6 +325,17 @@ class SurfaceCommandsMixin:
                     )
                 }
         fields_changed: list[str] = []
+        if "repair_batch" in args:
+            from src.git.manager import GitError
+            from src.integration.batch_repair_publication import BatchRepairAssignments
+
+            if self.config.integration.git_first != "active":
+                return {"success": False, "error": "batch repair assignment requires Git-first active mode"}
+            try:
+                await BatchRepairAssignments(self.db).assign(task, args["repair_batch"])
+            except GitError as exc:
+                return {"success": False, "error": str(exc)}
+            fields_changed.append("repair_batch")
         if "description" in args:
             from src.database.queries.task_comment_queries import TaskFindingsConflict
 

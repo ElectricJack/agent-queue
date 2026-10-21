@@ -423,6 +423,16 @@ target.
 
 Conflict evidence in each target and batch's `detail` names the member,
 partial head, reason and files; the daemon log records the same build result.
+For a supervisor-filed fixer that works directly on an existing candidate, bind
+its publication authority before sending it to the batch branch:
+`aq task set TASK --repair-batch BATCH`. The supervisor/operator assignment grants
+that held task push access to the batch's candidate, preserving its canonical
+task branch. The fixer can use `aq git push` or explicitly name the candidate;
+the push must fast-forward the currently published candidate. Task descriptions
+and `--meta` do not grant this authority. A successful candidate push wakes the
+target's train visit, even after the automatic repair budget is exhausted;
+delivery still requires checks for the new exact SHA and unchanged operator intent.
+
 A repair claim with `needs_attention: repair_target_unpublished` found its
 remote target absent and reports an integration train defect. It does not
 consume slot-reset retries or create the ref from the worker slot.

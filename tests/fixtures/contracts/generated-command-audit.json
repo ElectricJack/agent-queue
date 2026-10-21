@@ -22509,7 +22509,7 @@
   "task_set": {
     "mode": "json_object",
     "producer": "src/commands/surface_commands.py:SurfaceCommandsMixin._cmd_task_set",
-    "source_digest": "sha256:163ecbae8376439e33bb7abfeb94581a6076816b9a292546c01db614ca299614",
+    "source_digest": "sha256:9be5a846aa8385733d0fb2656b08bdcf7c5880e11b00287113562cdab3e5bf85",
     "input_schema_source": "explicit_tool",
     "schema_quality": "declared",
     "argument_reads_diagnostic_only": [
@@ -22522,6 +22522,7 @@
       "meta",
       "note",
       "pr_url",
+      "repair_batch",
       "task_id",
       "work_dir"
     ],
@@ -22548,6 +22549,10 @@
       },
       {
         "return": "{'success': False, 'error': 'retained_workspace_stop is reserved; use stop_task.'}",
+        "protocol": "explicit_boolean: False"
+      },
+      {
+        "return": "{'success': False, 'error': 'integration_batch_repair is reserved; use --repair-batch.'}",
         "protocol": "explicit_boolean: False"
       },
       {
@@ -22591,8 +22596,16 @@
         "protocol": "explicit_boolean: False"
       },
       {
+        "return": "{'success': False, 'error': 'batch repair assignment requires Git-first active mode'}",
+        "protocol": "explicit_boolean: False"
+      },
+      {
         "return": "error",
         "protocol": "delegated_producer"
+      },
+      {
+        "return": "{'success': False, 'error': str(exc)}",
+        "protocol": "explicit_boolean: False"
       },
       {
         "return": "self._task_findings_conflict(error)",
@@ -22607,7 +22620,11 @@
       "tests/test_claim_commands.py",
       "tests/test_integration_train_sources.py",
       "tests/test_surface_commands.py",
-      "tests/test_work_graph_commands.py"
+      "tests/test_work_graph_commands.py",
+      "tests/test_worker_git_scope.py::test_assigned_batch_fixer_publishes_candidate_without_renaming_task",
+      "tests/test_worker_git_scope.py::test_batch_assignment_cannot_be_self_granted_or_spoofed",
+      "tests/test_worker_git_scope.py::test_batch_assignment_rejects_foreign_repository_and_reassignment_revokes_old_ref",
+      "tests/test_cli_task_comments.py::test_task_set_forwards_explicit_batch_repair_assignment"
     ],
     "helper_producers": {
       "_assert_session_owns": "sha256:71e593f004f04a082031f118625f21eceebed926b1718d3c8e89d6fdc0825ec3",
@@ -22620,7 +22637,7 @@
       "_task_findings_write_fence": "sha256:ddaf185b219090db1d81f785713a571f944b87c778789603de6d4a5b5b9f973f",
       "_task_provider_view": "sha256:bc0669889619cdd9fb0b87f490059d9d607d472e0b96ce5805fb12db1307db26"
     },
-    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled.  Dev reconciliation (4e9a17b8c0adae80acc6cf1195b339b974b69270): reviewed delegated _cmd_get_task dependency batching as recorded on get_task. This wrapper and its producer exits are unchanged; existing held_session authority remains required. Only the reviewed helper digest is refreshed."
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled.  Dev reconciliation (4e9a17b8c0adae80acc6cf1195b339b974b69270): reviewed delegated _cmd_get_task dependency batching as recorded on get_task. This wrapper and its producer exits are unchanged; existing held_session authority remains required. Only the reviewed helper digest is refreshed. Batch repair assignment (67575c6b9a43f820d824ff2bdb7d6be41ec21db3): reviewed the reserved integration_batch_repair metadata refusal, Git-first active-mode refusal, and delegated BatchRepairAssignments.assign GitError refusal. Each returns success=false; successful assignment retains the task_show envelope and fields_changed. BatchRepairAssignments.assign checks integration_operator authority and open-batch project/repository bindings; generated invocation remains disabled and existing held_session resource authority is unchanged."
   },
   "task_show": {
     "mode": "json_object",

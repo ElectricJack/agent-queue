@@ -8400,13 +8400,16 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:7d495a1e58b2b5a61d1d16c1b3e9a59c8adce69a7ae42958c1f7c186a45647c4",
+      "digest": "sha256:fe47ea6dde5a636db7f12bc98423bd15f4960f83d167bf253c269161633d098e",
       "imports": [
         "src.commands",
         "src.config",
         "src.database.tables",
+        "src.event_bus",
+        "src.git.identity",
         "src.git.manager",
         "src.integration.attestation",
+        "src.integration.batch_repair_publication",
         "src.integration.batches",
         "src.integration.ci",
         "src.integration.ci_producers",
@@ -19148,7 +19151,7 @@
         "github"
       ],
       "default_arm": true,
-      "digest": "sha256:928d263948ce00c7842a72da27901364e0aebdba970b8572c00d77dbe3611e9d",
+      "digest": "sha256:f41a3e18ab7e505a5da8839552f23e6a6d70f2964d488287574319b25c87be5e",
       "imports": [
         "src.api.auth",
         "src.api.scope",
@@ -19160,6 +19163,8 @@
         "src.git.github_contracts",
         "src.git.identity",
         "src.git.manager",
+        "src.integration.batches",
+        "src.integration.lock",
         "src.integration.models",
         "src.integration.publication_delegations",
         "src.models",

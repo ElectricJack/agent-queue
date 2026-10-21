@@ -25,6 +25,8 @@ class TaskSetRequest:
         expected_description (None | str | Unset): Exact description previously read; rejects concurrent edits before
             changing any fields.
         branch (None | str | Unset): Branch name for this task's work (optional).
+        repair_batch (None | str | Unset): Supervisor/operator only: assign push authority for this open batch's
+            candidate branch, preserving the task's canonical branch.
         pr_url (None | str | Unset): Pull-request URL (optional).
         work_dir (None | str | Unset): Directory the work happens in (optional; recorded as task metadata).
         note (None | str | Unset): Free-text note appended to the task's context (optional).
@@ -39,6 +41,7 @@ class TaskSetRequest:
     description: None | str | Unset = UNSET
     expected_description: None | str | Unset = UNSET
     branch: None | str | Unset = UNSET
+    repair_batch: None | str | Unset = UNSET
     pr_url: None | str | Unset = UNSET
     work_dir: None | str | Unset = UNSET
     note: None | str | Unset = UNSET
@@ -70,6 +73,12 @@ class TaskSetRequest:
             branch = UNSET
         else:
             branch = self.branch
+
+        repair_batch: None | str | Unset
+        if isinstance(self.repair_batch, Unset):
+            repair_batch = UNSET
+        else:
+            repair_batch = self.repair_batch
 
         pr_url: None | str | Unset
         if isinstance(self.pr_url, Unset):
@@ -134,6 +143,8 @@ class TaskSetRequest:
             field_dict["expected_description"] = expected_description
         if branch is not UNSET:
             field_dict["branch"] = branch
+        if repair_batch is not UNSET:
+            field_dict["repair_batch"] = repair_batch
         if pr_url is not UNSET:
             field_dict["pr_url"] = pr_url
         if work_dir is not UNSET:
@@ -184,6 +195,15 @@ class TaskSetRequest:
             return cast(None | str | Unset, data)
 
         branch = _parse_branch(d.pop("branch", UNSET))
+
+        def _parse_repair_batch(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        repair_batch = _parse_repair_batch(d.pop("repair_batch", UNSET))
 
         def _parse_pr_url(data: object) -> None | str | Unset:
             if data is None:
@@ -277,6 +297,7 @@ class TaskSetRequest:
             description=description,
             expected_description=expected_description,
             branch=branch,
+            repair_batch=repair_batch,
             pr_url=pr_url,
             work_dir=work_dir,
             note=note,

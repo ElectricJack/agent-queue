@@ -21054,6 +21054,7 @@
         ],
         "optional": [
           "--branch",
+          "--repair-batch",
           "--pr-url",
           "--work-dir",
           "--note",
