@@ -1,0 +1,3124 @@
+{
+  "catalogue_delta": {
+    "added_explicit": [
+      "wait_ack",
+      "wait_checkpoint",
+      "wait_decide",
+      "wait_explain",
+      "wait_graph",
+      "wait_lift"
+    ],
+    "previous_explicit": {
+      "edit_task": {
+        "name": "edit_task",
+        "description": "Edit a task's properties: project_id, title, description, priority, task_type, status, max_retries, verification_type, integration_mode, skip_verification, intelligence_class, affinity_agent_id, affinity_reason, workspace_mode, needs_attention, or clear_needs_attention. Use this to move a task to a different project, rename tasks, change priority, override status (admin), change the routing hints, adjust retry/verification settings, or set coordination parameters. A task's route (profile, provider, model, pin) is the router's and is refused here (routing.choice_forbidden).",
+        "input_schema": {
+          "type": "object",
+          "properties": {
+            "task_id": {
+              "type": "string",
+              "description": "Task ID"
+            },
+            "project_id": {
+              "type": "string",
+              "description": "Move task to a different project (optional)"
+            },
+            "title": {
+              "type": "string",
+              "description": "New title (optional)"
+            },
+            "description": {
+              "type": "string",
+              "description": "New description (optional)"
+            },
+            "priority": {
+              "type": "integer",
+              "description": "New priority (optional)"
+            },
+            "task_type": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "enum": [
+                "feature",
+                "bugfix",
+                "refactor",
+                "test",
+                "docs",
+                "chore",
+                "research",
+                "plan",
+                "design",
+                "art",
+                "operator",
+                null
+              ],
+              "description": "New task type (optional, set to null to clear)"
+            },
+            "status": {
+              "type": "string",
+              "enum": [
+                "DEFINED",
+                "READY",
+                "IN_PROGRESS",
+                "COMPLETED",
+                "FAILED",
+                "BLOCKED"
+              ],
+              "description": "New status \u2014 admin override, bypasses state machine (optional)"
+            },
+            "max_retries": {
+              "type": "integer",
+              "description": "Max retry attempts (optional)"
+            },
+            "verification_type": {
+              "type": "string",
+              "enum": [
+                "auto_test",
+                "qa_agent",
+                "human"
+              ],
+              "description": "How to verify task output (optional)"
+            },
+            "intelligence_class": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "Intelligence-class hint for the router; change only while unassigned. Null clears it. On a queued task, editing the class hint or task_type sends the task back to its router."
+            },
+            "integration_mode": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "enum": [
+                "direct",
+                "pull_request",
+                null
+              ],
+              "description": "Integration-policy override ('direct' | 'pull_request'). Null clears the override so the task inherits the project/system policy (optional)"
+            },
+            "skip_verification": {
+              "type": "boolean",
+              "description": "If true, skip git verification on task completion (optional)"
+            },
+            "affinity_agent_id": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "Preferred agent ID for context continuity. Set to null to clear (optional)"
+            },
+            "affinity_reason": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "enum": [
+                "context",
+                "workspace",
+                "type",
+                null
+              ],
+              "description": "Why this agent is preferred. Set to null to clear (optional)"
+            },
+            "workspace_mode": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "enum": [
+                "exclusive",
+                "branch-isolated",
+                "directory-isolated",
+                null
+              ],
+              "description": "Workspace lock mode. Set to null to clear (optional). 'branch-isolated' is DEPRECATED and behaves as 'exclusive' \u2014 see create_task."
+            },
+            "after_review": {
+              "type": "string",
+              "description": "Attach this task to the named document review's gate until the review is approved."
+            },
+            "needs_attention": {
+              "type": "string",
+              "description": "Set the operator attention code (optional)"
+            },
+            "clear_needs_attention": {
+              "type": "boolean",
+              "description": "Clear the operator attention code (optional)"
+            }
+          },
+          "required": [
+            "task_id"
+          ]
+        }
+      },
+      "wait_register": {
+        "name": "wait_register",
+        "description": "Register a bounded typed wait and end the turn until its result pointer arrives.",
+        "input_schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "idempotency_key"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "job",
+                "task",
+                "message",
+                "timer"
+              ]
+            },
+            "ref": {
+              "type": "string",
+              "maxLength": 256
+            },
+            "after_seq": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "due_at": {
+              "type": "number"
+            },
+            "timeout": {
+              "type": "number",
+              "exclusiveMinimum": 0,
+              "maximum": 86400
+            },
+            "idempotency_key": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "claim_epoch": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "project_id": {
+              "type": "string"
+            },
+            "task_id": {
+              "type": "string"
+            },
+            "session_id": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "wait_get": {
+        "name": "wait_get",
+        "description": "Read a durable wait, optionally consuming its result notification.",
+        "input_schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "wait_id"
+          ],
+          "properties": {
+            "wait_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "consume": {
+              "type": "boolean",
+              "default": false
+            },
+            "claim_epoch": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "project_id": {
+              "type": "string"
+            },
+            "task_id": {
+              "type": "string"
+            },
+            "session_id": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "wait_list": {
+        "name": "wait_list",
+        "description": "List the owner's durable wait history.",
+        "input_schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "limit": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100
+            },
+            "offset": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "project_id": {
+              "type": "string"
+            },
+            "task_id": {
+              "type": "string"
+            },
+            "session_id": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "wait_cancel": {
+        "name": "wait_cancel",
+        "description": "Cancel a current-claim wait and queue its result.",
+        "input_schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "wait_id"
+          ],
+          "properties": {
+            "wait_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "claim_epoch": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "project_id": {
+              "type": "string"
+            },
+            "task_id": {
+              "type": "string"
+            },
+            "session_id": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "added_fallback": [
+      "scheduler_wait_sync",
+      "wait_deadline_fire",
+      "wait_evict",
+      "wait_legacy_bridge",
+      "wait_resume_dispatch",
+      "wait_sleep_decide",
+      "wait_source_commit"
+    ],
+    "added_tool_categories": [
+      "wait_explain",
+      "wait_graph",
+      "wait_checkpoint",
+      "wait_ack",
+      "wait_decide",
+      "wait_lift",
+      "wait_legacy_bridge"
+    ]
+  },
+  "cli_catalogue_sha256": "35c001817f1cbe603adcd833129905da6e869b7890bb8c5c8d47812c9269381c",
+  "contracts": {
+    "job_cancel": {
+      "execution": {
+        "schema_generation": 1,
+        "name": "job_cancel",
+        "args_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "job_id": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "job_id"
+          ],
+          "type": "object"
+        },
+        "result_schema": {
+          "$defs": {
+            "AgentWaitRecord": {
+              "additionalProperties": false,
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "project_id": {
+                  "type": "string"
+                },
+                "owner_kind": {
+                  "enum": [
+                    "task",
+                    "supervisor"
+                  ],
+                  "type": "string"
+                },
+                "owner_id": {
+                  "type": "string"
+                },
+                "session_id": {
+                  "type": "string"
+                },
+                "session_instance_token": {
+                  "type": "string"
+                },
+                "claim_epoch": {
+                  "type": "integer"
+                },
+                "kind": {
+                  "enum": [
+                    "job",
+                    "task",
+                    "message",
+                    "timer"
+                  ],
+                  "type": "string"
+                },
+                "match": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "state": {
+                  "enum": [
+                    "active",
+                    "satisfied",
+                    "expired",
+                    "cancelled"
+                  ],
+                  "type": "string"
+                },
+                "version": {
+                  "type": "integer"
+                },
+                "created_at": {
+                  "type": "number"
+                },
+                "deadline_at": {
+                  "type": "number"
+                },
+                "resolved_at": {
+                  "anyOf": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
+                },
+                "wait_resumed_at": {
+                  "anyOf": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
+                },
+                "checked_at": {
+                  "default": 0,
+                  "type": "number"
+                },
+                "result_ref": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
+                },
+                "digest": {
+                  "anyOf": [
+                    {
+                      "additionalProperties": true,
+                      "type": "object"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
+                },
+                "idempotency_key": {
+                  "type": "string"
+                },
+                "result_message_id": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
+                }
+              },
+              "required": [
+                "claim_epoch",
+                "created_at",
+                "deadline_at",
+                "id",
+                "idempotency_key",
+                "kind",
+                "match",
+                "owner_id",
+                "owner_kind",
+                "project_id",
+                "session_id",
+                "session_instance_token",
+                "state",
+                "version"
+              ],
+              "type": "object"
+            }
+          },
+          "additionalProperties": false,
+          "properties": {
+            "job": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "wait": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/AgentWaitRecord"
+                },
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "wait_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "decision": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "continuation_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "generation": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "next_step": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "required": [
+            "job"
+          ],
+          "type": "object"
+        },
+        "outcomes": [
+          {
+            "name": "completed",
+            "classification": "success"
+          },
+          {
+            "name": "rejected",
+            "classification": "failure"
+          }
+        ],
+        "capability": "job_cancel",
+        "side_effect": "resolve",
+        "idempotency": {
+          "mode": "natural",
+          "key_field": null
+        },
+        "retry_safe": true,
+        "timeout_seconds": null,
+        "effects": [],
+        "sensitive_args": [],
+        "sensitive_result_fields": [],
+        "receipt_projection": [],
+        "supports_preview": false
+      },
+      "fingerprint": "sha256:845d9db9c4725f37cce36ea267aaa6111ec185ec1f88115db9f13fd185e25ffa",
+      "previous_fingerprint": "sha256:50334b6a0cf418c6be1fdb8ede97344df437cfb8f91030723b1b70de4913a2c6"
+    },
+    "job_get": {
+      "execution": {
+        "schema_generation": 1,
+        "name": "job_get",
+        "args_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "job_id": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "job_id"
+          ],
+          "type": "object"
+        },
+        "result_schema": {
+          "$defs": {
+            "AgentWaitRecord": {
+              "additionalProperties": false,
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "project_id": {
+                  "type": "string"
+                },
+                "owner_kind": {
+                  "enum": [
+                    "task",
+                    "supervisor"
+                  ],
+                  "type": "string"
+                },
+                "owner_id": {
+                  "type": "string"
+                },
+                "session_id": {
+                  "type": "string"
+                },
+                "session_instance_token": {
+                  "type": "string"
+                },
+                "claim_epoch": {
+                  "type": "integer"
+                },
+                "kind": {
+                  "enum": [
+                    "job",
+                    "task",
+                    "message",
+                    "timer"
+                  ],
+                  "type": "string"
+                },
+                "match": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "state": {
+                  "enum": [
+                    "active",
+                    "satisfied",
+                    "expired",
+                    "cancelled"
+                  ],
+                  "type": "string"
+                },
+                "version": {
+                  "type": "integer"
+                },
+                "created_at": {
+                  "type": "number"
+                },
+                "deadline_at": {
+                  "type": "number"
+                },
+                "resolved_at": {
+                  "anyOf": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
+                },
+                "wait_resumed_at": {
+                  "anyOf": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
+                },
+                "checked_at": {
+                  "default": 0,
+                  "type": "number"
+                },
+                "result_ref": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
+                },
+                "digest": {
+                  "anyOf": [
+                    {
+                      "additionalProperties": true,
+                      "type": "object"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
+                },
+                "idempotency_key": {
+                  "type": "string"
+                },
+                "result_message_id": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
+                }
+              },
+              "required": [
+                "claim_epoch",
+                "created_at",
+                "deadline_at",
+                "id",
+                "idempotency_key",
+                "kind",
+                "match",
+                "owner_id",
+                "owner_kind",
+                "project_id",
+                "session_id",
+                "session_instance_token",
+                "state",
+                "version"
+              ],
+              "type": "object"
+            }
+          },
+          "additionalProperties": false,
+          "properties": {
+            "job": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "wait": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/AgentWaitRecord"
+                },
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "wait_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "decision": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "continuation_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "generation": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "next_step": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "required": [
+            "job"
+          ],
+          "type": "object"
+        },
+        "outcomes": [
+          {
+            "name": "completed",
+            "classification": "success"
+          },
+          {
+            "name": "rejected",
+            "classification": "failure"
+          }
+        ],
+        "capability": "job_get",
+        "side_effect": "read",
+        "idempotency": {
+          "mode": "natural",
+          "key_field": null
+        },
+        "retry_safe": true,
+        "timeout_seconds": null,
+        "effects": [],
+        "sensitive_args": [],
+        "sensitive_result_fields": [],
+        "receipt_projection": [],
+        "supports_preview": false
+      },
+      "fingerprint": "sha256:bac65c9a584d348429d67bcae8bc6a5e6f5b8242ed07827682342ab978decdea",
+      "previous_fingerprint": "sha256:c46ca1d06907362de3445917402b8496c579cbd9a96c06380819c715b24817eb"
+    },
+    "job_submit": {
+      "execution": {
+        "schema_generation": 1,
+        "name": "job_submit",
+        "args_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "project_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "task_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "session_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "claim_epoch": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "preset": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "argv": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "idempotency_key": {
+              "maxLength": 200,
+              "minLength": 1,
+              "type": "string"
+            },
+            "attempt_id": {
+              "anyOf": [
+                {
+                  "maxLength": 128,
+                  "minLength": 1,
+                  "pattern": "^[A-Za-z0-9_-]+$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "wait": {
+              "default": false,
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "idempotency_key",
+            "preset"
+          ],
+          "type": "object"
+        },
+        "result_schema": {
+          "$defs": {
+            "AgentWaitRecord": {
+              "additionalProperties": false,
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "project_id": {
+                  "type": "string"
+                },
+                "owner_kind": {
+                  "enum": [
+                    "task",
+                    "supervisor"
+                  ],
+                  "type": "string"
+                },
+                "owner_id": {
+                  "type": "string"
+                },
+                "session_id": {
+                  "type": "string"
+                },
+                "session_instance_token": {
+                  "type": "string"
+                },
+                "claim_epoch": {
+                  "type": "integer"
+                },
+                "kind": {
+                  "enum": [
+                    "job",
+                    "task",
+                    "message",
+                    "timer"
+                  ],
+                  "type": "string"
+                },
+                "match": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "state": {
+                  "enum": [
+                    "active",
+                    "satisfied",
+                    "expired",
+                    "cancelled"
+                  ],
+                  "type": "string"
+                },
+                "version": {
+                  "type": "integer"
+                },
+                "created_at": {
+                  "type": "number"
+                },
+                "deadline_at": {
+                  "type": "number"
+                },
+                "resolved_at": {
+                  "anyOf": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
+                },
+                "wait_resumed_at": {
+                  "anyOf": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
+                },
+                "checked_at": {
+                  "default": 0,
+                  "type": "number"
+                },
+                "result_ref": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
+                },
+                "digest": {
+                  "anyOf": [
+                    {
+                      "additionalProperties": true,
+                      "type": "object"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
+                },
+                "idempotency_key": {
+                  "type": "string"
+                },
+                "result_message_id": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
+                }
+              },
+              "required": [
+                "claim_epoch",
+                "created_at",
+                "deadline_at",
+                "id",
+                "idempotency_key",
+                "kind",
+                "match",
+                "owner_id",
+                "owner_kind",
+                "project_id",
+                "session_id",
+                "session_instance_token",
+                "state",
+                "version"
+              ],
+              "type": "object"
+            }
+          },
+          "additionalProperties": false,
+          "properties": {
+            "job": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "wait": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/AgentWaitRecord"
+                },
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "wait_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "decision": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "continuation_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "generation": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "next_step": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "required": [
+            "job"
+          ],
+          "type": "object"
+        },
+        "outcomes": [
+          {
+            "name": "completed",
+            "classification": "success"
+          },
+          {
+            "name": "rejected",
+            "classification": "failure"
+          }
+        ],
+        "capability": "job_submit",
+        "side_effect": "create",
+        "idempotency": {
+          "mode": "keyed",
+          "key_field": "idempotency_key"
+        },
+        "retry_safe": true,
+        "timeout_seconds": null,
+        "effects": [],
+        "sensitive_args": [],
+        "sensitive_result_fields": [],
+        "receipt_projection": [],
+        "supports_preview": false
+      },
+      "fingerprint": "sha256:a4f8b1735ede53fc866a10c12a745128d49902bf4328e41b9699c01c4a60fc4d",
+      "previous_fingerprint": "sha256:ee1c5f39e5ab3ff4d4d3c047b41b0edb5b5652e559f964d53e59ea2d2852c9aa"
+    },
+    "message_wait": {
+      "execution": {
+        "schema_generation": 1,
+        "name": "message_wait",
+        "args_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "schema_version": {
+              "default": 1,
+              "enum": [
+                1,
+                2
+              ],
+              "type": "integer"
+            },
+            "project_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "task_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "session_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "thread_id": {
+              "maxLength": 64,
+              "minLength": 1,
+              "type": "string"
+            },
+            "after_seq": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "timeout": {
+              "default": 60,
+              "maximum": 60,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "idempotency_key": {
+              "anyOf": [
+                {
+                  "maxLength": 256,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "claim_epoch": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "required": [
+            "after_seq",
+            "thread_id"
+          ],
+          "type": "object"
+        },
+        "result_schema": {
+          "$defs": {
+            "AgentWaitRecord": {
+              "additionalProperties": false,
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "project_id": {
+                  "type": "string"
+                },
+                "owner_kind": {
+                  "enum": [
+                    "task",
+                    "supervisor"
+                  ],
+                  "type": "string"
+                },
+                "owner_id": {
+                  "type": "string"
+                },
+                "session_id": {
+                  "type": "string"
+                },
+                "session_instance_token": {
+                  "type": "string"
+                },
+                "claim_epoch": {
+                  "type": "integer"
+                },
+                "kind": {
+                  "enum": [
+                    "job",
+                    "task",
+                    "message",
+                    "timer"
+                  ],
+                  "type": "string"
+                },
+                "match": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "state": {
+                  "enum": [
+                    "active",
+                    "satisfied",
+                    "expired",
+                    "cancelled"
+                  ],
+                  "type": "string"
+                },
+                "version": {
+                  "type": "integer"
+                },
+                "created_at": {
+                  "type": "number"
+                },
+                "deadline_at": {
+                  "type": "number"
+                },
+                "resolved_at": {
+                  "anyOf": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
+                },
+                "wait_resumed_at": {
+                  "anyOf": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
+                },
+                "checked_at": {
+                  "default": 0,
+                  "type": "number"
+                },
+                "result_ref": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
+                },
+                "digest": {
+                  "anyOf": [
+                    {
+                      "additionalProperties": true,
+                      "type": "object"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
+                },
+                "idempotency_key": {
+                  "type": "string"
+                },
+                "result_message_id": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
+                }
+              },
+              "required": [
+                "claim_epoch",
+                "created_at",
+                "deadline_at",
+                "id",
+                "idempotency_key",
+                "kind",
+                "match",
+                "owner_id",
+                "owner_kind",
+                "project_id",
+                "session_id",
+                "session_instance_token",
+                "state",
+                "version"
+              ],
+              "type": "object"
+            },
+            "CollaborationMessageRecord": {
+              "additionalProperties": false,
+              "properties": {
+                "seq": {
+                  "type": "integer"
+                },
+                "message_id": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
+                },
+                "sender_task_id": {
+                  "type": "string"
+                },
+                "subject": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
+                },
+                "body": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
+                },
+                "created_at": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "created_at",
+                "sender_task_id",
+                "seq"
+              ],
+              "type": "object"
+            }
+          },
+          "additionalProperties": false,
+          "properties": {
+            "state": {
+              "enum": [
+                "satisfied",
+                "waiting",
+                "expired",
+                "cancelled",
+                "thread_closed",
+                "peer_failed",
+                "peer_gone",
+                "partner_not_running"
+              ],
+              "type": "string"
+            },
+            "wait": {
+              "$ref": "#/$defs/AgentWaitRecord"
+            },
+            "messages": {
+              "anyOf": [
+                {
+                  "items": {
+                    "$ref": "#/$defs/CollaborationMessageRecord"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "next_cursor": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "has_more": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "cursor": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "next_step": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "required": [
+            "state",
+            "wait"
+          ],
+          "type": "object"
+        },
+        "outcomes": [
+          {
+            "name": "completed",
+            "classification": "success"
+          },
+          {
+            "name": "rejected",
+            "classification": "failure"
+          }
+        ],
+        "capability": "message_wait",
+        "side_effect": "create",
+        "idempotency": {
+          "mode": "keyed",
+          "key_field": "idempotency_key"
+        },
+        "retry_safe": true,
+        "timeout_seconds": null,
+        "effects": [],
+        "sensitive_args": [],
+        "sensitive_result_fields": [],
+        "receipt_projection": [],
+        "supports_preview": false
+      },
+      "fingerprint": "sha256:1ae0cf1e8365712451dbc606e80b73ddfd06bbd68a1f6be82ff2e66d4d1d964d",
+      "previous_fingerprint": "sha256:6032a5449468b4efc114d5f18ecd4cf046bd4b26417ea4060f41657daba9c24d"
+    },
+    "wait_cancel": {
+      "execution": {
+        "schema_generation": 1,
+        "name": "wait_cancel",
+        "args_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "schema_version": {
+              "default": 1,
+              "enum": [
+                1,
+                2
+              ],
+              "type": "integer"
+            },
+            "project_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "task_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "session_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "wait_id": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "claim_epoch": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "required": [
+            "wait_id"
+          ],
+          "type": "object"
+        },
+        "result_schema": {
+          "$defs": {
+            "AgentWaitRecord": {
+              "additionalProperties": false,
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "project_id": {
+                  "type": "string"
+                },
+                "owner_kind": {
+                  "enum": [
+                    "task",
+                    "supervisor"
+                  ],
+                  "type": "string"
+                },
+                "owner_id": {
+                  "type": "string"
+                },
+                "session_id": {
+                  "type": "string"
+                },
+                "session_instance_token": {
+                  "type": "string"
+                },
+                "claim_epoch": {
+                  "type": "integer"
+                },
+                "kind": {
+                  "enum": [
+                    "job",
+                    "task",
+                    "message",
+                    "timer"
+                  ],
+                  "type": "string"
+                },
+                "match": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "state": {
+                  "enum": [
+                    "active",
+                    "satisfied",
+                    "expired",
+                    "cancelled"
+                  ],
+                  "type": "string"
+                },
+                "version": {
+                  "type": "integer"
+                },
+                "created_at": {
+                  "type": "number"
+                },
+                "deadline_at": {
+                  "type": "number"
+                },
+                "resolved_at": {
+                  "anyOf": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
+                },
+                "wait_resumed_at": {
+                  "anyOf": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
+                },
+                "checked_at": {
+                  "default": 0,
+                  "type": "number"
+                },
+                "result_ref": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
+                },
+                "digest": {
+                  "anyOf": [
+                    {
+                      "additionalProperties": true,
+                      "type": "object"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
+                },
+                "idempotency_key": {
+                  "type": "string"
+                },
+                "result_message_id": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
+                }
+              },
+              "required": [
+                "claim_epoch",
+                "created_at",
+                "deadline_at",
+                "id",
+                "idempotency_key",
+                "kind",
+                "match",
+                "owner_id",
+                "owner_kind",
+                "project_id",
+                "session_id",
+                "session_instance_token",
+                "state",
+                "version"
+              ],
+              "type": "object"
+            }
+          },
+          "additionalProperties": false,
+          "properties": {
+            "wait": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/AgentWaitRecord"
+                },
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "wait_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "condition": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "evidence": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "decision": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "escalate_at": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "ceiling_at": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "continuation_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "warnings": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "next_step": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "type": "object"
+        },
+        "outcomes": [
+          {
+            "name": "completed",
+            "classification": "success"
+          },
+          {
+            "name": "rejected",
+            "classification": "failure"
+          }
+        ],
+        "capability": "wait_cancel",
+        "side_effect": "resolve",
+        "idempotency": {
+          "mode": "natural",
+          "key_field": null
+        },
+        "retry_safe": true,
+        "timeout_seconds": null,
+        "effects": [],
+        "sensitive_args": [],
+        "sensitive_result_fields": [],
+        "receipt_projection": [],
+        "supports_preview": false
+      },
+      "fingerprint": "sha256:e4daf859327d0c9e56e18437cccc884a5ce43a640d4f4084c42c7c24dfdd8dd1",
+      "previous_fingerprint": "sha256:c1c108440614afd2fd5829cb82fc85d5e22422b0243bba7616087917bd6e7c5b"
+    },
+    "wait_get": {
+      "execution": {
+        "schema_generation": 1,
+        "name": "wait_get",
+        "args_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "schema_version": {
+              "default": 1,
+              "enum": [
+                1,
+                2
+              ],
+              "type": "integer"
+            },
+            "project_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "task_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "session_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "wait_id": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "consume": {
+              "default": false,
+              "type": "boolean"
+            },
+            "claim_epoch": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "required": [
+            "wait_id"
+          ],
+          "type": "object"
+        },
+        "result_schema": {
+          "$defs": {
+            "AgentWaitRecord": {
+              "additionalProperties": false,
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "project_id": {
+                  "type": "string"
+                },
+                "owner_kind": {
+                  "enum": [
+                    "task",
+                    "supervisor"
+                  ],
+                  "type": "string"
+                },
+                "owner_id": {
+                  "type": "string"
+                },
+                "session_id": {
+                  "type": "string"
+                },
+                "session_instance_token": {
+                  "type": "string"
+                },
+                "claim_epoch": {
+                  "type": "integer"
+                },
+                "kind": {
+                  "enum": [
+                    "job",
+                    "task",
+                    "message",
+                    "timer"
+                  ],
+                  "type": "string"
+                },
+                "match": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "state": {
+                  "enum": [
+                    "active",
+                    "satisfied",
+                    "expired",
+                    "cancelled"
+                  ],
+                  "type": "string"
+                },
+                "version": {
+                  "type": "integer"
+                },
+                "created_at": {
+                  "type": "number"
+                },
+                "deadline_at": {
+                  "type": "number"
+                },
+                "resolved_at": {
+                  "anyOf": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
+                },
+                "wait_resumed_at": {
+                  "anyOf": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
+                },
+                "checked_at": {
+                  "default": 0,
+                  "type": "number"
+                },
+                "result_ref": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
+                },
+                "digest": {
+                  "anyOf": [
+                    {
+                      "additionalProperties": true,
+                      "type": "object"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
+                },
+                "idempotency_key": {
+                  "type": "string"
+                },
+                "result_message_id": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
+                }
+              },
+              "required": [
+                "claim_epoch",
+                "created_at",
+                "deadline_at",
+                "id",
+                "idempotency_key",
+                "kind",
+                "match",
+                "owner_id",
+                "owner_kind",
+                "project_id",
+                "session_id",
+                "session_instance_token",
+                "state",
+                "version"
+              ],
+              "type": "object"
+            }
+          },
+          "additionalProperties": false,
+          "properties": {
+            "wait": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/AgentWaitRecord"
+                },
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "wait_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "condition": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "evidence": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "decision": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "escalate_at": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "ceiling_at": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "continuation_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "warnings": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "next_step": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "type": "object"
+        },
+        "outcomes": [
+          {
+            "name": "completed",
+            "classification": "success"
+          },
+          {
+            "name": "rejected",
+            "classification": "failure"
+          }
+        ],
+        "capability": "wait_get",
+        "side_effect": "composite",
+        "idempotency": {
+          "mode": "natural",
+          "key_field": null
+        },
+        "retry_safe": true,
+        "timeout_seconds": null,
+        "effects": [],
+        "sensitive_args": [],
+        "sensitive_result_fields": [],
+        "receipt_projection": [],
+        "supports_preview": false
+      },
+      "fingerprint": "sha256:4f0ee5ddfcaf9a6dd9548e746f31d69a445fa6253b60e2e1f244f8354e484715",
+      "previous_fingerprint": "sha256:c294954efbe7275f7d4f89cc5c7f1dacacb6d83d00a13daeb03b8732289ce9cd"
+    },
+    "wait_list": {
+      "execution": {
+        "schema_generation": 1,
+        "name": "wait_list",
+        "args_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "schema_version": {
+              "default": 1,
+              "enum": [
+                1,
+                2
+              ],
+              "type": "integer"
+            },
+            "project_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "task_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "session_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "limit": {
+              "default": 100,
+              "maximum": 100,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "offset": {
+              "default": 0,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "type": "object"
+        },
+        "result_schema": {
+          "$defs": {
+            "AgentWaitRecord": {
+              "additionalProperties": false,
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "project_id": {
+                  "type": "string"
+                },
+                "owner_kind": {
+                  "enum": [
+                    "task",
+                    "supervisor"
+                  ],
+                  "type": "string"
+                },
+                "owner_id": {
+                  "type": "string"
+                },
+                "session_id": {
+                  "type": "string"
+                },
+                "session_instance_token": {
+                  "type": "string"
+                },
+                "claim_epoch": {
+                  "type": "integer"
+                },
+                "kind": {
+                  "enum": [
+                    "job",
+                    "task",
+                    "message",
+                    "timer"
+                  ],
+                  "type": "string"
+                },
+                "match": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "state": {
+                  "enum": [
+                    "active",
+                    "satisfied",
+                    "expired",
+                    "cancelled"
+                  ],
+                  "type": "string"
+                },
+                "version": {
+                  "type": "integer"
+                },
+                "created_at": {
+                  "type": "number"
+                },
+                "deadline_at": {
+                  "type": "number"
+                },
+                "resolved_at": {
+                  "anyOf": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
+                },
+                "wait_resumed_at": {
+                  "anyOf": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
+                },
+                "checked_at": {
+                  "default": 0,
+                  "type": "number"
+                },
+                "result_ref": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
+                },
+                "digest": {
+                  "anyOf": [
+                    {
+                      "additionalProperties": true,
+                      "type": "object"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
+                },
+                "idempotency_key": {
+                  "type": "string"
+                },
+                "result_message_id": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
+                }
+              },
+              "required": [
+                "claim_epoch",
+                "created_at",
+                "deadline_at",
+                "id",
+                "idempotency_key",
+                "kind",
+                "match",
+                "owner_id",
+                "owner_kind",
+                "project_id",
+                "session_id",
+                "session_instance_token",
+                "state",
+                "version"
+              ],
+              "type": "object"
+            }
+          },
+          "additionalProperties": false,
+          "properties": {
+            "waits": {
+              "items": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/AgentWaitRecord"
+                  },
+                  {
+                    "additionalProperties": true,
+                    "type": "object"
+                  }
+                ]
+              },
+              "type": "array"
+            },
+            "count": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "count",
+            "waits"
+          ],
+          "type": "object"
+        },
+        "outcomes": [
+          {
+            "name": "completed",
+            "classification": "success"
+          },
+          {
+            "name": "rejected",
+            "classification": "failure"
+          }
+        ],
+        "capability": "wait_list",
+        "side_effect": "read",
+        "idempotency": {
+          "mode": "natural",
+          "key_field": null
+        },
+        "retry_safe": true,
+        "timeout_seconds": null,
+        "effects": [],
+        "sensitive_args": [],
+        "sensitive_result_fields": [],
+        "receipt_projection": [],
+        "supports_preview": false
+      },
+      "fingerprint": "sha256:6c152419a1d81504913f1e03d5f6d2ef469b8d0012427c647d5c1c6feb9c9090",
+      "previous_fingerprint": "sha256:83d7721d71ea24a7715ae4b3edba2084a6ff0bf9cf49d4c3cf142faf19c829ca"
+    },
+    "wait_register": {
+      "execution": {
+        "schema_generation": 1,
+        "name": "wait_register",
+        "args_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "schema_version": {
+              "default": 1,
+              "enum": [
+                1,
+                2
+              ],
+              "type": "integer"
+            },
+            "project_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "task_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "session_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "kind": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "job",
+                    "task",
+                    "message",
+                    "timer",
+                    "dependency",
+                    "ci_check",
+                    "ci_run",
+                    "pull_request",
+                    "batch",
+                    "human",
+                    "resource",
+                    "playbook_condition"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "condition": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "claimed": {
+              "anyOf": [
+                {
+                  "maxLength": 1024,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "escalate_after_seconds": {
+              "anyOf": [
+                {
+                  "exclusiveMinimum": 0,
+                  "maximum": 86400,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "owner_kind": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "scheduler",
+                    "integration",
+                    "playbook"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "owner_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "ref": {
+              "anyOf": [
+                {
+                  "maxLength": 256,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "after_seq": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "due_at": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "timeout": {
+              "anyOf": [
+                {
+                  "exclusiveMinimum": 0,
+                  "maximum": 86400,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "idempotency_key": {
+              "maxLength": 256,
+              "minLength": 1,
+              "type": "string"
+            },
+            "claim_epoch": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "required": [
+            "idempotency_key"
+          ],
+          "type": "object"
+        },
+        "result_schema": {
+          "$defs": {
+            "AgentWaitRecord": {
+              "additionalProperties": false,
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "project_id": {
+                  "type": "string"
+                },
+                "owner_kind": {
+                  "enum": [
+                    "task",
+                    "supervisor"
+                  ],
+                  "type": "string"
+                },
+                "owner_id": {
+                  "type": "string"
+                },
+                "session_id": {
+                  "type": "string"
+                },
+                "session_instance_token": {
+                  "type": "string"
+                },
+                "claim_epoch": {
+                  "type": "integer"
+                },
+                "kind": {
+                  "enum": [
+                    "job",
+                    "task",
+                    "message",
+                    "timer"
+                  ],
+                  "type": "string"
+                },
+                "match": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "state": {
+                  "enum": [
+                    "active",
+                    "satisfied",
+                    "expired",
+                    "cancelled"
+                  ],
+                  "type": "string"
+                },
+                "version": {
+                  "type": "integer"
+                },
+                "created_at": {
+                  "type": "number"
+                },
+                "deadline_at": {
+                  "type": "number"
+                },
+                "resolved_at": {
+                  "anyOf": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
+                },
+                "wait_resumed_at": {
+                  "anyOf": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
+                },
+                "checked_at": {
+                  "default": 0,
+                  "type": "number"
+                },
+                "result_ref": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
+                },
+                "digest": {
+                  "anyOf": [
+                    {
+                      "additionalProperties": true,
+                      "type": "object"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
+                },
+                "idempotency_key": {
+                  "type": "string"
+                },
+                "result_message_id": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
+                }
+              },
+              "required": [
+                "claim_epoch",
+                "created_at",
+                "deadline_at",
+                "id",
+                "idempotency_key",
+                "kind",
+                "match",
+                "owner_id",
+                "owner_kind",
+                "project_id",
+                "session_id",
+                "session_instance_token",
+                "state",
+                "version"
+              ],
+              "type": "object"
+            }
+          },
+          "additionalProperties": false,
+          "properties": {
+            "wait": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/AgentWaitRecord"
+                },
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "wait_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "condition": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "evidence": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "decision": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "escalate_at": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "ceiling_at": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "continuation_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "warnings": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "next_step": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "type": "object"
+        },
+        "outcomes": [
+          {
+            "name": "completed",
+            "classification": "success"
+          },
+          {
+            "name": "rejected",
+            "classification": "failure"
+          }
+        ],
+        "capability": "wait_register",
+        "side_effect": "create",
+        "idempotency": {
+          "mode": "keyed",
+          "key_field": "idempotency_key"
+        },
+        "retry_safe": true,
+        "timeout_seconds": null,
+        "effects": [],
+        "sensitive_args": [],
+        "sensitive_result_fields": [],
+        "receipt_projection": [],
+        "supports_preview": false
+      },
+      "fingerprint": "sha256:bf32cd335bffbc95828bf07acb6a7e5b070480bfeed81ba97dcad415e8f6b729",
+      "previous_fingerprint": "sha256:fa37f806a3d005ee7d2e7248a8d75d0ec8aace5e2b5f26385f8693cc4d00d414"
+    }
+  },
+  "previous_cli_catalogue_sha256": "468e30721893c160e591ef116159339a6e8d4720e8de3b1266baac51701eced6",
+  "review_notes": [
+    "The hibernation epic (verified wait cutover a278d71d3 and its prerequisites) changes the wait and job command surfaces: wait_register/get/list/cancel and message_wait accept schema_version=2 conditions and return verified wait records; job_submit/get/cancel results carry the registered wait and decision.",
+    "edit_task's status enum gains the suspended lifecycle states (ASSIGNED, WAITING, HIBERNATED, RESUME_PENDING, WAITING_INPUT, PAUSED); suspended transitions require wait controls.",
+    "New explicit commands wait_ack/checkpoint/decide/explain/graph/lift and internal fallback service boundaries are additive. Reverting exactly this delta recovers the withheld-source catalogue bytes; historical recordings remain unchanged."
+  ],
+  "source_base": "4385c73158425a08114164893b623cf6b65718e8",
+  "transport_definitions": {
+    "edit_task": {
+      "previous_sha256": "20fe9a386fce1f9ff668982d3f149e36bb15d53392aec3b7e7ac28a7a92eb851",
+      "sha256": "dae3b2e10fd0a3b4204c85ca9465bd0dcffe92a6f1e038997e2516d9f1978d06"
+    },
+    "wait_cancel": {
+      "previous_sha256": "582d7c2e0673e8930e214540daaea45bfb7bd8cd67741d36a77b04f7a4e4652e",
+      "sha256": "cc9312c24465239dd6613d7ab13f934a170d25b15f25d3f8adbd9f8b80fd79c9"
+    },
+    "wait_get": {
+      "previous_sha256": "fbe0151dcb11f9c36cadd8c792990d851353541e3a214a39e32d940d8a957c17",
+      "sha256": "f2172bd77a8590ab2797aa7a36e466b2d374032942347b762c00c432bb530845"
+    },
+    "wait_list": {
+      "previous_sha256": "6d12a893582776c516503d2ff9b9b929a70c0a9989a312a9e2a3dbfe85345f04",
+      "sha256": "e07f063809a98ac6d832fa22b2685eaa99fa7af7d3b7a4b1fc2767e582198dcd"
+    },
+    "wait_register": {
+      "previous_sha256": "7165e0d25fedfd3472aec5341814adeeaf3ada326b7bd77da787630222f7575b",
+      "sha256": "28fc64cae6fe55044ffe3709d7d9e721db3a03030c712deb529db4f5acde4c00"
+    }
+  }
+}
