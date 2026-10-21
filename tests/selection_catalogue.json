@@ -858,6 +858,7 @@
         "tests/test_migration_pool_claim_refusals.py",
         "tests/test_migration_postgres_upgrade_head.py",
         "tests/test_migration_project_router_binding.py",
+        "tests/test_migration_publication_delegations.py",
         "tests/test_migration_repair_stages.py",
         "tests/test_migration_retired_intelligence_classes.py",
         "tests/test_migration_review_playbook_pin.py",
@@ -12013,6 +12014,18 @@
       ],
       "summary": "a00000000043: every project bound to a router, ``default_profile_id`` dropped."
     },
+    "tests/test_migration_publication_delegations.py": {
+      "areas": [
+        "migrations"
+      ],
+      "default_arm": false,
+      "digest": "sha256:aa6430a2a5b6e614695aaae6f2a233421000b70fbed625a75c0f5b31f71f4c93",
+      "imports": [],
+      "markers": [
+        "migration"
+      ],
+      "summary": "The delegation migration adds the owner-lease binding on old and current schemas."
+    },
     "tests/test_migration_repair_stages.py": {
       "areas": [
         "migrations"
@@ -19119,16 +19132,20 @@
         "github"
       ],
       "default_arm": true,
-      "digest": "sha256:e261159034933b8f9bf8cc18e9ef9695a9bb1c3e941a8541d23a16f7643893f5",
+      "digest": "sha256:928d263948ce00c7842a72da27901364e0aebdba970b8572c00d77dbe3611e9d",
       "imports": [
         "src.api.auth",
         "src.api.scope",
         "src.cli.app",
+        "src.commands.contracts.integration",
         "src.config",
+        "src.database",
         "src.database.tables",
         "src.git.github_contracts",
         "src.git.identity",
         "src.git.manager",
+        "src.integration.models",
+        "src.integration.publication_delegations",
         "src.models",
         "src.plugins.internal.git",
         "src.profiles.capabilities",

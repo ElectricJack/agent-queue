@@ -3482,6 +3482,9 @@ integration_branch_owners = Table(
     Column("workspace_id", Text, nullable=True),
     Column("confirmed_workspace_id", Text, nullable=True),
     Column("expires_at", Float, nullable=True),
+    # Publication delegation binding and audit for the holder
+    # ``publication-delegation:<id>``; cleared by the next acquisition.
+    Column("delegation", JSONB(none_as_null=True), nullable=True),
     Column("created_at", Float, nullable=False),
     Column("updated_at", Float, nullable=False),
     UniqueConstraint("repository_id", "ref", name="uq_integration_branch_owners_ref"),

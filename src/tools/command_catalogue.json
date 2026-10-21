@@ -13766,6 +13766,85 @@
         "type": "object"
       }
     },
+    "integration_delegate_publication": {
+      "name": "integration_delegate_publication",
+      "description": "Authenticated hierarchical integration operational control.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "minLength": 1,
+            "title": "Id",
+            "type": "string"
+          },
+          "project_id": {
+            "minLength": 1,
+            "title": "Project Id",
+            "type": "string"
+          },
+          "repository_id": {
+            "minLength": 1,
+            "title": "Repository Id",
+            "type": "string"
+          },
+          "task_id": {
+            "minLength": 1,
+            "title": "Task Id",
+            "type": "string"
+          },
+          "session_id": {
+            "minLength": 1,
+            "title": "Session Id",
+            "type": "string"
+          },
+          "claim_epoch": {
+            "minimum": 0,
+            "title": "Claim Epoch",
+            "type": "integer"
+          },
+          "target_branch": {
+            "minLength": 1,
+            "title": "Target Branch",
+            "type": "string"
+          },
+          "expected_target_oid": {
+            "title": "Expected Target Oid",
+            "type": "string"
+          },
+          "expected_owner_fence": {
+            "minimum": 0,
+            "title": "Expected Owner Fence",
+            "type": "integer"
+          },
+          "ttl_seconds": {
+            "default": 480,
+            "maximum": 480,
+            "minimum": 1,
+            "title": "Ttl Seconds",
+            "type": "integer"
+          },
+          "reason": {
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "project_id",
+          "repository_id",
+          "task_id",
+          "session_id",
+          "claim_epoch",
+          "target_branch",
+          "expected_target_oid",
+          "expected_owner_fence",
+          "reason"
+        ],
+        "title": "IntegrationDelegatePublicationArgs",
+        "type": "object"
+      }
+    },
     "integration_delivery_readiness": {
       "name": "integration_delivery_readiness",
       "description": "Read whether every child of one parent has delivered, changing nothing.",
@@ -15645,6 +15724,37 @@
           "task_id"
         ],
         "title": "IntegrationReverifyEpicArgs",
+        "type": "object"
+      }
+    },
+    "integration_revoke_publication": {
+      "name": "integration_revoke_publication",
+      "description": "Authenticated hierarchical integration operational control.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "minLength": 1,
+            "title": "Id",
+            "type": "string"
+          },
+          "project_id": {
+            "minLength": 1,
+            "title": "Project Id",
+            "type": "string"
+          },
+          "reason": {
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "project_id",
+          "reason"
+        ],
+        "title": "IntegrationRevokePublicationArgs",
         "type": "object"
       }
     },
@@ -20059,6 +20169,10 @@
                 "type": "string",
                 "description": "Exact remote branch OID expected before the push (40 hex digits); the push may then rewrite the branch, and is refused if the remote holds anything else. All zeros means the branch must still be absent."
               },
+              "publication_delegation_id": {
+                "type": "string",
+                "description": "Single-use integration-owner grant for this target branch"
+              },
               "workspace": {
                 "type": "string",
                 "description": "Workspace name or ID (optional)"
@@ -20362,6 +20476,10 @@
               "expected_remote_oid": {
                 "type": "string",
                 "description": "Exact remote branch OID expected before the push (40 hex digits); the push may then rewrite the branch, and is refused if the remote holds anything else. All zeros means the branch must still be absent."
+              },
+              "publication_delegation_id": {
+                "type": "string",
+                "description": "Single-use integration-owner grant for this target branch"
               },
               "workspace": {
                 "type": "string",
