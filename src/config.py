@@ -1086,6 +1086,16 @@ class SupervisorConfig:
                 errors.append(ConfigError("supervisor", key, "must be a positive integer"))
         return errors
 
+    @classmethod
+    def from_mapping(cls, section: Mapping) -> SupervisorConfig:
+        """Build from the YAML ``supervisor`` section; ``global`` is the nested section."""
+        global_section = section.get("global", {}) or {}
+        kwargs = _dataclass_kwargs(cls, section)
+        kwargs["global_"] = GlobalSupervisorConfig(
+            idle_timeout_seconds=global_section.get("idle_timeout_seconds", 2700),
+        )
+        return cls(**kwargs)
+
 
 LLM_PROVIDER_IDS = frozenset({"anthropic", "google", "openai"})
 _LEGACY_LLM_PROVIDER_IDS = {"gemini": "google", "ollama": "openai"}
@@ -5269,17 +5279,7 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
         config.llm = _llm_config_from_mapping(legacy_raw, legacy=True)
 
     if "supervisor" in raw:
-        s = raw["supervisor"]
-        global_section = s.get("global", {}) or {}
-        config.supervisor = SupervisorConfig(
-            **{key: s[key] for key in (
-                "turn_timeout_seconds", "question_timeout_seconds", "retry_backoff_seconds",
-                "max_turn_retries", "max_session_age_seconds", "context_ceiling_tokens",
-            ) if key in s},
-            global_=GlobalSupervisorConfig(
-                idle_timeout_seconds=global_section.get("idle_timeout_seconds", 2700),
-            ),
-        )
+        config.supervisor = SupervisorConfig.from_mapping(raw["supervisor"])
 
     # hook_engine config section removed (playbooks spec §13 Phase 3).
     # Existing config files with hook_engine section are silently ignored.

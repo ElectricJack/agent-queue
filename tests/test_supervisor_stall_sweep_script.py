@@ -989,13 +989,16 @@ def test_auto_deploy_escalates_consecutive_dirty_skips_once(tmp_path):
     assert not state.exists()
 
 
-@pytest.mark.parametrize("sample,alarm", [
-    ({"checked_at": time.time(), "unhealthy": True, "reason": "turn_timeout",
-      "pending_count": 2, "attempts": 2}, "SUPERVISOR-UNHEALTHY"),
-    ({"checked_at": time.time() - 300, "unhealthy": False}, "SUPERVISOR-UNKNOWN"),
-    ({}, "SUPERVISOR-UNKNOWN"),
+@pytest.mark.parametrize("sample,age,alarm", [
+    ({"unhealthy": True, "reason": "turn_timeout", "pending_count": 2, "attempts": 2}, 0,
+     "SUPERVISOR-UNHEALTHY"),
+    ({"unhealthy": False}, 300, "SUPERVISOR-UNKNOWN"),
+    ({}, None, "SUPERVISOR-UNKNOWN"),
 ])
-def test_supervisor_turn_health_ignores_recent_process_activity(tmp_path, sample, alarm):
+def test_supervisor_turn_health_ignores_recent_process_activity(tmp_path, sample, age, alarm):
+    # Stamp at run time: collection can precede this test by minutes under xdist.
+    if age is not None:
+        sample = {**sample, "checked_at": time.time() - age}
     responses = _scoped_responses([])
     row = _session("n-supervisor--rom", "rom", None)
     row.update(lifecycle="named", profile_id="supervisor", last_activity=time.time(),
