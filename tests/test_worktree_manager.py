@@ -1450,6 +1450,46 @@ class TestResetSlot:
         assert (path / "published.txt").read_text() == "published before reopen\n"
         assert _git(["status", "--porcelain"], path) == ""
 
+    async def test_branch_older_than_gitignore_drops_now_untracked_cache_before_merge(
+        self, mgr, base_ws, kind,
+    ):
+        """aq-design-tour, 2026-10-21: the parent merge refused the slot's cache."""
+        base = Path(base_ws.workspace_path)
+        _git(["checkout", "-b", "aq/tsk-1"], base)
+        _git(["rm", "-q", ".gitignore"], base)
+        _git(["commit", "-m", "pre-gitignore base"], base)
+        _git(["checkout", "-b", "parent"], base)
+        (base / "node_modules").mkdir()
+        (base / "node_modules" / "x").write_text("vendored\n")
+        _git(["add", "-f", "node_modules/x"], base)
+        _git(["commit", "-m", "pre-gitignore vendor"], base)
+        parent = _git(["rev-parse", "HEAD"], base)
+        _git(["push", "-q", "origin", "aq/tsk-1", "parent"], base)
+        _git(["checkout", "main"], base)
+        slot = await mgr.create_slot(base_ws, kind, 0)
+        path = Path(slot.workspace_path)
+        (path / "node_modules").mkdir()
+        (path / "node_modules" / "x").write_text("cache\n")
+
+        await mgr.reset_slot_for_task(
+            slot, FakeTask(), target_branch="aq/tsk-1", base_branch=parent, preserve_branch=True,
+        )
+
+        assert _git(["merge-base", "--is-ancestor", parent, "HEAD"], path) == ""
+        assert (path / "node_modules" / "x").read_text() == "vendored\n"
+        assert _git(["status", "--porcelain"], path) == ""
+
+    async def test_reset_keeps_cache_the_new_branch_still_ignores(self, mgr, base_ws, kind):
+        slot = await mgr.create_slot(base_ws, kind, 0)
+        path = Path(slot.workspace_path)
+        (path / "node_modules").mkdir()
+        (path / "node_modules" / "x").write_text("cache\n")
+
+        assert await mgr.reset_slot_for_task(slot, FakeTask()) == "aq/tsk-1"
+
+        assert (path / "node_modules" / "x").read_text() == "cache\n"
+        assert mgr.read_sentinel(path).task_id == "tsk-1"
+
     @pytest.mark.parametrize("delete_predecessor_branch", [False, True])
     async def test_reuses_published_slot_detached_at_default_tip(
         self, mgr, base_ws, kind, delete_predecessor_branch,
@@ -2381,6 +2421,39 @@ class TestFinishedTaskSentinel:
         assert (sentinel.workspace_id, sentinel.project_id) == (slot.id, "p1")
         # The incident: the branch goes away and main moves on.  A released
         # slot prepares without consulting the predecessor at all.
+        _git(["push", "origin", ":aq/tsk-prev"], cwd=path)
+        _git(["commit", "--allow-empty", "-m", "later"], cwd=base_repo)
+        _git(["push", "origin", "main"], cwd=base_repo)
+        _git(["fetch", "--prune", "origin"], cwd=path)
+        _git(["branch", "-D", "aq/tsk-prev"], cwd=path)
+        assert await mgr.reset_slot_for_task(slot, FakeTask(id="tsk-next")) == "aq/tsk-next"
+
+    async def test_detach_cleans_output_only_the_task_branch_ignored(
+        self, mgr, base_ws, kind, base_repo
+    ):
+        """grand-forge-35: a branch that ignores its build output detaches onto
+        a default tip that does not.  The output turned untracked, the dirty
+        slot kept its sentinel, and once main moved on the next preparation
+        refused it as disagreeing with that sentinel (prime-nexus-13)."""
+        slot = await mgr.create_slot(base_ws, kind, 0)
+        await mgr.reset_slot_for_task(slot, FakeTask(id="tsk-prev"))
+        path = Path(slot.workspace_path)
+        (path / ".gitignore").write_text("node_modules/\nout/\n")
+        _git(["add", ".gitignore"], cwd=path)
+        _git(["commit", "-m", "ignore build output"], cwd=path)
+        _git(["push", "origin", "aq/tsk-prev"], cwd=path)
+        (path / "out").mkdir()
+        (path / "out" / "frame.png").write_bytes(b"\x89PNG")
+        (path / "node_modules").mkdir()
+        (path / "node_modules" / "dep.js").write_text("cache\n")
+
+        await mgr.restore_slot_after_task(slot, task_id="tsk-prev")
+
+        assert _git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=path) == "HEAD"
+        assert not (path / "out").exists()
+        # Never ``-x``: a cache the default branch ignores survives the reuse.
+        assert (path / "node_modules" / "dep.js").exists()
+        assert await mgr.release_task_sentinel(slot, "tsk-prev") is True
         _git(["push", "origin", ":aq/tsk-prev"], cwd=path)
         _git(["commit", "--allow-empty", "-m", "later"], cwd=base_repo)
         _git(["push", "origin", "main"], cwd=base_repo)

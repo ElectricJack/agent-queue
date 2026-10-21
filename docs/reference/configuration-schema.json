@@ -3607,6 +3607,7 @@
         "projects": {},
         "resume_cost_minutes": 10.0,
         "resume_launch_attempts": 2,
+        "resume_stall_seconds": 300,
         "scheduler_waits_enabled": true,
         "transition_budget_seconds": 120,
         "v1_bodies": "refuse",
@@ -3810,6 +3811,13 @@
                   "null"
                 ]
               },
+              "resume_stall_seconds": {
+                "default": null,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
               "scheduler_waits_enabled": {
                 "default": null,
                 "type": [
@@ -3836,6 +3844,10 @@
         },
         "resume_launch_attempts": {
           "default": 2,
+          "type": "integer"
+        },
+        "resume_stall_seconds": {
+          "default": 300,
           "type": "integer"
         },
         "scheduler_waits_enabled": {

@@ -754,6 +754,17 @@ async def test_release_requires_flag_and_exact_hold(env):
                                    expected_hold_at=held["decided_at"])
 
 
+async def test_hold_result_returns_decided_at_for_operator_release(env):
+    current = await incident(env)
+    held = await decide(env, current, "hold")
+    stored = await env.db.get_task_meta("t", "supervisor_recovery_incident")
+    assert held["decided_at"] == stored["decided_at"], held
+    released = await decide(env, current, "release", operator_release=True,
+                            expected_hold_at=held["decided_at"])
+    assert "error" not in released, released
+    after = await env.db.get_task_meta("t", "supervisor_recovery_incident")
+    assert released["decided_at"] == after["decided_at"] > held["decided_at"]
+
 async def bind_train_repair(env):
     async with env.db.immediate() as conn:
         await conn.execute(insert(integration_repair_operations).values(

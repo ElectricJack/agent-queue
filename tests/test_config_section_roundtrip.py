@@ -151,11 +151,13 @@ def test_wait_policy_section_reads_every_scalar_field(tmp_path):
 def test_wait_policy_nested_dataclass_round_trip(tmp_path):
     path = tmp_path / "config.yaml"
     values = dataclasses.asdict(WaitPolicyConfig())
+    values["resume_stall_seconds"] = 600
     values["kinds"]["task"]["expected_duration_seconds"] = 4500
     values["projects"] = {
         "p": {
             "in_place_ceiling_seconds": 3600,
             "resume_cost_minutes": 40,
+            "resume_stall_seconds": 120,
             "hibernate_margin": 3.0,
             "v2_enabled": True,
             "hibernation_enabled": False,
@@ -169,6 +171,7 @@ def test_wait_policy_nested_dataclass_round_trip(tmp_path):
         "wait_policy": values,
     }))
     loaded = load_config(str(path)).wait_policy
+    assert loaded.resume_stall_seconds == 600
     assert dataclasses.asdict(loaded)["kinds"] == values["kinds"]
     assert loaded.projects["p"].kinds["task"].expected_duration_seconds is None
     expected = values["projects"]["p"]
