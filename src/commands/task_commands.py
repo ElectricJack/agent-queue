@@ -64,6 +64,8 @@ from src.state_machine import (
     validate_waits_for,
 )
 from src.task_graph.activity import attach_activity, load_activity, task_activity
+from src.task_graph.ingestion import merge_ingestion
+from src.task_graph.readiness import load_readiness
 from src.task_names import (
     MAX_NAMING_DEPTH,
     MAX_STRUCTURAL_DEPTH,
@@ -812,15 +814,10 @@ class TaskCommandsMixin:
             }
             if include_project:
                 d["project_id"] = t.project_id
-            return {**d, **activity.get(t.id, {}), **readiness.get(t.id, {}),
-                    **ingestion.get(t.id, {})}
-
-        from src.task_graph.readiness import load_readiness
+            return {**d, **activity.get(t.id, {}), **readiness.get(t.id, {})}
 
         readiness = await load_readiness(self.db, [self._task_to_dict(t) for t in tasks])
-        from src.task_graph.ingestion import load_ingestion
-
-        ingestion = await load_ingestion(self.db, [self._task_to_dict(t) for t in tasks])
+        await merge_ingestion(self.db, [self._task_to_dict(t) for t in tasks], readiness)
         activity = await load_activity(self.db, [t.id for t in tasks])
         by_project: dict[str, list[dict]] = {}
         for t in tasks:

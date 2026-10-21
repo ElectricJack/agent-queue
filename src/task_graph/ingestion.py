@@ -16,3 +16,9 @@ async def attach_ingestion(db, rows: list[dict]) -> None:
     fields = await load_ingestion(db, rows)
     for row in rows:
         row.update(fields.get(row["id"], {}))
+
+
+async def merge_ingestion(db, rows: list[dict], fields_by_id: dict[str, dict]) -> None:
+    """Fold held-batch membership into an existing per-task field map."""
+    for tid, fields in (await load_ingestion(db, rows)).items():
+        fields_by_id.setdefault(tid, {}).update(fields)
