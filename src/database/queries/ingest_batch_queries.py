@@ -317,18 +317,32 @@ async def batch_of_task(conn, task_id: str) -> dict[str, Any] | None:
 
 async def task_batch_summary(conn, task_id: str) -> dict[str, Any] | None:
     """Read-only task detail projection, retaining membership after release."""
-    row = (await conn.execute(
-        select(ingest_batches, task_proposals.c.source)
+    return (await task_batch_summaries(conn, [task_id])).get(task_id)
+
+
+async def task_batch_summaries(conn, task_ids: Iterable[str]) -> dict[str, dict[str, Any]]:
+    """Canonical membership for visible tasks, independent of lifecycle status.
+
+    A single batched read retains released membership, preferring a current
+    hold over historical batches just as the task detail projection does.
+    """
+    ids = set(task_ids)
+    if not ids:
+        return {}
+    rows = (await conn.execute(
+        select(ingest_batches, task_proposals.c.source, ingest_batch_members.c.task_id)
         .join(ingest_batch_members,
               ingest_batch_members.c.batch_id == ingest_batches.c.batch_id)
         .join(task_proposals, task_proposals.c.id == ingest_batches.c.batch_id)
-        .where(ingest_batch_members.c.task_id == task_id,
+        .where(ingest_batch_members.c.task_id.in_(ids),
                ingest_batch_members.c.state == "active")
         .order_by(ingest_batches.c.state.in_(HELD_STATES).desc(),
                   ingest_batches.c.created_at.desc(), ingest_batches.c.batch_id)
-        .limit(1)
-    )).mappings().one_or_none()
-    return batch_summary(row) if row is not None else None
+    )).mappings()
+    summaries = {}
+    for row in rows:
+        summaries.setdefault(row["task_id"], batch_summary(row))
+    return summaries
 
 
 def batch_summary(batch: Mapping[str, Any]) -> dict[str, Any]:

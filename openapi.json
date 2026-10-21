@@ -41771,6 +41771,18 @@
               }
             ]
           },
+          "delivery_condition": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delivery Condition"
+          },
           "route_source": {
             "anyOf": [
               {
@@ -44275,6 +44287,16 @@
               }
             ],
             "title": "Parent Task Id"
+          },
+          "held_batch": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/HeldBatchSummary"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "type": "object",
@@ -49764,6 +49786,16 @@
               }
             ],
             "title": "Parent Task Id"
+          },
+          "held_batch": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/HeldBatchSummary"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "x": {
             "type": "number",
@@ -79701,6 +79733,18 @@
               }
             ]
           },
+          "delivery_condition": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delivery Condition"
+          },
           "route_source": {
             "anyOf": [
               {
@@ -81386,6 +81430,18 @@
               }
             ]
           },
+          "delivery_condition": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delivery Condition"
+          },
           "route_source": {
             "anyOf": [
               {
@@ -81943,6 +81999,18 @@
                 "type": "null"
               }
             ]
+          },
+          "delivery_condition": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delivery Condition"
           },
           "route_source": {
             "anyOf": [

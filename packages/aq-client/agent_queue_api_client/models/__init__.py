@@ -626,6 +626,7 @@ from .get_task_response_422 import GetTaskResponse422
 from .get_task_response_child_state_counts_type_0 import GetTaskResponseChildStateCountsType0
 from .get_task_response_children_type_0 import GetTaskResponseChildrenType0
 from .get_task_response_deliverables_item import GetTaskResponseDeliverablesItem
+from .get_task_response_delivery_condition_type_0 import GetTaskResponseDeliveryConditionType0
 from .get_task_response_descendant_state_counts_type_0 import GetTaskResponseDescendantStateCountsType0
 from .get_task_response_display_state_type_0 import GetTaskResponseDisplayStateType0
 from .get_task_response_parent_type_0 import GetTaskResponseParentType0
@@ -1936,6 +1937,7 @@ from .task_detail import TaskDetail
 from .task_detail_child_state_counts_type_0 import TaskDetailChildStateCountsType0
 from .task_detail_children_type_0 import TaskDetailChildrenType0
 from .task_detail_deliverables_item import TaskDetailDeliverablesItem
+from .task_detail_delivery_condition_type_0 import TaskDetailDeliveryConditionType0
 from .task_detail_descendant_state_counts_type_0 import TaskDetailDescendantStateCountsType0
 from .task_detail_display_state_type_0 import TaskDetailDisplayStateType0
 from .task_detail_parent_type_0 import TaskDetailParentType0
@@ -1978,6 +1980,7 @@ from .task_set_response_child_state_counts_type_0 import TaskSetResponseChildSta
 from .task_set_response_children_type_0 import TaskSetResponseChildrenType0
 from .task_set_response_context_item import TaskSetResponseContextItem
 from .task_set_response_deliverables_item import TaskSetResponseDeliverablesItem
+from .task_set_response_delivery_condition_type_0 import TaskSetResponseDeliveryConditionType0
 from .task_set_response_descendant_state_counts_type_0 import TaskSetResponseDescendantStateCountsType0
 from .task_set_response_display_state_type_0 import TaskSetResponseDisplayStateType0
 from .task_set_response_fidelity_type_0 import TaskSetResponseFidelityType0
@@ -1993,6 +1996,7 @@ from .task_show_response_child_state_counts_type_0 import TaskShowResponseChildS
 from .task_show_response_children_type_0 import TaskShowResponseChildrenType0
 from .task_show_response_context_item import TaskShowResponseContextItem
 from .task_show_response_deliverables_item import TaskShowResponseDeliverablesItem
+from .task_show_response_delivery_condition_type_0 import TaskShowResponseDeliveryConditionType0
 from .task_show_response_descendant_state_counts_type_0 import TaskShowResponseDescendantStateCountsType0
 from .task_show_response_display_state_type_0 import TaskShowResponseDisplayStateType0
 from .task_show_response_fidelity_type_0 import TaskShowResponseFidelityType0
@@ -2826,6 +2830,7 @@ __all__ = (
     "GetTaskResponseChildrenType0",
     "GetTaskResponseChildStateCountsType0",
     "GetTaskResponseDeliverablesItem",
+    "GetTaskResponseDeliveryConditionType0",
     "GetTaskResponseDescendantStateCountsType0",
     "GetTaskResponseDisplayStateType0",
     "GetTaskResponseParentType0",
@@ -4128,6 +4133,7 @@ __all__ = (
     "TaskDetailChildrenType0",
     "TaskDetailChildStateCountsType0",
     "TaskDetailDeliverablesItem",
+    "TaskDetailDeliveryConditionType0",
     "TaskDetailDescendantStateCountsType0",
     "TaskDetailDisplayStateType0",
     "TaskDetailParentType0",
@@ -4170,6 +4176,7 @@ __all__ = (
     "TaskSetResponseChildStateCountsType0",
     "TaskSetResponseContextItem",
     "TaskSetResponseDeliverablesItem",
+    "TaskSetResponseDeliveryConditionType0",
     "TaskSetResponseDescendantStateCountsType0",
     "TaskSetResponseDisplayStateType0",
     "TaskSetResponseFidelityType0",
@@ -4185,6 +4192,7 @@ __all__ = (
     "TaskShowResponseChildStateCountsType0",
     "TaskShowResponseContextItem",
     "TaskShowResponseDeliverablesItem",
+    "TaskShowResponseDeliveryConditionType0",
     "TaskShowResponseDescendantStateCountsType0",
     "TaskShowResponseDisplayStateType0",
     "TaskShowResponseFidelityType0",

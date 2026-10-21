@@ -149,8 +149,8 @@ async def test_graph_endpoint_statement_count_does_not_grow_with_tasks(db, clien
     body = r.json()
     assert len(body["tasks"]) == 40 and len(body["edges"]) == 39
     assert body["gates"][0]["task_ids"] == sorted(ids[:20])
-    # project + tasks + edges + gates + waiters + agents
-    assert counter["n"] <= 6, counter["n"]
+    # project + tasks + edges + gates + waiters + agents + batched ingestion membership
+    assert counter["n"] <= 7, counter["n"]
 
 
 async def test_graph_rolls_up_nested_waiting_work(db, client_factory):

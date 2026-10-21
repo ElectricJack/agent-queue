@@ -1,6 +1,6 @@
 /** The status pill model a card and a frame header share (§3.1, §2.4); the
  *  `StatusPill` component paints it. */
-import type { ReviewWait } from "@aq/ts-client";
+import type { HeldBatchSummary, ReviewWait } from "@aq/ts-client";
 import { deliveryCardStatus, deliveryHeadline, describeDelivery, type EpicDelivery } from "../../components/epicDeliveryFormat";
 import { reviewStateLabel } from "./reviewWaitFormat";
 import { STATUS_TREATMENT, treatmentFor, type StatusTreatment } from "./taskStatus";
@@ -10,6 +10,7 @@ import { DISPLAY_LABEL, DISPLAY_STATUS, rolledState, type EpicActivity } from ".
 export interface StatusPillInput {
   /** The stored lifecycle status. */
   status: string;
+  held_batch?: HeldBatchSummary | null;
   isBlocked?: boolean;
   /** An epic's delivery projection, when the daemon sent one. */
   delivery?: EpicDelivery | null;
@@ -36,7 +37,11 @@ export interface StatusPillModel {
  * A container's rolled-up activity replaces a lifecycle that only says "a
  * child is unfinished"; a batch in flight still outranks it.
  */
-export function statusPillFor({ status, isBlocked, delivery = null, reviewBlock = null, subtasks, display_state, display_reason, claim_readiness, child_state_counts }: StatusPillInput & EpicActivity): StatusPillModel {
+export function statusPillFor({ status, held_batch, isBlocked, delivery = null, reviewBlock = null, subtasks, display_state, display_reason, claim_readiness, child_state_counts }: StatusPillInput & EpicActivity): StatusPillModel {
+  if (isIngestHeld(held_batch)) {
+    return { cardStatus: "WAITING", treatment: treatmentFor("WAITING"),
+      text: "Held for fidelity review", title: `Held for fidelity review${held_batch ? ` · batch ${held_batch.batch_id} · revision ${held_batch.structure_revision} · ${held_batch.state}` : ""} · task status ${status}`, working: false };
+  }
   if (status === "READY" && !child_state_counts && claim_readiness && !claim_readiness.claimable) {
     return { cardStatus: "WAITING", treatment: treatmentFor("WAITING", false),
       text: claim_readiness.label, title: `${claim_readiness.reason} · task status READY`, working: false };
@@ -62,6 +67,10 @@ export function statusPillFor({ status, isBlocked, delivery = null, reviewBlock 
   return { cardStatus, treatment, text, title, working };
 }
 
+export function isIngestHeld(batch: HeldBatchSummary | null | undefined): boolean {
+  return !!batch && ["held", "reviewing", "needs_scope"].includes(batch.state);
+}
+
 /** The pill a task card shows, built from the card's own node data. The
  *  canvas reads the same model to count striped cards, so the two can never
  *  disagree about which cards are running. */
@@ -71,6 +80,7 @@ export function pillForCard(data: Pick<TaskNodeData, "task" | "delivery" | "revi
     status: data.task.status, isBlocked: data.task.is_blocked, delivery: data.delivery ?? null,
     display_state: data.task.display_state, display_reason: data.task.display_reason,
     claim_readiness: data.task.claim_readiness, child_state_counts: data.task.child_state_counts,
+    held_batch: data.task.held_batch,
     reviewBlock, subtasks: data.subtasks,
   });
 }
