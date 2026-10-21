@@ -43,7 +43,7 @@ class McpCommandsMixin:
         registry = getattr(self.orchestrator, "mcp_registry", None)
         catalog = getattr(self.orchestrator, "mcp_tool_catalog", None)
         if registry is None:
-            return {"servers": [], "count": 0}
+            return {"success": True, "servers": [], "count": 0}
 
         configs = registry.list_for_scope(project_id)
         servers: list[dict] = []
@@ -57,24 +57,25 @@ class McpCommandsMixin:
                     d["last_error"] = cat.last_error
             servers.append(d)
 
-        return {"servers": servers, "count": len(servers)}
+        return {"success": True, "servers": servers, "count": len(servers)}
 
     async def _cmd_get_mcp_server(self, args: dict) -> dict:
         """Return a single MCP server's full config."""
         name = (args.get("name") or "").strip()
         if not name:
-            return {"error": "name is required"}
+            return {"success": False, "error": "name is required"}
         project_id = (args.get("project_id") or "").strip() or None
         registry = getattr(self.orchestrator, "mcp_registry", None)
         if registry is None:
-            return {"error": "MCP registry not available"}
+            return {"success": False, "error": "MCP registry not available"}
 
         # Lookup respects scope cascade (project first, then system).
         config = registry.get(name, project_id=project_id)
         if config is None:
-            return {"error": f"MCP server '{name}' not found"}
+            return {"success": False, "error": f"MCP server '{name}' not found"}
 
         d = config.to_summary_dict()
+        d["success"] = True
         d["adapter_config"] = config.to_adapter_dict()
         # Surface inline config fields for dashboard editing.
         d["command"] = config.command
@@ -96,7 +97,7 @@ class McpCommandsMixin:
         wanted = args.get("server_names") or []
         catalog = getattr(self.orchestrator, "mcp_tool_catalog", None)
         if catalog is None:
-            return {"servers": {}}
+            return {"success": True, "servers": {}}
 
         entries = catalog.list_for_scope(project_id)
         out: dict[str, dict] = {}
@@ -104,29 +105,29 @@ class McpCommandsMixin:
             if wanted and e.server_name not in wanted:
                 continue
             out[e.server_name] = e.to_dict()
-        return {"servers": out, "count": len(out)}
+        return {"success": True, "servers": out, "count": len(out)}
 
     async def _cmd_probe_mcp_server(self, args: dict) -> dict:
         """Probe a single server and refresh its catalog entry."""
         name = (args.get("name") or "").strip()
         if not name:
-            return {"error": "name is required"}
+            return {"success": False, "error": "name is required"}
         project_id = (args.get("project_id") or "").strip() or None
 
         registry = getattr(self.orchestrator, "mcp_registry", None)
         catalog = getattr(self.orchestrator, "mcp_tool_catalog", None)
         if registry is None or catalog is None:
-            return {"error": "MCP registry/catalog not initialised"}
+            return {"success": False, "error": "MCP registry/catalog not initialised"}
 
         config = registry.get(name, project_id=project_id)
         if config is None:
-            return {"error": f"MCP server '{name}' not found"}
+            return {"success": False, "error": f"MCP server '{name}' not found"}
 
         from src.profiles.mcp_catalog import refresh_one
 
         resolver = getattr(self.orchestrator, "_mcp_builtin_resolver", None)
         entry = await refresh_one(catalog, config, builtin_resolver=resolver)
-        return {"probed": entry.to_dict()}
+        return {"success": True, "probed": entry.to_dict()}
 
     # -----------------------------------------------------------------------
     # Write commands (vault-write — watcher syncs in-memory registry)
@@ -218,7 +219,7 @@ class McpCommandsMixin:
             project_id = self._mcp_project_scope(args)
             config = self._build_mcp_config(args, project_id=project_id)
         except ValueError as exc:
-            return {"error": str(exc)}
+            return {"success": False, "error": str(exc)}
 
         # Refuse to clobber the embedded agent-queue builtin.
         registry = getattr(self.orchestrator, "mcp_registry", None)
@@ -226,6 +227,7 @@ class McpCommandsMixin:
             existing = registry.get(config.name, project_id=project_id)
             if existing is not None and existing.is_builtin:
                 return {
+                    "success": False,
                     "error": (
                         f"Cannot create MCP server '{config.name}' — name is "
                         "reserved by the embedded agent-queue server"
@@ -235,6 +237,7 @@ class McpCommandsMixin:
         target = self._vault_mcp_server_path(config.name, project_id)
         if os.path.isfile(target):
             return {
+                "success": False,
                 "error": (
                     f"MCP server '{config.name}' already exists (scope={project_id or 'system'})"
                 )
@@ -258,6 +261,7 @@ class McpCommandsMixin:
                 logger.debug("Eager probe failed for new MCP server %s", config.name, exc_info=True)
 
         return {
+            "success": True,
             "created": config.name,
             "scope": "project" if project_id else "system",
             "project_id": project_id,
@@ -278,16 +282,17 @@ class McpCommandsMixin:
 
         name = (args.get("name") or "").strip()
         if not name:
-            return {"error": "name is required"}
+            return {"success": False, "error": "name is required"}
         try:
             validate_vault_id(name, kind="name")
             project_id = self._mcp_project_scope(args)
         except ValueError as exc:
-            return {"error": str(exc)}
+            return {"success": False, "error": str(exc)}
 
         target = self._vault_mcp_server_path(name, project_id)
         if not os.path.isfile(target):
             return {
+                "success": False,
                 "error": (
                     f"MCP server '{name}' not found in vault (scope={project_id or 'system'})"
                 )
@@ -296,7 +301,7 @@ class McpCommandsMixin:
         text = Path(target).read_text(encoding="utf-8")
         parsed = parse_server_markdown(text, fallback_name=name, project_id=project_id)
         if not parsed.is_valid or parsed.config is None:
-            return {"error": f"Existing markdown is malformed: {parsed.errors}"}
+            return {"success": False, "error": f"Existing markdown is malformed: {parsed.errors}"}
 
         current = parsed.config
         # Apply patch — only fields explicitly present in args.
@@ -314,7 +319,7 @@ class McpCommandsMixin:
         try:
             new_config = self._build_mcp_config(merged_args, project_id=project_id)
         except ValueError as exc:
-            return {"error": str(exc)}
+            return {"success": False, "error": str(exc)}
 
         Path(target).write_text(render_server_markdown(new_config), encoding="utf-8")
 
@@ -332,6 +337,7 @@ class McpCommandsMixin:
                 logger.debug("Eager probe failed for edited MCP server %s", name, exc_info=True)
 
         return {
+            "success": True,
             "updated": name,
             "scope": "project" if project_id else "system",
             "path": target,
@@ -348,18 +354,18 @@ class McpCommandsMixin:
 
         name = (args.get("name") or "").strip()
         if not name:
-            return {"error": "name is required"}
+            return {"success": False, "error": "name is required"}
         try:
             validate_vault_id(name, kind="name")
             project_id = self._mcp_project_scope(args)
         except ValueError as exc:
-            return {"error": str(exc)}
+            return {"success": False, "error": str(exc)}
 
         registry = getattr(self.orchestrator, "mcp_registry", None)
         if registry is not None:
             existing = registry.get(name, project_id=project_id)
             if existing is not None and existing.is_builtin:
-                return {"error": (f"Cannot delete '{name}' — it's the embedded agent-queue server")}
+                return {"success": False, "error": (f"Cannot delete '{name}' — it's the embedded agent-queue server")}
 
         # Find profiles referencing this name (any scope).  We only
         # Block deletion while any profile still names the server.  Profiles
@@ -378,6 +384,7 @@ class McpCommandsMixin:
             referencing.append(p.id)
         if referencing:
             return {
+                "success": False,
                 "error": (
                     f"Cannot delete MCP server '{name}': still referenced by "
                     f"{len(referencing)} profile(s)"
@@ -387,7 +394,7 @@ class McpCommandsMixin:
 
         target = self._vault_mcp_server_path(name, project_id)
         if not os.path.isfile(target):
-            return {"error": f"MCP server '{name}' not found"}
+            return {"success": False, "error": f"MCP server '{name}' not found"}
 
         os.remove(target)
 
@@ -403,6 +410,7 @@ class McpCommandsMixin:
             catalog.remove(name, project_id=project_id)
 
         return {
+            "success": True,
             "deleted": name,
             "scope": "project" if project_id else "system",
             "path": target,

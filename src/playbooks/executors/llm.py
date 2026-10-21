@@ -12,6 +12,8 @@ from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError
 
 from src.commands.authorization import authorize_command, denial_result
+from src.commands.descriptors import PLAYBOOK_DENIALS
+from src.commands.principal import SERVER_OWNED_ARG_KEYS
 from src.commands.principal import PrincipalKind, check_delegation
 from src.llm.client import LLMToolTurn, LLMToolTurnBoundaryError
 from src.llm.spec import LLMCallSpec
@@ -25,14 +27,18 @@ from src.playbooks.executors.base import (
     StepControl,
     project_step_receipt,
 )
-from src.playbooks.receipts import idempotency_key
+from src.playbooks.expressions import ValueResolutionError
+from src.playbooks.receipts import idempotency_key, sensitive_handle
+from src.playbooks.invocation import _invocation_context
+from src.playbooks.private_values import PrivateValueError
 from src.profiles.capabilities import capability_policy_for
 from src.routing.filing import routing_choice_refusal
 
 
 def _attempt_key(ctx: StepContext) -> str:
     return idempotency_key(
-        ctx.run_id, ctx.step_id, -1 if ctx.iteration_index is None else ctx.iteration_index, ctx.attempt
+        ctx.run_id, ctx.step_id, -1 if ctx.iteration_index is None else ctx.iteration_index, ctx.attempt,
+        ctx.iteration_path,
     )
 
 
@@ -114,7 +120,7 @@ def _result(
     diagnostics: tuple[str, ...] = (),
     control: StepControl = StepControl.ADVANCE,
 ) -> ExecutorResult:
-    prompt_digest = hashlib.sha256(_prompt(step, ctx).encode()).hexdigest()
+    prompt_digest = sensitive_handle(ctx.run_id, "prompt", _prompt(step, ctx))
     _ignored_inputs, receipt_result = project_step_receipt(
         {}, value or {}, run_id=ctx.run_id
     )
@@ -122,6 +128,7 @@ def _result(
         control=control,
         outcome=outcome,
         value=value if step.save_result_as else None,
+        private_fields=tuple(value or {}),
         usage=usage,
         llm_calls=llm_calls,
         effective_principal=ctx.principal,
@@ -137,16 +144,20 @@ def _prompt(step: LlmStep, ctx: StepContext) -> str:
     """Render the prompt, inputs and the exact output contract the model must meet."""
     from src.playbooks.expressions import resolve_value
 
-    prompt = str(resolve_value(step.prompt, ctx.scope))
+    if "prompt" in ctx.rendered_prompts:
+        return ctx.rendered_prompts["prompt"]
+    prompt = str(resolve_value(step.prompt, ctx.scope, ctx.evaluation_budget))
     if ctx.inputs:
         prompt += f"\n\nInputs:\n{json.dumps(dict(ctx.inputs), sort_keys=True, default=str)}"
     # The validator enforces constraints such as maxLength even when the
     # authored prompt does not mention them. Give the model the same contract
     # on its first call, including steps with only one allowed call.
-    return (
+    rendered = (
         f"{prompt}\n\nReturn one JSON object satisfying this output JSON Schema:\n"
         f"{json.dumps(step.output_schema, sort_keys=True)}"
     )
+    ctx.rendered_prompts["prompt"] = rendered
+    return rendered
 
 
 def _resume_state(
@@ -160,6 +171,7 @@ def _resume_state(
             for turn in ctx.llm_turns
             if turn.get("step_id") == ctx.step_id
             and int(turn.get("iteration", -1)) == iteration
+            and turn.get("iteration_path", "") == ctx.iteration_path
             and int(turn.get("attempt", 1)) == ctx.attempt
         ),
         key=lambda turn: int(turn["turn_index"]),
@@ -189,6 +201,8 @@ def _published_tools(step: LlmStep, ctx: StepContext) -> list[dict[str, Any]]:
     # Namespace separation is an authorization property, not a reason to hide
     # contracted plugin tools from the provider catalogue.
     for name in (*step.tool_use.aq_commands, *step.tool_use.plugin_tools):
+        if name in PLAYBOOK_DENIALS:
+            continue
         registration = ctx.services.contracts.get(name)
         resolver = ctx.services.resolver
         if registration is None or resolver is None:
@@ -376,6 +390,13 @@ class LiveLlmExecutor:
             )
         ctx = replace(ctx, principal=resolution.principal)
 
+        try:
+            if ctx.services.private_values is None:
+                raise PrivateValueError("private_storage_unavailable")
+            await ctx.services.private_values.check_ready()
+        except PrivateValueError as exc:
+            return _result(step, ctx, outcome="unavailable", diagnostics=(exc.code,))
+
         if step.transport == "cli":
             return await _execute_cli(step, ctx, resolution)
 
@@ -438,6 +459,9 @@ class LiveLlmExecutor:
 
                 async def dispatch_tool(name: str, args: dict[str, Any]) -> Any:
                     nonlocal denied
+                    if name in PLAYBOOK_DENIALS or set(args).intersection(SERVER_OWNED_ARG_KEYS):
+                        denied = True
+                        return {"success": False, "error_code": "playbook_command_denied"}
                     resolver = ctx.services.resolver
                     if resolver is None or not authorize_command(
                         name,
@@ -458,7 +482,26 @@ class LiveLlmExecutor:
                         return refusal
                     try:
                         validated = registration.contract.execution.args_model.model_validate(args)
-                        response = await registration.invoke(validated, ctx.principal)
+                        with _invocation_context(ctx):
+                            response = await registration.invoke(validated, ctx.principal)
+                        if registration.contract.execution.result_mode == "json_object":
+                            from src.playbooks.definition import CommandStep
+                            from src.playbooks.executors.command import _consume
+
+                            consumed = _consume(
+                                response, registration,
+                                CommandStep(
+                                    rule=step.rule, title=step.title, source=step.source,
+                                    command=name, save_result_as="tool_result",
+                                    transitions={"runtime_error": "done"},
+                                ),
+                                ctx, resolved_inputs=args, key="llm_tool",
+                            )
+                            if consumed.outcome == "unauthorized":
+                                denied = True
+                            if consumed.value is None:
+                                return {"success": False, "error_code": consumed.outcome}
+                            return consumed.value
                         return response.value.model_dump()
                     except Exception as exc:  # noqa: BLE001 - tool loop receives a safe error result
                         return {"success": False, "error": type(exc).__name__}
@@ -588,6 +631,11 @@ class LiveLlmExecutor:
                     llm_calls=calls,
                     value=value,
                 )
+        except ValueResolutionError as exc:
+            return ExecutorResult(
+                control=StepControl.ADVANCE, outcome="input_resolution_failed",
+                diagnostics=(exc.reason,),
+            )
         except LLMToolTurnBoundaryError:
             raise
         except TimeoutError:

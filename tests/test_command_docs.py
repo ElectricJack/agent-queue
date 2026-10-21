@@ -10,15 +10,19 @@ from __future__ import annotations
 
 import importlib.util
 import shutil
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
-from src.commands.contracts import CONTRACTS
+from src.commands.contracts.registry import ContractRegistry
 
 REPO = Path(__file__).resolve().parents[1]
 SCRIPT = REPO / "scripts" / "gen-command-docs.py"
 DOCS = REPO / "docs" / "reference" / "playbook-commands"
+# Match the generator's shipped inventory independently of live handler state
+# installed by other tests sharing this process.
+CONTRACTS = ContractRegistry(autoload=True)
 
 
 @pytest.fixture(scope="module")
@@ -62,6 +66,26 @@ def test_the_index_lists_every_command_exactly_once(generator):
     assert "commands are registered." not in index
     for name in sorted(CONTRACTS.names()):
         assert index.count(f"[`{name}`]({name}.md)") == 1, f"{name} is not indexed exactly once"
+
+
+def test_generation_uses_shipped_inventory_with_a_live_plugin_registry(generator, monkeypatch):
+    import src.commands.contracts as contracts_module
+
+    snapshot = CONTRACTS.descriptors
+    alias_name = "aq-files.count_project_memory_files"
+    alias = replace(
+        snapshot.commands["count_project_memory_files"],
+        name=alias_name,
+        origin="plugin",
+        plugin="aq-files",
+    )
+    live_snapshot = replace(snapshot, commands=dict(snapshot.commands) | {alias_name: alias})
+    live = ContractRegistry(autoload=True)
+    live.configure_snapshot_provider(lambda: live_snapshot)
+    monkeypatch.setattr(contracts_module, "CONTRACTS", live)
+    assert alias_name in live.names()
+
+    assert generator.check(DOCS) == []
 
 
 def test_every_command_presentation_has_a_summary():

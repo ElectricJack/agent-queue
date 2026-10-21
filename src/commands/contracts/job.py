@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import Field
 
@@ -56,6 +56,7 @@ class JobResultArgs(JobGetArgs):
 
 
 class JobLogsArgs(JobGetArgs):
+    stream: Literal["stdout", "stderr"] = "stdout"
     after: int = Field(default=0, ge=0)
     limit: int = Field(default=65536, ge=1, le=1048576)
 

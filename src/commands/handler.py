@@ -40,6 +40,7 @@ from src.logging_config import CorrelationContext
 
 # Mixin imports — each provides one domain of _cmd_* methods
 from src.commands.job_commands import JobCommandsMixin
+from src.commands.playbook_script_commands import PlaybookScriptCommandsMixin
 from src.commands.object_loop_commands import ObjectLoopCommandsMixin
 from src.commands.claim_commands import ClaimCommandsMixin
 from src.commands.question_commands import QuestionCommandsMixin
@@ -92,6 +93,8 @@ from src.commands.message_wait_commands import MessageWaitCommandsMixin
 from src.commands.session_commands import SessionCommandsMixin
 from src.commands.surface_commands import SurfaceCommandsMixin
 from src.commands.ops_commands import OpsCommandsMixin
+from src.commands.doctor_observation_commands import DoctorObservationCommandsMixin
+from src.commands.playbook_state_commands import STATE_SCHEMAS, PlaybookStateCommandsMixin
 from src.commands.worktree_commands import WorktreeCommandsMixin
 from src.commands.git_commands import GitCommandsMixin
 from src.commands.ci_commands import CiCommandsMixin
@@ -394,6 +397,9 @@ class CommandHandler(
     SessionCommandsMixin,
     SurfaceCommandsMixin,
     OpsCommandsMixin,
+    DoctorObservationCommandsMixin,
+    PlaybookStateCommandsMixin,
+    PlaybookScriptCommandsMixin,
     WorktreeCommandsMixin,
     # -- dv2 phase 2 mixins -----------------------------------------------
     GitCommandsMixin,
@@ -666,16 +672,22 @@ class CommandHandler(
         and any registered workspace path.
         """
         real = os.path.realpath(path)
+        principal = current_principal()
+        scoped_project = principal.project_id if principal and principal.enforced else None
         from src.task_templates import editable_task_template_path
 
         template_path = editable_task_template_path(path, self.config.data_dir)
-        if template_path is not None:
+        if template_path is not None and scoped_project is None:
             return template_path
         workspace_real = os.path.realpath(self.config.workspace_dir)
-        if real.startswith(workspace_real + os.sep) or real == workspace_real:
+        if scoped_project is None and (
+            real.startswith(workspace_real + os.sep) or real == workspace_real
+        ):
             return real
         repos = await self.db.list_repos()
         for repo in repos:
+            if scoped_project is not None and repo.project_id != scoped_project:
+                continue
             if repo.source_path:
                 repo_real = os.path.realpath(repo.source_path)
                 if real.startswith(repo_real + os.sep) or real == repo_real:
@@ -683,6 +695,8 @@ class CommandHandler(
         # Also allow paths within any registered workspace
         workspaces = await self.db.list_workspaces()
         for ws in workspaces:
+            if scoped_project is not None and ws.project_id != scoped_project:
+                continue
             ws_real = os.path.realpath(ws.workspace_path)
             if real.startswith(ws_real + os.sep) or real == ws_real:
                 return real
@@ -758,10 +772,26 @@ class CommandHandler(
         return False
 
     def contracted_commands(self) -> frozenset[str]:
-        """Commands backed by a typed Playbook V2 contract (read-only)."""
+        """Commands backed by typed or generated Playbook V2 contracts."""
         from src.commands.contracts import CONTRACTS
 
         return CONTRACTS.names()
+
+    @property
+    def command_descriptors(self):
+        """Compose only after construction, refreshing on plugin generation changes."""
+        from src.commands.command_inventory import compose_snapshot
+        from src.commands.contracts import CONTRACTS
+        from src.plugins.registry import PluginRegistry
+
+        typed = CONTRACTS.typed_contracts()
+        plugins = getattr(self.orchestrator, "plugin_registry", None)
+        generation = plugins.command_generation if isinstance(plugins, PluginRegistry) else 0
+        key = (id(plugins), generation)
+        if getattr(self, "_descriptor_cache_key", None) != key:
+            self._descriptor_snapshot = compose_snapshot(type(self), typed, plugin_registry=plugins)
+            self._descriptor_cache_key = key
+        return self._descriptor_snapshot
 
     # -- Execution principal seam (Playbook V2 Package 0 §3.5) -------------
     #
@@ -949,9 +979,15 @@ class CommandHandler(
             # Belt-and-braces defense — /api/execute already strips any
             # client-supplied ``_scope`` before forwarding the trusted one.
             scope = None
+            inherited_principal = current_principal()
             if isinstance(args, dict) and any(k in args for k in SERVER_OWNED_ARG_KEYS):
+                if inherited_principal is not None and inherited_principal.kind.value == "playbook":
+                    return {"success": False, "error_code": "server_owned_argument",
+                            "error": "Server-owned arguments are forbidden in playbooks"}
                 args = dict(args)
-                scope = args.pop("_scope", None)
+                supplied_scope = args.pop("_scope", None)
+                if inherited_principal is None:
+                    scope = supplied_scope
                 # Belt-and-braces defense, mirroring the ``_scope`` comment
                 # above: /api/execute and the generated typed routes already
                 # strip every server-owned key before forwarding the trusted
@@ -966,7 +1002,6 @@ class CommandHandler(
             # re-enter ``execute`` outright), and an unconditional clear in
             # the ``finally`` would strip the outer command's identity the
             # moment the inner one returned.
-            _scope_token = _current_scope_var.set(scope)
             # The principal follows the same save/restore discipline, and for
             # the same reason: ``execute`` is re-entrant.  An already-bound
             # principal (the playbook runner, an orchestrator service call)
@@ -974,6 +1009,11 @@ class CommandHandler(
             principal = current_principal()
             if principal is None:
                 principal = await self._principal_from_scope(scope)
+            from src.commands.resource_authorization import principal_scope
+
+            if inherited_principal is not None:
+                scope = principal_scope(principal)
+            _scope_token = _current_scope_var.set(scope)
             _principal_token = _principal_var.set(principal)
             operator_session, _operator_token, operator_refusal = bind_operator_dispatch(
                 principal, name, args)
@@ -1008,6 +1048,10 @@ class CommandHandler(
                 }
             if name.startswith("operator_"):
                 log_args = {"command": args.get("command"), "arguments": "<operator inputs>"}
+            private_call = (principal.kind.value == "playbook" or name in STATE_SCHEMAS
+                            or name in {"job_logs", "playbook_script_run"})
+            if private_call:
+                log_args = {key: "(redacted)" for key in args}
             if mutating:
                 logger.info("cmd %s args=%s", name, self._preview(log_args))
             else:
@@ -1018,6 +1062,8 @@ class CommandHandler(
             # never appear on the bus regardless.
             _emit_started_at = request_started
             _emit_args_snapshot = dict(args) if isinstance(args, dict) else {}
+            if private_call:
+                _emit_args_snapshot = dict(log_args)
             if name in {"bind_project_repository", "create_project", "onboard_project"}:
                 _emit_args_snapshot = dict(log_args)
             _emit_ok: bool = False
@@ -1106,6 +1152,18 @@ class CommandHandler(
                 # ahead of every handler, so the answer is the same for every
                 # principal and nothing is written.  Project commands refuse a
                 # project default the same way (§8).
+                from src.commands.resource_authorization import authorize_resources
+
+                descriptor = self.command_descriptors.commands.get(name)
+                refusal = await authorize_resources(
+                    name, args, principal, db=self.db,
+                    generated=descriptor is not None and descriptor.result_mode == "json_object",
+                    descriptor=descriptor,
+                )
+                if refusal is not None:
+                    _emit_ok, _emit_error = _classify_result(refusal)
+                    return refusal
+
                 if name in GUARDED_COMMANDS:
                     refusal = routing_choice_refusal(name, args, principal)
                     if refusal is not None:
@@ -1127,7 +1185,8 @@ class CommandHandler(
                 if handler:
                     result = await handler(args)
                     if mutating:
-                        logger.info("cmd %s result=%s", name, self._preview(result))
+                        logger.info("cmd %s result=%s", name,
+                                    "(protected)" if private_call else self._preview(result))
                     _emit_ok, _emit_error = _classify_result(result)
                     return result
 
@@ -1148,20 +1207,20 @@ class CommandHandler(
                                     "cmd %s (plugin=%s) result=%s",
                                     name,
                                     plugin_name,
-                                    self._preview(result),
+                                    "(protected)" if private_call else self._preview(result),
                                 )
                             _emit_ok, _emit_error = _classify_result(result)
                             return result
                         except Exception as e:
                             await self.orchestrator.plugin_registry.record_failure(
-                                plugin_name, str(e)
+                                plugin_name, type(e).__name__ if private_call else str(e)
                             )
                             logger.error(
                                 "Plugin command %s failed: args=%s err=%s",
                                 name,
                                 self._preview(log_args),
-                                e,
-                                exc_info=True,
+                                type(e).__name__ if private_call else e,
+                                exc_info=not private_call,
                             )
                             _emit_ok = False
                             from src.git.github_contracts import GitHubAccessError
@@ -1172,25 +1231,30 @@ class CommandHandler(
                                 str(e) if isinstance(e, GitHubAccessError) else e.__class__.__name__
                             )
                             _emit_error = f"Plugin command failed: {detail}"
-                            return {"error": f"Plugin command failed: {e}"}
+                            return {"success": False, "error_code": "command_runtime_error",
+                                    "error": (f"Plugin command failed: {e}"
+                                              if not principal.enforced
+                                              else "Plugin command failed")}
 
                 logger.warning(
                     "Unknown command requested: %s args=%s", name, self._preview(log_args)
                 )
                 _emit_ok = False
                 _emit_error = f"Unknown command: {name}"
-                return {"error": f"Unknown command: {name}"}
+                return {"success": False, "error_code": "unknown_command",
+                        "error": f"Unknown command: {name}"}
             except Exception as e:
                 logger.error(
                     "Command %s failed: args=%s err=%s",
                     name,
                     self._preview(log_args),
-                    e,
-                    exc_info=True,
+                    type(e).__name__ if private_call else e,
+                    exc_info=not private_call,
                 )
                 _emit_ok = False
-                _emit_error = f"{e.__class__.__name__}: {e}"[:200]
-                return {"error": str(e)}
+                _emit_error = type(e).__name__ if private_call else f"{type(e).__name__}: {e}"[:200]
+                return {"success": False, "error_code": "command_runtime_error",
+                        "error": str(e) if not principal.enforced else "Command execution failed"}
             finally:
                 dispatch_ms = (time.monotonic() - request_started) * 1000
                 # Ensure scope does not leak across commands.
@@ -1224,7 +1288,8 @@ class CommandHandler(
                                 if isinstance(scope, dict)
                                 else None,
                                 "args_summary": _summarize_args(name, _emit_args_snapshot),
-                                "error": _emit_error,
+                                "error": "command_failed" if private_call and _emit_error
+                                else _emit_error,
                             }
                             await bus.emit("command.invoked", payload)
                 except Exception:  # pragma: no cover -- defensive

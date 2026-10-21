@@ -393,4 +393,3 @@ class TestBoundedClosePublication:
         (job,) = execution._DETACHED_CLOSE_PUBLICATIONS
         release.set()
         assert (await job) == {"outcome": "opened"}
-
