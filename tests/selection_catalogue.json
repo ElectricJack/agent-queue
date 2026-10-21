@@ -6095,7 +6095,7 @@
         "doctor"
       ],
       "default_arm": true,
-      "digest": "sha256:13bf369a07bb271d211c19c3b3d510fd15abd17aa3f1ad6b71bb969774ff33e1",
+      "digest": "sha256:b39bc01e12e916e0ba0da93d42696739d2c9ab517fe67fc97db8fe50d6876c91",
       "imports": [
         "src.cli.app",
         "src.commands.ops_commands",
@@ -6135,6 +6135,7 @@
         "src.doctor.workspace_checks",
         "src.event_bus",
         "src.event_schemas",
+        "src.playbooks.private_values",
         "src.plugins.base",
         "src.sessions",
         "src.sessions.harness_manifest",
@@ -7656,16 +7657,18 @@
         "doctor"
       ],
       "default_arm": true,
-      "digest": "sha256:8927adb164d556a48487eb7fe92fb94ff44c7151d3c71df8b9d3a27f53fb51f1",
+      "digest": "sha256:0540e536b07d1d4a8849d1e154181120eb27c4dd64aaad519948989229c7921d",
       "imports": [
         "src.api",
         "src.api.dependencies",
         "src.api.health",
         "src.api.health_monitor",
+        "src.config",
         "src.discord.adapter",
         "src.main",
         "src.messaging.base",
-        "src.messaging.null_adapter"
+        "src.messaging.null_adapter",
+        "src.playbooks.private_values"
       ],
       "markers": [
         "asyncio",
@@ -8173,7 +8176,7 @@
         "install"
       ],
       "default_arm": true,
-      "digest": "sha256:ca96750e5b272c6bc44155eac228ae82681cfa6706ff8fa6bd43eb5ffc09ab44",
+      "digest": "sha256:eca49a7a420ef0a8ebaf92b15e80966fcdf0f9016ed689c1d0eef1ec0cbdb71b",
       "imports": [
         "src.config",
         "src.install",
@@ -8187,7 +8190,9 @@
         "src.install.steps",
         "src.install.wizard"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "``aq install`` — the onboarding steps that finish the newcomer's path."
     },
     "tests/test_install_platform.py": {
