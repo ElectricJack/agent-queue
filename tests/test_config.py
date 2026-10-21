@@ -77,6 +77,48 @@ def test_wait_policy_project_overrides_inherit_each_field_and_isolate_canary(tmp
     assert WaitPolicyConfig().kinds["job"].escalate_after_seconds == 7200
 
 
+def test_wait_policy_config_and_runtime_share_models_and_preserve_metrics(tmp_path):
+    from src.config import WaitKindPolicy, WaitProjectOverrides
+    from src.config_wait_policy import (
+        WaitKindPolicy as RuntimeKindPolicy,
+        WaitPolicyConfig as RuntimePolicyConfig,
+        WaitProjectOverrides as RuntimeProjectOverrides,
+        parse_wait_policy,
+    )
+
+    assert WaitPolicyConfig is RuntimePolicyConfig
+    assert WaitKindPolicy is RuntimeKindPolicy
+    assert WaitProjectOverrides is RuntimeProjectOverrides
+    values = {
+        "metrics": {
+            "pre_rollout_turn_rate": 2.5,
+            "pre_rollout_tokens_per_turn": 100,
+            "cohort": "before-rollout",
+            "window": "2026-10-01/2026-10-07",
+        },
+        "projects": {"canary": {
+            "v2_enabled": True,
+            "kinds": {"job": {"escalate_after_seconds": 9000}},
+        }},
+    }
+    path = tmp_path / "config.yaml"
+    path.write_text(yaml.safe_dump({
+        "messaging_platform": "none",
+        "database": {"url": "postgresql://u:p@localhost/aq_cfg_test"},
+        "wait_policy": values,
+    }))
+    loaded = load_config(str(path)).wait_policy
+    assert loaded == parse_wait_policy(values)
+    resolved = loaded.resolve_project("canary")
+    assert resolved.v2_enabled
+    assert resolved.escalation_seconds("job") == 9000
+    assert resolved.escalation_seconds("human") is None
+    assert resolved.metrics == loaded.metrics
+    resolved.metrics.cohort = "changed"
+    assert loaded.metrics.cohort == "before-rollout"
+    assert loaded.metrics.pre_rollout_turn_rate == 2.5
+
+
 @pytest.fixture
 def config_dir(tmp_path):
     return tmp_path

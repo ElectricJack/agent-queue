@@ -3605,7 +3605,7 @@
         },
         "min_samples": 5,
         "projects": {},
-        "resume_cost_minutes": 10,
+        "resume_cost_minutes": 10.0,
         "resume_launch_attempts": 2,
         "scheduler_waits_enabled": false,
         "transition_budget_seconds": 120,
@@ -3831,7 +3831,7 @@
           "type": "object"
         },
         "resume_cost_minutes": {
-          "default": 10,
+          "default": 10.0,
           "type": "number"
         },
         "resume_launch_attempts": {

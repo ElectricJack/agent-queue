@@ -1024,6 +1024,11 @@ budget must be between 1 and 86400 seconds. Counts must be positive
 integers, resume cost must be finite and positive, and the margin must be
 finite and at least 1.0. Expected durations must be nonnegative integers.
 
+`metrics` retains the optional historical cohort used for wait cost reporting:
+`pre_rollout_turn_rate` and `pre_rollout_tokens_per_turn` are finite nonnegative
+numbers, while `cohort` and `window` are non-empty strings when supplied.
+Project resolution preserves this global metrics configuration.
+
 ```yaml
 wait_policy:
   kinds:

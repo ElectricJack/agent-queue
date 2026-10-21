@@ -30,6 +30,12 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import yaml
 
+from src.config_wait_policy import (
+    WaitKindPolicy as WaitKindPolicy,
+    WaitPolicyConfig as WaitPolicyConfig,
+    WaitProjectOverrides as WaitProjectOverrides,
+    parse_wait_policy,
+)
 from src.docs_urls import DEFAULT_DOCS_BASE_URL
 from src.routing.sources import DEFAULT_ROUTER_PLAYBOOK_ID
 
@@ -2115,11 +2121,6 @@ class SecurityConfig:
             )
         return errors
 
-
-from src.config_wait_policy import (  # noqa: E402
-    WaitKindPolicy as WaitKindPolicy, WaitPolicyConfig,
-    WaitProjectOverrides as WaitProjectOverrides, parse_wait_policy,
-)
 
 @dataclass
 class MessagesConfig:
@@ -4931,6 +4932,15 @@ def _present_kwargs(section: dict, spec: dict) -> dict:
     return {name: coerce(section[name]) for name, coerce in spec.items() if name in section}
 
 
+def _load_wait_policy(raw: object) -> WaitPolicyConfig:
+    """Parse and validate the policy before making it visible to runtime consumers."""
+    config = parse_wait_policy(raw)
+    errors = config.validate()
+    if errors:
+        raise ConfigValidationError([str(error) for error in errors])
+    return config
+
+
 def load_config(path: str, profile: str | None = None) -> AppConfig:
     """Load and validate application configuration from a YAML file.
 
@@ -5438,7 +5448,7 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
         config.pricing = PricingConfig(models=entries)
 
     if "wait_policy" in raw:
-        config.wait_policy = parse_wait_policy(raw["wait_policy"])
+        config.wait_policy = _load_wait_policy(raw["wait_policy"])
 
     if "messages" in raw and isinstance(raw["messages"], dict):
         ms_cfg = raw["messages"]

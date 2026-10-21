@@ -85,6 +85,10 @@ def test_wait_policy_aggregates_nested_validation_errors():
     ({"kinds": []}, "kinds"),
     ({"kinds": {"task": []}}, "kinds.task"),
     ({"resume_cost_minutes": "ten"}, "resume_cost_minutes"),
+    ({"metrics": []}, "metrics"),
+    ({"metrics": {"typo": 1}}, "metrics.typo"),
+    ({"metrics": {"pre_rollout_turn_rate": -1}}, "metrics.pre_rollout_turn_rate"),
+    ({"metrics": {"cohort": ""}}, "metrics.cohort"),
     ([], "must be a mapping"),
     (None, "must be a mapping"),
 ])
