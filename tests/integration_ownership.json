@@ -16899,6 +16899,7 @@
     "src/database/queries/hierarchy_queries.py::LIVE_SESSION_STATES": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/database/queries/hierarchy_queries.py::PHASE_KEY": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/database/queries/hierarchy_queries.py::container_flag_exists": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/queries/ingest_batch_queries.py::task_batch_summary": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/database/queries/job_queries.py::JobQueriesMixin": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/database/queries/knowledge_queries.py::KnowledgeQueryMixin": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/database/queries/layout_queries.py::LayoutQueryMixin": "Generic dependency; integration-specific definitions in this file are charged independently.",

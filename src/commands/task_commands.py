@@ -26,6 +26,7 @@ from src.commands.helpers import (
 )
 from src.commands.principal import matches_session_instance
 from src.database.queries.hierarchy_queries import PHASE_KEY, STANDING_PARENT_KEY, HierarchyError
+from src.database.queries.ingest_batch_queries import task_batch_summary
 from src.database.queries.task_queries import (
     TERMINAL_BLOCKED_META_KEY,
     TaskProjectMoveError,
@@ -3766,7 +3767,6 @@ class TaskCommandsMixin:
         # Effective integration policy + its source, so surfaces can show
         # where the mode comes from instead of another ambiguous flag.
         from src.integration.delivery_path import effective_integration_mode
-
         project = await self.db.get_project(task.project_id)
         effective_mode, mode_source = await effective_integration_mode(
             self.db, task, default_mode=self.orchestrator.config.integration.default_mode
@@ -3776,8 +3776,6 @@ class TaskCommandsMixin:
 
         info["needs_attention"] = await self.db.get_task_meta(task.id, "needs_attention")
         info["reroute"], info["provider_hold"] = await self._task_provider_view(task, project)
-        from src.database.queries.ingest_batch_queries import task_batch_summary
-
         async with self.db._engine.connect() as conn:
             info["held_batch"] = await task_batch_summary(conn, task.id)
         completion = await self.db.get_task_completion(task.id)
