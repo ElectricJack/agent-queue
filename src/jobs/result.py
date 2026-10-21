@@ -112,6 +112,8 @@ def build_result(job: dict, completion: dict | None, tail: bytes = b"") -> dict:
     if job["preset"] == "matter_render":
         result["capture"] = receipt.get("capture")
         result["render_profile"] = render_profile_record(job, receipt.get("capture"))
+    if "build_measurements" in receipt:
+        result["build_measurements"] = receipt["build_measurements"]
     result["result_hash"] = hashlib.sha256(
         json.dumps(result, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()

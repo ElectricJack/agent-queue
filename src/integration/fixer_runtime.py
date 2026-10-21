@@ -190,14 +190,8 @@ class DaemonFixerRuntime:
         if previous is not None:
             raise ValueError("fixer launch already registered; preserve it for reconciliation")
         repo = await self.repository(state)
-        # A single retained checkout of the existing batch branch, independent
-        # of task slots/preparation. Never reset or replace it on another red.
-        root = Path(orch.config.data_dir).expanduser().resolve() / "batch-fixers"
-        path = root / state["session_name"]
-        if root.is_symlink() or path.is_symlink():
-            raise ValueError("fixer checkout must be a private retained directory")
-        if path.exists():
-            raise ValueError("fixer checkout already exists; preserve it for inspection")
+        # Allocation shares the fleet routing lock with session registration.
+        # Previous fixers require both durable release and a stopped process.
         branch = state["target_ref"].removeprefix("refs/heads/")
         # Selection and registration share the ordinary fleet routing lock.
         # Registered starting sessions count before process creation.
@@ -210,7 +204,20 @@ class DaemonFixerRuntime:
                 str(repo.store), repository=repo.binding, oid=state["starting_sha"],
                 destination_ref=state["target_ref"],
             )
-            await self.git.aworktree_add(str(repo.store), str(path), ref=branch, detach=False)
+            from src.warm_workspaces import WarmWorkspacePool, primary_store
+
+            store = await primary_store(self.db, self.git, state["project_id"],
+                                        state["repository_id"], repo.store, state["starting_sha"])
+            pool = WarmWorkspacePool(self.git, store,
+                                     Path(orch.config.data_dir) / "batch-fixers")
+            path = await pool.acquire(
+                {"session_id": state["session_id"], "instance_token": state["instance_token"]},
+                state["starting_sha"], released=self._checkout_released, branch=branch,
+            )
+            actual_branch, dirty = await self.git.aread_status_summary(str(path))
+            if (actual_branch != branch or dirty
+                    or await self.git.arev_parse(str(path), "HEAD") != state["starting_sha"]):
+                raise ValueError("fixer preparation changed; preserve it for inspection")
             token = await orch.token_store.mint(
                 session_id=state["session_id"], session_instance_token=state["instance_token"],
                 task_id=None, project_id=state["project_id"], elevated=False,
@@ -262,6 +269,49 @@ class DaemonFixerRuntime:
         await launch_session(self.db, provider, spec, row, registered=True,
                              bus=getattr(orch, "bus", None))
         return {"work_dir": str(path), "route": route}
+
+    async def _checkout_released(self, manifest, path, head):
+        """Unknown, live and unpublished owners retain their checkout."""
+        owner = manifest["owner"]
+        if not owner.get("session_id") or not owner.get("instance_token"):
+            return False
+        session = await self.db.get_session(owner["session_id"])
+        if (session is None or session.instance_token != owner["instance_token"]
+                or session.work_dir != str(path) or session.state != "stopped"
+                or session.desired_state != "stopped"):
+            return False
+        provider = self.orchestrator.session_providers.create(session.provider)
+        if await provider.is_running(SessionHandle(session.name, session.provider,
+                                                   session.instance_token)):
+            return False
+        from src.database.tables import job_workspace_pins, workspaces
+
+        async with self.db._engine.connect() as conn:
+            if await conn.scalar(select(sessions.c.id).where(
+                sessions.c.work_dir == str(path), sessions.c.state != "stopped",
+            ).limit(1)):
+                return False
+            if await conn.scalar(select(workspaces.c.id).where(
+                workspaces.c.workspace_path == str(path),
+                workspaces.c.enabled.is_(True) | workspaces.c.locked_by_task_id.is_not(None)
+                | workspaces.c.locked_by_agent_id.is_not(None),
+            ).limit(1)):
+                return False
+            if await conn.scalar(select(job_workspace_pins.c.job_id).join(
+                workspaces, workspaces.c.id == job_workspace_pins.c.workspace_id,
+            ).where(workspaces.c.workspace_path == str(path)).limit(1)):
+                return False
+            rows = (await conn.execute(select(integration_batches).where(
+                integration_batches.c.fixer_state["session_id"].astext == session.id,
+            ))).mappings().all()
+        if len(rows) != 1:
+            return False
+        batch = rows[0]
+        state = batch["fixer_state"]
+        return (batch["lifecycle"] in {"promoted", "aborted", "failed", "empty"}
+                and state.get("instance_token") == session.instance_token
+                and state.get("work_dir") == str(path)
+                and head == state.get("published_sha", state.get("starting_sha")))
 
     async def alive(self, state):
         row = await self.db.get_session(state["session_id"])
@@ -423,7 +473,7 @@ class DaemonFixerRuntime:
                     }:
                         raise PublishWithdrawn("save and publish all fixes before rebinding")
                     if branch != new_ref.removeprefix("refs/heads/"):
-                        await self.git.afetch_repository_oid(str(repo.store),
+                        await self.git.afetch_repository_oid(path,
                             repository=repo.binding, oid=new_head, destination_ref=new_ref)
                         await self.git.acheckout_branch(path, new_ref.removeprefix("refs/heads/"))
                     members = await BatchStore(self.db).members(destination)

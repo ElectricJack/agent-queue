@@ -668,7 +668,8 @@
         "tests/test_integration_superseded_completion.py",
         "tests/test_integration_train.py",
         "tests/test_integration_train_sources.py",
-        "tests/test_integration_truth_reconciler.py"
+        "tests/test_integration_truth_reconciler.py",
+        "tests/test_integration_workspaces.py"
       ]
     },
     "intelligence-classes": {
@@ -1501,6 +1502,7 @@
         "tests/test_resolve_repo_path.py",
         "tests/test_smart_workspace_assignment.py",
         "tests/test_task_requirements_queries.py",
+        "tests/test_workspace.py",
         "tests/test_workspace_acquisition_read_only.py",
         "tests/test_workspace_attachments.py",
         "tests/test_workspace_branch_wait.py",
@@ -10184,6 +10186,28 @@
         "parametrize"
       ],
       "summary": "Server-side stop and checkout-detachment proofs for owner handoff."
+    },
+    "tests/test_integration_workspaces.py": {
+      "areas": [
+        "integration-trains"
+      ],
+      "default_arm": true,
+      "digest": "sha256:88a66ee70ff8c4a199a6c3bd082883c88812ec88a4a1a3b6227178bcf1e41fa2",
+      "imports": [
+        "src.build_cache",
+        "src.config",
+        "src.database.tables",
+        "src.integration.batches",
+        "src.integration.train",
+        "src.jobs.artifacts",
+        "src.jobs.workspace",
+        "src.models",
+        "src.waits.measurements"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Warm candidates and fixers keep durable ownership and job measurement fences."
     },
     "tests/test_integration_writers.py": {
       "areas": [
@@ -19869,6 +19893,23 @@
       ],
       "markers": [],
       "summary": "Tests for the workflow pipeline view module."
+    },
+    "tests/test_workspace.py": {
+      "areas": [
+        "workspaces"
+      ],
+      "default_arm": true,
+      "digest": "sha256:80d89db36f9da94b736eacc84c2647b148c49b6b56e3992db17f92363f7435f0",
+      "imports": [
+        "src.build_cache",
+        "src.config",
+        "src.git.manager",
+        "src.warm_workspaces"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Real linked-checkout reuse preserves warm output and uncertain owners."
     },
     "tests/test_workspace_acquisition_read_only.py": {
       "areas": [
