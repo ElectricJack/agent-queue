@@ -55,6 +55,23 @@ REVIEWED_BUNDLES_CHECK_ID = "playbooks.reviewed_bundles"
 ORPHANED_RUNS_CHECK_ID = "playbooks.orphaned_runs"
 SOURCE_CHECK_ID = "playbooks.source_unavailable"
 REQUIRED_CHECK_ID = "playbooks.required"
+PRIVATE_KEY_CHECK_ID = "playbooks.private_value_key"
+
+
+async def _check_private_value_key(ctx: DoctorContext) -> CheckResult:
+    from src.playbooks.private_values import private_value_key_health
+
+    accessor = getattr(ctx.db, "playbook_private_values", None)
+    service = accessor() if callable(accessor) and ctx.config.playbooks.enabled else None
+    status = private_value_key_health(ctx.config.playbooks, service=service)
+    if status.get("state") == "disabled":
+        severity, detail = Severity.INFO, "playbooks.enabled is false"
+    elif status["ok"]:
+        severity, detail = Severity.OK, "Active playbook private-value key is available"
+    else:
+        severity = Severity.ERROR
+        detail = status["error"] + ": " + status["remediation"]
+    return CheckResult(id=PRIVATE_KEY_CHECK_ID, severity=severity, detail=detail, data=status)
 
 
 async def _check_required(ctx: DoctorContext) -> CheckResult:
@@ -401,7 +418,7 @@ async def _check_activation_stale(ctx: DoctorContext) -> CheckResult:
 
 
 async def _check_activation_invalid(ctx: DoctorContext) -> CheckResult:
-    """Name enabled activations with verified artifacts the loader cannot parse."""
+    """Name enabled artifacts with invalid definitions or unsupported features."""
     playbooks = getattr(ctx.config, "playbooks", None)
     if playbooks is None or not getattr(playbooks, "enabled", False):
         return CheckResult(
@@ -438,7 +455,11 @@ async def _check_activation_invalid(ctx: DoctorContext) -> CheckResult:
     return CheckResult(
         id=INVALID_CHECK_ID,
         severity=Severity.WARN,
-        detail=f"{len(invalid)} enabled activation(s) have invalid definitions; recompile and reactivate them",
+        detail=(
+            f"{len(invalid)} enabled activation(s) have invalid definitions or unsupported "
+            "features; upgrade all intended executors for the named features, or explicitly "
+            "restore compatible reviewed artifacts; recompile malformed definitions"
+        ),
         data={"checked": len(records), "count": len(invalid), "invalid": invalid},
     )
 
@@ -579,6 +600,7 @@ async def _fix_reviewed_bundles(ctx: DoctorContext) -> CheckResult:
 
 def playbook_v2_checks() -> list[DoctorCheck]:
     return [
+        DoctorCheck(id=PRIVATE_KEY_CHECK_ID, run=_check_private_value_key, owner=OWNER),
         DoctorCheck(id=REQUIRED_CHECK_ID, run=_check_required, fix=_fix_required, timeout_s=30.0, owner=OWNER),
         DoctorCheck(id=ORPHANED_RUNS_CHECK_ID, run=_check_orphaned_runs, owner=OWNER),
         DoctorCheck(id=CHECK_ID, run=_check_artifact_integrity, fix=None, owner=OWNER),

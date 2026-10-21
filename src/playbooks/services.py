@@ -367,6 +367,7 @@ def build_v2_engine(
     from src.playbooks.artifact_store import ArtifactStore
     from src.playbooks.engine import PlaybookEngine
     from src.playbooks.executors.base import EngineServices
+    from src.playbooks.private_values import PrivateValueService
 
     cached = getattr(handler, "__dict__", {}).get("_v2_playbook_engine")
     if cached is not None:
@@ -374,6 +375,8 @@ def build_v2_engine(
 
     playbooks = config.playbooks
     bind_pending_event_policy(db, playbooks)
+    private_values = PrivateValueService.from_config(getattr(db, "_engine", None), playbooks)
+    db.set_playbook_private_values(private_values)
     services = EngineServices(
         contracts=CONTRACTS,
         clock=time.time,
@@ -389,6 +392,7 @@ def build_v2_engine(
         authorization_mode=getattr(
             getattr(config, "security", None), "capability_enforcement", "audit"
         ),
+        private_values=private_values,
     )
     engine = PlaybookEngine(
         services=services,
@@ -416,6 +420,28 @@ async def load_v2_snapshot(db: Any, run_id: str) -> Any | None:
     except (AttributeError, TypeError):
         return None
     return snapshot if isinstance(snapshot, RunSnapshot) else None
+
+
+async def run_project_id(db: Any, snapshot: Any, *, conn: Any = None) -> str:
+    """Read only a run's routing identifier; callers must still authorize its source.
+
+    Bound results protect derived event fields too. This daemon-owned lookup
+    never decrypts the run's bindings or returns private data in a projection.
+    """
+    from src.commands.principal import ExecutionPrincipal
+    from src.playbooks.private_values import PrivateValueError, is_reference
+
+    project = snapshot.event.get("project_id")
+    if is_reference(project):
+        project = await db.playbook_private_values().read(
+            project, owner=await db.private_run_owner(snapshot),
+            principal=ExecutionPrincipal.service("playbook-run-routing"), conn=conn,
+        )
+    if project is None:
+        return ""
+    if not isinstance(project, str):
+        raise PrivateValueError("private_run_project_invalid")
+    return project
 
 
 @dataclass

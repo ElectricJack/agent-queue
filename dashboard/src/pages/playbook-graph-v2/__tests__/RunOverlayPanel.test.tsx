@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it } from "vitest";
 import type { PlaybookRunOverlayResponse, ReceiptDTO } from "../../../api/client";
 import RunOverlayPanel from "../RunOverlayPanel";
+import ReceiptDetail from "../ReceiptDetail";
 import { artifact, runOverlay, runReceipts } from "./fixtures";
 
 afterEach(cleanup);
@@ -14,6 +15,20 @@ function receiptButton(name: string) {
 }
 
 describe("RunOverlayPanel", () => {
+  it("shows script execution identity, cause, nested iteration and protected output handles", () => {
+    render(<ReceiptDetail receipt={{ ...runReceipts[0]!, step_kind: "script",
+      iteration_path: '[["outer",1],["inner",0]]',
+      script: { job_id: "job-script", execution_id: "execution-script", terminal_cause: "nonzero_exit",
+        exit_code: 7, capture_complete: true, cleanup_complete: true,
+        output_refs: { stdout: "protected-stdout-handle" } },
+    }} />);
+    expect(screen.getByText("job-script")).toBeInTheDocument();
+    expect(screen.getByText("execution-script")).toBeInTheDocument();
+    expect(screen.getByText("nonzero_exit")).toBeInTheDocument();
+    expect(screen.getByText('[["outer",1],["inner",0]]')).toBeInTheDocument();
+    expect(screen.getByText(/Protected stdout: protected-stdout-handle/)).toBeInTheDocument();
+  });
+
   it("pins the panel to the run's artifact and warns when it is not the active one", () => {
     render(<RunOverlayPanel overlay={runOverlay} />);
     expect(screen.getByRole("status")).toHaveTextContent(

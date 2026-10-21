@@ -240,6 +240,33 @@ def test_admission_aged_order_and_exclusive_frontier():
     assert next_admission([integration, old], 1300, 4, 2) == old
 
 
+@pytest.mark.parametrize("full_state", ["starting", "running", "cancelling"])
+def test_full_suite_allows_two_focused_jobs_and_queues_second_suite(full_state):
+    def row(name, state="queued", weight=1, scope="focused", submitted=100):
+        return {
+            "id": name, "state": state, "job_class": "shared", "weight": weight,
+            "priority_band": 2, "submitted_at": submitted, "owner_id": name,
+            "contract": {"test_scope": scope},
+        }
+
+    full = row("full", full_state, weight=4, scope="full")
+    second = row("second", weight=4, scope="full")
+    first = row("foreign-focused-1", submitted=101)
+    later = row("foreign-focused-2", submitted=102)
+    rows = [full, second, first, later]
+    assert next_admission(rows, 200, 6, 2) == first
+    first["state"] = "running"
+    assert next_admission(rows, 200, 6, 2) == later
+    later["state"] = "running"
+    assert next_admission(rows, 200, 6, 2) is None
+    full["state"] = "succeeded"
+    assert next_admission(rows, 200, 6, 2) == second
+    # A waiting first full suite keeps its position as existing work drains.
+    full["state"] = "queued"
+    first["weight"] = 3
+    assert next_admission(rows, 200, 6, 2) is None
+
+
 async def test_wrong_launch_identity_and_corrupt_receipt_never_release_pin(db, tmp_path):
     svc = service(db, tmp_path)
     job = await db.submit_job(values())

@@ -117,7 +117,7 @@ def batch(batch_id="batch-1", attempts=0):
 
 
 def train(checks, *, baseline=None, service=None, repair=None, frozen_batch=None,
-          sync_default_branch=None):
+          sync_default_branch=None, baseline_fix_checks=None):
     """One target, one open batch, the given checks cache and baseline service."""
     from src.integration.train import BatchSelection
 
@@ -128,7 +128,8 @@ def train(checks, *, baseline=None, service=None, repair=None, frozen_batch=None
         return checks
 
     lane = TrainLane(snapshot=snapshot, service=service or Service(),
-                     checks=CandidateChecks(resolve), sync_default_branch=sync_default_branch)
+                     checks=CandidateChecks(resolve), sync_default_branch=sync_default_branch,
+                     baseline_fix_checks=baseline_fix_checks)
 
     class Batches:
         async def open_batch(self, target, snapshot_, service_):
@@ -798,3 +799,24 @@ async def test_only_this_heads_own_suites_are_rerequested(db):
     assert await checks.rerequest(
         HeadIdentity(repository_id="r", ref="refs/heads/main", sha=OTHER, generation=0), ("unit",)
     ) == ()
+
+
+@pytest.mark.parametrize("target_unit,expected", [("failure", True), ("success", False),
+                                                ("pending", False)])
+async def test_only_proven_preexisting_failures_consider_pending_baseline_fixes(db,
+                                                                              target_unit, expected):
+    frozen_batch = await frozen(db)
+    provider = Provider({CANDIDATE: {"unit": "failure", "lint": "success"},
+                         TARGET: {"unit": target_unit, "lint": "success"}})
+    checks = ExactChecks(db, provider, clock=Clock())
+    train_ = train(checks, baseline=CandidateBaselineService(db, clock=Clock()),
+                   frozen_batch=frozen_batch, baseline_fix_checks=AsyncMock())
+    reassemble = AsyncMock(return_value={"outcome": "reassembled",
+                                        "replacement_batch_id": "with-fix"})
+    train_.batches.reassemble_preexisting = reassemble
+    visit = await train_.visit(ROOT)
+    assert reassemble.await_count == int(expected)
+    if expected:
+        assert visit.detail["reassembly"]["replacement_batch_id"] == "with-fix"
+        assert visit.repair is None and provider.rerequests == []
+        assert reassemble.call_args.kwargs["names"] == ("unit",)

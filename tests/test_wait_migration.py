@@ -20,7 +20,7 @@ from tests.alembic_revisions import previous_revision
 from tests.pg_dsn import create_scratch_database
 
 ROOT = Path(__file__).resolve().parent.parent
-REVISION = "a00000000103"
+REVISION = "a00000000109"
 TABLES = (
     "wait_records",
     "wait_edges",
@@ -230,11 +230,11 @@ def assert_unique_semantics(bind):
 @pytest.mark.parametrize("legacy", [True, False], ids=["pre-v2", "fresh-baseline"])
 async def test_upgrade_twice_repairs_indexes_preserves_data_and_retains_downgrade(legacy):
     engine = create_async_engine(await create_scratch_database("waitmigration"))
-    revision = import_module("migrations.versions.a00000000103_wait_records")
-    compatibility = import_module("migrations.versions.a00000000104_base_claim_frontier_indexes")
+    revision = import_module("migrations.versions.a00000000109_wait_records")
+    compatibility = import_module("migrations.versions.a00000000110_base_claim_frontier_indexes")
     predecessor = import_module("migrations.versions.a00000000102_workspace_kind_limits")
     try:
-        await migrate(engine, previous_revision(previous_revision(REVISION)))
+        await migrate(engine, previous_revision(predecessor.revision))
         async with engine.begin() as conn:
             if legacy:
                 await conn.execute(
@@ -350,7 +350,7 @@ async def test_upgrade_twice_repairs_indexes_preserves_data_and_retains_downgrad
 @pytest.mark.integration
 async def test_continuation_task_audit_fk_upgrade_is_idempotent():
     engine = create_async_engine(await create_scratch_database("continuationaudit"))
-    revision = import_module("migrations.versions.a00000000106_continuation_task_audit")
+    revision = import_module("migrations.versions.a00000000112_continuation_task_audit")
     try:
         await migrate(engine, "head")
 

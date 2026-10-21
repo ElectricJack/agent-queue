@@ -267,6 +267,30 @@ def integration_settle_batch(ctx, batch_id, expected_target_sha, reason, apply):
     })
 
 
+@integration.command("release-withheld-source")
+@click.argument("batch_id")
+@click.option("--task", "task_id", required=True, help="Frozen member the aborted batch withholds.")
+@click.option("--source-sha", "expected_source_sha", help="Exact source SHA returned by preview.")
+@click.option("--target-sha", "expected_target_sha", help="Exact target SHA returned by preview.")
+@click.option("--reason", default="", help="Required explanation when releasing.")
+@click.option("--apply", is_flag=True, help="Release the exact source; default is preview.")
+@click.pass_context
+@_handle_errors
+def integration_release_withheld_source(ctx, batch_id, task_id, expected_source_sha,
+                                        expected_target_sha, reason, apply):
+    """Preview or release a TASK source that aborted BATCH_ID withholds from the train.
+
+    The aborted batch stays history and the next batch carries its repair count.
+    """
+    if apply and (not expected_source_sha or not expected_target_sha or not reason.strip()):
+        raise click.UsageError("--apply requires --source-sha, --target-sha and --reason")
+    _execute(ctx, "integration_release_withheld_source", {
+        "batch_id": batch_id, "task_id": task_id,
+        "expected_source_sha": expected_source_sha, "expected_target_sha": expected_target_sha,
+        "reason": reason, "dry_run": not apply,
+    })
+
+
 @integration.command("refresh-epic")
 @click.option("--task", "task_id", required=True, help="Epic whose branch needs the default branch.")
 @click.option("--apply", is_flag=True, help="Start or advance the attested refresh; default is preview.")
@@ -655,6 +679,8 @@ def integration_authorize_root(
 
 @integration.command("redrive-child")
 @click.argument("task_id")
+@click.option("--adopt-source", is_flag=True,
+              help="Retain a missing completion source after verifying its published head.")
 @click.option(
     "--apply", is_flag=True, help="Advance the child into assembly; default is a dry run."
 )
@@ -669,6 +695,7 @@ def integration_authorize_root(
 def integration_redrive_child(
     ctx: click.Context,
     task_id: str,
+    adopt_source: bool,
     apply: bool,
     expected_head_sha: str | None,
     reason: str | None,
@@ -681,11 +708,16 @@ def integration_redrive_child(
     child's origin base) and answers `would_advance`, `nothing_to_redrive`,
     `blocked` or `not_eligible` with the reason and the head.  `--apply` needs
     that head and a reason: it records approved evidence for exactly that head
-    and queues the parent's collection.
+    and queues the parent's collection. In Git-first mode delivery belongs to
+    the train. Use --adopt-source to preview retaining an older leaf's missing
+    completion source; --apply --head and --reason retain that exact generation
+    without granting review or declaring delivery.
     """
     if apply and not (expected_head_sha and reason):
         raise click.UsageError("--apply requires --head and --reason")
     args: dict[str, Any] = {"task_id": task_id, "dry_run": not apply}
+    if adopt_source:
+        args["adopt_source"] = True
     if expected_head_sha is not None:
         args["expected_head_sha"] = expected_head_sha
     if reason is not None:

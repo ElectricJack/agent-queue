@@ -1,0 +1,11 @@
+{
+  "playbook_fixtures": {
+    "tests/fixtures/playbooks/v2/default-pipeline/artifact.json": {
+      "previous_sha256": "7d48f95da0d74c368d2271ef99a367c23ceac40fd67291c9ab02081491fa25dd",
+      "sha256": "2aa5acd9e4d2e7399b57edd2625bc850b45427d3c87d1568af109475bdc09b29"
+    }
+  },
+  "reason": "sound-flare-53 clarifies that obsolete ingestion task closure preserves approval deduplication. The rebuilt reviewed pipeline changes only source hash, source locations and compilation time; executable semantics and contract fingerprints are unchanged. Chain the explicit artifact pin after the frozen-main evidence, preserving all historical recordings.",
+  "source_base": "f88abe7fd245da853bd328187f01beda41e02e41",
+  "source_commit": "c46d358639d45faaddf133a9cbf82668e3ad10c0"
+}

@@ -457,6 +457,37 @@ class IntegrationCommandsMixin:
             return _failure("refused", str(exc))
         return {"success": True, **result}
 
+    async def _cmd_integration_release_withheld_source(self, args: dict) -> dict:
+        """Preview or release one exact source an aborted batch withholds.
+
+        The owning supervisor or a local operator may apply. Operator workers
+        still need a grant bound to an exact human decision.
+        """
+        from src.commands.contracts.integration import IntegrationReleaseWithheldSourceArgs
+        from src.integration.batches import BatchStore
+        from src.integration.train_controls import TrainControlError, TrainControls
+
+        request = IntegrationReleaseWithheldSourceArgs.model_validate(args)
+        batch = await BatchStore(self.db).get(request.batch_id)
+        operator, refusal = await integration_operator(self.db, batch.project_id if batch else None)
+        if refusal:
+            return _failure("unauthorized", refusal)
+        try:
+            result = await TrainControls(self.db, train=getattr(
+                self.orchestrator, "integration_train", None,
+            )).release_withheld_source(
+                request.batch_id, request.task_id, dry_run=request.dry_run,
+                expected_source_sha=request.expected_source_sha,
+                expected_target_sha=request.expected_target_sha, operator_id=operator,
+                reason=request.reason,
+                human_authority=operator.startswith(("human:", "operator session:")),
+            )
+        except TrainControlError as exc:
+            return _failure(exc.outcome, str(exc))
+        except (ValueError, GitError, OSError) as exc:
+            return _failure("refused", str(exc))
+        return {"success": True, **result}
+
     async def _cmd_integration_abort_batch(self, args: dict) -> dict:
         """Preview or abort an unpromoted Git-first batch."""
         from src.commands.contracts.integration import IntegrationAbortBatchArgs
@@ -2006,6 +2037,7 @@ class IntegrationCommandsMixin:
             expected_head_sha=request.expected_head_sha,
             reason=request.reason,
             operator_id=principal,
+            adopt_source=request.adopt_source,
         )
         return {
             "success": result["outcome"] in {"would_advance", "advanced", "nothing_to_redrive"},

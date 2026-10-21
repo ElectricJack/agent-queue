@@ -464,6 +464,7 @@ from .event_group_dto import EventGroupDTO
 from .event_trigger import EventTrigger
 from .execute_request import ExecuteRequest
 from .execute_request_args import ExecuteRequestArgs
+from .execution_requirements_dto import ExecutionRequirementsDTO
 from .explain_reason import ExplainReason
 from .explain_task_request import ExplainTaskRequest
 from .explain_task_response import ExplainTaskResponse
@@ -613,6 +614,10 @@ from .get_status_response_422 import GetStatusResponse422
 from .get_stuck_tasks_request import GetStuckTasksRequest
 from .get_stuck_tasks_response import GetStuckTasksResponse
 from .get_stuck_tasks_response_422 import GetStuckTasksResponse422
+from .get_stuck_tasks_response_artifacts_item import GetStuckTasksResponseArtifactsItem
+from .get_stuck_tasks_response_coverage_item import GetStuckTasksResponseCoverageItem
+from .get_stuck_tasks_response_identity_manifest_item import GetStuckTasksResponseIdentityManifestItem
+from .get_stuck_tasks_response_page_tokens_item import GetStuckTasksResponsePageTokensItem
 from .get_task_dependencies_request import GetTaskDependenciesRequest
 from .get_task_dependencies_response_422 import GetTaskDependenciesResponse422
 from .get_task_request import GetTaskRequest
@@ -781,6 +786,7 @@ from .job_list_args import JobListArgs
 from .job_list_response import JobListResponse
 from .job_list_response_jobs_item import JobListResponseJobsItem
 from .job_logs_args import JobLogsArgs
+from .job_logs_args_stream import JobLogsArgsStream
 from .job_logs_response import JobLogsResponse
 from .job_logs_response_chunks_item import JobLogsResponseChunksItem
 from .job_logs_response_gaps_item import JobLogsResponseGapsItem
@@ -959,6 +965,10 @@ from .list_project_roots_response_422 import ListProjectRootsResponse422
 from .list_projects_request import ListProjectsRequest
 from .list_projects_response import ListProjectsResponse
 from .list_projects_response_422 import ListProjectsResponse422
+from .list_projects_response_artifacts_item import ListProjectsResponseArtifactsItem
+from .list_projects_response_coverage_item import ListProjectsResponseCoverageItem
+from .list_projects_response_identity_manifest_item import ListProjectsResponseIdentityManifestItem
+from .list_projects_response_page_tokens_item import ListProjectsResponsePageTokensItem
 from .list_prompts_request import ListPromptsRequest
 from .list_prompts_response import ListPromptsResponse
 from .list_prompts_response_422 import ListPromptsResponse422
@@ -970,6 +980,10 @@ from .list_sessions_response import ListSessionsResponse
 from .list_tasks_request import ListTasksRequest
 from .list_tasks_response import ListTasksResponse
 from .list_tasks_response_422 import ListTasksResponse422
+from .list_tasks_response_artifacts_item import ListTasksResponseArtifactsItem
+from .list_tasks_response_coverage_item import ListTasksResponseCoverageItem
+from .list_tasks_response_identity_manifest_item import ListTasksResponseIdentityManifestItem
+from .list_tasks_response_page_tokens_item import ListTasksResponsePageTokensItem
 from .list_workspace_kinds_request import ListWorkspaceKindsRequest
 from .list_workspace_kinds_response_422 import ListWorkspaceKindsResponse422
 from .list_workspaces_request import ListWorkspacesRequest
@@ -1004,6 +1018,7 @@ from .message_list_response import MessageListResponse
 from .message_list_response_422 import MessageListResponse422
 from .message_model import MessageModel
 from .message_model_pane_open_type_0 import MessageModelPaneOpenType0
+from .message_model_provenance_type_0 import MessageModelProvenanceType0
 from .message_reply_request import MessageReplyRequest
 from .message_reply_response import MessageReplyResponse
 from .message_reply_response_422 import MessageReplyResponse422
@@ -1674,6 +1689,11 @@ from .scan_stub_staleness_request import ScanStubStalenessRequest
 from .scan_stub_staleness_response import ScanStubStalenessResponse
 from .scan_stub_staleness_response_422 import ScanStubStalenessResponse422
 from .scoped_conftest import ScopedConftest
+from .script_execution_dto import ScriptExecutionDTO
+from .script_execution_dto_output_refs import ScriptExecutionDTOOutputRefs
+from .script_node_detail_dto import ScriptNodeDetailDTO
+from .script_node_detail_dto_input_pins_item import ScriptNodeDetailDTOInputPinsItem
+from .script_node_detail_dto_program import ScriptNodeDetailDTOProgram
 from .search_files_request import SearchFilesRequest
 from .search_files_response import SearchFilesResponse
 from .search_files_response_422 import SearchFilesResponse422
@@ -2626,6 +2646,7 @@ __all__ = (
     "EventTrigger",
     "ExecuteRequest",
     "ExecuteRequestArgs",
+    "ExecutionRequirementsDTO",
     "ExplainReason",
     "ExplainTaskRequest",
     "ExplainTaskResponse",
@@ -2773,6 +2794,10 @@ __all__ = (
     "GetStuckTasksRequest",
     "GetStuckTasksResponse",
     "GetStuckTasksResponse422",
+    "GetStuckTasksResponseArtifactsItem",
+    "GetStuckTasksResponseCoverageItem",
+    "GetStuckTasksResponseIdentityManifestItem",
+    "GetStuckTasksResponsePageTokensItem",
     "GetTaskDependenciesRequest",
     "GetTaskDependenciesResponse422",
     "GetTaskRequest",
@@ -2941,6 +2966,7 @@ __all__ = (
     "JobListResponse",
     "JobListResponseJobsItem",
     "JobLogsArgs",
+    "JobLogsArgsStream",
     "JobLogsResponse",
     "JobLogsResponseChunksItem",
     "JobLogsResponseGapsItem",
@@ -3117,6 +3143,10 @@ __all__ = (
     "ListProjectsRequest",
     "ListProjectsResponse",
     "ListProjectsResponse422",
+    "ListProjectsResponseArtifactsItem",
+    "ListProjectsResponseCoverageItem",
+    "ListProjectsResponseIdentityManifestItem",
+    "ListProjectsResponsePageTokensItem",
     "ListPromptsRequest",
     "ListPromptsResponse",
     "ListPromptsResponse422",
@@ -3128,6 +3158,10 @@ __all__ = (
     "ListTasksRequest",
     "ListTasksResponse",
     "ListTasksResponse422",
+    "ListTasksResponseArtifactsItem",
+    "ListTasksResponseCoverageItem",
+    "ListTasksResponseIdentityManifestItem",
+    "ListTasksResponsePageTokensItem",
     "ListWorkspaceKindsRequest",
     "ListWorkspaceKindsResponse422",
     "ListWorkspacesRequest",
@@ -3162,6 +3196,7 @@ __all__ = (
     "MessageListResponse422",
     "MessageModel",
     "MessageModelPaneOpenType0",
+    "MessageModelProvenanceType0",
     "MessageReplyRequest",
     "MessageReplyResponse",
     "MessageReplyResponse422",
@@ -3828,6 +3863,11 @@ __all__ = (
     "ScanStubStalenessResponse",
     "ScanStubStalenessResponse422",
     "ScopedConftest",
+    "ScriptExecutionDTO",
+    "ScriptExecutionDTOOutputRefs",
+    "ScriptNodeDetailDTO",
+    "ScriptNodeDetailDTOInputPinsItem",
+    "ScriptNodeDetailDTOProgram",
     "SearchFilesRequest",
     "SearchFilesResponse",
     "SearchFilesResponse422",

@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Any
 
 from src.playbooks.artifact_ref import SHA256_RE, ArtifactRef
+from src.playbooks.features import unsupported_feature_message, unsupported_features
 from src.playbooks.run_state import ArtifactVerificationFailed
 
 logger = logging.getLogger(__name__)
@@ -102,6 +103,7 @@ def evaluate_health(
     stored_profile_fingerprint: str | None = None,
     artifact_sha_mismatch: bool = False,
     invalid_artifact: str | None = None,
+    unsupported_artifact_features: Sequence[str] = (),
 ) -> tuple[ActivationHealth, tuple[HealthReason, ...]]:
     """Health for one activation.  First match wins; the order is the contract.
 
@@ -133,6 +135,11 @@ def evaluate_health(
                 HealthReason("artifact_invalid", invalid_artifact),
             )
         return ActivationHealth.UNAVAILABLE, (HealthReason("artifact_missing", "Artifact is unavailable"),)
+    if unsupported_artifact_features:
+        return ActivationHealth.INVALID, tuple(
+            HealthReason("unsupported_feature", unsupported_feature_message(feature), feature)
+            for feature in unsupported_artifact_features
+        )
     errors = validation.get("errors", [])
     if errors:
         return ActivationHealth.INVALID, tuple(
@@ -366,6 +373,9 @@ async def load_activation_health(
             ),
             artifact_sha_mismatch=artifact_sha_mismatch,
             invalid_artifact=invalid_artifact,
+            unsupported_artifact_features=(
+                unsupported_features(definition, contracts=contracts) if definition else ()
+            ),
         )
         records.append(
             ActivationHealthRecord(

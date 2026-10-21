@@ -51,6 +51,11 @@ AUTHORITATIVE_FIELDS: Final[frozenset[str]] = frozenset(
         "compiled_at",
         "compiler_build",
         "compiled_against",
+        "required_features",
+        "trusted_execution",
+        "state_schema_version",
+        "required_capabilities",
+        "scripts",
         "enabled",
         "triggers",
         "cooldown_seconds",
@@ -317,6 +322,7 @@ def propose(
     events: EventSchemaLookup,
     version: int,
     enforce_inventory: bool = True,
+    script_pins: Mapping[str, Any] | None = None,
 ) -> CompileProposal:
     """Build a review-only proposal from trusted source and untrusted body."""
     diagnostics: list[Diagnostic] = []
@@ -374,10 +380,44 @@ def propose(
             steps=semantic.steps,
             integration_policy=policy,
         )
+        from src.playbooks.features import execution_metadata_from_source, infer_required_features
+
+        from src.playbooks.definition import ScriptStep, TrustedExecutionMetadata
+        from src.playbooks.script_policy import ScriptProgram
+
+        metadata = execution_metadata_from_source(source.frontmatter, artifact)
+        scripts = {key: step for key, step in artifact.steps.items() if isinstance(step, ScriptStep)}
+        source_programs = source.frontmatter.get("scripts", {})
+        if not isinstance(source_programs, dict) or set(source_programs) != set(scripts):
+            raise ValueError("script source and compiled step identities differ")
+        if set(script_pins or {}) != set(scripts):
+            raise ValueError("scripts require server-resolved source pins")
+        for step_id, step in scripts.items():
+            authored = ScriptProgram.model_validate(source_programs[step_id])
+            if authored != step.program or script_pins[step_id].program != authored:
+                raise ValueError("compiled script differs from its authored program")
+        if scripts:
+            metadata = (metadata or TrustedExecutionMetadata()).model_copy(
+                update={"scripts": dict(script_pins)})
+        artifact = artifact.model_copy(update={"trusted_execution": metadata})
+        artifact = artifact.model_copy(update={
+            "required_features": infer_required_features(artifact, contracts=contracts),
+        })
     except (KeyError, ValueError, ValidationError) as exc:
         diagnostics.append(Diagnostic("error", "ambiguous_prose", str(exc)))
         digest = source_digest(source.raw)
         return CompileProposal(None, diagnostics, [], digest, None, COMPILER_BUILD, None, None)
+    metadata = artifact.trusted_execution
+    old_metadata = baseline.trusted_execution if baseline is not None else None
+    if metadata is not None and metadata.state_schema_version is not None:
+        old_version = old_metadata.state_schema_version if old_metadata is not None else 1
+        if metadata.state_schema_version != old_version:
+            diagnostics.append(Diagnostic(
+                "warning", "state_namespace_migration",
+                "Changing state_schema_version selects a new namespace and resets suppression. "
+                "An operator must review the migration and explicitly provision that namespace; "
+                "activation never deletes or migrates the previous namespace.",
+            ))
     artifact = _snapshots(artifact, contracts, profiles)
     diagnostics.extend(
         validate_definition(
@@ -388,6 +428,16 @@ def propose(
             events=events,
         )
     )
+    # Preserve generation-1 source acceptance and its reviewed golden bundles.
+    # New building-block semantics (or explicit source requirements) opt into
+    # the stronger policy-evidence contract; no stored artifact is rewritten.
+    building_blocks = {"collections_v1", "nested_foreach_v1", "observation_context_v1",
+                       "state_v1", "script_v1"}
+    if enforce_inventory and (
+        building_blocks.intersection(artifact.required_features)
+        or "required_capabilities" in source.frontmatter
+    ):
+        diagnostics.extend(_source_policy_alignment(source, artifact))
     diff = diff_definitions(baseline, artifact) if baseline is not None else None
     return CompileProposal(
         artifact,
@@ -399,3 +449,121 @@ def propose(
         diff,
         artifact_sha256(artifact),
     )
+
+
+async def pin_source_scripts(source, *, source_root, source_revision, store, runtimes, max_bytes):
+    """Pin source-authored programs for E3's trusted-execution metadata assembly.
+
+    No compiler body or authored digest supplies execution authority. E3 embeds
+    these typed pins in B3's metadata envelope and compares its ScriptSteps with
+    the corresponding source programs before producing an activatable artifact.
+    This seam alone neither adds a step type nor advertises script_v1 support.
+    """
+    from src.playbooks.script_inputs import pin_script_inputs
+    from src.playbooks.script_policy import ScriptError, ScriptProgram
+
+    raw = source.frontmatter.get("scripts", {})
+    if not isinstance(raw, dict) or len(raw) > 500:
+        raise ScriptError("script_source_metadata_invalid")
+    pinned = {}
+    for step_id, program_body in raw.items():
+        if not isinstance(step_id, str) or re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", step_id) is None:
+            raise ScriptError("script_source_metadata_invalid")
+        program = ScriptProgram.model_validate(program_body)
+        runtime = runtimes.get(program.runtime)
+        if runtime is None:
+            raise ScriptError("script_runtime_unavailable")
+        pinned[step_id] = await pin_script_inputs(
+            program, store=store, source_root=source_root, source_revision=source_revision,
+            runtime=runtime, max_bytes=max_bytes,
+        )
+    return pinned
+
+
+def _source_policy_alignment(source: PlaybookSource, artifact: PlaybookDefinition) -> list[Diagnostic]:
+    """Require explicit source evidence for executable policy, not guessed prose.
+
+    This is a conservative compiler gate, not a natural-language equivalence
+    proof. A question leaves the artifact reviewable but prevents activation.
+    Exact paths and policy clauses must be authored together; merely mentioning
+    both conflicting constants elsewhere in the document is insufficient.
+    """
+    from src.playbooks.expressions import BindingRef, LoopRef
+    from src.playbooks.definition import step_values
+
+    diagnostics = []
+    lines = source.raw.splitlines()
+
+    def scalar_text(value):
+        return value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
+
+    def evidence(*terms):
+        # Frontmatter keys/values are already explicit policy, like backticks.
+        def declared(value):
+            if isinstance(value, dict):
+                if len(terms) == 2 and terms[0] in value:
+                    if scalar_text(value[terms[0]]) == terms[1]:
+                        return True
+                return any(declared(child) for child in value.values())
+            if isinstance(value, list):
+                return any(declared(child) for child in value)
+            return False
+
+        return declared(source.frontmatter) or any(
+            all(f"`{term}`" in line for term in terms) for line in lines
+        )
+
+    def question(step_id, message, field):
+        diagnostics.append(Diagnostic(
+            "question", "ambiguous_prose", message, step_id=step_id,
+            field=field, source=artifact.steps[step_id].source,
+        ))
+
+    policy_keys = {"to", "to_id", "to_kind", "recipient", "repeat_after_seconds",
+                   "limit", "page_size", "max_iterations", "timeout_seconds"}
+
+    def walk(raw, step_id, path, key=None):
+        if isinstance(raw, list):
+            for index, child in enumerate(raw):
+                walk(child, step_id, f"{path}/{index}", key)
+        elif isinstance(raw, dict):
+            if raw.get("type") == "literal" and key and (
+                key in policy_keys or "threshold" in key
+            ):
+                value = scalar_text(raw["value"])
+                if not evidence(key, value):
+                    question(step_id, f"Source must state `{key}` and `{value}` together; "
+                             "the compiler may not invent policy values", path)
+            if raw.get("type") == "comparison":
+                # A whole predicate is source evidence, not just a bag of names.
+                left, right = raw.get("left", {}), raw.get("right", {})
+                if right.get("type") == "literal" and left.get("path"):
+                    terms = (left["path"], raw["op"], scalar_text(right["value"]))
+                    if not evidence(*terms):
+                        question(step_id, "Source must state predicate path, operator and value "
+                                 f"together: {terms!r}", path)
+            for name, child in raw.items():
+                walk(child, step_id, f"{path}/{name}", name if name != "value" else key)
+
+    for rule in artifact.rules:
+        if rule.guard is not None:
+            walk(rule.guard.model_dump(mode="json"), rule.entry_step,
+                 f"/rules/{rule.id}/guard")
+
+    for step_id, step in artifact.steps.items():
+        raw = step.model_dump(mode="json", exclude_unset=True)
+        # Script program equality is already enforced against the typed source
+        # manifest, including its dependency list and requested limits.
+        raw.pop("program", None)
+        walk(raw, step_id, f"/steps/{step_id}")
+        for value in step_values(step):
+            if isinstance(value, (BindingRef, LoopRef)) and value.path:
+                if (value.path not in source.inventory.names
+                        and f"{value.binding}.{value.path}" not in source.inventory.names):
+                    question(step_id, f"Exact result path `{value.path}` must appear in source",
+                             f"/steps/{step_id}")
+        for key in ("max_iterations", "timeout_seconds"):
+            if key in raw and not evidence(key, scalar_text(raw[key])):
+                question(step_id, f"Source must state `{key}` and `{raw[key]}` together",
+                         f"/steps/{step_id}/{key}")
+    return diagnostics
