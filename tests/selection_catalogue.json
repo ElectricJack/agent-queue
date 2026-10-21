@@ -19298,7 +19298,7 @@
         "agent-waits"
       ],
       "default_arm": true,
-      "digest": "sha256:d6d6392dcf29f94e6db3e643f5a7f1be49caea48232076dc6adbe335eeb0f318",
+      "digest": "sha256:d6012683136f6aea17f20b6682f8eb2dc774885aaa3c0b234a1bbb469e1537dd",
       "imports": [
         "src.cli.waits",
         "src.commands",
@@ -19310,6 +19310,7 @@
         "src.database.tables",
         "src.git.manager",
         "src.models",
+        "src.orchestrator.worktree_manager",
         "src.prime",
         "src.prime.budgets",
         "src.prime.hook_envelopes",

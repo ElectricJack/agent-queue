@@ -463,23 +463,25 @@ class WorktreeSlotManager:
         return [by_index[i] for i in sorted(by_index)]
 
     async def _provision_slot_dir(
-        self, base_ws: Workspace, kind: WorkspaceKind, target: Path
+        self, base_ws: Workspace, kind: WorkspaceKind, target: Path, *, prune: bool = True,
     ) -> str:
         """Put a detached worktree at *target* and run the kind's setup.
 
         exclude-block → prune → fetch → ``worktree add --detach`` →
         ``worktree_setup``.  Shared by :meth:`create_slot` and
         :meth:`reprovision_slot`; returns the setup hash for the sentinel.
+        ``prune=False`` leaves every ``.git/worktrees`` registration alone.
         """
         base_path = base_ws.workspace_path
         default_branch = await self._default_branch(base_path, project_id=base_ws.project_id)
 
         async with self._git_mutex(base_path):
             await self.ensure_git_exclude(base_path)
-            try:
-                await self.git.aworktree_prune(base_path)
-            except GitError as e:
-                logger.debug("worktree prune failed in %s: %s", base_path, e)
+            if prune:
+                try:
+                    await self.git.aworktree_prune(base_path)
+                except GitError as e:
+                    logger.debug("worktree prune failed in %s: %s", base_path, e)
 
             start_ref = await self._fetch_and_resolve_start_ref(
                 base_path, default_branch, required=True, project_id=base_ws.project_id
@@ -500,19 +502,28 @@ class WorktreeSlotManager:
         await self._run_setup(target, kind.worktree_setup)
         return setup_hash
 
-    async def reprovision_slot(self, slot_ws: Workspace, kind: WorkspaceKind) -> None:
+    async def reprovision_slot(
+        self, slot_ws: Workspace, kind: WorkspaceKind, *, prune: bool = True,
+    ) -> None:
         """Re-create a slot's missing worktree in place, keeping its row id.
 
         The slot reconciler's repair for a disabled slot whose directory is
         gone (``src.orchestrator.slot_restore``).  The row, its index and its
         id survive, so nothing that references the workspace goes stale; the
         caller re-enables the row once this returns.
+
+        A continuation's fresh checkout (``src.wait_runtime.resume``) passes
+        ``prune=False``: it adopts a checkout it has just added, and other
+        slots' registrations whose directories are missing may still have
+        retained owners, so they are evidence to keep rather than prune.
+        Without a prune, a missing *target* that is still registered cannot
+        be re-added; only adopt an existing checkout that way.
         """
         base_ws = await self._base_of(slot_ws)
         if base_ws is None:
             raise OSError(f"slot {slot_ws.id} has no base workspace")
         target = Path(slot_ws.workspace_path)
-        setup_hash = await self._provision_slot_dir(base_ws, kind, target)
+        setup_hash = await self._provision_slot_dir(base_ws, kind, target, prune=prune)
         slot_index = slot_ws.slot_index or 0
         self.write_sentinel(
             target,
