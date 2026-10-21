@@ -973,6 +973,12 @@ class DeliveryObserver:
                 break
         if not cached_only:
             await self._admit_delivery_dependents(view)
+            # Latency telemetry only (spec section 10); nothing here reads it back.
+            record = getattr(self.db, "record_delivery_observations", None)
+            try:
+                await record(view) if record is not None else None
+            except Exception:
+                logger.warning("delivery observation telemetry failed", exc_info=True)
         return view
 
     async def _admit_delivery_dependents(self, view: DeliveryView) -> None:
