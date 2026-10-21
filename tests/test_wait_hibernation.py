@@ -1247,7 +1247,8 @@ async def test_failed_resume_retries_once_then_holds_without_frontier_requeue(en
     assert metrics['wakes_1h']['other'] == 0
 
 
-async def test_fresh_resume_builds_new_git_folder_without_ignored_transcript(env, tmp_path):
+@pytest.mark.parametrize('setup_fails', [False, True])
+async def test_fresh_resume_builds_new_git_folder_without_ignored_transcript(env, tmp_path, setup_fails):
     from pathlib import Path
     from src.git.manager import GitManager
     from src.models import Workspace, RepoSourceType
@@ -1280,17 +1281,192 @@ async def test_fresh_resume_builds_new_git_folder_without_ignored_transcript(env
     env.db.resolve_workspace_kind = AsyncMock(return_value=SimpleNamespace())
     env.db.update_workspace = AsyncMock()
     slots = SimpleNamespace(reprovision_slot=AsyncMock())
+    if setup_fails:
+        slots.reprovision_slot.side_effect = RuntimeError('setup failed')
     orch = SimpleNamespace(db=env.db, git=git, _prepare_workspace_locked=AsyncMock(
-        return_value=str(old)), _git_mutex=lambda _: asyncio.Lock(), _worktree_slots=lambda: slots)
+        return_value=str(old)), _git_mutex=lambda _: asyncio.Lock(), _worktree_slots=lambda: slots,
+        _worktree_base_paths={})
     driver = ResumeTransaction(SimpleNamespace(orch=orch))
-    target = await driver.fresh_workspace(AssignAction('a', 'owner', 'p', 'c', 1),
-        await env.db.get_task('owner'), None, await intent(env))
+    args = (AssignAction('a', 'owner', 'p', 'c', 1),
+            await env.db.get_task('owner'), None, await intent(env))
+    if setup_fails:
+        with pytest.raises(RuntimeError, match='setup failed'):
+            await driver.fresh_workspace(*args)
+        target = (await intent(env))['facts']['fresh_workspace']['new_path']
+    else:
+        target = await driver.fresh_workspace(*args)
     assert target != str(old) and Path(target).is_dir()
     assert not (Path(target) / 'transcript.cache').exists()
     assert await git._arun(['rev-parse', 'HEAD'], cwd=target) == head
     assert await git._arun(['branch', '--show-current'], cwd=target) == 'aq/owner'
     env.db.update_workspace.assert_awaited_once_with('slot', workspace_path=target)
     slots.reprovision_slot.assert_awaited_once()
+
+
+@pytest.fixture
+async def cold_restart_checkout(env, tmp_path):
+    from src.git.manager import GitManager
+    from src.models import RepoConfig, RepoSourceType, Workspace
+
+    git = GitManager()
+    origin = tmp_path / 'origin.git'
+    await git._arun(['init', '--bare', str(origin)])
+    base_path = tmp_path / 'base'
+    await git._arun(['clone', str(origin), str(base_path)])
+    await git._arun(['config', 'user.email', 'test@example.test'], cwd=str(base_path))
+    await git._arun(['config', 'user.name', 'Test'], cwd=str(base_path))
+    await git._arun(['switch', '-c', 'main'], cwd=str(base_path))
+    (base_path / 'content').write_text('saved work\n')
+    await git._arun(['add', 'content'], cwd=str(base_path))
+    await git._arun(['commit', '-m', 'base'], cwd=str(base_path))
+    await git._arun(['push', 'origin', 'main'], cwd=str(base_path))
+    head = await git._arun(['rev-parse', 'HEAD'], cwd=str(base_path))
+    old = base_path / '.aq' / 'worktrees' / 'slot-0'
+    target = old.parent / 'resume-c-1'
+    duplicate = old.parent / 'slot-1'
+    await git._arun(['worktree', 'add', '-b', 'aq/owner', str(old)], cwd=str(base_path))
+    await git._arun(['push', 'origin', 'aq/owner'], cwd=str(old))
+    await git._arun(['switch', '--detach'], cwd=str(old))
+    await git._arun(['worktree', 'add', str(target), 'aq/owner'], cwd=str(base_path))
+    await git._arun(['worktree', 'add', '--detach', str(duplicate), 'main'], cwd=str(base_path))
+    await env.db.create_repo(RepoConfig(id='repo', project_id='p', url=str(origin),
+                                      source_type=RepoSourceType.CLONE, default_branch='main'))
+    await env.db.update_project('p', integration_repository_id='repo')
+    await env.db.create_workspace(Workspace(id='base', project_id='p',
+        workspace_path=str(base_path), source_type=RepoSourceType.CLONE))
+    for index, path in enumerate((old, duplicate)):
+        await env.db.create_workspace(Workspace(id=f'slot-{index}', project_id='p',
+            workspace_path=str(path), source_type=RepoSourceType.WORKTREE,
+            base_workspace_id='base', slot_index=index, locked_by_task_id='owner',
+            locked_by_agent_id='a'))
+    await park(env, saved_head=head)
+    await env.db.update_session('s', state='stopped', desired_state='stopped')
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(continuations).values(resume_state='held', launch_attempts=1,
+            hold_reason='resume_workspace_failed', facts={'fresh_workspace': {
+                'workspace_id': 'slot-0', 'old_path': str(old), 'new_path': str(target),
+                'attempt': 1}}))
+    provider = SimpleNamespace(confirm_stopped=AsyncMock(return_value=True))
+    locks = {}
+    orch = SimpleNamespace(git=git, config=AppConfig(),
+        _git_mutex=lambda path: locks.setdefault(path, asyncio.Lock()),
+        _task_control_lock=lambda task: locks.setdefault(('task', task), asyncio.Lock()),
+        session_providers=SimpleNamespace(create=lambda *_: provider))
+    return SimpleNamespace(env=env, git=git, old=old, target=target, duplicate=duplicate,
+        base=base_path, provider=provider, command=SimpleNamespace(db=env.db, orchestrator=orch))
+
+
+@pytest.mark.parametrize('relocation_recorded', [False, True])
+@pytest.mark.parametrize('prior_resume', [False, True])
+async def test_cold_restart_releases_staged_branch_and_all_reservations(
+    cold_restart_checkout, relocation_recorded, prior_resume,
+):
+    from src.commands.task_commands import TaskCommandsMixin
+    from src.database.tables import admission_reservations
+    from src.models import TaskStatus
+
+    case = cold_restart_checkout
+    db = case.env.db
+    if prior_resume:
+        old = case.old.parent / 'resume-prior-1'
+        await case.git._arun(['worktree', 'move', str(case.old), str(old)], cwd=str(case.base))
+        async with db._engine.begin() as conn:
+            current = await intent(case.env)
+            await conn.execute(insert(continuations).values(id='prior', task_id='owner',
+                wait_id=case.env.wait_id, suspension_generation=0, branch='aq/owner',
+                prior_status='IN_PROGRESS', held_cursor_seq=0, resume_state='acknowledged',
+                facts={'fresh_workspace': {'workspace_id': 'slot-0', 'attempt': 1,
+                    'old_path': str(case.old), 'new_path': str(old)}}))
+            stage = {**current['facts']['fresh_workspace'], 'old_path': str(old)}
+            await conn.execute(update(continuations).where(continuations.c.id == 'c').values(
+                facts={'fresh_workspace': stage}))
+        case.old = old
+        await db.update_workspace('slot-0', workspace_path=str(old))
+    if relocation_recorded:
+        await db.update_workspace('slot-0', workspace_path=str(case.target))
+        await case.git._arun(['worktree', 'remove', str(case.old)], cwd=str(case.base))
+    async with db._engine.begin() as conn:
+        await conn.execute(insert(admission_reservations).values(id='reservation',
+            project_id='p', task_id='owner', continuation_id='c', state='granted',
+            scope={}, provenance='resume', created_at=NOW, effective_priority=100,
+            deadline_at=NOW + 300))
+    result = await TaskCommandsMixin._cmd_restart_task(case.command, {'task_id': 'owner'})
+    assert result['success'], result
+    assert (await db.get_task('owner')).status == TaskStatus.READY
+    assert all(not ws.locked_by_task_id for ws in await db.list_workspaces('p'))
+    assert await case.git._arun(['branch', '--show-current'], cwd=str(case.target)) == ''
+    assert (case.target / 'content').read_text() == 'saved work\n'
+    async with db._engine.connect() as conn:
+        assert await conn.scalar(select(continuations.c.resume_state).where(
+            continuations.c.id == 'c')) == 'cancelled'
+    async with db._engine.connect() as conn:
+        assert await conn.scalar(select(admission_reservations.c.state)) == 'cancelled'
+    case.provider.confirm_stopped.assert_awaited_once()
+    # Replay must not reattach the branch, recreate reservations or reprobe writers.
+    assert (await TaskCommandsMixin._cmd_restart_task(case.command, {'task_id': 'owner'}))['success']
+    case.provider.confirm_stopped.assert_awaited_once()
+    # This is the Git operation that the next claim previously could not perform.
+    await case.git._arun(['switch', 'aq/owner'], cwd=str(case.duplicate))
+
+
+async def test_cold_restart_waits_for_resume_workspace_transaction(cold_restart_checkout):
+    from src.commands.task_commands import TaskCommandsMixin
+
+    case = cold_restart_checkout
+    lock = case.command.orchestrator._task_control_lock('owner')
+    async with lock:
+        restart = asyncio.create_task(TaskCommandsMixin._cmd_restart_task(
+            case.command, {'task_id': 'owner'}))
+        await asyncio.sleep(0)
+        assert not restart.done()
+        case.provider.confirm_stopped.assert_not_awaited()
+    assert (await restart)['success']
+
+
+@pytest.mark.parametrize('blocker', [
+    'live', 'unknown_stop', 'stop_error', 'dirty', 'unpushed', 'head_drift',
+    'reused', 'reused_agent', 'pinned',
+])
+async def test_cold_restart_refuses_without_losing_ownership(cold_restart_checkout, blocker):
+    from src.commands.task_commands import TaskCommandsMixin
+    from src.database.tables import workspaces
+
+    case = cold_restart_checkout
+    db = case.env.db
+    if blocker == 'live':
+        await db.create_session(SessionRecord(id='live-writer', project_id='p',
+            profile_id='worker', harness='codex', provider='fake', name='live-writer', lifecycle='task',
+            work_dir=str(case.target), task_id='owner', epoch='boot',
+            instance_token='live-token', state='running', desired_state='running',
+            started_at=NOW, last_activity=NOW))
+    elif blocker == 'unknown_stop':
+        case.provider.confirm_stopped.return_value = False
+    elif blocker == 'stop_error':
+        case.provider.confirm_stopped.side_effect = RuntimeError('provider unavailable')
+    elif blocker == 'dirty':
+        (case.target / 'unsaved').write_text('retain this')
+    elif blocker == 'unpushed':
+        (case.target / 'content').write_text('unpublished work')
+        await case.git._arun(['commit', '-am', 'unpublished'], cwd=str(case.target))
+    elif blocker == 'head_drift':
+        async with db._engine.begin() as conn:
+            await conn.execute(update(continuations).values(saved_head='f' * 40))
+    elif blocker == 'reused':
+        await db.create_task(Task(id='other-owner', project_id='p', title='Other', description=''))
+        await db.update_workspace('slot-0', locked_by_task_id='other-owner')
+    elif blocker == 'reused_agent':
+        await db.update_workspace('slot-0', locked_by_task_id=None)
+    else:
+        async with db._engine.begin() as conn:
+            await conn.execute(update(workspaces).where(workspaces.c.id == 'slot-0').values(
+                job_pin_count=1))
+    before = await db.get_task('owner')
+    result = await TaskCommandsMixin._cmd_restart_task(case.command, {'task_id': 'owner'})
+    assert not result['success'], result
+    assert (await db.get_task('owner')).status == before.status
+    assert (await db.get_workspace('slot-1')).locked_by_task_id == 'owner'
+    assert (await intent(case.env))['resume_state'] == 'held'
+    assert case.target.is_dir()
 
 
 async def test_resume_reserves_common_capacity_only_after_idle_process_stops(env):

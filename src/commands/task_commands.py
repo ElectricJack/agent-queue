@@ -4773,11 +4773,30 @@ class TaskCommandsMixin:
         return result
 
     async def _cmd_restart_task(self, args: dict) -> dict:
+        orch = getattr(self, 'orchestrator', None)
+        if orch is not None:
+            # Resume can be between durable relocation intent and Git setup.
+            # Share its exclusion through both cleanup and readmission.
+            async with orch._task_control_lock(args['task_id']):
+                return await TaskCommandsMixin._restart_task_locked(self, args)
+        return await TaskCommandsMixin._restart_task_locked(self, args)
+
+    async def _restart_task_locked(self, args: dict) -> dict:
         task = await self.db.get_task(args["task_id"])
         if not task:
             return {"success": False, "error": f"Task '{args['task_id']}' not found"}
         if task.status == TaskStatus.IN_PROGRESS:
             return {"success": False, "error": "Task is currently in progress. Stop it first."}
+        from src.wait_runtime.restart import release_restart_continuations
+        from src.waits.conditions import WaitError
+        from src.git.manager import GitError
+
+        try:
+            continuation_released = await release_restart_continuations(self, task)
+        except WaitError as exc:
+            return {"success": False, "error": str(exc), "error_code": exc.code}
+        except (GitError, OSError) as exc:
+            return {"success": False, "error": f"Cannot release continuation: {exc}"}
         project = await self.db.get_project(task.project_id)
         managed = (
             project is not None
@@ -4806,13 +4825,25 @@ class TaskCommandsMixin:
                         "apply only after its provider-backed proof succeeds, then retry restart."
                     )}
         old_status = task.status.value
-        await self.db.transition_task(
-            args["task_id"],
-            TaskStatus.READY,
-            context="restart_task",
-            retry_count=0,
-            assigned_agent_id=None,
-        )
+        if continuation_released:
+            from src.database.tables import tasks
+
+            accepted = await self.db.transition_task_with_meta(
+                task.id, TaskStatus.READY, meta={}, context="restart_task",
+                from_statuses=(task.status,), extra_where=tasks.c.claim_epoch == task.claim_epoch,
+                force=task.status in SUSPENDED_TASK_STATUSES,
+                retry_count=0, assigned_agent_id=None,
+            )
+            if not accepted:
+                return {"success": False, "error": "Task changed during cold restart; retry."}
+        else:
+            await self.db.transition_task(
+                args["task_id"],
+                TaskStatus.READY,
+                context="restart_task",
+                retry_count=0,
+                assigned_agent_id=None,
+            )
         return {
             "success": True,
             "restarted": args["task_id"],

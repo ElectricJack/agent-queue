@@ -237,6 +237,17 @@ def kind() -> WorkspaceKind:
 # ──────────────────────────── §2.4 exclude block ─────────────────────────
 
 
+async def test_resume_reprovision_keeps_checkout_and_skips_prune(base_ws, kind, mgr):
+    slot = await mgr.create_slot(base_ws, kind, 0)
+    branch = 'aq/resume-test'
+    await mgr.git._arun(['switch', '-c', branch], cwd=slot.workspace_path)
+    mgr.git.aworktree_prune = AsyncMock(side_effect=AssertionError('must not prune'))
+    await mgr.reprovision_slot(slot, kind, prune=False)
+    assert await mgr.git._arun(['branch', '--show-current'], cwd=slot.workspace_path) == branch
+    assert mgr.read_sentinel(Path(slot.workspace_path)).workspace_id == slot.id
+    mgr.git.aworktree_prune.assert_not_awaited()
+
+
 class TestGitExclude:
     def test_creates_block_when_absent(self, base_repo: Path, mgr):
         assert asyncio.run(mgr.ensure_git_exclude(base_repo)) is True

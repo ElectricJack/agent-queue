@@ -166,10 +166,14 @@ class ResumeTransaction:
             if await git._arun(['status', '--porcelain'], cwd=target):
                 raise WaitError('continuation.head_drift', 'recovered checkout is not clean')
             kind = await self.db.resolve_workspace_kind(task.project_id, workspace.kind_id)
+            base = await self.db.get_workspace(workspace.base_workspace_id)
+            if base is None:
+                raise WaitError('wait.unavailable', 'worktree base disappeared')
+            await self.db.update_workspace(workspace.id, workspace_path=target)
+            self.orch._worktree_base_paths[target] = base.workspace_path
             await self.orch._worktree_slots().reprovision_slot(
                 replace(workspace, workspace_path=target), kind, prune=False,
             )
-            await self.db.update_workspace(workspace.id, workspace_path=target)
             return target
         path = await self.orch._prepare_workspace_locked(task, agent)
         workspace = await self.db.get_workspace_for_task(task.id)
@@ -202,11 +206,14 @@ class ResumeTransaction:
             await git._arun_unlocked(['worktree', 'add', target, intent['branch']],
                                      cwd=base.workspace_path)
         fresh = replace(workspace, workspace_path=target)
+        # Cleanup must see the checkout holding the branch even if setup fails.
+        # The persisted stage above covers a crash before this path update.
+        await self.db.update_workspace(workspace.id, workspace_path=target)
+        self.orch._worktree_base_paths[target] = base.workspace_path
         # reprovision reuses this *new* checkout and applies the configured
         # setup and ownership sentinel. It never copies an old agent folder.
         await self.orch._worktree_slots().reprovision_slot(fresh, kind, prune=False)
         await git._arun(['merge-base', '--is-ancestor', intent['saved_head'], 'HEAD'], cwd=target)
-        await self.db.update_workspace(workspace.id, workspace_path=target)
         # Old detached folder is clean and unowned after the atomic path update.
         # Removal failure is harmless retained disk, never a second writer.
         try:
