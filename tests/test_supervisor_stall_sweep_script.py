@@ -144,6 +144,50 @@ def _scoped_responses(task_response):
     return responses
 
 
+@pytest.mark.parametrize("status", ["READY", "DEFINED"])
+@pytest.mark.parametrize("identity", ["blocking_ids", "parent", "direct_ref", "unknown"])
+def test_epic_refresh_wait_reports_owning_epic_and_apply_command(tmp_path, status, identity):
+    child = _task("child", status)
+    refresh = {"code": "frontier_epic_refresh_pending", "ref": "child",
+               "detail": "Epic must contain prerequisite", "batch_ids": ["train-epic-refresh-one"]}
+    if identity == "blocking_ids":
+        refresh["blocking_task_ids"] = ["epic"]
+    elif identity == "parent":
+        child["parent_task_id"] = "epic"
+    elif identity == "direct_ref":
+        refresh["ref"] = "epic"
+    responses = _scoped_responses([child])
+    responses["aq"]["task explain --task-id child"] = {"reasons": [
+        {"code": "awaiting_pool_session", "detail": "withheld"},
+        {"code": "blocked_dependency", "ref": "other",
+         "detail": "dep 'other' status=IN_PROGRESS"},
+        refresh,
+    ]}
+    proc, calls = _run(tmp_path, responses, "--project", "rom")
+    assert proc.returncode == 0, proc.stderr
+    [line] = [line for line in proc.stdout.splitlines() if "EPIC-REFRESH-NEEDED" in line]
+    assert "rom child" in line and "train-epic-refresh-one" in line
+    if identity == "unknown":
+        assert "epic identity unavailable" in line
+        assert "refresh-epic --task" not in line
+    else:
+        assert "aq integration refresh-epic --task epic --apply" in line
+    assert "--task child" not in line
+    assert "STUCK rom child" not in proc.stdout
+    assert calls.count(["aq", "task", "explain", "--task-id", "child"]) == 1
+    assert not any("refresh-epic" in call for call in calls)
+    assert set(_project_args(calls)) == {"rom"}
+
+
+def test_fresh_epic_refresh_wait_stays_below_stall_threshold(tmp_path):
+    proc, calls = _run(tmp_path, _scoped_responses([
+        _task("child", "READY", age_s=60, parent_task_id="epic"),
+    ]), "--project", "rom")
+    assert proc.returncode == 0, proc.stderr
+    assert "EPIC-REFRESH-NEEDED" not in proc.stdout
+    assert not any(call[1:3] == ["task", "explain"] for call in calls)
+
+
 def test_train_repair_capacity_alarm_reaches_timed_patrol(tmp_path):
     responses = _scoped_responses([_task("delegate", "READY", age_s=1900)])
     responses["aq"]["task explain --task-id delegate"] = {"reasons": [

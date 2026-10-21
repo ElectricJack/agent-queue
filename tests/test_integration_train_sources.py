@@ -3899,7 +3899,8 @@ async def test_epic_refresh_conflict_files_ordinary_repair_on_epic(
     git(origin.clone, "push", "origin", "main")
     transport = LocalGit(Path(origin.url))
     train, checks, _ = lane(world, transport, target=target)
-    pending = await EpicRefresh(db, train).refresh("epic", dry_run=False)
+    controls = TrainControls(db, train=train)
+    pending = await controls.refresh_epic("epic", dry_run=False, operator_id="operator")
     assert pending["state"] == "repair", pending
     repairs = [task for task in await db.list_tasks("p") if task.dedup_key
                and task.dedup_key.startswith(f"repair:{pending['batch_id']}:")]
@@ -3907,6 +3908,12 @@ async def test_epic_refresh_conflict_files_ordinary_repair_on_epic(
     assert repair.branch_name == target.target_ref.removeprefix("refs/heads/")
     owner = await BranchLock(db).get(BranchKey(repository_id="r", branch=target.target_ref))
     assert owner.holder == repair.id
+    # Retrying the operator's apply advances the same batch and repair rather
+    # than returning an unhandled merge_conflict or allocating another worker.
+    again = await controls.refresh_epic("epic", dry_run=False, operator_id="operator")
+    assert again["batch_id"] == pending["batch_id"] and again["state"] == "repair"
+    assert [task.id for task in await db.list_tasks("p") if task.dedup_key
+            and task.dedup_key.startswith(f"repair:{pending['batch_id']}:")] == [repair.id]
     assert "frontier_epic_refresh_pending" in {
         item["code"] for item in await db.claim_frontier_exclusions("child")}
 

@@ -11,6 +11,7 @@ import asyncio
 import json
 import logging
 import re
+import shlex
 import time
 from collections import Counter
 from dataclasses import dataclass, replace
@@ -157,6 +158,29 @@ async def _work_findings(ctx: DoctorContext, tasks: list, now: float, explains: 
         reasons = why.get("reasons") or []
         from src.task_graph.readiness import DELIVERY_CODES, readiness_from_reasons
 
+        refresh = [r for r in reasons if r.get("code") == "frontier_epic_refresh_pending"]
+        if refresh:
+            epic_ids = sorted({
+                epic for r in refresh
+                for epic in (r.get("blocking_task_ids") or
+                             [getattr(task, "parent_task_id", None) or r.get("ref")])
+                if epic and epic != task.id
+            })
+            batch_ids = sorted({batch for r in refresh
+                                for batch in (r.get("batch_ids") or [r.get("batch_id")])
+                                if batch})
+            commands = [f"aq integration refresh-epic --task {shlex.quote(epic)} --apply"
+                        for epic in epic_ids]
+            action = "; ".join(commands) or "epic identity unavailable; inspect the child's parent"
+            findings.append(_finding(
+                "epic_refresh_needed", task.project_id,
+                f"{task.id}: epic refresh needed; "
+                + "; ".join(r.get("detail", "") for r in refresh)
+                + f"; next: {action}",
+                task_id=task.id, epic_ids=epic_ids, batch_ids=batch_ids,
+                commands=commands, reasons=reasons,
+            ))
+            continue
         if any(r.get("code") in DELIVERY_CODES for r in reasons):
             readiness = readiness_from_reasons(reasons)
             findings.append(_finding(
@@ -609,6 +633,7 @@ _SUBJECTS = {
     "unclaimed_work": ("task", "task_id"),
     "undelivered_blocker": ("task", "task_id"),
     "WAITING-ON-DELIVERY": ("task", "task_id"),
+    "epic_refresh_needed": ("task", "task_id"),
     "restore_branch": ("task", "dependent_task_id"),
     "worker_relaunch_loop": ("task", "task_id"),
     "train_repair_capacity_wait": ("task", "task_id"),
@@ -770,7 +795,7 @@ async def _check_sweep(ctx: DoctorContext) -> CheckResult:
     if active:
         runs.extend([
             _probe(ctx, active, ("unclaimed_work", "undelivered_blocker", "WAITING-ON-DELIVERY",
-                                 "train_repair_capacity_wait"),
+                                 "epic_refresh_needed", "train_repair_capacity_wait"),
                    lambda c: _work_findings(c, tasks, now, _Explains(c))),
             _probe(ctx, active, ("container_dependency", "container_dependencies_truncated"),
                    lambda c: _container_dependency_findings(c, active)),
@@ -819,7 +844,7 @@ async def _check_sweep(ctx: DoctorContext) -> CheckResult:
         coverage.extend(partition(CHECK_ID, kind, None, complete=True, total=0)
                         for kind in _SUBJECTS if kind not in {p["kind"] for p in coverage})
     inventory_kinds = {"unclaimed_work", "undelivered_blocker", "worker_relaunch_loop",
-                       "train_repair_capacity_wait", "WAITING-ON-DELIVERY",
+                       "train_repair_capacity_wait", "WAITING-ON-DELIVERY", "epic_refresh_needed",
                        "pool_without_claim", "idle_worker", "idle_pool", "delivery_stale",
                        "disabled_provider", "publisher_skip", "non_design_expensive_route"}
     coverage.extend(partition(CHECK_ID, "non_design_expensive_route", pid, complete=True)

@@ -258,6 +258,11 @@ branch and contained in its epic. Missing epic containment withholds the child e
 when no batch is open. Scheduler, pool demand, explain and claim share these rules.
 Explain reports `frontier_epic_refresh_pending` for the epic gate and names any
 blocking refresh batch id; default-branch proof retains its separate exclusion.
+For stale children, `aq doctor --check stall.sweep` reports `epic_refresh_needed`
+and the operator stall script prints `EPIC-REFRESH-NEEDED`, with the epic's refresh
+command and any blocking batch ids. A conflicting apply files an ordinary train
+repair on the epic branch. Repeating apply reuses that batch and repair; the child
+continues waiting for the refresh's checks, attestation and publication.
 Repairs for failed or missing CI start from the tested refresh candidate; conflict
 repairs start from the partial candidate containing the successful merges.
 Refresh failures are compared with the default SHA frozen into the batch. A
