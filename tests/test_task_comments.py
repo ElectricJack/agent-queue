@@ -598,7 +598,7 @@ async def test_append_race_with_task_removal_is_lossless_or_clean(env, monkeypat
             return
         if operation == "archive":
             match = (
-                statement.startswith("SELECT tasks.id, tasks.status") and "FOR UPDATE" in statement
+                statement.startswith("SELECT tasks.id") and "FOR UPDATE" in statement
             )
         elif env.db._engine.dialect.name == "postgresql":
             # Pending-pause deletion safety locks the task before FK cleanup.

@@ -37,9 +37,11 @@ from tests.test_collaboration_queries import NOW, accept, count, create, env as 
 
 @pytest.fixture
 def commands(env):
+    config = AppConfig()
     return CommandHandler(
-        SimpleNamespace(db=env.db, bus=SimpleNamespace(emit=AsyncMock()), plugin_registry=None),
-        AppConfig(),
+        SimpleNamespace(db=env.db, bus=SimpleNamespace(emit=AsyncMock()), plugin_registry=None,
+                        config=config),
+        config,
     )
 
 
