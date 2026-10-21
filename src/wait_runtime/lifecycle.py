@@ -143,7 +143,8 @@ class WaitLifecycle:
         """One checkpoint request; retain the registered source and its edges."""
         from src.waits.ownership import fence_owner
 
-        if not getattr(self.orch.config.wait_policy, 'hibernation_enabled', False):
+        policy = project_policy(self.orch.config.wait_policy, wait['project_id'])
+        if not policy.hibernation_enabled:
             return {'success': True, 'suspended': False, 'reason': 'flag'}
         if wait['sleep_decision'] != 'in_place' or wait['outcome'] != 'pending':
             return {'success': True, 'suspended': False}
@@ -195,8 +196,6 @@ class WaitLifecycle:
 
     async def tick(self):
         self.medians.clear()
-        if not getattr(self.orch.config.wait_policy, 'hibernation_enabled', False):
-            return
         async with self.db._engine.connect() as conn:
             ids = list((await conn.execute(select(continuations.c.wait_id).join(
                 wait_records, wait_records.c.id == continuations.c.wait_id,
@@ -224,8 +223,6 @@ class WaitLifecycle:
         await self.resume_pending()
 
     async def resume_pending(self):
-        if not getattr(self.orch.config.wait_policy, 'hibernation_enabled', False):
-            return
         async with self.db._engine.connect() as conn:
             ready = [dict(row) for row in (await conn.execute(select(continuations).join(
                 tasks, tasks.c.id == continuations.c.task_id,

@@ -79,7 +79,7 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["src/agent_waits.py", "src/database/queries/agent_wait_queries.py", "src/commands/wait_commands.py", "src/commands/contracts/wait.py", "src/cli/waits.py", "src/api/models/wait.py"], areas: ["agent-waits"] }
   - { paths: ["src/waits/**", "src/wait_runtime/**", "src/database/queries/wait_queries.py", "src/database/queries/continuation_queries.py", "src/commands/wait_v2_commands.py", "src/commands/contracts/wait_v2.py"], areas: ["agent-waits"] }
   # The remaining v2 ownership paths land with the leaves that create them.
-  - { paths: ["src/waits/**", "src/database/queries/wait_source_queries.py"], areas: ["agent-waits"] }
+  - { paths: ["src/waits/**", "src/database/queries/wait_source_queries.py", "src/doctor/wait_checks.py"], areas: ["agent-waits"] }
   - { paths: ["src/database/queries/wait_metrics.py", "src/metrics/waits.py"], areas: ["agent-waits", "metrics"] }
   - { paths: ["migrations/versions/a00000000102_workspace_kind_limits.py", "migrations/versions/a00000000109_wait_records.py"], areas: ["agent-waits"] }
   - { paths: ["src/agent_cron.py", "src/database/queries/agent_cron_queries.py", "src/commands/cron_commands.py", "src/commands/contracts/cron.py", "src/cli/cron.py", "src/api/models/cron.py"], areas: ["agent-cron"] }

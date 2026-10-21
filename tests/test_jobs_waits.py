@@ -994,12 +994,15 @@ async def test_run_outcome_commits_through_service_command_and_refusal_stays_due
         row("unit", "success", run_id="77", run_url="https://ci/runs/77", observed_at=20),
     ]
     key = f"ci_run:repo:{HEAD}:77"
-    # v2 off: the service commit is refused, nothing is written, the head stays due.
-    watched.config.wait_policy.v2_enabled = False
+    # A transport refusal must leave this exact head due for retry.
+    commit = watched.watcher.commit
+    watched.watcher.commit = AsyncMock(return_value={"success": False})
     assert await watched.watcher.tick() == 0
     assert not await source_events(watched.db, key)
     assert not watched.watcher._due
-    watched.config.wait_policy.v2_enabled = True
+    # Rollback flags must still allow source events for existing subscriptions.
+    watched.watcher.commit = commit
+    watched.config.wait_policy.v2_enabled = False
     assert await watched.watcher.tick() == 1
     rows = await source_events(watched.db, key)
     assert len(rows) == 1 and rows[0]["outcome_ref"] == "https://ci/runs/77"

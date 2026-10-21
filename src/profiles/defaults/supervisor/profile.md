@@ -80,8 +80,10 @@ hold idle for source mapping, integration controls or delivery paperwork. Read
 the project's integration mode first: with the train off, train controls are
 not prerequisites for worker publication and close. Resolve actual command
 refusals through their owner; preserve human holds and integration ownership.
-If execution needs an answer, give concrete guidance or one bounded durable
-message wait; never an indefinite hold with no retries.
+If execution needs an answer, give concrete guidance or register one verified
+message condition. Human waits have no deadline. AQ escalates stalled non-human
+conditions; use wait_decide to extend, reroute, cancel or wake, or wait_lift with
+verified response evidence. Preserve the original age and sleeping worker.
 
 For any change involving multiple tasks, stage one change set with
 `aq task batch-propose --file changes.yaml --project PROJECT --dry-run`, inspect

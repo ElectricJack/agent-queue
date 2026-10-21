@@ -146,12 +146,36 @@ async def test_reserved_task_still_obeys_frontier_and_claim_consumes_atomically(
     assert reservation["state"] == "consumed" and reservation["consumed_by_session_id"] == "session"
 
 
-async def test_disabled_service_does_not_mutate(env):
+async def test_disabled_service_admits_no_new_waits(env):
     env.o.config.wait_policy.scheduler_waits_enabled = False
-    with pytest.raises(WaitError, match="disabled"):
-        await sync(env)
+    await sync(env)
     assert not await rows(env, wait_records)
     assert not await rows(env, wait_deadlines)
+
+
+async def test_scheduler_rollback_retracts_branch_reservations_but_preserves_resume(env):
+    from src.database.tables import continuations
+
+    await sync(env)
+    await fire(env, (await rows(env, wait_deadlines))[0], NOW + 1800)
+    wait = (await rows(env, wait_records))[0]
+    async with env.db._engine.begin() as conn:
+        await conn.execute(insert(continuations).values(
+            id="resume", task_id="holder", wait_id=wait["id"], suspension_generation=1,
+            facts={}, branch="aq/holder", prior_status="IN_PROGRESS", held_cursor_seq=0,
+            resume_state="queued", created_at=NOW,
+        ))
+        await conn.execute(insert(admission_reservations).values(
+            id="resume-seat", continuation_id="resume", project_id="p", scope={},
+            effective_priority=100, provenance="resume", deadline_at=NOW + 3000,
+            state="pending", created_at=NOW,
+        ))
+    env.o.config.wait_policy.scheduler_waits_enabled = False
+    await sync(env, NOW + 1801)
+    reservations = {r["id"]: r for r in await rows(env, admission_reservations)}
+    assert reservations.pop("resume-seat")["state"] == "pending"
+    assert all(r["state"] == "cancelled" for r in reservations.values())
+    assert all(r["cleared_at"] is not None for r in await rows(env, wait_records))
 
 
 async def test_admission_reader_preserves_ingestion_hold(env):
@@ -173,9 +197,10 @@ async def test_admission_reader_preserves_ingestion_hold(env):
         )) == "awaiting-fidelity-review"
 
 
-def test_policy_defaults_are_dormant_and_string_flags_refused():
+def test_policy_defaults_enable_cutover_and_string_flags_refused():
     policy = AppConfig().wait_policy
-    assert not policy.v2_enabled and not policy.hibernation_enabled and not policy.scheduler_waits_enabled
+    assert policy.v2_enabled and policy.hibernation_enabled and policy.scheduler_waits_enabled
+    assert policy.v1_bodies == "refuse"
     assert policy.branch_admission_deadline_seconds == 1800
     assert not policy.validate()
     assert parse_wait_policy({"v2_enabled": "false"}).validate()
@@ -432,6 +457,8 @@ async def test_startup_bridge_runs_once_and_restart_honours_durable_marker(env):
     assert service.command.await_count == 1
     assert any(r['phase'] == 'agent-waits' and r['identity'] == '*' and r['state'] == 'complete'
                for r in await rows(env, wait_bridge_progress))
-    service._bridge_started = False
+    # A new composition root relies on the durable receipt, not process memory.
+    service = WaitService(SimpleNamespace(db=env.db, config=env.o.config), clock=lambda: NOW)
+    service.command = AsyncMock(side_effect=command)
     await service.startup_bridge()
-    assert service.command.await_count == 1
+    service.command.assert_not_awaited()

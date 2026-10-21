@@ -245,12 +245,16 @@ class TestConfigWatcher:
         self, config_dir, bus,
     ):
         _, config_path = config_dir
+        data = yaml.safe_load(config_path.read_text())
+        data["wait_policy"] = {"v2_enabled": False}
+        config_path.write_text(yaml.safe_dump(data))
         config = load_config(str(config_path))
         watcher = ConfigWatcher(str(config_path), bus, config)
         events = []
         bus.subscribe("config.reloaded", lambda data: events.append(data))
         data = yaml.safe_load(config_path.read_text())
         data["wait_policy"] = {
+            "v2_enabled": False,
             "resume_cost_minutes": 20,
             "projects": {"canary": {"v2_enabled": True, "resume_cost_minutes": 40}},
         }

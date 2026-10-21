@@ -42,6 +42,7 @@
         "tests/test_agent_waits.py",
         "tests/test_wait_admission.py",
         "tests/test_wait_commands.py",
+        "tests/test_wait_cutover.py",
         "tests/test_wait_decisions.py",
         "tests/test_wait_dispatch.py",
         "tests/test_wait_faults.py",
@@ -6113,7 +6114,7 @@
         "doctor"
       ],
       "default_arm": true,
-      "digest": "sha256:b39bc01e12e916e0ba0da93d42696739d2c9ab517fe67fc97db8fe50d6876c91",
+      "digest": "sha256:49c54555bc047e21071d990396e1a8d2ad1cb6d76384163828514c777292da05",
       "imports": [
         "src.cli.app",
         "src.commands.ops_commands",
@@ -6150,6 +6151,7 @@
         "src.doctor.skill_checks",
         "src.doctor.stall_checks",
         "src.doctor.task_checks",
+        "src.doctor.wait_checks",
         "src.doctor.workspace_checks",
         "src.event_bus",
         "src.event_schemas",
@@ -19095,6 +19097,28 @@
         "parametrize"
       ],
       "summary": "Verified wait surfaces, principal fences and dormant runtime composition."
+    },
+    "tests/test_wait_cutover.py": {
+      "areas": [
+        "agent-waits"
+      ],
+      "default_arm": true,
+      "digest": "sha256:b1143d862322739a9137d00f0c06f882f29bad19bf4173f35fdfc636241501a4",
+      "imports": [
+        "src.config",
+        "src.config_wait_policy",
+        "src.database.tables",
+        "src.doctor.models",
+        "src.doctor.wait_checks",
+        "src.handoffs",
+        "src.models",
+        "src.waits.policy",
+        "src.waits.recovery"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Cutover flags gate admission while durable outcomes and recovery keep working."
     },
     "tests/test_wait_decisions.py": {
       "areas": [

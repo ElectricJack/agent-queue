@@ -205,8 +205,6 @@ class ResumeTransaction:
         return target
 
     async def dispatch(self, args, *, principal, scope, handler):
-        if not self.orch.config.wait_policy.hibernation_enabled:
-            raise WaitError('wait.disabled', 'hibernation is disabled')
         async with self.db._engine.connect() as conn:
             intent = (await conn.execute(select(continuations).where(
                 continuations.c.id == args['continuation_id'],
