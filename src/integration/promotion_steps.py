@@ -23,6 +23,8 @@ from jsonschema import Draft202012Validator
 from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert
 
+from src.waits.sources import execute_task_status_mutation
+from src.waits.sources import execute_batch_mutation
 from src.database.tables import (
     archived_tasks,
     integration_batch_members,
@@ -1454,7 +1456,7 @@ class PromotionVisit(BatchService):
                                       authorize=delivered)
             if await self.gitops.remote(repo, ref) is None:
                 async with self.store.db.immediate() as conn:
-                    await conn.execute(update(integration_batches).where(
+                    await execute_batch_mutation(conn, update(integration_batches).where(
                         integration_batches.c.id == batch.id,
                     ).values(cleanup_state="complete", updated_at=self.clock()))
         except (GitError, OSError, RuntimeError, ValueError):
@@ -1756,7 +1758,7 @@ async def settle_promotion(db, batch, observation, *, clock=time.time, conn=None
     members = (await conn.execute(select(integration_batch_members.c.task_id).where(
         integration_batch_members.c.batch_id == batch.id,
     ))).scalars().all()
-    await conn.execute(update(tasks).where(tasks.c.id.in_(members),
+    await execute_task_status_mutation(conn, update(tasks).where(tasks.c.id.in_(members),
                        tasks.c.task_type == "promotion", tasks.c.status == "IN_PROGRESS")
                        .values(status="COMPLETED", updated_at=clock()))
     result = {"tag_oid": (observation.detail or {}).get("tag_oid"),

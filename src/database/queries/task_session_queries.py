@@ -29,7 +29,7 @@ DEFAULT_STALE_AFTER = 480.0
 #: Task statuses a live attempt's task must be in for its worker to dock on
 #: the task graph.  A finished or not-yet-started task never carries a
 #: marker even if a stray session row still points at it.
-LIVE_WORKER_TASK_STATUSES = ("ASSIGNED", "IN_PROGRESS")
+LIVE_WORKER_TASK_STATUSES = ("ASSIGNED", "IN_PROGRESS", "WAITING")
 
 
 def open_attempts(session_id):

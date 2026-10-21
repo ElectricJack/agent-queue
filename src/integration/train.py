@@ -17,8 +17,9 @@ ends the repair with no attempt counted. A red candidate is then measured agains
 the target commit it was built on, and only a failure the target does not also
 fail reaches the repair. An epic with only pre-existing failures can instead
 receive one default-branch sync repair when that exact branch has trusted green
-checks and train-produced or attested provenance. Otherwise the candidate's own
-suites are re-requested under bounded backoff, and the
+checks and train-produced or attested provenance. An ordinary root can admit
+green pending baseline fixes through an atomic replacement batch. Otherwise
+the candidate's own suites are re-requested under bounded backoff, and the
 bound ends at a named blocker instead of an endless repair chain. The allocator
 counts attempts when it files, never per visit. A merge conflict files one
 ordinary repair whose brief names the conflicting member and every member still to
@@ -206,6 +207,11 @@ class BatchSource(Protocol):
 
     async def settle(self, batch: Batch, observation: BatchObservation) -> None:
         """Record that the target contains the batch; idempotent."""
+
+    async def reassemble_preexisting(
+        self, target, snapshot, service, batch, frozen, *, names, source_checks,
+    ) -> dict | None:
+        """Replace a baseline-blocked batch only with admitted exact green fixes."""
 
 
 class RepairAllocator(Protocol):
@@ -413,6 +419,7 @@ class TrainLane:
     ] | None = None
     sync_closed_epic: Callable[[GitTruthSnapshot], Awaitable[BatchSelection | None]] | None = None
     observe_source: Callable[[GitTruthSnapshot], Awaitable[None]] | None = None
+    baseline_fix_checks: Callable[[BatchMember], Awaitable[ChecksResult | None]] | None = None
 
 
 @dataclass(frozen=True)
@@ -899,9 +906,9 @@ class IntegrationTrain:
 
         A required check that also fails on the target commit this candidate was
         built on is a pre-existing failure, and one the target has not decided is
-        nobody's. Only an epic's proven pre-existing failures can authorize a
-        bounded merge of a verified default head; all other unrepairable reds
-        re-request the candidate's own suites under bounded backoff.
+        nobody's. An epic can merge a verified default head; an ordinary root
+        can admit a green pending baseline fix through a replacement batch.
+        Otherwise re-request the candidate's own suites under bounded backoff.
         """
         if not failing(result):
             # A workflow can fail while every required job succeeds. Preserve
@@ -964,6 +971,17 @@ class IntegrationTrain:
                     return replace(visit, detail={
                         **(visit.detail or {}), **baseline.detail(), "sync_default_branch": sync,
                     })
+        reassembly = None
+        if (target.kind in {"root", "development"} and baseline.state == "pre_existing"
+                and lane.baseline_fix_checks is not None):
+            _progress("admit_baseline_fix", candidate_sha=head.sha)
+            reassembly = await self.batches.reassemble_preexisting(
+                target, snapshot, lane.service, batch, members,
+                names=baseline.pre_existing, source_checks=lane.baseline_fix_checks,
+            )
+            if reassembly and reassembly.get("outcome") == "reassembled":
+                return replace(self._visit(target, "preexisting", batch, observation, result),
+                    detail={**baseline.detail(), "reassembly": reassembly})
         _progress("rerequest_preexisting", candidate_sha=head.sha)
         re_requested = await self.baseline.re_request(
             batch, candidate=result, baseline=baseline, checks=checks,
@@ -972,6 +990,7 @@ class IntegrationTrain:
         return replace(visit, detail={
             **(visit.detail or {}), **baseline.detail(), "re_request": re_requested,
             **({"sync_default_branch": sync} if sync else {}),
+            **({"reassembly": reassembly} if reassembly else {}),
         })
 
     async def _checks(self, checks: ExactChecks, head: HeadIdentity) -> ChecksResult:

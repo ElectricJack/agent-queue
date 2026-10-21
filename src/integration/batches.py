@@ -18,6 +18,7 @@ from typing import Protocol
 
 from sqlalchemy import func, insert, select, tuple_, union_all, update
 
+from src.waits.sources import execute_batch_mutation
 from src.database.tables import (
     archived_tasks, integration_batch_members, integration_batches, projects, tasks,
 )
@@ -103,7 +104,8 @@ def withheld_source_blocker(target, task_id, source_sha, row):
                   f" ({row.human_abort_reason or 'no abort reason'}); the train will not"
                   " re-batch this exact source on its own",
         "action": f"preview `aq integration release-withheld-source {batch_id} --task "
-                  f"{task_id}`; an operator applies it with the previewed SHAs and a reason. "
+                  f"{task_id}`; an operator or owning supervisor applies it with the previewed "
+                  "SHAs and a reason. "
                   "A new completion of the task is admitted without a release",
     }
 
@@ -380,7 +382,7 @@ class BatchStore:
             projects.c.id == batch.project_id,
         )) or {}
         retention = (policy.get("cleanup") or {}).get("successful_source_refs", "delete")
-        await conn.execute(insert(integration_batches).values(
+        await execute_batch_mutation(conn, insert(integration_batches).values(
             id=batch.id, project_id=batch.project_id, repository_id=batch.repository_id,
             target_ref=batch.target_ref, intent=batch.intent,
             repair_attempt_count=batch.repair_attempt_count,
@@ -419,7 +421,7 @@ class BatchStore:
                 source_ref=source_ref,
                 source_ref_retention=retention if source_ref else None,
             ))
-        await conn.execute(update(integration_batches).where(
+        await execute_batch_mutation(conn, update(integration_batches).where(
             integration_batches.c.id == batch.id,
         ).values(lifecycle="sealed"))
         return replace(batch, created_at=batch.created_at or now)
@@ -485,7 +487,7 @@ class BatchStore:
                            "task_id": task_id,
                            "replacement_batch_id": replacement.id if replacement else None,
                            "operator_id": operator_id, "reason": reason}
-            await conn.execute(update(integration_batches).where(
+            await execute_batch_mutation(conn, update(integration_batches).where(
                 integration_batches.c.id == batch.id,
             ).values(intent="aborted", lifecycle="aborted",
                      human_abort_reason=reason, ejection_record=instruction,
@@ -591,7 +593,7 @@ class BatchStore:
                            "task_id": task_id,
                            "replacement_batch_id": replacement.id if replacement else None,
                            "operator_id": "service:integration-train", "reason": reason}
-            await conn.execute(update(integration_batches).where(
+            await execute_batch_mutation(conn, update(integration_batches).where(
                 integration_batches.c.id == batch.id,
             ).values(intent="aborted", lifecycle="aborted",
                      human_abort_reason=reason, ejection_record=instruction,
@@ -608,6 +610,57 @@ class BatchStore:
             await self.db.log_event("integration.batch_superseded", project_id=batch.project_id,
                 task_id=task_id, payload=json.dumps(instruction),
                 conn=conn)
+        return True
+
+    async def reassemble(self, batch, replacement, members, *, trees, authorize):
+        """Atomically replace an open baseline-blocked batch, retaining every source."""
+        import json
+
+        async with self.db.immediate() as conn:
+            await self.db.lock_hierarchy_project(conn, batch.project_id)
+            await conn.execute(select(projects.c.id).where(
+                projects.c.id == batch.project_id).with_for_update())
+            await self._target_lock(conn, batch)
+            row = (await conn.execute(select(integration_batches).where(
+                integration_batches.c.id == batch.id).with_for_update())).mappings().one()
+            if (Batch.from_row(row) != batch or row["intent"] != "open"
+                    or row["lifecycle"] == "promoted"):
+                return False
+            frozen = tuple(BatchMember(r.task_id, r.source_sha, r.source_base_sha, r.ordinal)
+                for r in (await conn.execute(select(integration_batch_members).where(
+                    integration_batch_members.c.batch_id == batch.id,
+                ).order_by(integration_batch_members.c.ordinal))).all())
+            sources = {m.task_id: (m.source_sha, m.base_sha) for m in members}
+            if (len(sources) <= len(frozen) or any(
+                    sources.get(m.task_id) != (m.source_sha, m.base_sha) for m in frozen)):
+                raise ValueError("reassembly must retain every exact frozen member")
+            if ((replacement.project_id, replacement.repository_id, replacement.target_ref)
+                    != (batch.project_id, batch.repository_id, batch.target_ref)
+                    or replacement.repair_attempt_count < batch.repair_attempt_count):
+                raise ValueError("reassembly must preserve target and repair history")
+            await self._exclusive_target(conn, replacement, excluding=batch.id)
+            await conn.execute(select(tasks.c.id).where(tasks.c.id.in_(sources))
+                               .order_by(tasks.c.id).with_for_update())
+            if not await authorize(conn, row):
+                return False
+            instruction = {
+                "batch_id": batch.id, "project_id": batch.project_id,
+                "task_id": frozen[0].task_id, "replacement_batch_id": replacement.id,
+                "operator_id": "service:integration-train",
+                "reason": "pre-existing target failures; admit green pending baseline fix",
+            }
+            await conn.execute(update(integration_batches).where(
+                integration_batches.c.id == batch.id,
+            ).values(intent="aborted", lifecycle="aborted", ejection_record=instruction,
+                     human_abort_reason=instruction["reason"], cleanup_state="pending",
+                     updated_at=self.clock()))
+            from src.integration.branch_retirement import request_batch_retirement_on
+
+            await request_batch_retirement_on(conn, row, reason="reassembled batch candidate",
+                                             now=self.clock())
+            await self._freeze_on(conn, replacement, members, trees=trees)
+            await self.db.log_event("integration.batch_reassembled", project_id=batch.project_id,
+                payload=json.dumps(instruction), conn=conn)
         return True
 
     async def set_intent(self, batch_id: str, intent: str, *, dry_run=False,
@@ -644,7 +697,7 @@ class BatchStore:
                 )
                 if row["lifecycle"] != "aborted":
                     values["cleanup_state"] = "pending"
-            await conn.execute(update(integration_batches).where(
+            await execute_batch_mutation(conn, update(integration_batches).where(
                 integration_batches.c.id == batch_id,
             ).values(**values))
             if intent == "aborted":
@@ -678,7 +731,7 @@ class BatchStore:
             ids = list((await conn.execute(pending.order_by(integration_batches.c.id)
                 .limit(limit).with_for_update(skip_locked=True))).scalars())
             if ids:
-                await conn.execute(update(integration_batches).where(
+                await execute_batch_mutation(conn, update(integration_batches).where(
                     integration_batches.c.id.in_(ids),
                 ).values(lifecycle="aborted", cleanup_state="pending",
                     human_abort_reason=func.coalesce(

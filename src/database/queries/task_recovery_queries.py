@@ -10,6 +10,7 @@ import uuid
 
 from sqlalchemy import and_, delete, insert, or_, select, update
 
+from src.waits.sources import insert_message_with_source_event
 from src.database.queries.blocked_state import apply_label_filters, blocked_predicate
 from src.database.queries.task_queries import RECOVERY_FAILURE_AT_KEY, STALE_OPEN_ATTENTION
 from src.database.tables import (
@@ -1019,7 +1020,7 @@ class TaskRecoveryQueryMixin:
                 }
             body = _recovery_message_body(facts)
             now = time.time()
-            await conn.execute(
+            await insert_message_with_source_event(conn,
                 insert(messages).values(
                     id="msg-" + incident_id,
                     project_id=task["project_id"],

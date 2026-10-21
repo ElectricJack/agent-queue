@@ -569,7 +569,7 @@ Maps to `PlaybooksConfig`. The YAML key is `playbooks`.
 |---|---|---|---|
 | `enabled` | `bool` | `False` | Whether the playbook/workflow subsystem is active. |
 | `private_value_active_key_id` | `str` | `""` | Active encryption key identifier. Missing key material refuses protected bindings before invocation. |
-| `private_value_key_env` | `dict[str, str]` | `{}` | Key identifier → daemon environment variable name containing a base64-encoded 32-byte key. Retain old keys for existing runs. No keys are generated automatically; key bytes must remain outside the database, vault and script mounts. |
+| `private_value_key_env` | `dict[str, str]` | `{}` | Key identifier → daemon environment variable name containing a base64-encoded 32-byte key. Retain old keys for existing runs. The installer bootstraps unconfigured storage; the runtime never generates keys. Key bytes remain outside the database, vault and script mounts. |
 | `v2_api` | `bool` | `False` | Playbook V2 semantic-graph **read** surface: `playbook_v2_graph`, `playbook_activation_health`, `playbook_artifacts`, `playbook_artifact_diff`, `playbook_pending_events`, `playbook_run_overlay`. Off returns `playbook v2 api is disabled (playbooks.v2_api=false)`. |
 | `v2_activation_writes` | `bool` | `False` | Playbook V2 operator **writes**: `playbook_activate` and `playbook_pending_event_action`. Gated separately from `v2_api` so the whole review surface stays readable with writes disabled. Off returns `playbook v2 activation writes are disabled (playbooks.v2_activation_writes=false)`. |
 | `v2_compiler_enabled` | `bool` | `False` | Review-only Package 2 compiler commands. Compilation, validation and shadow reports never persist or activate an artifact. |
@@ -585,6 +585,23 @@ retains the previous variable mappings until their encrypted data expires or is
 retired. Missing read keys leave suspended runs intact and return
 `private_storage_key_unavailable`; restoring the key permits authorized resume.
 Do not pass these environment variables to agents or scripts.
+
+When playbooks are enabled with neither an active key identifier nor a key
+mapping, `aq install` provisions a random 32-byte key in the protected `.env`
+file (mode 0600), with a fresh identifier and variable name recorded in config.
+It preserves other environment entries and playbook settings. Reruns retain
+configured identifiers, mappings and key material; dry runs generate nothing.
+The runtime and doctor never generate keys. If a configured key is lost,
+restore its original material rather than replacing it under the same identifier.
+
+`aq install` fails its `config.check` step if a configured
+active key is absent, malformed base64, or decodes to anything other than 32
+bytes. `aq doctor --check playbooks.private_value_key` reports the same problem
+as an error, with provisioning instructions.
+The daemon's `playbook_private_value_key` health check inspects the key loaded
+by the live private-value service, so `/health` and `/ready` return 503 while
+protected routing cannot run. Restart after provisioning or restoring key
+material; changing the environment alone does not replace the live key ring.
 
 The run snapshot stores opaque references for unprojected or sensitive command
 results, derived loop/wait state and LLM transcripts. Audited public result
@@ -957,6 +974,76 @@ until an operator restores health/readiness and the dashboard, then verifies wit
 `aq update --yes --resume-after-recovery`. Automatic updates require backup.
 System Config shows the private, bounded `deploy-history.json` log.
 See [branch tracking](design/branch-tracking-deployment.md).
+
+### 4.16 `wait_policy` Section
+
+Maps to `WaitPolicyConfig`. This section is hot reloadable. Values are read
+at each wait decision; registry consumers snapshot the three rollout flags
+once per cycle. All flags (`v2_enabled`, `hibernation_enabled`,
+`scheduler_waits_enabled`) default to `true`. `v1_bodies` defaults to `refuse` and
+also accepts `translate` for rollout/rollback compatibility. Explicit false
+configuration continues to gate new admission; persisted waits and continuations
+keep draining. See [the cutover runbook](../guides/hibernation-cutover-runbook.md)
+for existing installations and rollback ordering.
+
+Global defaults are `in_place_ceiling_seconds: 1800`, `hibernate_margin: 2.0`,
+`resume_cost_minutes: 10`, `min_samples: 5`, `loop_window_registrations: 3`,
+`loop_window_seconds: 3600`, `branch_admission_deadline_seconds: 1800`,
+`transition_budget_seconds: 120`, and `resume_launch_attempts: 2`.
+
+`kinds` maps each wait kind to `WaitKindPolicy`, with
+`escalate_after_seconds` and `expected_duration_seconds`. Partial global
+kind entries preserve the omitted defaults. Escalation defaults are 14400
+for `task`, `dependency`, `pull_request`, and `batch`; 7200 for `job`,
+`message`, and `playbook_condition`; 5400 for `ci_check` and `ci_run`; 1800
+for `resource`; and 300 for `timer` after its due time. Expected durations
+are respectively 3600, 3600, 3600, 2700, 900, 1800, 1800, 1200, and 1500
+seconds for the first nine kinds. Timer duration comes from its due time;
+`human` and `resource` have no configured duration estimate. Human waits
+have no escalation policy and cannot be overridden.
+
+`projects.<project-id>` maps to `WaitProjectOverrides`. It accepts the three
+rollout flags, `in_place_ceiling_seconds`, `resume_cost_minutes`,
+`hibernate_margin`, and partial `kinds` entries. Absent or null override
+fields inherit the global value. `WaitPolicyConfig.resolve_project(id)`
+returns an independent effective policy in project → global → default order.
+This supports one project's v2 canary while global rollout flags stay off;
+`src.waits.decision.project_policy` resolves through it, so per-project
+registration, hibernation and scheduler admission gates all honour the effective
+project policy. A global listener also starts for any enabled project canary.
+
+`metrics` maps to `WaitMetricsConfig`: an operator-supplied pre-rollout
+cohort (`pre_rollout_turn_rate` in turns per minute,
+`pre_rollout_tokens_per_turn`, `cohort`, `window`) for the counterfactual
+tokens-saved metric. Rates must be finite and nonnegative; labels must be
+non-empty strings. All default to null.
+
+The single implementation lives in `src/config_wait_policy.py`
+(`parse_wait_policy`, `WaitPolicyConfig.validate`).
+
+Unknown keys at any depth and unknown kind names are errors. Ceilings and
+deadlines must be integers between 60 and 86400 seconds; the transition
+budget must be between 1 and 86400 seconds. Counts must be positive
+integers, resume cost must be finite and positive, and the margin must be
+finite and at least 1.0. Expected durations must be nonnegative integers.
+
+`metrics` retains the optional historical cohort used for wait cost reporting:
+`pre_rollout_turn_rate` and `pre_rollout_tokens_per_turn` are finite nonnegative
+numbers, while `cohort` and `window` are non-empty strings when supplied.
+Project resolution preserves this global metrics configuration.
+
+```yaml
+wait_policy:
+  kinds:
+    task:
+      escalate_after_seconds: 18000
+  projects:
+    expensive-resume:
+      resume_cost_minutes: 40
+      in_place_ceiling_seconds: 7200
+    canary:
+      v2_enabled: true
+```
 
 ## 5. Loading Behavior
 

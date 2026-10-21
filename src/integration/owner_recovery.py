@@ -18,7 +18,8 @@ never from the task row or its status:
 2. **The branch is safe.**  After ``git fetch origin`` in the repository's
    base checkout, every worktree holding the branch (or the row's own
    checkout, detached) is inspected.  One a live session works in refuses
-   with ``checkout_in_use``. On a ``worker`` row only work proved against the
+   with ``checkout_in_use``; a running pool session with no task and no claim
+   in flight is idle there, not working. On a ``worker`` row only work proved against the
    recorded task origin, claim time and matching slot sentinel is eligible for
    preservation; integration rows rely on their fenced writer binding. A missing
    local task ref never borrows a detached slot's HEAD. Uncommitted work is
@@ -682,7 +683,8 @@ class OwnerRecovery:
                         evidence["worktree"] = path
                         raise _Refusal(
                             CHECKOUT_IN_USE,
-                            f"{branch} is checked out at {path}, where a live session works",
+                            f"{branch} is checked out at {path}, where live session "
+                            f"{live_dirs[os.path.realpath(path)]} works",
                         )
                     # The row's old slot, detached and reused by a successor:
                     # the branch is not there, and the work is not the writer's.
@@ -984,12 +986,29 @@ class OwnerRecovery:
         checkout = next((path for path in candidates if os.path.isdir(path)), None)
         return checkout, default_branch, row_path, repository.url
 
-    async def _live_work_dirs(self) -> set[str]:
+    async def _live_work_dirs(self) -> dict[str, str]:
+        """``{real work_dir: session id}`` of attached sessions that may use a checkout.
+
+        A running pool session with no task and no claim in flight does no
+        work in its slot.  A successor launched into a stopped writer's slot
+        sits there idle (it cannot claim into a workspace that task still
+        locks), so counting it would refuse the very recovery that frees the
+        slot.  A claim it starts later sets ``claim_phase`` before touching
+        git.  A stopped row that may still be resumed keeps fencing.
+        """
+        idle_pool = and_(
+            sessions.c.lifecycle == "pool",
+            sessions.c.state != "stopped",
+            sessions.c.task_id.is_(None),
+            sessions.c.claim_phase.is_(None),
+        )
         async with self.db._engine.connect() as conn:
-            dirs = (
-                await conn.execute(select(sessions.c.work_dir).where(session_attached_clause()))
-            ).scalars()
-            return {os.path.realpath(d) for d in dirs if d}
+            rows = await conn.execute(
+                select(sessions.c.work_dir, sessions.c.id)
+                .where(session_attached_clause(), not_(idle_pool))
+                .order_by(sessions.c.id)
+            )
+            return {os.path.realpath(d): session_id for d, session_id in rows if d}
 
     def _mutex(self, checkout: str):
         if self.git_mutex is None:
@@ -1224,7 +1243,10 @@ class OwnerRecovery:
         # stopped writer's claim (``terminate_pool_session``), and it only
         # skipped it because this owner row protected the claim -- teardown
         # of a stopped session is never retried, so nothing else would.
-        in_flight = status in _IN_FLIGHT_STATUSES
+        # A task already READY (a released recovery hold) takes the same
+        # path: the release clears this exact claim's assignment, which the
+        # frontier would otherwise read as held by the gone writer.
+        in_flight = status in _IN_FLIGHT_STATUSES or status is TaskStatus.READY
         result = await self.db.release_claim(
             current["id"],
             task_status=TaskStatus.READY if in_flight else status,

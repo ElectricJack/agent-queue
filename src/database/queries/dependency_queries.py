@@ -14,6 +14,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from src.database.queries.blocked_state import unmet_dependency_predicate
 from src.database.tables import task_dependencies, tasks
 from src.models import BLOCKING_DEP_TYPES, DepType, Task, TaskStatus
+from src.waits.sources import record_dependency_change
 
 
 def _dep_type_filter(dep_types: frozenset[str] | set[str] | None):
@@ -104,7 +105,7 @@ class DependencyQueryMixin:
         if conn is not None:
             if reject_container_target:
                 await self._guard_dependency_target(conn, depends_on, dep_type)
-            await conn.execute(
+            inserted = await conn.execute(
                 _insert(task_dependencies)
                 .values(
                     task_id=task_id,
@@ -114,13 +115,15 @@ class DependencyQueryMixin:
                 )
                 .on_conflict_do_nothing()
             )
+            if inserted.rowcount:
+                await record_dependency_change(conn, task_id, depends_on, dep_type, "added")
             await self._mark_dependency_dirty((task_id, depends_on), conn=conn)
             return await self.recompute_blocked({task_id, depends_on}, conn=conn)
 
         async with self._engine.begin() as owned_conn:
             if reject_container_target:
                 await self._guard_dependency_target(owned_conn, depends_on, dep_type)
-            await owned_conn.execute(
+            inserted = await owned_conn.execute(
                 _insert(task_dependencies)
                 .values(
                     task_id=task_id,
@@ -130,6 +133,8 @@ class DependencyQueryMixin:
                 )
                 .on_conflict_do_nothing()
             )
+            if inserted.rowcount:
+                await record_dependency_change(owned_conn, task_id, depends_on, dep_type, "added")
             await self._mark_dependency_dirty((task_id, depends_on), conn=owned_conn)
             flipped = await self.recompute_blocked({task_id, depends_on}, conn=owned_conn)
             ready_ids = await self._note_frontier_entry(
@@ -619,13 +624,17 @@ class DependencyQueryMixin:
                     parent_settled = parent_result.settled
                     parent_ready = parent_result.ready
                     conditions.append(task_dependencies.c.dep_type != DepType.PARENT_CHILD.value)
-            removed = await conn.execute(delete(task_dependencies).where(and_(*conditions)))
+            removed = await conn.execute(delete(task_dependencies).where(and_(*conditions))
+                .returning(task_dependencies.c.dep_type))
             # ``dep_type=None`` also covers the parent edge, which
             # ``set_parent`` above already marked ``parent.changed``; the
             # DELETE here only ever touches non-parent-child edges, and may
             # well match none.  Mark only when it actually removed an edge,
             # so a pure parent-child removal produces exactly one mark.
-            if (removed.rowcount or 0) > 0:
+            removed_types = list(removed.scalars())
+            for removed_type in removed_types:
+                await record_dependency_change(conn, task_id, depends_on, removed_type, "removed")
+            if removed_types:
                 await self._mark_dependency_dirty((task_id, depends_on), conn=conn)
             flipped = await self.recompute_blocked({task_id, depends_on}, conn=conn)
             flipped |= parent_flipped

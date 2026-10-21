@@ -6,6 +6,7 @@ These are pure data — no logic.
 
 from __future__ import annotations
 
+from src.models import TaskStatus
 # Pure-data schema modules: importing the command mixins here would pull the
 # doctor registry and the database into every CLI start.
 from src.commands.doctor_observation_schemas import CATALOG_SCHEMA, RUN_SCHEMA
@@ -168,6 +169,13 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "wait_get": "wait",
     "wait_list": "wait",
     "wait_cancel": "wait",
+    "wait_explain": "wait",
+    "wait_graph": "wait",
+    "wait_checkpoint": "wait",
+    "wait_ack": "wait",
+    "wait_decide": "wait",
+    "wait_lift": "wait",
+    "wait_legacy_bridge": "wait",
     "cron_register": "cron",
     "cron_get": "cron",
     "cron_list": "cron",
@@ -2636,8 +2644,10 @@ _ALL_TOOL_DEFINITIONS = [
                 },
                 "status": {
                     "type": "string",
-                    "enum": ["DEFINED", "READY", "IN_PROGRESS", "COMPLETED", "FAILED", "BLOCKED"],
-                    "description": "New status — admin override, bypasses state machine (optional)",
+                    "enum": [status.value for status in TaskStatus],
+                    "description": (
+                        "New lifecycle status (optional); suspended states require wait controls"
+                    ),
                 },
                 "max_retries": {"type": "integer", "description": "Max retry attempts (optional)"},
                 "verification_type": {
@@ -9330,6 +9340,37 @@ _ALL_TOOL_DEFINITIONS.extend([
      "description": "Check all planned operator inputs and report every blocker together before mutations.",
      "input_schema": _OperatorPreflightArgs.model_json_schema()},
 ])
+
+# Wait v2 uses one closed request schema across all public surfaces.
+from src.commands.contracts.wait import (  # noqa: E402
+    WaitRegisterArgs as _WaitRegisterArgs, WaitGetArgs as _WaitGetArgs,
+    WaitListArgs as _WaitListArgs, WaitCancelArgs as _WaitCancelArgs,
+)
+from src.commands.contracts.wait_v2 import (  # noqa: E402
+    PUBLIC_WAIT_V2_COMMANDS as _PUBLIC_WAIT_V2_COMMANDS, WAIT_V2_ARGS as _WAIT_V2_ARGS,
+)
+
+_WAIT_ARGS = {
+    "wait_register": _WaitRegisterArgs, "wait_get": _WaitGetArgs,
+    "wait_list": _WaitListArgs, "wait_cancel": _WaitCancelArgs,
+}
+for _definition in _ALL_TOOL_DEFINITIONS:
+    if _definition["name"] in _WAIT_ARGS:
+        _definition["input_schema"] = _WAIT_ARGS[_definition["name"]].model_json_schema()
+_WAIT_V2_DESCRIPTIONS = {
+    "wait_explain": "Explain a verified wait's condition, evidence and outcome.",
+    "wait_graph": "Inspect the dependency graph of verified waits.",
+    "wait_checkpoint": "Save a continuation checkpoint for the held claim's verified wait.",
+    "wait_ack": "Acknowledge a verified wait outcome for the held claim.",
+    "wait_decide": "Record a supervisor decision for a verified wait.",
+    "wait_lift": "Lift an escalated verified wait with an authorized decision.",
+}
+_ALL_TOOL_DEFINITIONS.extend([
+    {"name": name, "description": _WAIT_V2_DESCRIPTIONS[name],
+     "input_schema": _WAIT_V2_ARGS[name].model_json_schema()}
+    for name in sorted(_PUBLIC_WAIT_V2_COMMANDS)
+])
+
 
 # Shared observation schemas feed every descriptor projection; no playbook registration.
 

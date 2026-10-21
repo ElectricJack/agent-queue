@@ -2731,9 +2731,13 @@ async def test_cancel_during_checkout_preserves_partial_source_and_git_lock(mgr,
     _git(["checkout", "main"], cwd=clone)
     ready, go = tmp_path / "ready", tmp_path / "go"
     filter_script = tmp_path / "filter.py"
+    # Publish the process-group id before existence permits cancellation.
+    # write_text alone exposes an empty file that cancellation can leave behind.
     filter_script.write_text(
         "import os,pathlib,sys,time\n"
-        f"pathlib.Path({str(ready)!r}).write_text(str(os.getpgrp()))\n"
+        f"ready = pathlib.Path({str(ready)!r})\n"
+        "ready.with_suffix('.tmp').write_text(str(os.getpgrp()))\n"
+        "ready.with_suffix('.tmp').replace(ready)\n"
         f"while not pathlib.Path({str(go)!r}).exists(): time.sleep(.01)\n"
         "sys.stdout.write(sys.stdin.read())\n"
         "pathlib.Path('late-filter-write').write_text('old writer')\n"

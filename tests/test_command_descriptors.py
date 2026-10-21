@@ -40,6 +40,7 @@ WITHHELD_CHANGES = ROOT / "tests/fixtures/contracts/withheld-source-contract-cha
 EPIC_CHANGES = ROOT / "tests/fixtures/contracts/epic-integration-contract-changes.json"
 EPIC_COMMANDS = ("integration_cutover_containment", "integration_reconcile_git_truth")
 WATCH_CHANGES = ROOT / "tests/fixtures/contracts/watch-contract-changes.json"
+INGEST_CHANGES = ROOT / "tests/fixtures/contracts/ingestion-replay-contract-changes.json"
 
 
 @pytest.fixture(autouse=True)
@@ -264,6 +265,8 @@ def test_legacy_playbook_fixtures_are_unchanged():
     changes = {**changes, **_script_changes()["playbook_fixtures"]}
     main = _main_changes()["playbook_fixtures"]
     watch = _watch_changes()["playbook_fixtures"]
+    ingest = json.loads(INGEST_CHANGES.read_text())["playbook_fixtures"]
+    assert set(ingest) == {"tests/fixtures/playbooks/v2/default-pipeline/artifact.json"}
     for path, digest in json.loads(GOLDEN.read_text())["playbook_fixtures"].items():
         if path in changes:
             assert changes[path]["previous_sha256"] == digest
@@ -278,6 +281,10 @@ def test_legacy_playbook_fixtures_are_unchanged():
             assert hashlib.sha256(historical.read_bytes()).hexdigest() == digest
             assert watch[path]["sha256"] != digest
             digest = watch[path]["sha256"]
+        if path in ingest:
+            assert ingest[path]["previous_sha256"] == digest
+            assert ingest[path]["sha256"] != digest
+            digest = ingest[path]["sha256"]
         assert hashlib.sha256((ROOT / path).read_bytes()).hexdigest() == digest, path
 
 

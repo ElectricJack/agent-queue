@@ -928,7 +928,9 @@ class SessionLens:
                 if (
                     task is None
                     or task.project_id != row.project_id
-                    or task.status not in {TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS}
+                    or task.status not in {
+                        TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS, TaskStatus.WAITING,
+                    }
                     or row.claim_phase != "active"
                     or row.last_claim_epoch != task.claim_epoch
                     or row.agent_id != task.assigned_agent_id

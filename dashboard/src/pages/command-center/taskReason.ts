@@ -68,6 +68,12 @@ export function taskReason(input: ReasonInput): Reason | null {
       return reason(input.profileId ? `Starting · ${input.profileId}` : "Starting");
     case "IN_PROGRESS":
       return inProgressReason(input);
+    case "WAITING":
+      return reason("Waiting on a condition");
+    case "HIBERNATED":
+      return reason("Sleeping until the condition resolves");
+    case "RESUME_PENDING":
+      return reason("Waiting for capacity to resume");
     case "WAITING_INPUT":
       return deliveryReason(input.delivery) ?? reason("Waiting on ", strong("your answer"));
     case "PAUSED":
