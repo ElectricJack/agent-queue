@@ -125,10 +125,11 @@ class WakeDispatcher:
         return await self.finish(
             conn, row, outcome=outcome, result_ref=result_ref, event=event,
             task=task, continuation=continuation, changed_keys=changed_keys,
+            observation=observed,
         )
 
     async def finish(self, conn, row, *, outcome, result_ref, event, task,
-                     continuation, changed_keys, decision=None, deliver=True):
+                     continuation, changed_keys, decision=None, deliver=True, observation=None):
         """Finish an already fenced wait on the caller's transaction.
 
         The source listener and wait_decide hold the same graph/task/source/wait
@@ -139,6 +140,11 @@ class WakeDispatcher:
         adapter = self.registry.adapter(cond.kind)
         now = self.clock()
         inputs = dict(row["decision_inputs"] or {})
+        if outcome == "source_unavailable" and observation is not None:
+            inputs["source_unavailable"] = {
+                "revision": observation.revision,
+                "reason": observation.facts.get("reason", "source_missing"),
+            }
         inputs["wake_progress"] = await progress(conn, row, task=task, continuation=continuation)
         if decision:
             inputs["supervisor_decision"] = decision

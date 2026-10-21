@@ -152,9 +152,10 @@ class WaitSourceListener:
         while True:
             async with self.db._engine.begin() as conn:
                 cursor = await self.locked_lease(conn)
-                # Bound a batch below the renewal interval so a slow adapter
-                # cannot keep an expired leader writing or starve its renewal.
-                async with asyncio.timeout(self.renewal_seconds):
+                started_at = self.clock()
+                # Renewal cadence is not a query deadline. The cursor row lock
+                # fences this batch; expiration still rolls it back below.
+                async with asyncio.timeout(self.lease_seconds):
                     await conn.execute(select(func.pg_advisory_xact_lock(
                         REGISTRATION_LOCK,
                     )))
@@ -164,18 +165,24 @@ class WaitSourceListener:
                     ).order_by(wait_source_events.c.seq).limit(self.batch_size))).mappings().all()
                     if not rows:
                         return count
+                    processed = []
                     for event in rows:
                         await self._dispatch(conn, dict(event))
+                        processed.append(event)
+                        # Finish a slow event, then commit a shorter prefix so
+                        # renewal can proceed without replaying the whole batch.
+                        if self.clock() - started_at >= self.renewal_seconds:
+                            break
                     if cursor["lease_expires_at"] <= self.clock():
                         raise LeaseLost("wait source lease expired during dispatch")
                     await conn.execute(update(wait_source_events).where(
-                        wait_source_events.c.seq.in_([row["seq"] for row in rows]),
+                        wait_source_events.c.seq.in_([row["seq"] for row in processed]),
                     ).values(dispatched_at=self.clock()))
                     await conn.execute(update(wait_listener_cursors).where(
                         wait_listener_cursors.c.listener_key == "source",
                         wait_listener_cursors.c.lease_owner == self.owner,
-                    ).values(last_seq=rows[-1]["seq"], updated_at=self.clock()))
-            count += len(rows)
+                    ).values(last_seq=processed[-1]["seq"], updated_at=self.clock()))
+            count += len(processed)
             if not await self.service.lease():
                 raise LeaseLost("wait source lease lost between batches")
 

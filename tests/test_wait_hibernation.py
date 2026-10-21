@@ -649,6 +649,198 @@ async def test_outcome_during_stop_queues_only_after_park(env):
     assert (await intent(env))['resume_state'] == 'queued'
 
 
+async def test_live_service_resumes_parked_outcome_without_orchestrator_cycle(env):
+    from tests.test_wait_dispatch import runtime
+    from src.models import TaskStatus
+
+    await park(env)
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(continuations).values(facts={'workspace_released_at': NOW + 20}))
+    service = runtime(env, registry=build_registry(clock=lambda: NOW))
+    service.orch.wait_dispatcher = service._dispatcher
+    service.listener.renewal_seconds = 0.01
+    delivered = asyncio.Event()
+
+    async def command(name, args):
+        assert name == 'wait_resume_dispatch'
+        assert args == {'continuation_id': 'c', 'generation': 1}
+        row = await intent(env)
+        assert row['resume_state'] == 'queued'
+        assert (await env.db.get_task('owner')).status is TaskStatus.RESUME_PENDING
+        delivered.set()
+        return {'success': True}
+
+    async def listen():
+        # Drain a real outcome, then simulate a stalled source listener.
+        await env.db.transition_task('source', TaskStatus.COMPLETED)
+        await service.listener.tick()
+        await asyncio.Event().wait()
+
+    service.command = command
+    service.listener.run = listen
+    service.startup_bridge = AsyncMock()
+    runner = asyncio.create_task(service.run())
+    try:
+        await asyncio.wait_for(delivered.wait(), 5)
+        async with env.db._engine.connect() as conn:
+            wait = (await conn.execute(select(wait_records))).mappings().one()
+        assert wait['outcome'] == 'satisfied' and wait['wake_delivered_at'] is None
+        assert wait['cleared_at'] is None  # Recovery never acknowledges on the worker's behalf.
+    finally:
+        runner.cancel()
+        await asyncio.gather(runner, return_exceptions=True)
+    assert not service.lifecycle._resume_tasks
+
+
+@pytest.mark.parametrize('state', ['queued', 'reserved', 'launching', 'held'])
+async def test_resume_stall_notice_retains_outcome_and_deduplicates_across_restart(env, state):
+    from tests.test_wait_dispatch import runtime
+
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(wait_records).values(outcome='satisfied', resolved_at=NOW + 10))
+    await park(env)
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(continuations).values(resume_state=state))
+    now = [NOW + 309]
+    service = runtime(env, clock=lambda: now[0], registry=build_registry())
+    async def notices():
+        async with env.db._engine.connect() as conn:
+            return list((await conn.execute(select(messages).where(
+                messages.c.subject == 'Resume stalled: owner',
+            ))).mappings())
+    before = await intent(env)
+    await service.orch._command_handler.wait_service_resume_stalls(service.lifecycle)
+    assert not await notices()
+    now[0] += 1
+    await service.orch._command_handler.wait_service_resume_stalls(service.lifecycle)
+    [notice] = await notices()
+    assert notice['to_id'] == 'supervisor-p' and notice['to_kind'] == 'session'
+    assert f'state {state}' in notice['body'] and '300 seconds' in notice['body']
+    replacement = runtime(env, clock=lambda: NOW + 900, registry=build_registry())
+    await replacement.orch._command_handler.wait_service_resume_stalls(replacement.lifecycle)
+    assert len(await notices()) == 1
+    assert await intent(env) == before
+    async with env.db._engine.connect() as conn:
+        wait = (await conn.execute(select(wait_records))).mappings().one()
+    assert wait['outcome'] == 'satisfied' and wait['cleared_at'] is None
+
+
+async def test_resume_dispatch_in_flight_is_reused_and_failed_command_is_retried(env):
+    from tests.test_wait_dispatch import runtime
+
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(wait_records).values(outcome='satisfied', resolved_at=NOW + 10))
+    await park(env)
+    service = runtime(env, registry=build_registry())
+    started, release = asyncio.Event(), asyncio.Event()
+    async def dispatch(*args):
+        started.set()
+        await release.wait()
+        return {'success': False, 'error_code': 'wait.unavailable'}
+    service.command = AsyncMock(side_effect=dispatch)
+    try:
+        await service.lifecycle.resume_pending()
+        await asyncio.wait_for(started.wait(), 5)
+        await service.lifecycle.resume_pending()
+        assert service.command.await_count == 1
+        release.set()
+        await asyncio.gather(*service.lifecycle._resume_tasks.values())
+        service.command.side_effect = RuntimeError('temporary dispatch failure')
+        await service.lifecycle.resume_pending()
+        await asyncio.gather(*service.lifecycle._resume_tasks.values())
+        service.command.side_effect = None
+        service.command.return_value = {'success': True}
+        await service.lifecycle.resume_pending()
+        await asyncio.gather(*service.lifecycle._resume_tasks.values())
+        assert service.command.await_count == 3
+    finally:
+        await service.lifecycle.stop()
+
+
+async def test_slow_resume_does_not_block_another_parked_task_and_shutdown_joins_it(env):
+    from tests.test_wait_dispatch import runtime
+
+    second = await owner(env.db, task_id='second', session_id='s2', agent_id='a2')
+    async with env.db._engine.begin() as conn:
+        receipt = await register_wait(conn, scope=second,
+            condition={'kind': 'task', 'task_id': 'source'}, idempotency_key='second',
+            registry=build_registry(clock=lambda: NOW), policy=Policy(), now=NOW,
+            source_watermark=0, decide_sleep=lambda *_: SleepDecision('hibernate', 'test', {}))
+        await conn.execute(insert(continuations).values(
+            id='c2', task_id='second', wait_id=receipt['wait_id'], suspension_generation=1,
+            facts={}, branch='aq/second', prior_status='IN_PROGRESS', held_cursor_seq=0,
+            resume_state='sleeping', created_at=NOW))
+        await conn.execute(update(tasks).where(tasks.c.id == 'second').values(branch_name='aq/second'))
+        await conn.execute(update(wait_records).values(outcome='satisfied', resolved_at=NOW + 10))
+    await park(env)
+    async with env.db._engine.begin() as conn:
+        await env.db.park_task_for_continuation(conn, task_id='second', wait_id=receipt['wait_id'],
+            continuation_id='c2', generation=1, session_id='s2', instance_token='token',
+            claim_epoch=1, saved_head='a' * 40, now=NOW + 20)
+    service = runtime(env, registry=build_registry())
+    first, other = asyncio.Event(), asyncio.Event()
+    async def dispatch(name, args):
+        if args['continuation_id'] == 'c':
+            first.set()
+            await asyncio.Event().wait()
+        other.set()
+        return {'success': True}
+    service.command = dispatch
+    try:
+        await service.lifecycle.resume_pending()
+        await asyncio.wait_for(first.wait(), 5)
+        await asyncio.wait_for(other.wait(), 5)
+        assert ('c', 1) in service.lifecycle._resume_tasks
+    finally:
+        await service.lifecycle.stop()
+    assert not service.lifecycle._resume_tasks
+
+
+async def test_maintenance_retries_after_a_transient_failure(env):
+    from tests.test_wait_dispatch import runtime
+
+    service = runtime(env, registry=build_registry())
+    service.listener.renewal_seconds = 0.01
+    resumed = asyncio.Event()
+    attempts = 0
+
+    async def tick():
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError('temporary')
+        resumed.set()
+
+    service.lifecycle.tick = tick
+    runner = asyncio.create_task(service.maintain())
+    try:
+        await asyncio.wait_for(resumed.wait(), 5)
+        assert attempts >= 2
+    finally:
+        runner.cancel()
+        await asyncio.gather(runner, return_exceptions=True)
+
+
+@pytest.mark.parametrize('change', ['pause', 'acknowledged', 'cleared'])
+async def test_resume_stall_notice_excludes_paused_and_consumed_waits(env, change):
+    from tests.test_wait_dispatch import runtime
+
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(wait_records).values(outcome='satisfied', resolved_at=NOW + 10))
+    await park(env)
+    async with env.db._engine.begin() as conn:
+        if change == 'pause':
+            await conn.execute(update(tasks).where(tasks.c.id == 'owner').values(status='PAUSED'))
+        elif change == 'acknowledged':
+            await conn.execute(update(continuations).values(resume_state='acknowledged'))
+        else:
+            await conn.execute(update(wait_records).values(cleared_at=NOW + 20))
+    service = runtime(env, clock=lambda: NOW + 1000, registry=build_registry())
+    await service.orch._command_handler.wait_service_resume_stalls(service.lifecycle)
+    async with env.db._engine.connect() as conn:
+        assert not list((await conn.execute(select(messages))).mappings())
+
+
 async def test_suspension_fence_is_exact_session_bound(env):
     from src.waits.fencing import mutation_fence
 

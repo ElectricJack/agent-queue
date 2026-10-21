@@ -312,6 +312,60 @@ def runtime(env, *, clock=lambda: NOW, dispatcher=None, enabled=True, registry=N
     return WaitService(orch, clock=clock)
 
 
+async def test_source_batch_can_exceed_renewal_cadence_without_restarting(runtime_env):
+    env = runtime_env
+    await register(env)
+    dispatcher = ObservingDispatcher(env.registry)
+    original = dispatcher.commit
+
+    async def slow(conn, row, event, **kwargs):
+        await asyncio.sleep(0.03)
+        return await original(conn, row, event, **kwargs)
+
+    dispatcher.commit = slow
+    service = runtime(env, dispatcher=dispatcher)
+    service.listener.renewal_seconds = 0.01
+    await env.db.transition_task("source", TaskStatus.COMPLETED)
+    assert await service.tick()
+    assert (await records(env))[0]["outcome"] == "satisfied"
+    assert (await records(env, wait_listener_cursors))[0]["last_seq"] > 0
+
+
+async def test_slow_batches_commit_only_processed_prefix_and_renew_before_continuing(runtime_env):
+    now = [NOW]
+    service = runtime(runtime_env, clock=lambda: now[0])
+    for n in range(8):
+        await runtime_env.db.wait_source_commit(source_key='test:slow', generation=0,
+            revision=str(n), outcome_ref=f'test:{n}', payload={})
+    expected = [row['seq'] for row in await records(runtime_env, wait_source_events)]
+    seen = []
+    async def slow(conn, event):
+        seen.append(event['seq'])
+        now[0] += 6
+    service.listener._dispatch = slow
+    assert await service.listener.tick()
+    assert seen == sorted(expected)
+    assert now[0] - NOW > service.listener.lease_seconds
+    cursor = (await records(runtime_env, wait_listener_cursors))[0]
+    assert cursor['last_seq'] == max(expected)
+    assert all(row['dispatched_at'] is not None
+               for row in await records(runtime_env, wait_source_events))
+
+
+async def test_deadline_command_can_exceed_renewal_cadence(runtime_env):
+    service = runtime(runtime_env)
+    service.listener.renewal_seconds = 0.01
+    async def slow(*args):
+        await asyncio.sleep(0.03)
+        return {'success': True}
+    service.command = slow
+    service.timers.heap = [(NOW, 'deadline', {
+        'wait_id': 'w', 'deadline_type': 'due', 'generation': 1,
+    })]
+    assert await service.timers.tick() == 1
+    assert not service.timers.heap
+
+
 async def test_listener_two_daemons_share_one_renewable_lease(runtime_env):
     env = runtime_env
     now = [NOW]
