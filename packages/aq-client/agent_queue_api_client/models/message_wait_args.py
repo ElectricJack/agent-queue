@@ -5,6 +5,7 @@ from typing import Any, TypeVar, cast
 
 from attrs import define as _attrs_define
 
+from ..models.message_wait_args_schema_version import MessageWaitArgsSchemaVersion
 from ..types import UNSET, Unset
 
 T = TypeVar("T", bound="MessageWaitArgs")
@@ -16,6 +17,7 @@ class MessageWaitArgs:
     Attributes:
         thread_id (str):
         after_seq (int):
+        schema_version (MessageWaitArgsSchemaVersion | Unset):  Default: MessageWaitArgsSchemaVersion.VALUE_1.
         project_id (None | str | Unset):
         task_id (None | str | Unset):
         session_id (None | str | Unset):
@@ -26,6 +28,7 @@ class MessageWaitArgs:
 
     thread_id: str
     after_seq: int
+    schema_version: MessageWaitArgsSchemaVersion | Unset = MessageWaitArgsSchemaVersion.VALUE_1
     project_id: None | str | Unset = UNSET
     task_id: None | str | Unset = UNSET
     session_id: None | str | Unset = UNSET
@@ -37,6 +40,10 @@ class MessageWaitArgs:
         thread_id = self.thread_id
 
         after_seq = self.after_seq
+
+        schema_version: int | Unset = UNSET
+        if not isinstance(self.schema_version, Unset):
+            schema_version = self.schema_version.value
 
         project_id: None | str | Unset
         if isinstance(self.project_id, Unset):
@@ -78,6 +85,8 @@ class MessageWaitArgs:
                 "after_seq": after_seq,
             }
         )
+        if schema_version is not UNSET:
+            field_dict["schema_version"] = schema_version
         if project_id is not UNSET:
             field_dict["project_id"] = project_id
         if task_id is not UNSET:
@@ -99,6 +108,13 @@ class MessageWaitArgs:
         thread_id = d.pop("thread_id")
 
         after_seq = d.pop("after_seq")
+
+        _schema_version = d.pop("schema_version", UNSET)
+        schema_version: MessageWaitArgsSchemaVersion | Unset
+        if isinstance(_schema_version, Unset):
+            schema_version = UNSET
+        else:
+            schema_version = MessageWaitArgsSchemaVersion(_schema_version)
 
         def _parse_project_id(data: object) -> None | str | Unset:
             if data is None:
@@ -150,6 +166,7 @@ class MessageWaitArgs:
         message_wait_args = cls(
             thread_id=thread_id,
             after_seq=after_seq,
+            schema_version=schema_version,
             project_id=project_id,
             task_id=task_id,
             session_id=session_id,

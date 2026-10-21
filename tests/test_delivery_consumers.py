@@ -23,7 +23,7 @@ from sqlalchemy import insert, update
 
 from src.database.queries.hierarchy_queries import HierarchyError
 from src.database.tables import events, projects, tasks
-from src.git.manager import GitManager
+from src.git.manager import GitError, GitManager
 from src.integration.delivery_observer import DeliveryObserver
 from src.integration.delivery_truth import DeliveryState
 from src.integration.development import DevelopmentPrimitives
@@ -985,7 +985,7 @@ async def test_missing_target_fetch_warms_peers_but_decisions_refetch_it(world, 
                                 truth=GitTruth(transport))
     missing = DeliveryTarget("p", "r", origin.url, "refs/heads/absent")
     observer.truth.snapshot = AsyncMock(wraps=observer.truth.snapshot)
-    assert (await observer.snapshot(missing)).observation.error == "missing_target"
+    assert (await observer.snapshot(missing)).observation.error == "target_ref_missing"
     observer.truth.snapshot.assert_awaited_once()
     warm = await observer.observe(["done"], max_age=30, cached_only=True)
     # A fetched peer ref warms its observation, but diagnostics cannot build
@@ -996,10 +996,34 @@ async def test_missing_target_fetch_warms_peers_but_decisions_refetch_it(world, 
     warm = await observer.observe(["done"], max_age=30, cached_only=True)
     assert warm.satisfied("done")
     assert (await observer.snapshot(missing, max_age=30, cached_only=True)
-            ).observation.error == "missing_target"
+            ).observation.error == "target_ref_missing"
     observer.truth.snapshot.assert_awaited_once()
-    assert (await observer.snapshot(missing, max_age=30)).observation.error == "missing_target"
+    assert (await observer.snapshot(missing, max_age=30)).observation.error == "target_ref_missing"
     assert observer.truth.snapshot.await_count == 2
+
+
+async def test_integrity_absence_never_replaces_a_peer_with_an_incomplete_inventory(world, tmp_path):
+    from src.integration.delivery_observer import DeliveryTarget, _for_target
+    from src.integration.git_truth import GitTruth
+
+    db, origin, _observer, _service = world
+    transport = GitManager()
+    observer = DeliveryObserver(db, git=transport, data_dir=tmp_path / "incomplete-inventory",
+                                truth=GitTruth(transport))
+    main = DeliveryTarget("p", "r", origin.url, "refs/heads/main")
+    missing = DeliveryTarget("p", "r", origin.url, "refs/heads/absent")
+    assert (await observer.snapshot(main)).target_oid
+    warm = observer._recent[main]
+    failure = "retained Git object integrity is unavailable"
+    transport.afetch_origin = AsyncMock(side_effect=GitError(failure))
+    absent = (await observer.snapshot(missing)).observation
+    assert absent.error == "target_ref_missing"
+    assert absent.acquisition_error == "snapshot_git_error: " + failure
+    assert observer._recent[main] is warm
+    peer = _for_target(absent, main)
+    assert peer.error == "snapshot_git_error: " + failure
+    assert peer.target_oid is None
+    assert _for_target(peer, missing).error == "target_ref_missing"
 
 
 async def test_frontier_cache_uncertainty_preserves_known_delivery_exclusions(world, tmp_path):
@@ -1491,7 +1515,7 @@ class ControlledFetches:
         oid = heads.get("refs/remotes/origin/" + target_ref.removeprefix("refs/heads/"))
         return DeliverySnapshot(git, str(store), project_id, repository_id, repository_url,
                                 target_ref, oid, MappingProxyType(heads),
-                                None if oid else "missing_target")
+                                None if oid else "target_ref_missing")
 
 
 def oid(n: int) -> str:
@@ -1607,7 +1631,7 @@ async def test_one_observation_covers_other_refs_of_the_same_repository(shared_s
     assert fetches.count == 1
     assert (main.target_ref, main.target_oid, main.error) == ("refs/heads/main", oid(1), None)
     assert (epic.target_ref, epic.target_oid, epic.error) == ("refs/heads/aq/epic", oid(101), None)
-    assert (absent.target_oid, absent.error) == (None, "missing_target")
+    assert (absent.target_oid, absent.error) == (None, "target_ref_missing")
     # A name its own fetch would have rejected stays unknown, never "missing".
     for refused in (malformed, tag):
         assert refused.target_oid is None
@@ -1650,11 +1674,11 @@ async def test_moved_and_vanished_refs_are_seen_by_the_observation_after_them(sh
     fetches.release(2)
     assert (await held).target_oid == oid(2)
     # The vanished ref's cached evidence is retired by the covering fetch.
-    assert observer._recent[x][1].error == "missing_target"
+    assert observer._recent[x][1].error == "target_ref_missing"
     await fetches.started[3].wait()
     fetches.release(3)
-    assert ((await moved).target_oid, (await moved).error) == (None, "missing_target")
-    assert (await observer.snapshot(x, max_age=30, cached_only=True)).error == "missing_target"
+    assert ((await moved).target_oid, (await moved).error) == (None, "target_ref_missing")
+    assert (await observer.snapshot(x, max_age=30, cached_only=True)).error == "target_ref_missing"
     assert fetches.count == 3
 
 
@@ -1678,7 +1702,7 @@ async def test_failed_observation_is_unknown_for_every_joiner_until_recovery(
     assert fetches.count == 1
     for result in results:
         assert result.target_oid is None
-        assert result.error not in {None, "missing_target"}
+        assert result.error not in {None, "target_ref_missing"}
     assert observer._recent == {}
     fetches.release(2)
     recovered = await observer.snapshot(_target("refs/heads/aq/epic"))
@@ -1865,3 +1889,87 @@ async def test_concurrent_guarded_writers_share_fetches_and_need_current_proof(
         assert refused.value.code == "delivery_target_fixed"
     assert (await db.get_task("reopened")).status is TaskStatus.COMPLETED
 
+
+@pytest.mark.parametrize("cross_epic", [False, True])
+@pytest.mark.parametrize("proof", ["current", "missing", "reopened", "held"])
+async def test_resume_uses_git_prerequisites_without_legacy_receipts(world, tmp_path, proof, cross_epic):
+    from types import SimpleNamespace
+
+    from sqlalchemy import select
+
+    from src.config import AppConfig
+    from src.database.tables import continuations, task_branch_origins, wait_records
+    from src.integration.git_truth import GitTruth
+    from src.models import AgentProfile, Workspace
+    from src.wait_runtime.resume import ResumeTransaction
+    from src.wait_runtime.scheduler import SchedulerWaitService
+
+    db, origin, _, _ = world
+    transport = GitManager()
+    observer = DeliveryObserver(db, git=transport, data_dir=tmp_path / "resume-proof",
+                                truth=GitTruth(transport))
+    db._prerequisite_observer = observer
+    await db.create_profile(AgentProfile(id="worker", name="Worker", lifecycle="pool"))
+    await db.create_workspace(Workspace(id="free", project_id="p", kind_id="project-repo",
+                                        source_type=RepoSourceType.CLONE,
+                                        workspace_path=str(tmp_path / "free")))
+    await db.create_task(Task(id="dependent", project_id="p", repo_id="r", title="dependent",
+                              description="", branch_name="aq/dependent",
+                              profile_id="worker", route_source="override"))
+    await db.add_dependency("dependent", "epic", "parent-child")
+    await db.add_dependency("dependent", "done")
+    if cross_epic:
+        await db.create_task(Task(id="upstream-epic", project_id="p", title="Upstream",
+                                  description=""))
+        async with db._engine.begin() as conn:
+            await db.set_parent("done", "upstream-epic", conn=conn)
+    await db.update_project("p", hierarchical_integration_mode="hierarchy")
+    git(origin.clone, "push", "origin", "main:aq/epic")
+    head = git(origin.clone, "rev-parse", "main")
+    now = time.time()
+    async with db._engine.begin() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == "epic").values(
+            branch_name="aq/epic", repo_id="r"))
+        await conn.execute(update(tasks).where(tasks.c.id == "dependent").values(
+            status="RESUME_PENDING", held_batch_id="held" if proof == "held" else None))
+        await conn.execute(insert(task_branch_origins).values(
+            id="dependent-origin", task_id="dependent", repository_id="r",
+            branch_name="aq/dependent", parent_task_id="epic", parent_repository_id="r",
+            parent_ref="aq/epic", base_sha=head, creation_generation=0,
+            reserved=True, materialized=True, created_at=now,
+        ))
+        await conn.execute(insert(wait_records).values(
+            id="finished-wait", project_id="p", owner_kind="task", owner_id="dependent",
+            origin="agent", condition_kind="message", condition={}, source_key="message:reply",
+            source_generation=0, source_watermark_seq=0, verification_state="verified",
+            evidence_ref="message:reply", verified_at=now, created_at=now,
+            request_hash="test", outcome="satisfied", sleep_decision="hibernate",
+        ))
+        await conn.execute(insert(continuations).values(
+            id="resume", task_id="dependent", wait_id="finished-wait",
+            suspension_generation=1, facts={"workspace_released_at": now},
+            branch="aq/dependent", saved_head=head, stopped_at=now,
+            prior_status="IN_PROGRESS", held_cursor_seq=0, resume_state="queued", created_at=now,
+        ))
+    if proof == "missing":
+        # The source exists, but is absent from the parent delivery target.
+        base = git(origin.clone, "rev-list", "--max-parents=0", "main")
+        git(origin.clone, "push", "--force", "origin", f"{base}:aq/epic")
+    elif proof == "reopened":
+        async with db._engine.begin() as conn:
+            await conn.execute(update(tasks).where(tasks.c.id == "done").values(
+                status="IN_PROGRESS", claim_epoch=tasks.c.claim_epoch + 1))
+            await db.recompute_blocked({"done", "dependent"}, conn=conn)
+    config = AppConfig()
+    orch = SimpleNamespace(db=db, config=config, _worktrees_enabled=lambda: False,
+                           _pool_quarantine_state=lambda *a: (None, None))
+    service = SimpleNamespace(orch=orch, scheduler=SchedulerWaitService(orch))
+    action = await ResumeTransaction(service).reserve("resume", 1)
+    async with db._engine.connect() as conn:
+        observed = await service.scheduler.reader.observe_task(
+            conn, "dependent", continuation_id="resume")
+    assert (action is not None) == (proof == "current"), observed
+    async with db._engine.connect() as conn:
+        state = await conn.scalar(select(continuations.c.resume_state).where(
+            continuations.c.id == "resume"))
+    assert state == ("reserved" if proof == "current" else "queued")

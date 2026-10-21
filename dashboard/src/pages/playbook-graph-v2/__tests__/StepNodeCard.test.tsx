@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { GraphNodeDTO } from "../../../api/client";
 import { StepNodeCard, outgoingOutcomes } from "../StepNodeCard";
-import { projectedGraph, projectedNode } from "./projected";
+import { collectionNode, projectedGraph, projectedNode } from "./projected";
 
 afterEach(cleanup);
 
@@ -28,6 +28,21 @@ function keyData() {
 }
 
 describe("StepNodeCard", () => {
+  it("keeps collection semantics in the compact inputs and overflow tooltip", () => {
+    card(collectionNode);
+    const rows = collectionNode.explanation.inputs!;
+    for (const row of rows.slice(0, 2)) {
+      expect(screen.getByTitle(`${row.label}: ${row.value.display}`)).toBeInTheDocument();
+    }
+    const overflow = screen.getByText("+2 more");
+    for (const row of rows.slice(2)) {
+      expect(overflow.getAttribute("title")).toContain(row.value.display);
+    }
+    expect(rows[0]!.value.display).toContain("item => item > 1");
+    expect(rows[1]!.value.display).toContain("item#index");
+    expect(rows[3]!.value.display).toContain('key_path="meta.id"');
+  });
+
   it("leaves the card available as the node drag surface", () => {
     card(ensureReviewTask);
     expect(screen.getByRole("button", { name: /Inspect step Ensure a review task/ })).not.toHaveClass(

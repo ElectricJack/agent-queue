@@ -8,7 +8,9 @@ from src.models import TaskStatus
 MAX_IDENTICAL_CLAIM_FAILURES = 3
 CLAIM_FAILURE_DRAIN_REASON = "claim_refusals"
 
-LIVE_POOL_CLAIM_TASK_STATUSES = frozenset((TaskStatus.IN_PROGRESS, TaskStatus.ASSIGNED))
+LIVE_POOL_CLAIM_TASK_STATUSES = frozenset({
+    TaskStatus.IN_PROGRESS, TaskStatus.ASSIGNED, TaskStatus.WAITING,
+})
 
 
 def is_live_pool_claim_task_status(status: TaskStatus | None) -> bool:

@@ -38,7 +38,10 @@ async def commands(env):
         )
     )
     config = AppConfig()
-    orch = SimpleNamespace(db=env.db, bus=SimpleNamespace(emit=AsyncMock()), plugin_registry=None)
+    # Exercise legacy compatibility during a flag-only rollback.
+    config.wait_policy.v2_enabled = False
+    orch = SimpleNamespace(db=env.db, config=config,
+                           bus=SimpleNamespace(emit=AsyncMock()), plugin_registry=None)
     return CommandHandler(orch, config)
 
 
@@ -527,7 +530,7 @@ async def test_plain_message_wakes_idle_pool_holder(commands, env, monkeypatch, 
 
     await Orchestrator._deliver_messages(orch)
 
-    assert typed() == [f"Handle `aq message status {message_id} --json`."]
+    assert typed() == [f"Handle `aq message status {message_id} --json` (running it marks the message read)."]
     message = await env.db.get_message(message_id)
     assert message.delivered_at is None and message.read_at is None
     assert message.last_notified_at == NOW and message.notification_attempts == 1
@@ -870,7 +873,10 @@ def test_wait_cli_reads_claim_epoch_and_emits_versioned_json(monkeypatch):
     assert json.loads(result.output)["data"]["wait"]["id"] == "w"
     assert calls[0] == (
         "wait_register",
-        {"kind": "task", "ref": "t", "idempotency_key": "k", "claim_epoch": 7},
+        {
+            "kind": "task", "idempotency_key": "k", "claim_epoch": 7,
+            "schema_version": 2, "condition": {"kind": "task", "task_id": "t"},
+        },
     )
     shown = CliRunner().invoke(cli, ["wait", "show", "w", "--json"])
     assert shown.exit_code == 0

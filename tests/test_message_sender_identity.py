@@ -53,6 +53,8 @@ async def api(env, monkeypatch):
     config = AppConfig()
     config.messages.enabled = True
     config.security.capability_enforcement = "enforce"
+    # Exercise legacy compatibility during a flag-only rollback.
+    config.wait_policy.v2_enabled = False
     handler = CommandHandler(SimpleNamespace(
         db=env.db, bus=SimpleNamespace(emit=AsyncMock()), plugin_registry=None,
     ), config)
@@ -100,9 +102,9 @@ async def command(api, name, args, *, caller="s"):
     return response.json()
 
 
-async def native_send(api, args):
+async def native_send(api, args, *, caller="s"):
     """Native dispatch receives only the scope authenticated from the minted token."""
-    scope = await api.store.validate(api.tokens["s"])
+    scope = await api.store.validate(api.tokens[caller])
     assert scope is not None
     args = dict(args)
     error = await check_request_scope("message_send", args, scope, db=api.handler.db)
@@ -365,6 +367,50 @@ async def test_live_supervisor_may_use_its_owned_explicit_address(api, address):
         to_kind="session", to_id="s", body="guidance", from_kind="session", from_id="supervisor-q",
     ), caller="sup-p")
     assert not forged["ok"] and "out of scope" in forged["error"]
+
+
+@pytest.mark.parametrize("destination", [
+    "supervisor-global", "n-supervisor--global", "sup-global", "s",
+])
+@pytest.mark.parametrize("explicit", [False, True])
+@pytest.mark.parametrize("path", ["/api/messages/send", "native"])
+async def test_project_supervisor_sends_ordinary_reports_and_worker_guidance(
+    api, env, destination, explicit, path,
+):
+    args = dict(to_kind="session", to_id=destination, body="guidance or report", thread_id="report")
+    if explicit:
+        args.update(from_kind="session", from_id="sup-p")
+    if path == "native":
+        result = await native_send(api, args, caller="sup-p")
+    else:
+        response = await api.http.post(
+            path, json=args,
+            headers={"Authorization": f"Bearer {api.tokens['sup-p']}"},
+        )
+        assert response.status_code == 200, response.text
+        result = response.json()
+    assert "error" not in result, result
+    stored = await env.db.get_message(result["message_id"])
+    assert (stored.project_id, stored.from_kind, stored.from_id) == ("p", "session", "sup-p")
+    assert stored.to_id == ("s" if destination == "s" else "supervisor-global")
+    assert stored.thread_id == "report"
+
+
+@pytest.mark.parametrize("explicit", [False, True])
+async def test_project_supervisor_named_relay_keeps_report_in_own_project(api, env, explicit):
+    payload = {"body": "project report", "thread_id": "relay-report"}
+    if explicit:
+        payload.update({"from_kind": "session", "from": "sup-p"})
+    response = await api.http.post(
+        "/api/sessions/supervisor-global/message", json=payload,
+        headers={"Authorization": f"Bearer {api.tokens['sup-p']}"},
+    )
+    assert response.status_code == 200, response.text
+    stored = await env.db.get_message(response.json()["message_id"])
+    assert (stored.project_id, stored.from_kind, stored.from_id, stored.to_id) == (
+        "p", "session", "sup-p", "supervisor-global",
+    )
+    assert stored.thread_id == "relay-report"
 
 
 async def test_local_human_defaults_and_explicit_senders_remain_distinct(api):

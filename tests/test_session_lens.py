@@ -1413,10 +1413,21 @@ class TestSupervisorAddressValidation:
         """End to end through the delivery engine across repeated passes."""
         _row, handle = await _seed_running_supervisor(db, providers, project_id="proj1")
         providers.create("fake").sessions[handle.name].activity = time.time() - 300
+        from sqlalchemy import update
+
+        from src.database.tables import messages
+
+        # Inserts now canonicalise a project-less supervisor alias to the
+        # message's own supervisor, so a historical row stored under the alias
+        # (written before that) is recreated by rewriting the stored address.
         legacy = await db.create_message(
             project_id="proj1", from_kind="user", from_id="cli", to_kind="session",
-            to_id="supervisor-aq", subject="historical", body="original body, preserved",
+            to_id="supervisor-proj1", subject="historical", body="original body, preserved",
         )
+        async with db._engine.begin() as conn:
+            await conn.execute(
+                update(messages).where(messages.c.id == legacy.id).values(to_id="supervisor-aq")
+            )
         orphan = await db.create_message(
             project_id=None, from_kind="user", from_id="cli", to_kind="session",
             to_id="supervisor-nowhere", subject="orphan", body="orphan body",
@@ -1428,7 +1439,8 @@ class TestSupervisorAddressValidation:
 
         assert [r["delivered"] for r in results] == [0, 0, 0]
         assert fake.sent_nudges == [
-            (handle.name, f"Handle `aq message status {legacy.id} --json`.")
+            (handle.name,
+             f"Handle `aq message status {legacy.id} --json` (running it marks the message read).")
         ]
         notified = await db.get_message(legacy.id)
         assert notified.delivered_at is None and notified.read_at is None

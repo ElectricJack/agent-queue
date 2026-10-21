@@ -982,6 +982,54 @@ class TestExplainAfterATerminalClose:
         assert "restart or reopen" in details["blocked_terminal"]
 
 
+class TestExplainABlockedTaskNothingHolds:
+    """A BLOCKED row with no attention, mark or graph blocker is never requeued.
+
+    Pools count only READY, so explain must name the status itself rather
+    than answer with route and pool waits (swift-crest-94).
+    """
+
+    async def test_unheld_blocked_names_the_requeue(self, handler, db):
+        await mktask(db, "parked", status=TaskStatus.BLOCKED)
+
+        res = await handler._cmd_explain_task({"task_id": "parked"})
+
+        details = {r["code"]: r["detail"] for r in res["reasons"]}
+        assert "no recorded blocker" in details["blocked_unheld"]
+        assert "set-status --task-id parked --status READY" in details["blocked_unheld"]
+
+    async def test_failed_slot_reset_names_resume(self, handler, db):
+        await mktask(db, "parked", status=TaskStatus.BLOCKED)
+        await db.set_task_meta("parked", "slot_reset_failure", {
+            "reason": "worktree dirty", "attempt": 5, "retry": "manual",
+        })
+
+        res = await handler._cmd_explain_task({"task_id": "parked"})
+
+        details = {r["code"]: r["detail"] for r in res["reasons"]}
+        assert "worktree dirty (attempt 5)" in details["blocked_unheld"]
+        assert "aq task resume --task-id parked" in details["blocked_unheld"]
+
+    @pytest.mark.parametrize("held_by", ["attention", "terminal", "dependency"])
+    async def test_held_blocked_is_not_unheld(self, handler, db, held_by):
+        await mktask(db, "parked", status=TaskStatus.IN_PROGRESS)
+        if held_by == "terminal":
+            await db.transition_task(
+                "parked", TaskStatus.BLOCKED, context="session_close_hard_failure",
+            )
+        else:
+            await db.transition_task("parked", TaskStatus.BLOCKED, context="test")
+        if held_by == "attention":
+            await db.set_task_meta("parked", "needs_attention", "slot_reset_failed")
+        elif held_by == "dependency":
+            await mktask(db, "upstream")
+            await db.add_dependency("parked", "upstream")
+
+        res = await handler._cmd_explain_task({"task_id": "parked"})
+
+        assert "blocked_unheld" not in res["reason_codes"]
+
+
 async def test_explain_includes_shared_operator_decision(handler, db):
     from src.operator_decisions import OperatorDecisions
 

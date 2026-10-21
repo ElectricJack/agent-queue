@@ -220,12 +220,12 @@ message wait for the reply with the returned thread/cursor, then end the turn:
 
 ```bash
 aq wait register --kind message --ref <reply-thread> --after-seq <cursor> \
-  --timeout 3600 --idempotency-key claim-blocker-reply
+  --idempotency-key claim-blocker-reply
 ```
 
-Consume the existing wait when notified and follow the reply. On timeout, inspect
-the outcome once and ask for direction; it is not permission to restart an unchanged
-claim loop. Do not keep polling claims/inboxes, reread unchanged context or repeat the
+Acknowledge the existing outcome when notified and follow the reply or recorded
+supervisor decision. Keep the same wait; escalation never restarts the claim loop.
+Do not keep polling claims/inboxes, reread unchanged context or repeat the
 blocker report. Never drain a retained claim just to make the refusal disappear.
 
 `aq task close`'s TASK_ID argument is optional: omit it (as the loop above
@@ -259,17 +259,17 @@ For supported validation, submit the producer and wait together:
 
 ```bash
 aq test --aq-detach --aq-wait --aq-idempotency-key validation TEST_ARGS
-aq wait register --kind task --ref <producer-task> --timeout 7200 --idempotency-key settlement
+aq wait register --kind task --ref <producer-task> --idempotency-key settlement
 aq wait show <wait-id> --consume --json
 ```
 
-Register once and end the turn. The durable wait retains the current claim,
-workspace and seat; the daemon queues completion, failure or bounded timeout.
-`--consume` reads the result and consumes only its notification, so it does not
-leave a redundant nudge or close blocker. Plain reads remain diagnostic. Handle
-the actual outcome; expiry never cancels a producer or proves success. Inspect
-the producer once on timeout and decide what to do instead of blindly
-re-registering or submitting replacement work. Managed admission is opt-in;
+State one condition, register once and end the turn. AQ chooses sleep in place or
+hibernation and delivers the durable outcome. If requested, submit `aq wait checkpoint`
+with a compaction summary before ending the turn. `--consume` acknowledges the outcome;
+plain reads remain diagnostic. Act on the result or supervisor decision: availability
+never proves success. Escalation goes to the supervisor and keeps the worker asleep.
+Do not re-register the same condition or submit replacement work. Managed admission
+is opt-in;
 if disabled, use ordinary foreground `aq test` with the existing resource caps.
 
 For `messages.pending_before_close`, handle every mailbox named by the refusal

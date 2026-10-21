@@ -500,6 +500,27 @@ def _agent_task_twin() -> dict[str, Any]:
     return artifact
 
 
+def _too_deep_loop_twin() -> dict[str, Any]:
+    """Five properly nested loops exceed the supported four-frame stack."""
+    artifact = _foreach_twin()
+    ids = ["loop", "inner", "level3", "level4", "level5"]
+    artifact["steps"]["loop"]["body_entry"] = "inner"
+    for index, step_id in enumerate(ids[1:], start=1):
+        artifact["steps"][step_id] = {
+            "type": "foreach",
+            "rule": "r1",
+            "title": "Inner",
+            "collection": {"type": "binding_ref", "binding": "bound", "path": "tasks"},
+            "item_binding": "leaf" if index == 1 else f"item{index + 1}",
+            "failure_policy": "halt",
+            "body_entry": ids[index + 1] if index + 1 < len(ids) else "body",
+            "transitions": {"completed": ids[index - 1], "failed": ids[index - 1]},
+            "source": source(9),
+        }
+    artifact["steps"]["body"]["transitions"] = {"done": "level5", "skipped": "level5"}
+    return artifact
+
+
 def _mutate(base: dict[str, Any], mutation: Any) -> dict[str, Any]:
     artifact = copy.deepcopy(base)
     mutation(artifact)
@@ -529,6 +550,9 @@ def _invalid_artifacts() -> dict[str, dict[str, Any]]:
         return artifact["rules"][0]
 
     table: dict[str, dict[str, Any]] = {
+        "unsupported_feature": _mutate(
+            twin(), lambda a: a.update(required_features=["future_v9"])
+        ),
         "unknown_identifier": _mutate(
             twin(), lambda a: a["steps"]["act"].update(command="session_kill")
         ),
@@ -676,26 +700,7 @@ def _invalid_artifacts() -> dict[str, dict[str, Any]]:
                 ),
             ),
         ),
-        "nested_loop": _mutate(
-            _foreach_twin(),
-            lambda a: (
-                a["steps"]["loop"].update(body_entry="inner"),
-                a["steps"].update(
-                    inner={
-                        "type": "foreach",
-                        "rule": "r1",
-                        "title": "Inner",
-                        "collection": {"type": "binding_ref", "binding": "bound", "path": "tasks"},
-                        "item_binding": "leaf",
-                        "failure_policy": "halt",
-                        "body_entry": "body",
-                        "transitions": {"completed": "loop", "failed": "loop"},
-                        "source": source(9),
-                    }
-                ),
-                a["steps"]["body"].update(transitions={"done": "inner", "skipped": "inner"}),
-            ),
-        ),
+        "nested_loop": _too_deep_loop_twin(),
         "loop_body_escapes": _mutate(
             # A body step ending the run at a terminal the loop never declares
             # as one of its own exits.
@@ -948,7 +953,11 @@ def write_graph_fixture() -> None:
 
 def refresh_golden_contracts() -> None:
     """Regenerate live command pins in authored goldens and their receipts."""
-    contracts = StubContracts()
+    # Projection intentionally leaves list_tasks unregistered, but the
+    # executable goldens still pin its real contract like every other step.
+    from src.playbooks.validation import RegistryContractLookup
+
+    contracts = RegistryContractLookup()
     for path in (GOLDEN, GOLDEN_V6):
         payload = json.loads(path.read_text())
         for name in payload["compiled_against"]["commands"]:

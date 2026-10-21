@@ -35,6 +35,7 @@ from pathlib import Path
 from src.git.identity import GitIdentity, resolve_git_identity
 from src.profiles.capabilities import HARNESS_TOOL_NAMES
 from src.resources.limits import session_env_caps, wrap_session_argv
+from src.sessions.dialogs import first_match
 from src.sessions.env import build_session_env
 from src.sessions.harness_parser import Harness
 from src.sessions.provider import DialogRule, SessionSpec
@@ -275,6 +276,16 @@ def _infer_provider_from_harness(harness) -> str:
     mapping = {"claude": "anthropic", "codex": "openai", "gemini": "google"}
     key = getattr(harness, "id", "") or getattr(harness, "command", "")
     return mapping.get(key, "")
+
+
+#: Codex 0.162's trust screen as painted in a worker slot (verified live,
+#: 2026-10-21). A harness whose own rules miss it gets a built-in one.
+_CODEX_TRUST_SCREEN = (
+    "  Trust this folder? Codex can read, edit, and run files here, subject to your\n"
+    "  permission settings.\n\n"
+    "› 1. Trust and continue\n"
+    "  2. Back to Agent Command Center\n"
+)
 
 
 def _is_codex_cli(harness) -> bool:
@@ -751,6 +762,18 @@ class SessionSpecBuilder:
                 keys=(),
                 quarantine=True,
             ), *dialogs)
+        codex_project_trust = _is_codex_cli(harness) and allow_skip_permissions
+        if _is_codex_cli(harness) and first_match(dialogs, _CODEX_TRUST_SCREEN) is None:
+            # Codex 0.162 renamed its trust screen, and an operator-edited
+            # vault harness keeps the old rule. Its "› 1. Trust and continue"
+            # row must never pass for the composer. Pre-trust normally keeps
+            # the screen away; without the worktree argument, fail startup.
+            dialogs = (*dialogs, DialogRule(
+                name="trust-folder",
+                pattern=r"(?m)Trust this folder\?[\s\S]*^\s*›\s*1\. Trust and continue\s*$",
+                is_regex=True,
+                keys=("Enter",) if codex_project_trust else (),
+            ))
 
         return SessionSpec(
             session_name=session_name,
@@ -772,6 +795,7 @@ class SessionSpecBuilder:
             hooks_provisioned=hooks_provisioned,
             git_identity_digest=git_identity.digest if git_identity is not None else None,
             knowledge_transport=knowledge_transport,
+            codex_project_trust=codex_project_trust,
         )
 
     def _compose_argv(

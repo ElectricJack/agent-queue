@@ -43,6 +43,7 @@ async def test_list_playbooks_projects_v2_activations_to_dashboard_summaries() -
     result = await _Handler()._cmd_list_playbooks({})
 
     assert result == {
+        "success": True,
         "playbooks": [{
             "id": "router",
             "scope": "system",
@@ -89,7 +90,7 @@ async def test_list_playbooks_applies_scope_filter() -> None:
 
     result = await handler._cmd_list_playbooks({"scope": "project"})
 
-    assert result == {"playbooks": [], "count": 0}
+    assert result == {"success": True, "playbooks": [], "count": 0}
     handler.db.latest_run_per_playbook.assert_awaited_once_with([])
 
 

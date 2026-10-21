@@ -89,6 +89,7 @@ SHIPPED_HARNESS_HASHES: Mapping[str, frozenset[str]] = {
             "f9dcf86290b94d59fab3369e9d9fef15fcf8aed7e4f4efab498d71fcedea5bfe",  # 84945773 2026-09-06 (--full-auto removed)
             "9f37a9b7b9e320d840cd2085d8b40823505fc5021a92bcc2904b7353724f8d66",  # bold-rapids.2 2026-09-20 (dialog signal)
             "0b5dcde0e19c56fadc096b4336113445ee3579b33b5c39fbe0fff3018c7fc1c1",  # quick-stone 2026-09-22 (input prompts)
+            "cd7572472cfc7f250c61ba227988b5341975067b303ff81743b7fb21991e74bd",  # nimble-harbor-12 2026-10-21 (Trust this folder?)
         }
     ),
     "gemini.md": frozenset(

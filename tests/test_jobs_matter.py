@@ -315,6 +315,7 @@ async def test_timed_out_complete_capture_cannot_pass(db, tmp_path):
 
 async def test_atomic_render_wait_recovers_once_and_evidence_outlives_logs(setup, tmp_path):
     config = configured(tmp_path)
+    config.wait_policy.v2_enabled = False  # Legacy rollback adapter; v2 is covered at command level.
     svc = JobService(setup.db, config)
     args = dict(
         project_id="p",

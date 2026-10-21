@@ -28,7 +28,7 @@ from src.database.queries.hierarchy_queries import ProjectIntegrationMode
 from src.database.queries.ingest_hold import IngestHeld
 from src.git.manager import ForeignSlotClaim
 from src.git.process import PREPARE_CLEANUP_HOLD, ProcessCleanupError
-from src.models import ClaimResult, TaskStatus
+from src.models import SUSPENDED_TASK_STATUSES, ClaimResult, TaskStatus
 from src.pool_claims import pool_claim_cap
 from src.workspace_disable import CLAIM_FAILURES, disable_fields
 
@@ -46,7 +46,11 @@ _MOVED_ADMISSION = frozenset({"delivery_snapshot_changed", "stack_snapshot_chang
 
 
 def _retryable_preparation_error(exc: Exception) -> bool:
-    """Recognize PostgreSQL transaction conflicts through driver/SQLAlchemy wrappers."""
+    """Retry fenced I/O expiry and PostgreSQL transaction conflicts."""
+    from src.integration.lock import BranchLockTimeout
+
+    if isinstance(exc, BranchLockTimeout):
+        return True
     seen = set()
     while exc is not None and id(exc) not in seen:
         seen.add(id(exc))
@@ -796,6 +800,12 @@ class ClaimCommandsMixin:
                         row,
                         cap,
                     )
+                if task.status in SUSPENDED_TASK_STATUSES:
+                    # The wait/continuation owns this binding. Claim-loop
+                    # recovery must neither release it nor re-serve the task.
+                    return self._simple(
+                        ClaimResult.NOT_ADMISSIBLE, "wait.task_suspended", row, cap
+                    )
                 if (
                     task.status is not TaskStatus.IN_PROGRESS
                     or task.assigned_agent_id != row.agent_id
@@ -915,8 +925,10 @@ class ClaimCommandsMixin:
                     hierarchy_mode = replace(hierarchy_mode, stackable_prerequisite_ids=frozenset(
                         await stack_view.verified_on(conn, proof_ids)
                     ))
-                tid = await self.db.select_ready_for_profile(
-                    conn,
+                from src.waits.reservations import claim_candidate, consume_reservation
+
+                tid, reservation_id = await claim_candidate(
+                    self, conn,
                     project_id=session.project_id,
                     profile_id=session.profile_id,
                     agent_id=row.agent_id,
@@ -957,6 +969,7 @@ class ClaimCommandsMixin:
                         now=now,
                         agent_reserved=True,
                     )
+                    await consume_reservation(conn, reservation_id, session.id, now=now)
                     new_claim = (row, task, slot)
 
         if stale_binding is not None:
@@ -1370,15 +1383,16 @@ class ClaimCommandsMixin:
                     # reservation: releasing either would strand a delegate
                     # outside the materialized-origin claim frontier.
                     logger.info(
-                        "claim %s/%s: transient database conflict during preparation (%s/%s)",
-                        session.id, task.id, attempt + 1, len(_PREPARATION_RETRY_DELAYS) + 1,
+                        "claim %s/%s: transient %s during preparation (%s/%s)",
+                        session.id, task.id, type(exc).__name__,
+                        attempt + 1, len(_PREPARATION_RETRY_DELAYS) + 1,
                     )
                     if attempt < len(_PREPARATION_RETRY_DELAYS):
                         await asyncio.sleep(_PREPARATION_RETRY_DELAYS[attempt])
             remove_claim_file_if_matches(row.work_dir, task.id, task.claim_epoch, session_id=session.id)
             self._resolve_claim_waiters(session.id, task.claim_epoch, "no_ready_work")
             return self._simple(
-                ClaimResult.NO_READY_WORK, "claim preparation database contention", row, cap
+                ClaimResult.NO_READY_WORK, "claim preparation transient contention", row, cap
             )
 
     async def _branch_fenced_prepare_failed(
@@ -1830,6 +1844,8 @@ class ClaimCommandsMixin:
                 )
                 base_sha = origin["base_sha"]
                 if owner_role == "repair":
+                    from src.integration.lock import REPAIR_START_SECONDS
+
                     # A repair stage's clock runs from its activation, so a
                     # delegate the pool could not staff in time is claimed with
                     # its budget already spent -- and its close is then refused
@@ -1849,6 +1865,7 @@ class ClaimCommandsMixin:
                         async with ownership.mutation_exclusion_on(
                             repair_conn, fence, expected_role=owner_role,
                             state="attached" if hierarchy_attached else "reserved",
+                            timeout_seconds=REPAIR_START_SECONDS,
                         ):
                             base_sha = await self.orchestrator._hierarchy_repair_start(
                                 slot.workspace_path, origin, fence,
@@ -1938,7 +1955,7 @@ class ClaimCommandsMixin:
         except Exception as exc:
             if _retryable_preparation_error(exc):
                 # Retry only after the failed transaction unwinds; never run
-                # permanent failure cleanup for a database conflict.
+                # permanent failure cleanup for transient contention/expiry.
                 raise
             current = await self.db.get_session(session.id)
             current_task = await self.db.get_task(task.id)
@@ -1981,6 +1998,25 @@ class ClaimCommandsMixin:
             from src.preparation_failure import describe_preparation_failure
 
             failure = describe_preparation_failure(exc, stage)
+            if hierarchy_enabled and stage == "integration_origin":
+                # A retained self-handoff predates this retry's attach step.
+                # Preserve its holder proof when retry still cannot detach;
+                # the generic BranchBusy ladder must not release that claim.
+                from sqlalchemy import select
+
+                from src.database.tables import integration_branch_owners
+
+                async with self.db._engine.connect() as conn:
+                    hierarchy_attached = bool(await conn.scalar(
+                        select(integration_branch_owners.c.id).where(
+                            integration_branch_owners.c.owner_id == task.id,
+                            integration_branch_owners.c.session_id == session.id,
+                            integration_branch_owners.c.workspace_id == slot.id,
+                            integration_branch_owners.c.handoff_state.in_(
+                                ("attached", "handoff_pending"),
+                            ),
+                        ).limit(1)
+                    ))
             await self.db.record_failed_preparation(
                 session.id, instance_token=session.instance_token, task_id=task.id,
                 claim_epoch=epoch, preparation_started_at=row.claim_phase_at,
@@ -2101,10 +2137,13 @@ class ClaimCommandsMixin:
                 # checkout restores this task's reserved fence and then the
                 # normal failed-prepare release is safe; an unprovable one
                 # intentionally retains every binding for later recovery.
-                released = await self.orchestrator.arelease_integration_writer_for_retry(
-                    task,
-                    reason="integration_prepare_failed",
-                    pool=True,
+                # Origin recovery already tried the stricter unactivated
+                # self-handoff proof. Do not fall back to an ordinary pool
+                # close proof after an epoch/receipt/phase mismatch.
+                released = stage != "integration_origin" and await (
+                    self.orchestrator.arelease_integration_writer_for_retry(
+                        task, reason="integration_prepare_failed", pool=True,
+                    )
                 )
                 if released:
                     await self.db.release_claim(

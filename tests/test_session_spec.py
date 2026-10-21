@@ -558,6 +558,73 @@ class TestCodexHookTrust:
         )
 
 
+class TestCodexProjectTrust:
+    """Codex 0.162's "Trust this folder?" screen must never pass for readiness.
+
+    nimble-harbor-12: the renamed screen missed the vault rule, its
+    ``› 1. Trust and continue`` row looked like the composer, and two pool
+    sessions idled 40+ minutes.
+    """
+
+    CODEX = TestCodexHookTrust.CODEX
+    SCREEN = (
+        "  Trust this folder? Codex can read, edit, and run files here, subject to your\n"
+        "  permission settings.\n\n"
+        "› 1. Trust and continue\n"
+        "  2. Back to Agent Command Center\n"
+    )
+
+    def test_an_isolated_worktree_pre_trusts_and_accepts_the_screen(self, builder):
+        from src.sessions.dialogs import first_match
+
+        spec = _isolated(builder, harness=self.CODEX)
+        assert spec.codex_project_trust is True
+        rule = first_match(spec.dialogs, self.SCREEN)
+        assert rule is not None and rule.keys == ("Enter",)
+
+    def test_a_linked_checkout_is_not_pre_trusted_and_fails_startup(self, builder):
+        from src.models import RepoSourceType
+        from src.sessions.dialogs import first_match
+
+        spec = _build(
+            builder, harness=self.CODEX, workspace_source_type=RepoSourceType.LINK
+        )
+        assert spec.codex_project_trust is False
+        rule = first_match(spec.dialogs, self.SCREEN)
+        assert rule is not None and rule.keys == () and not rule.quarantine
+
+    def test_a_harness_rule_that_already_matches_is_kept(self, builder):
+        from src.sessions.dialogs import first_match
+        from src.sessions.provider import DialogRule
+
+        own = DialogRule(name="trust-directory", pattern="Trust this folder?", keys=("Enter",))
+        harness = replace(self.CODEX, dialogs=(own,))
+        spec = _isolated(builder, harness=harness)
+        assert first_match(spec.dialogs, self.SCREEN) is own
+        assert [r.name for r in spec.dialogs].count("trust-folder") == 0
+
+    def test_the_fallback_stays_quiet_on_the_composer(self, builder):
+        from src.sessions.dialogs import first_match
+
+        spec = _isolated(builder, harness=self.CODEX)
+        assert first_match(spec.dialogs, "welcome\n\n› Trust and continue\n") is None
+
+    def test_claude_is_never_pre_trusted(self, builder):
+        spec = _isolated(builder)
+        assert spec.codex_project_trust is False
+        assert all(r.name != "trust-folder" for r in spec.dialogs)
+
+    async def test_the_screen_is_answered_not_mistaken_for_readiness(self, builder):
+        from tests.test_tmux_startup_dialogs import _await_ready, _Pane, _provider
+
+        spec = replace(
+            _isolated(builder, harness=self.CODEX), ready_prompt_prefix="› ", ready_delay_ms=0,
+        )
+        pane = _Pane(lambda p: "› \n" if p.sent else self.SCREEN)
+        await _await_ready(_provider(pane, settle=0.1), spec)
+        assert pane.sent == [("Enter",)]
+
+
 class TestArgvComposition:
     def test_codex_full_auto_profile_opt_in_adds_flag_once(self, builder):
         codex = Harness(id="codex", command="codex", args=("--quiet",))

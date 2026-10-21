@@ -23,27 +23,34 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import math
 import time
 import uuid
 from collections.abc import Callable, Collection, Mapping, Sequence
+from copy import deepcopy
 from dataclasses import dataclass, field, replace
+from datetime import datetime
+from enum import Enum
 from typing import Any
 
 from src.commands.authorization import authorize_command
-from src.commands.principal import PrincipalKind
+from src.commands.principal import ExecutionPrincipal, PrincipalKind
 from src.commands.contracts.models import OutcomeClass
 from src.llm.client import LLMToolTurn, LLMToolTurnBoundaryError
 from src.llm.types import TokenUsage
 from src.playbooks.artifact_ref import ArtifactRef
+from src.playbooks.authority import bind, binds_run_authority, caller_record, effect_principal
 from src.playbooks.definition import (
     AgentTaskStep,
     CommandStep,
+    ScriptStep,
     ForEachStep,
     LlmStep,
     PlaybookDefinition,
     Rule,
     WaitStep,
     step_targets,
+    uses_iteration_paths,
 )
 from src.playbooks.executors import executor_for
 from src.playbooks.executors.agent_task import (
@@ -53,6 +60,7 @@ from src.playbooks.executors.agent_task import (
     narrow_for_child,
 )
 from src.playbooks.executors.llm import resolve_profile_principal
+from src.playbooks.executors.script import ScriptSubmissionInterrupted
 from src.playbooks.executors.base import (
     ENGINE_RESERVED_OUTCOMES,
     GOTO_CAPABLE_STEP_KINDS,
@@ -68,16 +76,20 @@ from src.playbooks.executors.wait import WaitResumption, resolve_wait_result
 from src.playbooks.expressions import (
     ResolutionScope,
     ValueResolutionError,
+    EvaluationBudget,
     evaluate_condition,
     resolve_value,
 )
 from src.playbooks.receipts import (
     ATTEMPT_SCOPED_RECEIPT_KINDS,
     StepReceipt,
+    attempt_key,
+    encode_iteration_path,
     idempotency_key,
     transition_id,
 )
 from src.playbooks.run_state import (
+    MAX_ITERATION_ENTRIES,
     DuplicateAttempt,
     DuplicateRun,
     IllegalLifecycleTransition,
@@ -133,7 +145,7 @@ EVENT_STEP_COMPLETED = "playbook.v2.step.completed"
 
 #: The step types whose attempts reach outside the engine, and are therefore
 #: fenced by a receipted ``attempt_start`` boundary before they execute.
-EXTERNAL_STEP_TYPES = (CommandStep, LlmStep, AgentTaskStep)
+EXTERNAL_STEP_TYPES = (CommandStep, LlmStep, AgentTaskStep, ScriptStep)
 EVENT_RUN_FINISHED = "playbook.v2.run.finished"
 
 _TERMINAL_LIFECYCLE: dict[str, RunLifecycle] = {
@@ -290,9 +302,11 @@ class _DryRunCursor:
     rule_id: str
     step_id: str
     scope: ResolutionScope
-    loop: LoopFrame | None
+    loop_stack: tuple[LoopFrame, ...]
     nodes: tuple[DryRunNode, ...] = ()
     unresolved: bool = False
+    iteration_entries: int = 0
+    state_preview: dict = field(default_factory=dict)
 
 
 class InMemoryRunRecorder:
@@ -388,6 +402,10 @@ class _Attempt:
     llm_calls: int = 0
     boundary_receipts: list[StepReceipt] = field(default_factory=list)
 
+    @property
+    def iteration_path(self) -> str:
+        return self.snapshot.iteration_path
+
 
 @dataclass(slots=True)
 class _RunControl:
@@ -434,7 +452,9 @@ class _RunControl:
     receipt: StepReceipt | None = None
 
 
-def _authored_idempotency_key(step: Any, scope: ResolutionScope) -> str | None:
+def _authored_idempotency_key(
+    step: Any, scope: ResolutionScope, budget: EvaluationBudget | None = None
+) -> str | None:
     """Resolve a ``CommandStep``'s step-level idempotency override, if any.
 
     Resolved here rather than in the executor for the same reason
@@ -446,7 +466,7 @@ def _authored_idempotency_key(step: Any, scope: ResolutionScope) -> str | None:
     raw = getattr(step, "idempotency_key", None)
     if raw is None:
         return None
-    value = resolve_value(raw, scope)
+    value = resolve_value(raw, scope, budget)
     return None if value is None else str(value)
 
 
@@ -576,9 +596,17 @@ class PlaybookEngine:
             try:
                 artifact = self._load(ref)
             except Exception as exc:  # noqa: BLE001 - a load failure queues, never drops
+                from src.playbooks.features import UnsupportedArtifactFeatures
+
                 logger.warning("V2 dispatch: artifact %s unavailable: %s", ref.artifact_sha256, exc)
                 pending.append(
-                    PendingEventRef(ref.playbook_id, hydrated.get("event_id"), "unavailable")
+                    PendingEventRef(
+                        ref.playbook_id,
+                        hydrated.get("event_id"),
+                        "unsupported_feature"
+                        if isinstance(exc, UnsupportedArtifactFeatures)
+                        else "unavailable",
+                    )
                 )
                 await self._queue_pending(ref.playbook_id, hydrated)
                 continue
@@ -705,7 +733,7 @@ class PlaybookEngine:
         for rule in rules:
             scope = ResolutionScope(
                 event=dict(event),
-                context=self._context(artifact, rule, dispatch_id),
+                context=self._context(artifact, rule, dispatch_id, event),
                 bindings={},
                 loop={},
             )
@@ -722,12 +750,12 @@ class PlaybookEngine:
                 )
                 truncated = True
             else:
-                work.append(_DryRunCursor(rule.id, rule.entry_step, scope, None))
+                work.append(_DryRunCursor(rule.id, rule.entry_step, scope, ()))
 
         visits = 0
         while work:
             cursor = work.pop(0)
-            cursor = replace(cursor, scope=self._loop_scope(cursor.scope, artifact, cursor.loop))
+            cursor = replace(cursor, scope=self._loop_scope(cursor.scope, artifact, cursor.loop_stack))
             if visits >= max_step_visits:
                 paths.append(
                     DryRunPath(
@@ -743,12 +771,13 @@ class PlaybookEngine:
             step = artifact.steps.get(cursor.step_id)
             if step is None:
                 raise UnknownStepType(f"step {cursor.step_id!r} is not in the artifact")
+            budget = EvaluationBudget()
             try:
                 inputs = {
-                    name: resolve_value(value, cursor.scope)
+                    name: resolve_value(value, cursor.scope, budget)
                     for name, value in getattr(step, "inputs", {}).items()
                 }
-                authored_key = _authored_idempotency_key(step, cursor.scope)
+                authored_key = _authored_idempotency_key(step, cursor.scope, budget)
             except ValueResolutionError as exc:
                 paths.append(
                     DryRunPath(
@@ -764,7 +793,14 @@ class PlaybookEngine:
                 )
                 continue
 
-            denied = isinstance(step, CommandStep) and not self._authorized(step, principal)
+            step_principal = principal
+            if (isinstance(step, CommandStep) and binds_run_authority(artifact)
+                    and isinstance(principal, ExecutionPrincipal)):
+                # Preview the effect under the authority live would bind.
+                step_principal = bind(
+                    principal, artifact, run_id_for(cursor.rule_id), cursor.step_id
+                )
+            denied = isinstance(step, CommandStep) and not self._authorized(step, step_principal)
             if denied:
                 # The live walk's stage 5.  Package 0 owns the decision and the
                 # engine only routes it, so a denial is a resolved outcome the
@@ -778,8 +814,9 @@ class PlaybookEngine:
                 )
             else:
                 result = await self._execute_symbolic(
-                    step, cursor, artifact, artifact_ref, principal, inputs,
+                    step, cursor, artifact, artifact_ref, step_principal, inputs,
                     authored_key=authored_key,
+                    budget=budget,
                     mode=mode,
                     dispatch_id=dispatch_id,
                     run_id=run_id_for(cursor.rule_id),
@@ -863,9 +900,19 @@ class PlaybookEngine:
                                 cursor.rule_id,
                                 target,
                                 cursor.scope,
-                                cursor.loop,
+                                self._next_loop(_Attempt(
+                                    snapshot=RunSnapshot(
+                                        run_id=run_id_for(cursor.rule_id), playbook_id=artifact.id,
+                                        artifact_sha256=artifact_ref.artifact_sha256,
+                                        rule_id=cursor.rule_id, loop_stack=cursor.loop_stack,
+                                    ),
+                                    step_id=cursor.step_id, step=step, started_at=0,
+                                    outcome=outcome, next_step_id=target,
+                                )),
                                 cursor.nodes + (node,),
                                 True,
+                                cursor.iteration_entries,
+                                deepcopy(cursor.state_preview),
                             )
                         )
                 continue
@@ -879,7 +926,7 @@ class PlaybookEngine:
                 try:
                     # The same body step may produce a new result on each
                     # foreach iteration, just like live bind_step_output.
-                    if cursor.loop is not None:
+                    if bool(cursor.loop_stack):
                         bindings = dict(next_scope.bindings)
                         bindings.pop(step.save_result_as, None)
                         next_scope = next_scope.model_copy(update={"bindings": bindings})
@@ -894,7 +941,6 @@ class PlaybookEngine:
                         )
                     )
                     continue
-            next_loop = None if result.clear_loop else (result.loop_frame or cursor.loop)
             if result.control is StepControl.TERMINATE:
                 paths.append(
                     DryRunPath(
@@ -933,6 +979,24 @@ class PlaybookEngine:
                     )
                 )
                 continue
+            symbolic_attempt = _Attempt(
+                snapshot=RunSnapshot(
+                    run_id=run_id_for(cursor.rule_id), playbook_id=artifact.id,
+                    artifact_sha256=artifact_ref.artifact_sha256, rule_id=cursor.rule_id,
+                    loop_stack=cursor.loop_stack,
+                ),
+                step_id=cursor.step_id, step=step, started_at=0,
+                outcome=result.outcome, next_step_id=target,
+                clear_loop=result.clear_loop, loop_frame=result.loop_frame,
+            )
+            next_loop = self._next_loop(symbolic_attempt)
+            if result.loop_frame is not None:
+                names = {getattr(artifact.steps[item], "save_result_as", None)
+                         for item in result.loop_frame.body_step_ids}
+                names.add(getattr(step, "save_result_as", None))
+                next_scope = next_scope.model_copy(update={"bindings": {
+                    k: v for k, v in next_scope.bindings.items() if k not in names
+                }})
             node = replace(node, target=target)
             work.append(
                 _DryRunCursor(
@@ -942,6 +1006,8 @@ class PlaybookEngine:
                     next_loop,
                     cursor.nodes + (node,),
                     cursor.unresolved,
+                    cursor.iteration_entries + int(result.loop_frame is not None),
+                    cursor.state_preview,
                 )
             )
         if truncated:
@@ -969,6 +1035,7 @@ class PlaybookEngine:
         inputs: Mapping[str, Any],
         *,
         authored_key: str | None = None,
+        budget: EvaluationBudget | None = None,
         mode: ExecutionMode,
         dispatch_id: str,
         run_id: str,
@@ -991,15 +1058,26 @@ class PlaybookEngine:
             scope=cursor.scope,
             services=self.services,
             mode=mode,
-            iteration_index=None if cursor.loop is None else cursor.loop.index,
+            iteration_index=cursor.loop_stack[-1].index if cursor.loop_stack else None,
+            iteration_path=encode_iteration_path([(f.step_id, f.index) for f in cursor.loop_stack])
+                if uses_iteration_paths(artifact) else "",
+            iteration_entries=cursor.iteration_entries,
+            state_preview=cursor.state_preview,
+            loop_stack=cursor.loop_stack,
             inputs=inputs,
             authored_idempotency_key=authored_key,
-            loop_frame=cursor.loop,
+            evaluation_budget=budget if budget is not None else EvaluationBudget(),
+            loop_frame=cursor.loop_stack[-1] if cursor.loop_stack else None,
         )
         try:
             return await executor_for(step.type, executor_mode).execute(step, ctx)
         except asyncio.CancelledError:
             raise
+        except ValueResolutionError as exc:
+            return ExecutorResult(
+                control=StepControl.UNRESOLVED, outcome="input_resolution_failed",
+                diagnostics=(exc.reason,),
+            )
         except Exception as exc:  # noqa: BLE001 - a preview/provider error is an honest boundary
             return ExecutorResult(
                 control=StepControl.UNRESOLVED,
@@ -1054,13 +1132,15 @@ class PlaybookEngine:
             mode=mode.value,
             current_step_id=rule.entry_step,
             event=dict(event),
-            context=self._context(artifact, rule, dispatch_id),
+            context=self._context(artifact, rule, dispatch_id, event),
+            iteration_paths=uses_iteration_paths(artifact),
             event_type=self._event_type(event),
             event_id=event.get("event_id"),
             dispatch_id=dispatch_id,
             deadline_at=deadline_at,
             started_at=now,
             updated_at=now,
+            caller=caller_record(principal, artifact),
         )
         try:
             snapshot = await repository.create_run(snapshot)
@@ -1232,6 +1312,13 @@ class PlaybookEngine:
             return RunOutcome(run_id, snapshot.lifecycle, "human_decision_required", snapshot)
         if snapshot.is_terminal:
             return RunOutcome(run_id, snapshot.lifecycle, "already_terminal", snapshot)
+        from src.playbooks.private_values import PrivateValueError
+
+        try:
+            snapshot = await self._resolve_private_run(snapshot, principal, repository)
+        except PrivateValueError as exc:
+            # Key loss or failed authorization must not destroy resumable data.
+            return RunOutcome(run_id, snapshot.lifecycle, exc.code, snapshot.redacted())
         if isinstance(cause, InterruptedByRestart):
             if (
                 snapshot.lifecycle not in {RunLifecycle.RUNNING, RunLifecycle.CANCELLING}
@@ -1254,6 +1341,7 @@ class PlaybookEngine:
         mode = ExecutionMode(snapshot.mode)
         artifact_ref = await self._ref_for(snapshot)
         artifact = self._load(artifact_ref)
+        snapshot = self._classify_private_bindings(snapshot, artifact)
         if snapshot.operator_decision is not None:
             return await self._resolve_operator_decision(
                 snapshot, cause, principal, artifact, artifact_ref, mode, repository
@@ -1267,6 +1355,7 @@ class PlaybookEngine:
             # The interrupted receipt is a boundary of its own.  Re-load the
             # durable snapshot shape before replaying the identical attempt.
             snapshot = await repository.load_run(run_id) or snapshot
+            snapshot = await self._resolve_private_run(snapshot, principal, repository)
         current_step = artifact.steps.get(snapshot.current_step_id or "")
         if isinstance(cause, HumanDecision) and (
             not isinstance(current_step, WaitStep) or current_step.wait_kind != "human"
@@ -1300,6 +1389,7 @@ class PlaybookEngine:
                 for turn in snapshot.llm_turns
                 if turn.get("step_id") == step_id
                 and int(turn.get("iteration", -1)) == iteration
+                and turn.get("iteration_path", "") == snapshot.iteration_path
                 and int(turn.get("attempt", 1)) == attempt_number
             ]
             effective_principal = (
@@ -1321,6 +1411,7 @@ class PlaybookEngine:
                     step_id,
                     iteration,
                     attempt_number,
+                    snapshot.iteration_path,
                 ),
             )
             await self._commit_llm_turn(
@@ -1383,8 +1474,11 @@ class PlaybookEngine:
         list_receipts = getattr(repository, "list_receipts", None)
         if not callable(list_receipts):
             return snapshot, None
-        receipts = await list_receipts(snapshot.run_id)
         iteration = self._iteration_of(snapshot, snapshot.current_step_id)
+        receipts = await list_receipts(
+            snapshot.run_id, step_id=snapshot.current_step_id, iteration=iteration,
+            iteration_path=snapshot.iteration_path,
+        )
         # An attempt is open when the latest receipt that speaks for the whole
         # attempt is still open: the ``attempt_start`` fence has no
         # ``completed_at``, and the ``step``/``interrupted``/resolution receipt
@@ -1394,6 +1488,7 @@ class PlaybookEngine:
             if (
                 receipt.step_id == snapshot.current_step_id
                 and receipt.iteration == iteration
+                and receipt.iteration_path == snapshot.iteration_path
                 and receipt.receipt_kind in ATTEMPT_SCOPED_RECEIPT_KINDS
             ):
                 latest_by_attempt[receipt.attempt] = receipt
@@ -1403,7 +1498,8 @@ class PlaybookEngine:
         marker = snapshot.context.get("_in_flight_attempt")
         if started:
             receipt = max(started, key=lambda item: item.attempt)
-        elif isinstance(marker, Mapping) and marker.get("step_id") == snapshot.current_step_id:
+        elif (isinstance(marker, Mapping) and marker.get("step_id") == snapshot.current_step_id
+              and marker.get("iteration_path", "") == snapshot.iteration_path):
             receipt = StepReceipt(
                 receipt_id=uuid.uuid4().hex,
                 run_id=snapshot.run_id,
@@ -1415,6 +1511,7 @@ class PlaybookEngine:
                 started_at=float(marker.get("started_at") or self.services.clock()),
                 snapshot_version=snapshot.version,
                 iteration=int(marker.get("iteration", iteration)),
+                iteration_path=str(marker.get("iteration_path", "")),
                 attempt=int(marker.get("attempt", 1)),
                 idempotency_key=str(marker.get("idempotency_key") or ""),
                 completed_at=None,
@@ -1431,6 +1528,7 @@ class PlaybookEngine:
                 for item in receipts
                 if item.step_id == receipt.step_id
                 and item.iteration == iteration
+                and item.iteration_path == snapshot.iteration_path
                 and item.attempt == receipt.attempt
                 and item.receipt_kind != "attempt_start"
             ),
@@ -1451,7 +1549,7 @@ class PlaybookEngine:
         )
         if self._retry_safe_after_interruption(step):
             attempts = dict(snapshot.attempts)
-            attempts[f"{receipt.step_id}:{iteration}"] = max(0, receipt.attempt - 1)
+            attempts[attempt_key(receipt.step_id, iteration, receipt.iteration_path)] = max(0, receipt.attempt - 1)
             replayable = replace(
                 snapshot,
                 attempts=attempts,
@@ -1465,9 +1563,10 @@ class PlaybookEngine:
             return await repository.commit_boundary(replayable, interrupted), "replay"
 
         attempts = dict(snapshot.attempts)
-        attempts[f"{receipt.step_id}:{iteration}"] = receipt.attempt
+        attempts[attempt_key(receipt.step_id, iteration, receipt.iteration_path)] = receipt.attempt
         decision = OperatorDecision(
             step_id=receipt.step_id,
+            iteration_path=receipt.iteration_path,
             attempt=receipt.attempt,
             reason="interrupted attempt may have reached an external side effect",
             raised_at=now,
@@ -1497,6 +1596,9 @@ class PlaybookEngine:
         return await repository.commit_boundary(paused, operator_receipt), "operator_decision_required"
 
     def _retry_safe_after_interruption(self, step: Any) -> bool:
+        if isinstance(step, ScriptStep):
+            # Replay submission with the same durable operation key, never execution.
+            return True
         if not isinstance(step, CommandStep):
             return False
         registration = self.services.contracts.get(step.command)
@@ -1562,6 +1664,7 @@ class PlaybookEngine:
             started_at=now,
             snapshot_version=snapshot.version + 1,
             iteration=snapshot.loop.index if snapshot.loop else -1,
+            iteration_path=decision.iteration_path,
             attempt=decision.attempt,
             principal=self._principal_projection(principal),
             result={"operator_resolution": cause.kind},
@@ -1592,7 +1695,7 @@ class PlaybookEngine:
             },
         )
         attempt.idempotency_key = idempotency_key(
-            running.run_id, decision.step_id, attempt.iteration, attempt.attempt
+            running.run_id, decision.step_id, attempt.iteration, attempt.attempt, attempt.iteration_path
         )
         attempt.receipt_result = {"operator_resolution": cause.kind}
         if action == "accept":
@@ -1605,6 +1708,7 @@ class PlaybookEngine:
                         step_id=step.save_result_as,
                         value=value,
                         declared=value.keys(),
+                        private_fields=tuple(value),
                     )
                 except (AttributeError, StateLimitExceeded):
                     attempt.outcome = "state_limit_exceeded"
@@ -1694,7 +1798,7 @@ class PlaybookEngine:
             attempt=self._next_attempt(running, step_id or "", iteration),
         )
         attempt.idempotency_key = idempotency_key(
-            running.run_id, step_id or "", iteration, attempt.attempt
+            running.run_id, step_id or "", iteration, attempt.attempt, attempt.iteration_path
         )
         attempt.outcome = child_outcome_for_status(cause.status)
         attempt.clear_waits = True
@@ -1807,7 +1911,7 @@ class PlaybookEngine:
             completed = await persist_intent()
             if completed is not None:
                 if completed.snapshot is not None:
-                    await self._cancel_children(completed.snapshot, principal, cancel_children)
+                    await self._cancel_children(snapshot, principal, cancel_children)
                 return completed
             # No walk here.  Whichever process owns the run reads the intent
             # off the snapshot at its next boundary.
@@ -1820,7 +1924,7 @@ class PlaybookEngine:
                 if completed is not None:
                     if completed.snapshot is not None:
                         await self._cancel_children(
-                            completed.snapshot, principal, cancel_children
+                            snapshot, principal, cancel_children
                         )
                     return completed
                 control.cancel_snapshot = snapshot
@@ -2043,6 +2147,32 @@ class PlaybookEngine:
         whose authority has since shrunk cannot reach the child through the
         cancel path.
         """
+        artifact_ref = await self._ref_for(snapshot)
+        artifact = self._load(artifact_ref)
+        script_step = artifact.steps.get(snapshot.current_step_id or "")
+        if isinstance(script_step, ScriptStep):
+            from src.playbooks.executors.script import dispatch
+
+            step_id = snapshot.current_step_id
+            number = snapshot.attempts.get(attempt_key(
+                step_id, self._iteration_of(snapshot, step_id), snapshot.iteration_path), 1)
+            job_id = (snapshot.wait.match.get("job_id") if snapshot.wait else None)
+            if not isinstance(job_id, str):
+                # Stored snapshots may protect wait matches; durable identity is public.
+                job = await self.services.db.find_script_job(
+                    snapshot.run_id, step_id, snapshot.iteration_path, number)
+                job_id = job["id"] if job else None
+            ctx = StepContext(
+                run_id=snapshot.run_id, dispatch_id=snapshot.dispatch_id or "",
+                artifact_ref=artifact_ref, artifact=artifact, rule_id=snapshot.rule_id,
+                step_id=step_id, principal=principal, attempt=number,
+                scope=ResolutionScope(), services=self.services,
+                iteration_path=snapshot.iteration_path,
+            )
+            if job_id:
+                result = await dispatch(ctx, "job_cancel", {"job_id": job_id})
+                if not result.get("success"):
+                    logger.warning("Script cancellation refused for run %s", snapshot.run_id)
         if not snapshot.agent_task_ids:
             return
         step = None
@@ -2137,6 +2267,9 @@ class PlaybookEngine:
                 receipts.append(receipt)
                 if receipt.receipt_kind == "step":
                     await self._emit(EVENT_STEP_COMPLETED, snapshot, step_id=receipt.step_id)
+            if outcome == "script_submission_interrupted":
+                # The durable start fence remains RUNNING for recovery to rejoin.
+                break
             if snapshot.lifecycle is RunLifecycle.PAUSED and snapshot.pending_wait_claims:
                 # Registration and inbox ingestion serialize per playbook, so
                 # an event that arrived first is consumed *inside* the same
@@ -2174,7 +2307,7 @@ class PlaybookEngine:
         rule_steps = tuple(
             step for step in artifact.steps.values() if step.rule == rule_id
         )
-        loop_iterations = sum(
+        loop_iterations = MAX_ITERATION_ENTRIES if uses_iteration_paths(artifact) else sum(
             step.max_iterations
             for step in rule_steps
             if isinstance(step, ForEachStep)
@@ -2199,6 +2332,8 @@ class PlaybookEngine:
         and the commit writes anything durable, so a crash in that window
         loses the attempt and never the run.
         """
+        snapshot = self._classify_private_bindings(snapshot, artifact)
+        snapshot = await self._resolve_private_run(snapshot, principal, repository)
         step_id = snapshot.current_step_id
         if step_id is None or step_id not in artifact.steps:
             failed, receipt, outcome = await self._fail_now(
@@ -2217,7 +2352,7 @@ class PlaybookEngine:
             attempt=self._next_attempt(snapshot, step_id, iteration),
         )
         attempt.idempotency_key = idempotency_key(
-            snapshot.run_id, step_id, iteration, attempt.attempt
+            snapshot.run_id, step_id, iteration, attempt.attempt, attempt.iteration_path
         )
         resolution_kind = snapshot.context.get("_operator_resolution")
         if resolution_kind is not None:
@@ -2271,6 +2406,10 @@ class PlaybookEngine:
         # re-executing would compute a second correlation key and open a
         # second wait for one suspension.  The resumption is durable state
         # on the snapshot, so this branch is identical after a restart.
+        if isinstance(step, ScriptStep) and snapshot.wait is not None:
+            return await finish(
+                self._resume_script_wait(attempt, artifact, artifact_ref, repository)
+            )
         if isinstance(step, WaitStep) and snapshot.wait is not None:
             return await finish(
                 self._resume_wait(attempt, step, artifact, artifact_ref, repository)
@@ -2294,12 +2433,13 @@ class PlaybookEngine:
 
         # 4. Resolve inputs.  A miss is an outcome *before* the executor
         #    runs; the engine never injects a marker and never coerces to "".
+        budget = EvaluationBudget()
         try:
             inputs = {
-                name: resolve_value(value, scope)
+                name: resolve_value(value, scope, budget)
                 for name, value in getattr(step, "inputs", {}).items()
             }
-            authored_key = _authored_idempotency_key(step, scope)
+            authored_key = _authored_idempotency_key(step, scope, budget)
         except ValueResolutionError as exc:
             attempt.outcome = "input_resolution_failed"
             attempt.error = exc.reason
@@ -2308,13 +2448,43 @@ class PlaybookEngine:
             )
 
         # 5. Authorize.  Package 0 owns the decision; the engine only routes
-        #    it, so an artifact can declare an edge for a denial.
-        if isinstance(step, CommandStep) and not self._authorized(step, principal):
+        #    it, so an artifact can declare an edge for a denial.  A gated
+        #    artifact's effect acts for the run's recorded caller, re-derived
+        #    now, never for whoever drives this attempt (an operator retry).
+        step_principal = principal
+        if isinstance(step, (CommandStep, ScriptStep)):
+            step_principal = await effect_principal(
+                snapshot, artifact, principal, self.services, step_id
+            )
+            if isinstance(step, CommandStep):
+                attempt.principal = step_principal
+        if isinstance(step, CommandStep) and not self._authorized(step, step_principal):
             attempt.outcome = "unauthorized"
             attempt.error = f"capability denied: {step.command}"
             return await finish(
                 self._advance_on_outcome(attempt, artifact, artifact_ref, repository)
             )
+
+        # Wait/child results have no audited public result contract. Mark
+        # their future binding before opening the wait or spawning the child,
+        # so an event racing registration also enters the protected inbox.
+        if isinstance(step, (WaitStep, AgentTaskStep, ScriptStep)) and step.save_result_as:
+            from src.playbooks.private_values import PrivateValueError
+
+            try:
+                if self.services.private_values is None:
+                    raise PrivateValueError("private_storage_unavailable")
+                await self.services.private_values.check_ready()
+            except PrivateValueError as exc:
+                attempt.outcome = "unavailable"
+                attempt.error = exc.code
+                return await finish(
+                    self._advance_on_outcome(attempt, artifact, artifact_ref, repository)
+                )
+            snapshot = replace(snapshot, private_bindings={
+                **snapshot.private_bindings, step.save_result_as: (),
+            })
+            attempt.snapshot = snapshot
 
         async def on_tool_turn(turn: LLMToolTurn) -> None:
             if control is None:
@@ -2352,7 +2522,7 @@ class PlaybookEngine:
             artifact=artifact,
             rule_id=snapshot.rule_id,
             step_id=step_id,
-            principal=principal,
+            principal=step_principal,
             scope=scope,
             services=self.services,
             mode=mode,
@@ -2362,8 +2532,13 @@ class PlaybookEngine:
             cancel_requested=snapshot.cancel_requested_at is not None,
             cancel_event=control.cancel_event if control is not None else None,
             inputs=inputs,
+            private_inputs=snapshot.has_private_data,
             authored_idempotency_key=authored_key,
+            evaluation_budget=budget,
             loop_frame=snapshot.loop,
+            loop_stack=snapshot.loop_stack,
+            iteration_entries=snapshot.iteration_entries,
+            iteration_path=snapshot.iteration_path,
             llm_turns=snapshot.llm_turns,
             on_tool_turn=on_tool_turn if isinstance(step, LlmStep) else None,
         )
@@ -2426,6 +2601,11 @@ class PlaybookEngine:
             result = await executor.execute(step, ctx)
         except asyncio.CancelledError:
             raise
+        except StateLimitExceeded:
+            result = ExecutorResult(
+                control=StepControl.ADVANCE, outcome="state_limit_exceeded",
+                diagnostics=("loop collection or aggregate exceeds the state limit",),
+            )
         except LLMToolTurnBoundaryError as exc:
             cause = exc.__cause__
             if isinstance(cause, StateLimitExceeded):
@@ -2526,6 +2706,13 @@ class PlaybookEngine:
                     outcome="runtime_error",
                     diagnostics=(type(cause).__name__,),
                 )
+        except ValueResolutionError as exc:
+            result = ExecutorResult(
+                control=StepControl.ADVANCE, outcome="input_resolution_failed",
+                diagnostics=(exc.reason,),
+            )
+        except ScriptSubmissionInterrupted:
+            return attempt.snapshot, tuple(attempt.boundary_receipts), "script_submission_interrupted"
         except Exception as exc:  # noqa: BLE001 - §3.4 step 6
             result = ExecutorResult(
                 control=StepControl.ADVANCE,
@@ -2618,6 +2805,7 @@ class PlaybookEngine:
                     declared=result.value.keys()
                     if isinstance(result.value, Mapping)
                     else (),
+                    private_fields=result.private_fields,
                 )
             except StateLimitExceeded:
                 attempt.outcome = "state_limit_exceeded"
@@ -2630,7 +2818,8 @@ class PlaybookEngine:
         if result.control is StepControl.TERMINATE:
             if result.value is not None:
                 attempt.receipt_result = dict(attempt.receipt_result) | {
-                    "value": result.value
+                    "value": {"__redacted__": True}
+                    if attempt.snapshot.has_private_data else result.value
                 }
             attempt.lifecycle = _TERMINAL_LIFECYCLE.get(
                 result.terminal_outcome or "completed", RunLifecycle.COMPLETED
@@ -2707,6 +2896,7 @@ class PlaybookEngine:
             "step_id": attempt.step_id,
             "step_kind": attempt.step.type,
             "iteration": attempt.iteration,
+            "iteration_path": attempt.iteration_path,
             "attempt": attempt.attempt,
             "started_at": attempt.started_at,
             "idempotency_key": attempt.idempotency_key,
@@ -2763,6 +2953,7 @@ class PlaybookEngine:
             # The version this boundary writes (see ``_commit``).
             snapshot_version=attempt.snapshot.version + 1,
             iteration=attempt.iteration,
+            iteration_path=attempt.iteration_path,
             attempt=attempt.attempt,
             idempotency_key=attempt.idempotency_key,
             contract_fingerprint=self._contract_fingerprint(attempt.step),
@@ -2773,7 +2964,10 @@ class PlaybookEngine:
     @staticmethod
     async def _next_start_ordinal(attempt: _Attempt, repository: Any) -> int:
         list_receipts = getattr(repository, "list_receipts", None)
-        prior = await list_receipts(attempt.snapshot.run_id) if callable(list_receipts) else []
+        prior = await list_receipts(
+            attempt.snapshot.run_id, step_id=attempt.step_id, iteration=attempt.iteration,
+            iteration_path=attempt.iteration_path,
+        ) if callable(list_receipts) else []
         return (
             max(
                 (
@@ -2782,6 +2976,7 @@ class PlaybookEngine:
                     if receipt.receipt_kind == "attempt_start"
                     and receipt.step_id == attempt.step_id
                     and receipt.iteration == attempt.iteration
+                    and receipt.iteration_path == attempt.iteration_path
                     and receipt.attempt == attempt.attempt
                 ),
                 default=-1,
@@ -2816,6 +3011,7 @@ class PlaybookEngine:
                 "kind": turn.kind,
                 "step_id": attempt.step_id,
                 "iteration": iteration,
+                "iteration_path": attempt.iteration_path,
                 "attempt": attempt.attempt,
                 "turn_index": turn.turn_index,
                 "tool_call_ids": list(turn.tool_call_ids),
@@ -2834,6 +3030,7 @@ class PlaybookEngine:
             operator_decision = OperatorDecision(
                 step_id=attempt.step_id,
                 attempt=attempt.attempt,
+                iteration_path=attempt.iteration_path,
                 reason="LLM provider or tool call interrupted",
                 raised_at=now,
                 decision_id=decision_id,
@@ -2884,12 +3081,13 @@ class PlaybookEngine:
             started_at=attempt.started_at,
             snapshot_version=snapshot.version + 1,
             iteration=iteration,
+            iteration_path=attempt.iteration_path,
             attempt=attempt.attempt,
             idempotency_key=attempt.idempotency_key,
             principal=self._principal_projection(turn.principal or attempt.principal),
             result={
                 "tool_call_ids": list(turn.tool_call_ids),
-                "results_digest": turn.results_digest,
+                "results_digest": "(redacted)",
             },
             error=error if turn.kind == "interrupted" else None,
             error_code="interrupted" if turn.kind == "interrupted" else None,
@@ -3016,7 +3214,7 @@ class PlaybookEngine:
         snapshot = attempt.snapshot
         terminal = attempt.lifecycle in TERMINAL_LIFECYCLES
         attempts = dict(snapshot.attempts)
-        attempts[f"{attempt.step_id}:{attempt.iteration}"] = attempt.attempt
+        attempts[attempt_key(attempt.step_id, attempt.iteration, attempt.iteration_path)] = attempt.attempt
         agent_task_ids = snapshot.agent_task_ids
         if attempt.child_task_id and attempt.child_task_id not in agent_task_ids:
             agent_task_ids = agent_task_ids + (attempt.child_task_id,)
@@ -3027,6 +3225,7 @@ class PlaybookEngine:
                 for turn in snapshot.llm_turns
                 if turn.get("step_id") == attempt.step_id
                 and int(turn.get("iteration", -1)) == attempt.iteration
+                and turn.get("iteration_path", "") == attempt.iteration_path
                 and int(turn.get("attempt", 1)) == attempt.attempt
             ]
             durable_tokens = sum(
@@ -3043,13 +3242,27 @@ class PlaybookEngine:
                 llm_calls=budget.llm_calls + new_calls,
                 total_tokens=budget.total_tokens + new_tokens,
             )
+        if attempt.loop_frame is not None:
+            artifact = self._load(artifact_ref)
+            names = {
+                name for item in attempt.loop_frame.body_step_ids
+                if (name := getattr(artifact.steps[item], "save_result_as", None))
+            }
+            if (own := getattr(attempt.step, "save_result_as", None)):
+                names.add(own)
+            snapshot = replace(snapshot,
+                bindings={k: v for k, v in snapshot.bindings.items() if k not in names},
+                private_bindings={k: v for k, v in snapshot.private_bindings.items() if k not in names},
+            )
         next_snapshot = replace(
             snapshot,
             lifecycle=attempt.lifecycle,
             agent_task_ids=agent_task_ids,
             current_step_id=attempt.next_step_id or attempt.step_id,
             wait=self._next_wait(attempt),
-            loop=self._next_loop(attempt),
+            loop=None,
+            loop_stack=self._next_loop(attempt),
+            iteration_entries=snapshot.iteration_entries + int(attempt.loop_frame is not None),
             attempts=attempts,
             context={
                 key: value
@@ -3057,7 +3270,7 @@ class PlaybookEngine:
                 if key != "_in_flight_attempt"
             },
             budget=budget,
-            error=attempt.error,
+            error="private_run_error" if snapshot.has_private_data and attempt.error else attempt.error,
             error_code=(
                 attempt.outcome if attempt.outcome in ENGINE_RESERVED_OUTCOMES else None
             ),
@@ -3078,6 +3291,7 @@ class PlaybookEngine:
             # naming the pre-boundary version is a ``RunIdentityMismatch``.
             snapshot_version=snapshot.version + 1,
             iteration=attempt.iteration,
+            iteration_path=attempt.iteration_path,
             attempt=attempt.attempt,
             idempotency_key=attempt.idempotency_key,
             contract_fingerprint=self._contract_fingerprint(attempt.step),
@@ -3085,7 +3299,7 @@ class PlaybookEngine:
             inputs=dict(attempt.receipt_inputs),
             result=dict(attempt.receipt_result),
             selected_transition=attempt.selected_transition,
-            error=attempt.error,
+            error="private_run_error" if snapshot.has_private_data and attempt.error else attempt.error,
             error_code=(
                 attempt.outcome if attempt.outcome in ENGINE_RESERVED_OUTCOMES else None
             ),
@@ -3126,22 +3340,29 @@ class PlaybookEngine:
         failed = replace(
             snapshot,
             lifecycle=RunLifecycle.FAILED,
-            error=error,
+            error="private_run_error" if snapshot.has_private_data else error,
             error_code=outcome,
             updated_at=now,
             completed_at=now,
         )
+        step_id = snapshot.current_step_id or ""
+        # Retain the historical fallback receipt key for the legacy namespace.
+        iteration = self._iteration_of(snapshot, step_id) if snapshot.iteration_paths else -1
+        attempt = self._next_attempt(snapshot, step_id, iteration) if snapshot.iteration_paths else 1
         receipt = StepReceipt(
             receipt_id=uuid.uuid4().hex,
             run_id=snapshot.run_id,
             artifact_sha256=snapshot.artifact_sha256,
             rule_id=snapshot.rule_id,
-            step_id=snapshot.current_step_id or "",
+            step_id=step_id,
             step_kind="command",
             outcome="failure",
             started_at=now,
             snapshot_version=snapshot.version + 1,
-            error=error,
+            iteration=iteration,
+            iteration_path=snapshot.iteration_path,
+            attempt=attempt,
+            error="private_run_error" if snapshot.has_private_data else error,
             error_code=outcome,
             completed_at=now,
         )
@@ -3160,6 +3381,46 @@ class PlaybookEngine:
     # ------------------------------------------------------------------
     # §4.6 — the suspension's other half
     # ------------------------------------------------------------------
+
+    async def _resume_script_wait(self, attempt, artifact, artifact_ref, repository):
+        from src.playbooks.executors.script import settled_result
+
+        snapshot = attempt.snapshot
+        wait = snapshot.wait
+        ctx = StepContext(
+            run_id=snapshot.run_id, dispatch_id=snapshot.dispatch_id or "",
+            artifact_ref=artifact_ref, artifact=artifact, rule_id=snapshot.rule_id,
+            step_id=attempt.step_id,
+            principal=await effect_principal(
+                snapshot, artifact, attempt.principal, self.services, attempt.step_id
+            ),
+            scope=self._scope(snapshot, artifact), services=self.services,
+            iteration_path=snapshot.iteration_path,
+            attempt=snapshot.attempts[attempt_key(attempt.step_id, attempt.iteration,
+                                                   snapshot.iteration_path)],
+        )
+        result = await settled_result(attempt.step, ctx, wait.match["job_id"])
+        if result is None:
+            return replace(snapshot, lifecycle=RunLifecycle.PAUSED,
+                           pending_wait_claims=()), None, "awaiting_job"
+        attempt.wait_id = wait.wait_id
+        attempt.wait_changes = WaitChangeSet(clear_wait_ids=(wait.wait_id,))
+        attempt.snapshot = replace(snapshot, pending_wait_claims=())
+        attempt.outcome = result.outcome
+        attempt.receipt_inputs = result.receipt_inputs
+        attempt.receipt_result = result.receipt_result
+        attempt.principal = result.effective_principal or attempt.principal
+        if result.value is not None:
+            try:
+                attempt.snapshot = bind_step_output(
+                    attempt.snapshot, step_id=attempt.step.save_result_as,
+                    value=result.value, declared=result.value.keys(),
+                    private_fields=result.private_fields,
+                )
+            except StateLimitExceeded:
+                attempt.outcome = "state_limit_exceeded"
+                attempt.error = "script result exceeds the state limit"
+        return await self._advance_on_outcome(attempt, artifact, artifact_ref, repository)
 
     async def _resume_wait(
         self,
@@ -3326,6 +3587,7 @@ class PlaybookEngine:
             run_id=snapshot.run_id,
             step_id=wait.step_id,
             iteration=wait.iteration,
+            iteration_path=wait.iteration_path,
             kind=wait.kind,
             snapshot_version=snapshot.version,
             claimed_event_id=event_id,
@@ -3345,13 +3607,14 @@ class PlaybookEngine:
 
         The loop *node* itself is not inside its own body, but it is reached
         once per iteration, so its receipts carry the index they closed —
-        which is also what keeps their four-part attempt keys distinct.
+        which preserves legacy display and keys. Nested identity additionally
+        uses the complete snapshot.iteration_path.
         """
         return -1 if snapshot.loop is None else snapshot.loop.index
 
     @staticmethod
     def _next_attempt(snapshot: RunSnapshot, step_id: str, iteration: int) -> int:
-        return int(snapshot.attempts.get(f"{step_id}:{iteration}", 0)) + 1
+        return int(snapshot.attempts.get(attempt_key(step_id, iteration, snapshot.iteration_path), 0)) + 1
 
     @staticmethod
     def _next_wait(attempt: _Attempt) -> WaitSpec | None:
@@ -3364,30 +3627,31 @@ class PlaybookEngine:
             return None
         return attempt.snapshot.wait
 
-    def _next_loop(self, attempt: _Attempt) -> LoopFrame | None:
-        """The loop frame this boundary persists (§4.7).
-
-        Three cases, in order: the loop ended, the loop executor computed the
-        next frame, or a body step transitioned *back into* the loop node —
-        which is how an author says "this outcome is per-item", and is where
-        the iteration's verdict is recorded so the loop executor never has to
-        re-derive it.
-        """
-        if attempt.clear_loop:
-            return None
+    def _next_loop(self, attempt: _Attempt) -> tuple[LoopFrame, ...]:
+        """Push/advance/pop exactly the owning frame, then classify its return."""
+        stack = list(attempt.snapshot.loop_stack)
+        if attempt.clear_loop and stack and stack[-1].step_id == attempt.step_id:
+            stack.pop()
         if attempt.loop_frame is not None:
-            return attempt.loop_frame
-        frame = attempt.snapshot.loop
-        if frame is None or attempt.next_step_id != frame.step_id:
-            return frame
-        if attempt.step_id == frame.step_id:
-            return frame
-        return replace(
-            frame,
-            last_step_id=attempt.step_id,
-            last_outcome=attempt.outcome,
-            last_failed=self._is_iteration_failure(attempt),
-        )
+            if stack and stack[-1].step_id == attempt.step_id:
+                stack[-1] = attempt.loop_frame
+            else:
+                stack.append(attempt.loop_frame)
+        # A declared failure exit may leave multiple frames. Never carry a
+        # stale item onto that exit or pop an enclosing loop on an empty child.
+        while stack and attempt.next_step_id is not None:
+            frame = stack[-1]
+            if attempt.next_step_id == frame.step_id:
+                if attempt.step_id != frame.step_id:
+                    stack[-1] = replace(
+                        frame, last_step_id=attempt.step_id, last_outcome=attempt.outcome,
+                        last_failed=self._is_iteration_failure(attempt),
+                    )
+                break
+            if not frame.body_step_ids or attempt.next_step_id in frame.body_step_ids:
+                break
+            stack.pop()
+        return tuple(stack)
 
     def _is_iteration_failure(self, attempt: _Attempt) -> bool:
         """§4.7's locked classification of the edge that re-entered the loop."""
@@ -3408,10 +3672,17 @@ class PlaybookEngine:
         return InMemoryRunRecorder()
 
     def _load(self, ref: ArtifactRef) -> PlaybookDefinition:
+        from src.playbooks.features import require_supported_features
+        from src.playbooks.validation import RegistryContractLookup
+
         store = self.services.artifact_store
         if store is None:
             raise RuntimeError("the engine requires an artifact store")
-        return store.load(ref.artifact_sha256)
+        definition = store.load(ref.artifact_sha256)
+        require_supported_features(
+            definition, contracts=RegistryContractLookup(self.services.contracts)
+        )
+        return definition
 
     def _step_of(self, ref: ArtifactRef, step_id: str) -> Any:
         try:
@@ -3495,6 +3766,7 @@ class PlaybookEngine:
         difference.
         """
         hydrated = dict(event)
+        hydrated.setdefault("_received_at", self.services.clock())
         db = self.services.db
         if db is not None and hydrated.get("task_id") and "task" not in hydrated:
             try:
@@ -3521,33 +3793,51 @@ class PlaybookEngine:
         # stop.  Package 6's parity corpus is what surfaced it.
         task_dict = hydrated.get("task")
         if isinstance(task_dict, dict):
-            # Dataclass hydration preserves enum members, whereas the event
-            # schema advertises scalar wire values.  Normalise the task state
-            # before evaluating a guard so a rule can reliably compare it to
-            # an authored status literal (and so an incoming hydrated object
-            # has the same shape as a database-hydrated one).
-            status = task_dict.get("status")
-            if hasattr(status, "value"):
-                task_dict = dict(task_dict)
-                task_dict["status"] = status.value
-                hydrated["task"] = task_dict
+            # Task dataclasses carry enums (status, type, verification and
+            # workspace mode). Events use their scalar wire values, both for
+            # guard comparisons and JSON-only protected snapshot storage.
+            task_dict = {
+                name: value.value if isinstance(value, Enum) else value
+                for name, value in task_dict.items()
+            }
+            hydrated["task"] = task_dict
             flag_review_task_event(hydrated, task_dict.get("dedup_key"))
         return hydrated
 
     def _context(
-        self, artifact: PlaybookDefinition, rule: Rule, dispatch_id: str
+        self, artifact: PlaybookDefinition, rule: Rule, dispatch_id: str,
+        event: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         """``ENGINE_CONTEXT_SCHEMA``'s paths, and nothing else.
 
         The schema is closed, so a ``ContextRef`` the compiler accepted always
         resolves and one it rejected can never appear here.
         """
+        event = event or {}
+        now = self.services.clock()
+        observed_at = event.get("_received_at", now)
+        if self._event_type(event).startswith(("timer.", "cron.")) and "tick_time" in event:
+            tick = event["tick_time"]
+            if not isinstance(tick, str):
+                raise ValueError("invalid timer tick_time: expected timezone-aware ISO-8601")
+            try:
+                parsed = datetime.fromisoformat(tick)
+                if parsed.tzinfo is None or parsed.utcoffset() is None:
+                    raise ValueError("timezone required")
+                observed_at = parsed.timestamp()
+            except (ValueError, OverflowError, OSError) as exc:
+                raise ValueError("invalid timer tick_time") from exc
+        if isinstance(observed_at, bool) or not isinstance(observed_at, (int, float)) \
+                or not math.isfinite(observed_at):
+            raise ValueError("invalid observation time")
         return {
+            "observed_at": float(observed_at),
+            "observation_id": str(event.get("event_id") or dispatch_id),
             "dispatch_id": dispatch_id,
             "playbook_id": artifact.id,
             "rule_id": rule.id,
             "artifact_sha256": artifact.artifact_sha256(),
-            "now": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(self.services.clock())),
+            "now": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now)),
         }
 
     @staticmethod
@@ -3565,44 +3855,83 @@ class PlaybookEngine:
             return {"resume_resolution": cause.kind}
         return {}
 
+    def _classify_private_bindings(
+        self, snapshot: RunSnapshot, artifact: PlaybookDefinition,
+    ) -> RunSnapshot:
+        from src.playbooks.private_values import private_result_fields
+
+        classified = dict(snapshot.private_bindings)
+        for name, value in snapshot.bindings.items():
+            step = artifact.steps.get(name) or next(
+                (item for item in artifact.steps.values()
+                 if getattr(item, "save_result_as", None) == name), None,
+            )
+            registration = self.services.contracts.get(getattr(step, "command", ""))
+            names = (private_result_fields(registration.contract.execution, value)
+                     if registration is not None else frozenset(value))
+            names |= frozenset(classified.get(name, ()))
+            if names:
+                classified[name] = tuple(sorted(names))
+        return replace(snapshot, private_bindings=classified)
+
+    async def _resolve_private_run(
+        self, snapshot: RunSnapshot, principal: Any, repository: Any,
+    ) -> RunSnapshot:
+        from src.playbooks.invocation import _invocation_context
+        from src.playbooks.private_values import contains_reference
+
+        if not contains_reference(snapshot.to_body(protect=lambda value: value)):
+            return snapshot
+        artifact_ref = await self._ref_for(snapshot)
+        artifact = self._load(artifact_ref)
+        ctx = StepContext(
+            run_id=snapshot.run_id, dispatch_id=snapshot.dispatch_id or "",
+            artifact_ref=artifact_ref, artifact=artifact, rule_id=snapshot.rule_id,
+            step_id=snapshot.current_step_id or "", principal=principal,
+            scope=ResolutionScope(), services=self.services,
+            iteration_path=snapshot.iteration_path, loop_stack=snapshot.loop_stack,
+            iteration_entries=snapshot.iteration_entries,
+        )
+        with _invocation_context(ctx):
+            return await repository.resolve_private_snapshot(snapshot, principal)
+
     def _scope(
         self, snapshot: RunSnapshot, artifact: PlaybookDefinition, attempt: int = 1
     ) -> ResolutionScope:
-        """The four namespaces, with the live loop item in its own one.
-
-        The item is re-resolved from the pinned collection rather than stored
-        on the frame: the frame carries the collection's *digest*, so a
-        collection that changed under an active loop is a contract violation
-        the executor reports, not a stale copy the scope quietly serves.
-        """
+        """Rebuild lexical loop items from each durable pinned collection."""
         scope = ResolutionScope(
             event=dict(snapshot.event),
             context=dict(snapshot.context) | {"run_id": snapshot.run_id, "attempt": attempt},
             bindings=dict(snapshot.bindings),
             loop={},
         )
-        return self._loop_scope(scope, artifact, snapshot.loop)
+        return self._loop_scope(scope, artifact, snapshot.loop_stack)
 
     @staticmethod
     def _loop_scope(
-        scope: ResolutionScope, artifact: PlaybookDefinition, frame: LoopFrame | None,
+        scope: ResolutionScope, artifact: PlaybookDefinition, stack: tuple[LoopFrame, ...],
     ) -> ResolutionScope:
-        """Resolve the current foreach item identically in live and symbolic runs."""
-        scope = scope.model_copy(update={"loop": {}})
-        if frame is None:
-            return scope
-        loop_step = artifact.steps.get(frame.step_id)
-        if not isinstance(loop_step, ForEachStep):
-            return scope
-        try:
-            collection = resolve_value(loop_step.collection, scope)
-        except ValueResolutionError:
-            # The loop executor reports it as ``input_resolution_failed`` on
-            # its own next boundary; the scope's job is not to raise here.
-            return scope
-        if not isinstance(collection, list) or not 0 <= frame.index < len(collection):
-            return scope
-        return scope.with_loop_item(frame.item_binding, collection[frame.index], frame.index)
+        """Use pinned collections, resolving only old single-frame snapshots."""
+        scope = scope.model_copy(update={"loop": {}, "context": {
+            k: v for k, v in scope.context.items() if k != "iteration_index"
+        }})
+        for frame in stack:
+            collection = frame.collection
+            if collection is None:
+                step = artifact.steps.get(frame.step_id)
+                if not isinstance(step, ForEachStep):
+                    continue
+                try:
+                    collection = resolve_value(step.collection, scope)
+                except ValueResolutionError:
+                    continue
+            if isinstance(collection, list) and 0 <= frame.index < len(collection):
+                scope = scope.with_loop_item(frame.item_binding, collection[frame.index], frame.index)
+        if stack:
+            scope = scope.model_copy(update={"context": {
+                **scope.context, "iteration_index": stack[-1].index,
+            }})
+        return scope
 
     def _authorized(self, step: CommandStep, principal: Any) -> bool:
         resolver = self.services.resolver
@@ -3674,6 +4003,8 @@ class PlaybookEngine:
             # would make every open wait look like a finished step.
             return "skipped"
         if attempt.outcome in ENGINE_RESERVED_OUTCOMES:
+            return "failure"
+        if isinstance(attempt.step, ScriptStep) and attempt.outcome != "succeeded":
             return "failure"
         if attempt.lifecycle in (RunLifecycle.FAILED, RunLifecycle.BLOCKED):
             return "failure"
@@ -3766,11 +4097,19 @@ class WaitScheduler:
         self._principal = principal
 
     async def tick(self, now: float | None = None, *, limit: int = 100) -> tuple[str, ...]:
-        """Resume every run whose wait deadline has passed.  Returns the ids."""
+        """Resume expired waits and settled script jobs. Returns the run ids."""
         if self._waits is None:
             return ()
         moment = self._engine.services.clock() if now is None else now
         resumed: list[str] = []
+        scan = getattr(self._waits, "settled_script_waits", None)
+        if scan is not None:
+            for wait in await scan(limit=limit):
+                try:
+                    await self._engine.resume(wait.run_id, EventArrived(wait.wait_id), self._principal)
+                    resumed.append(wait.run_id)
+                except Exception:
+                    logger.exception("Script wait %s could not resume", wait.wait_id)
         for claim in await self._waits.expire_due(moment, limit=limit):
             try:
                 await self._engine.resume(
