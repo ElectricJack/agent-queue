@@ -45,6 +45,7 @@ class WaitSourceListener:
         self.changed = asyncio.Event()
         self.deadlines_changed = asyncio.Event()
         self._tick_lock = asyncio.Lock()
+        self._graph_busy = False
 
     async def _connect(self):
         import asyncpg
@@ -151,13 +152,17 @@ class WaitSourceListener:
         count = 0
         while True:
             async with self.db._engine.begin() as conn:
+                # Scheduler reconciliation can hold the graph fence longer than
+                # one renewal interval. Yield without locking the lease row so
+                # renewal stays live; the durable cursor remains replayable.
+                self._graph_busy = not await conn.scalar(select(
+                    func.pg_try_advisory_xact_lock(REGISTRATION_LOCK)))
+                if self._graph_busy:
+                    return count
                 cursor = await self.locked_lease(conn)
                 # Bound a batch below the renewal interval so a slow adapter
                 # cannot keep an expired leader writing or starve its renewal.
                 async with asyncio.timeout(self.renewal_seconds):
-                    await conn.execute(select(func.pg_advisory_xact_lock(
-                        REGISTRATION_LOCK,
-                    )))
                     rows = (await conn.execute(select(wait_source_events).where(
                         wait_source_events.c.seq > cursor["last_seq"],
                         wait_source_events.c.seq <= watermark,
@@ -211,7 +216,9 @@ class WaitSourceListener:
             if connection.is_closed():
                 raise ConnectionError("wait listener disconnected")
             try:
-                await asyncio.wait_for(self.changed.wait(), self.safety_seconds)
+                await asyncio.wait_for(self.changed.wait(),
+                                       self.renewal_seconds if self._graph_busy
+                                       else self.safety_seconds)
             except TimeoutError:
                 pass
 

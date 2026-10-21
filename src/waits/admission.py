@@ -89,7 +89,9 @@ class AdmissionReader:
 
     async def observe_task(self, conn, task_id, *, continuation_id=None, migration_audit=False):
         from src.database.queries.claim_queries import (
-            _pool_profiles_predicate, claim_frontier_predicates, route_claimable,
+            _pool_profiles_predicate,
+            claim_frontier_predicates,
+            route_claimable,
         )
         from src.database.queries.hierarchy_queries import ProjectIntegrationMode
         from src.routing.readiness import orchestrator_router_ready
@@ -127,6 +129,14 @@ class AdmissionReader:
         # separately re-observed below; an old cached verdict never clears a hold.
         project_model = await o.db.get_project(task["project_id"])
         mode = ProjectIntegrationMode.of(project_model)
+        if mode.hierarchical:
+            from src.integration.delivery_observer import hierarchy_frontier_modes
+
+            # Git refresh belongs outside graph/owner locks; revalidate cached
+            # identities on this transaction, never use legacy receipts in Git-first.
+            mode = (await hierarchy_frontier_modes(
+                o.db, task_id=task_id, cached_only=True, conn=conn,
+            )).get(task['project_id'], mode)
         predicates = claim_frontier_predicates(hierarchy_mode=mode)
         predicates["route"] = route_claimable(ready)
         if profile:

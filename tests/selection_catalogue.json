@@ -5615,7 +5615,7 @@
         "development-delivery"
       ],
       "default_arm": true,
-      "digest": "sha256:0596c73e6955dd449533527c2273912b8e2c1e08df5ab414993f41d49ac7fc63",
+      "digest": "sha256:9875b0c1ec416528e7a873a65ebbe1683e19e3163f9faf03e1695866aa2e95cc",
       "imports": [
         "src.commands.handler",
         "src.commands.principal",
@@ -5644,7 +5644,9 @@
         "src.integration.status",
         "src.models",
         "src.orchestrator",
-        "src.profiles.capabilities"
+        "src.profiles.capabilities",
+        "src.wait_runtime.resume",
+        "src.wait_runtime.scheduler"
       ],
       "markers": [
         "parametrize"
@@ -19205,7 +19207,7 @@
         "agent-waits"
       ],
       "default_arm": true,
-      "digest": "sha256:8bbbe40e9c960caf540a4f4ead57c6be8a6de71bbbd931d2eeaf6fe306a2ea1d",
+      "digest": "sha256:8999f5bb21e85cbe17d9aeb88c75b5ab43ed24beb88ce173a9a42545a1729003",
       "imports": [
         "src.commands",
         "src.commands.principal",
@@ -19219,6 +19221,7 @@
         "src.scheduler",
         "src.wait_runtime.service",
         "src.waits.conditions",
+        "src.waits.graph",
         "src.waits.listener",
         "src.waits.registry",
         "src.waits.resource_sources",
