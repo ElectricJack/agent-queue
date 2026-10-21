@@ -17292,7 +17292,7 @@
         "supervisor"
       ],
       "default_arm": true,
-      "digest": "sha256:e88d920187d3b1265d3740cc6434ea8f1e44679e4d9877fb66c84b86fdcfca1e",
+      "digest": "sha256:f095e5edb7a5018c4996b55041794afb099e461fa992bf6ced9bb6ddd0a147a4",
       "imports": [
         "src.api.auth",
         "src.asks.models",
@@ -17310,6 +17310,7 @@
         "src.models",
         "src.orchestrator",
         "src.orchestrator.task_checkpoint",
+        "src.sessions.obsolete",
         "src.sessions.provider",
         "src.sessions.tmux"
       ],
