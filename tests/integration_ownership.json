@@ -8682,7 +8682,7 @@
       "reason": "Shared task lifecycle/claim import; charged to integration ownership because the same adapter guards delivery and retained branches."
     },
     "src/database/queries/claim_queries.py::import from src.database.tables import agents, integration_batches, integration_branch_owners, integration_repair_operations, integration_repair_stages, job_workspace_pins, projects, sessions, task_branch_origins, task_completion_records, task_delivery_receipts, task_integration_checkpoints, task_metadata, task_session_attempts, task_workspace_requirements, tasks, workspaces": {
-      "reason": "Claim queries import integration ownership, repair and origin tables alongside ordinary workspace/session tables; includes managed job pins used by the retained-binding guard.",
+      "reason": "Claim and integration schema imports; job_workspace_pins joins retained branch ownership as a refusal fence for repairing an idle misplaced workspace lock.",
       "landing_span": [
         53,
         71
@@ -8690,7 +8690,7 @@
       "baseline_span": null
     },
     "src/database/queries/claim_queries.py::ClaimQueryMixin._repair_pool_workspace_lock": {
-      "reason": "Claim preparation moves only an idle misplaced workspace lock to the session checkout. Reads attached/pending integration ownership and job pins to refuse retained bindings before updating ordinary workspace locks; no integration state or Git ref mutation.",
+      "reason": "Repairs only an idle misplaced agent workspace lock after checking foreign claims, live sessions, retained integration ownership and job pins. Reads integration owners as a refusal fence; changes workspace locks only, never branch ownership, publication or ref replay state.",
       "landing_span": [
         1036,
         1106
@@ -8698,7 +8698,7 @@
       "baseline_span": null
     },
     "src/orchestrator/worktree_manager.py::WorktreeSlotManager._slot_has_retained_binding": {
-      "reason": "Read-only integration owner and managed job pin probe fences missing-slot recreation. Attached/pending ownership prevents removal of its Git registration; no lifecycle, storage or ref write.",
+      "reason": "Read-only attached/handoff-pending integration-owner and job-pin fence. Prevents slot recreation or abandoned-merge recovery from changing retained checkouts; grants no release, delivery or ref replay authority.",
       "landing_span": [
         634,
         648
@@ -8709,27 +8709,29 @@
       "reason": "Read-only wait evidence adapter inspects authoritative integration ownership; entire adapter remains charged."
     },
     "src/waits/adapters/batch.py::BatchAdapter.snapshot": {
-      "reason": "Read-only wait evidence adapter inspects authoritative integration ownership; entire adapter remains charged."
+      "reason": "Integration-specific batch observation: reads lifecycle, generation, repair stage, ejection record and member task blockers from the authoritative integration ledger. Read-only wait evidence; charge the complete method."
     },
     "src/waits/adapters/ci.py::CIAdapter.authorise": {
-      "reason": "Read-only wait evidence adapter inspects authoritative integration ownership; entire adapter remains charged."
+      "reason": "Exact-head CI authorisation reads integration batches and candidate revisions, or a matching job/task, to prove the head belongs to an authorised stage. Charge the complete definition including its job alternative."
     },
     "src/database/queries/wait_queries.py::import from src.database.tables import agents, admission_reservations, continuations, integration_batch_members, integration_batches, integration_branch_owners, integration_repair_stages, messages, projects, sessions, tasks, wait_deadlines, wait_edges, wait_escalations, wait_priority_projection, wait_records": {
       "reason": "Shared integration source imports for verified wait observation; charged without moving integration authority."
     },
     "src/waits/adapters/batch.py::import from src.database.tables import integration_batch_members as members": {
-      "reason": "Shared integration source imports for verified wait observation; charged without moving integration authority."
+      "reason": "Integration batch membership schema import used to derive wait blockers; remains integration-owned."
     },
     "src/waits/adapters/batch.py::import from src.database.tables import integration_batches as batches": {
-      "reason": "Shared integration source imports for verified wait observation; charged without moving integration authority."
+      "reason": "Authoritative integration batch schema import for the settlement adapter; remains integration-owned."
     },
     "src/waits/adapters/ci.py::import from src.database.tables import integration_batches as batches": {
-      "reason": "Shared integration source imports for verified wait observation; charged without moving integration authority."
+      "reason": "Integration batch schema import used by exact-head CI stage authorisation; remains integration-owned."
     },
     "src/waits/adapters/ci.py::import from src.database.tables import integration_candidate_revisions as revisions": {
-      "reason": "Shared integration source imports for verified wait observation; charged without moving integration authority."
+      "reason": "Integration candidate revision schema import used by exact-head CI stage authorisation; remains integration-owned."
     },
-    "src/api/target_scope.py::import from src.database.tables import agent_waits, continuations, escalation_messages, escalations, gates, integration_batches, integration_branch_owners, integration_candidate_resolutions, integration_check_evidence, integration_outbox, integration_parent_episodes, integration_subjects, jobs, projects, repos, task_branch_origins, test_selection_promotions, test_selections, wait_records": "Admission reads current integration branch, batch, repository and route constraints; charged to integration ownership.",
+    "src/api/target_scope.py::import from src.database.tables import agent_waits, continuations, escalation_messages, escalations, gates, integration_batches, integration_branch_owners, integration_candidate_resolutions, integration_check_evidence, integration_outbox, integration_parent_episodes, integration_subjects, jobs, projects, repos, task_branch_origins, test_selection_promotions, test_selections, wait_records": {
+      "reason": "Shared target-scope schema import continues to expose integration subjects, batches, evidence and branch ownership alongside universal wait targets; charge the complete import."
+    },
     "src/waits/admission.py::AdmissionReader.observe_task": "Admission reads current integration branch, batch, repository and route constraints; charged to integration ownership.",
     "src/waits/admission.py::branch_holders": "Admission reads current integration branch, batch, repository and route constraints; charged to integration ownership.",
     "src/waits/admission.py::import from src.database.tables import integration_batch_members, integration_batches, integration_branch_owners, integration_repair_stages, projects, sessions, tasks, token_ledger": "Admission reads current integration branch, batch, repository and route constraints; charged to integration ownership.",
@@ -9574,17 +9576,17 @@
     "src/database/tables.py::wait_source_events": "Generic wait outbox for all source kinds. Payloads are evidence hints; consumers re-observe authoritative state, never replay integration refs or lifecycle from this table.",
     "src/waits/sources.py::record_batch_event": "Generic wait source evidence bridge for batch transitions. It writes only the universal wait outbox; integration policy and authoritative batch state remain in src/integration.",
     "src/waits/sources.py::execute_batch_mutation": "Transaction-preserving bridge from existing batch writes to the generic wait source outbox; contains no integration policy, ref replay or duplicate authority.",
-    "src/database/tables.py::wait_edges": "Generic verified-wait dependency edges used for cycle detection and priority donation; no integration delivery or Git ref authority.",
-    "src/database/tables.py::wait_deadlines": "Generic verified-wait deadline scheduling and generation fences for all wait kinds; no integration delivery journal.",
+    "src/database/tables.py::wait_edges": "Universal semantic/resource wait graph across all source kinds. Stores waiter/blocker identities and observation revisions, not integration branch ownership, delivery lifecycle or Git ref replay state.",
+    "src/database/tables.py::wait_deadlines": "Universal due/escalation/ceiling/transition/reservation deadlines attached to wait records. Timer scheduling state for all wait kinds; no integration publication intent, lifecycle journal or ref replay authority.",
     "src/database/tables.py::wait_escalations": "Generic verified-wait escalation evidence and supervisor decisions; no integration delivery or Git ref mutation state.",
     "src/database/tables.py::admission_reservations": "Scheduler admission reservations for continuations and other work; train_repair is priority provenance, not integration delivery authority.",
     "src/database/tables.py::wait_priority_projection": "Derived task priority donation projection from the verified-wait graph; no integration delivery or Git ref authority.",
-    "src/database/queries/wait_queries.py::register_wait": "Generic verified-wait registration and owner fencing; service owner category integration grants no branch mutation or delivery authority.",
-    "src/database/queries/wait_queries.py::verify_owner": "Generic verified-wait registration and owner fencing; service owner category integration grants no branch mutation or delivery authority.",
+    "src/database/queries/wait_queries.py::register_wait": "Universal verified subscription transaction: idempotency, observation, semantic cycle guard, server-injected sleep policy, deadlines and edges. Writes only generic wait state; integration-specific condition verification is separately charged to its adapters.",
+    "src/database/queries/wait_queries.py::verify_owner": "Universal transaction-local wait ownership and live-claim fence. Integration is one service owner kind; this function validates project/session/task identity without reading or mutating the integration ledger.",
     "src/waits/explain.py::owner_key": "Pure mapping from a wait owner category to a graph node key; integration is a category label, not delivery state or authority.",
-    "src/commands/contracts/wait.py::WaitRegisterArgs.owner_kind": "Generic verified-wait lifecycle/configuration or ordinary routing helper; no integration ref mutation or duplicate lifecycle storage.",
+    "src/commands/contracts/wait.py::WaitRegisterArgs.owner_kind": "Universal service-owner discriminator for scheduler, integration and playbook waits. It declares a typed scope only; authenticated command and ledger checks supply authority. No integration lifecycle or ref replay state.",
     "src/commands/contracts/wait_v2.py::register_wait_v2_contracts": "Generic verified-wait lifecycle/configuration or ordinary routing helper; no integration ref mutation or duplicate lifecycle storage.",
-    "src/commands/wait_v2_commands.py::WaitV2CommandsMixin._wait_v2_scope": "Generic verified-wait lifecycle/configuration or ordinary routing helper; no integration ref mutation or duplicate lifecycle storage.",
+    "src/commands/wait_v2_commands.py::WaitV2CommandsMixin._wait_v2_scope": "Universal authenticated wait-owner scope derivation for services, playbooks, tasks and sessions. Naming integration as one service owner grants no integration mutation authority; integration-specific adapters remain charged.",
     "src/config_wait_policy.py::parse_wait_policy": "Generic verified-wait lifecycle/configuration or ordinary routing helper; no integration ref mutation or duplicate lifecycle storage.",
     "src/database/queries/claim_queries.py::route_claimable": "Generic verified-wait lifecycle/configuration or ordinary routing helper; no integration ref mutation or duplicate lifecycle storage.",
     "src/routing/sources.py::claimable_sources": "Generic verified-wait lifecycle/configuration or ordinary routing helper; no integration ref mutation or duplicate lifecycle storage.",
@@ -17517,14 +17519,14 @@
     "src/waits/sources.py::payload_hash": "Generic canonical JSON SHA-256 for universal wait evidence, including resource invalidation authentication; no integration lifecycle, ref identity or replay authority.",
     "src/waits/graph.py::lock_component_tasks": "Generic wait graph urgency propagation shared by ordinary task priority writes; no integration policy or ref authority.",
     "src/waits/graph.py::apply_base_priority_change": "Generic wait graph urgency propagation shared by ordinary task priority writes; no integration policy or ref authority.",
-    "src/waits/adapters/base.py::foreign": "Generic typed wait validation, database row read or pure graph rendering; shared across source kinds and contains no integration policy or mutation authority.",
-    "src/waits/adapters/base.py::invalid": "Generic typed wait validation, database row read or pure graph rendering; shared across source kinds and contains no integration policy or mutation authority.",
-    "src/waits/adapters/base.py::row": "Generic typed wait validation, database row read or pure graph rendering; shared across source kinds and contains no integration policy or mutation authority.",
-    "src/waits/adapters/base.py::unresolved": "Generic typed wait validation, database row read or pure graph rendering; shared across source kinds and contains no integration policy or mutation authority.",
+    "src/waits/adapters/base.py::foreign": "Generic wait scope refusal with deliberately redacted object identity; integration adapters remain charged independently.",
+    "src/waits/adapters/base.py::invalid": "Generic typed-condition validation refusal shared by all wait adapters; no integration policy or storage.",
+    "src/waits/adapters/base.py::row": "Generic SQLAlchemy single-row reader shared by condition adapters; integration-specific queries and predicates remain charged to their callers.",
+    "src/waits/adapters/base.py::unresolved": "Generic source-verification refusal shared by all wait adapters; no integration policy or storage.",
     "src/waits/explain.py::graph_paths": "Generic typed wait validation, database row read or pure graph rendering; shared across source kinds and contains no integration policy or mutation authority.",
     "src/waits/explain.py::owner_key": "Generic typed wait validation, database row read or pure graph rendering; shared across source kinds and contains no integration policy or mutation authority.",
     "src/commands/contracts/wait.py::WaitRegisterArgs.owner_kind": "Generic verified-wait lifecycle/configuration or ordinary routing helper; no integration ref mutation or duplicate lifecycle storage.",
-    "src/commands/contracts/wait_v2.py::register_wait_v2_contracts": "Generic verified-wait lifecycle/configuration or ordinary routing helper; no integration ref mutation or duplicate lifecycle storage.",
+    "src/commands/contracts/wait_v2.py::register_wait_v2_contracts": "Universal verified-wait contract registration invoked by the shared command composition root. Typed dispatch and caller checks do not implement integration policy; integration-specific commands remain charged.",
     "src/commands/wait_v2_commands.py::WaitV2CommandsMixin._wait_v2_scope": "Generic verified-wait lifecycle/configuration or ordinary routing helper; no integration ref mutation or duplicate lifecycle storage.",
     "src/config_wait_policy.py::parse_wait_policy": "Generic verified-wait lifecycle/configuration or ordinary routing helper; no integration ref mutation or duplicate lifecycle storage.",
     "src/database/queries/claim_queries.py::route_claimable": "Generic verified-wait lifecycle/configuration or ordinary routing helper; no integration ref mutation or duplicate lifecycle storage.",
@@ -17533,7 +17535,7 @@
     "src/waits/reservations.py::claim_candidate": "Generic verified-wait lifecycle/configuration or ordinary routing helper; no integration ref mutation or duplicate lifecycle storage.",
     "src/waits/reservations.py::consume_reservation": "Generic verified-wait lifecycle/configuration or ordinary routing helper; no integration ref mutation or duplicate lifecycle storage.",
     "src/waits/scheduler.py::enabled": "Generic verified-wait lifecycle/configuration or ordinary routing helper; no integration ref mutation or duplicate lifecycle storage.",
-    "src/waits/conditions.py::canonical": "Generic wait serialization, graph serialization or session capacity accounting; no integration ref policy or mutation authority.",
+    "src/waits/conditions.py::canonical": "Generic stable JSON encoding for condition request hashes; no integration lifecycle, ref identity or replay authority.",
     "src/waits/graph.py::lock_graph": "Generic wait serialization, graph serialization or session capacity accounting; no integration ref policy or mutation authority.",
     "src/waits/occupancy.py::continuation_occupancy": "Generic wait serialization, graph serialization or session capacity accounting; no integration ref policy or mutation authority.",
     "src/database/queries/ingest_hold.py::not_ingest_held": "Generic ingestion admission predicate over tasks.held_batch_id, shared by claim demand and execution admission. It performs no integration delivery, publication or lifecycle mutation.",
@@ -17608,7 +17610,7 @@
     "src/waits/dispatcher.py::WakeDispatcher.commit": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
     "src/workspace_disable.py::slot_cap": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
     "src/waits/adapters/message.py::MessageAdapter.snapshot": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
-    "src/waits/graph.py::would_create_cycle": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/waits/graph.py::would_create_cycle": "Generic reachability guard over task dependencies and active semantic wait edges. Resource holds are excluded from semantic cycles; no integration ownership or delivery policy.",
     "src/waits/sources.py::import from src.waits.resource_sources import resource_invalidation": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
     "src/commands/wait_commands.py::WaitCommandsMixin._cmd_wait_register": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
     "src/database/tables.py::collaboration_messages": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
