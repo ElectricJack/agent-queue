@@ -48,6 +48,10 @@
     "tests/fixtures/playbooks/v2/stuck-task-watch",
     "src/prompts/reviewed_playbooks/stuck-task-watch"
   ],
+  "stuck-task-watch-reminder": [
+    "tests/fixtures/playbooks/v2/stuck-task-watch-reminder",
+    "src/prompts/reviewed_playbooks/stuck-task-watch-reminder"
+  ],
   "supervisor-digest": [
     "tests/fixtures/playbooks/v2/supervisor-digest",
     "src/prompts/reviewed_playbooks/supervisor-digest"
