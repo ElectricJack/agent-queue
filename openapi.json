@@ -45603,9 +45603,14 @@
                 "$ref": "#/components/schemas/AgentWaitRecord"
               },
               {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
                 "type": "null"
               }
-            ]
+            ],
+            "title": "Wait"
           },
           "next_step": {
             "anyOf": [

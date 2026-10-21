@@ -5,6 +5,7 @@ import asyncio
 from pathlib import Path
 from sqlalchemy import select
 from src.agent_waits import WaitError
+from src.waits.conditions import WaitError as VerifiedWaitError
 from pydantic import ValidationError
 from src.commands.principal import current_principal, PrincipalKind
 from src.jobs.policy import JobError
@@ -76,6 +77,9 @@ class JobCommandsMixin:
         if service is None:
             service = self.orchestrator.job_service = JobService(self.db, self.config)
         service.config = self.config
+        service.wait_lifecycle = getattr(
+            getattr(self.orchestrator, "wait_service", None), "lifecycle", None
+        )
         return service
 
     async def _cmd_job_submit_integration(self, args):
@@ -254,15 +258,14 @@ class JobCommandsMixin:
             if wait:
                 from src.agent_waits import wait_next_step
 
-                response.update(
-                    wait=wait,
-                    next_step=wait_next_step(wait),
-                )
+                response.update(wait=wait, next_step=(
+                    wait["next_step"] if "wait_id" in wait else wait_next_step(wait)
+                ))
             return response
-        except (JobError, WaitError, ValidationError, KeyError, ValueError) as exc:
+        except (JobError, WaitError, VerifiedWaitError, ValidationError, KeyError, ValueError) as exc:
             code = (
                 exc.code
-                if isinstance(exc, WaitError)
+                if isinstance(exc, (WaitError, VerifiedWaitError))
                 else (str(exc) if isinstance(exc, JobError) else "jobs.invalid")
             )
             return {

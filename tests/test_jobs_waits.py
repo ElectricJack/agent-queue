@@ -16,17 +16,22 @@ from src.agent_waits import WaitError, job_wait_deadline
 from src.commands import CommandHandler
 from src.commands.contracts import CONTRACTS
 from src.config import AppConfig
+from src.config_wait_policy import WaitProjectOverrides
 from src.database.tables import (
     agent_waits,
     jobs,
     job_outbox,
     job_workspace_pins,
     messages,
+    continuations,
+    wait_records,
     workspaces,
     wait_source_events,
 )
 from src.jobs.result import build_result
 from src.models import AgentProfile, Workspace, RepoSourceType
+from src.wait_runtime.service import WaitService
+from src.waits.conditions import WaitError as VerifiedWaitError
 from tests.test_agent_wait_queries import NOW, env as _wait_env, result_count
 from tests.test_integration_checks import REQUIRED, row
 from tests.test_integration_ci_producers import HEAD, OTHER
@@ -84,6 +89,169 @@ async def finish(env, job, *, ended_at=NOW + 50, exit_code=1):
     )
 
 
+@pytest.fixture
+async def verified(setup, tmp_path):
+    await setup.db.create_profile(AgentProfile(
+        id="worker-codex", name="Worker", harness_tools=[], plugin_tools=[],
+        aq_commands=["job_submit", "wait_register", "wait_get"],
+    ))
+    await setup.db.update_task("owner", branch_name="aq/owner")
+    config = AppConfig(data_dir=str(tmp_path / "data"))
+    config.resources.jobs.enabled = True
+    orch = SimpleNamespace(db=setup.db, config=config, plugin_registry=None,
+                           bus=SimpleNamespace(emit=AsyncMock()))
+    clock = SimpleNamespace(now=NOW)
+    orch.wait_service = WaitService(orch, clock=lambda: clock.now)
+    handler = CommandHandler(orch, config)
+    orch._command_handler = handler
+    scope = dict(kind="session", session_id="s", session_instance_token="token", project_id="p")
+    args = dict(preset="lint", argv=["src"], idempotency_key="verified-job", wait=True,
+                claim_epoch=1, _scope=scope)
+    return SimpleNamespace(db=setup.db, config=config, orch=orch, handler=handler,
+                           clock=clock, args=args)
+
+
+@pytest.mark.parametrize("project_override", [False, True])
+async def test_verified_atomic_job_wait_replay_and_completion(verified, project_override):
+    v = verified
+    if project_override:
+        v.config.wait_policy.v2_enabled = False
+        v.config.wait_policy.projects["p"] = WaitProjectOverrides(v2_enabled=True)
+    assert v.config.wait_policy.v1_bodies == "refuse"
+    first, replay = await asyncio.gather(*[
+        v.handler.execute("job_submit", v.args) for _ in range(2)
+    ])
+    assert first["success"] and replay["success"], (first, replay)
+    assert first == replay
+    wait_id = first["wait"]["wait_id"]
+    assert first["next_step"] == "end_turn"
+    assert (await v.db.get_task("owner")).status.value == "WAITING"
+    # Replays precede capacity checks, even with the task already WAITING.
+    v.config.resources.jobs.max_queued = 0
+    assert await v.handler.execute("job_submit", v.args) == first
+    async with v.db._engine.connect() as conn:
+        for table in (jobs, job_workspace_pins, wait_records):
+            assert await conn.scalar(select(func.count()).select_from(table)) == 1
+        assert await conn.scalar(select(func.count()).select_from(agent_waits)) == 0
+        assert await conn.scalar(select(workspaces.c.job_pin_count)) == 1
+        wait = (await conn.execute(select(wait_records))).mappings().one()
+        assert wait["verification_state"] == "verified"
+        assert wait["source_key"] == f"job:{first['job']['id']}"
+    await finish(v, first["job"])
+    # Both dispatch orders suppress the separate job result notification.
+    if not project_override:
+        await v.db.reconcile_job_results(now=NOW + 60, messaging_enabled=True)
+        assert await v.db.get_pending_messages("task", "owner") == []
+    v.clock.now += 60
+    assert await v.orch.wait_service.listener.tick()
+    if project_override:
+        await v.db.reconcile_job_results(now=NOW + 60, messaging_enabled=True)
+    async with v.db._engine.connect() as conn:
+        wait = (await conn.execute(select(wait_records))).mappings().one()
+        assert wait["outcome"] == "satisfied"
+        assert wait["result_ref"] == first["job"]["id"]
+        assert await conn.scalar(select(func.count()).select_from(messages).where(
+            messages.c.id == f"wait:{wait_id}:outcome")) == 1
+        assert not await conn.scalar(select(messages.c.id).where(
+            messages.c.body_kind == "job_result"))
+    terminal_replay = await v.handler.execute("job_submit", v.args)
+    assert terminal_replay["wait"] == first["wait"]
+    consumed = await v.handler.execute("wait_get", dict(
+        wait_id=wait_id, consume=True, claim_epoch=1, _scope=v.args["_scope"],
+    ))
+    assert consumed["success"], consumed
+    assert (await v.db.get_task("owner")).status.value == "IN_PROGRESS"
+    assert (await v.handler.execute("job_submit", v.args))["wait"] == first["wait"]
+    assert (await v.db.get_task("owner")).status.value == "IN_PROGRESS"
+
+
+@pytest.mark.parametrize("hibernate", [False, True])
+async def test_verified_wait_failure_rolls_back_job_pin_wait_and_task(verified, monkeypatch, hibernate):
+    v = verified
+    if hibernate:
+        v.config.wait_policy.kinds["job"].expected_duration_seconds = 3600
+    lifecycle = v.orch.wait_service.lifecycle
+    original = lifecycle.register_in_transaction
+
+    async def refuse(*args, **kwargs):
+        # Refuse after all wait/suspension writes, proving the shared transaction.
+        await original(*args, **kwargs)
+        raise VerifiedWaitError("wait.unavailable", "injected registration failure")
+
+    monkeypatch.setattr(lifecycle, "register_in_transaction", refuse)
+    result = await v.handler.execute("job_submit", v.args)
+    assert result["error_code"] == "wait.unavailable", result
+    assert (await v.db.get_task("owner")).status.value == "IN_PROGRESS"
+    async with v.db._engine.connect() as conn:
+        for table in (jobs, job_workspace_pins, wait_records, agent_waits, continuations):
+            assert await conn.scalar(select(func.count()).select_from(table)) == 0
+        assert await conn.scalar(select(workspaces.c.job_pin_count)) == 0
+    monkeypatch.setattr(lifecycle, "register_in_transaction", original)
+    assert (await v.handler.execute("job_submit", v.args))["success"]
+
+
+async def test_verified_atomic_job_wait_uses_hibernation_lifecycle(verified):
+    v = verified
+    v.config.wait_policy.kinds["job"].expected_duration_seconds = 3600
+    result = await v.handler.execute("job_submit", v.args)
+    assert result["success"], result
+    receipt = result["wait"]
+    assert receipt["decision"]["mode"] == "hibernate"
+    assert result["next_step"] == "checkpoint_then_end_turn"
+    async with v.db._engine.connect() as conn:
+        intent = (await conn.execute(select(continuations))).mappings().one()
+        assert intent["id"] == receipt["continuation_id"]
+        assert intent["wait_id"] == receipt["wait_id"]
+        assert intent["suspension_generation"] == receipt["generation"]
+        assert await conn.scalar(select(func.count()).select_from(agent_waits)) == 0
+
+
+@pytest.mark.parametrize("failure", [
+    "stale_epoch", "replaced_instance", "queue", "output", "service", "branch",
+])
+async def test_verified_atomic_job_wait_refusals_create_no_state(verified, failure):
+    v = verified
+    args = v.args.copy()
+    if failure == "stale_epoch":
+        args["claim_epoch"] = 0
+    elif failure == "replaced_instance":
+        args["_scope"] = {**args["_scope"], "session_instance_token": "replaced"}
+    elif failure == "queue":
+        v.config.resources.jobs.max_queued = 0
+    elif failure == "output":
+        v.config.resources.jobs.log_budget_bytes = 0
+    elif failure == "branch":
+        v.config.wait_policy.kinds["job"].expected_duration_seconds = 3600
+        await v.db.update_task("owner", branch_name=None)
+    else:
+        del v.orch.wait_service
+    result = await v.handler.execute("job_submit", args)
+    assert not result["success"], result
+    if failure in {"queue", "output", "service", "branch"}:
+        assert result["error_code"] == {
+            "queue": "jobs.queue_full", "output": "jobs.output_capacity", "service": "wait.unavailable",
+            "branch": "wait.unavailable",
+        }[failure]
+    async with v.db._engine.connect() as conn:
+        for table in (jobs, job_workspace_pins, wait_records, agent_waits):
+            assert await conn.scalar(select(func.count()).select_from(table)) == 0
+
+
+async def test_project_disabled_atomic_job_wait_retains_legacy_rollback(verified):
+    v = verified
+    v.config.wait_policy.projects["p"] = WaitProjectOverrides(v2_enabled=False)
+    first = await v.handler.execute("job_submit", v.args)
+    assert first["success"] and first["wait"]["state"] == "active", first
+    assert await v.handler.execute("job_submit", v.args) == first
+    refused = await v.handler.execute("job_submit", {**v.args, "idempotency_key": "another-job"})
+    assert refused["error_code"] == "wait.already_active", refused
+    async with v.db._engine.connect() as conn:
+        for table in (jobs, job_workspace_pins, agent_waits):
+            assert await conn.scalar(select(func.count()).select_from(table)) == 1
+        assert await conn.scalar(select(func.count()).select_from(wait_records)) == 0
+        assert await conn.scalar(select(workspaces.c.job_pin_count)) == 1
+
+
 async def test_atomic_submit_replay_keeps_one_job_pin_and_wait(setup):
     first, second = await asyncio.gather(submit(setup), submit(setup))
     assert first["id"] == second["id"]
@@ -115,6 +283,7 @@ async def test_managed_validation_uses_two_worker_calls_and_detects_failure_on_s
         harness_tools=[], plugin_tools=[],
     ))
     config = AppConfig(data_dir=str(tmp_path / "data"))
+    config.wait_policy.v2_enabled = False  # Explicit legacy rollback coverage.
     config.resources.jobs.enabled = True
     orch = SimpleNamespace(db=setup.db, bus=SimpleNamespace(emit=AsyncMock()), plugin_registry=None)
     handler = CommandHandler(orch, config)
@@ -260,6 +429,7 @@ async def test_scoped_submit_commands_return_wait_pointer_and_preserve_replay(se
         )
     )
     config = AppConfig(data_dir=str(tmp_path / "data"))
+    config.wait_policy.v2_enabled = False  # Explicit legacy rollback coverage.
     config.resources.jobs.enabled = True
     orch = SimpleNamespace(db=setup.db, bus=SimpleNamespace(emit=AsyncMock()), plugin_registry=None)
     handler = CommandHandler(orch, config)
@@ -313,6 +483,7 @@ async def test_pool_scope_resolves_live_claim_for_submit_and_reads(setup, tmp_pa
         )
     )
     config = AppConfig(data_dir=str(tmp_path / "data"))
+    config.wait_policy.v2_enabled = False  # Explicit legacy rollback coverage.
     config.resources.jobs.enabled = True
     orch = SimpleNamespace(db=setup.db, bus=SimpleNamespace(emit=AsyncMock()), plugin_registry=None)
     handler = CommandHandler(orch, config)

@@ -35,6 +35,7 @@ from src.sessions.env import SCRATCH_DB_SENTINEL
 class JobService:
     def __init__(self, db, config):
         self.db, self.config = db, config
+        self.wait_lifecycle = None
         self.root = Path(__file__).resolve().parents[2]
         self._tick_lock = asyncio.Lock()
         self._children = set()
@@ -292,6 +293,21 @@ class JobService:
             "runner_nonce": nonce,
         }
         await self.sweep(reserve=True)
+        wait_registration = None
+        if wait_identity:
+            from src.waits.conditions import Scope, WaitError
+            from src.waits.policy import enabled
+
+            if enabled(self.config, project_id):
+                if self.wait_lifecycle is None:
+                    raise WaitError("wait.unavailable", "verified wait service is unavailable")
+                wait_registration = await self.wait_lifecycle.job_registration(Scope(
+                    project_id, "task", task_id,
+                    session_id=wait_identity["session_id"],
+                    instance_token=wait_identity["instance_token"],
+                    claim_epoch=wait_identity["claim_epoch"],
+                    elevated=wait_identity["elevated"],
+                ))
         return await self.db.submit_job(
             values,
             max_queued=cfg.max_queued,
@@ -299,6 +315,7 @@ class JobService:
             log_budget=cfg.log_budget_bytes,
             reservation=cfg.head_bytes + cfg.tail_bytes,
             wait_identity=wait_identity,
+            wait_registration=wait_registration,
         )
 
     async def cancel(self, job: dict):

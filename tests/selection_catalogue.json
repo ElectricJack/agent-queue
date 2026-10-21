@@ -10268,7 +10268,7 @@
         "managed-jobs"
       ],
       "default_arm": true,
-      "digest": "sha256:da5efd3ecfcf6fdb119cdff62377c8afd0cd4ec43b7a18b612dce14d64549984",
+      "digest": "sha256:97b64ae31680fd080dc73aa2c2613471fb9406f9c08e3185e3368f28ee259a9a",
       "imports": [
         "src.agent_waits",
         "src.api.codegen",
@@ -10287,6 +10287,7 @@
         "src.commands.principal",
         "src.commands.wait_v2_commands",
         "src.config",
+        "src.config_wait_policy",
         "src.database.queries.wait_queries",
         "src.database.tables",
         "src.event_bus",
@@ -10300,6 +10301,7 @@
         "src.prime.sections",
         "src.profiles.parser",
         "src.sessions.context",
+        "src.wait_runtime.service",
         "src.waits.conditions",
         "src.waits.registry",
         "src.waits.watchers.ci"

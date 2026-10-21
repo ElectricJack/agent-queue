@@ -10,6 +10,7 @@ from ..types import UNSET, Unset
 if TYPE_CHECKING:
     from ..models.agent_wait_record import AgentWaitRecord
     from ..models.job_response_job import JobResponseJob
+    from ..models.job_response_wait_type_1 import JobResponseWaitType1
 
 
 T = TypeVar("T", bound="JobResponse")
@@ -20,18 +21,19 @@ class JobResponse:
     """
     Attributes:
         job (JobResponseJob):
-        wait (AgentWaitRecord | None | Unset):
+        wait (AgentWaitRecord | JobResponseWaitType1 | None | Unset):
         next_step (None | str | Unset):
         success (bool | Unset):  Default: True.
     """
 
     job: JobResponseJob
-    wait: AgentWaitRecord | None | Unset = UNSET
+    wait: AgentWaitRecord | JobResponseWaitType1 | None | Unset = UNSET
     next_step: None | str | Unset = UNSET
     success: bool | Unset = True
 
     def to_dict(self) -> dict[str, Any]:
         from ..models.agent_wait_record import AgentWaitRecord
+        from ..models.job_response_wait_type_1 import JobResponseWaitType1
 
         job = self.job.to_dict()
 
@@ -39,6 +41,8 @@ class JobResponse:
         if isinstance(self.wait, Unset):
             wait = UNSET
         elif isinstance(self.wait, AgentWaitRecord):
+            wait = self.wait.to_dict()
+        elif isinstance(self.wait, JobResponseWaitType1):
             wait = self.wait.to_dict()
         else:
             wait = self.wait
@@ -71,11 +75,12 @@ class JobResponse:
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         from ..models.agent_wait_record import AgentWaitRecord
         from ..models.job_response_job import JobResponseJob
+        from ..models.job_response_wait_type_1 import JobResponseWaitType1
 
         d = dict(src_dict)
         job = JobResponseJob.from_dict(d.pop("job"))
 
-        def _parse_wait(data: object) -> AgentWaitRecord | None | Unset:
+        def _parse_wait(data: object) -> AgentWaitRecord | JobResponseWaitType1 | None | Unset:
             if data is None:
                 return data
             if isinstance(data, Unset):
@@ -88,7 +93,15 @@ class JobResponse:
                 return wait_type_0
             except (TypeError, ValueError, AttributeError, KeyError):
                 pass
-            return cast(AgentWaitRecord | None | Unset, data)
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                wait_type_1 = JobResponseWaitType1.from_dict(data)
+
+                return wait_type_1
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(AgentWaitRecord | JobResponseWaitType1 | None | Unset, data)
 
         wait = _parse_wait(d.pop("wait", UNSET))
 
