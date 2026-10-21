@@ -32,6 +32,19 @@ from tests.assignment_routing_helpers import install_already_routed, route_sourc
 from tests.db_fixtures import lease_dsn
 
 
+@pytest.fixture(autouse=True)
+def _restore_contract_handler_provider():
+    """``set_command_handler`` installs the process-global contract handler
+    provider; an initialized orchestrator must not leak its live plugin
+    commands (``aq-files.*``) into later tests on the same worker."""
+    from src.commands.contracts import builtin
+
+    previous = builtin._handler_provider
+    yield
+    if builtin._handler_provider is not previous:
+        builtin.set_handler_provider(previous)
+
+
 class MockAdapter(Runtime):
     def __init__(self, result=AgentResult.COMPLETED, tokens=1000, on_wait=None):
         self._result = result

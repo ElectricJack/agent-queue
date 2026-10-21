@@ -2565,7 +2565,7 @@
         "api-contract"
       ],
       "default_arm": true,
-      "digest": "sha256:23926930e3ed84853e42f6c02327d87e4126dbd91c54175ae039d9e3eb8bdd82",
+      "digest": "sha256:7100fea96bd16a00066b5d4a6b338264c27718d32cf158b8ad2c4504be60029a",
       "imports": [
         "src.api",
         "src.api.app",
@@ -2573,6 +2573,8 @@
         "src.api.dependencies",
         "src.api.models.task",
         "src.api.spec",
+        "src.commands.contracts",
+        "src.commands.contracts.builtin",
         "src.config",
         "src.database",
         "src.event_bus",
@@ -12589,8 +12591,10 @@
         "orchestrator"
       ],
       "default_arm": true,
-      "digest": "sha256:3edadaf353247da6187d03ac7d646b012d51b895e99df9fb518e5c7752576f35",
+      "digest": "sha256:fd20d2d460e5456b4d1a942ee6d5751a4f866bb17dc8b443b716e6a3d70f4c6f",
       "imports": [
+        "src.commands.contracts",
+        "src.commands.contracts.builtin",
         "src.commands.handler",
         "src.config",
         "src.database.tables",
