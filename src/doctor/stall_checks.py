@@ -627,6 +627,7 @@ _SUBJECTS = {
     "escalation_undelivered": ("escalation", "escalation_id"),
     "continuous_promotion_lag": ("promotion_step", "step_id"),
     "continuous_promotion_observation_unavailable": None,
+    "stranded_promotion_task": ("task", "task_id"),
     "reviewed_file_guard": ("batch", "batch_id"), "orphaned_pr": ("pull_request", "pr_url"),
     "pr_inventory_failed": None, "unadmitted_parent": ("task", "task_id"),
     "validation_db": ("container", "container"), "stranded_child": ("task", "task_id"),
@@ -805,6 +806,8 @@ async def _check_sweep(ctx: DoctorContext) -> CheckResult:
             _probe(ctx, active, ("continuous_promotion_lag",
                                  "continuous_promotion_observation_unavailable"),
                    lambda c: _continuous_promotion_findings(c, active, now)),
+            _probe(ctx, active, ("stranded_promotion_task",),
+                   lambda c: _stranded_promotion_findings(c, active)),
             _probe(ctx, active, ("slot_capacity_short",),
                    lambda c: _slot_capacity_findings(c, active)),
             _probe(ctx, active, ("train_batch_stalled",),
@@ -929,6 +932,21 @@ async def _continuous_promotion_findings(ctx, active, now):
                  item["reason"], evidence=item)
         for item in report["unavailable"]
     ]
+
+
+async def _stranded_promotion_findings(ctx, active):
+    from src.integration.promotion_steps import stranded_promotion_tasks
+
+    async with ctx.db._engine.connect() as conn:
+        rows = (await conn.execute(stranded_promotion_tasks())).mappings().all()
+    return [_finding(
+        "stranded_promotion_task", row["project_id"], f"{row['task_id']} is IN_PROGRESS but "
+        f"promotion intent {row['id']} on {row['target_ref']} is {row['intent']}/"
+        f"{row['lifecycle']}; cleanup fails it, and the next request supersedes it",
+        severity="error", batch_id=row["id"], **{key: row[key] for key in (
+            "task_id", "repository_id", "target_ref", "request_id", "intent", "lifecycle",
+            "human_abort_reason")},
+    ) for row in rows if row["project_id"] in active]
 
 
 async def _worker_relaunch_findings(ctx: DoctorContext, tasks: list) -> list[dict]:
