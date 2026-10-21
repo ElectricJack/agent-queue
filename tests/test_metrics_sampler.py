@@ -407,10 +407,19 @@ async def test_collect_carries_slow_values_between_fast_ticks(db):
     second = await sampler.collect()
     assert calls == []  # not recomputed …
     assert second["tokens"] == first["tokens"]  # … but still present
+    assert second["waits"] == first["waits"]
 
     clock.advance(5)
     await sampler.collect()
     assert calls == [1]
+
+
+async def test_collect_preserves_unavailable_wait_group(db, monkeypatch):
+    async def unavailable(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(db, "metrics_waits_snapshot", unavailable)
+    assert (await make_sampler(db).collect())["waits"] is None
 
 
 async def test_collect_reports_its_own_cost(db):

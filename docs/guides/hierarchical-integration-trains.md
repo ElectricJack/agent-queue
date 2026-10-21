@@ -360,6 +360,12 @@ used 961 Git commands in 2.864 seconds; the warm pass used zero commands with
 - `aq integration reverify-epic EPIC_ID` previews aggregate verification for a completed epic. Apply with `--apply --head HEAD_SHA --reason REASON` to request one bounded train visit, including when the old owner is released. The result names the actual visit state and blockers; `visited` does not mean checks or review passed. Read the [control specification](../specs/design/epic-aggregate-reverification.md) for the operator handoff.
 - `aq integration record-root-noop ROOT_TASK_ID` previews a no-artifact completion for an unheld no-code root; apply requires `--apply --head HEAD_SHA --reason REASON`.
 
+After a hand landing, an ordinary open epic batch settles automatically when
+the configured default branch proves every frozen input, including when the
+epic ref has been deleted. Its membership and history remain available; no ref
+is recreated or published. Partial or unknown proof and human holds preserve
+the batch. Paused, epic sync/refresh and promotion batches keep their protocols.
+
 Completed root epics receive ordinary aggregate train visits automatically,
 including after child origins retire. They do not depend on a parent integration
 run. A missing root origin stays visible as a readiness blocker. Implementation

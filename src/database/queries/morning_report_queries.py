@@ -8,6 +8,7 @@ import json
 from sqlalchemy import and_, cast, delete, func, or_, select, update
 from sqlalchemy.dialects.postgresql import JSONB, insert as pg_insert
 
+from src.waits.sources import insert_message_with_source_event
 from src.database.tables import morning_report_coverage as coverage
 from src.database.tables import morning_report_facts as facts
 from src.database.tables import morning_reports as reports
@@ -326,7 +327,7 @@ class MorningReportQueriesMixin:
                 return None
             if row["state"] == "reserved":
                 message_id = f"msg-{request_id}"
-                await conn.execute(
+                await insert_message_with_source_event(conn,
                     pg_insert(messages)
                     .values(
                         id=message_id,

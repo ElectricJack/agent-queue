@@ -12,6 +12,7 @@ import json
 import time
 from typing import Any
 
+from src.waits.sources import insert_message_with_source_event
 from src.commands.operator_authority import local_or_operator
 from src.commands.principal import PrincipalKind, TRUSTED_LOCAL, current_principal
 from src.commands.supervisor_authority import integration_operator
@@ -522,8 +523,8 @@ class IntegrationCommandsMixin:
     async def _cmd_integration_release_withheld_source(self, args: dict) -> dict:
         """Preview or release one exact source an aborted batch withholds.
 
-        A supervisor may preview; only a local operator or a granted operator
-        worker (whose grant needs an exact human decision) may apply.
+        The owning supervisor or a local operator may apply. Operator workers
+        still need a grant bound to an exact human decision.
         """
         from src.commands.contracts.integration import IntegrationReleaseWithheldSourceArgs
         from src.integration.batches import BatchStore
@@ -1114,7 +1115,7 @@ class IntegrationCommandsMixin:
             else:
                 why = None
             if why is not None:
-                await conn.execute(pg_insert(messages).values(
+                await insert_message_with_source_event(conn, pg_insert(messages).values(
                     id=f"msg-source-ancestry-{evidence['id']}",
                     project_id=source["project_id"],
                     from_kind="system",

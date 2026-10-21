@@ -265,12 +265,12 @@ record it so, and never claim coverage you did not observe.
 4. Register one durable task wait and end the turn:
 
    ```bash
-   aq wait register --kind task --ref <task-id> --timeout 7200 --idempotency-key review-round-N
+   aq wait register --kind task --ref <task-id> --idempotency-key review-round-N
    ```
 
-   Resume with `aq wait show <wait-id> --consume --json`. Handle an expired
-   wait explicitly; do not repeatedly read unchanged status or blindly register
-   again. A failed or cancelled reviewer is an incomplete review. Check
+   Resume with `aq wait show <wait-id> --consume --json`. Act on its result or
+   recorded supervisor decision; keep the same wait. A failed or cancelled reviewer
+   is an incomplete review. Check
    attribution, then read the findings and the verdict:
 
    ```bash

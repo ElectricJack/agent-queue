@@ -523,7 +523,25 @@ class ExactChecks:
         if rows:
             async with self.db._engine.begin() as conn:
                 for check in rows:
-                    await conn.execute(_upsert(check))
+                    changed = await conn.execute(_upsert(check))
+                    if changed.rowcount:
+                        from src.waits.sources import record_source_event
+
+                        await record_source_event(
+                            conn,
+                            source_key=f"ci_check:{check.repository_id}:{check.sha}:{check.name}",
+                            generation=0, revision=f"{check.producer_id}:"
+                            f"{check.required_check_version}:{check.run_id}:{check.attempt}:"
+                            f"{check.observed_at}:{check.conclusion.value}",
+                            outcome_ref=check.run_url or f"check:{check.sha}:{check.name}",
+                            occurred_at=check.observed_at,
+                            payload={"repository_id": check.repository_id, "sha": check.sha,
+                                     "check_name": check.name, "run_id": check.run_id,
+                                     "producer_id": check.producer_id,
+                                     "required_check_version": check.required_check_version,
+                                     "attempt": check.attempt,
+                                     "conclusion": check.conclusion.value},
+                        )
             if self.on_change is not None and any(
                 check.name not in previous or
                 (check.conclusion, check.run_id, check.attempt) !=

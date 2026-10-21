@@ -90,8 +90,11 @@ async def ready() -> JSONResponse:
     messaging_ok = _check_ok(checks.get("messaging"))
     database_ok = _check_ok(checks.get("database"))
     required_playbooks_ok = _check_ok(checks.get("required_playbooks", {"ok": True}))
+    private_key_ok = _check_ok(checks.get("playbook_private_value_key", {"ok": True}))
     snapshot_ok = _check_ok(checks.get("health_snapshot", {"ok": True}))
-    is_ready = messaging_ok and database_ok and required_playbooks_ok and snapshot_ok
+    is_ready = (
+        messaging_ok and database_ok and required_playbooks_ok and private_key_ok and snapshot_ok
+    )
 
     body = {
         "ready": is_ready,
@@ -100,6 +103,7 @@ async def ready() -> JSONResponse:
             "messaging": checks.get("messaging", {"ok": False}),
             "database": checks.get("database", {"ok": False}),
             "required_playbooks": checks.get("required_playbooks", {"ok": True}),
+            "playbook_private_value_key": checks.get("playbook_private_value_key", {"ok": True}),
             "health_snapshot": checks.get("health_snapshot", {"ok": True}),
         },
     }
