@@ -6145,6 +6145,8 @@ wait_measurements = Table(
     Column("teardown_seconds", Float, nullable=True),
     Column("setup_seconds", Float, nullable=True),
     Column("rebuild_seconds", Float, nullable=True),
+    Column("cache_hit_rate", Float, nullable=True),
+    Column("workspace_path", Text, nullable=True),
     Column("recorded_at", Float, nullable=False),
     Index(
         "idx_wait_measurements_bucket",

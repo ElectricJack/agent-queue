@@ -3181,7 +3181,7 @@ class DaemonLanes:
         )
         producer = LocalCIProducer(
             self.db, PublisherJobs(lambda: self.orchestrator._command_handler),
-            store=store, plan=plan, clock=self.clock,
+            store=store, plan=plan, clock=self.clock, workspace_batch_id=batch.id,
         )
         checks = RequestedChecks if requested else ExactChecks
         return checks(self.db, LocalChecks(producer, project_id=target.project_id,
@@ -3206,7 +3206,7 @@ class DaemonLanes:
         )
         producer = LocalCIProducer(
             self.db, PublisherJobs(lambda: self.orchestrator._command_handler),
-            store=retained.store, plan=plan, clock=self.clock,
+            store=retained.store, plan=plan, clock=self.clock, workspace_batch_id=batch.id,
         )
         return ExactChecks(self.db, LocalChecks(producer, project_id=target.project_id),
                            on_change=self._checks_changed)

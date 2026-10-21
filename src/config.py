@@ -3950,6 +3950,45 @@ class DeployConfig:
 
 
 @dataclass
+class BuildCacheConfig:
+    """Optional compiler cache on native storage, shared by job checkouts."""
+
+    kind: str = "ccache"
+    dir: str = ""
+
+    def validate(self) -> list[ConfigError]:
+        errors = []
+        if not isinstance(self.kind, str) or self.kind not in {"ccache", "sccache"}:
+            errors.append(ConfigError("workspaces", "build_cache.kind", "use ccache or sccache"))
+        if (not isinstance(self.dir, str) or not os.path.isabs(self.dir)
+                or "\x00" in self.dir or self.dir == "/"
+                or re.match(r"^/mnt/[a-z](?:/|$)", os.path.realpath(self.dir))):
+            errors.append(ConfigError(
+                "workspaces", "build_cache.dir", "must be an absolute native Linux directory",
+            ))
+        return errors
+
+
+@dataclass
+class WorkspacesConfig:
+    build_cache: BuildCacheConfig | None = None
+    # Project entries override the installation default, including explicit null.
+    projects: dict[str, BuildCacheConfig | None] = field(default_factory=dict)
+
+    def validate(self) -> list[ConfigError]:
+        errors = []
+        if not isinstance(self.projects, dict):
+            return [ConfigError("workspaces", "projects", "must be a mapping")]
+        for cache in (self.build_cache, *self.projects.values()):
+            if cache is not None:
+                if isinstance(cache, BuildCacheConfig):
+                    errors.extend(cache.validate())
+                else:
+                    errors.append(ConfigError("workspaces", "build_cache", "must be a mapping"))
+        return errors
+
+
+@dataclass
 class AppConfig:
     """Top-level application configuration aggregating all subsystem configs.
 
@@ -3999,6 +4038,7 @@ class AppConfig:
     # -- Framework-overhaul substrate sections (all flags default off) ------
     sessions: SessionsConfig = field(default_factory=SessionsConfig)
     worktrees: WorktreesConfig = field(default_factory=WorktreesConfig)
+    workspaces: WorkspacesConfig = field(default_factory=WorkspacesConfig)
     streams: StreamsConfig = field(default_factory=StreamsConfig)
     security: SecurityConfig = field(default_factory=SecurityConfig)
     pricing: PricingConfig = field(default_factory=PricingConfig)
@@ -4225,6 +4265,7 @@ class AppConfig:
         errors.extend(self.playbooks.validate())
         errors.extend(self.sessions.validate())
         errors.extend(self.worktrees.validate())
+        errors.extend(self.workspaces.validate())
         errors.extend(self.streams.validate())
         errors.extend(self.security.validate())
         errors.extend(self.pricing.validate())
@@ -4430,6 +4471,7 @@ HOT_RELOADABLE_SECTIONS = {
     # an edit governs the next launch and retires stale pool sessions at
     # their next claim (docs/specs/git-identity.md).
     "git_identity",
+    "workspaces",  # cache settings apply to the next job/session launch
     "deploy",  # selectors and automatic branch-check cadence are read live
     # Read per use through lambda getters (``orchestrator.core`` knowledge
     # reads and ``records`` outbox/export), so an edit bites on the next
@@ -5031,6 +5073,23 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
         config.data_dir = raw["data_dir"]
     if "workspace_dir" in raw:
         config.workspace_dir = raw["workspace_dir"]
+    if "workspaces" in raw:
+        section = raw["workspaces"]
+        if not isinstance(section, dict):
+            raise ConfigValidationError(["[workspaces] must be a mapping"])
+
+        def cache_config(value):
+            if value is None or not isinstance(value, dict):
+                return value
+            return BuildCacheConfig(**_dataclass_kwargs(BuildCacheConfig, value))
+
+        projects = section.get("projects", {})
+        if not isinstance(projects, dict):
+            raise ConfigValidationError(["[workspaces] projects must be a mapping"])
+        config.workspaces = WorkspacesConfig(
+            build_cache=cache_config(section.get("build_cache")),
+            projects={key: cache_config(value) for key, value in projects.items()},
+        )
     if "docs" in raw and isinstance(raw["docs"], dict):
         config.docs = DocsConfig(**_dataclass_kwargs(DocsConfig, raw["docs"]))
     if "deploy" in raw and isinstance(raw["deploy"], dict):

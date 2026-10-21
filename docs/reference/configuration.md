@@ -426,3 +426,46 @@ the writer itself deliberately leaves validation to its caller. See
 * aq test tests/test_config.py tests/test_config_profiles.py tests/test_config_watcher.py
   and aq test tests/test_config_editor.py tests/test_config_roundtrip.py exercise the
   focused behavior.
+
+## Warm integration checkouts and compiler caches
+
+Train candidate jobs and task-free batch fixers use reusable linked worktrees under
+`data_dir/job-snapshots` and `data_dir/batch-fixers`. They share the configured
+repository's primary clone object store. Reuse switches to the exact candidate
+commit and runs `reset --hard`; it never runs `clean -fdx`. Ignored build output
+survives. A checkout with dirty or untracked files, unpublished commits, active
+writers, job pins or unknown ownership remains retained. Candidate batches must
+be terminal before another batch adopts their checkout. Fixers additionally
+require a stopped session and a confirmed stopped provider process. Interrupted
+preparation and legacy snapshots are not silently adopted.
+
+Optionally configure a compiler cache on native Linux storage beside the clone:
+
+```yaml
+workspaces:
+  build_cache:
+    kind: ccache                 # or sccache
+    dir: /srv/aq/cache/compiler
+  projects:
+    matter-engine:
+      kind: sccache
+      dir: /srv/aq/cache/matter
+    cache-disabled-project: null
+```
+
+Project entries override the installation default; explicit `null` disables it.
+The selected directory reaches candidate/local job contracts and session
+launches (including fixers) as `CCACHE_DIR` or `SCCACHE_DIR`. These settings apply
+to new jobs and sessions after a config reload. Cache configuration is local to
+an installation and excluded from portable configuration bundles. Without a
+setting AQ adds no cache variables or compiler-cache probes. The build command
+must already invoke the selected compiler cache; setting its directory does not
+rewrite compiler commands. Cache binaries must be available on the job's PATH.
+
+Build presets record elapsed command seconds and workspace attribution in the
+job result. Optional bounded cache probes record hit/miss counter deltas and a
+hit rate when available. The counters have `shared_cache` scope: concurrent jobs
+can contribute, so the rate is not exclusive to one process. Missing tools,
+missing statistics, reset counters and intervals with no requests leave the rate
+unknown. Job waits copy available build seconds, cache hit rate and workspace
+path into common wait measurements. These observations do not gate publication.
