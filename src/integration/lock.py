@@ -234,6 +234,7 @@ class BranchLock:
             "session_id": None,
             "workspace_id": None,
             "confirmed_workspace_id": None,
+            "delegation": None,
             "updated_at": now,
         }
         if row:

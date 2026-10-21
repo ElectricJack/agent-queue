@@ -360,6 +360,10 @@ async def orch(tmp_path):
     from tests.session_dispatch_helpers import create_session_project, make_session_orch
 
     orch = await make_session_orch(tmp_path)
+    # Outage notices may cold-start a global supervisor when delivery is due.
+    # Keep this fixture's session starts scoped to task failover, as in the
+    # provider-suppression suite.
+    orch.config.messages.enabled = False
     orch.session_spec_builder._intelligence_classes = dict(CLASSES)
     orch.harness_registry.upsert(_codex_harness())
     orch.provider_availability._probe_impl = _probe
@@ -1137,9 +1141,10 @@ async def test_every_provider_down_holds_the_task_and_launches_nothing(orch, tmp
     }
     orch.git = mock_git
     starts = len(_fake(orch).starts)
+    orch._last_delivery_pass = 0
     for _ in range(3):
         await _cycle(orch)
-    assert len(_fake(orch).starts) == starts
+    assert len(_fake(orch).starts) == starts, [s.session_name for s in _fake(orch).starts]
     task = await orch.db.get_task("t0")
     assert task.status == TaskStatus.READY and task.profile_id == "standard-high-codex"
     hold = await orch.provider_availability.hold_for(task)

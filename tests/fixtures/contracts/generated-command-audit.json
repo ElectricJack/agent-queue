@@ -7643,6 +7643,49 @@
       "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
     ]
   },
+  "integration_delegate_publication": {
+    "mode": "typed",
+    "producer": "src/commands/integration_commands.py:IntegrationCommandsMixin._cmd_integration_delegate_publication",
+    "source_digest": "sha256:fa671890b177ef7462fc5449cab86aeff9461881ea6c0eaa3f7139690864f025",
+    "input_schema_source": "typed_contract",
+    "schema_quality": "typed",
+    "argument_reads_diagnostic_only": [],
+    "effect": "destructive",
+    "retry_safe": true,
+    "principal_requirement": "original_principal",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "denial_reason": null,
+    "result_policy": "retained typed adapter",
+    "return_branches": [
+      {
+        "return": "self._publication_delegation_result('issued', row)",
+        "protocol": "explicit_boolean: True"
+      },
+      {
+        "return": "_failure('refused', 'publication delegation requires Git-first active mode')",
+        "protocol": "delegated_producer"
+      },
+      {
+        "return": "_failure('refused', str(exc))",
+        "protocol": "delegated_producer"
+      }
+    ],
+    "helper_producers": {
+      "_publication_delegation_result": "sha256:e0768f47847aec450d165b1893eb6b9dfaece9f86f70f09477b5560a85b39a21"
+    },
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_publication_delegation_catalogue_only_adds_reviewed_commands_and_grant",
+      "tests/test_worker_git_scope.py::test_delegated_publication_uses_pinned_source_and_consumes_audited_grant",
+      "tests/test_worker_git_scope.py::test_delegation_cannot_expand_authority_or_take_a_live_writer",
+      "tests/test_worker_git_scope.py::test_only_current_named_supervisor_can_issue_delegation",
+      "tests/test_cli_integration.py::test_delegate_publication_preserves_explicit_grantee_and_fences"
+    ],
+    "review_notes": "Delegated integration publication (source base f9a7591766d69481b309e8733be795e62ab0e59e): operator integration controls; refusals carry the delegation service's reason, success returns the typed audit view. An exact retry returns the existing audit without reviving authority."
+  },
   "integration_delivery_readiness": {
     "mode": "typed",
     "producer": "src/commands/integration_commands.py:IntegrationCommandsMixin._cmd_integration_delivery_readiness",
@@ -8778,7 +8821,7 @@
   "integration_release_withheld_source": {
     "mode": "typed",
     "producer": "src/commands/integration_commands.py:IntegrationCommandsMixin._cmd_integration_release_withheld_source",
-    "source_digest": "sha256:58046d15c1f371e9809503500863d84fff4620270eb0e55642faae2299b04925",
+    "source_digest": "sha256:0f3965dce3abbc83d738a1701c7c14a81f012e58e9f7f3e2d5890a0524344112",
     "input_schema_source": "typed_contract",
     "schema_quality": "typed",
     "effect": "destructive",
@@ -8819,7 +8862,7 @@
       "tests/test_integration_contracts.py",
       "tests/test_operator_workers.py"
     ],
-    "review_notes": "Dev ff25a7d71: typed operational control, original-principal integration_operator gate; human authority required for apply. TrainControls checks exact source/target, reason, acceptance, live writers, holds and repair budget; repeated apply is idempotent. Producer maps domain/authority failures through _failure and emits explicit success for completed preview/apply. Generated invocation remains disabled."
+    "review_notes": "Dev ff25a7d71: typed operational control, original-principal integration_operator gate. Candidate dd03f9ffb updates only this handler's docstring to describe owning-supervisor/local-operator apply authority; operator workers still require an exact human decision. TrainControls checks exact source/target, reason, acceptance, live writers, holds and repair budget; repeated apply is idempotent. Producer return branches and argument handling are unchanged: domain/authority failures use _failure and completed preview/apply emits explicit success. Generated invocation remains disabled."
   },
   "integration_reopen_collection": {
     "mode": "typed",
@@ -9242,6 +9285,44 @@
       "tests/test_cli_integration.py"
     ],
     "review_notes": "Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. "
+  },
+  "integration_revoke_publication": {
+    "mode": "typed",
+    "producer": "src/commands/integration_commands.py:IntegrationCommandsMixin._cmd_integration_revoke_publication",
+    "source_digest": "sha256:ac7718397c7c0c5259d129e7994c794600f41a911070d84aab70ee6faab3bf5f",
+    "input_schema_source": "typed_contract",
+    "schema_quality": "typed",
+    "argument_reads_diagnostic_only": [],
+    "effect": "destructive",
+    "retry_safe": true,
+    "principal_requirement": "original_principal",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "denial_reason": null,
+    "result_policy": "retained typed adapter",
+    "return_branches": [
+      {
+        "return": "self._publication_delegation_result('revoked', row)",
+        "protocol": "explicit_boolean: True"
+      },
+      {
+        "return": "_failure('refused', str(exc))",
+        "protocol": "delegated_producer"
+      }
+    ],
+    "helper_producers": {
+      "_publication_delegation_result": "sha256:e0768f47847aec450d165b1893eb6b9dfaece9f86f70f09477b5560a85b39a21"
+    },
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_publication_delegation_catalogue_only_adds_reviewed_commands_and_grant",
+      "tests/test_worker_git_scope.py::test_delegated_publication_rechecks_every_binding_before_network",
+      "tests/test_worker_git_scope.py::test_delegation_revocation_serializes_with_inflight_publication",
+      "tests/test_cli_integration.py::test_revoke_publication_uses_native_control"
+    ],
+    "review_notes": "Delegated integration publication (source base f9a7591766d69481b309e8733be795e62ab0e59e): operator integration controls; refusals carry the delegation service's reason, success returns the typed audit view. An exact retry returns the existing audit without reviving authority."
   },
   "integration_seal_now": {
     "mode": "typed",
@@ -22000,7 +22081,7 @@
   "task_recover": {
     "mode": "json_object",
     "producer": "src/commands/task_commands.py:TaskCommandsMixin._cmd_task_recover",
-    "source_digest": "sha256:bfbb6be741df05c76ae9f2bf3e690c9f43419f9919b78a7311343e0b7bb17b19",
+    "source_digest": "sha256:7e3b79eb18e3676887b507b6b50cffe4070441d2a69a5979ba16687526fb55f9",
     "input_schema_source": "explicit_tool",
     "schema_quality": "declared",
     "argument_reads_diagnostic_only": [
@@ -22072,20 +22153,26 @@
       {
         "return": "{'success': False, 'error': 'Incident is stale or not found'}",
         "protocol": "explicit_boolean: False"
+      },
+      {
+        "return": "{'success': False, 'error_code': 'task_recovery.refused', 'error': str(exc)}",
+        "protocol": "explicit_boolean: False"
       }
     ],
     "tests": [
       "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
       "tests/test_generated_command_contracts.py::test_generic_result_protocol",
       "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
-      "tests/test_integration_owner_recovery.py"
+      "tests/test_integration_owner_recovery.py",
+      "tests/test_supervisor_recovery.py::test_operator_close_resolves_open_recovery_incident",
+      "tests/test_supervisor_recovery.py::test_recover_racing_completion_refuses_cleanly"
     ],
     "helper_producers": {
       "_confirm_recovery_worker_stopped": "sha256:782b33c9f86faaa3e7d7bc88e33d0c5e0d5f9d110610d849a3069149e6f448af",
       "_task_control_scope_error": "sha256:1a958b28c3c21a13a924724bd84dbb483c7f9902e5870f9560a6e412c5356e9b",
       "_task_findings_scope_error": "sha256:f5380416ec0bf188bc7b4d7ec48bd2abc812325fc775319abf2e5f55dc962fb6"
     },
-    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. "
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. Completion racing a direct recovery decision returns task_recovery.refused with success false; ask decisions still raise for their operation reconciler. "
   },
   "task_recovery_notify": {
     "mode": "typed",
@@ -22422,7 +22509,7 @@
   "task_set": {
     "mode": "json_object",
     "producer": "src/commands/surface_commands.py:SurfaceCommandsMixin._cmd_task_set",
-    "source_digest": "sha256:163ecbae8376439e33bb7abfeb94581a6076816b9a292546c01db614ca299614",
+    "source_digest": "sha256:9be5a846aa8385733d0fb2656b08bdcf7c5880e11b00287113562cdab3e5bf85",
     "input_schema_source": "explicit_tool",
     "schema_quality": "declared",
     "argument_reads_diagnostic_only": [
@@ -22435,6 +22522,7 @@
       "meta",
       "note",
       "pr_url",
+      "repair_batch",
       "task_id",
       "work_dir"
     ],
@@ -22461,6 +22549,10 @@
       },
       {
         "return": "{'success': False, 'error': 'retained_workspace_stop is reserved; use stop_task.'}",
+        "protocol": "explicit_boolean: False"
+      },
+      {
+        "return": "{'success': False, 'error': 'integration_batch_repair is reserved; use --repair-batch.'}",
         "protocol": "explicit_boolean: False"
       },
       {
@@ -22504,8 +22596,16 @@
         "protocol": "explicit_boolean: False"
       },
       {
+        "return": "{'success': False, 'error': 'batch repair assignment requires Git-first active mode'}",
+        "protocol": "explicit_boolean: False"
+      },
+      {
         "return": "error",
         "protocol": "delegated_producer"
+      },
+      {
+        "return": "{'success': False, 'error': str(exc)}",
+        "protocol": "explicit_boolean: False"
       },
       {
         "return": "self._task_findings_conflict(error)",
@@ -22520,7 +22620,11 @@
       "tests/test_claim_commands.py",
       "tests/test_integration_train_sources.py",
       "tests/test_surface_commands.py",
-      "tests/test_work_graph_commands.py"
+      "tests/test_work_graph_commands.py",
+      "tests/test_worker_git_scope.py::test_assigned_batch_fixer_publishes_candidate_without_renaming_task",
+      "tests/test_worker_git_scope.py::test_batch_assignment_cannot_be_self_granted_or_spoofed",
+      "tests/test_worker_git_scope.py::test_batch_assignment_rejects_foreign_repository_and_reassignment_revokes_old_ref",
+      "tests/test_cli_task_comments.py::test_task_set_forwards_explicit_batch_repair_assignment"
     ],
     "helper_producers": {
       "_assert_session_owns": "sha256:71e593f004f04a082031f118625f21eceebed926b1718d3c8e89d6fdc0825ec3",
@@ -22533,7 +22637,7 @@
       "_task_findings_write_fence": "sha256:ddaf185b219090db1d81f785713a571f944b87c778789603de6d4a5b5b9f973f",
       "_task_provider_view": "sha256:bc0669889619cdd9fb0b87f490059d9d607d472e0b96ce5805fb12db1307db26"
     },
-    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled.  Dev reconciliation (4e9a17b8c0adae80acc6cf1195b339b974b69270): reviewed delegated _cmd_get_task dependency batching as recorded on get_task. This wrapper and its producer exits are unchanged; existing held_session authority remains required. Only the reviewed helper digest is refreshed."
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled.  Dev reconciliation (4e9a17b8c0adae80acc6cf1195b339b974b69270): reviewed delegated _cmd_get_task dependency batching as recorded on get_task. This wrapper and its producer exits are unchanged; existing held_session authority remains required. Only the reviewed helper digest is refreshed. Batch repair assignment (67575c6b9a43f820d824ff2bdb7d6be41ec21db3): reviewed the reserved integration_batch_repair metadata refusal, Git-first active-mode refusal, and delegated BatchRepairAssignments.assign GitError refusal. Each returns success=false; successful assignment retains the task_show envelope and fields_changed. BatchRepairAssignments.assign checks integration_operator authority and open-batch project/repository bindings; generated invocation remains disabled and existing held_session resource authority is unchanged."
   },
   "task_show": {
     "mode": "json_object",

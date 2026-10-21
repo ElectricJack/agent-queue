@@ -569,7 +569,7 @@ Maps to `PlaybooksConfig`. The YAML key is `playbooks`.
 |---|---|---|---|
 | `enabled` | `bool` | `False` | Whether the playbook/workflow subsystem is active. |
 | `private_value_active_key_id` | `str` | `""` | Active encryption key identifier. Missing key material refuses protected bindings before invocation. |
-| `private_value_key_env` | `dict[str, str]` | `{}` | Key identifier → daemon environment variable name containing a base64-encoded 32-byte key. Retain old keys for existing runs. No keys are generated automatically; key bytes must remain outside the database, vault and script mounts. |
+| `private_value_key_env` | `dict[str, str]` | `{}` | Key identifier → daemon environment variable name containing a base64-encoded 32-byte key. Retain old keys for existing runs. The installer bootstraps unconfigured storage; the runtime never generates keys. Key bytes remain outside the database, vault and script mounts. |
 | `v2_api` | `bool` | `False` | Playbook V2 semantic-graph **read** surface: `playbook_v2_graph`, `playbook_activation_health`, `playbook_artifacts`, `playbook_artifact_diff`, `playbook_pending_events`, `playbook_run_overlay`. Off returns `playbook v2 api is disabled (playbooks.v2_api=false)`. |
 | `v2_activation_writes` | `bool` | `False` | Playbook V2 operator **writes**: `playbook_activate` and `playbook_pending_event_action`. Gated separately from `v2_api` so the whole review surface stays readable with writes disabled. Off returns `playbook v2 activation writes are disabled (playbooks.v2_activation_writes=false)`. |
 | `v2_compiler_enabled` | `bool` | `False` | Review-only Package 2 compiler commands. Compilation, validation and shadow reports never persist or activate an artifact. |
@@ -585,6 +585,23 @@ retains the previous variable mappings until their encrypted data expires or is
 retired. Missing read keys leave suspended runs intact and return
 `private_storage_key_unavailable`; restoring the key permits authorized resume.
 Do not pass these environment variables to agents or scripts.
+
+When playbooks are enabled with neither an active key identifier nor a key
+mapping, `aq install` provisions a random 32-byte key in the protected `.env`
+file (mode 0600), with a fresh identifier and variable name recorded in config.
+It preserves other environment entries and playbook settings. Reruns retain
+configured identifiers, mappings and key material; dry runs generate nothing.
+The runtime and doctor never generate keys. If a configured key is lost,
+restore its original material rather than replacing it under the same identifier.
+
+`aq install` fails its `config.check` step if a configured
+active key is absent, malformed base64, or decodes to anything other than 32
+bytes. `aq doctor --check playbooks.private_value_key` reports the same problem
+as an error, with provisioning instructions.
+The daemon's `playbook_private_value_key` health check inspects the key loaded
+by the live private-value service, so `/health` and `/ready` return 503 while
+protected routing cannot run. Restart after provisioning or restoring key
+material; changing the environment alone does not replace the live key ring.
 
 The run snapshot stores opaque references for unprojected or sensitive command
 results, derived loop/wait state and LLM transcripts. Audited public result
