@@ -18,6 +18,39 @@ from src.integration.models import BranchKey
 from src.integration.ownership import BranchBusy, BranchOwnership
 
 
+async def reserve_ordinary_repair_branch(db, task, repair, original, train) -> dict:
+    """Restore the current batch allocation, never a producer origin or a new repair."""
+    from src.integration.batches import BatchStore
+    from src.integration.repair import ordinary_repair_id
+
+    store = BatchStore(db)
+    batch = await store.get(original["batch_id"])
+    if (batch is None or not batch.repair_attempt_count
+            or task.status.value not in {"READY", "BLOCKED"}
+            or task.assigned_agent_id or task.project_id != batch.project_id
+            or task.repo_id != batch.repository_id or task.created_by_id != batch.id
+            or task.id != ordinary_repair_id(batch.id, batch.repair_attempt_count)
+            or original["attempt"] != batch.repair_attempt_count
+            or original["repository_id"] != batch.repository_id
+            or task.branch_name != original["target_ref"].removeprefix("refs/heads/")):
+        return {"outcome": "not_eligible", "reason": "task is not the detached current batch repair"}
+    if train is None:
+        return {"outcome": "not_eligible", "reason": "the integration train is not active"}
+    target = next((target for target in await train.targets.targets(train.clock())
+                   if target.key == (batch.project_id, batch.repository_id, batch.target_ref)), None)
+    if target is None:
+        return {"outcome": "not_eligible", "reason": "batch target is not admitted by the train"}
+    lane = await train.lane_for(target)
+    result = await repair.recover_published_reservation(
+        batch, await store.members(batch.id), await lane.snapshot(), lane.service,
+    )
+    if (result.get("outcome") == "exists" and result.get("task_id") == task.id
+            and not result.get("lease_expired") and not result.get("target_changed")):
+        return {**result, "outcome": "acquired"}
+    return {"outcome": "not_eligible", "reason": "batch repair reservation was not restored",
+            "recovery": result}
+
+
 async def reserve_canonical_task_branch(db, task_id: str) -> dict:
     """Reserve only a detached READY/BLOCKED producer's persisted branch.
 

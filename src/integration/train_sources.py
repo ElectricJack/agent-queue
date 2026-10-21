@@ -819,6 +819,14 @@ class DatabaseBatches:
                     "incident_ids": [item["id"] for item in incidents],
                 },))
         frozen_members = await service.store.members(current.id) if current is not None else ()
+        if current is not None and current.repair_attempt_count:
+            from src.integration.repair import OrdinaryRepairService
+
+            # Selection and rebuilding may refuse before _visit_batch reaches
+            # recovery. A stopped repair must retain a path back to the frontier.
+            await OrdinaryRepairService(self.db).recover_published_reservation(
+                current, frozen_members, snapshot, service,
+            )
         if (target.kind == "epic" and current is not None and frozen_members
                 and current.intent == "open" and not (current.epic_sync or current.epic_refresh)
                 and await _finish_on_cancel(self._settle_project_delivered(

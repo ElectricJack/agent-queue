@@ -9863,7 +9863,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:80ae10f07dc32be5d22fbf4bdd0a39849d73f136c5d7a208f2b2da0093454ad2",
+      "digest": "sha256:3f8e9a8e62ee874e45c2d771e4d0e772e6f6284a51749e9d8ecd24193304e4d1",
       "imports": [
         "src.commands",
         "src.commands.integration_commands",
@@ -9876,6 +9876,7 @@
         "src.database.tables",
         "src.doctor.integration_checks",
         "src.doctor.models",
+        "src.doctor.stall_checks",
         "src.git.github_contracts",
         "src.git.manager",
         "src.integration",

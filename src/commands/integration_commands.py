@@ -1920,7 +1920,10 @@ class IntegrationCommandsMixin:
         from pydantic import ValidationError
 
         from src.commands.contracts.integration import IntegrationReserveOwnerArgs
-        from src.integration.canonical_reservation import reserve_canonical_task_branch
+        from src.integration.canonical_reservation import (
+            reserve_canonical_task_branch, reserve_ordinary_repair_branch,
+        )
+        from src.integration.repair import OrdinaryRepairService
 
         try:
             request = IntegrationReserveOwnerArgs.model_validate(args)
@@ -1932,7 +1935,14 @@ class IntegrationCommandsMixin:
         _principal, refusal = await integration_operator(self.db, task.project_id)
         if refusal is not None:
             return _failure("unauthorized", refusal)
-        if task.created_by_kind == "integration_repair":
+        repair = OrdinaryRepairService(self.db)
+        original = await repair.input(task.id)
+        if original is not None:
+            result = await reserve_ordinary_repair_branch(
+                self.db, task, repair, original,
+                getattr(getattr(self, "orchestrator", None), "integration_train", None),
+            )
+        elif await self.db.get_active_integration_repair_for_task(task.id) is not None:
             result = await self._integration_repair_service().reserve_delegate(task.id)
         else:
             result = await reserve_canonical_task_branch(self.db, task.id)

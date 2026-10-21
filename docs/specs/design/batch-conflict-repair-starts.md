@@ -16,6 +16,17 @@ the members already merged into it and every remaining member in frozen order.
 The observation retains the replaced candidate SHA when a rebuild displaces it.
 The target branch stays unchanged until a complete candidate passes its gates.
 
+A frozen batch with an existing repair revisits its published candidate before
+fresh source admission and rebuilding. Restore only the current detached
+allocation's lease, using the allocator's locks and fresh published-ref proof;
+preserve its input and attempt count. Holds, attached workers, moved refs and
+unavailable Git evidence do not authorize a new fence. Open sealed batches keep
+their target discoverable even when no completed source remains pending.
+`aq integration reserve-owner` resolves repairs through their current batch input
+or active stage, rather than their creator kind. It uses the same recovery proof
+and never allocates a successor. The stall sweep names aged READY repairs whose
+missing branch reservation excludes them from the claim frontier.
+
 Before allocating a conflict repair after a completed repair, inspect its immutable Git
 completion source. If it equals the repair's starting head and does not contain
 the current fetched target, report `repair_no_progress_missing_target` with the

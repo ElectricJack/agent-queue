@@ -121,6 +121,7 @@ class OrdinaryRepairService:
         completion_blocker: Callable[[str, str], Awaitable[dict | None]] | None = None,
         sync_default_branch: dict[str, Any] | None = None,
         existing_only: bool = False,
+        expected_attempt: int | None = None,
     ) -> dict:
         from src.integration.batches import candidate_ref
 
@@ -138,12 +139,16 @@ class OrdinaryRepairService:
             if target_ref not in {candidate_ref(batch_id), batch["target_ref"]}:
                 raise ValueError("repair target is not this batch's candidate or epic ref")
             attempt = batch["repair_attempt_count"]
+            if expected_attempt is not None and attempt != expected_attempt:
+                return {"outcome": "stale", "batch_id": batch_id}
             sync_key = f"repair:{batch_id}:sync-default-branch"
 
             def answer(outcome, **detail):
                 return {"success": True, "outcome": outcome, "batch_id": batch_id,
                         "attempt_count": attempt, **detail}
 
+            if existing_only and batch["lifecycle"] == "promoted":
+                return answer("none")
             if batch["intent"] != "open":
                 return answer(batch["intent"])
             if held or review_rejected:
@@ -169,6 +174,7 @@ class OrdinaryRepairService:
                     current = (await conn.execute(select(
                         table.c.id, table.c.status, table.c.dedup_key,
                         table.c.retry_count, table.c.max_retries,
+                        table.c.assigned_agent_id,
                     ).where(
                         table.c.id == current_id,
                     ).with_for_update())).mappings().one_or_none()
@@ -210,7 +216,10 @@ class OrdinaryRepairService:
                             sessions.c.task_id == current_id,
                             or_(sessions.c.state != "stopped", sessions.c.claim_phase.is_not(None)),
                         ).limit(1))
-                        if claimed is not None:
+                        workspace = await conn.scalar(select(workspaces.c.id).where(
+                            workspaces.c.locked_by_task_id == current_id,
+                        ).limit(1))
+                        if claimed is not None or workspace is not None or current["assigned_agent_id"]:
                             return answer("exists", task_id=current_id, lease_expired=True)
                         # The previous prepare/recovery may have released the
                         # lease. Restore this exact filing, never a new attempt.
@@ -383,6 +392,7 @@ class OrdinaryRepairService:
     async def recover_reservation(
         self, batch_id: str, *, target_ref: str, head_sha: str,
         authorize: Callable[[], Awaitable[bool]], held: bool = False,
+        expected_attempt: int | None = None,
     ) -> dict:
         """Restore a detached repair's lease even while candidate checks are pending.
 
@@ -392,6 +402,7 @@ class OrdinaryRepairService:
         return await self.allocate(
             batch_id, target_ref=target_ref, head_sha=head_sha,
             authorize=authorize, held=held, existing_only=True,
+            expected_attempt=expected_attempt,
         )
 
     async def input(self, task_id: str) -> dict | None:
@@ -407,6 +418,37 @@ class OrdinaryRepairService:
         if ordinary_repair_id(value["batch_id"], value["attempt"]) != task_id:
             raise ValueError("ordinary repair input does not match filing identity")
         return value
+
+    async def recover_published_reservation(self, batch, members, snapshot, service) -> dict:
+        """Revisit the current filing before source admission or candidate rebuilding.
+
+        A frozen batch can outlive its worker, origin and source admission. Its
+        published candidate and current allocation still identify the repair;
+        recovery rechecks holds and publication under the allocator's locks.
+        """
+        from src.integration.batches import candidate_ref
+
+        if not batch.repair_attempt_count or snapshot.error or not snapshot.target_oid:
+            return {"outcome": "none"}
+        head = snapshot.observation.source_heads.get(
+            "refs/remotes/origin/" + candidate_ref(batch.id).removeprefix("refs/heads/")
+        )
+        if not head:
+            return {"outcome": "unconfirmed"}
+
+        async def authorize():
+            if not await service.repair_authorized(batch, members, head):
+                return False
+            if batch.epic_refresh:
+                repo = await service.gitops.repository(batch)
+                return await service.gitops.remote(repo, batch.target_ref) == snapshot.target_oid
+            return True
+
+        return await self.recover_reservation(
+            batch.id, target_ref=batch.target_ref if batch.epic_refresh else candidate_ref(batch.id),
+            head_sha=head, authorize=authorize, held=batch.intent != "open",
+            expected_attempt=batch.repair_attempt_count,
+        )
 
     async def resume_completed(
         self, task_id: str, *, batch_id: str | None = None, attempt: int | None = None,
