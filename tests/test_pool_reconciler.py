@@ -172,7 +172,10 @@ async def git_first_frontier(orch, db, tmp_path):
             ))
     await db.add_dependency("second", "first")
     await db.update_project(PROJECT_ID, hierarchical_integration_mode="train",
-                            integration_repository_id="repo", repo_url=origin.url)
+                            integration_repository_id="repo", repo_url=origin.url,
+                            hierarchical_integration_policy={
+                                "prerequisite_branches": "wait-for-parent",
+                            })
     await db.save_task_completion(TaskCompletion(
         id="close-first", task_id="first", outcome="pass", commits=[source], completed_at=time.time(),
     ))

@@ -317,6 +317,13 @@ def test_ingest_storage_keeps_outbox_adapter_charged(report, manifest):
     assert "integration_outbox" in report["tables"]
 
 
+def test_operator_decision_storage_keeps_stack_authorization_charged(report, manifest):
+    assert "src/database/tables.py::operator_decisions" in manifest["generic_dependencies"]
+    assert "operator_decisions" not in report["tables"]
+    path = "src/integration/stacked_branches.py"
+    assert report["spans"][path] == list(range(1, (ROOT / path).read_bytes().count(b"\n") + 1))
+
+
 def test_transition_budget_cannot_reset_to_current_counts(manifest):
     copy = deepcopy(manifest)
     copy["phase"] = "transition"

@@ -1126,6 +1126,12 @@ async def test_every_provider_down_holds_the_task_and_launches_nothing(orch, tmp
             provider, DISABLED, by="human:test", reason="all down", until=None
         )
 
+    # Outage notices can wake the supervisor through message delivery before
+    # a scheduler tick. That named-session path must share launch suppression.
+    assert not await orch.session_lens.ensure_started(
+        kind="session", target_id="supervisor-p-1", project_id="p-1",
+    )
+
     await _die_on_usage_limit(orch, session)
     task = await orch.db.get_task("t0")
     assert task.status == TaskStatus.READY and task.retry_count == 0

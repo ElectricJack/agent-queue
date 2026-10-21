@@ -190,6 +190,7 @@ class SessionLens:
         epoch: str = "",
         token_store=None,
         bus=None,
+        availability=None,
     ):
         self._db = db
         self._providers = providers
@@ -209,6 +210,7 @@ class SessionLens:
         #: omit; the harness falls back to no bearer (LOCAL_SCOPE).
         self._token_store = token_store
         self._bus = bus
+        self._availability = availability
         self._start_locks: dict[str, asyncio.Lock] = {}
         self._activity_cursors: dict[str, _ActivityCursor] = {}
         #: Latest refused nudge per session id, cleared by the next success.
@@ -405,6 +407,13 @@ class SessionLens:
         if harness is None:
             logger.warning("harness %r not registered; cannot start supervisor", harness_name)
             return False
+        if self._availability is not None:
+            provider_key = self._availability.provider_for_profile(
+                profile, agent=agent, project_id=harness_project,
+            )
+            if self._availability.suppresses(provider_key):
+                logger.info("Provider %s is unavailable; refusing supervisor start", provider_key)
+                return False
 
         # Match the reconciler exactly: use the operator's configured
         # provider. Tests must register the fake under that same name (or

@@ -42,15 +42,19 @@ EPIC_COMMANDS = ("integration_cutover_containment", "integration_reconcile_git_t
 WATCH_CHANGES = ROOT / "tests/fixtures/contracts/watch-contract-changes.json"
 INGEST_CHANGES = ROOT / "tests/fixtures/contracts/ingestion-replay-contract-changes.json"
 HIBERNATION_CHANGES = ROOT / "tests/fixtures/contracts/hibernation-contract-changes.json"
+DISPATCH_CHANGES = ROOT / "tests/fixtures/contracts/dispatch-wait-contract-changes.json"
 
 
 def _hibernation_changes():
     return json.loads(HIBERNATION_CHANGES.read_text())
 
 
-def _before_hibernation_catalogue():
-    catalogue = json.loads(render_command_catalogue())
-    for section, evidence in _hibernation_changes()["catalogue_sections"].items():
+def _dispatch_changes():
+    return json.loads(DISPATCH_CHANGES.read_text())
+
+
+def _revert_catalogue(catalogue, changes):
+    for section, evidence in changes["catalogue_sections"].items():
         current = catalogue[section]
         entries = {row["name"]: row for row in current} if evidence["list"] else current
         for name, change in evidence["entries"].items():
@@ -63,6 +67,14 @@ def _before_hibernation_catalogue():
         assert previous.keys() == entries.keys()
         catalogue[section] = list(previous.values()) if evidence["list"] else previous
     return catalogue
+
+
+def _before_dispatch_catalogue():
+    return _revert_catalogue(json.loads(render_command_catalogue()), _dispatch_changes())
+
+
+def _before_hibernation_catalogue():
+    return _revert_catalogue(_before_dispatch_catalogue(), _hibernation_changes())
 
 
 @pytest.fixture(autouse=True)
@@ -182,11 +194,12 @@ def test_legacy_execution_documents_and_fingerprints():
         if name in changes:
             assert expected["previous_fingerprint"] == old["fingerprint"]
             assert expected["fingerprint"] != old["fingerprint"]
-        later = _hibernation_changes()["contracts"].get(name)
-        if later:
-            assert later["previous_fingerprint"] == expected["fingerprint"]
-            assert later["fingerprint"] != expected["fingerprint"]
-            expected = later
+        for recording in (_hibernation_changes(), _dispatch_changes()):
+            later = recording["contracts"].get(name)
+            if later:
+                assert later["previous_fingerprint"] == expected["fingerprint"]
+                assert later["fingerprint"] != expected["fingerprint"]
+                expected = later
         contract = CONTRACTS.require(name).contract
         assert canonical_execution_document(contract.execution) == expected["execution"], name
         assert contract.fingerprint() == expected["fingerprint"], name
@@ -222,10 +235,11 @@ def test_transport_views_and_cli_serialization_preserve_golden_evidence():
             approved = dev["transport_definitions"][name]
             assert approved["previous_sha256"] == digest
             digest = approved["sha256"]
-        if name in _hibernation_changes()["transport_definitions"]:
-            approved = _hibernation_changes()["transport_definitions"][name]
-            assert approved["previous_sha256"] == digest
-            digest = approved["sha256"]
+        for recording in (_hibernation_changes(), _dispatch_changes()):
+            if name in recording["transport_definitions"]:
+                approved = recording["transport_definitions"][name]
+                assert approved["previous_sha256"] == digest
+                digest = approved["sha256"]
         assert _digest(snapshot.commands[name].tool_definition()) == digest, name
     actual = hashlib.sha256(render_command_catalogue().encode()).hexdigest()
     assert changes["previous_cli_catalogue_sha256"] == fixture["cli_catalogue_sha256"]
@@ -238,7 +252,11 @@ def test_transport_views_and_cli_serialization_preserve_golden_evidence():
     assert epic["previous_cli_catalogue_sha256"] == withheld["cli_catalogue_sha256"]
     hibernation = _hibernation_changes()
     assert hibernation["previous_cli_catalogue_sha256"] == epic["cli_catalogue_sha256"]
-    assert actual == hibernation["cli_catalogue_sha256"]
+    dispatch = _dispatch_changes()
+    assert dispatch["previous_cli_catalogue_sha256"] == hibernation["cli_catalogue_sha256"]
+    assert actual == dispatch["cli_catalogue_sha256"]
+    previous = json.dumps(_before_dispatch_catalogue(), indent=2) + "\n"
+    assert hashlib.sha256(previous.encode()).hexdigest() == hibernation["cli_catalogue_sha256"]
     previous = json.dumps(_before_hibernation_catalogue(), indent=2) + "\n"
     assert hashlib.sha256(previous.encode()).hexdigest() == epic["cli_catalogue_sha256"]
     definitions = {d["name"]: d for d in effective_tool_definitions()}
