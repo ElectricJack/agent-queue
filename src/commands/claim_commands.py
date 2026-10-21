@@ -707,13 +707,15 @@ class ClaimCommandsMixin:
         withheld_source_repairs: dict = {}
         from src.integration.admission import observe_admission, structural_candidates
 
-        if getattr(project, "_source_admission_required", True):
+        if (getattr(project, "_source_admission_required", True)
+                or hierarchy_mode and hierarchy_mode.hierarchical):
             ids = [want_id] if want_id else await structural_candidates(self.db, project.id)
             admission = await observe_admission(
                 self.db,
                 ids,
                 self._development_integration(),
                 default_mode=self.config.integration.default_mode,
+                router_ready_projects={project.id} if router_ready else set(),
             )
         if getattr(project, "hierarchical_integration_mode", None) in {"hierarchy", "train"}:
             # A queued source-CI repair whose source generation is already on
@@ -743,16 +745,14 @@ class ClaimCommandsMixin:
         from src.integration.delivery_observer import prerequisite_observer
 
         observer = prerequisite_observer(self.db)
-        if hierarchy_mode and hierarchy_mode.hierarchical and observer is not None:
-            with claim_phase("delivery_admission"):
-                prerequisite_view = await observer.prerequisite_view(project.id, task_id=want_id)
-            if not await prerequisite_view.fresh():
-                return self._simple(ClaimResult.NO_READY_WORK, "delivery_snapshot_changed", None, cap)
-            hierarchy_mode = await prerequisite_view.mode(hierarchy_mode)
+        if admission is not None:
+            hierarchy_mode = admission.hierarchy_modes.get(project.id, hierarchy_mode)
+            prerequisite_view, stack_view = admission.hierarchy_evidence(project.id)
         if hierarchy_mode and hierarchy_mode.hierarchical and hierarchy_mode.stacked and observer:
             from src.integration.stacked_branches import observe_stacks
 
-            stack_view = await observe_stacks(observer, project.id, task_id=want_id)
+            if stack_view is None:
+                stack_view = await observe_stacks(observer, project.id, task_id=want_id)
             stack_state = await stack_view.currentness()
             if not stack_state.current:
                 logger.info(
@@ -1778,16 +1778,16 @@ class ClaimCommandsMixin:
                 # named on the task row, or neither happens.  Discarding it
                 # here is what left development-mode pool tasks with a NULL
                 # ``branch_name`` and an unclosable completion pipeline.
-                stage = "admission_recheck"
-                if admission is not None and (
-                    task.id not in admission.allowed or not await admission.is_fresh(task.id)
-                ):
-                    return None
                 if hierarchy_enabled:
                     from src.integration.stacked_branches import verify_preparation
 
                     stage = "verify_preparation"
                     await verify_preparation(origin, conn=conn)
+                stage = "admission_recheck"
+                if admission is not None and (
+                    task.id not in admission.allowed or not await admission.is_fresh(task.id)
+                ):
+                    return None
                 if (
                     admission is not None
                     and admission.pr is not None

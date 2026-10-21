@@ -673,7 +673,7 @@ FRONTIER_PREDICATE_DETAILS = {
         "delivered_same_parent_prerequisites_when_hierarchical(): requires the preserved "
         "parent origin and each completed blocks sibling delivered to the shared parent or "
         "proven on its own task branch under the project stacked policy; "
-        "Git-first uses current Git proof, shadow uses matching code receipts after rework"
+        "only current Git proof can satisfy delivery; an absent observer is unknown"
     ),
     "container_settles_without_worker": "container_flag_exists() must be false",
     "has_children": "the task must have no children (a parent is a container)",
@@ -714,13 +714,14 @@ class ClaimQueryMixin:
     async def claim_frontier_exclusions_many(
         self, task_ids, *, router_ready=None, cached_only=False,
         hierarchy_modes=None, project_ids=None, single_task_id=None, router_ready_projects=None,
+        display_unavailable=None,
     ) -> dict[str, list[dict]]:
         """Batch the same predicate evaluation used by explain; never fetch Git for display."""
         if not task_ids:
             return {}
-        from src.integration.delivery_observer import hierarchy_frontier_modes
+        from src.integration.delivery_observer import hierarchy_frontier_modes, prerequisite_observer
 
-        unavailable = {}
+        unavailable = display_unavailable if display_unavailable is not None else {}
         modes = hierarchy_modes if hierarchy_modes is not None else await hierarchy_frontier_modes(
             self, project_ids=project_ids, task_id=single_task_id, cached_only=cached_only,
             **({"display_unavailable": unavailable} if cached_only else {}),
@@ -794,16 +795,23 @@ class ClaimQueryMixin:
         result = {}
         for row in rows:
             task_id = row["id"]
+            mode = modes.get(row["project_id"])
+            unknown_delivery = (prerequisite_observer(self) is None
+                                or bool(mode and mode.observation_unavailable))
             exclusions = [
                 {
                     "code": ("delivery_evidence_unavailable"
-                             if name in display_predicates and row["display_" + name]
-                             else f"frontier_{name}"),
+                             if (name in display_predicates and row["display_" + name])
+                             or (unknown_delivery and name in {
+                                 "sibling_prerequisite_not_delivered", "prerequisite_not_on_default_branch",
+                             }) else f"frontier_{name}"),
                     "detail": (
                         "Delivery evidence has not loaded yet; claim frontier eligibility "
                         f"for {name} is unknown (snapshot_unavailable)"
-                        if name in display_predicates and row["display_" + name]
-                        else "Pool claim frontier excludes this READY task: "
+                        if (name in display_predicates and row["display_" + name])
+                        or (unknown_delivery and name in {
+                            "sibling_prerequisite_not_delivered", "prerequisite_not_on_default_branch",
+                        }) else "Pool claim frontier excludes this READY task: "
                         + FRONTIER_PREDICATE_DETAILS[name].format(batch_id=row["held_batch_id"])
                     ),
                     "ref": task_id,
@@ -822,12 +830,13 @@ class ClaimQueryMixin:
                 sources = cross_sources.get(task_id, [])
                 missing = set().union(*(entry["default"] for entry in unavailable.values()))
                 exclusions.extend({
-                    "code": ("delivery_evidence_unavailable" if tid in missing
+                    "code": ("delivery_evidence_unavailable" if unknown_delivery or tid in missing
                              else "prerequisite_not_on_default_branch"),
                     "ref": tid, "epic_id": parent,
                     "detail": (f"Prerequisite {tid}: delivery evidence has not loaded yet; "
                                "default-branch delivery is unknown (snapshot_unavailable)"
-                               if tid in missing else f"Prerequisite {tid} (epic {parent or tid}) "
+                               if unknown_delivery or tid in missing
+                               else f"Prerequisite {tid} (epic {parent or tid}) "
                                "is not proven on the default branch"),
                     }
                     for tid, parent in sources if mode is None or tid not in mode.default_prerequisite_ids)

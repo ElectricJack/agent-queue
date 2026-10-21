@@ -5877,12 +5877,6 @@ class TaskCommandsMixin:
         # route filter depends on the project's router readiness (§9.1).
         from src.routing.readiness import orchestrator_router_ready
 
-        reasons.extend(await self.db.claim_frontier_exclusions(
-            str(task_id),
-            router_ready=await orchestrator_router_ready(self.orchestrator, task.project_id),
-            cached_only=True,
-        ))
-
         from src.integration.admission import observe_admission
 
         admission = await observe_admission(
@@ -5891,6 +5885,8 @@ class TaskCommandsMixin:
             self._development_integration(),
             cached_only=True,
             default_mode=self.config.integration.default_mode,
+            router_ready_projects=({task.project_id} if await orchestrator_router_ready(
+                self.orchestrator, task.project_id) else set()),
         )
         from src.integration.delivery_engine import project_delivery_issue
 
@@ -5914,9 +5910,14 @@ class TaskCommandsMixin:
                     ) if prerequisite_project is not None else None
                 )
             issue = delivery_issues.get(prerequisite_project_id)
+            engine_reason = issue and (
+                delivery_reason["code"].startswith(("development_", "pr_"))
+                or (delivery_reason["code"] == "delivery_evidence_unavailable"
+                    and delivery_reason["ref"] != str(task_id))
+            )
             reasons.append(
                 Reason(code="delivery_engine_unavailable", detail=issue["detail"],
-                       ref=delivery_reason["ref"]) if issue else delivery_reason
+                       ref=delivery_reason["ref"]) if engine_reason else dict(delivery_reason)
             )
         issue = delivery_issues.get(task.project_id)
         if issue and not any(reason.get("code") == "delivery_engine_unavailable" for reason in reasons):

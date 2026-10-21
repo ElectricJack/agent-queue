@@ -321,7 +321,14 @@ class DeliveryView:
         groups: dict[DeliveryTarget, set[str]] = {}
         for task_id in ids:
             target = current_targets.get(task_id)
-            if target is not None and target == self.targets.get(task_id):
+            stale = target is not None and any(
+                snapshot.project_id == target.project_id
+                and snapshot.repository_id == target.repository_id
+                and snapshot.target_ref == target.target_ref
+                and not snapshot._freshness.get(snapshot.target_ref, True)
+                for snapshot in self.snapshots
+            )
+            if target is not None and target == self.targets.get(task_id) and not stale:
                 groups.setdefault(target, set()).add(task_id)
         verified: dict[str, DeliveryEvidence] = {}
         for target, group in groups.items():
@@ -354,6 +361,7 @@ class PrerequisiteView:
     #: the dependent's own parent branch (so no epic refresh is needed).
     parent_containment: Mapping[str, Mapping[str, bool]] = field(default_factory=dict)
     parent_snapshots: tuple[DeliverySnapshot, ...] = ()
+    parent_refs: Mapping[str, str] = field(default_factory=dict)
 
     def get(self, task_id):
         return self.siblings.get(task_id)
@@ -398,6 +406,16 @@ class PrerequisiteView:
         default_ids = frozenset(tid for tid, p in default.items()
                                 if p.satisfied and not p.lifecycle_exclusion)
         retired_ids = frozenset(tid for tid, p in default.items() if p.lifecycle_exclusion)
+        stale_parents = {
+            s.target_ref for s in self.parent_snapshots
+            if not s._freshness.get(s.target_ref, True)
+        }
+        current_refs = {}
+        if conn is not None and self.parent_refs:
+            parent = tasks.alias("admission_current_parent")
+            current_refs = dict((await conn.execute(select(tasks.c.id, parent.c.branch_name)
+                .select_from(tasks.join(parent, parent.c.id == tasks.c.parent_task_id))
+                .where(tasks.c.id.in_(self.parent_refs)))).all())
         return replace(mode,
             # These sets release obligation gates; parent containment below still
             # requires actual proof and cannot borrow a retired obligation.
@@ -408,6 +426,10 @@ class PrerequisiteView:
                 dependent for dependent, sources in self.parent_containment.items()
                 if sources and all(contained and tid in default_ids
                                    for tid, contained in sources.items())
+                and self.parent_refs.get(dependent) not in stale_parents
+                and (not self.parent_refs or conn is None or self.parent_refs.get(dependent)
+                     == "refs/heads/" + (current_refs.get(dependent) or "").removeprefix(
+                         "refs/heads/"))
             ))
 
 
@@ -435,13 +457,15 @@ def prerequisite_observer(db):
 
 async def hierarchy_frontier_modes(
     db, *, project_ids=None, task_id=None, cached_only=False, display_unavailable=None,
+    views=None, stack_views=None,
+    max_age=None,
 ):
     """Share revalidated Git prerequisites across scheduler, pool and claim reads.
 
     Advisory reads reuse successful snapshots within READ_MAX_AGE and recheck target
     freshness. Claims take fresh views under task locks. cached_only diagnostics
     never fetch or check remote refs; display_unavailable records cache misses.
-    Shadow observers retain receipt admission; unstable active views withhold work.
+    Missing observers and unstable views withhold only Git-gated work.
     """
     from dataclasses import replace
 
@@ -449,14 +473,12 @@ async def hierarchy_frontier_modes(
 
     observer = prerequisite_observer(db)
     if observer is None:
-        # Standalone databases do not carry integration.git_first configuration.
-        # Warn about the conditional fallback without adding reads to the
-        # observer-free frontier's single-query fast path.
-        logger.warning(
-            "No Git prerequisite observer is registered: hierarchy frontier reads "
-            "fall back to legacy receipts. These answers are invalid when "
-            "integration.git_first is active; use the daemon's registered observer.",
-        )
+        # The correlated SQL predicates also fail closed without an overlay.
+        # Avoid a project scan for ordinary frontiers with no Git observer.
+        if not getattr(db, "_warned_missing_prerequisite_observer", False):
+            logger.warning("No Git prerequisite observer is registered; Git-gated "
+                           "candidates remain unavailable without receipt fallback")
+            db._warned_missing_prerequisite_observer = True
         return {}
     if task_id is not None:
         task = await db.get_task(task_id)
@@ -478,6 +500,8 @@ async def hierarchy_frontier_modes(
             modes[project.id] = await asyncio.wait_for(_project_frontier_mode(
                 db, observer, project, mode, task_id=task_id, cached_only=cached_only,
                 display_unavailable=display_unavailable,
+                views=views, stack_views=stack_views,
+                max_age=max_age,
             ), timeout)
         except TimeoutError:
             # Fail closed for this read: no Git-proven prerequisite admits work,
@@ -487,7 +511,7 @@ async def hierarchy_frontier_modes(
                 project.id, f" task {task_id}" if task_id else "", timeout,
             )
             modes[project.id] = replace(
-                mode, delivered_prerequisite_ids=frozenset(),
+                mode, delivered_prerequisite_ids=frozenset(), observation_unavailable=True,
             )
     return modes
 
@@ -502,14 +526,18 @@ FRONTIER_DISPLAY_TIMEOUT_SECONDS = 10.0
 
 async def _project_frontier_mode(
     db, observer, project, mode, *, task_id, cached_only, display_unavailable=None,
+    views=None, stack_views=None,
+    max_age=None,
 ):
     from dataclasses import replace
 
     view = await observer.prerequisite_view(
-        project.id, task_id=task_id, max_age=observer.READ_MAX_AGE,
+        project.id, task_id=task_id,
+        max_age=observer.READ_MAX_AGE if max_age is None else max_age,
         **({"cached_only": True} if cached_only else {}),
     )
-    verified_mode = replace(mode, delivered_prerequisite_ids=frozenset())
+    if views is not None:
+        views[project.id] = view
     if cached_only:
         if display_unavailable is not None:
             unavailable = {
@@ -519,20 +547,30 @@ async def _project_frontier_mode(
             }
             if any(unavailable.values()):
                 display_unavailable[project.id] = unavailable
-        fresh = all(snapshot._freshness.get(snapshot.target_ref, True)
-                    for snapshot in view.snapshots)
     else:
         fresh = await view.fresh()
-    if fresh:
-        async with db._engine.connect() as conn:
-            verified_mode = await view.mode(mode, conn=conn)
+        if not fresh and not any(
+            snapshot._freshness.get(snapshot.target_ref) is False
+            for delivery in (view.siblings, view.default)
+            for snapshot in delivery.snapshots
+        ):
+            # An observer may fail before identifying the moving target.
+            # Without a target-specific result none of its Git-gated IDs
+            # are usable, while structurally independent work remains ready.
+            return replace(mode, observation_unavailable=True)
+    # fresh() marks each target independently. verified_on discards only the
+    # identities whose own target moved; a peer's unavailable parent is local.
+    async with db._engine.connect() as conn:
+        verified_mode = await view.mode(mode, conn=conn)
     stackable = frozenset()
     if mode.stacked:
         from src.integration.stacked_branches import observe_stacks
 
         stack_view = await observe_stacks(observer, project.id, task_id=task_id,
-                                           max_age=observer.READ_MAX_AGE,
+                                           max_age=observer.READ_MAX_AGE if max_age is None else max_age,
                                            **({"cached_only": True} if cached_only else {}))
+        if stack_views is not None:
+            stack_views[project.id] = stack_view
         if await stack_view.fresh():
             async with db._engine.connect() as conn:
                 stackable = frozenset(await stack_view.verified_on(conn))
@@ -866,6 +904,8 @@ class DeliveryObserver:
             view = PrerequisiteView(
                 await self.observe(siblings, max_age=max_age, cached_only=cached_only),
                 default, containment, parents,
+                {dep: "refs/heads/" + branch.removeprefix("refs/heads/")
+                 for _tid, _parent, _child_parent, dep, branch in rows if branch},
             )
             if cached_only or await view.parents_fresh():
                 return view
@@ -982,11 +1022,10 @@ class DeliveryObserver:
         return view
 
     async def _admit_delivery_dependents(self, view: DeliveryView) -> None:
-        """Recompute ``delivery-of`` dependents of each task git shows delivered.
+        """Refresh structural completion after observing delivered sources.
 
-        The projection itself reads only the durable landing receipt, so a
-        target seen delivered before its receipt commits stays blocking until
-        a later observation; nothing here unblocks without the receipt.
+        Git eligibility remains request scoped in AdmissionView. Recomputing
+        the projection never persists a delivery verdict or a receipt fallback.
         """
         recompute = getattr(self.db, "recompute_delivery_dependents", None)
         delivered = sorted(task_id for task_id in view.evidence if view.satisfied(task_id))

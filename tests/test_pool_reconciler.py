@@ -45,7 +45,7 @@ async def test_pool_demand_observes_artifact_sources_only(orch, db, monkeypatch,
         status=TaskStatus.COMPLETED, branch_name="aq/source" if artifact else None,
     ))
     await db.add_dependency("candidate", "source")
-    observer = AsyncMock(return_value=MagicMock(allowed=set()))
+    observer = AsyncMock(return_value=MagicMock(allowed=set(), counts=AsyncMock(return_value={})))
     monkeypatch.setattr(orch, "_delivery_admission", observer)
     measurement = await orch._measure_pools()
     assert measurement.demand[PoolKey("worker")] == int(not artifact)
@@ -580,10 +580,14 @@ async def test_git_first_frontier_withholds_invalid_or_shadow_proof(
     assert "second" not in orch._last_scheduler_state.hierarchy_runnable_task_ids
     assert (await orch._measure_pools()).demand[PoolKey("worker")] == 0
     explained = await CommandHandler(orch, orch.config)._cmd_explain_task({"task_id": "second"})
+    # DB-invalidated identities give a negative result. A rewind invalidates
+    # the bounded advisory cache; display does not fetch a replacement proof.
     assert ("frontier_sibling_prerequisite_not_delivered" in explained["reason_codes"]) is (
-        movement not in {"rewind", "unstable"}
+        movement in {"retarget", "generation"}
     )
-    assert ("delivery_evidence_unavailable" in explained["reason_codes"]) is (movement == "rewind")
+    assert ("delivery_evidence_unavailable" in explained["reason_codes"]) is (
+        movement in {"rewind", "shadow"}
+    )
     if movement == "unstable":
         # The mocked freshness failure checks no refs, so it must not poison
         # otherwise valid cached display evidence. Decisions above still withhold.
@@ -2109,3 +2113,42 @@ async def test_native_demand_launches_matching_workspace_and_counts_supply_once(
     assert (native.ready, len(native.idle_session_ids)) == (1, 1)
     assert (ordinary.ready, len(ordinary.idle_session_ids)) == (0, 0)
     assert len(project_pool_candidates(measurement.candidates[key])) == 1
+
+
+async def test_admission_view_projects_identical_ids_counts_and_reasons(
+    orch, db, git_first_frontier,
+):
+    from src.database.tables import task_branch_origins
+    from src.models import Task, TaskStatus
+
+    env = git_first_frontier
+    await _deliver_first_by_train(db, env)
+    await db.create_task(Task(
+        id="independent", project_id=PROJECT_ID, title="Independent", description="",
+        status=TaskStatus.READY, profile_id="worker", route_source="override",
+        repo_id="repo", branch_name="aq/independent",
+    ))
+    async with db.immediate() as conn:
+        await db.set_parent("independent", "epic", conn=conn, integration_authorized=True)
+        await conn.execute(insert(task_branch_origins).values(
+            id="origin-independent", task_id="independent", repository_id="repo",
+            branch_name="aq/independent", parent_task_id="epic", parent_repository_id="repo",
+            parent_ref="aq/epic", base_sha=env.base, creation_generation=0,
+            reserved=True, materialized=True, created_at=time.time(),
+        ))
+    view = await orch._delivery_admission(["second", "independent"])
+    assert view.allowed == {"second", "independent"}
+    assert await view.counts(PROJECT_ID) == {"worker": 2}
+    assert not any(view.reasons.values())
+    assert set(await db.hierarchy_runnable_task_ids(
+        view.candidate_ids, hierarchy_modes=view.hierarchy_modes,
+    )) == view.allowed
+
+    env.observer.truth = None
+    unknown = await orch._delivery_admission(["second", "independent"])
+    assert unknown.allowed == {"independent"}
+    assert await unknown.counts(PROJECT_ID) == {"worker": 1}
+    assert [reason["code"] for reason in unknown.reasons["second"]] == [
+        "delivery_evidence_unavailable",
+    ]
+    assert not unknown.reasons.get("independent")

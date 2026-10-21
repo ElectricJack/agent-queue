@@ -126,7 +126,10 @@ class AdmissionReader:
         # The same SQL predicates the ordinary claim path uses. Git delivery is
         # separately re-observed below; an old cached verdict never clears a hold.
         project_model = await o.db.get_project(task["project_id"])
-        mode = ProjectIntegrationMode.of(project_model)
+        admission = await o._delivery_admission([task_id])
+        mode = admission.hierarchy_modes.get(task["project_id"]) or ProjectIntegrationMode.of(
+            project_model,
+        )
         predicates = claim_frontier_predicates(hierarchy_mode=mode)
         predicates["route"] = route_claimable(ready)
         if profile:
@@ -203,10 +206,8 @@ class AdmissionReader:
             tasks.c.id == task_id, tasks.c.id.in_(select(branch_holders().subquery().c.task_id)),
         )))
         batch_reasons = []
-        if project["hierarchical_integration_mode"] == "development":
-            admission = await o._delivery_admission([task_id])
-            if task_id not in admission.allowed or not await admission.matches(conn=conn, task_id=task_id):
-                batch_reasons.append("delivery_not_verified")
+        if task_id not in admission.allowed or not await admission.matches(conn=conn, task_id=task_id):
+            batch_reasons.append("delivery_not_verified")
         batch_names = {"sibling_prerequisite_not_delivered", "prerequisite_not_on_default_branch",
                        "epic_refresh_pending", "origin_not_materialized", "retired_repair_delegate"}
         batch_reasons.extend(name for name in batch_names if checks.get(name) is False)

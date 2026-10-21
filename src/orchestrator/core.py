@@ -1945,6 +1945,7 @@ class Orchestrator(
         # Archive/removal guards prove development delivery in git before
         # their transaction; the database layer has no Git of its own.
         self.db.set_delivery_observer(self.delivery_observer)
+        self.db._admission_reader = self._delivery_admission
         # Git-first promotion writes no delivery receipt, so sibling
         # prerequisites are proven from the parent branch in Git instead.
         if self.config.integration.git_first == "active":
@@ -4732,8 +4733,14 @@ class Orchestrator(
         task_snapshot = [
             task for task in task_snapshot if not is_supervisor_profile(task.profile_id)
         ]
+        if hierarchy_modes is None:
+            from src.integration.delivery_observer import hierarchy_frontier_modes
+
+            hierarchy_modes = await hierarchy_frontier_modes(self.db)
         delivery_admission = await self._delivery_admission(
-            [task.id for task in task_snapshot if task.status == TaskStatus.READY]
+            [task.id for task in task_snapshot if task.status == TaskStatus.READY],
+            hierarchy_modes=hierarchy_modes,
+            router_ready_projects=await self.router_readiness.ready_projects(),
         )
         task_snapshot = [
             task for task in task_snapshot
@@ -4741,7 +4748,7 @@ class Orchestrator(
         ]
         hierarchy_runnable_task_ids = await self.db.hierarchy_runnable_task_ids(
             [task.id for task in task_snapshot if task.status == TaskStatus.READY],
-            hierarchy_modes=hierarchy_modes,
+            hierarchy_modes=delivery_admission.hierarchy_modes,
         )
         # A flagged container (spec §7) is settle-only work and never
         # dispatchable.  Promotion releases the ones it promotes; this catches

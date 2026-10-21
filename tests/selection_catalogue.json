@@ -5604,7 +5604,7 @@
         "development-delivery"
       ],
       "default_arm": true,
-      "digest": "sha256:0596c73e6955dd449533527c2273912b8e2c1e08df5ab414993f41d49ac7fc63",
+      "digest": "sha256:34b4d21d0eeda6979aaa8dd1046adfeb716901f5c80574697aace4d018fb8245",
       "imports": [
         "src.commands.handler",
         "src.commands.principal",
@@ -5619,6 +5619,7 @@
         "src.integration",
         "src.integration.admission",
         "src.integration.child_delivery",
+        "src.integration.cleanup",
         "src.integration.delivery_observer",
         "src.integration.delivery_truth",
         "src.integration.development",
@@ -19145,7 +19146,7 @@
         "agent-waits"
       ],
       "default_arm": true,
-      "digest": "sha256:43bdc319cce686545f20467fc5d25955c9035191485356d2ef2d256973066b62",
+      "digest": "sha256:b6460a8d4756eeec50c482025cfc68b669833ff2325a3f29be58b3de16ef83be",
       "imports": [
         "src.commands.principal",
         "src.config",
@@ -19154,6 +19155,7 @@
         "src.database",
         "src.database.queries.wait_queries",
         "src.database.tables",
+        "src.integration.admission",
         "src.models",
         "src.scheduler",
         "src.wait_runtime.scheduler",
