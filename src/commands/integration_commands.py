@@ -675,6 +675,17 @@ class IntegrationCommandsMixin:
             from src.integration.stall_alerts import alert_stalled_batches
 
             await alert_stalled_batches(self, now=now)
+            observer = getattr(self.orchestrator, "delivery_observer", None)
+            if observer is not None:
+                import logging
+
+                from src.integration.delivery_watchdog import scan_stuck_deliveries
+
+                # The watchdog only observes and hands over; it never holds the train.
+                try:
+                    await scan_stuck_deliveries(self.db, observer=observer, now=now)
+                except Exception:
+                    logging.getLogger(__name__).exception("delivery watchdog scan failed")
             self._train_stall_checked_at = now
         result = await train.tick(visit_now)
         return {"success": True, **result}

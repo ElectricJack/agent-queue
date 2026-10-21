@@ -517,7 +517,7 @@ async def test_sweep_reports_missing_delivery_engine_without_waiting_for_tasks(c
         "_provider_findings", "_unmaterialized_pr_findings", "_completed_undelivered_findings",
         "_unadmitted_parent_findings", "_stranded_child_findings", "_reviewed_file_guard_findings",
         "_orphaned_pr_findings", "_validation_findings", "_subject_unknown_findings",
-        "_object_bootstrap_findings", "_worker_relaunch_findings",
+        "_object_bootstrap_findings", "_worker_relaunch_findings", "_delivery_stuck_findings",
     ):
         monkeypatch.setattr(module, name, AsyncMock(return_value=[]))
     monkeypatch.setattr(module, "_log_findings", lambda *args: [])
