@@ -198,7 +198,10 @@ async def _operation_project(db, operation_id: str) -> Ownership:
 
     operation = await db.get_integration_operation(operation_id)
     if operation is None:
-        return False, None
+        from src.integration.close_merge import CloseStore
+
+        close = await CloseStore(db).get(operation_id)
+        return (True, close["project_id"]) if close else (False, None)
     return True, await operation_project_id(db, operation)
 
 

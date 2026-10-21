@@ -397,6 +397,13 @@ class DeliveryWatchdogPolicy(BaseModel):
     stuck_after_seconds: float | None = Field(default=None, gt=0, allow_inf_nan=False)
 
 
+class CloseMergePolicy(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    author_assist: bool = True
+    author_budget_seconds: float = Field(default=1200, gt=0, allow_inf_nan=False)
+
+
 class HierarchicalIntegrationPolicy(BaseModel):
     """Validated project policy consumed when reserving an operation."""
 
@@ -422,6 +429,7 @@ class HierarchicalIntegrationPolicy(BaseModel):
     #: Unset is hosted for every target kind.
     ci: IntegrationCIPolicy | None = None
     delivery_watchdog: DeliveryWatchdogPolicy | None = None
+    close_merge: CloseMergePolicy = Field(default_factory=CloseMergePolicy)
 
     @model_validator(mode="after")
     def local_commands_cover_required_checks(self) -> HierarchicalIntegrationPolicy:
@@ -459,6 +467,11 @@ class HierarchicalIntegrationPolicy(BaseModel):
             dumped.pop("ci", None)
         if self.delivery_watchdog is None:
             dumped.pop("delivery_watchdog", None)
+        close = self.close_merge.model_dump(exclude_defaults=True)
+        if close:
+            dumped["close_merge"] = close
+        else:
+            dumped.pop("close_merge", None)
         return dumped
 
 

@@ -89,6 +89,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`integration_clear_retained_recovery`](integration_clear_retained_recovery.md) | Integration Clear Retained Recovery | Authenticated hierarchical integration operational control. |
 | [`integration_close_delivered_pr`](integration_close_delivered_pr.md) | Integration Close Delivered Pr | Authenticated hierarchical integration operational control. |
 | [`integration_complete_parent`](integration_complete_parent.md) | Integration Complete Parent | Complete a verified parent task at its exact verified generation and head. |
+| [`integration_continue_close`](integration_continue_close.md) | Integration Continue Close | Authenticated hierarchical integration operational control. |
 | [`integration_cutover`](integration_cutover.md) | Integration Cutover | Authenticated hierarchical integration operational control. |
 | [`integration_cutover_containment`](integration_cutover_containment.md) | Prepare strict-containment history | Local operator previews and applies exact historical lifecycle exclusions. |
 | [`integration_cutover_plan`](integration_cutover_plan.md) | Integration Cutover Plan | Authenticated hierarchical integration operational control. |

@@ -149,6 +149,7 @@ HANDCRAFTED_COVERAGE = {
     # integration.py — positional identities and explicit rollout CAS fences.
     "integration_release_held_gate",
     "integration_status",
+    "integration_continue_close",
     "integration_trust_manifest",
     "integration_app_verify",
     "integration_reevaluate_repair",

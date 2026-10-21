@@ -107,7 +107,17 @@ class CIAdapter(RepositoryAdapter):
             )
             .limit(1)
         )
-        if not known_batch and not known_job:
+        from src.waits.adapters.close_scope import author_candidate
+
+        close = await author_candidate(conn, scope, repository_id=p["repository_id"],
+                                       head=p["head_sha"])
+        if close:
+            hosted = close["evidence"].get("hosted") or {}
+            if self.kind != "ci_check" or p["check_name"] not in (
+                hosted.get("pending_checks", []) + hosted.get("missing_checks", [])
+            ):
+                foreign()
+        if not known_batch and not known_job and not close:
             unresolved("head is not known to a job or integration stage")
         return cond
 
