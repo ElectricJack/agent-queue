@@ -43,6 +43,7 @@ WATCH_CHANGES = ROOT / "tests/fixtures/contracts/watch-contract-changes.json"
 INGEST_CHANGES = ROOT / "tests/fixtures/contracts/ingestion-replay-contract-changes.json"
 HIBERNATION_CHANGES = ROOT / "tests/fixtures/contracts/hibernation-contract-changes.json"
 DISPATCH_CHANGES = ROOT / "tests/fixtures/contracts/dispatch-wait-contract-changes.json"
+BATCH_FIX_CHANGES = ROOT / "tests/fixtures/contracts/batch-fix-contract-changes.json"
 
 
 def _hibernation_changes():
@@ -70,7 +71,18 @@ def _revert_catalogue(catalogue, changes):
 
 
 def _before_dispatch_catalogue():
-    return _revert_catalogue(json.loads(render_command_catalogue()), _dispatch_changes())
+    return _revert_catalogue(_before_batch_fix_catalogue(), _dispatch_changes())
+
+
+def _before_batch_fix_catalogue():
+    evidence = json.loads(BATCH_FIX_CHANGES.read_text())
+    catalogue = json.loads(render_command_catalogue())
+    name = "integration_batch_fix"
+    definition = next(row for row in catalogue["explicit"] if row["name"] == name)
+    assert definition == evidence["transport_definition"]
+    catalogue["explicit"].remove(definition)
+    assert catalogue["tool_categories"].pop(name) == evidence["tool_category"]
+    return catalogue
 
 
 def _before_hibernation_catalogue():
@@ -254,7 +266,11 @@ def test_transport_views_and_cli_serialization_preserve_golden_evidence():
     assert hibernation["previous_cli_catalogue_sha256"] == epic["cli_catalogue_sha256"]
     dispatch = _dispatch_changes()
     assert dispatch["previous_cli_catalogue_sha256"] == hibernation["cli_catalogue_sha256"]
-    assert actual == dispatch["cli_catalogue_sha256"]
+    batch_fix = json.loads(BATCH_FIX_CHANGES.read_text())
+    assert batch_fix["previous_cli_catalogue_sha256"] == dispatch["cli_catalogue_sha256"]
+    assert actual == batch_fix["cli_catalogue_sha256"]
+    previous = json.dumps(_before_batch_fix_catalogue(), indent=2) + "\n"
+    assert hashlib.sha256(previous.encode()).hexdigest() == dispatch["cli_catalogue_sha256"]
     previous = json.dumps(_before_dispatch_catalogue(), indent=2) + "\n"
     assert hashlib.sha256(previous.encode()).hexdigest() == hibernation["cli_catalogue_sha256"]
     previous = json.dumps(_before_hibernation_catalogue(), indent=2) + "\n"
@@ -264,6 +280,17 @@ def test_transport_views_and_cli_serialization_preserve_golden_evidence():
         assert definition == snapshot.commands[name].tool_definition()
         if name in definitions:
             assert definition == definitions[name]
+
+
+def test_batch_fixer_catalogue_only_adds_scoped_publication_command():
+    evidence = json.loads(BATCH_FIX_CHANGES.read_text())
+    assert evidence["source_base"] == "d496e8a12c3e863aee09910856b018809f3eb21c"
+    name = "integration_batch_fix"
+    assert CONTRACTS.require(name).contract.fingerprint() == evidence["contract_fingerprint"]
+    previous = json.dumps(_before_batch_fix_catalogue(), indent=2) + "\n"
+    assert hashlib.sha256(previous.encode()).hexdigest() == evidence[
+        "previous_cli_catalogue_sha256"
+    ]
 
 
 def test_withheld_source_catalogue_only_adds_reviewed_command():
