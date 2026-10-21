@@ -2388,6 +2388,39 @@ class TestFinishedTaskSentinel:
         _git(["branch", "-D", "aq/tsk-prev"], cwd=path)
         assert await mgr.reset_slot_for_task(slot, FakeTask(id="tsk-next")) == "aq/tsk-next"
 
+    async def test_detach_cleans_output_only_the_task_branch_ignored(
+        self, mgr, base_ws, kind, base_repo
+    ):
+        """grand-forge-35: a branch that ignores its build output detaches onto
+        a default tip that does not.  The output turned untracked, the dirty
+        slot kept its sentinel, and once main moved on the next preparation
+        refused it as disagreeing with that sentinel (prime-nexus-13)."""
+        slot = await mgr.create_slot(base_ws, kind, 0)
+        await mgr.reset_slot_for_task(slot, FakeTask(id="tsk-prev"))
+        path = Path(slot.workspace_path)
+        (path / ".gitignore").write_text("node_modules/\nout/\n")
+        _git(["add", ".gitignore"], cwd=path)
+        _git(["commit", "-m", "ignore build output"], cwd=path)
+        _git(["push", "origin", "aq/tsk-prev"], cwd=path)
+        (path / "out").mkdir()
+        (path / "out" / "frame.png").write_bytes(b"\x89PNG")
+        (path / "node_modules").mkdir()
+        (path / "node_modules" / "dep.js").write_text("cache\n")
+
+        await mgr.restore_slot_after_task(slot, task_id="tsk-prev")
+
+        assert _git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=path) == "HEAD"
+        assert not (path / "out").exists()
+        # Never ``-x``: a cache the default branch ignores survives the reuse.
+        assert (path / "node_modules" / "dep.js").exists()
+        assert await mgr.release_task_sentinel(slot, "tsk-prev") is True
+        _git(["push", "origin", ":aq/tsk-prev"], cwd=path)
+        _git(["commit", "--allow-empty", "-m", "later"], cwd=base_repo)
+        _git(["push", "origin", "main"], cwd=base_repo)
+        _git(["fetch", "--prune", "origin"], cwd=path)
+        _git(["branch", "-D", "aq/tsk-prev"], cwd=path)
+        assert await mgr.reset_slot_for_task(slot, FakeTask(id="tsk-next")) == "aq/tsk-next"
+
     @pytest.mark.parametrize("shape", ["attached", "unpublished", "dirty"])
     async def test_completion_keeps_the_sentinel_on_unreleased_work(
         self, mgr, base_ws, kind, shape
