@@ -12019,12 +12019,12 @@
         "migrations"
       ],
       "default_arm": false,
-      "digest": "sha256:da91db046c10fd0568d22dc512f57cf1a09dc8ca6b140b56d26cac3cea3edd75",
+      "digest": "sha256:aa6430a2a5b6e614695aaae6f2a233421000b70fbed625a75c0f5b31f71f4c93",
       "imports": [],
       "markers": [
         "migration"
       ],
-      "summary": "The delegation migration creates durable authority on old and current schemas."
+      "summary": "The delegation migration adds the owner-lease binding on old and current schemas."
     },
     "tests/test_migration_repair_stages.py": {
       "areas": [

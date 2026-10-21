@@ -2240,6 +2240,7 @@ a stale owner's push is rejected before it reaches the remote.
 | `workspace_id` | TEXT | nullable | Workspace the owner works in |
 | `confirmed_workspace_id` | TEXT | nullable | Workspace whose checkout was verified to match the ref |
 | `expires_at` | REAL | nullable | Lease expiry for time-bounded owners |
+| `delegation` | JSONB | nullable | Publication delegation binding and audit while `owner_id` is `publication-delegation:<id>`; cleared by the next acquisition ([delegated-integration-publication.md](design/delegated-integration-publication.md)) |
 | `created_at` | REAL | NOT NULL | Unix timestamp |
 | `updated_at` | REAL | NOT NULL | Unix timestamp |
 

@@ -70,7 +70,6 @@ from src.database.tables import (
     integration_check_evidence,
     integration_outbox,
     integration_parent_episodes,
-    integration_publication_delegations,
     integration_subjects,
     jobs,
     projects,
@@ -120,6 +119,20 @@ def _row_resolver(table) -> Resolver:
         return await _project_id_of(db, table, value)
 
     return resolve
+
+
+async def _publication_delegation_project(db, value: str) -> Ownership:
+    """A delegation grant lives on its target owner row, keyed by lease holder."""
+    async with db._engine.connect() as conn:
+        row = (
+            await conn.execute(
+                select(integration_branch_owners.c.delegation).where(
+                    integration_branch_owners.c.owner_id == f"publication-delegation:{value}",
+                    integration_branch_owners.c.delegation.is_not(None),
+                ).limit(1)
+            )
+        ).mappings().first()
+    return (False, None) if row is None else (True, row["delegation"].get("project_id"))
 
 
 def _entity_resolver(getter: str) -> Resolver:
@@ -349,7 +362,7 @@ TARGET_RESOLVERS: Final[dict[str, Resolver]] = {
     "ask_id": _row_resolver(human_asks),
     "job_id": _row_resolver(jobs),
     "repository_id": _row_resolver(repos),
-    "publication_delegation_id": _row_resolver(integration_publication_delegations),
+    "publication_delegation_id": _publication_delegation_project,
     "selection_id": _row_resolver(test_selections),
     "subject_id": _row_resolver(integration_subjects),
     "promotion_id": _row_resolver(test_selection_promotions),

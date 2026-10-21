@@ -3482,6 +3482,9 @@ integration_branch_owners = Table(
     Column("workspace_id", Text, nullable=True),
     Column("confirmed_workspace_id", Text, nullable=True),
     Column("expires_at", Float, nullable=True),
+    # Publication delegation binding and audit for the holder
+    # ``publication-delegation:<id>``; cleared by the next acquisition.
+    Column("delegation", JSONB(none_as_null=True), nullable=True),
     Column("created_at", Float, nullable=False),
     Column("updated_at", Float, nullable=False),
     UniqueConstraint("repository_id", "ref", name="uq_integration_branch_owners_ref"),
@@ -3495,43 +3498,6 @@ integration_branch_owners = Table(
         "handoff_state IN ('reserved', 'attached', 'handoff_pending', 'released')",
         name="ck_integration_branch_owners_handoff_state",
     ),
-)
-
-integration_publication_delegations = Table(
-    "integration_publication_delegations",
-    metadata,
-    Column("id", Text, primary_key=True),
-    Column("project_id", Text, nullable=False),
-    Column("repository_id", Text, nullable=False),
-    Column("repository_url", Text, nullable=False),
-    Column("task_id", Text, nullable=False),
-    Column("session_id", Text, nullable=False),
-    Column("session_instance_token", Text, nullable=False),
-    Column("claim_epoch", Integer, nullable=False),
-    Column("source_branch", Text, nullable=False),
-    Column("target_branch", Text, nullable=False),
-    Column("expected_target_oid", Text, nullable=False),
-    Column("expected_owner_fence", BigInteger, nullable=False),
-    Column("owner_fence", BigInteger, nullable=False),
-    Column("ttl_seconds", Integer, nullable=False),
-    Column("issued_by", Text, nullable=False),
-    Column("reason", Text, nullable=False),
-    Column("created_at", Float, nullable=False),
-    Column("expires_at", Float, nullable=False),
-    Column("revoked_at", Float, nullable=True),
-    Column("revoked_by", Text, nullable=True),
-    Column("revoke_reason", Text, nullable=True),
-    Column("published_at", Float, nullable=True),
-    Column("published_oid", Text, nullable=True),
-    CheckConstraint(
-        "claim_epoch >= 0 AND expected_owner_fence >= 0 AND owner_fence > 0",
-        name="ck_integration_publication_delegations_fence",
-    ),
-    CheckConstraint(
-        "ttl_seconds BETWEEN 1 AND 480 AND expires_at = created_at + ttl_seconds",
-        name="ck_integration_publication_delegations_expiry",
-    ),
-    Index("idx_integration_publication_delegations_task", "task_id", "session_id"),
 )
 
 integration_review_evidence = Table(

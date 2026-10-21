@@ -796,10 +796,6 @@ async def _issue(w, **changes):
 async def test_delegated_publication_uses_pinned_source_and_consumes_audited_grant(
     delegated_git, command,
 ):
-    from sqlalchemy import select
-
-    from src.database.tables import integration_publication_delegations as grants
-
     w = delegated_git
     issued = await _issue(w)
     assert issued["success"], issued
@@ -817,7 +813,7 @@ async def test_delegated_publication_uses_pinned_source_and_consumes_audited_gra
     )
     assert w.git.apush_validated_delivery.await_args.kwargs["identity_policy"].enforce
     async with w.db._engine.connect() as conn:
-        row = (await conn.execute(select(grants))).mappings().one()
+        row = await w.service._grant(conn, "delegate-1")
     assert row["published_oid"] == _TIP and row["published_at"] is not None
     assert row["issued_by"] == "human:local-operator"
     assert (await w.db.get_task("t1")).branch_name == "aq/calm-ember-48"

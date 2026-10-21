@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import time
 
-from sqlalchemy import insert, select, update
+from sqlalchemy import select, update
 
 from src.commands.principal import PrincipalKind, current_principal, matches_session_instance
 from src.commands.supervisor_authority import integration_operator
@@ -20,7 +20,16 @@ class DelegationRefused(GitError):
     """No authority was obtained; the grant may not be used for publication."""
 
 
+HOLDER = "publication-delegation:"
+
+
 class PublicationDelegations:
+    """Each grant lives on its target's owner lease row (``delegation`` JSONB).
+
+    The lease holder ``publication-delegation:<id>`` names the grant; the binding
+    and its terminal audit stay readable until the next acquisition of the ref.
+    """
+
     def __init__(self, db, *, clock=time.time, active=None):
         self.db, self.clock = db, clock
         self.locks = BranchLock(db, clock=clock)
@@ -43,8 +52,36 @@ class PublicationDelegations:
 
     @classmethod
     def _fence(cls, row):
-        return Fence(target=cls._target(row), owner_id="publication-delegation:" + row["id"],
+        return Fence(target=cls._target(row), owner_id=HOLDER + row["id"],
                      token=row["owner_fence"])
+
+    @staticmethod
+    def _view(owner):
+        if owner is None or owner["delegation"] is None:
+            return None
+        return {**owner["delegation"], "repository_id": owner["repository_id"],
+                "target_branch": owner["ref"]}
+
+    @classmethod
+    async def _grant(cls, conn, delegation_id, *, lock=False):
+        owners = t.integration_branch_owners
+        query = select(owners).where(
+            owners.c.owner_id == HOLDER + delegation_id, owners.c.delegation.is_not(None),
+        ).order_by(owners.c.updated_at.desc()).limit(1)
+        if lock:
+            query = query.with_for_update()
+        return cls._view((await conn.execute(query)).mappings().first())
+
+    @staticmethod
+    async def _record(conn, row, **changes):
+        owners = t.integration_branch_owners
+        binding = {k: v for k, v in {**row, **changes}.items()
+                   if k not in {"repository_id", "target_branch"}}
+        await conn.execute(update(owners).where(
+            owners.c.repository_id == row["repository_id"],
+            owners.c.owner_id == HOLDER + row["id"],
+        ).values(delegation=binding))
+        return {**row, **changes}
 
     @staticmethod
     async def _row(conn, table, row_id, *, lock=False):
@@ -120,15 +157,16 @@ class PublicationDelegations:
                 raise DelegationRefused("use ordinary publication for the held task branch")
             target = self._target(binding)
             owner = await self.locks.lock_on(conn, target)
-            prior = await self._row(conn, t.integration_publication_delegations, request.id,
-                                    lock=True)
+            prior = await self._grant(conn, request.id)
             if prior is not None:
                 keys = ("project_id", "repository_id", "task_id", "session_id", "claim_epoch",
                         "target_branch", "expected_target_oid", "expected_owner_fence", "reason",
                         "ttl_seconds")
-                if any(prior[key] != binding[key] for key in keys) or prior["issued_by"] != by:
+                if (any(prior[key] != binding[key] for key in keys)
+                        or prior["repository_id"] != binding["repository_id"]
+                        or prior["issued_by"] != by):
                     raise DelegationRefused("delegation id already records another request")
-                return dict(prior)
+                return prior
             if owner is not None and not managed(owner):
                 raise DelegationRefused("legacy target owner requires managed owner recovery")
             if (owner["fence"] if owner else 0) != request.expected_owner_fence:
@@ -136,7 +174,7 @@ class PublicationDelegations:
             if owner and owner["holder"] and owner["expires_at"] > self.clock():
                 raise DelegationRefused("target has another unexpired integration writer")
             fence = await self.locks.acquire_on(
-                conn, target, "publication-delegation:" + request.id,
+                conn, target, HOLDER + request.id,
                 ttl_seconds=request.ttl_seconds, role="integration",
             )
             now = self.clock()
@@ -147,27 +185,28 @@ class PublicationDelegations:
             )}
             row.update(repository_url=repo["url"], source_branch=task["branch_name"],
                        session_instance_token=session["instance_token"], owner_fence=fence.token,
-                       issued_by=by, created_at=now, expires_at=now + request.ttl_seconds)
-            await conn.execute(insert(t.integration_publication_delegations).values(**row))
-            return row
+                       issued_by=by, created_at=now, expires_at=now + request.ttl_seconds,
+                       revoked_at=None, revoked_by=None, revoke_reason=None,
+                       published_at=None, published_oid=None)
+            return await self._record(conn, row)
 
     async def revoke(self, request):
         by = await self._authority(request.project_id)
         async with asyncio.timeout(CRITICAL_SECTION_SECONDS), self.db.immediate() as conn:
-            row = await self._row(conn, t.integration_publication_delegations, request.id)
+            row = await self._grant(conn, request.id)
             if row is None or row["project_id"] != request.project_id:
                 raise DelegationRefused("delegation not found in project")
-            # Same target -> grant lock order as issue/publication. No claim is needed
+            # Same target lock order as issue/publication. No claim is needed
             # to revoke an expired or reassigned attempt's remaining authority.
             await self.locks.lock_on(conn, self._target(row))
-            row = await self._row(conn, t.integration_publication_delegations, request.id,
-                                  lock=True)
+            row = await self._grant(conn, request.id, lock=True)
+            if row is None:
+                raise DelegationRefused("delegation was superseded by a later owner")
             if row["revoked_at"] is None and row["published_at"] is None:
-                await conn.execute(update(t.integration_publication_delegations).where(
-                    t.integration_publication_delegations.c.id == request.id,
-                ).values(revoked_at=self.clock(), revoked_by=by, revoke_reason=request.reason))
+                row = await self._record(conn, row, revoked_at=self.clock(), revoked_by=by,
+                                         revoke_reason=request.reason)
                 await self.locks.release(self._fence(row), conn=conn)
-            return dict(await self._row(conn, t.integration_publication_delegations, request.id))
+            return row
 
     async def _validate(self, conn, row, identity, branch, expected_oid, *, owner=None):
         if (row is None or row["project_id"] != identity.project_id
@@ -190,21 +229,20 @@ class PublicationDelegations:
 
     async def validate(self, delegation_id, identity, branch, expected_oid=None):
         async with asyncio.timeout(CRITICAL_SECTION_SECONDS), self.db._engine.connect() as conn:
-            row = await self._row(conn, t.integration_publication_delegations, delegation_id)
+            row = await self._grant(conn, delegation_id)
             await self._validate(conn, row, identity, branch, expected_oid)
-            return dict(row)
+            return row
 
     async def publish(self, delegation_id, identity, branch, *, expected_oid=None,
                       git, checkout_path, policy, inherited_oids=(), event_bus=None):
         # Advisory dispatch validation never establishes authority for this write.
         async with asyncio.timeout(CRITICAL_SECTION_SECONDS), self.db.immediate() as conn:
-            row = await self._row(conn, t.integration_publication_delegations, delegation_id)
+            row = await self._grant(conn, delegation_id)
             if row is None:
                 raise DelegationRefused("publication delegation not found")
             await self._claim(conn, row, lock=True)
             async with self.locks.exclusion(self._fence(row), conn=conn) as owner:
-                row = await self._row(conn, t.integration_publication_delegations, delegation_id,
-                                      lock=True)
+                row = await self._grant(conn, delegation_id, lock=True)
                 await self._validate(conn, row, identity, branch, expected_oid, owner=owner)
                 if self.active is None or not self.active():
                     raise DelegationRefused("publication delegation requires Git-first active mode")
@@ -222,9 +260,7 @@ class PublicationDelegations:
                 )
                 if oid != tip:
                     raise DelegationRefused("publication did not confirm the selected immutable tip")
-                await conn.execute(update(t.integration_publication_delegations).where(
-                    t.integration_publication_delegations.c.id == delegation_id,
-                ).values(published_at=self.clock(), published_oid=oid))
+                await self._record(conn, row, published_at=self.clock(), published_oid=oid)
                 await self.locks.release(self._fence(row), conn=conn)
                 return oid
 

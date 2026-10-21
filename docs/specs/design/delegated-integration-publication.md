@@ -24,10 +24,16 @@ Missing owner rows can be created only with expected fence 0. Legacy owner rows
 require recovery to the managed protocol first. Default branches, main, dev,
 staging and promotion chain branches cannot be delegated by this command.
 
-The typed `integration_publication_delegations` row records the full binding,
-issuing identity/reason, predecessor fence, granted fence, deadline and terminal
-revoke or publication evidence. Reusing an id with different inputs is refused;
-an exact retry returns its existing audit row without reviving authority.
+The grant adds no integration table (the integration storage ratchet,
+`tests/test_integration_size.py`). It lives on the target ref's own
+`integration_branch_owners` lease row: the nullable JSONB `delegation` column
+records the full binding, issuing identity/reason, predecessor fence, granted
+fence, deadline and terminal revoke or publication evidence while the row's
+`owner_id` is `publication-delegation:<id>`. Release keeps that owner id, so the
+audit stays readable; the ref's next acquisition clears it. Reusing an id with
+different inputs is refused; an exact retry returns its existing audit without
+reviving authority. Once a later owner has taken the ref, the id is unknown:
+revoke and publication refuse it, and the earlier grant's evidence is gone with it.
 Revocation is idempotent and releases only this delegation's still-current fence.
 It does not release a replacement owner's fence. Expiry, claim/session changes,
 repository rebinding, revocation or a superseding fence invalidate the grant.

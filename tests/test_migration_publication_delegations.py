@@ -1,12 +1,12 @@
-"""The delegation migration creates durable authority on old and current schemas."""
+"""The delegation migration adds the owner-lease binding on old and current schemas."""
 
 import importlib.util
 from pathlib import Path
 
-from alembic.migration import MigrationContext
-from alembic.operations import Operations
 import pytest
 import sqlalchemy as sa
+from alembic.migration import MigrationContext
+from alembic.operations import Operations
 
 pytestmark = pytest.mark.migration
 
@@ -20,19 +20,15 @@ async def test_delegation_migration_is_idempotent(reuse_database):
 
     def exercise(connection):
         # Only the fixture's disposable database: simulate a pre-delegation install.
-        sa.Table("integration_publication_delegations", sa.MetaData(),
-                 autoload_with=connection).drop(connection)
-        with Operations.context(MigrationContext.configure(connection)):
+        with Operations.context(MigrationContext.configure(connection)) as op:
+            op.drop_column("integration_branch_owners", "delegation")
             revision.upgrade()
             revision.upgrade()
         inspector = sa.inspect(connection)
-        assert {c["name"] for c in inspector.get_columns("integration_publication_delegations")} >= {
-            "session_instance_token", "claim_epoch", "expected_target_oid", "owner_fence",
-            "published_oid", "revoked_by",
-        }
-        assert {i["name"] for i in inspector.get_indexes("integration_publication_delegations")} == {
-            "idx_integration_publication_delegations_task",
-        }
+        columns = {c["name"]: c for c in inspector.get_columns("integration_branch_owners")}
+        assert columns["delegation"]["nullable"]
+        assert type(columns["delegation"]["type"]).__name__ == "JSONB"
+        assert not inspector.has_table("integration_publication_delegations")
 
     async with db._engine.begin() as connection:
         await connection.run_sync(exercise)
