@@ -86,6 +86,8 @@ DESIGN_INTEGRATION_COMMANDS = frozenset(
         "integration_recover_completed_container",
         "integration_reopen_collection",
         "integration_close_delivered_pr",
+        "integration_delegate_publication",
+        "integration_revoke_publication",
     }
 )
 
@@ -384,6 +386,64 @@ class IntegrationReleaseOwnerArgs(CommandArgs):
 
 class IntegrationReserveOwnerArgs(CommandArgs):
     task_id: str = Field(min_length=1)
+
+
+class IntegrationDelegatePublicationArgs(CommandArgs):
+    id: str = Field(min_length=1)
+    project_id: str = Field(min_length=1)
+    repository_id: str = Field(min_length=1)
+    task_id: str = Field(min_length=1)
+    session_id: str = Field(min_length=1)
+    claim_epoch: StrictInt = Field(ge=0)
+    target_branch: str = Field(min_length=1)
+    expected_target_oid: str
+    expected_owner_fence: StrictInt = Field(ge=0)
+    ttl_seconds: StrictInt = Field(default=480, ge=1, le=480)
+    reason: str = Field(min_length=1)
+
+    @field_validator("target_branch")
+    @classmethod
+    def valid_target(cls, value):
+        from src.git.manager import GitError, _validate_ref
+
+        value = value.removeprefix("refs/heads/")
+        try:
+            _validate_ref(value)
+        except GitError as exc:
+            raise ValueError(str(exc)) from exc
+        if value.startswith("refs/"):
+            raise ValueError("target must be a branch")
+        return value
+
+    @field_validator("expected_target_oid")
+    @classmethod
+    def valid_target_oid(cls, value):
+        if not is_valid_git_oid(value) or set(value) == {"0"}:
+            raise ValueError("expected target must be an existing full commit OID")
+        return value.lower()
+
+    @field_validator("reason")
+    @classmethod
+    def nonblank_reason(cls, value):
+        if not value.strip():
+            raise ValueError("reason must not be blank")
+        return value
+
+
+class IntegrationRevokePublicationArgs(CommandArgs):
+    id: str = Field(min_length=1)
+    project_id: str = Field(min_length=1)
+    reason: str = Field(min_length=1)
+
+
+class IntegrationPublicationValue(CommandValue):
+    project_id: str | None = None
+    delegation_id: str | None = None
+    target_branch: str | None = None
+    owner_fence: int | None = None
+    expires_at: float | None = None
+    revoked_at: float | None = None
+    published_oid: str | None = None
 
 
 class IntegrationRestoreTaskOriginArgs(CommandArgs):
@@ -1502,6 +1562,18 @@ INTEGRATION_RESERVE_OWNER = _operational_contract(
     side_effect=SideEffectClass.UPDATE,
 )
 
+INTEGRATION_DELEGATE_PUBLICATION = _operational_contract(
+    "integration_delegate_publication", IntegrationDelegatePublicationArgs,
+    ("issued", "refused"), successes=frozenset({"issued"}),
+    side_effect=SideEffectClass.UPDATE, result_model=IntegrationPublicationValue,
+)
+
+INTEGRATION_REVOKE_PUBLICATION = _operational_contract(
+    "integration_revoke_publication", IntegrationRevokePublicationArgs,
+    ("revoked", "refused"), successes=frozenset({"revoked"}),
+    side_effect=SideEffectClass.UPDATE, result_model=IntegrationPublicationValue,
+)
+
 INTEGRATION_RESTORE_TASK_ORIGIN = _operational_contract(
     "integration_restore_task_origin",
     IntegrationRestoreTaskOriginArgs,
@@ -2370,6 +2442,20 @@ async def _reserve_owner_adapter(args: IntegrationReserveOwnerArgs, ctx: Command
     )
 
 
+async def _delegate_publication_adapter(args: IntegrationDelegatePublicationArgs, ctx):
+    return await _hierarchy_adapter(
+        "integration_delegate_publication", args, ctx, IntegrationPublicationValue,
+        {"issued", "refused"},
+    )
+
+
+async def _revoke_publication_adapter(args: IntegrationRevokePublicationArgs, ctx):
+    return await _hierarchy_adapter(
+        "integration_revoke_publication", args, ctx, IntegrationPublicationValue,
+        {"revoked", "refused"},
+    )
+
+
 async def _restore_task_origin_adapter(args: IntegrationRestoreTaskOriginArgs, ctx):
     return await _hierarchy_adapter(
         "integration_restore_task_origin", args, ctx, IntegrationOperationalValue,
@@ -2757,6 +2843,8 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
         (INTEGRATION_RELEASE_OWNER, _release_owner_adapter),
         (INTEGRATION_RESTORE_TASK_ORIGIN, _restore_task_origin_adapter),
         (INTEGRATION_RESERVE_OWNER, _reserve_owner_adapter),
+        (INTEGRATION_DELEGATE_PUBLICATION, _delegate_publication_adapter),
+        (INTEGRATION_REVOKE_PUBLICATION, _revoke_publication_adapter),
         (INTEGRATION_CLEAR_RETAINED_RECOVERY, _clear_retained_recovery_adapter),
         (INTEGRATION_RELEASE_STALE_OWNERS, _release_stale_owners_adapter),
         (INTEGRATION_REDRIVE_ROOT, _redrive_root_adapter),

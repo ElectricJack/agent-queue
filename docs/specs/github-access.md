@@ -423,6 +423,13 @@ roles that need them. Extend the existing push contract if an explicit expected
 remote OID is needed for the documented squash/lease workflow. Do not grant
 workers integration-owner or main-publication authority as a side effect.
 
+Explicit named integration publication uses the server-owned, single-use
+[publication delegation](design/delegated-integration-publication.md). Its
+issue/revoke controls require operator or live owning supervisor authority;
+workers supply that exact grant to the existing push surface. The grant binds
+the live claim, session instance, designated repository, target OID and managed
+owner fence, and preserves the validated delivery gates.
+
 Update the shipped completion protocol, delivery prompts and relevant AQ Git
 skills to use those commands for network delivery. Keep local commit/history
 work local. Existing customized vault profiles must receive actionable grant

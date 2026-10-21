@@ -307,8 +307,9 @@ async def test_pool_diagnostics_never_fetch_hierarchy_or_stack_prerequisites(
         call.assert_not_awaited()
 
 
+@pytest.mark.parametrize("delivery", ["train", "external_fast_forward"])
 async def test_git_first_delivery_releases_scheduler_pool_and_claim(
-    orch, db, git_first_frontier, frontier_clock,
+    orch, db, git_first_frontier, frontier_clock, delivery,
 ):
     from sqlalchemy import select
 
@@ -348,7 +349,11 @@ async def test_git_first_delivery_releases_scheduler_pool_and_claim(
     await orch.wait_for_pool_launches()
     assert await db.list_sessions(lifecycle="pool") == []
 
-    await _deliver_first_by_train(db, env)
+    if delivery == "train":
+        await _deliver_first_by_train(db, env)
+    else:
+        # An authorized external writer bypasses train receipts and cache invalidation.
+        env.git(env.origin.clone, "push", "origin", "aq/first:aq/epic")
     # The old advisory observation may withhold newly delivered work until expiry.
     await frontier(False, evidence_unavailable=True)
     frontier_clock.return_value += env.observer.READ_MAX_AGE + 0.01

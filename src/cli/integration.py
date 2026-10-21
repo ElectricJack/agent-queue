@@ -526,6 +526,41 @@ def integration_reserve_owner(ctx: click.Context, task_id: str) -> None:
     _execute(ctx, "integration_reserve_owner", {"task_id": task_id})
 
 
+@integration.command("delegate-publication")
+@click.option("--id", required=True, help="Unique, retry-stable delegation identity.")
+@click.option("--project-id", required=True)
+@click.option("--repository-id", required=True)
+@click.option("--task-id", required=True)
+@click.option("--session-id", required=True, help="Session holding the delegated task.")
+@click.option("--claim-epoch", required=True, type=click.IntRange(min=0))
+@click.option("--target-branch", required=True)
+@click.option("--expected-target-oid", required=True)
+@click.option("--expected-owner-fence", required=True, type=click.IntRange(min=0),
+              help="Observed current managed fence; 0 only when no owner exists.")
+@click.option("--ttl-seconds", default=480, type=click.IntRange(1, 480))
+@click.option("--reason", required=True)
+@click.pass_context
+@_handle_errors
+def integration_delegate_publication(ctx: click.Context, **args) -> None:
+    """Delegate one fast-forward push to an idle named integration branch.
+
+    Local operator or live owning supervisor only; does not grant this caller
+    publication authority. The worker must explicitly select the returned grant.
+    """
+    _execute(ctx, "integration_delegate_publication", args)
+
+
+@integration.command("revoke-publication")
+@click.option("--id", required=True, help="Delegation identity to revoke.")
+@click.option("--project-id", required=True)
+@click.option("--reason", required=True)
+@click.pass_context
+@_handle_errors
+def integration_revoke_publication(ctx: click.Context, **args) -> None:
+    """Revoke a delegation and release only its still-current target fence."""
+    _execute(ctx, "integration_revoke_publication", args)
+
+
 @integration.command("clear-retained-recovery")
 @click.option("--project-id", required=True)
 @click.option("--incident-id", default=None, help="Clear only this incident.")

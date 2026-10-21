@@ -325,6 +325,9 @@ class ConfigService(Protocol):
     @property
     def git_identity(self) -> Any: ...
 
+    @property
+    def integration_git_first(self) -> str: ...
+
 
 @runtime_checkable
 class VaultWatcherService(Protocol):
@@ -719,6 +722,11 @@ class ConfigServiceImpl:
     def git_identity(self) -> Any:
         """The installation's default commit identity section (read per use)."""
         return self._config.git_identity
+
+    @property
+    def integration_git_first(self) -> str:
+        """Current publication mode, read at the fenced write boundary."""
+        return self._config.integration.git_first
 
 
 # ---------------------------------------------------------------------------
