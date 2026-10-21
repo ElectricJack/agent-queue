@@ -1775,6 +1775,24 @@ _INTEGRATION_SCHEMAS["integration.readiness_changed"] = {
     "types": {"project_id": str},
     "fields": {"project_id": {"type": "string", "description": "project"}},
 }
+# A verified ref write is an observation wakeup, independent of the legacy
+# promotion/receipt lifecycle and its frozen operation routes.
+_PUBLICATION_FIELDS = {
+    "project_id": (str, "string", "project"),
+    "batch_id": (str, "string", "integration batch"),
+    "revision": (int, "integer", "candidate revision"),
+    "repository_id": (str, "string", "published repository"),
+    "target_ref": (str, "string", "published ref"),
+    "head_sha": (str, "string", "verified published head"),
+    "candidate_sha": (str, "string", "tested candidate head"),
+    "publication_verified": (bool, "boolean", "ref write verified"),
+}
+_INTEGRATION_SCHEMAS["integration.publication_verified"] = {
+    "required": list(_PUBLICATION_FIELDS), "optional": [],
+    "types": {name: spec[0] for name, spec in _PUBLICATION_FIELDS.items()},
+    "fields": {name: {"type": spec[1], "description": spec[2]}
+               for name, spec in _PUBLICATION_FIELDS.items()},
+}
 _INTEGRATION_SCHEMAS["integration.sealed"] = {
     "required": ["project_id", "operation_id"],
     "optional": ["batch_id"],

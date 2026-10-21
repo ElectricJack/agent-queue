@@ -43,7 +43,7 @@ async def fence_owner(conn, wait, task, *, parked_required=False):
             raise WaitError("wait.out_of_scope", "stopped continuation ownership changed")
     else:
         scope = await verify_owner(conn, scope)
-        if parked_required and wait["sleep_decision"] == "hibernate":
+        if parked_required and task is not None and wait["sleep_decision"] == "hibernate":
             continuation = (await conn.execute(select(continuations).where(
                 continuations.c.wait_id == wait["id"],
                 continuations.c.task_id == wait["owner_id"],
