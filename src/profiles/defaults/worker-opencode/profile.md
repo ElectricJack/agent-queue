@@ -76,6 +76,7 @@ list and run python scripts/generate-worker-capabilities.py. -->
     "NotebookEdit"
   ],
   "aq_commands": [
+    "integration_continue_close",
     "integration_batch_fix",
     "wait_explain",
     "wait_checkpoint",

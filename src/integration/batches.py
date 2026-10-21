@@ -1042,6 +1042,10 @@ class BatchService:
                                                                companion, common))
                 elif not candidate and queue.get("delivery_sha"):
                     assembly_base = queue["delivery_sha"]
+                from src.integration.close_handoff import assembly_inputs
+
+                assembly_members = await assembly_inputs(
+                    self.store.db, self.gitops, repo, batch, assembly_members)
                 result = await self.gitops.merge_sources(repo, assembly_base,
                                                         assembly_members,
                                                         created_at=batch.created_at)

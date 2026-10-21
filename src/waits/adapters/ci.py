@@ -107,14 +107,24 @@ class CIAdapter(RepositoryAdapter):
             )
             .limit(1)
         )
-        if not known_batch and not known_job:
-            # The integration owner may observe disposable speculative heads
-            # before they occupy a delivery batch. The authenticated watcher
-            # must verify repository, origin SHA and exact run identity first.
-            if (self.kind != "ci_run" or scope.principal != "service"
-                    or scope.owner_kind != "integration"
-                    or not await self.snapshot(conn, cond)):
-                unresolved("head is not known to a job or integration stage")
+        from src.waits.adapters.close_scope import author_candidate
+
+        close = await author_candidate(conn, scope, repository_id=p["repository_id"],
+                                       head=p["head_sha"])
+        if close:
+            hosted = close["evidence"].get("hosted") or {}
+            if self.kind != "ci_check" or p["check_name"] not in (
+                hosted.get("pending_checks", []) + hosted.get("missing_checks", [])
+            ):
+                foreign()
+        # The integration owner may observe disposable speculative heads
+        # before they occupy a delivery batch. The authenticated watcher
+        # must verify repository, origin SHA and exact run identity first.
+        if (not known_batch and not known_job and not close
+                and (self.kind != "ci_run" or scope.principal != "service"
+                     or scope.owner_kind != "integration"
+                     or not await self.snapshot(conn, cond))):
+            unresolved("head is not known to a job or integration stage")
         return cond
 
     async def snapshot(self, conn, cond):

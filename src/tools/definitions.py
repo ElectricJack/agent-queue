@@ -16,6 +16,7 @@ from src.commands.playbook_state_schemas import STATE_SCHEMAS
 # Tools not listed here are "core" (always loaded).
 _TOOL_CATEGORIES: dict[str, str] = {
     "integration_batch_fix": "integration",
+    "integration_continue_close": "integration",
     "operator_execute": "operator",
     "operator_preflight": "operator",
     "policy_export": "policy",
@@ -9487,3 +9488,13 @@ for _name, _args in _ASK_ARGS.items():
         _ALL_TOOL_DEFINITIONS.append({"name": _name,
             "description": "Scoped human request communication and decision evidence.",
             "input_schema": _args.model_json_schema()})
+
+_ALL_TOOL_DEFINITIONS.append({
+    "name": "integration_continue_close",
+    "description": "Continue the parent merge belonging to your held task and session.",
+    "input_schema": {
+        "type": "object", "additionalProperties": False,
+        "required": ["operation_id"],
+        "properties": {"operation_id": {"type": "string"}},
+    },
+})

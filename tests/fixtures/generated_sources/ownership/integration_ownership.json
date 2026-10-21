@@ -12,7 +12,10 @@
       "src/commands/contracts/integration.py",
       "src/cli/integration.py",
       "src/doctor/integration_checks.py",
-      "src/database/queries/integration_*.py"
+      "src/database/queries/integration_*.py",
+      "src/waits/adapters/close_merge.py",
+      "src/waits/adapters/close_scope.py",
+      "migrations/versions/a00000000115_integration_close_attempts.py"
     ],
     "policy": [
       "src/playbooks/integration_policy.py"
@@ -9563,6 +9566,62 @@
     },
     "src/waits/admission.py::import from src.database.tables import continuations, integration_batch_members, integration_batches, integration_branch_owners, integration_repair_stages, projects, sessions, tasks, token_ledger, wait_records": {
       "reason": "Admission reads canonical integration ownership and repair blockers; integration source authority remains charged."
+    },
+    "src/cli/auto_commands.py::HANDCRAFTED_COVERAGE['integration_continue_close']": {
+      "reason": "Author-assisted close candidate authority, persisted proposal, or public continuation surface (stark-willow-95.15).",
+      "landing_span": [
+        152,
+        152
+      ],
+      "baseline_span": null
+    },
+    "src/database/tables.py::integration_close_attempts": {
+      "reason": "Author-assisted close candidate authority, persisted proposal, or public continuation surface (stark-willow-95.15).",
+      "landing_span": [
+        7761,
+        7793
+      ],
+      "baseline_span": null
+    },
+    "src/tools/definitions.py::_TOOL_CATEGORIES['integration_continue_close']": {
+      "reason": "Author-assisted close candidate authority, persisted proposal, or public continuation surface (stark-willow-95.15).",
+      "landing_span": [
+        19,
+        19
+      ],
+      "baseline_span": null
+    },
+    "src/tools/definitions.py::statement:678f1f7bd3e0177e": {
+      "reason": "Author-assisted close candidate authority, persisted proposal, or public continuation surface (stark-willow-95.15).",
+      "landing_span": [
+        9471,
+        9480
+      ],
+      "baseline_span": null
+    },
+    "src/waits/adapters/job.py::JobAdapter.authorise": {
+      "reason": "Author-assisted close candidate authority, persisted proposal, or public continuation surface (stark-willow-95.15).",
+      "landing_span": [
+        22,
+        42
+      ],
+      "baseline_span": null
+    },
+    "src/cli/client.py::_COMMAND_TIMEOUTS['task_close']": {
+      "reason": "Author-assisted close needs candidate regeneration time before returning its verified wait.",
+      "landing_span": [
+        105,
+        106
+      ],
+      "baseline_span": null
+    },
+    "src/cli/client.py::_COMMAND_TIMEOUTS['integration_continue_close']": {
+      "reason": "Author-assisted close needs candidate regeneration time before returning its verified wait.",
+      "landing_span": [
+        107,
+        107
+      ],
+      "baseline_span": null
     }
   },
   "exclusions": {
@@ -15332,7 +15391,7 @@
       "line": 2462,
       "owner": "ExecutionMixin._complete_session_task_locked",
       "call": "set_task_meta",
-      "owner_fingerprint": "2c71e34d3afe5f0898592025d474707e656ac21e08a6b6712567805c636f01fb",
+      "owner_fingerprint": "97455149cce9c4d4c192f4ba776bfe521b4a18c82a8ab04dae66253e0cd2aeb4",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Marks integration_handoff_unproven after failed completion handoff; the attention marker preserves the blocked state rather than granting release."
@@ -16223,7 +16282,7 @@
       "line": 1927,
       "owner": "ExecutionMixin._complete_session_task_locked",
       "call": "set_task_meta",
-      "owner_fingerprint": "2c71e34d3afe5f0898592025d474707e656ac21e08a6b6712567805c636f01fb",
+      "owner_fingerprint": "97455149cce9c4d4c192f4ba776bfe521b4a18c82a8ab04dae66253e0cd2aeb4",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Updates the existing identity-bound pending completion draft with verified source work before the terminal transition; accepted-close recovery uses no separate integration lifecycle journal."
@@ -16232,7 +16291,7 @@
       "line": 1918,
       "owner": "ExecutionMixin._complete_session_task_locked",
       "call": "set_task_meta",
-      "owner_fingerprint": "2c71e34d3afe5f0898592025d474707e656ac21e08a6b6712567805c636f01fb",
+      "owner_fingerprint": "97455149cce9c4d4c192f4ba776bfe521b4a18c82a8ab04dae66253e0cd2aeb4",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Stores completion_ci diagnostics collected while completing the worker task; actual check attestations and integration gates remain independently verified."
@@ -16493,7 +16552,7 @@
       "line": 1505,
       "owner": "SessionCommandsMixin._close_task_ordinary",
       "call": "set_task_meta",
-      "owner_fingerprint": "185fcf5404a417f3295aa11aa9ec5e7000909fccb65ef88ae51919eddeaaf1b2",
+      "owner_fingerprint": "807aba1e4afda12dd6db5fdfcec61eb87565a7ca0ca7f606cdb1db7700804e52",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Stores caller close_notes as ordinary completion narrative; notes neither authorize integration handoff nor attest delivery."
@@ -16502,7 +16561,7 @@
       "line": 1495,
       "owner": "SessionCommandsMixin._close_task_ordinary",
       "call": "set_task_meta",
-      "owner_fingerprint": "185fcf5404a417f3295aa11aa9ec5e7000909fccb65ef88ae51919eddeaaf1b2",
+      "owner_fingerprint": "807aba1e4afda12dd6db5fdfcec61eb87565a7ca0ca7f606cdb1db7700804e52",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Stores the task failure_class used to explain the work outcome; it contains no ref intent or delivery lifecycle generation."
@@ -16511,7 +16570,7 @@
       "line": 1509,
       "owner": "SessionCommandsMixin._close_task_ordinary",
       "call": "set_task_meta",
-      "owner_fingerprint": "185fcf5404a417f3295aa11aa9ec5e7000909fccb65ef88ae51919eddeaaf1b2",
+      "owner_fingerprint": "807aba1e4afda12dd6db5fdfcec61eb87565a7ca0ca7f606cdb1db7700804e52",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Records close_session_id for completion attribution to the accepting worker session; session identity alone cannot authorize publication."
@@ -16520,7 +16579,7 @@
       "line": 1906,
       "owner": "SessionCommandsMixin._close_task_ordinary",
       "call": "set_task_meta",
-      "owner_fingerprint": "185fcf5404a417f3295aa11aa9ec5e7000909fccb65ef88ae51919eddeaaf1b2",
+      "owner_fingerprint": "807aba1e4afda12dd6db5fdfcec61eb87565a7ca0ca7f606cdb1db7700804e52",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Marks claim_release_declined for attention after the guarded release refuses; the diagnostic cannot override that refusal."
@@ -16529,7 +16588,7 @@
       "line": 1497,
       "owner": "SessionCommandsMixin._close_task_ordinary",
       "call": "set_task_meta",
-      "owner_fingerprint": "185fcf5404a417f3295aa11aa9ec5e7000909fccb65ef88ae51919eddeaaf1b2",
+      "owner_fingerprint": "807aba1e4afda12dd6db5fdfcec61eb87565a7ca0ca7f606cdb1db7700804e52",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Stores work_outcome as the task's work result, separately from independently observed integration delivery."
@@ -16538,7 +16597,7 @@
       "line": 1499,
       "owner": "SessionCommandsMixin._close_task_ordinary",
       "call": "set_task_meta",
-      "owner_fingerprint": "185fcf5404a417f3295aa11aa9ec5e7000909fccb65ef88ae51919eddeaaf1b2",
+      "owner_fingerprint": "807aba1e4afda12dd6db5fdfcec61eb87565a7ca0ca7f606cdb1db7700804e52",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Stores the explicitly supplied work_commit locator for completion reporting; the SHA is a source observation, not proof that a target contains it."
@@ -16547,7 +16606,7 @@
       "line": 1767,
       "owner": "SessionCommandsMixin._close_task_ordinary",
       "call": "set_task_meta",
-      "owner_fingerprint": "185fcf5404a417f3295aa11aa9ec5e7000909fccb65ef88ae51919eddeaaf1b2",
+      "owner_fingerprint": "807aba1e4afda12dd6db5fdfcec61eb87565a7ca0ca7f606cdb1db7700804e52",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Stores the accepted task summary for user-facing completion history; no integration state is derived from its prose."
@@ -16556,7 +16615,7 @@
       "line": 1493,
       "owner": "SessionCommandsMixin._close_task_ordinary",
       "call": "set_task_meta",
-      "owner_fingerprint": "185fcf5404a417f3295aa11aa9ec5e7000909fccb65ef88ae51919eddeaaf1b2",
+      "owner_fingerprint": "807aba1e4afda12dd6db5fdfcec61eb87565a7ca0ca7f606cdb1db7700804e52",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Stores the ordinary task outcome accepted by close; downstream delivery still requires its separate fenced integration proof."
@@ -16565,7 +16624,7 @@
       "line": 1507,
       "owner": "SessionCommandsMixin._close_task_ordinary",
       "call": "set_task_meta",
-      "owner_fingerprint": "185fcf5404a417f3295aa11aa9ec5e7000909fccb65ef88ae51919eddeaaf1b2",
+      "owner_fingerprint": "807aba1e4afda12dd6db5fdfcec61eb87565a7ca0ca7f606cdb1db7700804e52",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Stores the worker verification narrative; this historical claim is not a CI attestation or Git containment predicate."
@@ -16574,7 +16633,7 @@
       "line": 1565,
       "owner": "SessionCommandsMixin._close_task_ordinary",
       "call": "set_task_meta",
-      "owner_fingerprint": "185fcf5404a417f3295aa11aa9ec5e7000909fccb65ef88ae51919eddeaaf1b2",
+      "owner_fingerprint": "807aba1e4afda12dd6db5fdfcec61eb87565a7ca0ca7f606cdb1db7700804e52",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Stores the identity-bound accepted-close completion draft for crash recovery, including work evidence and tests; it creates no integration episode, ref intent or delivery journal."
@@ -16583,7 +16642,7 @@
       "line": 1503,
       "owner": "SessionCommandsMixin._close_task_ordinary",
       "call": "set_task_meta",
-      "owner_fingerprint": "185fcf5404a417f3295aa11aa9ec5e7000909fccb65ef88ae51919eddeaaf1b2",
+      "owner_fingerprint": "807aba1e4afda12dd6db5fdfcec61eb87565a7ca0ca7f606cdb1db7700804e52",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Stores work_branch as the worker-reported completion locator; a branch name does not prove remote publication or grant ownership."
@@ -16592,7 +16651,7 @@
       "line": 1749,
       "owner": "SessionCommandsMixin._close_task_ordinary",
       "call": "set_task_meta",
-      "owner_fingerprint": "185fcf5404a417f3295aa11aa9ec5e7000909fccb65ef88ae51919eddeaaf1b2",
+      "owner_fingerprint": "807aba1e4afda12dd6db5fdfcec61eb87565a7ca0ca7f606cdb1db7700804e52",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Stores the automatically observed work_commit_auto SHA as source work evidence; current Git checks still decide integration containment."
@@ -16781,7 +16840,7 @@
       "line": 442,
       "owner": "register_wait",
       "call": "insert",
-      "owner_fingerprint": "2b56c1c49222623d1ac39b9cf4d221376a87cf73735792d18be9bb15e50b5891",
+      "owner_fingerprint": "35275c598162a7df357a2f35f0fa77f8f16dbe38d6fbf5d46187110b331c731b",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Wait registration, continuation park/delivery/ACK or existing task recovery audit; no new integration journal or reference replay authority."
@@ -18136,7 +18195,9 @@
     "src/waits/checkpoint.py::import from src.handoffs import collect_facts": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
     "src/waits/graph.py::GRAPH_LOCK": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
     "src/database/queries/wait_metrics.py::wait_metrics_snapshot": "Read-only fleet wait metrics aggregate owned by metrics; wait_graph's cost projection imports it, but it writes nothing and holds no integration fence or source.",
-    "src/database/tables.py::operator_decisions": "Project-scoped append-only operator instructions for tasks, batches and operations; stacked prerequisite authorization consumes existing decisions without adding integration storage. Integration authorization adapters remain charged."
+    "src/database/tables.py::operator_decisions": "Project-scoped append-only operator instructions for tasks, batches and operations; stacked prerequisite authorization consumes existing decisions without adding integration storage. Integration authorization adapters remain charged.",
+    "src/waits/policy.py::enabled": "Shared verified-wait rollout and policy resolver, independent of integration; close uses it without owning other wait consumers.",
+    "src/waits/policy.py::effective_policy": "Shared verified-wait rollout and policy resolver, independent of integration; close uses it without owning other wait consumers."
   },
   "exclusion_policy": {
     "tests": "Fixtures and tests do not ship as production mechanisms.",
@@ -19477,5 +19538,12 @@
     "delta": 1293,
     "restore_task": "azure-ridge-72",
     "expires_at": "s4_modules"
+  },
+  "storage_dispositions": {
+    "integration_close_attempts": {
+      "task": "stark-willow-95.15",
+      "authority": "Approved fast-smooth-integration section 5 and current task close contract, 2026-10-21",
+      "purpose": "Version-fenced retained author candidate and wait evidence, never delivery truth. Additive table charged; no cap increase."
+    }
   }
 }

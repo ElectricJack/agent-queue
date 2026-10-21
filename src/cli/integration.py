@@ -34,6 +34,15 @@ def integration() -> None:
     """Inspect integration Subjects and apply current recovery proofs."""
 
 
+@integration.command("continue-close")
+@click.option("--operation-id", required=True)
+@click.pass_context
+@_handle_errors
+def integration_continue_close(ctx, operation_id):
+    """Resume your retained parent merge, exact checks and task completion."""
+    _execute(ctx, "integration_continue_close", {"operation_id": operation_id})
+
+
 @integration.command("batch-fix")
 @click.option("--action", type=click.Choice(["status", "push", "rebind"]), default="status")
 @click.pass_context

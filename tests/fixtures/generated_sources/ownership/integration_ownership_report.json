@@ -10646,6 +10646,62 @@
     },
     "src/waits/admission.py::import from src.database.tables import continuations, integration_batch_members, integration_batches, integration_branch_owners, integration_repair_stages, projects, sessions, tasks, token_ledger, wait_records": {
       "reason": "Admission reads canonical integration ownership and repair blockers; integration source authority remains charged."
+    },
+    "src/cli/auto_commands.py::HANDCRAFTED_COVERAGE['integration_continue_close']": {
+      "reason": "Author-assisted close candidate authority, persisted proposal, or public continuation surface (stark-willow-95.15).",
+      "landing_span": [
+        152,
+        152
+      ],
+      "baseline_span": null
+    },
+    "src/database/tables.py::integration_close_attempts": {
+      "reason": "Author-assisted close candidate authority, persisted proposal, or public continuation surface (stark-willow-95.15).",
+      "landing_span": [
+        7761,
+        7793
+      ],
+      "baseline_span": null
+    },
+    "src/tools/definitions.py::_TOOL_CATEGORIES['integration_continue_close']": {
+      "reason": "Author-assisted close candidate authority, persisted proposal, or public continuation surface (stark-willow-95.15).",
+      "landing_span": [
+        19,
+        19
+      ],
+      "baseline_span": null
+    },
+    "src/tools/definitions.py::statement:678f1f7bd3e0177e": {
+      "reason": "Author-assisted close candidate authority, persisted proposal, or public continuation surface (stark-willow-95.15).",
+      "landing_span": [
+        9471,
+        9480
+      ],
+      "baseline_span": null
+    },
+    "src/waits/adapters/job.py::JobAdapter.authorise": {
+      "reason": "Author-assisted close candidate authority, persisted proposal, or public continuation surface (stark-willow-95.15).",
+      "landing_span": [
+        22,
+        42
+      ],
+      "baseline_span": null
+    },
+    "src/cli/client.py::_COMMAND_TIMEOUTS['task_close']": {
+      "reason": "Author-assisted close needs candidate regeneration time before returning its verified wait.",
+      "landing_span": [
+        105,
+        106
+      ],
+      "baseline_span": null
+    },
+    "src/cli/client.py::_COMMAND_TIMEOUTS['integration_continue_close']": {
+      "reason": "Author-assisted close needs candidate regeneration time before returning its verified wait.",
+      "landing_span": [
+        107,
+        107
+      ],
+      "baseline_span": null
     }
   },
   "shared_state": {
@@ -13543,6 +13599,13 @@
         "previous_recorded_owner_fingerprint": "ec49bd5e9066b5c54a2cc0c36d97d1220c7470d21e214d44405b527c9d2c938e",
         "inherited_unreviewed": true
       }
+    }
+  },
+  "storage_dispositions": {
+    "integration_close_attempts": {
+      "task": "stark-willow-95.15",
+      "authority": "Approved fast-smooth-integration section 5 and current task close contract, 2026-10-21",
+      "purpose": "Version-fenced retained author candidate and wait evidence, never delivery truth. Additive table charged; no cap increase."
     }
   }
 }

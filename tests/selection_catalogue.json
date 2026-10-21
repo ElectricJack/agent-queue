@@ -634,6 +634,7 @@
         "tests/test_integration_ci_producers.py",
         "tests/test_integration_cleanup.py",
         "tests/test_integration_cli_controls_present.py",
+        "tests/test_integration_close_merge.py",
         "tests/test_integration_completed_container_recovery.py",
         "tests/test_integration_completion_recovery.py",
         "tests/test_integration_container_completion.py",
@@ -8669,6 +8670,37 @@
         "parametrize"
       ],
       "summary": "Ensure the operator integration controls are registered in the CLI."
+    },
+    "tests/test_integration_close_merge.py": {
+      "areas": [
+        "integration-trains"
+      ],
+      "default_arm": true,
+      "digest": "sha256:ca307c6a6885d80d66c15376503864e2521d49e81b94be11455e9715028b9467",
+      "imports": [
+        "src.commands.integration_commands",
+        "src.commands.principal",
+        "src.config",
+        "src.database.tables",
+        "src.git.github_contracts",
+        "src.git.manager",
+        "src.integration.batches",
+        "src.integration.close_checks",
+        "src.integration.close_handoff",
+        "src.integration.close_merge",
+        "src.integration.close_runtime",
+        "src.integration.gitops",
+        "src.integration.models",
+        "src.models",
+        "src.operator_decisions",
+        "src.waits.adapters.close_scope",
+        "src.waits.conditions",
+        "src.waits.registry"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Author close retains real Git ancestry and exact evidence across retries."
     },
     "tests/test_integration_completed_container_recovery.py": {
       "areas": [
