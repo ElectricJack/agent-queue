@@ -40,6 +40,10 @@ vi.mock("../TimeSeriesChart", () => ({
   },
 }));
 
+// The delivery panel has its own suite and needs a router; this page test is
+// about the fleet charts.
+vi.mock("../DeliveryLatency", () => ({ default: () => <div data-testid="delivery-latency" /> }));
+
 const api = vi.hoisted(() => ({
   calls: [] as unknown[],
   response: null as MetricsSeriesResponse | null,

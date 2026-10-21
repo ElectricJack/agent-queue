@@ -33475,6 +33475,61 @@
             ],
             "title": "Dev Ref"
           },
+          "source_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Ref"
+          },
+          "source_oid": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Oid"
+          },
+          "target_oid": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Oid"
+          },
+          "observed_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Observed At"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
           "latest_state": {
             "anyOf": [
               {
@@ -33607,6 +33662,14 @@
             "type": "boolean",
             "title": "Current Blocker",
             "default": false
+          },
+          "waits": {
+            "items": {
+              "$ref": "#/components/schemas/DeliveryLatencyWait"
+            },
+            "type": "array",
+            "title": "Waits",
+            "default": []
           }
         },
         "type": "object",
@@ -33616,7 +33679,7 @@
           "status"
         ],
         "title": "DeliveryLatencyGeneration",
-        "description": "One completed generation in drill-down.\n\n``status`` is ``sample``, ``pending``, ``unknown``, ``historical_unknown``,\n``left_censored`` or ``excluded``. ``current_blocker`` marks a sample whose\ndev ref no longer contains it (a rewrite after the timing was taken)."
+        "description": "One completed generation in drill-down.\n\n``status`` is ``sample``, ``pending``, ``unknown``, ``historical_unknown``,\n``left_censored`` or ``excluded``. ``current_blocker`` marks a sample whose\ndev ref no longer contains it (a rewrite after the timing was taken).\n``observed_at``, ``reason`` and the OIDs come from the latest recorded\ncontainment transition (on dev when there is one); transitions are written\nonly when the state changes, so ``observed_at`` is not a freshness probe."
       },
       "DeliveryLatencyHistogramBucket": {
         "properties": {
@@ -34054,6 +34117,106 @@
         "type": "object",
         "title": "DeliveryLatencyTarget",
         "description": "Section 9.2's per-project threshold, which is also the SLO target.\n\n``source`` is ``floor`` until integration CI has been measured."
+      },
+      "DeliveryLatencyWait": {
+        "properties": {
+          "wait_id": {
+            "type": "string",
+            "title": "Wait Id"
+          },
+          "origin": {
+            "type": "string",
+            "title": "Origin"
+          },
+          "condition_kind": {
+            "type": "string",
+            "title": "Condition Kind"
+          },
+          "segment": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Segment"
+          },
+          "outcome": {
+            "type": "string",
+            "title": "Outcome"
+          },
+          "created_at": {
+            "type": "number",
+            "title": "Created At"
+          },
+          "resolved_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resolved At"
+          },
+          "evidence_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evidence Ref"
+          },
+          "result_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Result Ref"
+          },
+          "decision_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decision Reason"
+          },
+          "ci_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ci Url"
+          }
+        },
+        "type": "object",
+        "required": [
+          "wait_id",
+          "origin",
+          "condition_kind",
+          "outcome",
+          "created_at"
+        ],
+        "title": "DeliveryLatencyWait",
+        "description": "A wait record linked to a generation (its task, batch or repair).\n\n``segment`` names the breakdown segment an ``integration`` wait counts\ntoward; ``ci_url`` is the exact CI run, set only for an http(s) result."
       },
       "DeploymentEvent": {
         "properties": {
