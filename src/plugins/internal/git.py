@@ -94,6 +94,10 @@ def _build_tool_definitions() -> list[dict]:
                         "type": "string",
                         "description": _EXPECTED_REMOTE_OID_DESCRIPTION,
                     },
+                    "publication_delegation_id": {
+                        "type": "string",
+                        "description": "Single-use integration-owner grant for this target branch",
+                    },
                     "workspace": {
                         "type": "string",
                         "description": "Workspace name or ID (optional)",
@@ -330,6 +334,10 @@ def _build_tool_definitions() -> list[dict]:
                     "expected_remote_oid": {
                         "type": "string",
                         "description": _EXPECTED_REMOTE_OID_DESCRIPTION,
+                    },
+                    "publication_delegation_id": {
+                        "type": "string",
+                        "description": "Single-use integration-owner grant for this target branch",
                     },
                     "workspace": {
                         "type": "string",
@@ -814,6 +822,13 @@ class GitPlugin(InternalPlugin):
         git = self._git
         expected_remote_oid = args.get("expected_remote_oid")
         principal = _worker_principal()
+        delegation_id = args.get("publication_delegation_id")
+        if delegation_id is not None:
+            if principal is None:
+                raise GitError("publication delegation requires its bound worker session")
+            return await self._push_delegated(
+                principal, checkout_path, project, args, requested_branch,
+            )
         if principal is None:
             branch = requested_branch or await git.aget_current_branch(checkout_path)
             if not branch:
@@ -867,6 +882,43 @@ class GitPlugin(InternalPlugin):
                 self._db._db, publication.task_id, publication.branch, oid,
             )
         return publication.branch, oid, list(policy.notes)
+
+    async def _push_delegated(self, principal, checkout_path, project, args, branch):
+        from src.git.manager import GitError
+        from src.integration.publication_delegations import (
+            DELEGATION_ERRORS, PublicationDelegations,
+        )
+
+        service = PublicationDelegations(
+            self._db._db,
+            active=lambda: self._ctx.get_service("config").integration_git_first == "active",
+        )
+        try:
+            # Repeat dispatch authorization for native/in-process plugin callers.
+            grant = await service.validate(
+                args["publication_delegation_id"], principal, branch, args.get("expected_remote_oid"),
+            )
+            publication = await self._worker_publication(principal, checkout_path, project, None)
+            policy = await self._publish_policy(
+                principal, project, publication.task_id, checkout_path=checkout_path,
+                repository_url=grant["repository_url"],
+            )
+            from src.integration.repair import OrdinaryRepairService
+
+            inherited = await self._source_ci_inherited_oids(publication.task_id)
+            async with OrdinaryRepairService(self._db._db).publication(
+                publication.task_id, branch=branch,
+            ):
+                oid = await service.publish(
+                    args["publication_delegation_id"], principal, branch,
+                    expected_oid=args.get("expected_remote_oid"), git=self._git,
+                    checkout_path=checkout_path, policy=policy,
+                    inherited_oids=inherited,
+                    event_bus=self._ctx._bus,
+                )
+        except DELEGATION_ERRORS as exc:
+            raise GitError(str(exc)) from exc
+        return branch, oid, list(policy.notes)
 
     async def _source_ci_inherited_oids(self, task_id: str) -> list[str]:
         """Source-CI source heads an authorized repair task may merge above.

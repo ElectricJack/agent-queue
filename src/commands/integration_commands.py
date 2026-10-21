@@ -59,6 +59,37 @@ def _with_reason(success: bool, payload: dict[str, Any]) -> dict[str, Any]:
 
 
 class IntegrationCommandsMixin:
+    async def _cmd_integration_delegate_publication(self, args: dict) -> dict:
+        from src.commands.contracts.integration import IntegrationDelegatePublicationArgs
+        from src.integration.publication_delegations import DELEGATION_ERRORS, PublicationDelegations
+
+        request = IntegrationDelegatePublicationArgs.model_validate(args)
+        if self.config.integration.git_first != "active":
+            return _failure("refused", "publication delegation requires Git-first active mode")
+        try:
+            row = await PublicationDelegations(self.db).issue(request)
+        except DELEGATION_ERRORS as exc:
+            return _failure("refused", str(exc))
+        return self._publication_delegation_result("issued", row)
+
+    async def _cmd_integration_revoke_publication(self, args: dict) -> dict:
+        from src.commands.contracts.integration import IntegrationRevokePublicationArgs
+        from src.integration.publication_delegations import DELEGATION_ERRORS, PublicationDelegations
+
+        request = IntegrationRevokePublicationArgs.model_validate(args)
+        try:
+            row = await PublicationDelegations(self.db).revoke(request)
+        except DELEGATION_ERRORS as exc:
+            return _failure("refused", str(exc))
+        return self._publication_delegation_result("revoked", row)
+
+    @staticmethod
+    def _publication_delegation_result(outcome, row):
+        return {"success": True, "outcome": outcome, "delegation_id": row["id"], **{
+            key: row.get(key) for key in ("project_id", "target_branch", "owner_fence",
+                                        "expires_at", "revoked_at", "published_oid")
+        }}
+
     async def retained_repository_recovery(self, state, *, load=False):
         """Daemon port for its managed cache, never a caller-supplied repair command."""
         from src.integration.repository_incidents import record_incident

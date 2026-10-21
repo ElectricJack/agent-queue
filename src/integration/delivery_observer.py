@@ -603,7 +603,9 @@ class DeliveryObserver:
         self.db = db
         self.git = git
         self.truth = truth
-        self.request_loader = partial(load_delivery_requests, reduced=truth is not None)
+        # Git truth proves a sourceless completed container from its children.
+        self.request_loader = partial(load_delivery_requests, reduced=truth is not None,
+                                      containers=truth is not None)
         self.target_loader = partial(delivery_targets, reduced=truth is not None)
         self.data_dir = Path(data_dir) / "development-integration"
         self._recent: dict[DeliveryTarget, tuple[float, DeliverySnapshot]] = {}

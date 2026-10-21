@@ -622,3 +622,32 @@ def test_clear_retained_recovery_names_the_project_and_optional_incident(inciden
         "integration_clear_retained_recovery",
         {"project_id": "p", **({"incident_id": "abc"} if incident else {})},
     )
+
+
+def test_delegate_publication_preserves_explicit_grantee_and_fences():
+    from src.cli.app import cli
+
+    args = dict(id="grant", project_id="p", repository_id="r", task_id="t", session_id="worker",
+                claim_epoch=7, target_branch="aq/epic", expected_target_oid="a" * 40,
+                expected_owner_fence=3, ttl_seconds=60, reason="aggregate")
+    argv = ["integration", "delegate-publication"]
+    for key, value in args.items():
+        argv += ["--" + key.replace("_", "-"), str(value)]
+    client = _client({"success": True, "outcome": "issued", "delegation_id": "grant"})
+    with patch("src.cli.integration._get_client", return_value=client):
+        result = CliRunner().invoke(cli, [*argv, "--json"])
+    assert result.exit_code == 0, result.output
+    client.execute.assert_awaited_once_with("integration_delegate_publication", args)
+
+
+def test_revoke_publication_uses_native_control():
+    from src.cli.app import cli
+
+    client = _client({"success": True, "outcome": "revoked"})
+    with patch("src.cli.integration._get_client", return_value=client):
+        result = CliRunner().invoke(cli, ["integration", "revoke-publication", "--id", "grant",
+                                         "--project-id", "p", "--reason", "cancel"])
+    assert result.exit_code == 0, result.output
+    client.execute.assert_awaited_once_with("integration_revoke_publication", dict(
+        id="grant", project_id="p", reason="cancel",
+    ))
