@@ -72,8 +72,8 @@ class StrandedWork:
       Reported, not an error; ``branch`` is the local branch (or ``None``
       on a detached HEAD).
     * ``unknown`` — the question could not be asked (no checkout, git
-      failure).  Treated as "nothing to do" by callers, never as proof of
-      safety.
+      failure). A live failure-close with an assigned workspace refuses
+      this result; it is never proof of safety.
     """
 
     status: str
@@ -130,20 +130,22 @@ async def preserve_unpushed_work(
         return StrandedWork(status="unknown")
     try:
         if not await git.avalidate_checkout(workspace):
-            return StrandedWork(status="unknown")
+            return StrandedWork(status="unknown", error="Assigned checkout could not be validated")
     except ProcessCleanupError:
         raise
-    except Exception:  # pragma: no cover - defensive
+    except Exception as exc:  # pragma: no cover - defensive
         logger.debug("preserve_unpushed_work: checkout probe failed", exc_info=True)
-        return StrandedWork(status="unknown")
+        return StrandedWork(status="unknown", error=f"{type(exc).__name__}: {exc}")
 
     count = await git.acount_commits_not_on_any_remote(workspace)
     if count is None:
-        return StrandedWork(status="unknown")
+        return StrandedWork(status="unknown", error="Could not count unpublished commits")
     if count == 0:
         return StrandedWork(status="clean")
 
     head = await git.arev_parse(workspace, "HEAD")
+    if head is None:
+        return StrandedWork(status="unknown", count=count, error="Could not resolve workspace HEAD")
     local_branch: str | None = None
     try:
         local_branch = (await git.aget_current_branch(workspace)) or None
@@ -152,7 +154,13 @@ async def preserve_unpushed_work(
     except Exception:  # pragma: no cover - defensive
         local_branch = None
 
-    if not await git.ahas_remote(workspace):
+    has_remote = await git.ahas_remote(workspace, strict=True)
+    if has_remote is None:
+        return StrandedWork(
+            status="unknown", branch=local_branch, commit=head, count=count,
+            error="Could not determine whether origin is configured",
+        )
+    if not has_remote:
         return StrandedWork(
             status="no_remote",
             branch=local_branch,
@@ -326,6 +334,15 @@ async def save_wip_to_task_branch(
 
 def unpushed_close_issues(work: StrandedWork) -> list[str]:
     """Agent-facing feedback for a close refused over unpushed commits."""
+    if work.status == "unknown":
+        return [
+            "The daemon could not establish whether this workspace's commits are preserved: "
+            f"{work.error or 'Git inspection returned unknown'}. "
+            "The task, claim and workspace remain held. Inspect the assigned checkout's "
+            "HEAD and origin, publish the current work with `aq git push`, then retry close "
+            "with the same claim. If inspection or process cleanup remains unproved, "
+            "report the diagnostic to the project supervisor and keep the workspace intact."
+        ]
     where = f" (branch `{work.branch}`)" if work.branch else ""
     return [
         f"{work.count} commit(s) in this workspace{where} are on no remote branch, "

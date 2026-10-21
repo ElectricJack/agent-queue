@@ -1113,9 +1113,14 @@ class Orchestrator(
                     )
                     await self._finish_manual_pause(task_id, snapshot)
             task = await self.db.get_task(task_id)
+            # A hold placed over a failed slot reset resumes into the same
+            # retry, so the old writer needs the same proof of stop.
+            held = await self.db.get_task_meta(task_id, "manual_pause") if snapshot else None
+            parked = task.status if task is not None else None
+            if parked is TaskStatus.PAUSED and isinstance(held, dict):
+                parked = TaskStatus(held.get("status", "READY"))
             if (
-                task is not None
-                and task.status in {TaskStatus.READY, TaskStatus.BLOCKED}
+                parked in {TaskStatus.READY, TaskStatus.BLOCKED}
                 and await self.db.get_task_meta(task_id, "slot_reset_failure")
             ):
                 from src.sessions.provider import SessionHandle
@@ -1471,11 +1476,12 @@ class Orchestrator(
             task = await self.db.get_task(task_id)
             project = await self.db.get_project(task.project_id) if task else None
             await validate()
-            await validate_checkpoint_branch(self.git, ws.workspace_path, snapshot.get("branch_name"))
+            expected_branch = self._paused_checkpoint_branch(task_id, ws, snapshot)
+            await validate_checkpoint_branch(self.git, ws.workspace_path, expected_branch)
             with commit_identity(self.git.resolve_commit_identity(project)):
                 await capture_checkpoint(
                     self.db, self.git, task_id, ws.workspace_path, validate=validate, save=save,
-                    expected_branch=snapshot.get("branch_name"),
+                    expected_branch=expected_branch,
                 )
         except (PauseFenceError, CheckpointIdentityError, ProcessCleanupError):
             raise
@@ -1538,6 +1544,19 @@ class Orchestrator(
             )
         return True
 
+    @staticmethod
+    def _paused_checkpoint_branch(task_id: str, ws, snapshot: dict) -> str | None:
+        """The branch a paused workspace must be on for its capture to be the task's.
+
+        A managed slot is shared: with no recorded task branch it may still hold
+        another task's checkout, so it is held to the slot default branch name.
+        """
+        if snapshot.get("branch_name") or not ws.is_slot:
+            return snapshot.get("branch_name")
+        from src.orchestrator.worktree_manager import task_branch_name
+
+        return task_branch_name(task_id)
+
     async def _salvage_paused_workspace(self, task_id: str, ws, snapshot: dict) -> bool:
         """Preserve a partial patch without changing the paused task's live index."""
         from src.orchestrator.task_checkpoint import (
@@ -1553,12 +1572,13 @@ class Orchestrator(
         try:
             await self.db.validate_task_pause(task_id, snapshot, stopped=True)
             self._validate_paused_workspace_identity(task_id, ws, snapshot)
-            await validate_checkpoint_branch(self.git, ws.workspace_path, snapshot.get("branch_name"))
+            expected_branch = self._paused_checkpoint_branch(task_id, ws, snapshot)
+            await validate_checkpoint_branch(self.git, ws.workspace_path, expected_branch)
             return await salvage_checkpoint(
                 self.db, self.git, task_id, ws.workspace_path,
                 max_bytes=self.config.worktrees.salvage_max_bytes,
                 save=save,
-                expected_branch=snapshot.get("branch_name"),
+                expected_branch=expected_branch,
             )
         except (PauseFenceError, CheckpointIdentityError, ProcessCleanupError):
             raise
@@ -3610,6 +3630,19 @@ class Orchestrator(
             # Terminal onboarding requests are durable idempotency state; a
             # failed cleanup must not interrupt scheduling.
             await self._sweep_operational_event_retention()
+
+            # Snapshot expiry is bounded maintenance, independent of whether
+            # playbooks are enabled. Dispatch preserves the single write entry.
+            if (self._command_handler is not None
+                    and now - getattr(self, "_last_observation_cleanup", 0) >= 60):
+                self._last_observation_cleanup = now
+                try:
+                    from src.commands.principal import ExecutionPrincipal, principal_context
+
+                    with principal_context(ExecutionPrincipal.service("observation-retention")):
+                        await self._command_handler.execute("observation_snapshot_cleanup", {})
+                except Exception:
+                    logger.warning("Observation retention sweep failed", exc_info=True)
 
             # Selection records are history, not live state; a failed sweep
             # must not interrupt scheduling.

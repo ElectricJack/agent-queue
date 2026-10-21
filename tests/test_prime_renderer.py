@@ -352,6 +352,8 @@ class TestTaskContextSection:
     ):
         from src.knowledge.budget import ContextBudget
 
+        # Exercise the supported legacy operator cap, independently of auto sizing.
+        config.knowledge.context.input_max_tokens = 32768
         description = "Required acceptance αβ.\n" * 3000 + "FINAL ACCEPTANCE"
         salvage = "diff --git a/work.py b/work.py\n" + "+retained αβ\n" * 10000 + "FINAL DIFF"
         await db.update_task(task.id, description=description, deliverables=json.dumps([
@@ -370,7 +372,7 @@ class TestTaskContextSection:
                    "{{messages}}\n{{workspaces}}\n{{tool_guidance}}\n{{completion_protocol}}")
         renderer = PrimeRenderer(db, config)
         before = await renderer.render_for_task(task.id, work_dir=str(tmp_path))
-        # Use the default configured limit and make only inline policy large
+        # Use the explicit configured limit and make only inline policy large
         # enough to reproduce aggregate overflow from independently bounded prose.
         role = "Must preserve this exact policy. " + "r" * max(
             0, 34000 - len(before.to_markdown().encode("utf-8")),
@@ -456,6 +458,7 @@ class TestTaskContextSection:
         from src.knowledge.budget import ContextBudget
         from src.records.models import RecordError
 
+        config.knowledge.context.input_max_tokens = 32768
         config.knowledge.enabled = config.knowledge.context.enabled = config.memory.enabled = True
         config.knowledge.enabled_projects = [task.project_id]
         role = "MANDATORY POLICY " * 3000
@@ -466,6 +469,27 @@ class TestTaskContextSection:
         assert "--field prime_context" in doc.to_markdown()
         with pytest.raises(RecordError, match="context.required_over_budget"):
             ContextBudget.from_config(config).enforce(doc.to_markdown())
+
+    async def test_preview_fitting_uses_the_observed_model_window(
+        self, db, config, task, monkeypatch,
+    ):
+        from unittest.mock import AsyncMock
+        from src.knowledge.budget import ContextBudget
+
+        await db.add_task_context(task.id, type="note", label="Context", content="c" * 6000)
+        renderer = PrimeRenderer(db, config)
+        before = await renderer.render_for_task(task.id)
+        window = ContextBudget.from_config(config).account(before.to_markdown())["total_tokens"] - 1000
+        monkeypatch.setattr("src.sessions.context.read_context", AsyncMock(return_value={
+            "model_context_window": window,
+        }))
+        config.knowledge.enabled = config.knowledge.context.enabled = config.memory.enabled = True
+        config.knowledge.enabled_projects = [task.project_id]
+        after = await renderer.render_for_task(task.id)
+        ContextBudget.from_config(config, model_context_window=window).enforce(after.to_markdown())
+        assert "--field prime_context" in after.to_markdown()
+        assert len(after.to_markdown()) < len(before.to_markdown())
+        assert "aq task close" in after.to_markdown()
 
     async def test_worker_previews_bound_description_and_context_but_keep_protocol(
         self, db, config, task

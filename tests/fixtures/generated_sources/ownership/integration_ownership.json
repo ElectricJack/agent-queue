@@ -7917,6 +7917,9 @@
     "src/sessions/obsolete.py::ReleaseOwner": {
       "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
     },
+    "src/sessions/obsolete.py::import from src.database.tables import integration_branch_owners, integration_subjects, projects, sessions, task_metadata, tasks": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
     "src/sessions/obsolete.py::import from src.integration.finished_owners import stop_confirmer_for": {
       "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
     },
@@ -8651,6 +8654,24 @@
     "src/database/queries/task_queries.py::TaskQueryMixin.transition_task": {
       "reason": "Public lifecycle transition observes current Git delivery outside the transaction and passes request-scoped evidence to the locked mutation guard; no persisted delivery projection or ref replay authority."
     },
+    "src/api/target_scope.py::_target_project": {
+      "reason": "Shared resource ownership lookup used by integration target checks; read-only, without publication or lifecycle state."
+    },
+    "src/api/target_scope.py::target_references": {
+      "reason": "Shared command reference discovery including integration targets; no storage or authority mutation."
+    },
+    "src/commands/resource_authorization.py::SYSTEM_COMMANDS": {
+      "reason": "Audited system resource commands including integration service controls; declares authorization requirements only."
+    },
+    "src/commands/resource_authorization.py::SESSION_HANDLER_RESOURCE_GATES": {
+      "reason": "Session commands retaining independent domain resource checks, including operator repository binding; declares no publication authority."
+    },
+    "src/commands/resource_authorization.py::authorize_resources": {
+      "reason": "Shared principal resource authorization for integration and other commands; consults owners and exact operator grants without modifying branch state or lifecycle."
+    },
+    "src/commands/resource_authorization.py::principal_scope": {
+      "reason": "Derives the scope compatibility view used by integration controls from the original principal; never creates trusted operator authority."
+    },
     "src/orchestrator/lifecycle.py::LifecycleMixin.reevaluate_frontier_rejections": {
       "reason": "READY frontier lifecycle advisory evaluates shared integration admission predicates; it cannot publish refs or change delivery state."
     },
@@ -9164,6 +9185,8 @@
     "src/playbooks/executors/agent_task.py::CHILD_STATUS_OUTCOMES['completed']": "Generic same-shaped definition independently present at the pinned baseline/landing; new relocations are still charged.",
     "src/playbooks/executors/agent_task.py::CHILD_STATUS_OUTCOMES['failed']": "Generic same-shaped definition independently present at the pinned baseline/landing; new relocations are still charged.",
     "src/playbooks/receipts.py::RECEIPT_OUTCOMES['cancelled']": "Generic same-shaped definition independently present at the pinned baseline/landing; new relocations are still charged.",
+    "src/playbooks/script_inputs.py::QuotaLedger._locked": "Generic script input/output quota persistence uses atomic_json; it writes no integration lifecycle, ref replay or task metadata.",
+    "src/playbooks/script_policy.py::MIB": "Generic byte-unit constant for script capture limits; its same-shaped AST is not relocated integration logic.",
     "src/playbooks/waits.py::CHILD_TERMINAL_STATUSES['COMPLETED']": "Generic same-shaped definition independently present at the pinned baseline/landing; new relocations are still charged.",
     "src/playbooks/waits.py::CHILD_TERMINAL_STATUSES['FAILED']": "Generic same-shaped definition independently present at the pinned baseline/landing; new relocations are still charged.",
     "src/projects/github.py::GitHubAuthStatus.to_dict": "Generic same-shaped definition independently present at the pinned baseline/landing; new relocations are still charged.",
@@ -9196,6 +9219,25 @@
     "src/commands/operator_commands.py::OperatorCommandsMixin._operator_action": "Validates one operator-worker action against the command's schema, project target scope, profile grant and human decision; dispatch goes through the charged command handler. No integration storage, lifecycle or ref authority.",
     "src/commands/operator_commands.py::OperatorCommandsMixin._cmd_operator_preflight": "Operator-worker setup preflight: collects blockers from the charged integration read commands it dispatches and records an ordinary task comment, message and audit event. No integration storage, lifecycle or ref authority.",
     "src/doctor/escalation_checks.py::undelivered_escalations": "The delivery_status field describes human-notification transport, not code integration. This read-only query inspects escalation_deliveries receipts without reading or writing integration state; the stall sweep adapter remains charged.",
+    "src/database/queries/observation_snapshot_queries.py::task_rows": "Generic protected-snapshot projection of ordinary task rows; integration_mode is an existing task column copied verbatim. No integration storage, lifecycle or ref authority.",
+    "src/doctor/stall_checks.py::_SUBJECTS['completed_undelivered']": "Doctor observation identity mapping (finding kind to subject column) for read-only doctor_run pages; the integration finding producer is charged independently.",
+    "src/doctor/stall_checks.py::_SUBJECTS['continuous_promotion_lag']": "Doctor observation identity mapping (finding kind to subject column) for read-only doctor_run pages; the integration finding producer is charged independently.",
+    "src/doctor/stall_checks.py::_SUBJECTS['integration_unknown_facts']": "Doctor observation identity mapping (finding kind to subject column) for read-only doctor_run pages; the integration finding producer is charged independently.",
+    "src/jobs/playbook.py::import from src.jobs.artifacts import atomic_json, job_directory, read_json": "Playbook-only adapter import of generic managed-job receipt I/O; independent integration callers remain charged.",
+    "src/jobs/playbook.py::import from src.jobs.identity import processes, require_readable_identity, verified": "Playbook-only adapter import of generic process identity verification; no integration decisions.",
+    "src/jobs/playbook.py::launch_payload": "Decrypts script inputs for a closed stdin pipe; no integration identity or publication.",
+    "src/jobs/playbook.py::reconcile": "Settles protected script completion or pauses its owning playbook run; no integration ref replay.",
+    "src/jobs/playbook.py::retire": "Releases playbook input/output quotas and launch intent at result retention expiry; no integration lifecycle.",
+    "src/jobs/playbook.py::run": "Executes a pinned playbook script and encrypts its process result; independent of source CI jobs.",
+    "src/jobs/playbook.py::settle_unlaunched": "Records an unlaunched script cancellation/expiry as protected output; no integration lifecycle.",
+    "src/jobs/playbook.py::submit": "Admits playbook-owned scripts only, with encrypted inputs and immutable input pins; no integration submission.",
+    "src/jobs/script_sandbox.py::BINDING_BYTES": "Generic script binding size constant; same-shaped numeric AST is not relocated integration logic.",
+    "src/jobs/script_sandbox.py::REQUEST_BYTES": "Generic script input size constant; same-shaped numeric AST is not relocated integration logic.",
+    "src/jobs/script_sandbox.py::launch": "Ordinary script process backend with shared box admission and bounded streams; no integration policy/ref state.",
+    "src/playbooks/private_values.py::REFERENCE_KEY": "Generic protected-value reference key; same-shaped constant AST is not relocated integration logic.",
+    "src/playbooks/receipts.py::attempt_key": "Generic playbook step attempt hash; not an integration mutation key or replay ledger.",
+    "src/playbooks/script_inputs.py::canonical": "Generic canonical JSON for script input pins; not integration ref serialization.",
+    "src/playbooks/script_inputs.py::digest": "Generic SHA-256 for script bytes; not integration lifecycle storage.",
     "src/commands/ask_communication_commands.py::AskCommunicationCommandsMixin._cmd_ask_show": "Generic audience-scoped human request, review evidence and notification-transport display for all ask sources. delivery_status describes external messages; integration source authorization and adapters remain independently charged.",
     "src/database/queries/ask_delivery_queries.py::AskDeliveryQueriesMixin.ask_delivery_status": "Notification root and reconciliation-case observations for every ask source; delivery_status is transport receipt state, with no Git, branch, integration gate or publication authority.",
     "src/commands/ask_commands.py::AskCommandsMixin._ask_service": "Generic registry/service assembly for reviews, specifications and all human sources. Static integration adapter registration and IntegrationAdapter are independently charged; no integration decision or domain write occurs here.",
@@ -15105,6 +15147,15 @@
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
     },
+    "src/sessions/obsolete.py::ObsoleteClose.close::323f29e5c2576fb3bb7d12d8133d3446524707629df5ca97c22e69b9324ca590": {
+      "line": 243,
+      "owner": "ObsoleteClose.close",
+      "call": "log_event",
+      "owner_fingerprint": "5d106dba93d4e960d95d85d4625d588e53160cbea3b4e087c02c66872ac555e3",
+      "integration_signal": true,
+      "disposition": "ordinary",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Re-reviewed at the branch-retirement landing: the same transaction now queues an ordinary branch_retirements request; no ref replay or duplicate lifecycle."
+    },
     "src/sessions/obsolete.py::ObsoleteClose.close::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
       "line": 425,
       "owner": "ObsoleteClose.close",
@@ -16291,6 +16342,7 @@
     "src/commands/collaboration_commands.py::CollaborationCommandsMixin": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/commands/collaboration_lifecycle.py::CollaborationLifecycleMixin": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/commands/collaboration_lifecycle.py::CollaborationReconciler": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/commands/command_inventory.py::offline_snapshot": "Generic offline command-descriptor composition for every transport and playbook; imports the shared CommandHandler without integration policy, delivery authority or storage. Integration-specific handler definitions are charged independently.",
     "src/commands/contracts/builtin.py::_handler": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/commands/contracts/collaboration.py::register_collaboration_contracts": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/commands/contracts/digest.py::register_digest_contracts": "Generic dependency; integration-specific definitions in this file are charged independently.",
@@ -16608,7 +16660,6 @@
     "src/deliverables.py::evaluate_deliverables": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/deliverables.py::parse_unmet_reasons": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/deliverables.py::resolve_task_deliverables": "Generic dependency; integration-specific definitions in this file are charged independently.",
-    "src/deliverables.py::review_revision_guidance": "Generic document-review publication instructions shared by worker prime and task close; formats guidance only, with no integration state, storage or delivery authority. The task-close adapter remains charged independently.",
     "src/deliverables.py::review_submit_guidance": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/digest.py::DigestScheduleService": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/discord/escalation_transport.py::DiscordEscalationTransport": "Generic dependency; integration-specific definitions in this file are charged independently.",
@@ -17021,8 +17072,6 @@
     "src/vault_manager.py::VaultManager": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/vault_watcher.py::VaultWatcher": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/workflow_stage_resume_handler.py::WorkflowStageResumeHandler": "Generic dependency; integration-specific definitions in this file are charged independently.",
-    "src/workspace_disable.py::WORKTREE_REMOVED": "Generic dependency; workspace disable-reason vocabulary shared by every slot writer.",
-    "src/workspace_disable.py::disable_fields": "Generic dependency; workspace disable-reason vocabulary shared by every slot writer.",
     "src/workspace_spec_watcher.py::WorkspaceSpecWatcher": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/commands/authorization.py::authorize_command": "Generic capability policy for every command; integration command hold enforcement is charged in CommandHandler.execute.",
     "src/commands/authorization.py::denial_result": "Generic capability refusal payload with no integration state or authority.",
@@ -17061,7 +17110,26 @@
     "src/task_templates.py::bind_task_templates": "Generic context-local binding of editable task instruction templates to the configured vault; no integration state, branch ownership or delivery authority.",
     "src/task_templates.py::render_task_template": "Generic read-only Markdown template renderer shared by repair, issue, review, object and promotion task producers. Performs one-pass literal substitution, with no integration policy, storage or execution authority; integration-specific callers remain charged independently.",
     "src/task_templates.py::task_template_scope": "Generic context manager for temporarily binding task instruction templates in embedded callers and tests; no integration state, ref identity or lifecycle authority.",
+    "src/commands/descriptors.py::PLAYBOOK_DENIALS": "Generic playbook command denials for shell and daemon lifecycle; no integration-specific behavior.",
+    "src/profiles/capabilities.py::DENY_ALL": "Generic empty capability policy, shared by every principal kind; no integration-specific behavior.",
+    "src/api/scope.py::_PLAYBOOK_COMPILER_COMMANDS": "Generic compiler command vocabulary used for assignment-scoped authoring authority; no integration lifecycle or publication behavior.",
+    "src/api/scope.py::_has_live_playbook_compiler_assignment": "Read-only generic check of a live compiler session and held compiler task; no integration state or publication authority.",
+    "src/commands/operator_authority.py::operator_grant": "Generic context-local exact-command grant lookup; binding validates command and arguments before shared resource authorization, with no integration-specific behavior.",
+    "src/doctor/models.py::observation_context": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/doctor/models.py::observation_read_failed": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/doctor/observations.py::MAX_PRODUCER_BYTES": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/doctor/observations.py::MAX_ROWS": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/doctor/observations.py::finding": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/doctor/observations.py::partition": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/playbooks/definition.py::step_values": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/playbooks/definition.py::uses_iteration_paths": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/playbooks/features.py::execution_metadata_from_source": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/playbooks/features.py::infer_required_features": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/tables.py::job_input_pins": "Playbook-only immutable script input retention; no integration owner, workspace lease or ref replay storage.",
     "src/database/queries/ingest_hold.py::not_ingest_held": "Generic ingestion admission predicate over tasks.held_batch_id, shared by claim demand and execution admission. It performs no integration delivery, publication or lifecycle mutation.",
+    "src/deliverables.py::review_revision_guidance": "Generic document-review publication instructions shared by worker prime and task close; formats guidance only, with no integration state, storage or delivery authority. The task-close adapter remains charged independently.",
+    "src/workspace_disable.py::WORKTREE_REMOVED": "Generic dependency; workspace disable-reason vocabulary shared by every slot writer.",
+    "src/workspace_disable.py::disable_fields": "Generic dependency; workspace disable-reason vocabulary shared by every slot writer.",
     "src/preparation_failure.py::describe_preparation_failure": "Generic dependency: pure description of a preparation exception (stage, type, scrubbed bounded message, cause chain); no storage, fence or publication authority.",
     "src/projects/github.py::scrub_secrets": "Generic credential scrubber shared by GitHub clients, authentication diagnostics and Git transport; contains no integration policy or state.",
     "src/main.py::_bind_report_outbox": "Generic startup binding of human request, conversation and report notification services to their transport; no integration subject, branch, publication state or ref authority. Integration orchestration in run remains independently charged.",

@@ -324,6 +324,87 @@ of the default arm.
 
 ## The playbook command pages
 
+Command discovery is composed in
+[`src/commands/command_inventory.py`](../../src/commands/command_inventory.py).
+It supplies handler, plugin and explicit-tool inventories to the immutable
+[`descriptor builder`](../../src/commands/descriptors.py), which imports neither
+the handler nor MCP. The contract registry, MCP registration, CLI catalogue and
+API code generator project this shared snapshot. Live plugin load/unload changes
+its generation; unloaded names remain visible with `available=False`.
+
+Descriptors carry two schema views. Playbooks prefer an existing typed contract,
+then an explicit tool definition, then a fallback schema. A proven argumentless
+handler gets a closed empty object; other uncovered handlers get an explicitly
+opaque open object. Existing transports retain explicit-tool precedence and
+their legacy empty-schema behavior. Disagreements appear in
+`DescriptorSnapshot.schema_quality_report()` instead of silently replacing either
+view. Full schemas, including local references, defaults and nullable unions,
+are preserved; generated argument models validate JSON without coercion or
+remote reference fetching.
+
+Generated contracts use generation-2 execution fingerprints. Existing typed
+contracts keep their generation-1 documents and fingerprints, pinned by
+`tests/fixtures/contracts/legacy-command-descriptors.json`, captured before the
+descriptor migration. The same fixture records transport definitions, CLI
+catalogue bytes and existing playbook artifacts. An intentional compatibility
+change must review that evidence; regenerating expected values during a test
+would conceal the change.
+
+The frozen-main refresh at `c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb`
+records its reviewed deltas in `main-refresh-contract-changes.json` alongside
+the original recording. It pins human-decision fences, migration-admission
+receipts and transport changes independently, then chains their catalogue and
+artifact digests after the observation and script deltas. Retired train bundles
+are verified at their `historical-v2` archive paths; their original records stay
+in the legacy fixture. These files are checked-in review evidence, never values
+computed by a running test.
+
+The dev refresh at `35d58eee0183bcc25252931ae5958072983606d6` adds
+`integration_release_withheld_source`. Its separate
+`withheld-source-contract-changes.json` records the typed contract fingerprint,
+transport definition and chained catalogue digest. Removing exactly that new
+fallback definition must reproduce the preceding dev catalogue byte for byte.
+The producer audit records its existing human apply authority and source/target
+fences, plus the `explain_task` addition of the blocker action; older evidence
+files remain unchanged.
+
+**Generated invocation remains disabled pending private-value storage and safe
+inspection (A3).** There is no runtime bypass flag. The A2 producer audit is
+pinned in `tests/fixtures/contracts/generated-command-audit.json`, keyed by all
+built-in handlers. Adding a handler or changing its return branches requires
+reviewing and updating that evidence. Static argument reads are diagnostic;
+they never silently expand the public schema.
+
+Generated results must be JSON objects with an actual boolean `success` at
+every producer exit, including early refusals and delegated helpers. Only the
+executor's `_consume` boundary interprets this protocol: true means success,
+false means failure, known authority refusals mean unauthorized, and dispatch
+exceptions mean runtime_error. Missing or non-boolean success, non-JSON values,
+non-finite numbers and oversized results are contract violations even without
+a result binding. Other payload keys remain intact. Typed adapters keep their
+existing outcome semantics and generation-1 fingerprints.
+
+`src/commands/resource_authorization.py` provides the dispatch and HTTP resource
+gate. The original principal survives nested dispatch; capability grants do
+not grant ownership, a live session, a held claim or human decision authority.
+Project filters cannot authorize foreign task, session, review, run or artifact
+references. Global reads require system scope, and path access uses only the
+project's repository and workspace roots. All server-owned input keys are
+rejected for playbook callers. `run_command`, `shutdown`, `restart_daemon` and
+`update_and_restart` are denied in validation, invocation and LLM tools.
+
+Existing typed commands retain their independent domain resource gates and
+refusal outcomes. Session commands with claim, recipient, digest-selection or
+administrative scope rules also retain those gates. Exact operator grants and
+live compiler assignments are verified before admitting their delegated commands;
+they do not grant access to other system resources. Untrusted dispatch exceptions
+return safe diagnostics, while the local operator retains the actionable error.
+
+Generated entries remain protected and non-retryable without preview or receipt
+projection. Only explicitly audited reads receive a read effect; other entries
+retain the conservative destructive effect. Catalogue membership grants no
+authority. Existing memory helpers and typed plugin adapters remain registered.
+
 [`docs/reference/playbook-commands/`](../reference/playbook-commands/README.md)
 is half generated and half hand-written, page by page. Everything between
 `<!-- aq:generated:start -->` and `<!-- aq:generated:end -->` comes from the

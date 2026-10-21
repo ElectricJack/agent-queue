@@ -12,13 +12,10 @@ completed-turn questions are owned by ``AgentQuestionService`` and explicit
 blocker notifications use ``message_send``.
 
 Convention (see ``src/commands/handler.py``): every ``_cmd_*`` method takes a
-flat ``dict`` of arguments and returns a ``dict`` — domain data on success,
-``{"error": "..."}`` on failure.  ``CommandHandler.execute`` returns this
-dict verbatim (no implicit ``"success"`` key is injected at that layer); the
-wire-level ``{"ok": bool, "result"|"error"}`` shape is added by
-``/api/execute`` (``src/api/execute.py``).  ``prime`` and ``task_handoff``
-are exceptions: their §3 spec table explicitly documents a ``"success"`` key
-in the returned shape, so they include it to match.
+flat ``dict`` of arguments and returns a ``dict`` with an explicit boolean
+``success`` and the existing domain payload. ``CommandHandler.execute`` returns
+that dictionary verbatim; protocol interpretation belongs to its consumers.
+The HTTP transport adds its separate ``ok`` envelope.
 """
 
 from __future__ import annotations
@@ -47,7 +44,7 @@ class SurfaceCommandsMixin:
         """
         from src.surface_schema import get_surface_schema
 
-        return get_surface_schema()
+        return {**get_surface_schema(), "success": True}
 
     # ------------------------------------------------------------------
     # task_show — backs `aq task show|details` (design §3.1)
@@ -64,7 +61,7 @@ class SurfaceCommandsMixin:
         """
         task_id = args.get("task_id")
         if not task_id:
-            return {"error": "task_id is required"}
+            return {"success": False, "error": "task_id is required"}
 
         # ``_cmd_get_task`` applies ``_assert_task_in_scope`` itself; the
         # composed sections below must not run when it refused.
@@ -79,6 +76,7 @@ class SurfaceCommandsMixin:
 
         from src.operator_decisions import OperatorDecisions
 
+        info["success"] = True
         info["operator_decisions"] = await OperatorDecisions(self.db).history("task", task_id)
         info["context"] = await self.db.get_task_contexts(task_id)
         info["labels"] = await self.db.get_task_labels(task_id)
@@ -273,31 +271,31 @@ class SurfaceCommandsMixin:
         """
         task_id = args.get("task_id")
         if not task_id:
-            return {"error": "task_id is required"}
+            return {"success": False, "error": "task_id is required"}
 
         if any(str(key).startswith("manual_pause") for key in (args.get("meta") or {})):
-            return {"error": "manual_pause is reserved; use pause_task/resume_task."}
+            return {"success": False, "error": "manual_pause is reserved; use pause_task/resume_task."}
         if "retained_workspace_stop" in (args.get("meta") or {}):
-            return {"error": "retained_workspace_stop is reserved; use stop_task."}
+            return {"success": False, "error": "retained_workspace_stop is reserved; use stop_task."}
 
         if {"notes_input", "promotion_prepare", "promotion_hotfix", "backmerge",
             "backmerge_result", "promotion_intent", "promotion_result",
             "promotion_publish_intent"}.intersection(args.get("meta") or {}):
-            return {"error": "Promotion preparation metadata is immutable and daemon-owned."}
+            return {"success": False, "error": "Promotion preparation metadata is immutable and daemon-owned."}
 
         if any(str(key).startswith("supervisor_recovery") for key in (args.get("meta") or {})):
-            return {"error": "supervisor_recovery metadata is reserved; use task_recover."}
+            return {"success": False, "error": "supervisor_recovery metadata is reserved; use task_recover."}
 
         if any(str(key).startswith("integration_train_ejection")
                for key in (args.get("meta") or {})):
-            return {"error": "integration_train_ejection metadata is reserved; use integration_eject."}
+            return {"success": False, "error": "integration_train_ejection metadata is reserved; use integration_eject."}
 
         # Validate the description contract before touching any legacy field.
         for field in ("description", "expected_description"):
             if field in args and not isinstance(args[field], str):
-                return {"error": f"{field} must be a string"}
+                return {"success": False, "error": f"{field} must be a string"}
         if "expected_description" in args and "description" not in args:
-            return {"error": "expected_description requires description"}
+            return {"success": False, "error": "expected_description requires description"}
         scope = self._current_scope or {}
         err = await self._assert_session_owns(
             task_id,
@@ -309,7 +307,7 @@ class SurfaceCommandsMixin:
 
         task = await self.db.get_task(task_id)
         if not task:
-            return {"error": f"Task '{task_id}' not found"}
+            return {"success": False, "error": f"Task '{task_id}' not found"}
 
         scope_error = self._task_findings_scope_error(task)
         if scope_error:
@@ -318,6 +316,7 @@ class SurfaceCommandsMixin:
             checkpoint = await self.db.get_integration_checkpoint(task_id)
             if checkpoint is not None and args["branch"] != checkpoint["branch"]:
                 return {
+                    "success": False,
                     "error": (
                         f"Task '{task_id}' has a canonical integration branch "
                         f"'{checkpoint['branch']}'; --branch cannot rename it"
@@ -381,6 +380,7 @@ class SurfaceCommandsMixin:
 
         if not fields_changed:
             return {
+                "success": False,
                 "error": (
                     "No fields to update. Provide description, branch, pr_url, work_dir, note, "
                     "labels_add, labels_remove, or meta."
@@ -423,6 +423,7 @@ class SurfaceCommandsMixin:
             task_id = s.task_id if s else None
         if not task_id:
             return {
+                "success": False,
                 "error": (
                     "task_id is required (no task in scope — pass task_id "
                     "explicitly or run inside a task session)"
@@ -457,7 +458,7 @@ class SurfaceCommandsMixin:
                 bounded_worker=scope.get("kind") == "session" and not scope.get("elevated"),
             )
         except ValueError as exc:
-            return {"error": str(exc)}
+            return {"success": False, "error": str(exc)}
 
         from src.commands.principal import current_principal
         from src.knowledge.context import (
@@ -488,14 +489,30 @@ class SurfaceCommandsMixin:
 
                         # Counts and configured limits only; do not expose the
                         # undelivered instruction bodies through diagnostics.
+                        accounting = (
+                            bundle.budget if bundle is not None
+                            else ContextBudget.from_config(self.config).account(doc.to_markdown())
+                        )
+                        section_bytes = {
+                            s.key: len(s.body.encode("utf-8")) for s in doc.sections
+                        }
+                        largest = sorted(section_bytes.items(), key=lambda item: -item[1])[:3]
+                        requested = accounting["requested"]
+                        available = max(0, requested["input_tokens"]
+                                        - requested["output_tokens"] - requested["wrapper_tokens"])
+                        result["error"] = (
+                            f"{exc.code}: required body {len(doc.to_markdown().encode('utf-8'))} "
+                            f"bytes exceeds {available} available "
+                            f"(input ceiling {requested['input_tokens']}, "
+                            f"output/wrapper reserve "
+                            f"{requested['output_tokens'] + requested['wrapper_tokens']}); "
+                            "largest required sections (UTF-8 bytes, excluding headings): "
+                            + ", ".join(f"{key}={size}" for key, size in largest)
+                        )
                         result.update(
-                            context_budget=ContextBudget.from_config(self.config).account(
-                                doc.to_markdown(),
-                            ),
+                            context_budget=accounting,
                             required_body_bytes=len(doc.to_markdown().encode("utf-8")),
-                            required_section_bytes={
-                                s.key: len(s.body.encode("utf-8")) for s in doc.sections
-                            },
+                            required_section_bytes=section_bytes,
                             source=doc.source,
                         )
                     return result
@@ -559,7 +576,7 @@ class SurfaceCommandsMixin:
         try:
             validated = TaskHandoffArgs.model_validate(args)
         except ValidationError as exc:
-            return {"error": f"Invalid handoff: {exc}"}
+            return {"success": False, "error": f"Invalid handoff: {exc}"}
         task_id = validated.task_id
         scope = getattr(self, "_current_scope", None) or {}
         if not task_id:
@@ -571,6 +588,7 @@ class SurfaceCommandsMixin:
             task_id = held_session.task_id if held_session else None
         if not task_id:
             return {
+                "success": False,
                 "error": (
                     "task_id is required (no task in scope — pass task_id "
                     "explicitly or run inside a task session)"
@@ -585,7 +603,7 @@ class SurfaceCommandsMixin:
 
         task = await self.db.get_task(task_id)
         if not task:
-            return {"error": f"Task '{task_id}' not found"}
+            return {"success": False, "error": f"Task '{task_id}' not found"}
 
         auto = validated.auto
         note = agent_note(validated.model_dump())
@@ -593,7 +611,7 @@ class SurfaceCommandsMixin:
         session_id = scope.get("session_id") or validated.session_id
         session = await self.db.get_session(session_id) if session_id else None
         if session and session.task_id != task_id:
-            return {"error": "session does not hold this task"}
+            return {"success": False, "error": "session does not hold this task"}
         work_dir = getattr(session, "work_dir", None)
         if not work_dir and not session_id:
             work_dir = await self.db.get_task_meta(task_id, "work_dir")
@@ -622,7 +640,7 @@ class SurfaceCommandsMixin:
                 created_at=now,
             )
         except ValueError as exc:
-            return {"error": str(exc)}
+            return {"success": False, "error": str(exc)}
 
         restart_requested = False
         if not auto and created:
@@ -669,18 +687,18 @@ class SurfaceCommandsMixin:
         """
         event = str(args.get("event") or "").strip().lower()
         if event not in {"start", "stop"}:
-            return {"error": "event must be 'start' or 'stop'"}
+            return {"success": False, "error": "event must be 'start' or 'stop'"}
         subagent_id = str(args.get("subagent_id") or "").strip()
         if not subagent_id:
-            return {"error": "subagent_id is required"}
+            return {"success": False, "error": "subagent_id is required"}
 
         scope = getattr(self, "_current_scope", None) or {}
         session_id = scope.get("session_id") or args.get("session_id")
         if not session_id:
-            return {"error": "session_id is required (no session in scope)"}
+            return {"success": False, "error": "session_id is required (no session in scope)"}
         session = await self.db.get_session(str(session_id))
         if session is None:
-            return {"error": f"No session '{session_id}'"}
+            return {"success": False, "error": f"No session '{session_id}'"}
 
         recorded = await self.db.record_subagent_event(
             session_id=session.id,

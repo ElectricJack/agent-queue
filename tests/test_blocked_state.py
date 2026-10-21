@@ -913,4 +913,3 @@ class TestDeliveryOf:
             DeliveryView(db, {"leaf": evidence(DeliveryState.CONTAINED)})
         )
         assert not await blocked(db, "root")
-

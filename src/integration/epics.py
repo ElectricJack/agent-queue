@@ -289,7 +289,7 @@ class EpicReadinessEvaluator:
         target = snapshot.for_target(node.branch_ref)
         if target.observation.error or not target.target_oid:
             return EpicReadiness(graph, task_id, "unknown", blockers=(
-                (task_id, target.observation.error or "missing_target"),))
+                (task_id, target.observation.error or "target_ref_missing"),))
         for prerequisite_id in graph.authorization(task_id):
             prerequisite = next((item for item in graph.nodes
                                  if item.task_id == prerequisite_id), None)

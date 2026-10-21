@@ -323,6 +323,12 @@ project session with a matching live named `supervisor` row, canonical name and
 launch instance. The sender is always the authenticated session UUID; caller
 sender labels cannot impersonate a user, system or another supervisor. The row
 and message event retain the originating project, thread and reply linkage.
+The logical global address, runtime name `n-supervisor--global`, and persisted
+global supervisor UUID use this same route and store `supervisor-global` as the
+recipient. The named-session POST relay also retains the project supervisor's
+scope instead of inferring a request for projectless system scope. Ordinary
+messages to the supervisor's own workers continue to use its authenticated
+session identity and project.
 Replies require an exact-own original and a global-supervisor sender address
 bound to its persisted named global row (or canonical logical global address).
 An unaddressable system sender cannot be replied to; send a scoped report instead.

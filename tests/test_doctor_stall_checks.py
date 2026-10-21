@@ -670,7 +670,7 @@ def test_observation_failure_journal_replay_is_visible():
     assert "source unavailable" in module._unknown_subject_streaks(rows, NOW)[0]["detail"]
 
 
-async def test_completed_undelivered_line_names_only_branches_nothing_will_move(
+async def test_completed_undelivered_line_also_names_accounted_roots(
     context, monkeypatch,
 ):
     integration_checks = import_module("src.doctor.integration_checks")
@@ -679,6 +679,7 @@ async def test_completed_undelivered_line_names_only_branches_nothing_will_move(
         return {"task_id": task_id, "project_id": "one", "archived": False,
                 "branch": f"aq/{task_id}", "head": "abc", "wip": False, "rule": rule,
                 "accounted": accounted, "reason": f"{task_id} reason",
+                "root": task_id == "queued",
                 "remedy": f"settle {task_id}" if not accounted else None}
 
     async def read(ctx, *, project_ids=None, now=None):
@@ -689,11 +690,13 @@ async def test_completed_undelivered_line_names_only_branches_nothing_will_move(
                 "unavailable": [], "projects": 1}
 
     monkeypatch.setattr(integration_checks, "completed_undelivered", read)
-    [finding] = await module._completed_undelivered_findings(context, {"one"}, NOW)
+    finding, root = await module._completed_undelivered_findings(context, {"one"}, NOW)
     assert (finding["kind"], finding["project_id"], finding["rule"]) == (
         "completed_undelivered", "one", "unreconciled")
     assert "aq/stray holds work the default branch cannot reach" in finding["detail"]
     assert finding["detail"].endswith("settle stray")
+    assert root["task_id"] == "queued" and root["accounted"] is True
+    assert root["detail"].endswith("aq integration redrive-root queued")
 
     async def slow(ctx, *, project_ids=None, now=None):
         await asyncio.sleep(5)

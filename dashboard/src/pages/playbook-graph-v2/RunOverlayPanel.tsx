@@ -83,6 +83,9 @@ export default function RunOverlayPanel({ overlay }: RunOverlayPanelProps) {
 
   return (
     <section aria-label="Run overlay" className="min-w-0 space-y-3 rounded-lg border border-gray-800 bg-gray-900 p-4">
+      {overlay.receipts?.some((receipt) => receipt.script) && (
+        <p className="text-xs text-gray-400">Script streams are protected. Read output through authorized job logs; unresolved capture or cleanup is not a success receipt.</p>
+      )}
       {!overlay.artifact_is_active && (
         <p role="status" className="break-all rounded bg-amber-500/10 p-2 text-sm text-amber-200">
           This run used an older artifact: {overlay.artifact.artifact_sha256}

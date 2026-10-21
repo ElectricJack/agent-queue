@@ -516,6 +516,37 @@ stale seals left by older aborts. Cleanup retires the private candidate under it
 ref lease and releases only the batch's detached collector reservation; a live
 repair lease defers cleanup without preventing member rework.
 
+A withheld source is never silent. `aq integration status`, the pending visit
+and `aq task explain` name each one as `source_withheld_by_aborted_batch`
+(batch, source SHA, abort reason, repair attempts and the next action), and a
+dependent member reports `prerequisite_withheld`; the visit reads `blocked`, not
+idle. Status also lists every aborted member's disposition (`withheld`,
+`pending` after a batch-owned ejection, or `released`).
+
+### Release a withheld source
+
+When the unchanged source should be retried on the current target, an operator
+releases exactly one (task, source) pair from the aborted batch. Preview is
+read-only and returns the frozen fences; apply needs all three back and a
+human operator principal (a supervisor is refused `unauthorized`):
+
+```bash
+aq integration release-withheld-source <batch-id> --task <task-id>
+aq integration release-withheld-source <batch-id> --task <task-id> --apply \
+  --source-sha <sha> --target-sha <sha> --reason "retry on current target"
+```
+
+Release records an operator note, never a pending conversion: the aborted batch,
+its abort reason and the task's completion stay immutable history. The next
+batch takes a fresh id but carries the aborted batch's repair attempt count, so
+the repair budget is not reset. Apply is idempotent (`already_released`). It
+refuses, naming the owner decision needed, when the source or target moved, the
+source is already delivered or its identity retired, an operator hold or failed
+source acceptance applies, a writer session or workspace lock is live, the
+batch is still active, a repair task or operation is outstanding, or the repair
+budget is exhausted under `on_exhausted: human` (`repair_exhausted`: reopen the
+task with feedback or archive it).
+
 ### Settle a batch the target already contains
 
 Abort refuses a batch whose target already holds every member, and such a
@@ -534,7 +565,10 @@ target, or delivery trailers for it; a matching tree alone is refused with
 target (never the untested candidate) and logs `integration.batch_settled` with
 the principal and reason; the next target visit runs epic completion. The train
 settles on its own an epic refresh whose epic already is the default head (an
-ancestor with an identical tree; a resolved merge still runs its checks), and a run whose only non-success job lies outside the required checks no longer
+ancestor with an identical tree; a resolved merge still runs its checks). A refresh
+whose repair published a resolved merge into the epic stays sealed while that merge
+is red; abort it, or settle it once the epic has the frozen default head as an
+ancestor. A run whose only non-success job lies outside the required checks no longer
 holds candidate checks unknown.
 
 The train excludes current completions whose exact retained source is an ancestor

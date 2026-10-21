@@ -1178,6 +1178,40 @@ class TaskQueryMixin:
                 created_at=time.time(),
             ))
 
+    async def discard_task_pause_checkpoint(
+        self, task_id: str, *, reason: str, actor: str, expected: dict | None = None,
+    ) -> dict | None:
+        """Drop the checkpoint metadata, keeping its ref and commit in an audit row.
+
+        With *expected*, delete only that exact checkpoint (compare-and-delete):
+        a changed value raises ``ValueError`` and nothing is removed. Returns the
+        discarded checkpoint, or None when the task has none.
+        """
+        async with self.immediate() as conn:
+            raw = await conn.scalar(select(task_metadata.c.value).where(
+                task_metadata.c.task_id == task_id,
+                task_metadata.c.key == "manual_pause_checkpoint",
+            ).with_for_update())
+            if raw is None:
+                if expected is not None:
+                    raise ValueError("Paused checkpoint changed during discard")
+                return None
+            current = json.loads(raw)
+            if expected is not None and current != expected:
+                raise ValueError("Paused checkpoint changed during discard")
+            await conn.execute(delete(task_metadata).where(
+                task_metadata.c.task_id == task_id,
+                task_metadata.c.key == "manual_pause_checkpoint",
+            ))
+            await conn.execute(insert(task_context).values(
+                id=str(uuid.uuid4())[:12], task_id=task_id,
+                type="manual_pause_checkpoint_discarded",
+                label="Paused checkpoint discarded; its ref keeps the work",
+                content=json.dumps({"actor": actor, "reason": reason, "checkpoint": current}),
+                created_at=time.time(),
+            ))
+            return current
+
     async def record_task_pause_preparations_stopped(
         self, task_id: str, snapshot: dict, identities: list[dict]
     ) -> dict:
@@ -1392,18 +1426,7 @@ class TaskQueryMixin:
                 task_metadata.c.key == "slot_reset_failure",
             ))).scalar_one_or_none()
             if row["status"] in {"READY", "BLOCKED"} and failure:
-                await self._release_stopped_slot_reset_claim(conn, row, stopped_sessions)
-                await conn.execute(delete(task_metadata).where(
-                    task_metadata.c.task_id == task_id,
-                    task_metadata.c.key.in_([
-                        "claim_prepare_backoff_until", "claim_prepare_backoff_attempts",
-                    ]) | ((task_metadata.c.key == "needs_attention")
-                          & (task_metadata.c.value == json.dumps("slot_reset_failed"))),
-                ))
-                result = await self._apply_transition(
-                    conn, task_id, TaskStatus.READY, force=True,
-                    context="slot_reset_retry", returning=True, assigned_agent_id=None,
-                )
+                result = await self._retry_slot_reset_locked(conn, row, stopped_sessions)
             else:
                 if row["status"] != TaskStatus.PAUSED.value:
                     # "Task is not paused (status: FAILED)" is true and useless
@@ -1423,9 +1446,38 @@ class TaskQueryMixin:
                     raise ValueError(f"Task is not paused (status: {row['status']})")
                 encoded = await self._read_manual_pause(conn, task_id)
                 result = await self._resume_locked(conn, task_id, encoded)
+                # A hold placed over a failed slot reset restores the parked
+                # status, and the restore clears its attention: a BLOCKED row
+                # with no blocker the promotion cascade or explain can see
+                # (swift-crest-94).  Resuming it is the same operator retry as
+                # resuming the unpaused task, so apply it in this transaction.
+                row = await self._lock_task_row(conn, task_id)
+                if failure and row["status"] in {"READY", "BLOCKED"}:
+                    retried = await self._retry_slot_reset_locked(conn, row, stopped_sessions)
+                    seen = {ready_id for ready_id, _ in result.ready}
+                    result.flipped |= retried.flipped
+                    result.ready += [entry for entry in retried.ready if entry[0] not in seen]
         await self.log_blocked_flips(result.flipped)
         await self._notify_ready(result.ready)
         return await self.get_task(task_id)
+
+    async def _retry_slot_reset_locked(
+        self, conn, row, stopped_sessions: Sequence[dict]
+    ) -> TransitionResult:
+        """Requeue a failed slot reset; the caller holds the row lock."""
+        task_id = row["id"]
+        await self._release_stopped_slot_reset_claim(conn, row, stopped_sessions)
+        await conn.execute(delete(task_metadata).where(
+            task_metadata.c.task_id == task_id,
+            task_metadata.c.key.in_([
+                "claim_prepare_backoff_until", "claim_prepare_backoff_attempts",
+            ]) | ((task_metadata.c.key == "needs_attention")
+                  & (task_metadata.c.value == json.dumps("slot_reset_failed"))),
+        ))
+        return await self._apply_transition(
+            conn, task_id, TaskStatus.READY, force=True,
+            context="slot_reset_retry", returning=True, assigned_agent_id=None,
+        )
 
     async def recover_orphaned_pause(self, task_id: str) -> Task | None:
         """Resume a task wedged in PAUSED with no timer and no operator hold.

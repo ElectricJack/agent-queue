@@ -853,6 +853,99 @@ class TestOperatorHandoffCheckpoint:
         assert await mgr.db.get_task_meta("tsk-1", CHECKPOINT_META) == saved
 
     @pytest.mark.parametrize("unproved", [False, True])
+    @pytest.mark.parametrize("progress", ["published", "local", "paused", "diverged"])
+    async def test_pause_continuation_compares_existing_local_and_origin_before_reset(
+        self, mgr, base_ws, kind, monkeypatch, unproved, progress,
+    ):
+        from src.orchestrator.task_checkpoint import CHECKPOINT_META, capture_checkpoint
+
+        slot, path, saved = await self._checkpoint(mgr, base_ws, kind, dirty=True)
+        branch = "aq/tsk-1"
+        (path / "published.txt").write_text("published task work\n")
+        _git(["add", "published.txt"], path)
+        _git(["commit", "-m", "published progress"], path)
+        published = _git(["rev-parse", "HEAD"], path)
+        _git(["push", "origin", branch], path)
+        _git(["reset", "--hard", saved["head"]], path)
+        if progress in {"local", "paused", "diverged"}:
+            if progress in {"local", "paused"}:
+                _git(["reset", "--hard", published], path)
+            (path / "local.txt").write_text("preserved failed attempt\n")
+            _git(["add", "local.txt"], path)
+            _git(["commit", "-m", "preserved local progress"], path)
+        local = _git(["rev-parse", "HEAD"], path)
+        if progress == "paused":
+            # Committed pause progress is newer than both branch refs.
+            (path / "staged.txt").write_text("saved stage\n")
+            _git(["add", "staged.txt"], path)
+            (path / "staged.txt").write_text("saved unstaged\n")
+            await capture_checkpoint(mgr.db, mgr.git, "tsk-1", str(path))
+            saved = await mgr.db.get_task_meta("tsk-1", CHECKPOINT_META)
+            _git(["reset", "--hard", published], path)
+        _git(["switch", "-c", "aq/foreign", saved["head"]], path)
+        self._record_foreign_checkout(mgr, path)
+        switches = []
+        original = mgr.git._arun
+
+        async def record(args, **kwargs):
+            if args[:2] == ["switch", "-C"]:
+                switches.append(args)
+            return await original(args, **kwargs)
+
+        monkeypatch.setattr(mgr.git, "_arun", record)
+        if unproved:
+            monkeypatch.setattr(mgr.git, "ais_ancestor", AsyncMock(return_value=None))
+        if unproved or progress == "diverged":
+            with pytest.raises(GitError, match="diverged or are unproved"):
+                await mgr.reset_slot_for_task(
+                    slot, FakeTask(), target_branch=branch,
+                    base_branch=saved["head"], preserve_branch=True,
+                )
+            assert not switches
+            assert _git(["branch", "--show-current"], path) == "aq/foreign"
+            assert _git(["rev-parse", branch], path) == (
+                published if progress == "paused" else local
+            )
+        else:
+            await mgr.reset_slot_for_task(
+                slot, FakeTask(), target_branch=branch,
+                base_branch=saved["head"], preserve_branch=True,
+            )
+            expected = local if progress in {"local", "paused"} else published
+            assert switches == [["switch", "-C", branch, expected]]
+            assert _git(["rev-parse", "HEAD"], path) == expected
+            assert (path / "published.txt").read_text() == "published task work\n"
+            assert _git(["show", ":staged.txt"], path) == "saved stage"
+            assert (path / "staged.txt").read_text() == "saved unstaged\n"
+        assert await mgr.db.get_task_meta("tsk-1", CHECKPOINT_META) == saved
+
+    async def test_stale_restoration_plan_refuses_a_reset_below_origin(
+        self, mgr, base_ws, kind,
+    ):
+        from src.orchestrator.task_checkpoint import prepare_checkpoint, restore_checkpoint
+
+        _slot, path, saved = await self._checkpoint(mgr, base_ws, kind, dirty=True)
+        plan = await prepare_checkpoint(
+            mgr.db, mgr.git, "tsk-1", str(path), owned_branch="aq/tsk-1",
+            expected_branch="aq/tsk-1",
+        )
+        (path / "published.txt").write_text("later publication\n")
+        _git(["add", "published.txt"], path)
+        _git(["commit", "-m", "publication after planning"], path)
+        tip = _git(["rev-parse", "HEAD"], path)
+        _git(["push", "origin", "aq/tsk-1"], path)
+        before = _git(["status", "--porcelain"], path)
+
+        with pytest.raises(GitError, match="backwards from origin"):
+            await restore_checkpoint(
+                mgr.db, mgr.git, "tsk-1", str(path), saved=plan, expected_branch="aq/tsk-1",
+            )
+
+        assert _git(["rev-parse", "HEAD"], path) == tip
+        assert _git(["status", "--porcelain"], path) == before
+        assert _git(["rev-parse", saved["ref"]], path) == saved["commit"]
+
+    @pytest.mark.parametrize("unproved", [False, True])
     async def test_owned_checkpoint_refusal_names_compared_heads_and_preserves_slot(
         self, mgr, base_ws, kind, monkeypatch, unproved,
     ):
@@ -1334,6 +1427,29 @@ class TestMissingSentinelRecovery:
 
 
 class TestResetSlot:
+    async def test_exact_worker_retry_preserves_published_tip_with_stale_local_branch(
+        self, mgr, base_ws, kind,
+    ):
+        slot = await mgr.create_slot(base_ws, kind, 0)
+        path = Path(slot.workspace_path)
+        await mgr.reset_slot_for_task(slot, FakeTask())
+        initial = _git(["rev-parse", "HEAD"], path)
+        (path / "published.txt").write_text("published before reopen\n")
+        _git(["add", "published.txt"], path)
+        _git(["commit", "-m", "published attempt"], path)
+        published = _git(["rev-parse", "HEAD"], path)
+        _git(["push", "origin", "aq/tsk-1"], path)
+        _git(["reset", "--hard", initial], path)
+
+        await mgr.reset_slot_for_task(
+            slot, FakeTask(), target_branch="aq/tsk-1", base_branch=initial,
+            preserve_branch=True,
+        )
+
+        assert _git(["rev-parse", "HEAD"], path) == published
+        assert (path / "published.txt").read_text() == "published before reopen\n"
+        assert _git(["status", "--porcelain"], path) == ""
+
     @pytest.mark.parametrize("delete_predecessor_branch", [False, True])
     async def test_reuses_published_slot_detached_at_default_tip(
         self, mgr, base_ws, kind, delete_predecessor_branch,
@@ -2215,6 +2331,34 @@ class TestFinishedTaskSentinel:
         with pytest.raises(GitError, match="disagrees with its source sentinel"):
             await mgr.ensure_slot_checkout(slot, FakeTask(id="tsk-next"))
         assert mgr.read_sentinel(path).task_id == "tsk-prev"
+
+    @pytest.mark.parametrize("owner", ["tsk-next", "tsk-other"])
+    async def test_only_a_foreign_owner_row_retains_a_finished_slot(
+        self, mgr, base_ws, kind, base_repo, db, monkeypatch, owner
+    ):
+        """Claim preparation attaches the claimant's owner row before the reset.
+
+        The second preflight then saw that row as a retained binding and
+        refused the slot it had reclaimed moments earlier (bold-torrent-46:
+        brisk-quest-34 on AQ slot-4, nimble-rapids-30 on ME slot-1).
+        """
+        from src.models import TaskStatus
+
+        slot, path = await self._finished_slot(mgr, base_ws, kind, base_repo)
+        self._status(db, monkeypatch, TaskStatus.COMPLETED)
+
+        async def retained(workspace_id, *, excluding_owner=None):
+            return workspace_id == slot.id and owner != excluding_owner
+
+        monkeypatch.setattr(mgr, "_slot_has_retained_binding", retained)
+        if owner == "tsk-other":
+            with pytest.raises(GitError, match="disagrees with its source sentinel"):
+                await mgr.ensure_slot_checkout(slot, FakeTask(id="tsk-next"))
+            assert mgr.read_sentinel(path).task_id == "tsk-prev"
+            return
+        await mgr.ensure_slot_checkout(slot, FakeTask(id="tsk-next"))
+        assert await mgr.reset_slot_for_task(slot, FakeTask(id="tsk-next")) == "aq/tsk-next"
+        assert mgr.read_sentinel(path).task_id == "tsk-next"
 
     async def test_completion_releases_a_detached_published_slot(
         self, mgr, base_ws, kind, base_repo

@@ -44,7 +44,9 @@ def _group_has_writer(pgid: int) -> bool:
             continue
         try:
             fields = (entry / "stat").read_text().rsplit(")", 1)[1].split()
-        except FileNotFoundError:
+        except (FileNotFoundError, ProcessLookupError):
+            # Any process on the box may exit mid-scan: ENOENT at open, ESRCH
+            # at read. A vanished process is in no group and cannot write.
             continue
         if int(fields[2]) == pgid:
             found = True

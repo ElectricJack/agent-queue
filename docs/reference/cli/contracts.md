@@ -85,7 +85,13 @@ into each contract. That is the page under
 [playbook commands](../playbook-commands/README.md), the per-command reference
 whose contract facts are generated from this registry. `aq playbook commands`
 exposes the name, title, summary, documentation URL, and parameter JSON Schema
-as the read-only catalog used by the dashboard. Presentation metadata is
+as the read-only catalog used by the dashboard. The catalog includes denied and
+unavailable commands with their reason and schema quality. Queries accept
+`name`, `prefix`, `origin`, `plugin`, `schema_quality`, `result_mode`, `available`
+and `denied` filters, plus `offset` and `limit` (default 50, maximum 100).
+`include_schema=false` omits schemas; `total` and `next_offset` support paging.
+Availability describes discovery; `execution_available` also accounts for the
+generated invocation gate. Presentation metadata is
 deliberately excluded from the fingerprint: renaming a label or moving the
 documentation host must not invalidate every artifact compiled against the
 command.

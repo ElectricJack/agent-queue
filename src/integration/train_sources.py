@@ -42,7 +42,7 @@ from src.database.tables import (
     tasks,
 )
 from src.git.github_contracts import GitHubAccessError
-from src.git.manager import GitError, is_valid_git_oid
+from src.git.manager import GitError, RemoteRefState, is_valid_git_oid
 from src.integration.batches import (
     Batch,
     BatchMember,
@@ -51,7 +51,9 @@ from src.integration.batches import (
     BatchStore,
     SupersedeMemberUnavailable,
     candidate_ref,
-    ejection_instruction,
+    released_repair_attempts_on,
+    withheld_source_blocker,
+    withheld_sources_query,
 )
 from src.integration.candidate_baseline import CandidateBaselineService
 from src.integration.ci import (
@@ -383,9 +385,11 @@ class DatabaseTargets:
         self.snapshot = snapshot
         self.probe_timeout_seconds = probe_timeout_seconds
         self.flow_problems = flow_problems
+        self.retired_targets: set[tuple[str, str, str]] = set()
 
     async def targets(self, now: float) -> list[TrainTarget]:
         found: dict[tuple[str, str, str], TrainTarget] = {}
+        self.retired_targets.clear()
         async with self.db._engine.connect() as conn:
             rows = (await conn.execute(
                 select(projects.c.id, projects.c.hierarchical_integration_mode,
@@ -426,23 +430,94 @@ class DatabaseTargets:
             epics = await _epic_branches_on(conn, pending)
             batches = (await conn.execute(
                 _open_batch_rows(project_id, repository_id))).mappings().all()
+            completed = (await conn.execute(select(tasks.c.id).where(
+                tasks.c.project_id == project_id,
+                or_(tasks.c.repo_id == repository_id, tasks.c.repo_id.is_(None)),
+                tasks.c.status == "COMPLETED",
+            ))).scalars().all()
+            closed_epics = await _epic_branches_on(conn, completed)
+            independent = set(closed_epics) - set(pending)
+            completed_aggregates = set((await conn.execute(select(
+                task_completion_records.c.task_id,
+            ).where(task_completion_records.c.task_id.in_(independent)))).scalars())
+            legacy_containers = independent - completed_aggregates
+            children: dict[str, set[str]] = {}
+            for child_id, parent_id in (await conn.execute(select(
+                tasks.c.id, tasks.c.parent_task_id,
+            ).where(tasks.c.parent_task_id.in_(legacy_containers)))).all():
+                children.setdefault(parent_id, set()).add(child_id)
         delivered = set()
-        if pending:
+        contained_epics = set()
+        observed = None
+        if pending or closed_epics:
             try:
                 async with asyncio.timeout(self.probe_timeout_seconds):
                     observed = await self.snapshot(self.db, root)
                     delivered = await project_delivered(
-                        self.db, pending, project_id=project_id, repository_id=repository_id,
+                        self.db, sorted(set(pending) | set(closed_epics) |
+                                        {child for ids in children.values() for child in ids}),
+                        project_id=project_id, repository_id=repository_id,
                         target_ref=default, snapshot=observed,
                     )
+                    if observed is not None and not observed.error and observed.target_oid:
+                        # Legacy containers can lack their own completion even
+                        # though every child and their private tip reached the
+                        # root. Preserve that proof; unknown child delivery or
+                        # ancestry must retain the independent aggregate visit.
+                        provenance = GitProvenance(
+                            observed.observation.git, observed.observation.store,
+                            repository_url=observed.observation.repository_url,
+                        )
+                        for task_id in sorted(legacy_containers):
+                            if not children.get(task_id, set()) <= delivered:
+                                continue
+                            head = observed.for_target(_branch(closed_epics[task_id])).target_oid
+                            if head is None:
+                                continue
+                            facts = observed.truth._pair(observed.observation, head)
+                            if facts.ancestor is None:
+                                facts.ancestor = await provenance.ancestor(head, observed.target_oid)
+                            if facts.ancestor:
+                                contained_epics.add(task_id)
             except (TimeoutError, GitError, OSError):
                 logger.warning("integration root discovery probe unavailable for %s", root.key)
+        retired = set()
+        closed_refs = {_branch(branch) for branch in closed_epics.values()}
+        if closed_refs and observed is not None:
+            if (observed.error in {None, "target_ref_missing"}
+                    and not observed.observation.acquisition_error):
+                retired = {ref for ref in closed_refs if
+                           observed.for_target(ref).error == "target_ref_missing"}
+            else:
+                # Ref retirement needs no object bodies. On acquisition failure,
+                # a bounded independent remote read can still establish absence.
+                try:
+                    async with asyncio.timeout(self.probe_timeout_seconds):
+                        remote = await observed.observation.git.als_remote_refs(
+                            observed.observation.store, sorted(closed_refs),
+                            repository_url=observed.observation.repository_url,
+                        )
+                    retired = {ref for ref, result in remote.items()
+                               if result.state is RemoteRefState.ABSENT}
+                except (TimeoutError, GitError, OSError):
+                    pass
+        # A frozen batch still needs its recovery diagnostics, even if its
+        # container has since completed or its remote target disappeared.
+        retired -= {default, *promotions, *(batch["target_ref"] for batch in batches)}
+        self.retired_targets.update((project_id, repository_id, ref) for ref in retired)
         refs = {default, *(batch["target_ref"] for batch in batches)}
         refs.update(target.target_ref for task_id, target in routed.items()
                     if task_id not in delivered and
                     (target.project_id, target.repository_id) == (project_id, repository_id))
         refs.update(_branch(branch) for task_id, branch in epics.items() if task_id not in delivered)
+        # Settlement is implementation bookkeeping, not aggregate verification.
+        # A completed root has no parent whose pending children could rediscover
+        # its lane. Keep its own visit even after origins have retired; ordinary
+        # readiness still refuses missing source identity instead of inventing it.
+        refs.update(_branch(branch) for task_id, branch in closed_epics.items()
+                    if task_id not in delivered and task_id not in contained_epics)
         refs.update(promotions)
+        refs -= retired
         return [root if ref == default else promotions.get(ref) or
                 TrainTarget(project_id, repository_id, ref, "epic") for ref in sorted(refs)]
 
@@ -898,9 +973,11 @@ class DatabaseBatches:
                     "settling_cap_seconds": policy.settling_cap_seconds,
                     "task_ids": [member.task_id for member in members],
                 })
+        async with self.db._engine.connect() as conn:
+            carried = await released_repair_attempts_on(conn, target, members)
         batch = Batch(id=await self.next_batch_id(target, members), project_id=target.project_id,
                       repository_id=target.repository_id, target_ref=target.target_ref,
-                      created_at=now)
+                      repair_attempt_count=carried, created_at=now)
         with selection_stage("freeze", items=len(members)):
             frozen = await service.freeze(batch, members, requests=requests, snapshot=snapshot,
                                           dependencies=dependencies)
@@ -909,15 +986,16 @@ class DatabaseBatches:
         return BatchSelection(frozen, await service.store.members(frozen.id), tuple(blockers))
 
     async def next_batch_id(self, target, members):
-        """An ejected singleton may return with the same exact frozen inputs."""
+        """Ejected or released sources may return with the same exact frozen inputs.
+
+        The aborted batch stays immutable history under its own id.
+        """
         identity = batch_id(target, members)
         async with self.db._engine.connect() as conn:
             while True:
-                row = (await conn.execute(select(integration_batches.c.intent,
-                    ejection_instruction(integration_batches.c.id).label("ejected")).where(
-                        integration_batches.c.id == identity,
-                    ))).first()
-                if row is None or row.intent != "aborted" or not row.ejected:
+                intent = await conn.scalar(select(integration_batches.c.intent).where(
+                    integration_batches.c.id == identity))
+                if intent != "aborted":
                     return identity
                 identity = "train-" + hashlib.sha256((identity + ":readmit").encode()).hexdigest()[:32]
 
@@ -1221,18 +1299,13 @@ class DatabaseBatches:
                 if not ids:
                     return None
             epics = await _epic_branches_on(conn, ids)
-            withheld = set((await conn.execute(
-                select(integration_batch_members.c.task_id, integration_batch_members.c.source_sha)
-                .select_from(integration_batch_members.join(
-                    integration_batches,
-                    integration_batches.c.id == integration_batch_members.c.batch_id))
-                .where(integration_batches.c.project_id == target.project_id,
-                       integration_batches.c.repository_id == target.repository_id,
-                       integration_batches.c.target_ref == target.target_ref,
-                       integration_batches.c.intent == "aborted",
-                       ~ejection_instruction(integration_batches.c.id),
-                       integration_batch_members.c.task_id.in_(ids))
-            )).all())
+            # The latest aborted batch still withholding each exact source.
+            # Only its ejection or an explicit operator release frees it.
+            withheld = {(row.task_id, row.source_sha): row for row in (await conn.execute(
+                withheld_sources_query(target).where(
+                    integration_batch_members.c.task_id.in_(ids))
+                .order_by(integration_batches.c.created_at, integration_batches.c.id)
+            )).all()}
             repairs = set((await conn.execute(select(task_metadata.c.task_id).where(
                 task_metadata.c.task_id.in_(ids), task_metadata.c.key == "stack_repair_for",
             ))).scalars())
@@ -1285,6 +1358,7 @@ class DatabaseBatches:
         )
         members: dict[str, BatchMember] = {}
         retired = {tid for tid, request in requests.items() if request.lifecycle_disposition}
+        withheld_ids: set[str] = set()
         refused_sources = {}
         paired_sources = {}
         delivered: set[str] = set()
@@ -1315,6 +1389,12 @@ class DatabaseBatches:
             if task_id in repairs:
                 continue
             if request is None or not is_valid_git_oid(base or ""):
+                if blockers is not None:
+                    blockers.append({
+                        "code": "source_identity_unavailable", "ref": task_id,
+                        "task_id": task_id,
+                        "detail": "Completed source needs a current delivery request and exact origin base",
+                    })
                 continue
             with selection_stage("target_delivery", items=1):
                 evidence = await snapshot.strict_is_delivered(request, source_base=base)
@@ -1362,12 +1442,23 @@ class DatabaseBatches:
             source = evidence.source_oid
             if (evidence.state is not DeliveryState.PENDING
                     or evidence.reason != "source_not_contained"
-                    or not is_valid_git_oid(source or "") or (task_id, source) in withheld):
+                    or not is_valid_git_oid(source or "")):
+                continue
+            if (task_id, source) in withheld:
+                withheld_ids.add(task_id)
+                if blockers is not None:
+                    blockers.append(withheld_source_blocker(
+                        target, task_id, source, withheld[task_id, source]))
                 continue
             with selection_stage("stack_source", items=1):
                 stack_valid = (await stacks.current(task_id, source_sha=source)
                                and await stacks.source_contains_stack(task_id, source, snapshot))
             if not stack_valid:
+                if blockers is not None:
+                    blockers.append({
+                        "code": "stack_source_changed", "ref": task_id, "task_id": task_id,
+                        "detail": "Completion source does not match or contain its prerequisite stack",
+                    })
                 continue
             member = BatchMember(task_id, source, base)
             if gate_pr and target.kind == "root":
@@ -1446,13 +1537,31 @@ class DatabaseBatches:
         while changed:
             changed = False
             for task_id in list(members):
-                if (admission_edges.get(task_id, set()) & blocked
+                missing = admission_edges.get(task_id, set()) & blocked
+                if (missing
                         or (task_id in paired_sources
                             and not paired_sources[task_id] & members.keys())):
+                    if missing and blockers is not None:
+                        blockers.append({
+                            "code": "prerequisite_pending", "ref": task_id, "task_id": task_id,
+                            "detail": "Source waits for undelivered prerequisites outside this batch",
+                            "prerequisite_task_ids": sorted(missing),
+                        })
                     if task_id in paired_sources and blockers is not None:
                         refusal = refused_sources[task_id][1]
                         if refusal not in blockers:
                             blockers.append(refusal)
+                    waits_on = admission_edges.get(task_id, set()) & withheld_ids
+                    if waits_on and blockers is not None:
+                        prerequisite = min(waits_on)
+                        blockers.append({
+                            "code": "prerequisite_withheld", "ref": task_id, "task_id": task_id,
+                            "prerequisite_task_id": prerequisite,
+                            "detail": f"task {task_id} waits on prerequisite {prerequisite}, "
+                                      "whose exact source an aborted batch withholds",
+                            "repository_id": target.repository_id,
+                            "target_ref": target.target_ref,
+                        })
                     blocked.add(members.pop(task_id).task_id)
                     changed = True
         if not members:

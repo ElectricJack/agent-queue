@@ -16,7 +16,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
 from typing import Protocol
 
-from sqlalchemy import func, insert, select, union_all, update
+from sqlalchemy import func, insert, select, tuple_, union_all, update
 
 from src.database.tables import (
     archived_tasks, integration_batch_members, integration_batches, projects, tasks,
@@ -26,6 +26,7 @@ from src.integration.delivery_truth import DeliveryRequest
 from src.integration.git_truth import GitTruthSnapshot
 from src.integration.gitops import ZERO, GitOperations, RetainedRepository, branch
 from src.integration.provenance import CompletionIdentity, GitProvenance
+from src.operator_decisions import withheld_release
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +67,66 @@ def ejection_instruction(batch_identity):
         func.length(func.trim(record["operator_id"].astext)) > 0,
         func.length(func.trim(record["reason"].astext)) > 0,
     ).exists()
+
+
+def withheld_sources_query(target):
+    """Exact sources each aborted batch on *target* still withholds.
+
+    An aborted batch withholds its frozen sources until a batch-owned ejection
+    or an operator release names them. Both records are immutable history.
+    """
+    member, batch = integration_batch_members, integration_batches
+    return select(
+        member.c.task_id, member.c.source_sha, member.c.source_base_sha,
+        batch.c.id.label("batch_id"), batch.c.human_abort_reason,
+        batch.c.repair_attempt_count,
+    ).select_from(member.join(batch, batch.c.id == member.c.batch_id)).where(
+        batch.c.project_id == target.project_id,
+        batch.c.repository_id == target.repository_id,
+        batch.c.target_ref == target.target_ref,
+        batch.c.intent == "aborted",
+        ~ejection_instruction(batch.c.id),
+        ~withheld_release(batch.c.id, member.c.task_id, member.c.source_sha),
+    )
+
+
+def withheld_source_blocker(target, task_id, source_sha, row):
+    """Name the aborted batch, its reason and the supported next action."""
+    batch_id = row.batch_id
+    return {
+        "code": "source_withheld_by_aborted_batch", "ref": task_id, "task_id": task_id,
+        "source_sha": source_sha, "batch_id": batch_id,
+        "abort_reason": row.human_abort_reason,
+        "repair_attempt_count": row.repair_attempt_count,
+        "repository_id": target.repository_id, "target_ref": target.target_ref,
+        "detail": f"aborted batch {batch_id} withholds task {task_id} at {source_sha[:12]}"
+                  f" ({row.human_abort_reason or 'no abort reason'}); the train will not"
+                  " re-batch this exact source on its own",
+        "action": f"preview `aq integration release-withheld-source {batch_id} --task "
+                  f"{task_id}`; an operator applies it with the previewed SHAs and a reason. "
+                  "A new completion of the task is admitted without a release",
+    }
+
+
+async def released_repair_attempts_on(conn, target, members) -> int:
+    """Repair attempts an operator-released aborted batch spent on these sources.
+
+    A re-formed batch starts from this count, so a release never grants a
+    fresh repair budget.
+    """
+    pairs = [(m.task_id, m.source_sha) for m in members]
+    if not pairs:
+        return 0
+    member, batch = integration_batch_members, integration_batches
+    return await conn.scalar(select(func.coalesce(func.max(batch.c.repair_attempt_count), 0))
+        .select_from(member.join(batch, batch.c.id == member.c.batch_id)).where(
+            batch.c.project_id == target.project_id,
+            batch.c.repository_id == target.repository_id,
+            batch.c.target_ref == target.target_ref,
+            batch.c.intent == "aborted",
+            tuple_(member.c.task_id, member.c.source_sha).in_(pairs),
+            withheld_release(batch.c.id, member.c.task_id, member.c.source_sha),
+        ))
 
 
 def candidate_ref(batch_id: str) -> str:

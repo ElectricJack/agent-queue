@@ -201,6 +201,55 @@ async def test_worker_lease_reaches_the_validated_delivery_push(worker_git, comm
     assert w.git.apush_validated_delivery.await_args.kwargs["expected_remote_oid"] == oid
 
 
+@pytest.mark.parametrize("command", ["git_push", "push_branch"])
+async def test_worker_publication_advances_checkpoint_once_per_published_tip(worker_git, command):
+    from sqlalchemy import insert
+
+    from src.database.tables import task_branch_origins, task_integration_checkpoints
+    from src.git.manager import GitError
+
+    w = worker_git
+    branch = "aq/calm-ember-48"
+    base = "a" * 40
+    await w.db.create_repo(RepoConfig(
+        id="repo", project_id="p", source_type=RepoSourceType.CLONE, url=_REPOSITORY,
+    ))
+    await w.db.update_task("t1", repo_id="repo")
+    async with w.db.immediate() as conn:
+        await conn.execute(insert(task_branch_origins).values(
+            id="origin", task_id="t1", repository_id="repo", parent_ref="main",
+            base_sha=base, creation_generation=0, reserved=True, materialized=True,
+            created_at=1.0, materialized_at=1.0,
+        ))
+        await conn.execute(insert(task_integration_checkpoints).values(
+            task_id="t1", repository_id="repo", branch=branch, generation=0,
+            checkpoint_sha=base, verified_sha=base, verified_generation=0,
+            updated_at=1.0,
+        ))
+    for _ in range(2):
+        result = await w.handler.execute(command, w.scoped())
+        assert result["oid"] == _TIP
+        checkpoint = await w.db.get_integration_checkpoint("t1")
+        assert checkpoint["checkpoint_sha"] == _TIP
+        assert checkpoint["generation"] == checkpoint["version"] == 1
+        assert checkpoint["verified_sha"] is checkpoint["verified_generation"] is None
+
+    # A deliberate leased rewrite is another publication, not stale generation 0.
+    rewritten = "d" * 40
+    w.git.apush_validated_delivery.return_value = rewritten
+    await w.handler.execute(command, w.scoped(expected_remote_oid=_TIP))
+    checkpoint = await w.db.get_integration_checkpoint("t1")
+    assert checkpoint["checkpoint_sha"] == rewritten
+    assert checkpoint["generation"] == 2
+    origin = await w.db.get_task_branch_origin_for_promotion("t1", "repo")
+    assert origin["base_sha"] == base and origin["creation_generation"] == 0
+
+    w.git.apush_validated_delivery.side_effect = GitError("remote moved")
+    result = await w.handler.execute(command, w.scoped())
+    assert "remote moved" in result["error"]
+    assert await w.db.get_integration_checkpoint("t1") == checkpoint
+
+
 async def test_worker_push_without_a_fetched_default_is_a_root_delivery(worker_git):
     w = worker_git
     w.git.aref_exists.return_value = False

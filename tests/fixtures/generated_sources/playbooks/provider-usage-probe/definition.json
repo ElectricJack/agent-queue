@@ -5,7 +5,7 @@
     },
     "profiles": {}
   },
-  "compiled_at": "2026-09-08T14:43:32.064582Z",
+  "compiled_at": "2026-10-20T15:28:38.191456Z",
   "compiler_build": "playbook-v2-compiler/1",
   "id": "provider-usage-probe",
   "purpose": "routine",

@@ -5,10 +5,10 @@
       "task_route_plan": "sha256:06364f953b0b5dcbf257fc54fc94bb1688f8443561a691ab2354227a9b9739c7"
     },
     "profiles": {
-      "playbook-compiler": "sha256:04b54202e2fda1b8beb2a542f489e460395f1b613fd449bca90a6a0642f37080"
+      "playbook-compiler": "sha256:e8cc3d763db83f5313524f0418ae4e5caed46c44e406c06d58c050fe3ffdd75f"
     }
   },
-  "compiled_at": "2026-10-15T11:09:47.094329Z",
+  "compiled_at": "2026-10-20T15:28:38.059803Z",
   "compiler_build": "playbook-v2-compiler/1",
   "id": "default-assignment-routing",
   "purpose": "routine",

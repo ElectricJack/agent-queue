@@ -162,6 +162,13 @@ reports `blocked` and projects the delivery reason, including
 generations still require explicit provenance migration; branch observation is
 never substituted for immutable completion evidence.
 
+An operator or live authorized supervisor may explicitly retain an unlabelled
+completed epic leaf through `integration redrive-child --adopt-source`. This
+dry-run-first recovery binds the existing passing generation to its verified
+published checkpoint source, with an exact-head apply and an audited reason.
+The admission and writer fences are specified in [work-graph](work-graph.md).
+It supplies source identity only; Git containment and train gates still decide delivery.
+
 The git-first evaluator reports an explicit `no_change` state for a passing
 completion whose recorded commit list is empty, whose immutable retained Git
 source equals its recorded branch-origin base, and whose base is an ancestor of

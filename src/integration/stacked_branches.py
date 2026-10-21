@@ -241,7 +241,7 @@ class StackView:
         snapshot = self.snapshot
         target = snapshot.target_ref.removeprefix("refs/heads/")
         if snapshot.error or not snapshot.target_oid:
-            return unavailable(snapshot.error or "missing_target", target)
+            return unavailable(snapshot.error or "target_ref_missing", target)
         branches = {target}
         branches.update(proof["branch_name"].removeprefix("refs/heads/")
                         for proof in self.proofs.values())

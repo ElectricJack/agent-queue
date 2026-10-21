@@ -65,6 +65,7 @@ DESIGN_INTEGRATION_COMMANDS = frozenset(
         "integration_cutover_containment",
         "integration_abort_batch",
         "integration_settle_batch",
+        "integration_release_withheld_source",
         "integration_pause_batch",
         "integration_resume_batch",
         "integration_seal_now",
@@ -76,6 +77,7 @@ DESIGN_INTEGRATION_COMMANDS = frozenset(
         "integration_eject",
         "integration_reevaluate_repair",
         "integration_release_owner",
+        "integration_restore_task_origin",
         "integration_reserve_owner",
         "integration_clear_retained_recovery",
         "integration_release_stale_owners",
@@ -196,6 +198,32 @@ class IntegrationSettleBatchArgs(IntegrationAbortBatchArgs):
         return self
 
 
+#: Refusals of a withheld-source release; each names the owner decision it needs.
+RELEASE_WITHHELD_REFUSALS = (
+    "unknown_batch", "not_aborted", "not_a_member", "already_ejected",
+    "source_changed", "target_changed", "source_delivered", "identity_retired",
+    "source_not_accepted", "operator_decision_hold", "live_writer", "batch_active",
+    "repair_outstanding", "repair_exhausted",
+)
+
+
+class IntegrationReleaseWithheldSourceArgs(IntegrationAbortBatchArgs):
+    task_id: str = Field(min_length=1)
+    expected_source_sha: str | None = None
+    expected_target_sha: str | None = None
+
+    @model_validator(mode="after")
+    def require_preview_shas(self):
+        if not self.dry_run and (
+            not is_valid_git_oid(self.expected_source_sha or "")
+            or not is_valid_git_oid(self.expected_target_sha or "")
+            or not self.reason.strip()
+        ):
+            raise ValueError("apply requires the previewed source and target SHAs "
+                             "and a nonblank reason")
+        return self
+
+
 class IntegrationCutoverArgs(CommandArgs):
     project_id: str = Field(min_length=1)
     flow: Any = None
@@ -264,6 +292,11 @@ class IntegrationTrainControlValue(CommandValue):
     replacement_batch_id: str | None = None
     members: tuple[str, ...] = ()
     blockers: tuple[dict[str, Any], ...] = ()
+
+
+class IntegrationReleaseWithheldSourceValue(IntegrationTrainControlValue):
+    source_sha: str | None = None
+    repair_attempt_count: int | None = None
 
 
 class IntegrationRefreshEpicValue(IntegrationTrainControlValue):
@@ -355,6 +388,8 @@ class IntegrationReleaseOwnerArgs(CommandArgs):
     task_id: str | None = Field(default=None, min_length=1)
     owner_row_id: str | None = Field(default=None, min_length=1)
     dry_run: bool = True
+    no_push: bool = False
+    self_owned: bool = False
 
     @model_validator(mode="after")
     def exactly_one_target(self) -> "IntegrationReleaseOwnerArgs":
@@ -365,6 +400,25 @@ class IntegrationReleaseOwnerArgs(CommandArgs):
 
 class IntegrationReserveOwnerArgs(CommandArgs):
     task_id: str = Field(min_length=1)
+
+
+class IntegrationRestoreTaskOriginArgs(CommandArgs):
+    task_id: str = Field(min_length=1)
+    dry_run: bool = True
+    origin_id: str | None = Field(default=None, min_length=1)
+    expected_remote_oid: str | None = None
+    expected_fence_token: StrictInt | None = Field(default=None, ge=0)
+    reason: str = ""
+
+    @model_validator(mode="after")
+    def require_exact_restore(self):
+        if not self.dry_run and (
+            not self.origin_id or not is_valid_git_oid(self.expected_remote_oid or "")
+            or self.expected_fence_token is None or not self.reason.strip()
+        ):
+            raise ValueError("apply requires origin_id, expected_remote_oid, "
+                             "expected_fence_token and a nonblank reason")
+        return self
 
 
 class IntegrationClearRetainedRecoveryArgs(CommandArgs):
@@ -419,6 +473,7 @@ class IntegrationAuthorizeRootArgs(IntegrationRedriveRootArgs):
 
 class IntegrationRedriveChildArgs(CommandArgs):
     task_id: str = Field(min_length=1)
+    adopt_source: bool = False
     #: Diagnose only.  Applying needs the head the dry run reported and a reason.
     dry_run: bool = True
     expected_head_sha: str | None = Field(default=None, min_length=1)
@@ -440,7 +495,7 @@ class IntegrationRedriveChildArgs(CommandArgs):
         return self
 
 
-class IntegrationRecoverCompletedContainerArgs(IntegrationRedriveChildArgs):
+class IntegrationRecoverCompletedContainerArgs(IntegrationRedriveRootArgs):
     project_id: str = Field(min_length=1)
     repository_id: str = Field(min_length=1)
     branch: str = Field(min_length=1)
@@ -480,7 +535,7 @@ class IntegrationRecoverCompletedContainerValue(CommandValue):
     reason: str | None = None
 
 
-class IntegrationReopenCollectionArgs(IntegrationRedriveChildArgs):
+class IntegrationReopenCollectionArgs(IntegrationRedriveRootArgs):
     """Dry run by default; applying names the parent branch head the dry run reported."""
 
 
@@ -755,6 +810,7 @@ class IntegrationRedriveChildValue(CommandValue):
     remote_head_sha: str | None = None
     tree_sha: str | None = None
     evidence_id: str | None = None
+    completion_id: str | None = None
     collection: str | None = None
     checkpoint: dict[str, Any] | None = None
     reason: str | None = None
@@ -1460,6 +1516,15 @@ INTEGRATION_RESERVE_OWNER = _operational_contract(
     ("acquired", "already_reserved", "not_eligible", "not_found"),
     successes=frozenset({"acquired", "already_reserved"}),
     side_effect=SideEffectClass.UPDATE,
+)
+
+INTEGRATION_RESTORE_TASK_ORIGIN = _operational_contract(
+    "integration_restore_task_origin",
+    IntegrationRestoreTaskOriginArgs,
+    ("preview", "restored", "not_eligible", "not_found"),
+    successes=frozenset({"preview", "restored"}),
+    side_effect=SideEffectClass.COMPOSITE,
+    supports_preview=True,
 )
 
 CLEAR_RETAINED_RECOVERY_OUTCOMES = ("cleared", "not_clean", "unavailable", "not_found")
@@ -2321,6 +2386,13 @@ async def _reserve_owner_adapter(args: IntegrationReserveOwnerArgs, ctx: Command
     )
 
 
+async def _restore_task_origin_adapter(args: IntegrationRestoreTaskOriginArgs, ctx):
+    return await _hierarchy_adapter(
+        "integration_restore_task_origin", args, ctx, IntegrationOperationalValue,
+        {"preview", "restored", "not_eligible", "not_found"},
+    )
+
+
 async def _clear_retained_recovery_adapter(
     args: IntegrationClearRetainedRecoveryArgs, ctx: CommandContext | None
 ):
@@ -2440,6 +2512,8 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
          IntegrationRecordRootNoopValue),
         ("integration_abort_batch", IntegrationAbortBatchArgs, "aborted", IntegrationTrainControlValue),
         ("integration_settle_batch", IntegrationSettleBatchArgs, "settled", IntegrationTrainControlValue),
+        ("integration_release_withheld_source", IntegrationReleaseWithheldSourceArgs, "released",
+         IntegrationReleaseWithheldSourceValue),
         ("integration_pause_batch", IntegrationAbortBatchArgs, "paused", IntegrationTrainControlValue),
         ("integration_resume_batch", IntegrationAbortBatchArgs, "resumed", IntegrationTrainControlValue),
         ("integration_seal_now", IntegrationSealNowArgs, "sealed", IntegrationTrainControlValue),
@@ -2462,6 +2536,9 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
             successes.update({"no_ready_work", "existing_batch"})
         elif name == "integration_settle_batch":
             outcomes += ("unknown_batch", "target_not_settled")
+        elif name == "integration_release_withheld_source":
+            outcomes += ("already_released", *RELEASE_WITHHELD_REFUSALS)
+            successes.add("already_released")
         elif name == "integration_refresh_epic":
             outcomes += ("pending", "current")
             successes.update({"pending", "current"})
@@ -2708,6 +2785,7 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
         (INTEGRATION_EJECT, _eject_adapter),
         (INTEGRATION_REEVALUATE_REPAIR, _reevaluate_repair_adapter),
         (INTEGRATION_RELEASE_OWNER, _release_owner_adapter),
+        (INTEGRATION_RESTORE_TASK_ORIGIN, _restore_task_origin_adapter),
         (INTEGRATION_RESERVE_OWNER, _reserve_owner_adapter),
         (INTEGRATION_CLEAR_RETAINED_RECOVERY, _clear_retained_recovery_adapter),
         (INTEGRATION_RELEASE_STALE_OWNERS, _release_stale_owners_adapter),
