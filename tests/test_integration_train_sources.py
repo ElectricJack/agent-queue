@@ -1766,7 +1766,8 @@ async def test_legacy_delivery_for_another_repository_or_ref_does_not_suppress_w
     assert [m.task_id for m in members] == ["a"]
 
 
-async def test_existing_epic_batch_with_root_delivered_inputs_is_held(world):
+@pytest.mark.parametrize("missing_ref", [False, True])
+async def test_existing_epic_batch_with_root_delivered_inputs_settles(world, tmp_path, missing_ref):
     db, origin = world.db, world.origin
     await db.create_task(Task(id="epic", project_id="p", title="epic", description="",
                               branch_name="aq/epic", status=TaskStatus.COMPLETED))
@@ -1777,12 +1778,102 @@ async def test_existing_epic_batch_with_root_delivered_inputs_is_held(world):
     store = BatchStore(db)
     await store.freeze(Batch("wrong", "p", "r", epic.target_ref),
                        (BatchMember("child", source, base),), trees={"child": tree(world, source)})
+    git(origin.clone, "push", "origin", f"{source}:{candidate_ref('wrong')}")
+    git(origin.clone, "update-ref", RETAINED_CANDIDATE_PREFIX + "wrong", source)
     origin.land("child")
+    # Use the configured default, even when it differs from main.
+    git(origin.clone, "push", "origin", "main:development")
+    async with db._engine.begin() as conn:
+        await conn.execute(update(repos).where(repos.c.id == "r")
+                           .values(default_branch="development"))
+    if missing_ref:
+        git(origin.clone, "push", "origin", "--delete", "aq/epic", "aq/child")
+    before = git(origin.clone, "ls-remote", "origin")
+    batches = fixture_batches(db)
     selection = await fixture_batches(db).open_batch(
         epic, await snapshot(world, epic), SimpleNamespace(store=store),
     )
     assert selection.batch is None
-    assert selection.blockers[0]["code"] == "batch_inputs_delivered_to_project"
+    assert not selection.blockers
+    assert selection.detail["reason"] == "batch_inputs_delivered_to_project"
+    row = await db.get_integration_batch("wrong")
+    assert row["lifecycle"] == "promoted" and row["intent"] == "open"
+    assert row["final_main_sha"] == git(origin.clone, "rev-parse", "main")
+    assert await batches.current(epic) is None
+    assert await store.members("wrong") == (BatchMember("child", source, base),)
+    async with db._engine.connect() as conn:
+        recorded = (await conn.execute(select(events.c.payload).where(
+            events.c.event_type == "integration.batch_delivered_to_project"))).scalars().all()
+    assert len(recorded) == 1
+    assert json.loads(recorded[0])["delivered_ref"] == "refs/heads/development"
+    # Replay does not resurrect the target or write any remote refs.
+    await batches.open_batch(epic, await snapshot(world, epic), SimpleNamespace(store=store))
+    assert git(origin.clone, "ls-remote", "origin") == before
+    # Restartable cleanup independently proves root delivery and can finish
+    # after hand deletion of both the epic and source refs.
+    cleanup = train_cleanup(world, tmp_path)
+    await cleanup.materialize("wrong")
+    await cleanup.advance("wrong")
+    assert (await db.get_integration_batch("wrong"))["cleanup_state"] == "complete"
+    assert not git(origin.url, "for-each-ref", "--format=%(refname)", candidate_ref("wrong"))
+    assert git(origin.clone, "ls-remote", "origin", "development").split()[0] == row["final_main_sha"]
+
+
+@pytest.mark.parametrize("guard", ["partial", "unknown", "stale", "paused", "hold",
+                                   "sync", "refresh", "binding", "identity", "promotion"])
+async def test_root_delivered_epic_batch_retains_incomplete_or_held_inputs(world, monkeypatch, guard):
+    from src.operator_decisions import OperatorDecisions
+
+    db, origin = world.db, world.origin
+    await db.create_task(Task(id="epic", project_id="p", title="epic", description="",
+                              branch_name="aq/epic", status=TaskStatus.COMPLETED))
+    git(origin.clone, "push", "origin", "main:aq/epic")
+    sources = [await completed(world, tid, parent="epic") for tid in ("child", "other")]
+    batch_id = {"sync": "train-epic-sync-test", "refresh": "train-epic-refresh-test"}.get(
+        guard, "frozen")
+    epic = TrainTarget("p", "r", "refs/heads/aq/epic", "epic")
+    members = tuple(BatchMember(tid, source,
+        git(origin.clone, "rev-parse", f"{source}^"), order)
+        for order, (tid, source) in enumerate(zip(("child", "other"), sources, strict=True)))
+    store = BatchStore(db)
+    await store.freeze(Batch(batch_id, "p", "r", epic.target_ref), members,
+                       trees={m.task_id: tree(world, m.source_sha) for m in members},
+                       promotion={"repository_id": "r", "request_id": "promotion:r:test:1",
+                                  "step": {"id": "test"}} if guard == "promotion" else None)
+    origin.land("child")
+    if guard != "partial":
+        origin.land("other")
+    observed = await snapshot(world, epic)
+    if guard == "identity":
+        observed = replace(observed, observation=replace(observed.observation, repository_id="other"))
+    elif guard == "unknown":
+        monkeypatch.setattr(type(observed), "contains_source", AsyncMock(return_value=None))
+    elif guard == "stale":
+        monkeypatch.setattr(type(observed), "is_fresh", AsyncMock(return_value=False))
+    elif guard == "paused":
+        await store.set_intent(batch_id, "paused")
+    elif guard == "hold":
+        await OperatorDecisions(db).record({
+            "object_kind": "batch", "object_id": batch_id, "operator": "operator",
+            "decision": "Keep batch", "effect": "hold", "source": "dashboard",
+            "source_ref": "message:hold", "idempotency_key": "hold", "releases": None,
+        }, recorded_by="human:local-operator")
+    elif guard == "binding":
+        # The pre-lock proof no longer describes the current binding.
+        original = type(observed).contains_source
+
+        async def prove_then_change(self, *args):
+            proof = await original(self, *args)
+            async with db._engine.begin() as conn:
+                await conn.execute(update(repos).where(repos.c.id == "r")
+                                   .values(default_branch="elsewhere"))
+            return proof
+
+        monkeypatch.setattr(type(observed), "contains_source", prove_then_change)
+    await fixture_batches(db).open_batch(epic, observed, SimpleNamespace(store=store))
+    row = await db.get_integration_batch(batch_id)
+    assert row["lifecycle"] == "sealed"
+    assert row["intent"] == ("paused" if guard == "paused" else "open")
 
 
 async def test_delivered_work_does_not_consume_the_pending_member_limit(world):

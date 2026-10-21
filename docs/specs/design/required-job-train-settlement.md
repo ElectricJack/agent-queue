@@ -22,6 +22,16 @@ holds and identity checks. Partial conflict candidates and unknown proofs remain
 unsettled. Epic synchronization and promotion intents keep their own
 settlement protocols.
 
+An ordinary open epic batch also settles when every exact frozen source is
+proven on the designated repository's current default branch, even if the epic
+ref has disappeared after a hand landing. Recheck the repository binding,
+frozen membership, operator holds and default head under the project and batch
+locks. Paused batches, partial or unknown proofs, epic sync/refresh batches and
+promotion intents retain their existing protocols. Record the observed default
+ref and SHA without publishing or recreating the epic. Cleanup may use that
+default branch only after independently proving all frozen inputs there; its
+usual branch ownership, reachability and exact-tip guards still apply.
+
 When an ordinary root or development candidate fails only checks proven to
 fail on its frozen target, the train may replace its batch to admit a pending
 baseline fix. Require trusted green checks on the exact additional source,
