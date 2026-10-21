@@ -349,6 +349,7 @@ async def mark_integration_pool_handoff_released(
     session_instance_token: str,
     conn=None,
     preparation_epoch: int | None = None,
+    require_preparation: bool = False,
 ) -> bool:
     """Record a **pool** writer's detach proof without unbinding its slot.
 
@@ -383,7 +384,16 @@ async def mark_integration_pool_handoff_released(
                 db, owner, workspace=workspace, task_id=task_id,
                 session_instance_token=session_instance_token, conn=owned_conn,
                 preparation_epoch=preparation_epoch,
+                require_preparation=require_preparation,
             )
+    if require_preparation and (
+        preparation_epoch is None or await db.lock_claim_workspace(
+            conn, owner.get("session_id"), task_id, epoch=preparation_epoch,
+            instance_token=session_instance_token, expected_workspace=workspace,
+            allow_retained_preparation=True,
+        ) is None
+    ):
+        return False
     # Match release_claim: session before owner/workspace.
     session_row = (await conn.execute(select(sessions).where(
         sessions.c.id == owner.get("session_id")

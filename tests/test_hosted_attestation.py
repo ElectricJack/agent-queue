@@ -330,6 +330,20 @@ def test_accepts_exactly_what_the_daemon_publishes(payload: AttestationPayload) 
     assert rechecked == {str(check.check_run_id) for check in payload.checks}
 
 
+@pytest.mark.parametrize("conclusion", [None, "failure", "cancelled", "timed_out"])
+def test_workflow_aggregate_does_not_override_verified_required_jobs(conclusion):
+    payload = _payload()
+    payload = payload.model_copy(update={"workflow_runs": (
+        payload.workflow_runs[0].model_copy(update={"conclusion": conclusion}),
+    )})
+    github = FakeGitHub()
+    _publish(github, payload)
+    verdict = hosted.verify(_env(), github)
+    assert verdict.attested, verdict.reason
+    github.check_runs[101]["conclusion"] = "failure"
+    assert not hosted.verify(_env(), github).attested
+
+
 def test_ignores_other_apps_and_names_and_takes_the_newest_trusted_record() -> None:
     github = FakeGitHub()
     text = _publish(github, _payload(), record_id=10)

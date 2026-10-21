@@ -47,6 +47,7 @@ class ProjectCommandsMixin:
         ]
 
         return {
+            "success": True,
             "projects": 1 if filter_project else len(projects),
             "tasks": {
                 "total": len(tasks),
@@ -62,6 +63,11 @@ class ProjectCommandsMixin:
         }
 
     async def _cmd_list_projects(self, args: dict) -> dict:
+        from src.observations.commands import snapshot_command
+        from src.observations.snapshots import requested
+
+        if requested(args):
+            return await snapshot_command(self, "list_projects", args)
         projects = await self.db.list_projects()
         result = []
         for p in projects:
@@ -85,7 +91,7 @@ class ProjectCommandsMixin:
     async def _cmd_create_project(self, args: dict) -> dict:
         name = args.get("name") or args.get("project_id")
         if not name:
-            return {"error": "'name' is required to create a project"}
+            return {"success": False, "error": "'name' is required to create a project"}
         project_id = name.lower().replace(" ", "-")
 
         if args.get("repo_url") or args.get("create_repo"):
@@ -157,6 +163,7 @@ class ProjectCommandsMixin:
         )
 
         return {
+            "success": True,
             "created": project_id,
             "name": project.name,
             "assignment_playbook_id": project.assignment_playbook_id,
@@ -187,22 +194,83 @@ class ProjectCommandsMixin:
                 "code": "repository_authorization_missing", "recovery_command": command,
                 "message": "Local repository has no authorized remote. Review and run the binding command."}
 
+    async def _cmd_repair_repository_checkout(self, args: dict) -> dict:
+        """Repoint stale path fields without deleting a repository's identity."""
+        from dataclasses import asdict
+        from pathlib import Path
+
+        from src.commands.supervisor_authority import operator_or_global_supervisor
+        from src.git.manager import repository_urls_match
+        from src.workspace_registration import path_is_missing
+
+        operator_id, refusal = await operator_or_global_supervisor(self.db)
+        if refusal:
+            return {"success": False, "error_code": "global_operator_required", "error": refusal}
+        required = {"project_id", "repository_id", "expected_path", "replacement_path", "reason"}
+        if (set(args) - required - {"apply"} or not required <= set(args)
+                or any(not isinstance(args[k], str) or not args[k].strip() for k in required)
+                or not isinstance(args.get("apply", False), bool)):
+            return {"success": False, "error_code": "invalid_arguments",
+                    "error": "Provide project, repository, expected/replacement paths and reason"}
+        repo = await self.db.get_repo(args["repository_id"])
+        if repo is None or repo.project_id != args["project_id"]:
+            return {"success": False, "error_code": "repository_not_found",
+                    "error": "Repository not found in this project"}
+        expected = args["expected_path"]
+        replacement = args["replacement_path"]
+        fields = [field for field in ("source_path", "checkout_base_path")
+                  if getattr(repo, field) == expected]
+        if not fields:
+            return {"success": False, "error_code": "repository_checkout_stale",
+                    "error": "The expected path no longer matches the registration"}
+        if not Path(expected).is_absolute() or not path_is_missing(expected):
+            return {"success": False, "error_code": "checkout_not_missing",
+                    "error": "Expected path must be absolute and confirmed missing"}
+        if not Path(replacement).is_absolute() or not Path(replacement).is_dir() or not repo.url:
+            return {"success": False, "error_code": "replacement_unverified",
+                    "error": "Require an existing absolute checkout and a registered repository URL"}
+        replacement = str(Path(replacement).resolve())
+        try:
+            await self.orchestrator.git._arun(["rev-parse", "--git-dir"], cwd=replacement)
+            origin = await self.orchestrator.git.aget_remote_url(replacement)
+        except (GitError, OSError):
+            origin = None
+        if not origin or not repository_urls_match(repo.url, origin, base=replacement):
+            return {"success": False, "error_code": "replacement_unverified",
+                    "error": "Replacement must be a Git checkout of the registered repository"}
+        before = {**asdict(repo), "source_type": repo.source_type.value}
+        after = {**before, **dict.fromkeys(fields, replacement)}
+        if not args.get("apply", False):
+            return {"success": True, "project_id": repo.project_id, "repository_id": repo.id,
+                    "changed": False, "preview": True, "before": before, "after": after}
+        # Network/filesystem validation may have yielded; recheck the live authority
+        # and absence before committing a compare-and-swap of the full config.
+        operator_id, refusal = await operator_or_global_supervisor(self.db)
+        if refusal:
+            return {"success": False, "error_code": "global_operator_required", "error": refusal}
+        if not path_is_missing(expected):
+            return {"success": False, "error_code": "checkout_not_missing",
+                    "error": "The old checkout path is no longer confirmed missing"}
+        return await self.db.repair_repository_checkout(
+            repo, after=after, reason=args["reason"].strip(), operator_id=operator_id,
+        )
+
     async def _cmd_pause_project(self, args: dict) -> dict:
         pid = args["project_id"]
         project = await self.db.get_project(pid)
         if not project:
-            return {"error": f"Project '{pid}' not found"}
+            return {"success": False, "error": f"Project '{pid}' not found"}
         await self.db.update_project(pid, status=ProjectStatus.PAUSED)
         await self.orchestrator.bus.emit("project.paused", {"project_id": pid})
         if project.status != ProjectStatus.PAUSED:
             await self._notify_project_workers(pid, paused=True)
-        return {"paused": pid, "name": project.name}
+        return {"success": True, "paused": pid, "name": project.name}
 
     async def _cmd_resume_project(self, args: dict) -> dict:
         pid = args["project_id"]
         project = await self.db.get_project(pid)
         if not project:
-            return {"error": f"Project '{pid}' not found"}
+            return {"success": False, "error": f"Project '{pid}' not found"}
         await self.db.update_project(pid, status=ProjectStatus.ACTIVE)
         # Wakes any ``task_claim`` long-poll blocked on ``not_admissible``
         # (swarm-work-model §10) — a paused project resuming is exactly the
@@ -210,7 +278,7 @@ class ProjectCommandsMixin:
         await self.orchestrator.bus.emit("project.resumed", {"project_id": pid})
         if project.status == ProjectStatus.PAUSED:
             await self._notify_project_workers(pid, paused=False)
-        return {"resumed": pid, "name": project.name}
+        return {"success": True, "resumed": pid, "name": project.name}
 
     async def _notify_project_workers(self, project_id: str, *, paused: bool) -> None:
         """Durable safe-point notices, including workers with a pending wait."""
@@ -258,7 +326,7 @@ class ProjectCommandsMixin:
         pid = args["project_id"]
         project = await self.db.get_project(pid)
         if not project:
-            return {"error": f"Project '{pid}' not found"}
+            return {"success": False, "error": f"Project '{pid}' not found"}
 
         # Load existing constraint (if any) for merge/stacking behavior.
         existing = await self.db.get_project_constraint(pid)
@@ -275,6 +343,7 @@ class ProjectCommandsMixin:
 
         if not exclusive and not pause_scheduling and not max_agents_by_type:
             return {
+                "success": False,
                 "error": (
                     "At least one constraint must be set: "
                     "exclusive, max_agents_by_type, or pause_scheduling."
@@ -302,6 +371,7 @@ class ProjectCommandsMixin:
             active_fields.append(f"max_agents_by_type={constraint.max_agents_by_type}")
 
         return {
+            "success": True,
             "project_id": pid,
             "constraint_set": True,
             "active_fields": active_fields,
@@ -317,11 +387,11 @@ class ProjectCommandsMixin:
         pid = args["project_id"]
         project = await self.db.get_project(pid)
         if not project:
-            return {"error": f"Project '{pid}' not found"}
+            return {"success": False, "error": f"Project '{pid}' not found"}
 
         existing = await self.db.get_project_constraint(pid)
         if not existing:
-            return {"error": f"No active constraint on project '{pid}'"}
+            return {"success": False, "error": f"No active constraint on project '{pid}'"}
 
         # Check if caller wants to release specific fields only.
         fields_to_release = args.get("fields", [])
@@ -346,7 +416,7 @@ class ProjectCommandsMixin:
             if not exclusive and not pause_scheduling and not max_agents_by_type:
                 await self.db.delete_project_constraint(pid)
                 await self.orchestrator.bus.emit("constraint.released", {"project_id": pid})
-                return {"project_id": pid, "constraint_released": True, "fields": "all"}
+                return {"success": True, "project_id": pid, "constraint_released": True, "fields": "all"}
 
             updated = ProjectConstraint(
                 project_id=pid,
@@ -359,6 +429,7 @@ class ProjectCommandsMixin:
             await self.db.set_project_constraint(updated)
             await self.orchestrator.bus.emit("constraint.released", {"project_id": pid})
             return {
+                "success": True,
                 "project_id": pid,
                 "constraint_released": False,
                 "fields_released": fields_to_release,
@@ -376,7 +447,7 @@ class ProjectCommandsMixin:
         # Release the entire constraint.
         await self.db.delete_project_constraint(pid)
         await self.orchestrator.bus.emit("constraint.released", {"project_id": pid})
-        return {"project_id": pid, "constraint_released": True, "fields": "all"}
+        return {"success": True, "project_id": pid, "constraint_released": True, "fields": "all"}
 
     async def _cmd_bind_project_repository(self, args: dict) -> dict:
         """Authorize an initialized project's first repository, never a reassignment."""
@@ -436,7 +507,7 @@ class ProjectCommandsMixin:
         pid = args["project_id"]
         project = await self.db.get_project(pid)
         if not project:
-            return {"error": f"Project '{pid}' not found"}
+            return {"success": False, "error": f"Project '{pid}' not found"}
         if "repo_url" in args or "expected_repo_url" in args:
             return {"success": False, "error_code": "repository_binding_required",
                     "error": "Use bind_project_repository for an audited first repository binding"}
@@ -465,6 +536,7 @@ class ProjectCommandsMixin:
         }
         if rollout_fields.intersection(args):
             return {
+                "success": False,
                 "error": (
                     "Derived rollout fields cannot be edited directly; configure policy "
                     "with an explicit expected generation."
@@ -505,16 +577,17 @@ class ProjectCommandsMixin:
                 # as to LOCAL.
                 operator_id, refusal = await integration_operator(self.db, pid)
                 if refusal is not None:
-                    return {"error": f"Integration configuration refused: {refusal}"}
+                    return {"success": False, "error": f"Integration configuration refused: {refusal}"}
             else:
                 return {
+                    "success": False,
                     "error": (
                         "Integration configuration requires LOCAL operator or supervisor "
                         "authority"
                     )
                 }
             if "expected_integration_generation" not in args:
-                return {"error": "expected_integration_generation is required"}
+                return {"success": False, "error": "expected_integration_generation is required"}
             if "hierarchical_integration_mode" in sensitive:
                 from src.integration.delivery_engine import engine_refusal
 
@@ -570,6 +643,7 @@ class ProjectCommandsMixin:
             updates.update(identity_updates)
         if not updates:
             return {
+                "success": False,
                 "error": (
                     "No fields to update. Provide name, credit_weight, "
                     "max_concurrent_agents, budget_limit, "
@@ -586,7 +660,7 @@ class ProjectCommandsMixin:
                 # The claim frontier reads the cached ready set; re-read it
                 # now rather than on the next cycle.
                 await readiness.refresh()
-        return {"updated": pid, "fields": list(updates.keys())}
+        return {"success": True, "updated": pid, "fields": list(updates.keys())}
 
     async def _router_binding_refusal(self, project, playbook_id) -> dict | None:
         """Why *project* may not be bound to *playbook_id* (routing spec §8), or ``None``.
@@ -719,6 +793,7 @@ class ProjectCommandsMixin:
         checkout = await self.db.get_project_workspace_path(pid)
         if not checkout:
             return {
+                "success": False,
                 "outcome": "blocked",
                 "error": "workspace_unavailable",
                 "message": "No project workspace can create the missing targets.",
@@ -740,11 +815,11 @@ class ProjectCommandsMixin:
         pid = args["project_id"]
         project = await self.db.get_project(pid)
         if not project:
-            return {"error": f"Project '{pid}' not found"}
+            return {"success": False, "error": f"Project '{pid}' not found"}
 
         branch = args.get("branch", "").strip()
         if not branch:
-            return {"error": "branch is required"}
+            return {"success": False, "error": "branch is required"}
 
         old_branch = project.repo_default_branch or "main"
 
@@ -789,6 +864,7 @@ class ProjectCommandsMixin:
                             except GitError as exc:
                                 if str(exc).startswith("reserved delivery paths:"):
                                     return {
+                                        "success": False,
                                         "error": (
                                             f"refusing to create {branch} from the workspace "
                                             f"HEAD: {exc}"
@@ -804,7 +880,7 @@ class ProjectCommandsMixin:
                         if verified.state is not RemoteRefState.PRESENT or verified.oid != published_oid:
                             raise GitError("new default branch was not verified on origin")
                     except Exception as exc:
-                        return {"error": f"could not verify/create default branch {branch}: {exc}"}
+                        return {"success": False, "error": f"could not verify/create default branch {branch}: {exc}"}
             except Exception as exc:
                 logger.warning(
                     "Could not verify/create branch %s for project %s: %s",
@@ -815,7 +891,7 @@ class ProjectCommandsMixin:
 
         await self.db.update_project(pid, repo_default_branch=branch)
 
-        result: dict = {
+        result: dict = {"success": True,
             "project_id": pid,
             "default_branch": branch,
             "previous_branch": old_branch,
@@ -830,10 +906,10 @@ class ProjectCommandsMixin:
         pid = args["project_id"]
         project = await self.db.get_project(pid)
         if not project:
-            return {"error": f"Project '{pid}' not found"}
+            return {"success": False, "error": f"Project '{pid}' not found"}
         ws_path = await self.db.get_project_workspace_path(pid)
         usage = await self.db.get_project_token_usage(pid)
-        info: dict = {
+        info: dict = {"success": True,
             "id": project.id,
             "name": project.name,
             "status": project.status.value,
@@ -861,7 +937,7 @@ class ProjectCommandsMixin:
         pid = args["project_id"]
         project = await self.db.get_project(pid)
         if not project:
-            return {"error": f"Project '{pid}' not found"}
+            return {"success": False, "error": f"Project '{pid}' not found"}
         from src.integration.records import PolicyActivation
 
         if (
@@ -871,6 +947,7 @@ class ProjectCommandsMixin:
             or await PolicyActivation(self.db).has_active_work(pid)
         ):
             return {
+                "success": False,
                 "error": (
                     "Cannot delete: hierarchical integration must be disabled and drained "
                     "with no live rollout projection."
@@ -879,6 +956,7 @@ class ProjectCommandsMixin:
         tasks = await self.db.list_tasks(project_id=pid, status=TaskStatus.IN_PROGRESS)
         if tasks:
             return {
+                "success": False,
                 "error": f"Cannot delete: {len(tasks)} task(s) currently IN_PROGRESS. "
                 "Stop them first."
             }
@@ -896,7 +974,7 @@ class ProjectCommandsMixin:
                     **(exc.context or {}),
                 }
             raise
-        return {"deleted": pid, "name": project.name}
+        return {"success": True, "deleted": pid, "name": project.name}
 
 
 def _git_identity_updates(project, args: dict) -> dict:

@@ -39,10 +39,14 @@
                 "binding_ref": "#/$defs/BindingRef",
                 "coalesce": "#/$defs/CoalesceValue",
                 "context_ref": "#/$defs/ContextRef",
+                "diff": "#/$defs/DiffValue",
                 "event_ref": "#/$defs/EventRef",
+                "filter": "#/$defs/FilterValue",
+                "len": "#/$defs/LenValue",
                 "list": "#/$defs/ListValue",
                 "literal": "#/$defs/LiteralValue",
                 "loop_ref": "#/$defs/LoopRef",
+                "map": "#/$defs/MapValue",
                 "object": "#/$defs/ObjectValue",
                 "template": "#/$defs/TemplateValue"
               },
@@ -75,6 +79,18 @@
               },
               {
                 "$ref": "#/$defs/CoalesceValue"
+              },
+              {
+                "$ref": "#/$defs/FilterValue"
+              },
+              {
+                "$ref": "#/$defs/MapValue"
+              },
+              {
+                "$ref": "#/$defs/LenValue"
+              },
+              {
+                "$ref": "#/$defs/DiffValue"
               }
             ]
           },
@@ -100,10 +116,14 @@
               "binding_ref": "#/$defs/BindingRef",
               "coalesce": "#/$defs/CoalesceValue",
               "context_ref": "#/$defs/ContextRef",
+              "diff": "#/$defs/DiffValue",
               "event_ref": "#/$defs/EventRef",
+              "filter": "#/$defs/FilterValue",
+              "len": "#/$defs/LenValue",
               "list": "#/$defs/ListValue",
               "literal": "#/$defs/LiteralValue",
               "loop_ref": "#/$defs/LoopRef",
+              "map": "#/$defs/MapValue",
               "object": "#/$defs/ObjectValue",
               "template": "#/$defs/TemplateValue"
             },
@@ -136,6 +156,18 @@
             },
             {
               "$ref": "#/$defs/CoalesceValue"
+            },
+            {
+              "$ref": "#/$defs/FilterValue"
+            },
+            {
+              "$ref": "#/$defs/MapValue"
+            },
+            {
+              "$ref": "#/$defs/LenValue"
+            },
+            {
+              "$ref": "#/$defs/DiffValue"
             }
           ],
           "title": "Objective"
@@ -460,10 +492,14 @@
                 "binding_ref": "#/$defs/BindingRef",
                 "coalesce": "#/$defs/CoalesceValue",
                 "context_ref": "#/$defs/ContextRef",
+                "diff": "#/$defs/DiffValue",
                 "event_ref": "#/$defs/EventRef",
+                "filter": "#/$defs/FilterValue",
+                "len": "#/$defs/LenValue",
                 "list": "#/$defs/ListValue",
                 "literal": "#/$defs/LiteralValue",
                 "loop_ref": "#/$defs/LoopRef",
+                "map": "#/$defs/MapValue",
                 "object": "#/$defs/ObjectValue",
                 "template": "#/$defs/TemplateValue"
               },
@@ -496,6 +532,18 @@
               },
               {
                 "$ref": "#/$defs/CoalesceValue"
+              },
+              {
+                "$ref": "#/$defs/FilterValue"
+              },
+              {
+                "$ref": "#/$defs/MapValue"
+              },
+              {
+                "$ref": "#/$defs/LenValue"
+              },
+              {
+                "$ref": "#/$defs/DiffValue"
               }
             ]
           },
@@ -545,10 +593,14 @@
                   "binding_ref": "#/$defs/BindingRef",
                   "coalesce": "#/$defs/CoalesceValue",
                   "context_ref": "#/$defs/ContextRef",
+                  "diff": "#/$defs/DiffValue",
                   "event_ref": "#/$defs/EventRef",
+                  "filter": "#/$defs/FilterValue",
+                  "len": "#/$defs/LenValue",
                   "list": "#/$defs/ListValue",
                   "literal": "#/$defs/LiteralValue",
                   "loop_ref": "#/$defs/LoopRef",
+                  "map": "#/$defs/MapValue",
                   "object": "#/$defs/ObjectValue",
                   "template": "#/$defs/TemplateValue"
                 },
@@ -581,6 +633,18 @@
                 },
                 {
                   "$ref": "#/$defs/CoalesceValue"
+                },
+                {
+                  "$ref": "#/$defs/FilterValue"
+                },
+                {
+                  "$ref": "#/$defs/MapValue"
+                },
+                {
+                  "$ref": "#/$defs/LenValue"
+                },
+                {
+                  "$ref": "#/$defs/DiffValue"
                 }
               ]
             },
@@ -598,10 +662,14 @@
                 "binding_ref": "#/$defs/BindingRef",
                 "coalesce": "#/$defs/CoalesceValue",
                 "context_ref": "#/$defs/ContextRef",
+                "diff": "#/$defs/DiffValue",
                 "event_ref": "#/$defs/EventRef",
+                "filter": "#/$defs/FilterValue",
+                "len": "#/$defs/LenValue",
                 "list": "#/$defs/ListValue",
                 "literal": "#/$defs/LiteralValue",
                 "loop_ref": "#/$defs/LoopRef",
+                "map": "#/$defs/MapValue",
                 "object": "#/$defs/ObjectValue",
                 "template": "#/$defs/TemplateValue"
               },
@@ -634,6 +702,18 @@
               },
               {
                 "$ref": "#/$defs/CoalesceValue"
+              },
+              {
+                "$ref": "#/$defs/FilterValue"
+              },
+              {
+                "$ref": "#/$defs/MapValue"
+              },
+              {
+                "$ref": "#/$defs/LenValue"
+              },
+              {
+                "$ref": "#/$defs/DiffValue"
               }
             ]
           },
@@ -711,10 +791,14 @@
               "binding_ref": "#/$defs/BindingRef",
               "coalesce": "#/$defs/CoalesceValue",
               "context_ref": "#/$defs/ContextRef",
+              "diff": "#/$defs/DiffValue",
               "event_ref": "#/$defs/EventRef",
+              "filter": "#/$defs/FilterValue",
+              "len": "#/$defs/LenValue",
               "list": "#/$defs/ListValue",
               "literal": "#/$defs/LiteralValue",
               "loop_ref": "#/$defs/LoopRef",
+              "map": "#/$defs/MapValue",
               "object": "#/$defs/ObjectValue",
               "template": "#/$defs/TemplateValue"
             },
@@ -747,6 +831,18 @@
             },
             {
               "$ref": "#/$defs/CoalesceValue"
+            },
+            {
+              "$ref": "#/$defs/FilterValue"
+            },
+            {
+              "$ref": "#/$defs/MapValue"
+            },
+            {
+              "$ref": "#/$defs/LenValue"
+            },
+            {
+              "$ref": "#/$defs/DiffValue"
             }
           ],
           "title": "Left"
@@ -772,10 +868,14 @@
               "binding_ref": "#/$defs/BindingRef",
               "coalesce": "#/$defs/CoalesceValue",
               "context_ref": "#/$defs/ContextRef",
+              "diff": "#/$defs/DiffValue",
               "event_ref": "#/$defs/EventRef",
+              "filter": "#/$defs/FilterValue",
+              "len": "#/$defs/LenValue",
               "list": "#/$defs/ListValue",
               "literal": "#/$defs/LiteralValue",
               "loop_ref": "#/$defs/LoopRef",
+              "map": "#/$defs/MapValue",
               "object": "#/$defs/ObjectValue",
               "template": "#/$defs/TemplateValue"
             },
@@ -808,6 +908,18 @@
             },
             {
               "$ref": "#/$defs/CoalesceValue"
+            },
+            {
+              "$ref": "#/$defs/FilterValue"
+            },
+            {
+              "$ref": "#/$defs/MapValue"
+            },
+            {
+              "$ref": "#/$defs/LenValue"
+            },
+            {
+              "$ref": "#/$defs/DiffValue"
             }
           ],
           "title": "Right"
@@ -988,6 +1100,160 @@
       "title": "DecisionStep",
       "type": "object"
     },
+    "DiffValue": {
+      "additionalProperties": false,
+      "properties": {
+        "key_path": {
+          "anyOf": [
+            {
+              "pattern": "^[A-Za-z_][A-Za-z0-9_]*(\\.[A-Za-z_][A-Za-z0-9_]*)*$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Key Path"
+        },
+        "left": {
+          "discriminator": {
+            "mapping": {
+              "binding_ref": "#/$defs/BindingRef",
+              "coalesce": "#/$defs/CoalesceValue",
+              "context_ref": "#/$defs/ContextRef",
+              "diff": "#/$defs/DiffValue",
+              "event_ref": "#/$defs/EventRef",
+              "filter": "#/$defs/FilterValue",
+              "len": "#/$defs/LenValue",
+              "list": "#/$defs/ListValue",
+              "literal": "#/$defs/LiteralValue",
+              "loop_ref": "#/$defs/LoopRef",
+              "map": "#/$defs/MapValue",
+              "object": "#/$defs/ObjectValue",
+              "template": "#/$defs/TemplateValue"
+            },
+            "propertyName": "type"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/LiteralValue"
+            },
+            {
+              "$ref": "#/$defs/EventRef"
+            },
+            {
+              "$ref": "#/$defs/ContextRef"
+            },
+            {
+              "$ref": "#/$defs/BindingRef"
+            },
+            {
+              "$ref": "#/$defs/LoopRef"
+            },
+            {
+              "$ref": "#/$defs/ListValue"
+            },
+            {
+              "$ref": "#/$defs/ObjectValue"
+            },
+            {
+              "$ref": "#/$defs/TemplateValue"
+            },
+            {
+              "$ref": "#/$defs/CoalesceValue"
+            },
+            {
+              "$ref": "#/$defs/FilterValue"
+            },
+            {
+              "$ref": "#/$defs/MapValue"
+            },
+            {
+              "$ref": "#/$defs/LenValue"
+            },
+            {
+              "$ref": "#/$defs/DiffValue"
+            }
+          ],
+          "title": "Left"
+        },
+        "right": {
+          "discriminator": {
+            "mapping": {
+              "binding_ref": "#/$defs/BindingRef",
+              "coalesce": "#/$defs/CoalesceValue",
+              "context_ref": "#/$defs/ContextRef",
+              "diff": "#/$defs/DiffValue",
+              "event_ref": "#/$defs/EventRef",
+              "filter": "#/$defs/FilterValue",
+              "len": "#/$defs/LenValue",
+              "list": "#/$defs/ListValue",
+              "literal": "#/$defs/LiteralValue",
+              "loop_ref": "#/$defs/LoopRef",
+              "map": "#/$defs/MapValue",
+              "object": "#/$defs/ObjectValue",
+              "template": "#/$defs/TemplateValue"
+            },
+            "propertyName": "type"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/LiteralValue"
+            },
+            {
+              "$ref": "#/$defs/EventRef"
+            },
+            {
+              "$ref": "#/$defs/ContextRef"
+            },
+            {
+              "$ref": "#/$defs/BindingRef"
+            },
+            {
+              "$ref": "#/$defs/LoopRef"
+            },
+            {
+              "$ref": "#/$defs/ListValue"
+            },
+            {
+              "$ref": "#/$defs/ObjectValue"
+            },
+            {
+              "$ref": "#/$defs/TemplateValue"
+            },
+            {
+              "$ref": "#/$defs/CoalesceValue"
+            },
+            {
+              "$ref": "#/$defs/FilterValue"
+            },
+            {
+              "$ref": "#/$defs/MapValue"
+            },
+            {
+              "$ref": "#/$defs/LenValue"
+            },
+            {
+              "$ref": "#/$defs/DiffValue"
+            }
+          ],
+          "title": "Right"
+        },
+        "type": {
+          "const": "diff",
+          "default": "diff",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "left",
+        "right"
+      ],
+      "title": "DiffValue",
+      "type": "object"
+    },
     "EventRef": {
       "additionalProperties": false,
       "description": "A dotted path into the triggering event's registered payload schema.",
@@ -1034,10 +1300,14 @@
               "binding_ref": "#/$defs/BindingRef",
               "coalesce": "#/$defs/CoalesceValue",
               "context_ref": "#/$defs/ContextRef",
+              "diff": "#/$defs/DiffValue",
               "event_ref": "#/$defs/EventRef",
+              "filter": "#/$defs/FilterValue",
+              "len": "#/$defs/LenValue",
               "list": "#/$defs/ListValue",
               "literal": "#/$defs/LiteralValue",
               "loop_ref": "#/$defs/LoopRef",
+              "map": "#/$defs/MapValue",
               "object": "#/$defs/ObjectValue",
               "template": "#/$defs/TemplateValue"
             },
@@ -1070,6 +1340,18 @@
             },
             {
               "$ref": "#/$defs/CoalesceValue"
+            },
+            {
+              "$ref": "#/$defs/FilterValue"
+            },
+            {
+              "$ref": "#/$defs/MapValue"
+            },
+            {
+              "$ref": "#/$defs/LenValue"
+            },
+            {
+              "$ref": "#/$defs/DiffValue"
             }
           ],
           "title": "Value"
@@ -1079,6 +1361,113 @@
         "value"
       ],
       "title": "Exists",
+      "type": "object"
+    },
+    "FilterValue": {
+      "additionalProperties": false,
+      "properties": {
+        "collection": {
+          "discriminator": {
+            "mapping": {
+              "binding_ref": "#/$defs/BindingRef",
+              "coalesce": "#/$defs/CoalesceValue",
+              "context_ref": "#/$defs/ContextRef",
+              "diff": "#/$defs/DiffValue",
+              "event_ref": "#/$defs/EventRef",
+              "filter": "#/$defs/FilterValue",
+              "len": "#/$defs/LenValue",
+              "list": "#/$defs/ListValue",
+              "literal": "#/$defs/LiteralValue",
+              "loop_ref": "#/$defs/LoopRef",
+              "map": "#/$defs/MapValue",
+              "object": "#/$defs/ObjectValue",
+              "template": "#/$defs/TemplateValue"
+            },
+            "propertyName": "type"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/LiteralValue"
+            },
+            {
+              "$ref": "#/$defs/EventRef"
+            },
+            {
+              "$ref": "#/$defs/ContextRef"
+            },
+            {
+              "$ref": "#/$defs/BindingRef"
+            },
+            {
+              "$ref": "#/$defs/LoopRef"
+            },
+            {
+              "$ref": "#/$defs/ListValue"
+            },
+            {
+              "$ref": "#/$defs/ObjectValue"
+            },
+            {
+              "$ref": "#/$defs/TemplateValue"
+            },
+            {
+              "$ref": "#/$defs/CoalesceValue"
+            },
+            {
+              "$ref": "#/$defs/FilterValue"
+            },
+            {
+              "$ref": "#/$defs/MapValue"
+            },
+            {
+              "$ref": "#/$defs/LenValue"
+            },
+            {
+              "$ref": "#/$defs/DiffValue"
+            }
+          ],
+          "title": "Collection"
+        },
+        "item_binding": {
+          "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
+          "title": "Item Binding",
+          "type": "string"
+        },
+        "predicate": {
+          "discriminator": {
+            "mapping": {
+              "bool": "#/$defs/BooleanExpr",
+              "comparison": "#/$defs/Comparison",
+              "exists": "#/$defs/Exists"
+            },
+            "propertyName": "type"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/Comparison"
+            },
+            {
+              "$ref": "#/$defs/BooleanExpr"
+            },
+            {
+              "$ref": "#/$defs/Exists"
+            }
+          ],
+          "title": "Predicate"
+        },
+        "type": {
+          "const": "filter",
+          "default": "filter",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "collection",
+        "item_binding",
+        "predicate"
+      ],
+      "title": "FilterValue",
       "type": "object"
     },
     "ForEachStep": {
@@ -1095,10 +1484,14 @@
               "binding_ref": "#/$defs/BindingRef",
               "coalesce": "#/$defs/CoalesceValue",
               "context_ref": "#/$defs/ContextRef",
+              "diff": "#/$defs/DiffValue",
               "event_ref": "#/$defs/EventRef",
+              "filter": "#/$defs/FilterValue",
+              "len": "#/$defs/LenValue",
               "list": "#/$defs/ListValue",
               "literal": "#/$defs/LiteralValue",
               "loop_ref": "#/$defs/LoopRef",
+              "map": "#/$defs/MapValue",
               "object": "#/$defs/ObjectValue",
               "template": "#/$defs/TemplateValue"
             },
@@ -1131,6 +1524,18 @@
             },
             {
               "$ref": "#/$defs/CoalesceValue"
+            },
+            {
+              "$ref": "#/$defs/FilterValue"
+            },
+            {
+              "$ref": "#/$defs/MapValue"
+            },
+            {
+              "$ref": "#/$defs/LenValue"
+            },
+            {
+              "$ref": "#/$defs/DiffValue"
             }
           ],
           "title": "Collection"
@@ -1236,6 +1641,32 @@
       "title": "ForEachStep",
       "type": "object"
     },
+    "InputPin": {
+      "additionalProperties": false,
+      "properties": {
+        "byte_count": {
+          "minimum": 0,
+          "title": "Byte Count",
+          "type": "integer"
+        },
+        "path": {
+          "title": "Path",
+          "type": "string"
+        },
+        "sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Sha256",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "sha256",
+        "byte_count"
+      ],
+      "title": "InputPin",
+      "type": "object"
+    },
     "IntegrationPolicy": {
       "additionalProperties": false,
       "properties": {
@@ -1271,6 +1702,84 @@
       "title": "IntegrationPolicy",
       "type": "object"
     },
+    "LenValue": {
+      "additionalProperties": false,
+      "properties": {
+        "collection": {
+          "discriminator": {
+            "mapping": {
+              "binding_ref": "#/$defs/BindingRef",
+              "coalesce": "#/$defs/CoalesceValue",
+              "context_ref": "#/$defs/ContextRef",
+              "diff": "#/$defs/DiffValue",
+              "event_ref": "#/$defs/EventRef",
+              "filter": "#/$defs/FilterValue",
+              "len": "#/$defs/LenValue",
+              "list": "#/$defs/ListValue",
+              "literal": "#/$defs/LiteralValue",
+              "loop_ref": "#/$defs/LoopRef",
+              "map": "#/$defs/MapValue",
+              "object": "#/$defs/ObjectValue",
+              "template": "#/$defs/TemplateValue"
+            },
+            "propertyName": "type"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/LiteralValue"
+            },
+            {
+              "$ref": "#/$defs/EventRef"
+            },
+            {
+              "$ref": "#/$defs/ContextRef"
+            },
+            {
+              "$ref": "#/$defs/BindingRef"
+            },
+            {
+              "$ref": "#/$defs/LoopRef"
+            },
+            {
+              "$ref": "#/$defs/ListValue"
+            },
+            {
+              "$ref": "#/$defs/ObjectValue"
+            },
+            {
+              "$ref": "#/$defs/TemplateValue"
+            },
+            {
+              "$ref": "#/$defs/CoalesceValue"
+            },
+            {
+              "$ref": "#/$defs/FilterValue"
+            },
+            {
+              "$ref": "#/$defs/MapValue"
+            },
+            {
+              "$ref": "#/$defs/LenValue"
+            },
+            {
+              "$ref": "#/$defs/DiffValue"
+            }
+          ],
+          "title": "Collection"
+        },
+        "type": {
+          "const": "len",
+          "default": "len",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "collection"
+      ],
+      "title": "LenValue",
+      "type": "object"
+    },
     "ListValue": {
       "additionalProperties": false,
       "properties": {
@@ -1281,10 +1790,14 @@
                 "binding_ref": "#/$defs/BindingRef",
                 "coalesce": "#/$defs/CoalesceValue",
                 "context_ref": "#/$defs/ContextRef",
+                "diff": "#/$defs/DiffValue",
                 "event_ref": "#/$defs/EventRef",
+                "filter": "#/$defs/FilterValue",
+                "len": "#/$defs/LenValue",
                 "list": "#/$defs/ListValue",
                 "literal": "#/$defs/LiteralValue",
                 "loop_ref": "#/$defs/LoopRef",
+                "map": "#/$defs/MapValue",
                 "object": "#/$defs/ObjectValue",
                 "template": "#/$defs/TemplateValue"
               },
@@ -1317,6 +1830,18 @@
               },
               {
                 "$ref": "#/$defs/CoalesceValue"
+              },
+              {
+                "$ref": "#/$defs/FilterValue"
+              },
+              {
+                "$ref": "#/$defs/MapValue"
+              },
+              {
+                "$ref": "#/$defs/LenValue"
+              },
+              {
+                "$ref": "#/$defs/DiffValue"
               }
             ]
           },
@@ -1443,10 +1968,14 @@
                 "binding_ref": "#/$defs/BindingRef",
                 "coalesce": "#/$defs/CoalesceValue",
                 "context_ref": "#/$defs/ContextRef",
+                "diff": "#/$defs/DiffValue",
                 "event_ref": "#/$defs/EventRef",
+                "filter": "#/$defs/FilterValue",
+                "len": "#/$defs/LenValue",
                 "list": "#/$defs/ListValue",
                 "literal": "#/$defs/LiteralValue",
                 "loop_ref": "#/$defs/LoopRef",
+                "map": "#/$defs/MapValue",
                 "object": "#/$defs/ObjectValue",
                 "template": "#/$defs/TemplateValue"
               },
@@ -1479,6 +2008,18 @@
               },
               {
                 "$ref": "#/$defs/CoalesceValue"
+              },
+              {
+                "$ref": "#/$defs/FilterValue"
+              },
+              {
+                "$ref": "#/$defs/MapValue"
+              },
+              {
+                "$ref": "#/$defs/LenValue"
+              },
+              {
+                "$ref": "#/$defs/DiffValue"
               }
             ]
           },
@@ -1513,10 +2054,14 @@
               "binding_ref": "#/$defs/BindingRef",
               "coalesce": "#/$defs/CoalesceValue",
               "context_ref": "#/$defs/ContextRef",
+              "diff": "#/$defs/DiffValue",
               "event_ref": "#/$defs/EventRef",
+              "filter": "#/$defs/FilterValue",
+              "len": "#/$defs/LenValue",
               "list": "#/$defs/ListValue",
               "literal": "#/$defs/LiteralValue",
               "loop_ref": "#/$defs/LoopRef",
+              "map": "#/$defs/MapValue",
               "object": "#/$defs/ObjectValue",
               "template": "#/$defs/TemplateValue"
             },
@@ -1549,6 +2094,18 @@
             },
             {
               "$ref": "#/$defs/CoalesceValue"
+            },
+            {
+              "$ref": "#/$defs/FilterValue"
+            },
+            {
+              "$ref": "#/$defs/MapValue"
+            },
+            {
+              "$ref": "#/$defs/LenValue"
+            },
+            {
+              "$ref": "#/$defs/DiffValue"
             }
           ],
           "title": "Prompt"
@@ -1632,7 +2189,7 @@
     },
     "LoopRef": {
       "additionalProperties": false,
-      "description": "A read of the current item of an enclosing ``ForEachStep``.",
+      "description": "The item or index of an enclosing foreach, filter predicate or map body.",
       "properties": {
         "binding": {
           "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
@@ -1670,6 +2227,153 @@
       "title": "LoopRef",
       "type": "object"
     },
+    "MapValue": {
+      "additionalProperties": false,
+      "properties": {
+        "collection": {
+          "discriminator": {
+            "mapping": {
+              "binding_ref": "#/$defs/BindingRef",
+              "coalesce": "#/$defs/CoalesceValue",
+              "context_ref": "#/$defs/ContextRef",
+              "diff": "#/$defs/DiffValue",
+              "event_ref": "#/$defs/EventRef",
+              "filter": "#/$defs/FilterValue",
+              "len": "#/$defs/LenValue",
+              "list": "#/$defs/ListValue",
+              "literal": "#/$defs/LiteralValue",
+              "loop_ref": "#/$defs/LoopRef",
+              "map": "#/$defs/MapValue",
+              "object": "#/$defs/ObjectValue",
+              "template": "#/$defs/TemplateValue"
+            },
+            "propertyName": "type"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/LiteralValue"
+            },
+            {
+              "$ref": "#/$defs/EventRef"
+            },
+            {
+              "$ref": "#/$defs/ContextRef"
+            },
+            {
+              "$ref": "#/$defs/BindingRef"
+            },
+            {
+              "$ref": "#/$defs/LoopRef"
+            },
+            {
+              "$ref": "#/$defs/ListValue"
+            },
+            {
+              "$ref": "#/$defs/ObjectValue"
+            },
+            {
+              "$ref": "#/$defs/TemplateValue"
+            },
+            {
+              "$ref": "#/$defs/CoalesceValue"
+            },
+            {
+              "$ref": "#/$defs/FilterValue"
+            },
+            {
+              "$ref": "#/$defs/MapValue"
+            },
+            {
+              "$ref": "#/$defs/LenValue"
+            },
+            {
+              "$ref": "#/$defs/DiffValue"
+            }
+          ],
+          "title": "Collection"
+        },
+        "item_binding": {
+          "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
+          "title": "Item Binding",
+          "type": "string"
+        },
+        "type": {
+          "const": "map",
+          "default": "map",
+          "title": "Type",
+          "type": "string"
+        },
+        "value": {
+          "discriminator": {
+            "mapping": {
+              "binding_ref": "#/$defs/BindingRef",
+              "coalesce": "#/$defs/CoalesceValue",
+              "context_ref": "#/$defs/ContextRef",
+              "diff": "#/$defs/DiffValue",
+              "event_ref": "#/$defs/EventRef",
+              "filter": "#/$defs/FilterValue",
+              "len": "#/$defs/LenValue",
+              "list": "#/$defs/ListValue",
+              "literal": "#/$defs/LiteralValue",
+              "loop_ref": "#/$defs/LoopRef",
+              "map": "#/$defs/MapValue",
+              "object": "#/$defs/ObjectValue",
+              "template": "#/$defs/TemplateValue"
+            },
+            "propertyName": "type"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/LiteralValue"
+            },
+            {
+              "$ref": "#/$defs/EventRef"
+            },
+            {
+              "$ref": "#/$defs/ContextRef"
+            },
+            {
+              "$ref": "#/$defs/BindingRef"
+            },
+            {
+              "$ref": "#/$defs/LoopRef"
+            },
+            {
+              "$ref": "#/$defs/ListValue"
+            },
+            {
+              "$ref": "#/$defs/ObjectValue"
+            },
+            {
+              "$ref": "#/$defs/TemplateValue"
+            },
+            {
+              "$ref": "#/$defs/CoalesceValue"
+            },
+            {
+              "$ref": "#/$defs/FilterValue"
+            },
+            {
+              "$ref": "#/$defs/MapValue"
+            },
+            {
+              "$ref": "#/$defs/LenValue"
+            },
+            {
+              "$ref": "#/$defs/DiffValue"
+            }
+          ],
+          "title": "Value"
+        }
+      },
+      "required": [
+        "collection",
+        "item_binding",
+        "value"
+      ],
+      "title": "MapValue",
+      "type": "object"
+    },
     "ObjectValue": {
       "additionalProperties": false,
       "properties": {
@@ -1680,10 +2384,14 @@
                 "binding_ref": "#/$defs/BindingRef",
                 "coalesce": "#/$defs/CoalesceValue",
                 "context_ref": "#/$defs/ContextRef",
+                "diff": "#/$defs/DiffValue",
                 "event_ref": "#/$defs/EventRef",
+                "filter": "#/$defs/FilterValue",
+                "len": "#/$defs/LenValue",
                 "list": "#/$defs/ListValue",
                 "literal": "#/$defs/LiteralValue",
                 "loop_ref": "#/$defs/LoopRef",
+                "map": "#/$defs/MapValue",
                 "object": "#/$defs/ObjectValue",
                 "template": "#/$defs/TemplateValue"
               },
@@ -1716,6 +2424,18 @@
               },
               {
                 "$ref": "#/$defs/CoalesceValue"
+              },
+              {
+                "$ref": "#/$defs/FilterValue"
+              },
+              {
+                "$ref": "#/$defs/MapValue"
+              },
+              {
+                "$ref": "#/$defs/LenValue"
+              },
+              {
+                "$ref": "#/$defs/DiffValue"
               }
             ]
           },
@@ -1806,6 +2526,56 @@
       "title": "OutcomeSchedule",
       "type": "object"
     },
+    "PinnedScript": {
+      "additionalProperties": false,
+      "properties": {
+        "executable_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Executable Sha256",
+          "type": "string"
+        },
+        "inputs": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/InputPin"
+          },
+          "title": "Inputs",
+          "type": "array"
+        },
+        "program": {
+          "$ref": "#/$defs/ScriptProgram"
+        },
+        "program_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Program Sha256",
+          "type": "string"
+        },
+        "runtime_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Runtime Sha256",
+          "type": "string"
+        },
+        "source_revision": {
+          "title": "Source Revision",
+          "type": "string"
+        },
+        "version": {
+          "const": 1,
+          "default": 1,
+          "title": "Version",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "program",
+        "program_sha256",
+        "source_revision",
+        "runtime_sha256",
+        "executable_sha256"
+      ],
+      "title": "PinnedScript",
+      "type": "object"
+    },
     "PolicyAction": {
       "additionalProperties": false,
       "properties": {
@@ -1831,10 +2601,14 @@
                 "binding_ref": "#/$defs/BindingRef",
                 "coalesce": "#/$defs/CoalesceValue",
                 "context_ref": "#/$defs/ContextRef",
+                "diff": "#/$defs/DiffValue",
                 "event_ref": "#/$defs/EventRef",
+                "filter": "#/$defs/FilterValue",
+                "len": "#/$defs/LenValue",
                 "list": "#/$defs/ListValue",
                 "literal": "#/$defs/LiteralValue",
                 "loop_ref": "#/$defs/LoopRef",
+                "map": "#/$defs/MapValue",
                 "object": "#/$defs/ObjectValue",
                 "template": "#/$defs/TemplateValue"
               },
@@ -1867,6 +2641,18 @@
               },
               {
                 "$ref": "#/$defs/CoalesceValue"
+              },
+              {
+                "$ref": "#/$defs/FilterValue"
+              },
+              {
+                "$ref": "#/$defs/MapValue"
+              },
+              {
+                "$ref": "#/$defs/LenValue"
+              },
+              {
+                "$ref": "#/$defs/DiffValue"
               }
             ]
           },
@@ -2130,6 +2916,488 @@
       "title": "Rule",
       "type": "object"
     },
+    "ScriptLimits": {
+      "additionalProperties": false,
+      "properties": {
+        "stderr_bytes": {
+          "default": 1048576,
+          "maximum": 1048576,
+          "minimum": 1,
+          "title": "Stderr Bytes",
+          "type": "integer"
+        },
+        "stdout_bytes": {
+          "default": 1048576,
+          "maximum": 1048576,
+          "minimum": 1,
+          "title": "Stdout Bytes",
+          "type": "integer"
+        },
+        "wall_seconds": {
+          "default": 60,
+          "maximum": 900,
+          "minimum": 1,
+          "title": "Wall Seconds",
+          "type": "integer"
+        }
+      },
+      "title": "ScriptLimits",
+      "type": "object"
+    },
+    "ScriptProgram": {
+      "additionalProperties": false,
+      "description": "Source-authored DTO, independently of the compiler's semantic body.\n\nRuntime is a reviewed operator manifest identifier, never a host path. Argv\nhas a literal first element; all other elements and ``arguments`` are values.\nExactly one of script/argv/shell is legal. No template engine touches code.",
+      "properties": {
+        "arguments": {
+          "default": [],
+          "items": {
+            "discriminator": {
+              "mapping": {
+                "binding_ref": "#/$defs/BindingRef",
+                "coalesce": "#/$defs/CoalesceValue",
+                "context_ref": "#/$defs/ContextRef",
+                "diff": "#/$defs/DiffValue",
+                "event_ref": "#/$defs/EventRef",
+                "filter": "#/$defs/FilterValue",
+                "len": "#/$defs/LenValue",
+                "list": "#/$defs/ListValue",
+                "literal": "#/$defs/LiteralValue",
+                "loop_ref": "#/$defs/LoopRef",
+                "map": "#/$defs/MapValue",
+                "object": "#/$defs/ObjectValue",
+                "template": "#/$defs/TemplateValue"
+              },
+              "propertyName": "type"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/$defs/LiteralValue"
+              },
+              {
+                "$ref": "#/$defs/EventRef"
+              },
+              {
+                "$ref": "#/$defs/ContextRef"
+              },
+              {
+                "$ref": "#/$defs/BindingRef"
+              },
+              {
+                "$ref": "#/$defs/LoopRef"
+              },
+              {
+                "$ref": "#/$defs/ListValue"
+              },
+              {
+                "$ref": "#/$defs/ObjectValue"
+              },
+              {
+                "$ref": "#/$defs/TemplateValue"
+              },
+              {
+                "$ref": "#/$defs/CoalesceValue"
+              },
+              {
+                "$ref": "#/$defs/FilterValue"
+              },
+              {
+                "$ref": "#/$defs/MapValue"
+              },
+              {
+                "$ref": "#/$defs/LenValue"
+              },
+              {
+                "$ref": "#/$defs/DiffValue"
+              }
+            ]
+          },
+          "title": "Arguments",
+          "type": "array"
+        },
+        "argv": {
+          "anyOf": [
+            {
+              "items": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "discriminator": {
+                      "mapping": {
+                        "binding_ref": "#/$defs/BindingRef",
+                        "coalesce": "#/$defs/CoalesceValue",
+                        "context_ref": "#/$defs/ContextRef",
+                        "diff": "#/$defs/DiffValue",
+                        "event_ref": "#/$defs/EventRef",
+                        "filter": "#/$defs/FilterValue",
+                        "len": "#/$defs/LenValue",
+                        "list": "#/$defs/ListValue",
+                        "literal": "#/$defs/LiteralValue",
+                        "loop_ref": "#/$defs/LoopRef",
+                        "map": "#/$defs/MapValue",
+                        "object": "#/$defs/ObjectValue",
+                        "template": "#/$defs/TemplateValue"
+                      },
+                      "propertyName": "type"
+                    },
+                    "oneOf": [
+                      {
+                        "$ref": "#/$defs/LiteralValue"
+                      },
+                      {
+                        "$ref": "#/$defs/EventRef"
+                      },
+                      {
+                        "$ref": "#/$defs/ContextRef"
+                      },
+                      {
+                        "$ref": "#/$defs/BindingRef"
+                      },
+                      {
+                        "$ref": "#/$defs/LoopRef"
+                      },
+                      {
+                        "$ref": "#/$defs/ListValue"
+                      },
+                      {
+                        "$ref": "#/$defs/ObjectValue"
+                      },
+                      {
+                        "$ref": "#/$defs/TemplateValue"
+                      },
+                      {
+                        "$ref": "#/$defs/CoalesceValue"
+                      },
+                      {
+                        "$ref": "#/$defs/FilterValue"
+                      },
+                      {
+                        "$ref": "#/$defs/MapValue"
+                      },
+                      {
+                        "$ref": "#/$defs/LenValue"
+                      },
+                      {
+                        "$ref": "#/$defs/DiffValue"
+                      }
+                    ]
+                  }
+                ]
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Argv"
+        },
+        "cwd": {
+          "default": "scratch",
+          "enum": [
+            "scratch",
+            "inputs"
+          ],
+          "title": "Cwd",
+          "type": "string"
+        },
+        "env_allowlist": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Env Allowlist",
+          "type": "array"
+        },
+        "interpreter": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Interpreter"
+        },
+        "json_required": {
+          "default": false,
+          "title": "Json Required",
+          "type": "boolean"
+        },
+        "limits": {
+          "$ref": "#/$defs/ScriptLimits"
+        },
+        "output": {
+          "default": "text",
+          "enum": [
+            "text",
+            "json"
+          ],
+          "title": "Output",
+          "type": "string"
+        },
+        "runtime": {
+          "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
+          "title": "Runtime",
+          "type": "string"
+        },
+        "script": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Script"
+        },
+        "shell": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Shell"
+        },
+        "source_kind": {
+          "default": "repository",
+          "enum": [
+            "repository",
+            "vault"
+          ],
+          "title": "Source Kind",
+          "type": "string"
+        },
+        "stdin": {
+          "anyOf": [
+            {
+              "discriminator": {
+                "mapping": {
+                  "binding_ref": "#/$defs/BindingRef",
+                  "coalesce": "#/$defs/CoalesceValue",
+                  "context_ref": "#/$defs/ContextRef",
+                  "diff": "#/$defs/DiffValue",
+                  "event_ref": "#/$defs/EventRef",
+                  "filter": "#/$defs/FilterValue",
+                  "len": "#/$defs/LenValue",
+                  "list": "#/$defs/ListValue",
+                  "literal": "#/$defs/LiteralValue",
+                  "loop_ref": "#/$defs/LoopRef",
+                  "map": "#/$defs/MapValue",
+                  "object": "#/$defs/ObjectValue",
+                  "template": "#/$defs/TemplateValue"
+                },
+                "propertyName": "type"
+              },
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/LiteralValue"
+                },
+                {
+                  "$ref": "#/$defs/EventRef"
+                },
+                {
+                  "$ref": "#/$defs/ContextRef"
+                },
+                {
+                  "$ref": "#/$defs/BindingRef"
+                },
+                {
+                  "$ref": "#/$defs/LoopRef"
+                },
+                {
+                  "$ref": "#/$defs/ListValue"
+                },
+                {
+                  "$ref": "#/$defs/ObjectValue"
+                },
+                {
+                  "$ref": "#/$defs/TemplateValue"
+                },
+                {
+                  "$ref": "#/$defs/CoalesceValue"
+                },
+                {
+                  "$ref": "#/$defs/FilterValue"
+                },
+                {
+                  "$ref": "#/$defs/MapValue"
+                },
+                {
+                  "$ref": "#/$defs/LenValue"
+                },
+                {
+                  "$ref": "#/$defs/DiffValue"
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Stdin"
+        },
+        "supporting_files": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Supporting Files",
+          "type": "array"
+        }
+      },
+      "required": [
+        "runtime"
+      ],
+      "title": "ScriptProgram",
+      "type": "object"
+    },
+    "ScriptStep": {
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "executable": false,
+          "title": "Description"
+        },
+        "environment": {
+          "additionalProperties": {
+            "discriminator": {
+              "mapping": {
+                "binding_ref": "#/$defs/BindingRef",
+                "coalesce": "#/$defs/CoalesceValue",
+                "context_ref": "#/$defs/ContextRef",
+                "diff": "#/$defs/DiffValue",
+                "event_ref": "#/$defs/EventRef",
+                "filter": "#/$defs/FilterValue",
+                "len": "#/$defs/LenValue",
+                "list": "#/$defs/ListValue",
+                "literal": "#/$defs/LiteralValue",
+                "loop_ref": "#/$defs/LoopRef",
+                "map": "#/$defs/MapValue",
+                "object": "#/$defs/ObjectValue",
+                "template": "#/$defs/TemplateValue"
+              },
+              "propertyName": "type"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/$defs/LiteralValue"
+              },
+              {
+                "$ref": "#/$defs/EventRef"
+              },
+              {
+                "$ref": "#/$defs/ContextRef"
+              },
+              {
+                "$ref": "#/$defs/BindingRef"
+              },
+              {
+                "$ref": "#/$defs/LoopRef"
+              },
+              {
+                "$ref": "#/$defs/ListValue"
+              },
+              {
+                "$ref": "#/$defs/ObjectValue"
+              },
+              {
+                "$ref": "#/$defs/TemplateValue"
+              },
+              {
+                "$ref": "#/$defs/CoalesceValue"
+              },
+              {
+                "$ref": "#/$defs/FilterValue"
+              },
+              {
+                "$ref": "#/$defs/MapValue"
+              },
+              {
+                "$ref": "#/$defs/LenValue"
+              },
+              {
+                "$ref": "#/$defs/DiffValue"
+              }
+            ]
+          },
+          "title": "Environment",
+          "type": "object"
+        },
+        "program": {
+          "$ref": "#/$defs/ScriptProgram"
+        },
+        "rule": {
+          "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
+          "title": "Rule",
+          "type": "string"
+        },
+        "save_result_as": {
+          "anyOf": [
+            {
+              "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Save Result As"
+        },
+        "source": {
+          "$ref": "#/$defs/SourceRef"
+        },
+        "title": {
+          "executable": false,
+          "title": "Title",
+          "type": "string"
+        },
+        "transitions": {
+          "additionalProperties": {
+            "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
+            "type": "string"
+          },
+          "title": "Transitions",
+          "type": "object"
+        },
+        "type": {
+          "const": "script",
+          "default": "script",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "rule",
+        "title",
+        "source",
+        "program",
+        "transitions"
+      ],
+      "title": "ScriptStep",
+      "type": "object"
+    },
     "SourceRef": {
       "additionalProperties": false,
       "description": "Where in the authoring Markdown this element came from.\n\nField-for-field identical to Package 5 §4.1's ``SourceRefDTO``.  Every field\nis presentation-only (§4.8): moving a rule down the page must not change the\nartifact's executable fingerprint.",
@@ -2283,10 +3551,14 @@
                 "binding_ref": "#/$defs/BindingRef",
                 "coalesce": "#/$defs/CoalesceValue",
                 "context_ref": "#/$defs/ContextRef",
+                "diff": "#/$defs/DiffValue",
                 "event_ref": "#/$defs/EventRef",
+                "filter": "#/$defs/FilterValue",
+                "len": "#/$defs/LenValue",
                 "list": "#/$defs/ListValue",
                 "literal": "#/$defs/LiteralValue",
                 "loop_ref": "#/$defs/LoopRef",
+                "map": "#/$defs/MapValue",
                 "object": "#/$defs/ObjectValue",
                 "template": "#/$defs/TemplateValue"
               },
@@ -2319,6 +3591,18 @@
               },
               {
                 "$ref": "#/$defs/CoalesceValue"
+              },
+              {
+                "$ref": "#/$defs/FilterValue"
+              },
+              {
+                "$ref": "#/$defs/MapValue"
+              },
+              {
+                "$ref": "#/$defs/LenValue"
+              },
+              {
+                "$ref": "#/$defs/DiffValue"
               }
             ]
           },
@@ -2372,10 +3656,14 @@
                   "binding_ref": "#/$defs/BindingRef",
                   "coalesce": "#/$defs/CoalesceValue",
                   "context_ref": "#/$defs/ContextRef",
+                  "diff": "#/$defs/DiffValue",
                   "event_ref": "#/$defs/EventRef",
+                  "filter": "#/$defs/FilterValue",
+                  "len": "#/$defs/LenValue",
                   "list": "#/$defs/ListValue",
                   "literal": "#/$defs/LiteralValue",
                   "loop_ref": "#/$defs/LoopRef",
+                  "map": "#/$defs/MapValue",
                   "object": "#/$defs/ObjectValue",
                   "template": "#/$defs/TemplateValue"
                 },
@@ -2408,6 +3696,18 @@
                 },
                 {
                   "$ref": "#/$defs/CoalesceValue"
+                },
+                {
+                  "$ref": "#/$defs/FilterValue"
+                },
+                {
+                  "$ref": "#/$defs/MapValue"
+                },
+                {
+                  "$ref": "#/$defs/LenValue"
+                },
+                {
+                  "$ref": "#/$defs/DiffValue"
                 }
               ]
             },
@@ -2544,6 +3844,45 @@
       "title": "Trigger",
       "type": "object"
     },
+    "TrustedExecutionMetadata": {
+      "additionalProperties": false,
+      "description": "Source-derived execution pins; never caller authority or compiler output.\n\nState and script owners extend this strict model with reviewed pins. Command\nsecurity policy remains in the execution contracts, not in author assertions.",
+      "properties": {
+        "required_capabilities": {
+          "default": [],
+          "items": {
+            "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$",
+            "type": "string"
+          },
+          "title": "Required Capabilities",
+          "type": "array"
+        },
+        "scripts": {
+          "patternProperties": {
+            "^[a-z0-9][a-z0-9_-]{0,63}$": {
+              "$ref": "#/$defs/PinnedScript"
+            }
+          },
+          "title": "Scripts",
+          "type": "object"
+        },
+        "state_schema_version": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "State Schema Version"
+        }
+      },
+      "title": "TrustedExecutionMetadata",
+      "type": "object"
+    },
     "WaitStep": {
       "additionalProperties": false,
       "properties": {
@@ -2555,10 +3894,14 @@
                   "binding_ref": "#/$defs/BindingRef",
                   "coalesce": "#/$defs/CoalesceValue",
                   "context_ref": "#/$defs/ContextRef",
+                  "diff": "#/$defs/DiffValue",
                   "event_ref": "#/$defs/EventRef",
+                  "filter": "#/$defs/FilterValue",
+                  "len": "#/$defs/LenValue",
                   "list": "#/$defs/ListValue",
                   "literal": "#/$defs/LiteralValue",
                   "loop_ref": "#/$defs/LoopRef",
+                  "map": "#/$defs/MapValue",
                   "object": "#/$defs/ObjectValue",
                   "template": "#/$defs/TemplateValue"
                 },
@@ -2591,6 +3934,18 @@
                 },
                 {
                   "$ref": "#/$defs/CoalesceValue"
+                },
+                {
+                  "$ref": "#/$defs/FilterValue"
+                },
+                {
+                  "$ref": "#/$defs/MapValue"
+                },
+                {
+                  "$ref": "#/$defs/LenValue"
+                },
+                {
+                  "$ref": "#/$defs/DiffValue"
                 }
               ]
             },
@@ -2609,10 +3964,14 @@
                   "binding_ref": "#/$defs/BindingRef",
                   "coalesce": "#/$defs/CoalesceValue",
                   "context_ref": "#/$defs/ContextRef",
+                  "diff": "#/$defs/DiffValue",
                   "event_ref": "#/$defs/EventRef",
+                  "filter": "#/$defs/FilterValue",
+                  "len": "#/$defs/LenValue",
                   "list": "#/$defs/ListValue",
                   "literal": "#/$defs/LiteralValue",
                   "loop_ref": "#/$defs/LoopRef",
+                  "map": "#/$defs/MapValue",
                   "object": "#/$defs/ObjectValue",
                   "template": "#/$defs/TemplateValue"
                 },
@@ -2645,6 +4004,18 @@
                 },
                 {
                   "$ref": "#/$defs/CoalesceValue"
+                },
+                {
+                  "$ref": "#/$defs/FilterValue"
+                },
+                {
+                  "$ref": "#/$defs/MapValue"
+                },
+                {
+                  "$ref": "#/$defs/LenValue"
+                },
+                {
+                  "$ref": "#/$defs/DiffValue"
                 }
               ]
             },
@@ -2797,6 +4168,15 @@
       "title": "Purpose",
       "type": "string"
     },
+    "required_features": {
+      "default": [],
+      "items": {
+        "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$",
+        "type": "string"
+      },
+      "title": "Required Features",
+      "type": "array"
+    },
     "rules": {
       "items": {
         "$ref": "#/$defs/Rule"
@@ -2851,6 +4231,7 @@
               "decision": "#/$defs/DecisionStep",
               "foreach": "#/$defs/ForEachStep",
               "llm": "#/$defs/LlmStep",
+              "script": "#/$defs/ScriptStep",
               "terminal": "#/$defs/TerminalStep",
               "wait": "#/$defs/WaitStep"
             },
@@ -2877,12 +4258,26 @@
             },
             {
               "$ref": "#/$defs/TerminalStep"
+            },
+            {
+              "$ref": "#/$defs/ScriptStep"
             }
           ]
         }
       },
       "title": "Steps",
       "type": "object"
+    },
+    "trusted_execution": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/TrustedExecutionMetadata"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
     },
     "version": {
       "minimum": 1,

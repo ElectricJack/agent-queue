@@ -67,6 +67,9 @@ async def load_readiness(db, rows: Iterable[dict]) -> dict[str, dict]:
         cached_only=True,
         router_ready_projects=getattr(db, "_ready_router_projects", frozenset()),
         project_ids={row["project_id"] for row in rows if row.get("project_id")},
+        # A task card must not evaluate every prerequisite in the project.
+        # The frontier already supports this scope for task explain.
+        **({"single_task_id": rows[0]["id"]} if len(rows) == 1 else {}),
     )
     return {tid: {"claim_readiness": readiness_from_reasons(why)} for tid, why in reasons.items()}
 

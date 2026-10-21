@@ -47,7 +47,8 @@ async def _held_batch(handler):
         id="fidelity-reviewer", name="Fidelity Reviewer", harness="codex",
         default_class="deep-high", needs_workspace=False,
         aq_commands=["approved_spec_packet", "task_batch_validate", "task_batch_update",
-                     "task_batch_review_record"],
+                     "task_batch_review_record", "task_show", "list_tasks",
+                     "get_downstream_tasks"],
     ))
     return result, decision
 
@@ -488,3 +489,82 @@ async def test_pending_scope_question_cannot_change_on_replay(handler):
         assert (await conn.execute(select(func.count()).select_from(
             ingest_batch_receipts,
         ))).scalar_one() == 1
+
+
+@pytest.mark.parametrize("state", ["held", "reviewing", "needs_scope"])
+async def test_read_handlers_repeat_live_batch_boundary(handler, state):
+    from dataclasses import asdict
+
+    batch, decision = await _held_batch(handler)
+    reviewer_id = (await _ensure(handler, batch))["task_id"]
+    scope = await _reviewer_session(handler, reviewer_id, "s-read", epoch=2)
+    async with handler.db.immediate() as conn:
+        await conn.execute(update(ingest_batches).where(
+            ingest_batches.c.batch_id == batch["batch_id"],
+        ).values(state=state))
+    commands = [("list_tasks", {}), ("task_show", {"task_id": batch["task_ids"][1]}),
+        ("get_downstream_tasks", {"task_id": batch["task_ids"][1]}),
+        ("approved_spec_packet", {"decision_id": decision["decision_id"],
+                                  "packet_sha256": decision["packet_sha256"]})]
+    for command, args in commands:
+        result = await handler.execute(command, {**args, "_scope": asdict(scope)})
+        assert "error" not in result, result
+    # Do not trust a successful scope check saved before a reclaim.
+    await handler.db.update_task(reviewer_id, claim_epoch=3)
+    for command, args in commands:
+        result = await handler.execute(command, {**args, "_scope": asdict(scope)})
+        assert not result.get("success", True) and "out of scope" in result["error"], result
+
+
+async def test_read_scope_refuses_client_hints_and_malformed_assignment(handler):
+    batch, _ = await _held_batch(handler)
+    reviewer_id = (await _ensure(handler, batch))["task_id"]
+    scope = await _reviewer_session(handler, reviewer_id, "s-read")
+    for args in ({"batch_id": "other"}, {"proposal_id": "other"},
+                 {"session_id": "other"}, {"project_id": "other"}):
+        assert await check_request_scope("list_tasks", args, scope, db=handler.db) is not None
+    for metadata in (["batch_id", batch["batch_id"]], {"batch_id": "other"}):
+        await handler.db.set_task_meta(reviewer_id, "fidelity_review", metadata)
+        assert await check_request_scope("list_tasks", {}, scope, db=handler.db) is not None
+
+
+async def test_reader_denies_other_batch_and_cross_project_members(handler):
+    from dataclasses import asdict
+
+    from src.models import Project, Task
+    from src.database.tables import task_proposals
+
+    batch, _ = await _held_batch(handler)
+    reviewer_id = (await _ensure(handler, batch))["task_id"]
+    scope = await _reviewer_session(handler, reviewer_id, "s-read")
+    await handler.db.create_project(Project(id="p2", name="Foreign"))
+    for tid, pid in (("other-batch-member", "p1"), ("foreign-member", "p2")):
+        await handler.db.create_task(Task(id=tid, project_id=pid, title=tid,
+                                         description="Private batch work"))
+    async with handler.db.immediate() as conn:
+        await conn.execute(task_proposals.insert().values(
+            id="other-batch", project_id="p1", source="other-approved-source", payload="{}",
+            status="held", created_at=time.time(), updated_at=time.time(),
+        ))
+        await batches.create_batch(conn, batch_id="other-batch", project_id="p1",
+            source_review_id="other-source", source_revision=1, source_content_sha256="1" * 64,
+            decision_id="other-decision", lineage={"lineage_kind": "none"},
+            idempotency_key="other-ingestion")
+        await batches.add_member(conn, "other-batch", task_id="other-batch-member",
+            member_key="other", role="leaf", section_anchor="other", primary_outcome="Private", created_revision=1)
+        # Even a corrupt membership row is fenced by task project ownership.
+        await batches.add_member(conn, batch["batch_id"], task_id="foreign-member",
+            member_key="foreign", role="leaf", section_anchor="foreign", primary_outcome="Private", created_revision=1)
+    for tid in ("other-batch-member", "foreign-member"):
+        await handler.db.add_dependency(tid, batch["task_ids"][1], "blocks")
+        for command in ("task_show", "get_downstream_tasks"):
+            args = {"task_id": tid}
+            assert await check_request_scope(command, args, scope, db=handler.db) is not None
+            result = await handler.execute(command, {**args, "_scope": asdict(scope)})
+            assert not result["success"], result
+    for command, args in (("list_tasks", {"show_dependencies": True}),
+                          ("task_show", {"task_id": batch["task_ids"][1]}),
+                          ("get_downstream_tasks", {"task_id": batch["task_ids"][1]})):
+        result = await handler.execute(command, {**args, "_scope": asdict(scope)})
+        assert "other-batch-member" not in str(result), result
+        assert "foreign-member" not in str(result), result

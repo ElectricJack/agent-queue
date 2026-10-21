@@ -798,6 +798,25 @@ epoch. This saves no new work, changes no resume point, and never admits an acti
 dirty checkout or unpublished detached HEAD. A failed preparation releases to READY;
 an external task stop uses the same proof and returns that unactivated task to READY too.
 
+A retained failed preparation may resume its own `handoff_pending` row in the same
+pool session. The retry must prove the exact session instance, preparing claim epoch,
+workspace acquisition receipt and generation, task assignment and canonical branch.
+It uses the pool clean/published checkout proof and a fenced self-transfer, restoring
+the same task and role to `reserved` before retrying preparation. It never requires
+the pool session to stop. If proof fails, retain the claim and workspace binding;
+the generic branch-busy retry ladder must not erase that evidence.
+
+The operator or project supervisor may preview this recovery with
+`aq integration release-owner --task-id TASK_ID --self-owned`, then apply it with
+`--apply`. This opt-in requires a retained preparation-failure record naming the
+exact instance, epoch, workspace and generation. It also works for a retained
+preparation whose repeated failures requested drain and disabled its workspace.
+An active claim, changed identity, unproved child cleanup, dirty or unpublished
+checkout is refused. Preview neither detaches nor changes ownership. Apply records
+the recovery and restores the reservation while retaining the claim, session and
+workspace locks; ordinary preparation or teardown still owns their lifecycle.
+The normal stopped-writer `release-owner` behavior remains the default.
+
 When the ordinary stop proof is unavailable, stop retains every binding and names the exact
 writer session and the supervisor recovery commands. `aq session kill` requests termination;
 `aq integration release-owner --task-id TASK_ID --dry-run` previews the provider-backed,
@@ -1195,6 +1214,9 @@ that keeps its frozen destinations and can be replayed. The reviewed event types
 playbook consumes are instead marked delivered with an audit reason, and only once the playbook
 runtime proves that no subscription matches. Consumers deduplicate by domain event identity. Reconciliation scans durable pending state after restart,
 so a lost notification cannot strand a delivered child or an expired repair stage.
+Graceful runtime shutdown settles any in-flight pending-event claim before releasing
+its dispatch lease, including cancellation while the claim transaction is returning.
+A restarted consumer can then replay the retained event without waiting for lease expiry.
 
 ## 12. Events, gates, and operator controls
 

@@ -434,13 +434,14 @@ class TestFullPullLoop:
 
 
 class TestPublicPoolSleep:
-    @pytest.mark.parametrize("response_seconds", [0.5, 0.0], ids=["warm", "deferred"])
+    @pytest.mark.parametrize("response_seconds", [0.5, 0.0], ids=["default", "deferred"])
     async def test_sleep_terminates_idle_pool_and_reconciliation_replaces_it(
-        self, orch, db, handler, response_seconds, monkeypatch,
+        self, orch, db, handler, monkeypatch, response_seconds
     ):
         """Public sleep retires the exact idle worker instance, not its successor."""
+        # A zero response window forces preparation to outlive the first response.
         monkeypatch.setattr(
-            "src.commands.claim_commands._PREPARATION_RESPONSE_SECONDS", response_seconds,
+            "src.commands.claim_commands._PREPARATION_RESPONSE_SECONDS", response_seconds
         )
         await single_worker_pool(db)
         await ready(db, "t1")

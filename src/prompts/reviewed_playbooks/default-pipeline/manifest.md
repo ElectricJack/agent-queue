@@ -1,7 +1,7 @@
 ---
 playbook_id: default-pipeline
-artifact_sha256: sha256:c4ab0bead50c2cb773f7fe901632468296e952bbbb5cdfc274e97c330adfb273
-source_sha256: sha256:e626ced6fc6a9bf2d2c6994ff1c189c788ea920b3cbb069f54eac8a976858f14
+artifact_sha256: sha256:2aa5acd9e4d2e7399b57edd2625bc850b45427d3c87d1568af109475bdc09b29
+source_sha256: sha256:b761ab57cc68323dbe0d62b9ef55e05ad16b655a1aa09bfe737e9bda4733ce02
 contract_fingerprint: sha256:a0f47bce57968a66c1be8eefe5e1f3c6174773fd8d384c34ef4a5f6d52126fcd
 questions_resolved: 0
 capabilities_granted:
@@ -39,3 +39,9 @@ Missing accounting or unsigned drops are reported to the supervisor before
 affected implementation work is committed. This adds agent instructions,
 not a new command-level semantic approval gate; the three rules and their
 success/refusal transitions are unchanged.
+
+Updated 2026-10-20 for `sound-flare-53`: explicitly retain the decision's
+ingestion task receipt after completion, closure as obsolete, and archive.
+Rebuilt against the current command contracts, including `gate_create`;
+the three rules and their transitions are unchanged. Approval paths remain
+display mirrors, while immutable decision receipts establish deduplication.

@@ -2,9 +2,9 @@
   "success": true,
   "artifact": {
     "playbook_id": "default-pipeline",
-    "artifact_sha256": "sha256:f4079ff52ded96d6eecfd2db5e5d08a96a543c7d04d7fe9697beb4ed72b9db0b",
+    "artifact_sha256": "sha256:b894e6bc791942583a9ab4afa8a0731d9f036d20e7f0136bbc00103933cb2bd9",
     "schema_generation": 2,
-    "contract_fingerprint": "sha256:dd62d3b316d4dc39ba35d1a4d8d68278785f74b55c56554606ef8456ac3d2fda",
+    "contract_fingerprint": "sha256:209dc19b99329ce904a31045b4792ae440ab7acca9d5486ae9c1d3399afab5ac",
     "source_digest": "sha256:6f1c0d2b9a4e7f38c5b1de20a7f4c8931ee5b0a6d2c74f9138ab5e0c7d41928f",
     "compiler_build": "fixture",
     "compiled_at": "2026-09-01T00:00:00+00:00",
@@ -29,6 +29,11 @@
     "source_error": null
   },
   "purpose": "routine",
+  "execution_requirements": {
+    "required_features": [],
+    "required_capabilities": [],
+    "state_schema_version": null
+  },
   "event_groups": [
     {
       "event_type": "task.completed",
@@ -44,7 +49,7 @@
         "sweep-on-spec-approved"
       ],
       "node_count": 6,
-      "edge_count": 13
+      "edge_count": 14
     }
   ],
   "rules": [
@@ -100,6 +105,7 @@
   ],
   "nodes": [
     {
+      "script": null,
       "id": "ensure-review-task",
       "rule_id": "review-on-task-completed",
       "step_kind": "command",
@@ -438,6 +444,7 @@
       }
     },
     {
+      "script": null,
       "id": "classify-risk",
       "rule_id": "review-on-task-completed",
       "step_kind": "llm",
@@ -755,6 +762,7 @@
       }
     },
     {
+      "script": null,
       "id": "escalate",
       "rule_id": "review-on-task-completed",
       "step_kind": "agent_task",
@@ -1014,6 +1022,7 @@
       }
     },
     {
+      "script": null,
       "id": "await-approval",
       "rule_id": "review-on-task-completed",
       "step_kind": "wait",
@@ -1274,6 +1283,7 @@
       }
     },
     {
+      "script": null,
       "id": "review-unavailable",
       "rule_id": "review-on-task-completed",
       "step_kind": "terminal",
@@ -1351,6 +1361,7 @@
       }
     },
     {
+      "script": null,
       "id": "cancelled-end",
       "rule_id": "review-on-task-completed",
       "step_kind": "terminal",
@@ -1428,6 +1439,7 @@
       }
     },
     {
+      "script": null,
       "id": "done",
       "rule_id": "review-on-task-completed",
       "step_kind": "terminal",
@@ -1505,6 +1517,7 @@
       }
     },
     {
+      "script": null,
       "id": "list-downstream",
       "rule_id": "sweep-on-spec-approved",
       "step_kind": "command",
@@ -1576,6 +1589,14 @@
             "target_title": "Sweep failed",
             "reserved": true,
             "terminal_outcome": "failed"
+          },
+          {
+            "outcome": "rejected",
+            "label": "Rejected",
+            "target_step_id": "sweep-failed",
+            "target_title": "Sweep failed",
+            "reserved": false,
+            "terminal_outcome": "failed"
           }
         ],
         "contract_fingerprint": null,
@@ -1626,7 +1647,8 @@
           "save_result_as": "downstream",
           "transitions": {
             "listed": "for-each-task",
-            "runtime_error": "sweep-failed"
+            "runtime_error": "sweep-failed",
+            "rejected": "sweep-failed"
           }
         },
         "resolved_inputs": [
@@ -1692,13 +1714,14 @@
           }
         }
       ],
-      "out_degree": 2,
+      "out_degree": 3,
       "position": {
         "x": 4,
         "y": 0
       }
     },
     {
+      "script": null,
       "id": "for-each-task",
       "rule_id": "sweep-on-spec-approved",
       "step_kind": "foreach",
@@ -1803,6 +1826,7 @@
           "redacted": false,
           "type_name": null
         },
+        "max_iterations": 500,
         "item_binding": "task",
         "failure_policy": "collect",
         "body_entry_step_id": "open-gate",
@@ -1923,6 +1947,7 @@
       }
     },
     {
+      "script": null,
       "id": "open-gate",
       "rule_id": "sweep-on-spec-approved",
       "step_kind": "command",
@@ -2310,6 +2335,7 @@
       }
     },
     {
+      "script": null,
       "id": "check-gate",
       "rule_id": "sweep-on-spec-approved",
       "step_kind": "decision",
@@ -2472,6 +2498,7 @@
       }
     },
     {
+      "script": null,
       "id": "sweep-done",
       "rule_id": "sweep-on-spec-approved",
       "step_kind": "terminal",
@@ -2549,6 +2576,7 @@
       }
     },
     {
+      "script": null,
       "id": "sweep-failed",
       "rule_id": "sweep-on-spec-approved",
       "step_kind": "terminal",
@@ -2904,6 +2932,18 @@
       "condition": null
     },
     {
+      "id": "sweep-on-spec-approved::list-downstream::rejected",
+      "rule_id": "sweep-on-spec-approved",
+      "source": "list-downstream",
+      "source_port": "rejected",
+      "target": "sweep-failed",
+      "outcome": "rejected",
+      "label": "Rejected",
+      "kind": "failure",
+      "reserved": false,
+      "condition": null
+    },
+    {
       "id": "sweep-on-spec-approved::for-each-task::body",
       "rule_id": "sweep-on-spec-approved",
       "source": "for-each-task",
@@ -3125,6 +3165,7 @@
   ],
   "legend": {
     "step_kinds": {
+      "script": "Script",
       "command": "Command",
       "llm": "AI",
       "agent_task": "Delegated task",

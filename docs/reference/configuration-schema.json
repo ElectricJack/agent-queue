@@ -976,7 +976,7 @@
           "discovery_max_items": 8,
           "discovery_max_tokens": 1000,
           "enabled": false,
-          "input_max_tokens": 32768,
+          "input_max_tokens": null,
           "max_bytes": 16384,
           "max_tokens": 4096,
           "output_reserve_tokens": 4096,
@@ -1065,7 +1065,7 @@
             "discovery_max_items": 8,
             "discovery_max_tokens": 1000,
             "enabled": false,
-            "input_max_tokens": 32768,
+            "input_max_tokens": null,
             "max_bytes": 16384,
             "max_tokens": 4096,
             "output_reserve_tokens": 4096,
@@ -1092,8 +1092,11 @@
               "type": "boolean"
             },
             "input_max_tokens": {
-              "default": 32768,
-              "type": "integer"
+              "default": null,
+              "type": [
+                "integer",
+                "null"
+              ]
             },
             "max_bytes": {
               "default": 16384,
@@ -1970,6 +1973,8 @@
       "default": {
         "cancellation_grace_seconds": 30,
         "enabled": false,
+        "private_value_active_key_id": "",
+        "private_value_key_env": {},
         "v2_artifact_min_versions": 10,
         "v2_artifact_retention_days": 90,
         "v2_dry_run_max_paths": 32,
@@ -1994,6 +1999,17 @@
           "description": "When false the V2 playbook runtime, TimerService, resume handlers, and workflow recovery are not started. V2 artifacts and run data are preserved. See docs/specs/design/feature-pauses.md.",
           "restart_required": true,
           "type": "boolean"
+        },
+        "private_value_active_key_id": {
+          "default": "",
+          "type": "string"
+        },
+        "private_value_key_env": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {},
+          "type": "object"
         },
         "v2_artifact_min_versions": {
           "default": 10,
@@ -2683,6 +2699,7 @@
         "jobs": {
           "enabled": false,
           "exclusive_queue_seconds": 5400,
+          "full_suite_reserved_slots": 2,
           "head_bytes": 1048576,
           "log_budget_bytes": 2147483648,
           "log_days": 14,
@@ -2704,6 +2721,23 @@
         "max_concurrent_agents": 8,
         "max_pytest_processes": 24,
         "per_session_cpu_share": null,
+        "scripts": {
+          "enabled": true,
+          "env_allowlist": [],
+          "input_bytes": 67108864,
+          "input_root": "",
+          "input_storage_bytes": 2147483648,
+          "output_storage_bytes": 2147483648,
+          "per_run_storage_bytes": 67108864,
+          "queue_seconds": 300,
+          "runtime_bytes": 1073741824,
+          "runtime_manifest": "",
+          "runtime_root": "",
+          "state_root": "",
+          "stderr_bytes": 1048576,
+          "stdout_bytes": 1048576,
+          "wall_seconds": 60
+        },
         "session_nice": 10,
         "test_deselect_markers": "not perf and not migration and not slow and not tmux and not integration",
         "test_interpreters": {},
@@ -2752,6 +2786,7 @@
           "default": {
             "enabled": false,
             "exclusive_queue_seconds": 5400,
+            "full_suite_reserved_slots": 2,
             "head_bytes": 1048576,
             "log_budget_bytes": 2147483648,
             "log_days": 14,
@@ -2776,6 +2811,10 @@
             },
             "exclusive_queue_seconds": {
               "default": 5400,
+              "type": "integer"
+            },
+            "full_suite_reserved_slots": {
+              "default": 2,
               "type": "integer"
             },
             "head_bytes": {
@@ -2863,6 +2902,92 @@
             "integer",
             "null"
           ]
+        },
+        "scripts": {
+          "additionalProperties": false,
+          "default": {
+            "enabled": true,
+            "env_allowlist": [],
+            "input_bytes": 67108864,
+            "input_root": "",
+            "input_storage_bytes": 2147483648,
+            "output_storage_bytes": 2147483648,
+            "per_run_storage_bytes": 67108864,
+            "queue_seconds": 300,
+            "runtime_bytes": 1073741824,
+            "runtime_manifest": "",
+            "runtime_root": "",
+            "state_root": "",
+            "stderr_bytes": 1048576,
+            "stdout_bytes": 1048576,
+            "wall_seconds": 60
+          },
+          "properties": {
+            "enabled": {
+              "default": true,
+              "type": "boolean"
+            },
+            "env_allowlist": {
+              "default": [],
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "input_bytes": {
+              "default": 67108864,
+              "type": "integer"
+            },
+            "input_root": {
+              "default": "",
+              "type": "string"
+            },
+            "input_storage_bytes": {
+              "default": 2147483648,
+              "type": "integer"
+            },
+            "output_storage_bytes": {
+              "default": 2147483648,
+              "type": "integer"
+            },
+            "per_run_storage_bytes": {
+              "default": 67108864,
+              "type": "integer"
+            },
+            "queue_seconds": {
+              "default": 300,
+              "type": "integer"
+            },
+            "runtime_bytes": {
+              "default": 1073741824,
+              "type": "integer"
+            },
+            "runtime_manifest": {
+              "default": "",
+              "type": "string"
+            },
+            "runtime_root": {
+              "default": "",
+              "type": "string"
+            },
+            "state_root": {
+              "default": "",
+              "type": "string"
+            },
+            "stderr_bytes": {
+              "default": 1048576,
+              "type": "integer"
+            },
+            "stdout_bytes": {
+              "default": 1048576,
+              "type": "integer"
+            },
+            "wall_seconds": {
+              "default": 60,
+              "type": "integer"
+            }
+          },
+          "type": "object"
         },
         "session_nice": {
           "default": 10,
@@ -3413,6 +3538,338 @@
       "type": "boolean",
       "x-reload": "restart"
     },
+    "wait_policy": {
+      "additionalProperties": false,
+      "default": {
+        "branch_admission_deadline_seconds": 1800,
+        "hibernate_margin": 2.0,
+        "hibernation_enabled": true,
+        "in_place_ceiling_seconds": 1800,
+        "kinds": {
+          "batch": {
+            "escalate_after_seconds": 14400,
+            "expected_duration_seconds": 2700
+          },
+          "ci_check": {
+            "escalate_after_seconds": 5400,
+            "expected_duration_seconds": 1200
+          },
+          "ci_run": {
+            "escalate_after_seconds": 5400,
+            "expected_duration_seconds": 1500
+          },
+          "dependency": {
+            "escalate_after_seconds": 14400,
+            "expected_duration_seconds": 3600
+          },
+          "human": {
+            "escalate_after_seconds": null,
+            "expected_duration_seconds": null
+          },
+          "job": {
+            "escalate_after_seconds": 7200,
+            "expected_duration_seconds": 900
+          },
+          "message": {
+            "escalate_after_seconds": 7200,
+            "expected_duration_seconds": 1800
+          },
+          "playbook_condition": {
+            "escalate_after_seconds": 7200,
+            "expected_duration_seconds": 1800
+          },
+          "pull_request": {
+            "escalate_after_seconds": 14400,
+            "expected_duration_seconds": 3600
+          },
+          "resource": {
+            "escalate_after_seconds": 1800,
+            "expected_duration_seconds": null
+          },
+          "task": {
+            "escalate_after_seconds": 14400,
+            "expected_duration_seconds": 3600
+          },
+          "timer": {
+            "escalate_after_seconds": 300,
+            "expected_duration_seconds": null
+          }
+        },
+        "loop_window_registrations": 3,
+        "loop_window_seconds": 3600,
+        "metrics": {
+          "cohort": null,
+          "pre_rollout_tokens_per_turn": null,
+          "pre_rollout_turn_rate": null,
+          "window": null
+        },
+        "min_samples": 5,
+        "projects": {},
+        "resume_cost_minutes": 10.0,
+        "resume_launch_attempts": 2,
+        "resume_stall_seconds": 300,
+        "scheduler_waits_enabled": true,
+        "transition_budget_seconds": 120,
+        "v1_bodies": "refuse",
+        "v2_enabled": true
+      },
+      "properties": {
+        "branch_admission_deadline_seconds": {
+          "default": 1800,
+          "type": "integer"
+        },
+        "hibernate_margin": {
+          "default": 2.0,
+          "type": "number"
+        },
+        "hibernation_enabled": {
+          "default": true,
+          "type": "boolean"
+        },
+        "in_place_ceiling_seconds": {
+          "default": 1800,
+          "type": "integer"
+        },
+        "kinds": {
+          "additionalProperties": {
+            "additionalProperties": false,
+            "properties": {
+              "escalate_after_seconds": {
+                "default": null,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "expected_duration_seconds": {
+                "default": null,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              }
+            },
+            "type": "object"
+          },
+          "default": {
+            "batch": {
+              "escalate_after_seconds": 14400,
+              "expected_duration_seconds": 2700
+            },
+            "ci_check": {
+              "escalate_after_seconds": 5400,
+              "expected_duration_seconds": 1200
+            },
+            "ci_run": {
+              "escalate_after_seconds": 5400,
+              "expected_duration_seconds": 1500
+            },
+            "dependency": {
+              "escalate_after_seconds": 14400,
+              "expected_duration_seconds": 3600
+            },
+            "human": {
+              "escalate_after_seconds": null,
+              "expected_duration_seconds": null
+            },
+            "job": {
+              "escalate_after_seconds": 7200,
+              "expected_duration_seconds": 900
+            },
+            "message": {
+              "escalate_after_seconds": 7200,
+              "expected_duration_seconds": 1800
+            },
+            "playbook_condition": {
+              "escalate_after_seconds": 7200,
+              "expected_duration_seconds": 1800
+            },
+            "pull_request": {
+              "escalate_after_seconds": 14400,
+              "expected_duration_seconds": 3600
+            },
+            "resource": {
+              "escalate_after_seconds": 1800,
+              "expected_duration_seconds": null
+            },
+            "task": {
+              "escalate_after_seconds": 14400,
+              "expected_duration_seconds": 3600
+            },
+            "timer": {
+              "escalate_after_seconds": 300,
+              "expected_duration_seconds": null
+            }
+          },
+          "type": "object"
+        },
+        "loop_window_registrations": {
+          "default": 3,
+          "type": "integer"
+        },
+        "loop_window_seconds": {
+          "default": 3600,
+          "type": "integer"
+        },
+        "metrics": {
+          "additionalProperties": false,
+          "default": {
+            "cohort": null,
+            "pre_rollout_tokens_per_turn": null,
+            "pre_rollout_turn_rate": null,
+            "window": null
+          },
+          "properties": {
+            "cohort": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "pre_rollout_tokens_per_turn": {
+              "default": null,
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "pre_rollout_turn_rate": {
+              "default": null,
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "window": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "type": "object"
+        },
+        "min_samples": {
+          "default": 5,
+          "type": "integer"
+        },
+        "projects": {
+          "additionalProperties": {
+            "additionalProperties": false,
+            "properties": {
+              "hibernate_margin": {
+                "default": null,
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "hibernation_enabled": {
+                "default": null,
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "in_place_ceiling_seconds": {
+                "default": null,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "kinds": {
+                "additionalProperties": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "escalate_after_seconds": {
+                      "default": null,
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "expected_duration_seconds": {
+                      "default": null,
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    }
+                  },
+                  "type": "object"
+                },
+                "default": {},
+                "type": "object"
+              },
+              "resume_cost_minutes": {
+                "default": null,
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "resume_stall_seconds": {
+                "default": null,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "scheduler_waits_enabled": {
+                "default": null,
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "v2_enabled": {
+                "default": null,
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              }
+            },
+            "type": "object"
+          },
+          "default": {},
+          "type": "object"
+        },
+        "resume_cost_minutes": {
+          "default": 10.0,
+          "type": "number"
+        },
+        "resume_launch_attempts": {
+          "default": 2,
+          "type": "integer"
+        },
+        "resume_stall_seconds": {
+          "default": 300,
+          "type": "integer"
+        },
+        "scheduler_waits_enabled": {
+          "default": true,
+          "type": "boolean"
+        },
+        "transition_budget_seconds": {
+          "default": 120,
+          "type": "integer"
+        },
+        "v1_bodies": {
+          "default": "refuse",
+          "type": "string"
+        },
+        "v2_enabled": {
+          "default": true,
+          "type": "boolean"
+        }
+      },
+      "type": "object",
+      "x-reload": "hot"
+    },
     "work_graph": {
       "additionalProperties": false,
       "default": {
@@ -3554,6 +4011,7 @@
       "surface",
       "swarm",
       "test_selection",
+      "wait_policy",
       "work_graph"
     ],
     "other": [],

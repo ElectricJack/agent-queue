@@ -1,5 +1,6 @@
 import { cleanup, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
+import { collectionNode } from "./projected";
 import AdvancedNodeDetail from "../AdvancedNodeDetail";
 import { classifyRisk, ensureReviewTask, listDownstream } from "./fixtures";
 
@@ -11,6 +12,20 @@ afterEach(cleanup);
  *  not, so the panel's contract branch and its no-contract branch are both
  *  asserted against bytes `project_graph` actually wrote. */
 describe("AdvancedNodeDetail", () => {
+  it("preserves predicates, map bodies and diff keys in canonical collection inputs", () => {
+    render(<AdvancedNodeDetail node={collectionNode} />);
+    const typed = screen.getByRole("group", { name: "Typed step" });
+    const resolved = within(screen.getByRole("group", { name: "Resolved inputs" }));
+    for (const row of collectionNode.explanation.inputs!) {
+      expect(typed).toHaveTextContent(`"type": "${row.value.kind}"`);
+      expect(resolved.getByText(row.value.display)).toBeInTheDocument();
+      expect(resolved.getByText(JSON.stringify(row.value.canonical, null, 2), { exact: true,
+        normalizer: (text) => text })).toBeInTheDocument();
+    }
+    expect(typed).toHaveTextContent('"key_path": "meta.id"');
+    expect(typed).toHaveTextContent('"index": true');
+  });
+
   it("exposes the typed step, its ids and the inputs the projection resolved", () => {
     render(<AdvancedNodeDetail node={ensureReviewTask} />);
     const identity = within(screen.getByRole("group", { name: "Identity" }));
@@ -36,7 +51,7 @@ describe("AdvancedNodeDetail", () => {
     // contract to name its arguments either, so the projector says so in the
     // value rather than inventing one.
     const resolved = within(screen.getByRole("group", { name: "Resolved inputs" }));
-    expect(resolved.getAllByText("(unresolved)")).toHaveLength(2);
+    expect(resolved.getAllByText("Unresolved: (unresolved)")).toHaveLength(2);
     // An unregistered command claims no idempotency rather than none at all.
     const idempotency = within(screen.getByRole("group", { name: "Idempotency" }));
     expect(idempotency.getByText("no")).toBeInTheDocument();
@@ -71,7 +86,7 @@ describe("AdvancedNodeDetail", () => {
   it("renders a redacted value without its canonical payload", () => {
     render(<AdvancedNodeDetail node={ensureReviewTask} />);
     const resolved = within(screen.getByRole("group", { name: "Resolved inputs" }));
-    expect(resolved.getByText("(redacted)")).toBeInTheDocument();
+    expect(resolved.getByText("Protected value")).toBeInTheDocument();
     // A redacted row has no canonical JSON to disclose, so nothing names the
     // argument's value anywhere in the block.
     expect(resolved.queryByText(/"dedup_key"/)).not.toBeInTheDocument();

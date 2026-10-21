@@ -54,7 +54,7 @@ from src.integration.models import (
     RequiredCheckSet,
 )
 from src.integration.repository_git import RepositoryGit
-from src.models import AgentProfile, Project, RepoConfig, RepoSourceType, Task, TaskStatus
+from src.models import AgentProfile, Project, RepoConfig, RepoSourceType, Task, TaskCompletion, TaskStatus
 
 _AMBIENT_IDENTITY_KEYS = (
     "GIT_AUTHOR_NAME",
@@ -213,6 +213,191 @@ def _collector(case, delivery=None):
         hierarchy_service_factory=lambda: case.hierarchy,
         child_delivery=delivery or ChildDelivery(case.db, case.promotion),
     )
+
+
+async def _unretained_leaf(case, tmp_path, *, recorded_source=True):
+    from src.integration.delivery_observer import DeliveryObserver
+    from src.integration.git_truth import GitTruth
+
+    await case.db.save_task_completion(TaskCompletion(
+        id="leaf-close", task_id=case.child_id, outcome="pass", branch=f"aq/{case.child_id}",
+        commits=[case.head] if recorded_source else [], completed_at=4.0,
+    ))
+    git = GitManager()
+    observer = DeliveryObserver(case.db, git=git, data_dir=tmp_path / "observer",
+                                truth=GitTruth(git))
+    case.db.set_prerequisite_observer(observer)
+    return ChildDelivery(case.db, case.promotion), observer
+
+
+async def _retained_leaf(case):
+    from src.git.manager import RemoteRefState
+    from src.integration.provenance import CompletionIdentity, GitProvenance
+
+    _ref, result = await GitProvenance(case.promotion.git, str(case.work),
+                              repository_url=str(case.origin)).remote_completion(
+        CompletionIdentity("p", "repo", case.child_id, "leaf-close")
+    )
+    assert result.state is not RemoteRefState.ERROR
+    return result.oid if result.state is RemoteRefState.PRESENT else None
+
+
+@pytest.mark.parametrize("recorded_source", [True, False])
+async def test_git_first_redrive_adopts_missing_source_without_claiming_delivery(
+    case, tmp_path, recorded_source,
+):
+    delivery, observer = await _unretained_leaf(case, tmp_path, recorded_source=recorded_source)
+    before = await case.db.get_task_completion(case.child_id)
+    checkpoint = await case.db.get_integration_checkpoint(case.child_id)
+    diagnosis = await delivery.run(case.child_id)
+    assert diagnosis["outcome"] == "blocked"
+    assert "missing_git_provenance" in diagnosis["reason"]
+    assert "--adopt-source" in diagnosis["reason"]
+    preview = await delivery.run(case.child_id, adopt_source=True)
+    assert preview["outcome"] == "would_advance"
+    assert preview["completion_id"] == before.id
+    assert preview["head_sha"] == case.head
+    assert await _retained_leaf(case) is None
+
+    applied = await delivery.run(case.child_id, adopt_source=True, dry_run=False,
+                                 expected_head_sha=case.head, reason="recover old leaf",
+                                 operator_id="supervisor:p")
+    assert applied["outcome"] == "advanced", applied
+    assert await _retained_leaf(case)
+    assert await case.db.get_task_completion(case.child_id) == before
+    assert await case.db.get_integration_checkpoint(case.child_id) == checkpoint
+    assert (await case.db.get_task(case.child_id)).status is TaskStatus.COMPLETED
+    assert await _evidence(case.db) == []
+    async with case.db._engine.connect() as conn:
+        assert not await conn.scalar(select(task_delivery_receipts.c.id))
+        audit = (await conn.execute(select(events.c.payload).where(
+            events.c.event_type == REDRIVE_EVENT,
+        ))).scalars().all()
+    assert len(audit) == 1
+    assert json.loads(audit[0])["action"] == "adopt_source"
+    assert json.loads(audit[0])["reason"] == "recover old leaf"
+    pending = await observer.observe([case.child_id])
+    assert not pending.satisfied(case.child_id)
+    assert pending.get(case.child_id).reason != "missing_git_provenance"
+
+    repeated = await delivery.run(case.child_id, adopt_source=True, dry_run=False,
+                                  expected_head_sha=case.head, reason="retry same recovery",
+                                  operator_id="supervisor:p")
+    assert repeated["outcome"] == "nothing_to_redrive"
+    # Only a real merge changes the delivery answer.
+    _git(["push", "origin", f"{case.head}:refs/heads/{case.parent_branch}"], case.work)
+    assert (await observer.observe([case.child_id])).satisfied(case.child_id)
+
+
+async def test_source_adoption_command_forwards_explicit_opt_in(case, tmp_path):
+    from src.commands.integration_commands import IntegrationCommandsMixin
+
+    await _unretained_leaf(case, tmp_path)
+    handler = IntegrationCommandsMixin()
+    handler.db = case.db
+    handler.orchestrator = SimpleNamespace()
+    handler._integration_repository_git = lambda: case.promotion
+    preview = await handler._cmd_integration_redrive_child({
+        "task_id": case.child_id, "adopt_source": True,
+    })
+    assert preview["success"] is True
+    assert preview["outcome"] == "would_advance"
+    assert await _retained_leaf(case) is None
+
+
+@pytest.mark.parametrize("damage", ["missing_completion", "failed_completion", "recorded_head",
+                                  "unpublished", "moved", "origin", "parent_repo",
+                                  "session", "workspace", "owner", "reopened", "container"])
+async def test_source_adoption_refuses_unproven_or_live_bindings(case, tmp_path, damage):
+    from src.database.tables import integration_branch_owners, task_completion_records
+    from src.models import SessionRecord, Workspace
+
+    delivery, _observer = await _unretained_leaf(case, tmp_path)
+    if damage == "unpublished":
+        _git(["push", "origin", "--delete", f"aq/{case.child_id}"], case.work)
+    elif damage == "moved":
+        _git(["push", "origin", f"+{case.base}:refs/heads/aq/{case.child_id}"], case.work)
+    elif damage == "session":
+        await case.db.create_session(SessionRecord(
+            id="live-child", task_id=case.child_id, project_id="p", profile_id="worker",
+            harness="codex", provider="fake", name="child-writer", work_dir=str(case.work),
+            lifecycle="task", epoch="daemon", instance_token="writer", started_at=1.0,
+            state="running",
+        ))
+    elif damage == "workspace":
+        await case.db.create_workspace(Workspace(
+            id="child-slot", project_id="p", workspace_path=str(case.work),
+            source_type=RepoSourceType.CLONE, locked_by_task_id=case.child_id,
+        ))
+    elif damage == "container":
+        await case.db.create_task(Task(id=f"{case.child_id}.1", project_id="p",
+                                       title="nested", description=""))
+        async with case.db.immediate() as conn:
+            await conn.execute(update(tasks).where(tasks.c.id == f"{case.child_id}.1").values(
+                parent_task_id=case.child_id,
+            ))
+    else:
+        async with case.db.immediate() as conn:
+            if damage == "missing_completion":
+                await conn.execute(task_completion_records.delete())
+            elif damage == "failed_completion":
+                await conn.execute(update(task_completion_records).values(outcome="fail"))
+            elif damage == "recorded_head":
+                await conn.execute(update(task_completion_records).values(commits=json.dumps([case.base])))
+            elif damage == "origin":
+                await conn.execute(update(task_branch_origins).where(
+                    task_branch_origins.c.task_id == case.child_id,
+                ).values(retired_at=5.0))
+            elif damage == "parent_repo":
+                await conn.execute(update(tasks).where(tasks.c.id == case.parent_id).values(repo_id=None))
+            elif damage == "owner":
+                await conn.execute(update(integration_branch_owners).where(
+                    integration_branch_owners.c.owner_id == case.child_id,
+                ).values(handoff_state="attached"))
+            elif damage == "reopened":
+                await conn.execute(update(tasks).where(tasks.c.id == case.child_id).values(status="READY"))
+    result = await delivery.run(case.child_id, adopt_source=True, dry_run=False,
+                                expected_head_sha=case.head, reason="must refuse",
+                                operator_id="supervisor:p")
+    assert result["outcome"] == "blocked", result
+    assert await _retained_leaf(case) is None
+    assert await _evidence(case.db) == []
+
+
+@pytest.mark.parametrize("change", ["head", "completion", "publish_failure", "conflicting_source",
+                                  "remote_after_proof"])
+async def test_source_adoption_rechecks_preview_and_retains_on_failure(case, tmp_path, monkeypatch, change):
+    from src.git.manager import GitError
+    from src.integration.provenance import CompletedSource, CompletionIdentity, GitProvenance
+
+    delivery, _observer = await _unretained_leaf(case, tmp_path)
+    if change == "conflicting_source":
+        await GitProvenance(case.promotion.git, str(case.work), repository_url=str(case.origin)
+                            ).write_completion(CompletedSource(
+                                CompletionIdentity("p", "repo", case.child_id, "leaf-close"), case.base))
+    if change in {"completion", "remote_after_proof"}:
+        prove = delivery._prove
+        async def changed(snapshot):
+            proof = await prove(snapshot)
+            if change == "completion":
+                await case.db.save_task_completion(TaskCompletion(
+                    id="new-close", task_id=case.child_id, outcome="pass", completed_at=5.0,
+                ))
+            else:
+                _git(["push", "origin", f"+{case.base}:refs/heads/aq/{case.child_id}"], case.work)
+            return proof
+        monkeypatch.setattr(delivery, "_prove", changed)
+    if change == "publish_failure":
+        async def failed(*args, **kwargs):
+            raise GitError("publication unavailable")
+        monkeypatch.setattr(GitProvenance, "write_completion", failed)
+    result = await delivery.run(case.child_id, adopt_source=True, dry_run=False,
+                                expected_head_sha=case.base if change == "head" else case.head,
+                                reason="must retain", operator_id="supervisor:p")
+    assert result["outcome"] in {"changed", "blocked"}, result
+    assert (await case.db.get_task(case.child_id)).status is TaskStatus.COMPLETED
+    if change != "conflicting_source":
+        assert await _retained_leaf(case) is None
 
 
 async def _evidence(db, task_id="epic.1") -> list[dict]:

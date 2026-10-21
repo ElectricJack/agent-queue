@@ -21,6 +21,9 @@ from typing import Any
 from sqlalchemy import and_, delete, func, insert, or_, select, tuple_, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
+from src.waits.adapters.legacy_escalation import execute_mutation as execute_escalation_mutation
+from src.waits.sources import execute_batch_mutation
+from src.waits.sources import insert_message_with_source_event
 from src.task_templates import render_task_template
 from src.database.tables import (
     agents,
@@ -306,7 +309,7 @@ class OrdinaryRepairService:
                 id=task_id, task_id=task_id, type="snippet", label="Repair input",
                 content=json.dumps(repair_input, sort_keys=True), created_at=self.clock(),
             ))
-            await conn.execute(update(integration_batches).where(
+            await execute_batch_mutation(conn, update(integration_batches).where(
                 integration_batches.c.id == batch_id,
             ).values(repair_attempt_count=attempt, updated_at=self.clock()))
             return answer("filed", task_id=task_id, fence=fence.model_dump(mode="json"))
@@ -319,6 +322,16 @@ class OrdinaryRepairService:
         decision = (f"Choose eject for a member of batch {batch_id}, or abort-batch for the "
                     "whole batch. The train still observes the candidate and clears this "
                     "escalation if it becomes green.")
+        choices = ["eject", "abort-batch"]
+        if batch_id.startswith("train-epic-refresh-"):
+            decision = (
+                f"Repair epic refresh candidate {head_sha} for batch {batch_id}, retaining "
+                "its frozen default-branch input, or abandon the refresh with "
+                f"aq integration abort-batch {batch_id} --apply --reason REASON. "
+                "Publication requires trusted checks and attestation on the exact candidate; "
+                "the train clears this escalation when the candidate becomes green."
+            )
+            choices = ["repair", "abort-batch"]
         incident, created = await self.db.create_escalation(conn=conn,
             id=incident_id, project_id=batch["project_id"], source_kind="integration_repair",
             source_identity=batch_id, incident_key=f"repair-exhausted:{batch_id}",
@@ -327,12 +340,12 @@ class OrdinaryRepairService:
             investigation=(f"{batch['repair_attempt_count']} ordinary repairs were filed "
                            f"({policy.primary_attempts} primary, {policy.debug_attempts} debug). "
                            f"Candidate: {head_sha}; target: {batch['target_ref']}."),
-            decision_requested=decision, choices=["eject", "abort-batch"], severity="high",
+            decision_requested=decision, choices=choices, severity="high",
             now=now,
         )
         if not created:
             return incident
-        await conn.execute(pg_insert(messages).values(
+        await insert_message_with_source_event(conn, pg_insert(messages).values(
             id="msg-" + incident_id, project_id=batch["project_id"],
             from_kind="system", from_id="integration-train", to_kind="session",
             to_id=incident["supervisor_owner"], subject=summary,
@@ -347,7 +360,7 @@ class OrdinaryRepairService:
         from src.database.queries.escalation_queries import OPEN_ESCALATION_STATES
 
         now = self.clock()
-        await conn.execute(update(escalations).where(
+        await execute_escalation_mutation(conn, update(escalations).where(
             escalations.c.id == "escalation-" + ordinary_repair_id(batch_id, 1),
             escalations.c.source_kind == "integration_repair",
             escalations.c.state.in_(tuple(OPEN_ESCALATION_STATES)),
@@ -1880,7 +1893,7 @@ class RepairService:
         if parent is None:
             return
         head = evidence["parent_head_sha"]
-        await conn.execute(
+        await insert_message_with_source_event(conn,
             pg_insert(messages)
             .values(
                 id=f"msg-parent-red-{operation['id']}-{evidence['id']}",
@@ -4264,7 +4277,7 @@ class RepairService:
         """One supervisor message per *key*, however often the condition recurs."""
         if project_id is None:
             project_id = await self._operation_project_id_on(conn, operation)
-        await conn.execute(pg_insert(messages).values(
+        await insert_message_with_source_event(conn, pg_insert(messages).values(
             id=f"msg-{key}", project_id=project_id,
             from_kind="system", from_id="integration-repair", to_kind="session",
             to_id=f"supervisor-{project_id}", subject=subject, body=body,
@@ -4820,7 +4833,7 @@ class RepairService:
                     }
                 )
             )
-        await conn.execute(
+        await execute_batch_mutation(conn,
             update(integration_batches)
             .where(
                 integration_batches.c.id == batch["id"],
@@ -5094,7 +5107,7 @@ class RepairService:
                 dossier=dossier,
             )
         )
-        await conn.execute(
+        await execute_batch_mutation(conn,
             update(integration_batches)
             .where(
                 integration_batches.c.id == batch["id"],
@@ -6558,7 +6571,7 @@ class RepairService:
                 integration_branch_owners.c.handoff_state != "released",
             )
         )).mappings()]
-        await conn.execute(pg_insert(messages).values(
+        await insert_message_with_source_event(conn, pg_insert(messages).values(
             id=f"msg-{incident_id}", project_id=project_id,
             from_kind="system", from_id="integration-repair", to_kind="session",
             to_id=f"supervisor-{project_id}",
@@ -6626,7 +6639,7 @@ class RepairService:
                 _manual_pause_control=True,
             )
         else:
-            await conn.execute(
+            await execute_batch_mutation(conn,
                 update(integration_batches)
                 .where(integration_batches.c.id == operation["batch_id"])
                 .values(lifecycle="human_blocked", updated_at=now)
