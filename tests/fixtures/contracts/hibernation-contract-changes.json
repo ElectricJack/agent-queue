@@ -324,7 +324,7 @@
       "wait_legacy_bridge"
     ]
   },
-  "cli_catalogue_sha256": "35c001817f1cbe603adcd833129905da6e869b7890bb8c5c8d47812c9269381c",
+  "cli_catalogue_sha256": "028092cb3cdb3c2b81644a08f6132af615954a54e1976f56cf7f21af792662c7",
   "contracts": {
     "job_cancel": {
       "execution": {
@@ -3092,11 +3092,11 @@
       "previous_fingerprint": "sha256:fa37f806a3d005ee7d2e7248a8d75d0ec8aace5e2b5f26385f8693cc4d00d414"
     }
   },
-  "previous_cli_catalogue_sha256": "468e30721893c160e591ef116159339a6e8d4720e8de3b1266baac51701eced6",
+  "previous_cli_catalogue_sha256": "212a969357a004021f8d4638cb1dbb1aaaab5dfada827b183ecb2a67dfed7ac5",
   "review_notes": [
     "The hibernation epic (verified wait cutover a278d71d3 and its prerequisites) changes the wait and job command surfaces: wait_register/get/list/cancel and message_wait accept schema_version=2 conditions and return verified wait records; job_submit/get/cancel results carry the registered wait and decision.",
     "edit_task's status enum gains the suspended lifecycle states (ASSIGNED, WAITING, HIBERNATED, RESUME_PENDING, WAITING_INPUT, PAUSED); suspended transitions require wait controls.",
-    "New explicit commands wait_ack/checkpoint/decide/explain/graph/lift and internal fallback service boundaries are additive. Reverting exactly this delta recovers the withheld-source catalogue bytes; historical recordings remain unchanged."
+    "New explicit commands wait_ack/checkpoint/decide/explain/graph/lift and internal fallback service boundaries are additive. Reverting exactly this delta recovers the publication-delegation catalogue bytes (chained after it when main merged into the epic); historical recordings remain unchanged."
   ],
   "source_base": "4385c73158425a08114164893b623cf6b65718e8",
   "transport_definitions": {

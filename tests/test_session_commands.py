@@ -2888,7 +2888,25 @@ class TestEndToEndOnFakeProvider:
         self, db, real_orch, real_handler, provider, tmp_path, monkeypatch
     ):
         """A verification retry must return READY and release its old worker."""
-        import asyncio
+        await self._assert_verification_reopen(
+            db, real_orch, real_handler, tmp_path, monkeypatch
+        )
+
+    @pytest.mark.perf
+    async def test_verification_reopen_latency_budget(
+        self, perf_strict, db, real_orch, real_handler, tmp_path, monkeypatch
+    ):
+        """Retain the two-second reopen budget on an opted-in quiet box."""
+        await self._assert_verification_reopen(
+            db, real_orch, real_handler, tmp_path, monkeypatch, close_timeout=2
+        )
+
+    async def _assert_verification_reopen(
+        self, db, real_orch, real_handler, tmp_path, monkeypatch, *, close_timeout=120
+    ):
+        # Always exercise the real close and database resource release. The
+        # default timeout is a hang backstop; the perf_strict arm keeps the
+        # original latency budget independently of concurrent CI load.
 
         await self._launch_via_execute_task(db, real_orch, monkeypatch, tmp_path)
         session = await db.get_session_for_task("t1")
@@ -2904,7 +2922,7 @@ class TestEndToEndOnFakeProvider:
             return None, False
 
         monkeypatch.setattr(real_orch, "_run_completion_pipeline", reopen)
-        close = await asyncio.wait_for(
+        caller = asyncio.create_task(
             real_handler.execute(
                 "task_close",
                 {
@@ -2914,9 +2932,14 @@ class TestEndToEndOnFakeProvider:
                     "work_outcome": "shipped",
                     "summary": "Work completed; git verification requested a retry.",
                 },
-            ),
-            timeout=2,
+            )
         )
+        try:
+            close = await asyncio.wait_for(asyncio.shield(caller), timeout=close_timeout)
+        finally:
+            # A budget failure must not leave the shielded close running
+            # against a database that its fixture has already torn down.
+            await asyncio.wait_for(caller, timeout=120)
 
         assert close["success"] is True and close["status"] == "READY"
         task = await db.get_task("t1")

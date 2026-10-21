@@ -557,7 +557,7 @@ There is no foreign key from `subject` to `projects(id)` — the column is also 
 | `title` | TEXT | NOT NULL | Short display name |
 | `description` | TEXT | NOT NULL | Full prompt/instructions for the agent |
 | `priority` | INTEGER | NOT NULL DEFAULT 100 | Lower number = higher priority |
-| `effective_priority` | INTEGER | NOT NULL DEFAULT 100 | Derived wait-graph priority; revision a00000000109 backfills existing rows from priority once |
+| `effective_priority` | INTEGER | NOT NULL DEFAULT 100 | Derived wait-graph priority; revision a00000000110 backfills existing rows from priority once |
 | `status` | TEXT | NOT NULL DEFAULT 'DEFINED' | See task state machine |
 | `held_batch_id` | TEXT | nullable, indexed by `ix_tasks_held_batch_id` | Independent ingestion admission hold; cleared by atomic batch release. Added by revision `a00000000100` |
 | `verification_type` | TEXT | NOT NULL DEFAULT 'auto_test' | One of: auto_test, qa_agent, human |
@@ -2242,6 +2242,7 @@ a stale owner's push is rejected before it reaches the remote.
 | `workspace_id` | TEXT | nullable | Workspace the owner works in |
 | `confirmed_workspace_id` | TEXT | nullable | Workspace whose checkout was verified to match the ref |
 | `expires_at` | REAL | nullable | Lease expiry for time-bounded owners |
+| `delegation` | JSONB | nullable | Publication delegation binding and audit while `owner_id` is `publication-delegation:<id>`; cleared by the next acquisition ([delegated-integration-publication.md](design/delegated-integration-publication.md)) |
 | `created_at` | REAL | NOT NULL | Unix timestamp |
 | `updated_at` | REAL | NOT NULL | Unix timestamp |
 
@@ -3570,7 +3571,7 @@ phase completion. A held object prevents its phase from completing.
 
 Verified typed conditions, their source watermark, evidence, sleep decision and immutable outcome. Agent commentary lives in claimed separately from verified evidence. Partial unique indexes admit one pending non-scheduler wait per owner, deduplicate registrations and legacy translations, and allow multiple distinct scheduler blockers.
 
-Added by revision `a00000000109`; schema only until the verified-waits cutover.
+Added by revision `a00000000110`; schema only until the verified-waits cutover.
 
 | Column | Type | Constraints |
 |---|---|---|

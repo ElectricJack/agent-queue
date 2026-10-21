@@ -202,6 +202,13 @@ serial — still under its slot — instead of an `-n` pytest would reject.
 stdout stays a command line you can paste. Detached jobs and development
 validation use the same project interpreter selected in their pinned workspace.
 
+For managed tests, request serial execution with
+`aq test --aq-detach --aq-wait tests/test_example.py -n 0`, or
+`aq job submit --preset test --wait -- tests/test_example.py -n 0`.
+The equivalent `-n0`, `--numprocesses 0` and `--numprocesses=0` spellings are
+also accepted. Serial runs still take their normal test slots. Managed jobs
+reject nonzero worker-count overrides; omit the option to use the configured cap.
+
 ### Test scope and the recorded baseline
 
 The fleet series' `perf.host` block reports PSI, test-slot occupancy and

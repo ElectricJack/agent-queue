@@ -877,6 +877,7 @@
         "tests/test_migration_pool_claim_refusals.py",
         "tests/test_migration_postgres_upgrade_head.py",
         "tests/test_migration_project_router_binding.py",
+        "tests/test_migration_publication_delegations.py",
         "tests/test_migration_repair_stages.py",
         "tests/test_migration_retired_intelligence_classes.py",
         "tests/test_migration_review_playbook_pin.py",
@@ -1170,6 +1171,7 @@
       "description": "Agent sessions: spec building (names, argv, env, prompt delivery), executable checks, the session provider contract, the session reconciler and exit classifier, session queries and commands, and the completion protocol.",
       "modules": [
         "tests/test_cli_session_history.py",
+        "tests/test_codex_trust.py",
         "tests/test_env_scrub.py",
         "tests/test_fake_session_script.py",
         "tests/test_handoffs.py",
@@ -4376,6 +4378,20 @@
         "parametrize"
       ],
       "summary": "Codex tiers launch the requested current model families at the class effort."
+    },
+    "tests/test_codex_trust.py": {
+      "areas": [
+        "session-runtime"
+      ],
+      "default_arm": true,
+      "digest": "sha256:d0a18bb4bc3eacaaa0aa9ea174f4b592ef9fbddde0c90a22c86d19fc9d509f4a",
+      "imports": [
+        "src.sessions.codex_trust"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Pre-trusting a Codex session's project in ``config.toml`` (nimble-harbor-12)."
     },
     "tests/test_collaboration.py": {
       "areas": [
@@ -12067,6 +12083,18 @@
       ],
       "summary": "a00000000043: every project bound to a router, ``default_profile_id`` dropped."
     },
+    "tests/test_migration_publication_delegations.py": {
+      "areas": [
+        "migrations"
+      ],
+      "default_arm": false,
+      "digest": "sha256:aa6430a2a5b6e614695aaae6f2a233421000b70fbed625a75c0f5b31f71f4c93",
+      "imports": [],
+      "markers": [
+        "migration"
+      ],
+      "summary": "The delegation migration adds the owner-lease binding on old and current schemas."
+    },
     "tests/test_migration_repair_stages.py": {
       "areas": [
         "migrations"
@@ -16791,7 +16819,7 @@
         "session-runtime"
       ],
       "default_arm": true,
-      "digest": "sha256:b00f9790f3fa53db7cf7f6e86e5c4102a87e18af318b005303515cb1e22d32a2",
+      "digest": "sha256:117baae2c5c0fee006a5c4bea87406bbbda0d3e63800dfe9009658b04c0e2591",
       "imports": [
         "src.cli",
         "src.cli.agent_surface",
@@ -16803,6 +16831,7 @@
         "src.sessions.env",
         "src.sessions.harness_parser",
         "src.sessions.harness_registry",
+        "src.sessions.provider",
         "src.sessions.spec",
         "src.vault"
       ],
@@ -19634,16 +19663,20 @@
         "github"
       ],
       "default_arm": true,
-      "digest": "sha256:e261159034933b8f9bf8cc18e9ef9695a9bb1c3e941a8541d23a16f7643893f5",
+      "digest": "sha256:928d263948ce00c7842a72da27901364e0aebdba970b8572c00d77dbe3611e9d",
       "imports": [
         "src.api.auth",
         "src.api.scope",
         "src.cli.app",
+        "src.commands.contracts.integration",
         "src.config",
+        "src.database",
         "src.database.tables",
         "src.git.github_contracts",
         "src.git.identity",
         "src.git.manager",
+        "src.integration.models",
+        "src.integration.publication_delegations",
         "src.models",
         "src.plugins.internal.git",
         "src.profiles.capabilities",

@@ -540,7 +540,7 @@ async def test_wait_task_audit_migration_drops_old_fks_idempotently(env):
     from alembic.operations import Operations
 
     path = Path(__file__).resolve().parents[1] / (
-        "migrations/versions/a00000000112_continuation_task_audit.py")
+        "migrations/versions/a00000000113_continuation_task_audit.py")
     spec = importlib.util.spec_from_file_location("wait_task_audit_migration", path)
     migration = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(migration)

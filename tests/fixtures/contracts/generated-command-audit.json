@@ -7670,6 +7670,49 @@
       "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
     ]
   },
+  "integration_delegate_publication": {
+    "mode": "typed",
+    "producer": "src/commands/integration_commands.py:IntegrationCommandsMixin._cmd_integration_delegate_publication",
+    "source_digest": "sha256:fa671890b177ef7462fc5449cab86aeff9461881ea6c0eaa3f7139690864f025",
+    "input_schema_source": "typed_contract",
+    "schema_quality": "typed",
+    "argument_reads_diagnostic_only": [],
+    "effect": "destructive",
+    "retry_safe": true,
+    "principal_requirement": "original_principal",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "denial_reason": null,
+    "result_policy": "retained typed adapter",
+    "return_branches": [
+      {
+        "return": "self._publication_delegation_result('issued', row)",
+        "protocol": "explicit_boolean: True"
+      },
+      {
+        "return": "_failure('refused', 'publication delegation requires Git-first active mode')",
+        "protocol": "delegated_producer"
+      },
+      {
+        "return": "_failure('refused', str(exc))",
+        "protocol": "delegated_producer"
+      }
+    ],
+    "helper_producers": {
+      "_publication_delegation_result": "sha256:e0768f47847aec450d165b1893eb6b9dfaece9f86f70f09477b5560a85b39a21"
+    },
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_publication_delegation_catalogue_only_adds_reviewed_commands_and_grant",
+      "tests/test_worker_git_scope.py::test_delegated_publication_uses_pinned_source_and_consumes_audited_grant",
+      "tests/test_worker_git_scope.py::test_delegation_cannot_expand_authority_or_take_a_live_writer",
+      "tests/test_worker_git_scope.py::test_only_current_named_supervisor_can_issue_delegation",
+      "tests/test_cli_integration.py::test_delegate_publication_preserves_explicit_grantee_and_fences"
+    ],
+    "review_notes": "Delegated integration publication (source base f9a7591766d69481b309e8733be795e62ab0e59e): operator integration controls; refusals carry the delegation service's reason, success returns the typed audit view. An exact retry returns the existing audit without reviving authority."
+  },
   "integration_delivery_readiness": {
     "mode": "typed",
     "producer": "src/commands/integration_commands.py:IntegrationCommandsMixin._cmd_integration_delivery_readiness",
@@ -9269,6 +9312,44 @@
       "tests/test_cli_integration.py"
     ],
     "review_notes": "Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. "
+  },
+  "integration_revoke_publication": {
+    "mode": "typed",
+    "producer": "src/commands/integration_commands.py:IntegrationCommandsMixin._cmd_integration_revoke_publication",
+    "source_digest": "sha256:ac7718397c7c0c5259d129e7994c794600f41a911070d84aab70ee6faab3bf5f",
+    "input_schema_source": "typed_contract",
+    "schema_quality": "typed",
+    "argument_reads_diagnostic_only": [],
+    "effect": "destructive",
+    "retry_safe": true,
+    "principal_requirement": "original_principal",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "denial_reason": null,
+    "result_policy": "retained typed adapter",
+    "return_branches": [
+      {
+        "return": "self._publication_delegation_result('revoked', row)",
+        "protocol": "explicit_boolean: True"
+      },
+      {
+        "return": "_failure('refused', str(exc))",
+        "protocol": "delegated_producer"
+      }
+    ],
+    "helper_producers": {
+      "_publication_delegation_result": "sha256:e0768f47847aec450d165b1893eb6b9dfaece9f86f70f09477b5560a85b39a21"
+    },
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_publication_delegation_catalogue_only_adds_reviewed_commands_and_grant",
+      "tests/test_worker_git_scope.py::test_delegated_publication_rechecks_every_binding_before_network",
+      "tests/test_worker_git_scope.py::test_delegation_revocation_serializes_with_inflight_publication",
+      "tests/test_cli_integration.py::test_revoke_publication_uses_native_control"
+    ],
+    "review_notes": "Delegated integration publication (source base f9a7591766d69481b309e8733be795e62ab0e59e): operator integration controls; refusals carry the delegation service's reason, success returns the typed audit view. An exact retry returns the existing audit without reviving authority."
   },
   "integration_seal_now": {
     "mode": "typed",

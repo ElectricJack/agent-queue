@@ -273,6 +273,8 @@ start code work, tests or QA from a digest author turn.
     "integration_release_owner",
     "integration_restore_task_origin",
     "integration_reserve_owner",
+    "integration_delegate_publication",
+    "integration_revoke_publication",
     "integration_clear_retained_recovery",
     "integration_release_stale_owners",
     "integration_reevaluate_repair",

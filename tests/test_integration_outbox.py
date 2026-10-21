@@ -452,6 +452,50 @@ async def test_batch_policy_acceptance_survives_restart_without_duplicate_run(db
     await restarted.shutdown()
 
 
+async def test_shutdown_during_pending_claim_releases_lease_for_restart(db, tmp_path, monkeypatch):
+    compiled = tmp_path / "compiled"
+    await _activate(db, compiled, "integration-train", "integration.sealed")
+    await _enqueue(db)
+    first = _runtime(db, compiled)
+    await first.refresh()
+    await first.shutdown()
+    assert await first.accept_integration_event(
+        "integration.sealed", (await _outbox_rows(db))[0]["payload"], "event-1"
+    )
+    [row] = await _pending_rows(db)
+    original_claim = db.claim_pending_event_dispatch
+
+    async def cancel_after_commit(*args, **kwargs):
+        token = await original_claim(*args, **kwargs)
+        assert token is not None
+        # Shutdown can cancel the dispatcher while the committed claim is
+        # still returning through the connection's asynchronous cleanup.
+        dispatcher.cancel()
+        await asyncio.sleep(0)
+        return token
+
+    with monkeypatch.context() as patch:
+        patch.setattr(db, "claim_pending_event_dispatch", cancel_after_commit)
+        dispatcher = asyncio.create_task(first._dispatch_integration_pending(row))
+        with pytest.raises(asyncio.CancelledError):
+            await dispatcher
+
+    [retained] = await _pending_rows(db)
+    assert retained["resolved_at"] is None
+    assert retained["dispatch_claim_token"] is None
+    assert retained["dispatch_claimed_at"] is None
+    assert "CancelledError" in retained["last_error"]
+
+    restarted = _runtime(db, compiled)
+    await restarted.refresh()
+    outbox = IntegrationOutbox(db, restarted.accept_integration_event, clock=lambda: NOW)
+    assert await outbox.dispatch_due(NOW) == 1
+    await _wait_for_accepted(db, "event-1")
+    await _wait_for_pending_resolution(db, "event-1")
+    await restarted.shutdown()
+    assert await _accepted_activation_count(db, "event-1") == 1
+
+
 async def test_consumer_crash_after_acceptance_replays_one_activation(db, tmp_path):
     await _activate(db, tmp_path / "compiled", "integration-train", "integration.sealed")
     await _enqueue(db)

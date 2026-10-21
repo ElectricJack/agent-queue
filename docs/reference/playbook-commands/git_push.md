@@ -14,7 +14,7 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/generated.py`](../../../src/commands/contracts/generated.py) |
-| Contract fingerprint | `sha256:b201691c7351e0ad950caceb11005b81c63824cde60d54bf401cf57d2b28706e` |
+| Contract fingerprint | `sha256:82b3d60693476ee758d39d1d4bd5b7240544d8e1fab28a7c785efffb321957bd` |
 
 ## Parameters
 
@@ -23,6 +23,7 @@
 | `project_id` | `string` | no | — | Project ID |
 | `branch` | `string` | no | — | Branch to push (optional; defaults to the held task's branch for a worker session, else the current branch) |
 | `expected_remote_oid` | `string` | no | — | Exact remote branch OID expected before the push (40 hex digits); the push may then rewrite the branch, and is refused if the remote holds anything else. All zeros means the branch must still be absent. |
+| `publication_delegation_id` | `string` | no | — | Single-use integration-owner grant for this target branch |
 | `workspace` | `string` | no | — | Workspace name or ID (optional) |
 
 This generated contract exposes the **playbook** input-schema view. MCP/CLI/API retain their legacy **transport** view.
@@ -48,7 +49,7 @@ This command declares no effect clause, so the playbook graph falls back to its 
 
 | Effect | Subject | Condition |
 |---|---|---|
-| Composite using project_id, branch, expected_remote_oid, workspace | — | always |
+| Composite using project_id, branch, expected_remote_oid, publication_delegation_id, workspace | — | always |
 
 <!-- aq:generated:end -->
 
