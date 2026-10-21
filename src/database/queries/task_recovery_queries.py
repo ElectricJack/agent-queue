@@ -1215,10 +1215,9 @@ class TaskRecoveryQueryMixin:
             incident = meta.get(INCIDENT_KEY) or {}
             if (ask_decision_id and incident.get("id") == incident_id
                     and incident.get("ask_decision_id") == ask_decision_id):
-                return {"task_id": task_id, "incident_id": incident_id,
+                return {"task_id": task_id, "incident_id": incident_id, "replayed": True,
                         "decision": incident["decision"], "status": task["status"],
-                        "decided_at": incident["decided_at"],
-                        "decision_id": ask_decision_id, "replayed": True}
+                        "decided_at": incident["decided_at"], "decision_id": ask_decision_id}
             if ask_decision_id:
                 from src.asks.models import digest
                 owner = await self._recovery_owner(conn, task)
@@ -1376,9 +1375,7 @@ class TaskRecoveryQueryMixin:
         elif decision == "release" and task["status"] == "READY":
             await self._notify_ready([(task_id, "recovery_hold_released")])
         return {
-            "task_id": task_id,
-            "incident_id": incident_id,
-            "decision": decision,
+            "task_id": task_id, "incident_id": incident_id, "decision": decision,
             "status": "READY" if decision == "retry" else task["status"],
             # A later release must name this exact hold as expected_hold_at.
             "decided_at": now,

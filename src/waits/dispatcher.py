@@ -141,10 +141,8 @@ class WakeDispatcher:
         now = self.clock()
         inputs = dict(row["decision_inputs"] or {})
         if outcome == "source_unavailable" and observation is not None:
-            inputs["source_unavailable"] = {
-                "revision": observation.revision,
-                "reason": observation.facts.get("reason", "source_missing"),
-            }
+            reason = observation.facts.get("reason", "source_missing")
+            inputs["source_unavailable"] = {"revision": observation.revision, "reason": reason}
         inputs["wake_progress"] = await progress(conn, row, task=task, continuation=continuation)
         if decision:
             inputs["supervisor_decision"] = decision
