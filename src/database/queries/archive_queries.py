@@ -272,7 +272,11 @@ class ArchiveQueryMixin:
         replacement_task_id=None, satisfied_by=None, rewire=None,
     ):
         from src.database.queries.hierarchy_queries import LIVE_SESSION_STATES, HierarchyError
+        from src.waits.graph import lock_component_tasks
 
+        await lock_component_tasks(conn, {
+            f"task:{tid}" for tid in await self.subtree_ids(task_id, conn=conn)
+        })
         terminal = set(TERMINAL_STATUSES)
         if archive_reason and archive_reason.strip():
             terminal.update({"DEFINED", "READY", "PAUSED"})

@@ -356,15 +356,19 @@ async def test_continuation_task_audit_fk_upgrade_is_idempotent():
 
         def verify(bind):
             operations = Operations(MigrationContext.configure(bind))
-            operations.create_foreign_key(
-                "continuations_task_id_fkey", "continuations", "tasks", ["task_id"], ["id"],
-            )
+            for table in ("continuations", "admission_reservations"):
+                operations.create_foreign_key(
+                    f"{table}_task_id_fkey", table, "tasks", ["task_id"], ["id"],
+                )
             with Operations.context(MigrationContext.configure(bind)):
                 revision.upgrade()
                 revision.upgrade()
                 revision.downgrade()
+            inspector = sa.inspect(bind)
             assert {tuple(fk["constrained_columns"])
-                    for fk in sa.inspect(bind).get_foreign_keys("continuations")} == {("wait_id",)}
+                    for fk in inspector.get_foreign_keys("continuations")} == {("wait_id",)}
+            assert ("task_id",) not in {tuple(fk["constrained_columns"])
+                                        for fk in inspector.get_foreign_keys("admission_reservations")}
             assert_schema(bind)
 
         async with engine.begin() as conn:
