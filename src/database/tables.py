@@ -3836,6 +3836,8 @@ integration_batches = Table(
     Column("target_ref", Text, nullable=True),
     Column("intent", Text, nullable=False, server_default="open"),
     Column("repair_attempt_count", Integer, nullable=False, server_default="0"),
+    Column("fixer_state", JSONB(none_as_null=True), nullable=True),
+    Column("fixer_queue", JSONB(none_as_null=True), nullable=True),
     Column("request_id", Text, nullable=False),
     Column("trigger", Text, nullable=True),
     Column("source_manifest_digest", Text, nullable=False),

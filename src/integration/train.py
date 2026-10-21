@@ -544,6 +544,8 @@ class IntegrationTrain:
                     continue
                 if (self.event_driven and target.kind != "root"
                         and not lane.requested and lane.last is not None
+                        and getattr(self.targets, "deferred_revisits", {}).get(
+                            target.key, float("inf")) > now
                         and lane.last.batch_id is None
                         and lane.last.state in {"idle", "held"}
                         and (lane.last.detail or {}).get("reason") != "settling"):
@@ -877,7 +879,9 @@ class IntegrationTrain:
                   target_sha=observation.target_sha)
         if observation.state == "delivered":
             if head := observation.candidate_sha or observation.target_sha:
-                await self.repair.settle_green(batch.id, head)
+                await getattr(self.repair, "settle_delivered", self.repair.settle_green)(
+                    batch.id, head,
+                )
             _progress("settle_batch")
             await self.batches.settle(batch, observation)
             return self._visit(target, "delivered", batch, observation)
@@ -925,8 +929,9 @@ class IntegrationTrain:
             _progress("publish_candidate")
             published = await lane.service.visit(batch, members, snapshot)
             if published.state == "delivered":
-                if result is not None and not result.green:
-                    await self.repair.settle_green(batch.id, observation.candidate_sha)
+                await getattr(self.repair, "settle_delivered", self.repair.settle_green)(
+                    batch.id, observation.candidate_sha,
+                )
                 _progress("settle_batch")
                 await self.batches.settle(batch, published)
             return self._visit(target, published.state, batch, published, result)
@@ -1098,12 +1103,17 @@ class IntegrationTrain:
                 )
             )
         _progress("allocate_repair")
+        fixer_input = {}
+        if result is not None and getattr(self.repair, "task_free", False):
+            fixer_input["failure_evidence"] = result.model_dump(mode="json")
         repair = await self.repair.allocate(batch.id, target_ref=(
-            batch.target_ref if batch.epic_refresh else candidate_ref(batch.id)),
+            batch.target_ref if batch.epic_refresh and not getattr(self.repair, "task_free", False)
+            else candidate_ref(batch.id)),
                                             head_sha=head, held=batch.intent != "open",
                                             authorize=authorize, brief=brief,
                                             policy=lane.repair_policy,
                                             completion_blocker=completion_blocker,
+                                            **fixer_input,
                                             **({"sync_default_branch": sync_default_branch}
                                                if sync_default_branch else {}))
         if repair.get("outcome") in {"blocked", "human_required"}:

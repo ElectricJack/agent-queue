@@ -333,6 +333,7 @@ async def live_branch_references(
     for row in await rows(
         select(integration_batches.c.id, integration_batches.c.integration_branch).where(
             integration_batches.c.lifecycle.in_(ACTIVE_BATCH_LIFECYCLES)
+            | (integration_batches.c.fixer_queue["status"].astext.in_(("deferred", "companion")))
             | (
                 (integration_batches.c.lifecycle == "promoted")
                 & (integration_batches.c.cleanup_state != "complete")

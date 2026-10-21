@@ -72,8 +72,49 @@ times and `seal_at` in `detail`. Admission timing survives daemon restarts
 but never substitutes for the current PR gate or Git delivery proof.
 Epic collection and local development targets freeze immediately.
 
-Passing ordinary repair close reseals its current open batch and wakes the
-delivery target. A later visit recovers a missed close handoff, including after
+A red batch starts one task-free fixer session on its existing candidate branch.
+The session uses a retained checkout outside task slots; subsequent red results
+reuse both the session and checkout. It creates no repair task, claim or successor
+repair. The project's reviewed routing policy selects the worker profile. Frozen
+member file ownership and exact failing checks supply the failure groups in its
+input. The fixer commits locally and runs `aq integration batch-fix --action push`;
+this command derives its batch from the authenticated session and can publish
+only that candidate branch. It refuses rewritten history, missing frozen sources,
+changed session identity, withdrawn source authority and disabled integration.
+
+Each distinct red result notifies the same fixer once. The primary repair time
+budget and at most three CI rounds bound automatic notifications; exhaustion or
+an uncertain launch reports once to the supervisor and preserves the work. It
+never launches a successor or wakes an agent on a timer. Trusted green checks
+advance delivery even after exhaustion. Exhaustion releases the lane, retains the
+frozen sources and candidate, and schedules a finite re-observation (default
+300 seconds). Unchanged exhausted evidence does not re-admit work or notify an
+agent. A changed saved head or exact current-policy green can resume delivery.
+Capacity waits retry the same unlaunched identity without spending code rounds.
+Only an explicit operator decision creates an indefinite hold.
+When every conclusive red group identifies a strict subset, the repair policy's
+`split_attributed` decision (default true) removes that subset and its transitive
+dependents. A reduced batch tests from the same delivery tip. Shared or uncertain
+evidence prevents splitting. The original frozen batch and all fix commits stay
+as a retained companion; cleanup cannot delete them. Each reduced membership is
+attempted once. A split alone never starts a fixer.
+
+After the remainder settles, a successor freezes the original sources and merges
+the retained companion, including fixes saved since the split. A red successor
+reuses the same fixer. The fixer saves and publishes its current work, then runs
+`aq integration batch-fix --action rebind` to switch its clean checkout under both
+branch fences. Publication derives the current binding from the session and
+rechecks it under lock. Companion writes and delivery are serialized so an older
+green result cannot lose a later fix. Full family delivery stops the session.
+The project boundary's repair policy also supplies `primary_seconds`,
+`primary_attempts` (capped at three), and `deferred_revisit_seconds`; legacy
+`on_exhausted: human` does not create an automatic hold for task-free fixers.
+
+Existing ordinary repair tasks remain readable and can finish through their old
+close protocol, but the active allocator does not file new ordinary repairs.
+
+Passing a legacy ordinary repair close reseals its current open batch and wakes
+the delivery target. A later visit recovers a missed close handoff, including after
 repair archival. Neither action changes frozen sources or bypasses candidate
 checks. `integration.train_batches_stalled` and `stall.sweep` flag sealed batches
 with no progress past the settling cap, allowing bounded visits and announced
@@ -226,10 +267,10 @@ Before starting a cross-epic dependent, its epic must contain the proven sources
 A refresh brings them from the default branch through a frozen train batch.
 Publication needs the epic's lease,
 checks on the exact candidate and attestation. Checks or an occupied lease keep
-the refresh pending; a content conflict files ordinary repair work on the epic
-branch and withholds children whose prerequisites are still outside that epic.
-If the repair publishes a merge containing every required source, those children
-can start while the refresh candidate still awaits checks and attestation.
+the refresh pending; a content conflict starts the same task-free fixer on the
+refresh candidate and withholds children whose prerequisites remain outside the
+epic. The train publishes the repaired candidate only after its exact checks and
+attestation pass; the fixer cannot bypass that gate by pushing the epic itself.
 Preparation preserves the child's existing
 commits and records its actual refreshed parent head and default head in the
 filing origin's `base_refresh` annotation. The original `base_sha` stays fixed.

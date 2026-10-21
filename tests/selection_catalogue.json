@@ -642,6 +642,7 @@
         "tests/test_integration_cutover.py",
         "tests/test_integration_dispatch_waits.py",
         "tests/test_integration_failure_groups.py",
+        "tests/test_integration_fixers.py",
         "tests/test_integration_git_truth.py",
         "tests/test_integration_gitops.py",
         "tests/test_integration_hierarchy.py",
@@ -8939,6 +8940,40 @@
         "parametrize"
       ],
       "summary": "``integration.finished_branch_owners`` — owner rows a finished task never let go."
+    },
+    "tests/test_integration_fixers.py": {
+      "areas": [
+        "integration-trains"
+      ],
+      "default_arm": true,
+      "digest": "sha256:60f6e679d87933dcb7d4825f3d2da09961ae16a996612b918d87a487e0ab9707",
+      "imports": [
+        "src.api.auth",
+        "src.commands.principal",
+        "src.config",
+        "src.database.tables",
+        "src.git.github_contracts",
+        "src.git.manager",
+        "src.integration.batches",
+        "src.integration.fixer_batches",
+        "src.integration.fixer_runtime",
+        "src.integration.fixers",
+        "src.integration.gitops",
+        "src.integration.lock",
+        "src.integration.models",
+        "src.integration.train",
+        "src.models",
+        "src.profiles.capabilities",
+        "src.sessions",
+        "src.sessions.fake",
+        "src.sessions.harness_parser",
+        "src.sessions.harness_registry",
+        "src.sessions.spec"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Task-free in-place repair survives replay, budget exhaustion and green."
     },
     "tests/test_integration_git_truth.py": {
       "areas": [
