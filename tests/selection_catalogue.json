@@ -9688,13 +9688,11 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:7621dca9251d58b0557d597a4d39e251073e6e38dfaed75c52ccfcdca549b450",
+      "digest": "sha256:bb68dbf8253cd0f4fd59552d7451938e503b9623feb04e1d6eff8cfd5f602469",
       "imports": [
         "src.database.tables",
-        "src.git.manager",
         "src.integration.migration_heads",
         "src.integration.models",
-        "src.integration.source_ci",
         "src.models"
       ],
       "markers": [
