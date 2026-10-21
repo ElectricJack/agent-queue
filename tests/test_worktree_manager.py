@@ -1450,6 +1450,46 @@ class TestResetSlot:
         assert (path / "published.txt").read_text() == "published before reopen\n"
         assert _git(["status", "--porcelain"], path) == ""
 
+    async def test_branch_older_than_gitignore_drops_now_untracked_cache_before_merge(
+        self, mgr, base_ws, kind,
+    ):
+        """aq-design-tour, 2026-10-21: the parent merge refused the slot's cache."""
+        base = Path(base_ws.workspace_path)
+        _git(["checkout", "-b", "aq/tsk-1"], base)
+        _git(["rm", "-q", ".gitignore"], base)
+        _git(["commit", "-m", "pre-gitignore base"], base)
+        _git(["checkout", "-b", "parent"], base)
+        (base / "node_modules").mkdir()
+        (base / "node_modules" / "x").write_text("vendored\n")
+        _git(["add", "-f", "node_modules/x"], base)
+        _git(["commit", "-m", "pre-gitignore vendor"], base)
+        parent = _git(["rev-parse", "HEAD"], base)
+        _git(["push", "-q", "origin", "aq/tsk-1", "parent"], base)
+        _git(["checkout", "main"], base)
+        slot = await mgr.create_slot(base_ws, kind, 0)
+        path = Path(slot.workspace_path)
+        (path / "node_modules").mkdir()
+        (path / "node_modules" / "x").write_text("cache\n")
+
+        await mgr.reset_slot_for_task(
+            slot, FakeTask(), target_branch="aq/tsk-1", base_branch=parent, preserve_branch=True,
+        )
+
+        assert _git(["merge-base", "--is-ancestor", parent, "HEAD"], path) == ""
+        assert (path / "node_modules" / "x").read_text() == "vendored\n"
+        assert _git(["status", "--porcelain"], path) == ""
+
+    async def test_reset_keeps_cache_the_new_branch_still_ignores(self, mgr, base_ws, kind):
+        slot = await mgr.create_slot(base_ws, kind, 0)
+        path = Path(slot.workspace_path)
+        (path / "node_modules").mkdir()
+        (path / "node_modules" / "x").write_text("cache\n")
+
+        assert await mgr.reset_slot_for_task(slot, FakeTask()) == "aq/tsk-1"
+
+        assert (path / "node_modules" / "x").read_text() == "cache\n"
+        assert mgr.read_sentinel(path).task_id == "tsk-1"
+
     @pytest.mark.parametrize("delete_predecessor_branch", [False, True])
     async def test_reuses_published_slot_detached_at_default_tip(
         self, mgr, base_ws, kind, delete_predecessor_branch,

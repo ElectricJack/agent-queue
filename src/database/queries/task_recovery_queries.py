@@ -1217,6 +1217,7 @@ class TaskRecoveryQueryMixin:
                     and incident.get("ask_decision_id") == ask_decision_id):
                 return {"task_id": task_id, "incident_id": incident_id,
                         "decision": incident["decision"], "status": task["status"],
+                        "decided_at": incident["decided_at"],
                         "decision_id": ask_decision_id, "replayed": True}
             if ask_decision_id:
                 from src.asks.models import digest
@@ -1379,6 +1380,8 @@ class TaskRecoveryQueryMixin:
             "incident_id": incident_id,
             "decision": decision,
             "status": "READY" if decision == "retry" else task["status"],
+            # A later release must name this exact hold as expected_hold_at.
+            "decided_at": now,
         }
 
     async def _clear_stopped_recovery_assignment_on(
