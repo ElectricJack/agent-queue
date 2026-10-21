@@ -432,6 +432,7 @@ class TestWorkerContextRecovery:
     ):
         from src.database.tables import integration_branch_owners
         from src.orchestrator.pools import PoolsMixin
+        from src.orchestrator.workspace import WorkspaceMixin
         from src.sessions.worker_recovery import DISPOSITION_KEY, STREAK_KEY
 
         row = await _claimed_pool_session(db, provider, tmp_path)
@@ -459,7 +460,7 @@ class TestWorkerContextRecovery:
                 "instance_token": "previous-instance", "claim_epoch": row.last_claim_epoch - 1,
             })
 
-        class Orch(PoolsMixin):
+        class Orch(PoolsMixin, WorkspaceMixin):
             def __init__(self):
                 self.db, self.config, self.bus = db, config, bus
                 self.session_providers = registry
@@ -483,6 +484,9 @@ class TestWorkerContextRecovery:
         if handoff_state == "released":
             assert current.status is (TaskStatus.READY if count == 1 else TaskStatus.BLOCKED)
             assert current.assigned_agent_id is None
+            assert (await db.get_session(row.id)).state == "stopped"
+            assert (await db.get_agent(row.agent_id)).state is AgentState.IDLE
+            assert "pool.session_drained" in bus.types()
             receipt = await db.get_task_meta("t1", DISPOSITION_KEY)
             assert receipt["disposition"] == ("retry_ready" if count == 1 else "attention_required")
             assert ("task.restarted" in bus.types()) == (count == 1)
