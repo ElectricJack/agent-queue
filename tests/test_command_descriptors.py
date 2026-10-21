@@ -39,6 +39,7 @@ DEV_CHANGES = ROOT / "tests/fixtures/contracts/dev-refresh-contract-changes.json
 WITHHELD_CHANGES = ROOT / "tests/fixtures/contracts/withheld-source-contract-changes.json"
 WATCH_CHANGES = ROOT / "tests/fixtures/contracts/watch-contract-changes.json"
 INGEST_CHANGES = ROOT / "tests/fixtures/contracts/ingestion-replay-contract-changes.json"
+HIBERNATION_CHANGES = ROOT / "tests/fixtures/contracts/hibernation-contract-changes.json"
 
 
 @pytest.fixture(autouse=True)
@@ -119,6 +120,32 @@ def _dev_changes():
     return changes
 
 
+def _hibernation_changes():
+    changes = json.loads(HIBERNATION_CHANGES.read_text())
+    assert changes["source_base"] == "4385c73158425a08114164893b623cf6b65718e8"
+    assert set(changes["contracts"]) == {
+        "job_cancel", "job_get", "job_submit", "message_wait",
+        "wait_cancel", "wait_get", "wait_list", "wait_register",
+    }
+    assert set(changes["transport_definitions"]) == {
+        "edit_task", "wait_cancel", "wait_get", "wait_list", "wait_register",
+    }
+    return changes
+
+
+def _revert_hibernation_catalogue(catalogue):
+    delta = _hibernation_changes()["catalogue_delta"]
+    previous = delta["previous_explicit"]
+    catalogue["explicit"] = [
+        previous.get(entry["name"], entry) for entry in catalogue["explicit"]
+        if entry["name"] not in delta["added_explicit"]
+    ]
+    for key in ("fallback", "tool_categories"):
+        for name in delta[f"added_{key}"]:
+            catalogue[key].pop(name)
+    return catalogue
+
+
 def _watch_changes():
     changes = json.loads(WATCH_CHANGES.read_text())
     assert set(changes["playbook_fixtures"]) == {
@@ -145,11 +172,16 @@ def test_legacy_execution_documents_and_fingerprints():
     fixture = json.loads(GOLDEN.read_text())
     changes = {**_observation_changes()["contracts"], **_script_changes()["contracts"],
                **_main_changes()["contracts"], **_dev_changes()["contracts"]}
+    hibernation = _hibernation_changes()["contracts"]
     for name, old in fixture["legacy_contracts"].items():
         expected = changes.get(name, old)
         if name in changes:
             assert expected["previous_fingerprint"] == old["fingerprint"]
             assert expected["fingerprint"] != old["fingerprint"]
+        if name in hibernation:
+            assert hibernation[name]["previous_fingerprint"] == expected["fingerprint"]
+            assert hibernation[name]["fingerprint"] != expected["fingerprint"]
+            expected = hibernation[name]
         contract = CONTRACTS.require(name).contract
         assert canonical_execution_document(contract.execution) == expected["execution"], name
         assert contract.fingerprint() == expected["fingerprint"], name
@@ -170,6 +202,7 @@ def test_transport_views_and_cli_serialization_preserve_golden_evidence():
     scripts = _script_changes()
     main = _main_changes()
     dev = _dev_changes()
+    hibernation = _hibernation_changes()
     contracts = {**changes["contracts"], **scripts["contracts"]}
     snapshot = command_snapshot()
     for name, digest in fixture["transport_definitions"].items():
@@ -185,6 +218,10 @@ def test_transport_views_and_cli_serialization_preserve_golden_evidence():
             approved = dev["transport_definitions"][name]
             assert approved["previous_sha256"] == digest
             digest = approved["sha256"]
+        if name in hibernation["transport_definitions"]:
+            approved = hibernation["transport_definitions"][name]
+            assert approved["previous_sha256"] == digest
+            digest = approved["sha256"]
         assert _digest(snapshot.commands[name].tool_definition()) == digest, name
     actual = hashlib.sha256(render_command_catalogue().encode()).hexdigest()
     assert changes["previous_cli_catalogue_sha256"] == fixture["cli_catalogue_sha256"]
@@ -193,7 +230,8 @@ def test_transport_views_and_cli_serialization_preserve_golden_evidence():
     assert dev["previous_cli_catalogue_sha256"] == main["cli_catalogue_sha256"]
     withheld = json.loads(WITHHELD_CHANGES.read_text())
     assert withheld["previous_cli_catalogue_sha256"] == dev["cli_catalogue_sha256"]
-    assert actual == withheld["cli_catalogue_sha256"]
+    assert hibernation["previous_cli_catalogue_sha256"] == withheld["cli_catalogue_sha256"]
+    assert actual == hibernation["cli_catalogue_sha256"]
     definitions = {d["name"]: d for d in effective_tool_definitions()}
     for name, definition in _discover_all_commands().items():
         assert definition == snapshot.commands[name].tool_definition()
@@ -205,7 +243,10 @@ def test_withheld_source_catalogue_only_adds_reviewed_command():
     evidence = json.loads(WITHHELD_CHANGES.read_text())
     assert evidence["source_base"] == "35d58eee0183bcc25252931ae5958072983606d6"
     name = "integration_release_withheld_source"
-    catalogue = json.loads(render_command_catalogue())
+    catalogue = _revert_hibernation_catalogue(json.loads(render_command_catalogue()))
+    assert hashlib.sha256((json.dumps(catalogue, indent=2) + "\n").encode()).hexdigest() == (
+        evidence["cli_catalogue_sha256"]
+    )
     assert catalogue["fallback"].pop(name) == evidence["transport_definition"]
     assert CONTRACTS.require(name).contract.fingerprint() == evidence["contract_fingerprint"]
     # Removing exactly the new command must recover the prior bytes, including
