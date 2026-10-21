@@ -88,9 +88,14 @@ class WaitV2CommandsMixin:
         if (not mutating or principal is None
                 or principal.kind != PrincipalKind.SESSION):
             return None
+        engine = getattr(self.db, "_engine", None)
+        if engine is None:
+            # A stub-wired handler has no store and so no registered waits;
+            # principal resolution treats the same wiring as database-unavailable.
+            return None
         from src.waits.fencing import mutation_fence
 
-        async with self.db._engine.connect() as conn:
+        async with engine.connect() as conn:
             return await mutation_fence(conn, name, principal)
 
     async def wait_reroute_target(self, project_id, target):
