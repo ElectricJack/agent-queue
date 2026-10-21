@@ -9450,6 +9450,27 @@
     },
     "src/orchestrator/task_checkpoint.py::salvage_checkpoint": {
       "reason": "Preserves best-effort patch using an isolated index with fresh repository/branch validation; explicit partial evidence grants no restoration or ref publication authority."
+    },
+    "src/sessions/obsolete.py::import from src.database.tables import integration_branch_owners, integration_subjects, projects, sessions, task_metadata, tasks": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/api/target_scope.py::_target_project": {
+      "reason": "Shared resource ownership lookup used by integration target checks; read-only, without publication or lifecycle state."
+    },
+    "src/api/target_scope.py::target_references": {
+      "reason": "Shared command reference discovery including integration targets; no storage or authority mutation."
+    },
+    "src/commands/resource_authorization.py::SYSTEM_COMMANDS": {
+      "reason": "Audited system resource commands including integration service controls; declares authorization requirements only."
+    },
+    "src/commands/resource_authorization.py::SESSION_HANDLER_RESOURCE_GATES": {
+      "reason": "Session commands retaining independent domain resource checks, including operator repository binding; declares no publication authority."
+    },
+    "src/commands/resource_authorization.py::authorize_resources": {
+      "reason": "Shared principal resource authorization for integration and other commands; consults owners and exact operator grants without modifying branch state or lifecycle."
+    },
+    "src/commands/resource_authorization.py::principal_scope": {
+      "reason": "Derives the scope compatibility view used by integration controls from the original principal; never creates trusted operator authority."
     }
   },
   "exclusions": {
@@ -9592,7 +9613,28 @@
     "src/wait_runtime/legacy_projection.py::project_escalation": "Verified-wait migration provenance and read-only source projections. Owns no integration delivery lifecycle or Git ref mutation; canonical integration sources remain independently charged.",
     "src/waits/adapters/legacy_escalation.py::authorise": "Verified-wait migration provenance and read-only source projections. Owns no integration delivery lifecycle or Git ref mutation; canonical integration sources remain independently charged.",
     "src/waits/adapters/legacy_escalation.py::bind": "Verified-wait migration provenance and read-only source projections. Owns no integration delivery lifecycle or Git ref mutation; canonical integration sources remain independently charged.",
-    "src/waits/adapters/legacy_escalation.py::execute_mutation": "Verified-wait migration provenance and read-only source projections. Owns no integration delivery lifecycle or Git ref mutation; canonical integration sources remain independently charged."
+    "src/waits/adapters/legacy_escalation.py::execute_mutation": "Verified-wait migration provenance and read-only source projections. Owns no integration delivery lifecycle or Git ref mutation; canonical integration sources remain independently charged.",
+    "src/playbooks/script_inputs.py::QuotaLedger._locked": "Generic script input/output quota persistence uses atomic_json; it writes no integration lifecycle, ref replay or task metadata.",
+    "src/playbooks/script_policy.py::MIB": "Generic byte-unit constant for script capture limits; its same-shaped AST is not relocated integration logic.",
+    "src/database/queries/observation_snapshot_queries.py::task_rows": "Generic protected-snapshot projection of ordinary task rows; integration_mode is an existing task column copied verbatim. No integration storage, lifecycle or ref authority.",
+    "src/doctor/stall_checks.py::_SUBJECTS['completed_undelivered']": "Doctor observation identity mapping (finding kind to subject column) for read-only doctor_run pages; the integration finding producer is charged independently.",
+    "src/doctor/stall_checks.py::_SUBJECTS['continuous_promotion_lag']": "Doctor observation identity mapping (finding kind to subject column) for read-only doctor_run pages; the integration finding producer is charged independently.",
+    "src/doctor/stall_checks.py::_SUBJECTS['integration_unknown_facts']": "Doctor observation identity mapping (finding kind to subject column) for read-only doctor_run pages; the integration finding producer is charged independently.",
+    "src/jobs/playbook.py::import from src.jobs.artifacts import atomic_json, job_directory, read_json": "Playbook-only adapter import of generic managed-job receipt I/O; independent integration callers remain charged.",
+    "src/jobs/playbook.py::import from src.jobs.identity import processes, require_readable_identity, verified": "Playbook-only adapter import of generic process identity verification; no integration decisions.",
+    "src/jobs/playbook.py::launch_payload": "Decrypts script inputs for a closed stdin pipe; no integration identity or publication.",
+    "src/jobs/playbook.py::reconcile": "Settles protected script completion or pauses its owning playbook run; no integration ref replay.",
+    "src/jobs/playbook.py::retire": "Releases playbook input/output quotas and launch intent at result retention expiry; no integration lifecycle.",
+    "src/jobs/playbook.py::run": "Executes a pinned playbook script and encrypts its process result; independent of source CI jobs.",
+    "src/jobs/playbook.py::settle_unlaunched": "Records an unlaunched script cancellation/expiry as protected output; no integration lifecycle.",
+    "src/jobs/playbook.py::submit": "Admits playbook-owned scripts only, with encrypted inputs and immutable input pins; no integration submission.",
+    "src/jobs/script_sandbox.py::BINDING_BYTES": "Generic script binding size constant; same-shaped numeric AST is not relocated integration logic.",
+    "src/jobs/script_sandbox.py::REQUEST_BYTES": "Generic script input size constant; same-shaped numeric AST is not relocated integration logic.",
+    "src/jobs/script_sandbox.py::launch": "Ordinary script process backend with shared box admission and bounded streams; no integration policy/ref state.",
+    "src/playbooks/private_values.py::REFERENCE_KEY": "Generic protected-value reference key; same-shaped constant AST is not relocated integration logic.",
+    "src/playbooks/receipts.py::attempt_key": "Generic playbook step attempt hash; not an integration mutation key or replay ledger.",
+    "src/playbooks/script_inputs.py::canonical": "Generic canonical JSON for script input pins; not integration ref serialization.",
+    "src/playbooks/script_inputs.py::digest": "Generic SHA-256 for script bytes; not integration lifecycle storage."
   },
   "owned_fingerprints": [
     "0003870bf7ecea2ab9a41288b28bfe85be663baca1c9855bae4671222bd7c9ab",
@@ -16576,6 +16618,15 @@
       "integration_signal": false,
       "disposition": "ordinary",
       "reason": "Ordinary durable preparation-cleanup uncertainty marker when a writer cannot be proved stopped; retains ownership, not publication authority."
+    },
+    "src/sessions/obsolete.py::ObsoleteClose.close::323f29e5c2576fb3bb7d12d8133d3446524707629df5ca97c22e69b9324ca590": {
+      "line": 243,
+      "owner": "ObsoleteClose.close",
+      "call": "log_event",
+      "owner_fingerprint": "5d106dba93d4e960d95d85d4625d588e53160cbea3b4e087c02c66872ac555e3",
+      "integration_signal": true,
+      "disposition": "ordinary",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Re-reviewed at the branch-retirement landing: the same transaction now queues an ordinary branch_retirements request; no ref replay or duplicate lifecycle."
     }
   },
   "generic_dependencies": {
@@ -17799,7 +17850,25 @@
     "src/workspace_disable.py::kind_slot_cap": "Generic pure capacity arithmetic for a workspace kind and project limit; no integration storage, ownership or delivery authority.",
     "src/claim_file.py::CLAIM_FILE": "Generic claim-file basename, with no integration state or policy.",
     "src/preparation_failure.py::safe_text": "Generic bounded diagnostic scrubber, with no ref/owner or lifecycle authority.",
-    "src/sessions/proctable.py::workspace_quiescent": "Generic read-only process liveness proof; caller owns integration/workspace release decisions."
+    "src/sessions/proctable.py::workspace_quiescent": "Generic read-only process liveness proof; caller owns integration/workspace release decisions.",
+    "src/commands/command_inventory.py::offline_snapshot": "Generic offline command-descriptor composition for every transport and playbook; imports the shared CommandHandler without integration policy, delivery authority or storage. Integration-specific handler definitions are charged independently.",
+    "src/commands/descriptors.py::PLAYBOOK_DENIALS": "Generic playbook command denials for shell and daemon lifecycle; no integration-specific behavior.",
+    "src/profiles/capabilities.py::DENY_ALL": "Generic empty capability policy, shared by every principal kind; no integration-specific behavior.",
+    "src/api/scope.py::_PLAYBOOK_COMPILER_COMMANDS": "Generic compiler command vocabulary used for assignment-scoped authoring authority; no integration lifecycle or publication behavior.",
+    "src/api/scope.py::_has_live_playbook_compiler_assignment": "Read-only generic check of a live compiler session and held compiler task; no integration state or publication authority.",
+    "src/commands/operator_authority.py::operator_grant": "Generic context-local exact-command grant lookup; binding validates command and arguments before shared resource authorization, with no integration-specific behavior.",
+    "src/doctor/models.py::observation_context": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/doctor/models.py::observation_read_failed": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/doctor/observations.py::MAX_PRODUCER_BYTES": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/doctor/observations.py::MAX_ROWS": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/doctor/observations.py::finding": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/doctor/observations.py::partition": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/playbooks/definition.py::step_values": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/playbooks/definition.py::uses_iteration_paths": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/playbooks/features.py::execution_metadata_from_source": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/playbooks/features.py::infer_required_features": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/tables.py::job_input_pins": "Playbook-only immutable script input retention; no integration owner, workspace lease or ref replay storage.",
+    "src/database/queries/wait_metrics.py::wait_metrics_snapshot": "Read-only fleet wait metrics aggregate owned by metrics; wait_graph's cost projection imports it, but it writes nothing and holds no integration fence or source."
   },
   "exclusion_policy": {
     "tests": "Fixtures and tests do not ship as production mechanisms.",

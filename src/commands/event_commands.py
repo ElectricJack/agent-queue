@@ -41,7 +41,7 @@ class EventCommandsMixin:
                 continue
             category, _, _ = name.partition(".")
             events.append({"name": name, "category": category or "other"})
-        return {"events": events, "count": len(events)}
+        return {"success": True, "events": events, "count": len(events)}
 
     async def _cmd_get_recent_events(self, args: dict) -> dict:
         limit = args.get("limit", 10)
@@ -64,13 +64,14 @@ class EventCommandsMixin:
             agent_id=agent_id,
             task_id=task_id,
         )
-        return {"events": events}
+        return {"success": True, "events": events}
 
     async def _cmd_get_token_usage(self, args: dict) -> dict:
         project_id = args.get("project_id")
         task_id = args.get("task_id")
 
         result = await self.db.get_token_breakdown(task_id=task_id, project_id=project_id)
+        result["success"] = True
         if task_id:
             return {"task_id": task_id, **result}
         if project_id:
@@ -80,7 +81,7 @@ class EventCommandsMixin:
     async def _cmd_token_audit(self, args: dict) -> dict:
         days = args.get("days", 7)
         project_id = args.get("project_id")
-        return await self.db.get_token_audit(days=days, project_id=project_id)
+        return {**await self.db.get_token_audit(days=days, project_id=project_id), "success": True}
 
     async def _cmd_get_chat_analyzer_metrics(self, args: dict) -> dict:
         """Return aggregated metrics for chat-analyzer suggestion outcomes.
@@ -111,7 +112,7 @@ class EventCommandsMixin:
         try:
             since_hours_int = int(since_hours)
         except (TypeError, ValueError):
-            return {"error": f"since_hours must be an integer, got {since_hours!r}"}
+            return {"success": False, "error": f"since_hours must be an integer, got {since_hours!r}"}
 
         # since_hours <= 0 → no window (lifetime metrics).
         since_ts: float | None = None
@@ -122,11 +123,7 @@ class EventCommandsMixin:
             project_id=project_id, since=since_ts
         )
 
-        return {
-            "project_id": project_id,
-            "since_hours": since_hours_int,
-            **stats,
-        }
+        return {"success": True, "project_id": project_id, "since_hours": since_hours_int, **stats}
 
     async def _cmd_read_logs(self, args: dict) -> dict:
         """Read and filter the daemon's JSONL log file.
@@ -148,7 +145,7 @@ class EventCommandsMixin:
         )
 
         if not os.path.isfile(log_file):
-            return {"error": f"Log file not found: {log_file}"}
+            return {"success": False, "error": f"Log file not found: {log_file}"}
 
         # Build threshold from level
         threshold = _LEVEL_PRIORITY.get(level, 20)
@@ -160,7 +157,7 @@ class EventCommandsMixin:
                 since_ts = _parse_relative_time(since)
                 since_dt = datetime.datetime.fromtimestamp(since_ts, tz=datetime.timezone.utc)
             except ValueError as exc:
-                return {"error": str(exc)}
+                return {"success": False, "error": str(exc)}
 
         # Read the file from the end (tail) and filter
         raw_lines = _tail_log_lines(log_file, max_scan=limit * 10)
@@ -209,6 +206,7 @@ class EventCommandsMixin:
                 break
 
         return {
+            "success": True,
             "log_file": log_file,
             "level_filter": level,
             "count": len(entries),

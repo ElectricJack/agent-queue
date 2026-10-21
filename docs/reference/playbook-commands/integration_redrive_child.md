@@ -14,13 +14,14 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/integration.py`](../../../src/commands/contracts/integration.py) |
-| Contract fingerprint | `sha256:ea6ce787d76e63c19fdd77671e35c562cf45b7f7c8407db8c878f6806f926d23` |
+| Contract fingerprint | `sha256:d1c67fe0f8a46e453b371a36a853e61cb5d9349de568dca0d21450a4af3558b1` |
 
 ## Parameters
 
 | Parameter | Type | Required | Default | Description |
 |---|---|---|---|---|
 | `task_id` | `string` | yes | — | — |
+| `adopt_source` | `boolean` | no | `false` | — |
 | `dry_run` | `boolean` | no | `true` | — |
 | `expected_head_sha` | `string \| null` | no | `null` | — |
 | `reason` | `string \| null` | no | `null` | — |
@@ -41,11 +42,12 @@ Redacted in receipts and explanations: `reason`.
 | `remote_head_sha` | `string \| null` | — |
 | `tree_sha` | `string \| null` | — |
 | `evidence_id` | `string \| null` | — |
+| `completion_id` | `string \| null` | — |
 | `collection` | `string \| null` | — |
 | `checkpoint` | `object \| null` | — |
 | `reason` | `string \| null` | — |
 
-Projected into the run receipt: `task_id`, `project_id`, `parent_task_id`, `branch`, `parent_branch`, `head_sha`, `base_sha`, `remote_head_sha`, `tree_sha`, `evidence_id`, `collection`, `checkpoint`, `reason`.
+Projected into the run receipt: `task_id`, `project_id`, `parent_task_id`, `branch`, `parent_branch`, `head_sha`, `base_sha`, `remote_head_sha`, `tree_sha`, `evidence_id`, `completion_id`, `collection`, `checkpoint`, `reason`.
 
 ## Outcomes
 

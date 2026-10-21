@@ -1,0 +1,6752 @@
+{
+  "cli_catalogue_sha256": "44dae078fafb7ce50e997f5461e5fa7f79978a2e79078793d0399df918b6b60f",
+  "contracts": {
+    "gate_create": {
+      "execution": {
+        "args_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "await_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "gate_type": {
+              "type": "string"
+            },
+            "human_request": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "project_id": {
+              "type": "string"
+            },
+            "question": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "timeout_at": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "waiter_task_ids": {
+              "anyOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "required": [
+            "gate_type",
+            "project_id",
+            "title"
+          ],
+          "type": "object"
+        },
+        "capability": "gate_create",
+        "effects": [
+          {
+            "kind": "create",
+            "subject": "gate",
+            "when": {
+              "arg_equals": null,
+              "arg_present": null
+            }
+          },
+          {
+            "from_arg": "waiter_task_ids",
+            "kind": "link",
+            "relation_arg": null,
+            "subject": "gate_waiter",
+            "to_arg": "await_id",
+            "when": {
+              "arg_equals": null,
+              "arg_present": "waiter_task_ids"
+            }
+          }
+        ],
+        "idempotency": {
+          "key_field": "await_id",
+          "mode": "keyed"
+        },
+        "name": "gate_create",
+        "outcomes": [
+          {
+            "classification": "success",
+            "name": "created"
+          },
+          {
+            "classification": "failure",
+            "name": "rejected"
+          },
+          {
+            "classification": "success",
+            "name": "reused"
+          },
+          {
+            "classification": "success",
+            "name": "skipped"
+          }
+        ],
+        "receipt_projection": [],
+        "result_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "created": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "gate": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "gate_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "reason": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "skipped": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "was_created": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "type": "object"
+        },
+        "retry_safe": false,
+        "schema_generation": 1,
+        "sensitive_args": [],
+        "sensitive_result_fields": [],
+        "side_effect": "create",
+        "supports_preview": false,
+        "timeout_seconds": null
+      },
+      "fingerprint": "sha256:dd500df1eeafbdc80e2888c5ea44da49f2b2a221e1a0aeadbe7bb2bb08dd4ab5",
+      "previous_fingerprint": "sha256:cef412074d2e82ff21c66ce7aac359b3fd4211e7a2a7ec5f451db6ddf023500d"
+    },
+    "gate_resolve": {
+      "execution": {
+        "args_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "expected": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "gate_id": {
+              "type": "string"
+            },
+            "idempotency_key": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "option_key": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "overall_note": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "preview_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "resolution": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "resolved_by": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "required": [
+            "gate_id"
+          ],
+          "type": "object"
+        },
+        "capability": "gate_resolve",
+        "effects": [
+          {
+            "kind": "resolve",
+            "subject": "gate",
+            "target_arg": "gate_id",
+            "when": {
+              "arg_equals": null,
+              "arg_present": null
+            }
+          }
+        ],
+        "idempotency": {
+          "key_field": null,
+          "mode": "natural"
+        },
+        "name": "gate_resolve",
+        "outcomes": [
+          {
+            "classification": "failure",
+            "name": "refused_routing_gate"
+          },
+          {
+            "classification": "failure",
+            "name": "rejected"
+          },
+          {
+            "classification": "success",
+            "name": "resolved"
+          }
+        ],
+        "receipt_projection": [],
+        "result_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "gate_id": {
+              "type": "string"
+            },
+            "unblocked_task_ids": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "gate_id",
+            "unblocked_task_ids"
+          ],
+          "type": "object"
+        },
+        "retry_safe": true,
+        "schema_generation": 1,
+        "sensitive_args": [],
+        "sensitive_result_fields": [],
+        "side_effect": "resolve",
+        "supports_preview": false,
+        "timeout_seconds": null
+      },
+      "fingerprint": "sha256:118b84dc8b752a5a441cddce108db12963c4132ca2846d5bc55eda3b523e25c1",
+      "previous_fingerprint": "sha256:e7a50ef1a3596569250a59ce94fbef77f295cc3e6813a364e1718557b38470a4"
+    },
+    "integration_backmerge_source": {
+      "execution": {
+        "args_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "project_id": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "session_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "step_id": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "task_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "required": [
+            "project_id",
+            "step_id"
+          ],
+          "type": "object"
+        },
+        "capability": "integration_backmerge_source",
+        "effects": [
+          {
+            "fields_arg": null,
+            "kind": "update",
+            "subject": "integration_operation",
+            "when": {
+              "arg_equals": null,
+              "arg_present": null
+            }
+          }
+        ],
+        "idempotency": {
+          "key_field": null,
+          "mode": "natural"
+        },
+        "name": "integration_backmerge_source",
+        "outcomes": [
+          {
+            "classification": "failure",
+            "name": "approval_not_required"
+          },
+          {
+            "classification": "failure",
+            "name": "backmerge_ledger_invalid"
+          },
+          {
+            "classification": "failure",
+            "name": "backmerge_pending"
+          },
+          {
+            "classification": "success",
+            "name": "backmerges_authored"
+          },
+          {
+            "classification": "failure",
+            "name": "breaking_migration_override_forbidden"
+          },
+          {
+            "classification": "failure",
+            "name": "hotfix_patch_required"
+          },
+          {
+            "classification": "failure",
+            "name": "migration_range_invalid"
+          },
+          {
+            "classification": "failure",
+            "name": "migrations_not_additive"
+          },
+          {
+            "classification": "failure",
+            "name": "not_found"
+          },
+          {
+            "classification": "failure",
+            "name": "notes_not_reviewed"
+          },
+          {
+            "classification": "failure",
+            "name": "notes_range_invalid"
+          },
+          {
+            "classification": "failure",
+            "name": "notes_range_too_large"
+          },
+          {
+            "classification": "failure",
+            "name": "notes_source_missing"
+          },
+          {
+            "classification": "failure",
+            "name": "notes_stale"
+          },
+          {
+            "classification": "failure",
+            "name": "prepare_in_progress"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_body_too_large"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_flow_changed"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_flow_empty"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_flow_invalid"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_in_progress"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_intent_invalid"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_not_fast_forward"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_not_open"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_pr_identity_mismatch"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_publish_started"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_ref_conflict"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_requester_identity_missing"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_review_invalid"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_source_not_on_chain"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_source_pending"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_source_red"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_source_unavailable"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_source_untrusted"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_train_required"
+          },
+          {
+            "classification": "failure",
+            "name": "rate_limited"
+          },
+          {
+            "classification": "failure",
+            "name": "step_not_found"
+          },
+          {
+            "classification": "failure",
+            "name": "step_not_versioned"
+          },
+          {
+            "classification": "failure",
+            "name": "tag_exists"
+          },
+          {
+            "classification": "failure",
+            "name": "unavailable"
+          },
+          {
+            "classification": "failure",
+            "name": "version_mismatch"
+          },
+          {
+            "classification": "failure",
+            "name": "version_not_increasing"
+          }
+        ],
+        "receipt_projection": [
+          "project_id",
+          "request_id",
+          "batch_id",
+          "task_id",
+          "intent",
+          "pr_url",
+          "promotion",
+          "review",
+          "flow",
+          "promotions",
+          "evidence_source",
+          "retry_at",
+          "version",
+          "notes_input",
+          "draft",
+          "notes",
+          "policy",
+          "migration_admission",
+          "backmerges"
+        ],
+        "result_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "backmerges": {
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "batch_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "draft": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "evidence_source": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "flow": {
+              "anyOf": [
+                {
+                  "items": {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "intent": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "migration_admission": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "notes": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "notes_input": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "policy": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "pr_url": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "project_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "promotion": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "promotions": {
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "request_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "retry_at": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "review": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "task_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "version": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "type": "object"
+        },
+        "retry_safe": true,
+        "schema_generation": 1,
+        "sensitive_args": [],
+        "sensitive_result_fields": [],
+        "side_effect": "composite",
+        "supports_preview": false,
+        "timeout_seconds": null
+      },
+      "fingerprint": "sha256:f86273872cdfc12cca169fa9b7df2f3ed44e8c0292e1fe2dadb3ef78d6a6a05f",
+      "previous_fingerprint": "sha256:81577430d8662cecdf334156fd274dff96b915ecb905dc0e7efb560f2ad24a26"
+    },
+    "integration_promotion_notes_input": {
+      "execution": {
+        "args_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "project_id": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "session_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "source_sha": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "step_id": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "task_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "required": [
+            "project_id",
+            "step_id"
+          ],
+          "type": "object"
+        },
+        "capability": "integration_promotion_notes_input",
+        "effects": [
+          {
+            "kind": "read",
+            "subject": "integration_operation",
+            "when": {
+              "arg_equals": null,
+              "arg_present": null
+            }
+          }
+        ],
+        "idempotency": {
+          "key_field": null,
+          "mode": "natural"
+        },
+        "name": "integration_promotion_notes_input",
+        "outcomes": [
+          {
+            "classification": "failure",
+            "name": "approval_not_required"
+          },
+          {
+            "classification": "failure",
+            "name": "backmerge_ledger_invalid"
+          },
+          {
+            "classification": "failure",
+            "name": "backmerge_pending"
+          },
+          {
+            "classification": "failure",
+            "name": "breaking_migration_override_forbidden"
+          },
+          {
+            "classification": "failure",
+            "name": "hotfix_patch_required"
+          },
+          {
+            "classification": "failure",
+            "name": "migration_range_invalid"
+          },
+          {
+            "classification": "failure",
+            "name": "migrations_not_additive"
+          },
+          {
+            "classification": "failure",
+            "name": "not_found"
+          },
+          {
+            "classification": "success",
+            "name": "notes_input"
+          },
+          {
+            "classification": "failure",
+            "name": "notes_not_reviewed"
+          },
+          {
+            "classification": "failure",
+            "name": "notes_range_invalid"
+          },
+          {
+            "classification": "failure",
+            "name": "notes_range_too_large"
+          },
+          {
+            "classification": "failure",
+            "name": "notes_source_missing"
+          },
+          {
+            "classification": "failure",
+            "name": "notes_stale"
+          },
+          {
+            "classification": "failure",
+            "name": "prepare_in_progress"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_body_too_large"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_flow_changed"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_flow_empty"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_flow_invalid"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_in_progress"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_intent_invalid"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_not_fast_forward"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_not_open"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_pr_identity_mismatch"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_publish_started"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_ref_conflict"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_requester_identity_missing"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_review_invalid"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_source_not_on_chain"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_source_pending"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_source_red"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_source_unavailable"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_source_untrusted"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_train_required"
+          },
+          {
+            "classification": "failure",
+            "name": "rate_limited"
+          },
+          {
+            "classification": "failure",
+            "name": "step_not_found"
+          },
+          {
+            "classification": "failure",
+            "name": "step_not_versioned"
+          },
+          {
+            "classification": "failure",
+            "name": "tag_exists"
+          },
+          {
+            "classification": "failure",
+            "name": "unavailable"
+          },
+          {
+            "classification": "failure",
+            "name": "version_mismatch"
+          },
+          {
+            "classification": "failure",
+            "name": "version_not_increasing"
+          }
+        ],
+        "receipt_projection": [
+          "project_id",
+          "request_id",
+          "batch_id",
+          "task_id",
+          "intent",
+          "pr_url",
+          "promotion",
+          "review",
+          "flow",
+          "promotions",
+          "evidence_source",
+          "retry_at",
+          "version",
+          "notes_input",
+          "draft",
+          "notes",
+          "policy",
+          "migration_admission",
+          "backmerges"
+        ],
+        "result_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "backmerges": {
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "batch_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "draft": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "evidence_source": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "flow": {
+              "anyOf": [
+                {
+                  "items": {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "intent": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "migration_admission": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "notes": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "notes_input": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "policy": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "pr_url": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "project_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "promotion": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "promotions": {
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "request_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "retry_at": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "review": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "task_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "version": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "type": "object"
+        },
+        "retry_safe": true,
+        "schema_generation": 1,
+        "sensitive_args": [],
+        "sensitive_result_fields": [],
+        "side_effect": "read",
+        "supports_preview": false,
+        "timeout_seconds": null
+      },
+      "fingerprint": "sha256:8510d761a312ce1358fa7da2cb07834dc0b9da59f5c696713f8ade1a77e85b47",
+      "previous_fingerprint": "sha256:23a1f6fb5b7a9b9d84d53c97f0d06948390b465dfcef0188b42172545dffcd4a"
+    },
+    "integration_promotion_policy_input": {
+      "execution": {
+        "args_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "allow_breaking_migration": {
+              "default": false,
+              "type": "boolean"
+            },
+            "from_task": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "notes_reviewed": {
+              "default": false,
+              "type": "boolean"
+            },
+            "project_id": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "session_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "source_sha": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "step_id": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "task_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "version": {
+              "anyOf": [
+                {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "required": [
+            "project_id",
+            "step_id"
+          ],
+          "type": "object"
+        },
+        "capability": "integration_promotion_policy_input",
+        "effects": [
+          {
+            "kind": "read",
+            "subject": "integration_operation",
+            "when": {
+              "arg_equals": null,
+              "arg_present": null
+            }
+          }
+        ],
+        "idempotency": {
+          "key_field": null,
+          "mode": "natural"
+        },
+        "name": "integration_promotion_policy_input",
+        "outcomes": [
+          {
+            "classification": "failure",
+            "name": "approval_not_required"
+          },
+          {
+            "classification": "failure",
+            "name": "backmerge_ledger_invalid"
+          },
+          {
+            "classification": "failure",
+            "name": "backmerge_pending"
+          },
+          {
+            "classification": "failure",
+            "name": "breaking_migration_override_forbidden"
+          },
+          {
+            "classification": "failure",
+            "name": "hotfix_patch_required"
+          },
+          {
+            "classification": "failure",
+            "name": "migration_range_invalid"
+          },
+          {
+            "classification": "failure",
+            "name": "migrations_not_additive"
+          },
+          {
+            "classification": "failure",
+            "name": "not_found"
+          },
+          {
+            "classification": "failure",
+            "name": "notes_not_reviewed"
+          },
+          {
+            "classification": "failure",
+            "name": "notes_range_invalid"
+          },
+          {
+            "classification": "failure",
+            "name": "notes_range_too_large"
+          },
+          {
+            "classification": "failure",
+            "name": "notes_source_missing"
+          },
+          {
+            "classification": "failure",
+            "name": "notes_stale"
+          },
+          {
+            "classification": "success",
+            "name": "policy_input"
+          },
+          {
+            "classification": "failure",
+            "name": "prepare_in_progress"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_body_too_large"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_flow_changed"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_flow_empty"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_flow_invalid"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_in_progress"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_intent_invalid"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_not_fast_forward"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_not_open"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_pr_identity_mismatch"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_publish_started"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_ref_conflict"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_requester_identity_missing"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_review_invalid"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_source_not_on_chain"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_source_pending"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_source_red"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_source_unavailable"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_source_untrusted"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_train_required"
+          },
+          {
+            "classification": "failure",
+            "name": "rate_limited"
+          },
+          {
+            "classification": "failure",
+            "name": "step_not_found"
+          },
+          {
+            "classification": "failure",
+            "name": "step_not_versioned"
+          },
+          {
+            "classification": "failure",
+            "name": "tag_exists"
+          },
+          {
+            "classification": "failure",
+            "name": "unavailable"
+          },
+          {
+            "classification": "failure",
+            "name": "version_mismatch"
+          },
+          {
+            "classification": "failure",
+            "name": "version_not_increasing"
+          }
+        ],
+        "receipt_projection": [
+          "project_id",
+          "request_id",
+          "batch_id",
+          "task_id",
+          "intent",
+          "pr_url",
+          "promotion",
+          "review",
+          "flow",
+          "promotions",
+          "evidence_source",
+          "retry_at",
+          "version",
+          "notes_input",
+          "draft",
+          "notes",
+          "policy",
+          "migration_admission",
+          "backmerges"
+        ],
+        "result_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "backmerges": {
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "batch_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "draft": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "evidence_source": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "flow": {
+              "anyOf": [
+                {
+                  "items": {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "intent": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "migration_admission": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "notes": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "notes_input": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "policy": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "pr_url": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "project_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "promotion": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "promotions": {
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "request_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "retry_at": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "review": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "task_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "version": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "type": "object"
+        },
+        "retry_safe": true,
+        "schema_generation": 1,
+        "sensitive_args": [],
+        "sensitive_result_fields": [],
+        "side_effect": "read",
+        "supports_preview": false,
+        "timeout_seconds": null
+      },
+      "fingerprint": "sha256:f592ba10031a0d42db12486c0730af63a92dc80e0f4823f6f08cff8852d54674",
+      "previous_fingerprint": "sha256:dcb0ce1e78349524bf6581b7678fec227bc5476393a1f2b6143fe098211ed352"
+    },
+    "integration_release_owner": {
+      "execution": {
+        "args_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "dry_run": {
+              "default": true,
+              "type": "boolean"
+            },
+            "no_push": {
+              "default": false,
+              "type": "boolean"
+            },
+            "owner_row_id": {
+              "anyOf": [
+                {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "self_owned": {
+              "default": false,
+              "type": "boolean"
+            },
+            "task_id": {
+              "anyOf": [
+                {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "type": "object"
+        },
+        "capability": "integration_release_owner",
+        "effects": [
+          {
+            "fields_arg": null,
+            "kind": "update",
+            "subject": "integration_operation",
+            "when": {
+              "arg_equals": null,
+              "arg_present": null
+            }
+          }
+        ],
+        "idempotency": {
+          "key_field": null,
+          "mode": "natural"
+        },
+        "name": "integration_release_owner",
+        "outcomes": [
+          {
+            "classification": "failure",
+            "name": "not_eligible"
+          },
+          {
+            "classification": "failure",
+            "name": "not_found"
+          },
+          {
+            "classification": "success",
+            "name": "preserved_and_released"
+          },
+          {
+            "classification": "success",
+            "name": "released"
+          }
+        ],
+        "receipt_projection": [
+          "id",
+          "head_sha",
+          "recovered_task_id",
+          "source_sha",
+          "manifest",
+          "evidence",
+          "policy",
+          "deliveries",
+          "pending_publications",
+          "parked",
+          "preserved_owners",
+          "released_delegates",
+          "archived_delegates",
+          "project_id",
+          "operation_id",
+          "batch_id",
+          "task_id",
+          "effective_mode",
+          "desired_mode",
+          "mode",
+          "generation",
+          "draining",
+          "ready",
+          "rollout_ready",
+          "blockers",
+          "blocker_digest",
+          "certification",
+          "repository_id",
+          "schedule",
+          "active_batch",
+          "members",
+          "parent_readiness",
+          "ownership",
+          "lease",
+          "repair",
+          "ci_evidence",
+          "promotion",
+          "reconciliation",
+          "cleanup_pending",
+          "release",
+          "legacy_suppression",
+          "waiver_id",
+          "request_id",
+          "request_sequence",
+          "trigger",
+          "requested_at",
+          "next_due_at",
+          "state",
+          "stage",
+          "deadline_at",
+          "reason",
+          "count",
+          "outcomes",
+          "dry_run",
+          "leases",
+          "bound",
+          "unproven",
+          "verifier_task_id",
+          "children",
+          "retire_delegates",
+          "conclusion"
+        ],
+        "result_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "active_batch": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "archived_delegates": {
+              "default": [],
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "batch_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "blocker_digest": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "blockers": {
+              "default": [],
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "bound": {
+              "default": [],
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "certification": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "children": {
+              "default": [],
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "ci_evidence": {
+              "default": [],
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "cleanup_pending": {
+              "default": [],
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "conclusion": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "count": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "deadline_at": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "deliveries": {
+              "default": [],
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "desired_mode": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "draining": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "dry_run": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "effective_mode": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "evidence": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "generation": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "head_sha": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "lease": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "leases": {
+              "default": [],
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "legacy_suppression": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "manifest": {
+              "default": [],
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "members": {
+              "default": [],
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "mode": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "next_due_at": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "operation_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "outcomes": {
+              "default": [],
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "ownership": {
+              "default": [],
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "parent_readiness": {
+              "default": [],
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "parked": {
+              "default": [],
+              "items": {},
+              "type": "array"
+            },
+            "pending_publications": {
+              "default": [],
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "policy": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "preserved_owners": {
+              "default": [],
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "project_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "promotion": {
+              "default": [],
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "ready": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "reason": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "reconciliation": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "recovered_task_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "release": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "released_delegates": {
+              "default": [],
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "repair": {
+              "default": [],
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "repository_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "request_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "request_sequence": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "requested_at": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "retire_delegates": {
+              "default": [],
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "rollout_ready": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "schedule": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "source_sha": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "stage": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "state": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "task_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "trigger": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "unproven": {
+              "default": [],
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "verifier_task_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "waiver_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "type": "object"
+        },
+        "retry_safe": true,
+        "schema_generation": 1,
+        "sensitive_args": [],
+        "sensitive_result_fields": [],
+        "side_effect": "update",
+        "supports_preview": false,
+        "timeout_seconds": null
+      },
+      "fingerprint": "sha256:bb0ba01c7f653433f0735de81f5a3589444481c9174995a5e628887dca8f9334",
+      "previous_fingerprint": "sha256:c4b4900717db460e5897391066d83ea8163d00940d204d1903e9e28ddebbd4b6"
+    },
+    "promote_approve": {
+      "execution": {
+        "args_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "project_id": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "request_id": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "session_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "task_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "required": [
+            "project_id",
+            "request_id"
+          ],
+          "type": "object"
+        },
+        "capability": "promote_approve",
+        "effects": [
+          {
+            "fields_arg": null,
+            "kind": "update",
+            "subject": "integration_operation",
+            "when": {
+              "arg_equals": null,
+              "arg_present": null
+            }
+          }
+        ],
+        "idempotency": {
+          "key_field": null,
+          "mode": "natural"
+        },
+        "name": "promote_approve",
+        "outcomes": [
+          {
+            "classification": "success",
+            "name": "already_approved"
+          },
+          {
+            "classification": "failure",
+            "name": "approval_not_required"
+          },
+          {
+            "classification": "success",
+            "name": "approved"
+          },
+          {
+            "classification": "failure",
+            "name": "backmerge_ledger_invalid"
+          },
+          {
+            "classification": "failure",
+            "name": "backmerge_pending"
+          },
+          {
+            "classification": "failure",
+            "name": "breaking_migration_override_forbidden"
+          },
+          {
+            "classification": "failure",
+            "name": "hotfix_patch_required"
+          },
+          {
+            "classification": "failure",
+            "name": "migration_range_invalid"
+          },
+          {
+            "classification": "failure",
+            "name": "migrations_not_additive"
+          },
+          {
+            "classification": "failure",
+            "name": "not_found"
+          },
+          {
+            "classification": "failure",
+            "name": "notes_not_reviewed"
+          },
+          {
+            "classification": "failure",
+            "name": "notes_range_invalid"
+          },
+          {
+            "classification": "failure",
+            "name": "notes_range_too_large"
+          },
+          {
+            "classification": "failure",
+            "name": "notes_source_missing"
+          },
+          {
+            "classification": "failure",
+            "name": "notes_stale"
+          },
+          {
+            "classification": "failure",
+            "name": "prepare_in_progress"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_body_too_large"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_flow_changed"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_flow_empty"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_flow_invalid"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_in_progress"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_intent_invalid"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_not_fast_forward"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_not_open"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_pr_identity_mismatch"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_publish_started"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_ref_conflict"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_requester_identity_missing"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_review_invalid"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_source_not_on_chain"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_source_pending"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_source_red"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_source_unavailable"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_source_untrusted"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_train_required"
+          },
+          {
+            "classification": "failure",
+            "name": "rate_limited"
+          },
+          {
+            "classification": "failure",
+            "name": "step_not_found"
+          },
+          {
+            "classification": "failure",
+            "name": "step_not_versioned"
+          },
+          {
+            "classification": "failure",
+            "name": "tag_exists"
+          },
+          {
+            "classification": "failure",
+            "name": "unavailable"
+          },
+          {
+            "classification": "failure",
+            "name": "version_mismatch"
+          },
+          {
+            "classification": "failure",
+            "name": "version_not_increasing"
+          }
+        ],
+        "receipt_projection": [
+          "project_id",
+          "request_id",
+          "batch_id",
+          "task_id",
+          "intent",
+          "pr_url",
+          "promotion",
+          "review",
+          "flow",
+          "promotions",
+          "evidence_source",
+          "retry_at",
+          "version",
+          "notes_input",
+          "draft",
+          "notes",
+          "policy",
+          "migration_admission",
+          "backmerges"
+        ],
+        "result_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "backmerges": {
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "batch_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "draft": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "evidence_source": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "flow": {
+              "anyOf": [
+                {
+                  "items": {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "intent": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "migration_admission": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "notes": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "notes_input": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "policy": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "pr_url": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "project_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "promotion": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "promotions": {
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "request_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "retry_at": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "review": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "task_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "version": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "type": "object"
+        },
+        "retry_safe": true,
+        "schema_generation": 1,
+        "sensitive_args": [],
+        "sensitive_result_fields": [],
+        "side_effect": "composite",
+        "supports_preview": false,
+        "timeout_seconds": null
+      },
+      "fingerprint": "sha256:fecb6282886633c242e15c690cca65975b1a28d9e8b298dc57e9880c75c9ac39",
+      "previous_fingerprint": "sha256:1ee25ca867308704d934065d6990c2fbb335f8453b68242fab8e77312cbcfff5"
+    },
+    "promote_cancel": {
+      "execution": {
+        "args_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "project_id": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "request_id": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "session_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "task_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "required": [
+            "project_id",
+            "request_id"
+          ],
+          "type": "object"
+        },
+        "capability": "promote_cancel",
+        "effects": [
+          {
+            "fields_arg": null,
+            "kind": "update",
+            "subject": "integration_operation",
+            "when": {
+              "arg_equals": null,
+              "arg_present": null
+            }
+          }
+        ],
+        "idempotency": {
+          "key_field": null,
+          "mode": "natural"
+        },
+        "name": "promote_cancel",
+        "outcomes": [
+          {
+            "classification": "success",
+            "name": "already_cancelled"
+          },
+          {
+            "classification": "failure",
+            "name": "approval_not_required"
+          },
+          {
+            "classification": "failure",
+            "name": "backmerge_ledger_invalid"
+          },
+          {
+            "classification": "failure",
+            "name": "backmerge_pending"
+          },
+          {
+            "classification": "failure",
+            "name": "breaking_migration_override_forbidden"
+          },
+          {
+            "classification": "success",
+            "name": "cancelled"
+          },
+          {
+            "classification": "failure",
+            "name": "hotfix_patch_required"
+          },
+          {
+            "classification": "failure",
+            "name": "migration_range_invalid"
+          },
+          {
+            "classification": "failure",
+            "name": "migrations_not_additive"
+          },
+          {
+            "classification": "failure",
+            "name": "not_found"
+          },
+          {
+            "classification": "failure",
+            "name": "notes_not_reviewed"
+          },
+          {
+            "classification": "failure",
+            "name": "notes_range_invalid"
+          },
+          {
+            "classification": "failure",
+            "name": "notes_range_too_large"
+          },
+          {
+            "classification": "failure",
+            "name": "notes_source_missing"
+          },
+          {
+            "classification": "failure",
+            "name": "notes_stale"
+          },
+          {
+            "classification": "failure",
+            "name": "prepare_in_progress"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_body_too_large"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_flow_changed"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_flow_empty"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_flow_invalid"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_in_progress"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_intent_invalid"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_not_fast_forward"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_not_open"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_pr_identity_mismatch"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_publish_started"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_ref_conflict"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_requester_identity_missing"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_review_invalid"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_source_not_on_chain"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_source_pending"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_source_red"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_source_unavailable"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_source_untrusted"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_train_required"
+          },
+          {
+            "classification": "failure",
+            "name": "rate_limited"
+          },
+          {
+            "classification": "failure",
+            "name": "step_not_found"
+          },
+          {
+            "classification": "failure",
+            "name": "step_not_versioned"
+          },
+          {
+            "classification": "failure",
+            "name": "tag_exists"
+          },
+          {
+            "classification": "failure",
+            "name": "unavailable"
+          },
+          {
+            "classification": "failure",
+            "name": "version_mismatch"
+          },
+          {
+            "classification": "failure",
+            "name": "version_not_increasing"
+          }
+        ],
+        "receipt_projection": [
+          "project_id",
+          "request_id",
+          "batch_id",
+          "task_id",
+          "intent",
+          "pr_url",
+          "promotion",
+          "review",
+          "flow",
+          "promotions",
+          "evidence_source",
+          "retry_at",
+          "version",
+          "notes_input",
+          "draft",
+          "notes",
+          "policy",
+          "migration_admission",
+          "backmerges"
+        ],
+        "result_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "backmerges": {
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "batch_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "draft": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "evidence_source": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "flow": {
+              "anyOf": [
+                {
+                  "items": {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "intent": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "migration_admission": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "notes": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "notes_input": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "policy": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "pr_url": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "project_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "promotion": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "promotions": {
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "request_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "retry_at": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "review": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "task_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "version": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "type": "object"
+        },
+        "retry_safe": true,
+        "schema_generation": 1,
+        "sensitive_args": [],
+        "sensitive_result_fields": [],
+        "side_effect": "composite",
+        "supports_preview": false,
+        "timeout_seconds": null
+      },
+      "fingerprint": "sha256:70af9de873c19fee9cada6a6bfbe007e5adca2cb364928ade426411d9a6c2183",
+      "previous_fingerprint": "sha256:5957c77edd6192b9519e8fe185030923c4c598c20914610a0642dd557709bfeb"
+    },
+    "promote_hotfix": {
+      "execution": {
+        "args_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "from_task": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "project_id": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "session_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "step_id": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "task_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "version": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "required": [
+            "project_id",
+            "step_id",
+            "title"
+          ],
+          "type": "object"
+        },
+        "capability": "promote_hotfix",
+        "effects": [
+          {
+            "fields_arg": null,
+            "kind": "update",
+            "subject": "integration_operation",
+            "when": {
+              "arg_equals": null,
+              "arg_present": null
+            }
+          }
+        ],
+        "idempotency": {
+          "key_field": null,
+          "mode": "natural"
+        },
+        "name": "promote_hotfix",
+        "outcomes": [
+          {
+            "classification": "failure",
+            "name": "approval_not_required"
+          },
+          {
+            "classification": "failure",
+            "name": "backmerge_ledger_invalid"
+          },
+          {
+            "classification": "failure",
+            "name": "backmerge_pending"
+          },
+          {
+            "classification": "failure",
+            "name": "breaking_migration_override_forbidden"
+          },
+          {
+            "classification": "success",
+            "name": "hotfix_filed"
+          },
+          {
+            "classification": "failure",
+            "name": "hotfix_patch_required"
+          },
+          {
+            "classification": "failure",
+            "name": "migration_range_invalid"
+          },
+          {
+            "classification": "failure",
+            "name": "migrations_not_additive"
+          },
+          {
+            "classification": "failure",
+            "name": "not_found"
+          },
+          {
+            "classification": "failure",
+            "name": "notes_not_reviewed"
+          },
+          {
+            "classification": "failure",
+            "name": "notes_range_invalid"
+          },
+          {
+            "classification": "failure",
+            "name": "notes_range_too_large"
+          },
+          {
+            "classification": "failure",
+            "name": "notes_source_missing"
+          },
+          {
+            "classification": "failure",
+            "name": "notes_stale"
+          },
+          {
+            "classification": "failure",
+            "name": "prepare_in_progress"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_body_too_large"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_flow_changed"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_flow_empty"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_flow_invalid"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_in_progress"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_intent_invalid"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_not_fast_forward"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_not_open"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_pr_identity_mismatch"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_publish_started"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_ref_conflict"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_requester_identity_missing"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_review_invalid"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_source_not_on_chain"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_source_pending"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_source_red"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_source_unavailable"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_source_untrusted"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_train_required"
+          },
+          {
+            "classification": "failure",
+            "name": "rate_limited"
+          },
+          {
+            "classification": "failure",
+            "name": "step_not_found"
+          },
+          {
+            "classification": "failure",
+            "name": "step_not_versioned"
+          },
+          {
+            "classification": "failure",
+            "name": "tag_exists"
+          },
+          {
+            "classification": "failure",
+            "name": "unavailable"
+          },
+          {
+            "classification": "failure",
+            "name": "version_mismatch"
+          },
+          {
+            "classification": "failure",
+            "name": "version_not_increasing"
+          }
+        ],
+        "receipt_projection": [
+          "project_id",
+          "request_id",
+          "batch_id",
+          "task_id",
+          "intent",
+          "pr_url",
+          "promotion",
+          "review",
+          "flow",
+          "promotions",
+          "evidence_source",
+          "retry_at",
+          "version",
+          "notes_input",
+          "draft",
+          "notes",
+          "policy",
+          "migration_admission",
+          "backmerges"
+        ],
+        "result_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "backmerges": {
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "batch_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "draft": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "evidence_source": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "flow": {
+              "anyOf": [
+                {
+                  "items": {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "intent": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "migration_admission": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "notes": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "notes_input": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "policy": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "pr_url": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "project_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "promotion": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "promotions": {
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "request_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "retry_at": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "review": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "task_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "version": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "type": "object"
+        },
+        "retry_safe": true,
+        "schema_generation": 1,
+        "sensitive_args": [],
+        "sensitive_result_fields": [],
+        "side_effect": "composite",
+        "supports_preview": false,
+        "timeout_seconds": null
+      },
+      "fingerprint": "sha256:9f79e0d6c7ce4ac30213a4cabf56f40d8a40a1b57847b7e438db98ca0f2d0695",
+      "previous_fingerprint": "sha256:6bc11a058db48b5d2d8bfe4933aa940f5c0678a41344b799d27a43b0f07e3e6c"
+    },
+    "promote_list": {
+      "execution": {
+        "args_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "limit": {
+              "default": 20,
+              "maximum": 100,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "project_id": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "session_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "step_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "task_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "required": [
+            "project_id"
+          ],
+          "type": "object"
+        },
+        "capability": "promote_list",
+        "effects": [
+          {
+            "kind": "read",
+            "subject": "integration_operation",
+            "when": {
+              "arg_equals": null,
+              "arg_present": null
+            }
+          }
+        ],
+        "idempotency": {
+          "key_field": null,
+          "mode": "natural"
+        },
+        "name": "promote_list",
+        "outcomes": [
+          {
+            "classification": "failure",
+            "name": "approval_not_required"
+          },
+          {
+            "classification": "failure",
+            "name": "backmerge_ledger_invalid"
+          },
+          {
+            "classification": "failure",
+            "name": "backmerge_pending"
+          },
+          {
+            "classification": "failure",
+            "name": "breaking_migration_override_forbidden"
+          },
+          {
+            "classification": "failure",
+            "name": "hotfix_patch_required"
+          },
+          {
+            "classification": "success",
+            "name": "listed"
+          },
+          {
+            "classification": "failure",
+            "name": "migration_range_invalid"
+          },
+          {
+            "classification": "failure",
+            "name": "migrations_not_additive"
+          },
+          {
+            "classification": "failure",
+            "name": "not_found"
+          },
+          {
+            "classification": "failure",
+            "name": "notes_not_reviewed"
+          },
+          {
+            "classification": "failure",
+            "name": "notes_range_invalid"
+          },
+          {
+            "classification": "failure",
+            "name": "notes_range_too_large"
+          },
+          {
+            "classification": "failure",
+            "name": "notes_source_missing"
+          },
+          {
+            "classification": "failure",
+            "name": "notes_stale"
+          },
+          {
+            "classification": "failure",
+            "name": "prepare_in_progress"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_body_too_large"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_flow_changed"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_flow_empty"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_flow_invalid"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_in_progress"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_intent_invalid"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_not_fast_forward"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_not_open"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_pr_identity_mismatch"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_publish_started"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_ref_conflict"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_requester_identity_missing"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_review_invalid"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_source_not_on_chain"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_source_pending"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_source_red"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_source_unavailable"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_source_untrusted"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_train_required"
+          },
+          {
+            "classification": "failure",
+            "name": "rate_limited"
+          },
+          {
+            "classification": "failure",
+            "name": "step_not_found"
+          },
+          {
+            "classification": "failure",
+            "name": "step_not_versioned"
+          },
+          {
+            "classification": "failure",
+            "name": "tag_exists"
+          },
+          {
+            "classification": "failure",
+            "name": "unavailable"
+          },
+          {
+            "classification": "failure",
+            "name": "version_mismatch"
+          },
+          {
+            "classification": "failure",
+            "name": "version_not_increasing"
+          }
+        ],
+        "receipt_projection": [
+          "project_id",
+          "request_id",
+          "batch_id",
+          "task_id",
+          "intent",
+          "pr_url",
+          "promotion",
+          "review",
+          "flow",
+          "promotions",
+          "evidence_source",
+          "retry_at",
+          "version",
+          "notes_input",
+          "draft",
+          "notes",
+          "policy",
+          "migration_admission",
+          "backmerges"
+        ],
+        "result_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "backmerges": {
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "batch_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "draft": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "evidence_source": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "flow": {
+              "anyOf": [
+                {
+                  "items": {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "intent": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "migration_admission": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "notes": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "notes_input": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "policy": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "pr_url": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "project_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "promotion": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "promotions": {
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "request_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "retry_at": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "review": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "task_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "version": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "type": "object"
+        },
+        "retry_safe": true,
+        "schema_generation": 1,
+        "sensitive_args": [],
+        "sensitive_result_fields": [],
+        "side_effect": "read",
+        "supports_preview": false,
+        "timeout_seconds": null
+      },
+      "fingerprint": "sha256:452d446d7de6b5c09b6b5b66d1bd23b52d4b861d034707898f99e4c52704368a",
+      "previous_fingerprint": "sha256:60b050ff4497ffe37c827376d677b333c1732f64ce612c50bd35d1c3769d5bdf"
+    },
+    "promote_prepare": {
+      "execution": {
+        "args_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "bump": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "minor",
+                    "patch"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "from_task": {
+              "anyOf": [
+                {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "project_id": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "session_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "step_id": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "task_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "version": {
+              "anyOf": [
+                {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "required": [
+            "project_id",
+            "step_id"
+          ],
+          "type": "object"
+        },
+        "capability": "promote_prepare",
+        "effects": [
+          {
+            "fields_arg": null,
+            "kind": "update",
+            "subject": "integration_operation",
+            "when": {
+              "arg_equals": null,
+              "arg_present": null
+            }
+          }
+        ],
+        "idempotency": {
+          "key_field": null,
+          "mode": "natural"
+        },
+        "name": "promote_prepare",
+        "outcomes": [
+          {
+            "classification": "failure",
+            "name": "approval_not_required"
+          },
+          {
+            "classification": "failure",
+            "name": "backmerge_ledger_invalid"
+          },
+          {
+            "classification": "failure",
+            "name": "backmerge_pending"
+          },
+          {
+            "classification": "failure",
+            "name": "breaking_migration_override_forbidden"
+          },
+          {
+            "classification": "failure",
+            "name": "hotfix_patch_required"
+          },
+          {
+            "classification": "failure",
+            "name": "migration_range_invalid"
+          },
+          {
+            "classification": "failure",
+            "name": "migrations_not_additive"
+          },
+          {
+            "classification": "failure",
+            "name": "not_found"
+          },
+          {
+            "classification": "failure",
+            "name": "notes_not_reviewed"
+          },
+          {
+            "classification": "failure",
+            "name": "notes_range_invalid"
+          },
+          {
+            "classification": "failure",
+            "name": "notes_range_too_large"
+          },
+          {
+            "classification": "failure",
+            "name": "notes_source_missing"
+          },
+          {
+            "classification": "failure",
+            "name": "notes_stale"
+          },
+          {
+            "classification": "failure",
+            "name": "prepare_in_progress"
+          },
+          {
+            "classification": "success",
+            "name": "prepared"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_body_too_large"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_flow_changed"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_flow_empty"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_flow_invalid"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_in_progress"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_intent_invalid"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_not_fast_forward"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_not_open"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_pr_identity_mismatch"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_publish_started"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_ref_conflict"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_requester_identity_missing"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_review_invalid"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_source_not_on_chain"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_source_pending"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_source_red"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_source_unavailable"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_source_untrusted"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_train_required"
+          },
+          {
+            "classification": "failure",
+            "name": "rate_limited"
+          },
+          {
+            "classification": "failure",
+            "name": "step_not_found"
+          },
+          {
+            "classification": "failure",
+            "name": "step_not_versioned"
+          },
+          {
+            "classification": "failure",
+            "name": "tag_exists"
+          },
+          {
+            "classification": "failure",
+            "name": "unavailable"
+          },
+          {
+            "classification": "failure",
+            "name": "version_mismatch"
+          },
+          {
+            "classification": "failure",
+            "name": "version_not_increasing"
+          }
+        ],
+        "receipt_projection": [
+          "project_id",
+          "request_id",
+          "batch_id",
+          "task_id",
+          "intent",
+          "pr_url",
+          "promotion",
+          "review",
+          "flow",
+          "promotions",
+          "evidence_source",
+          "retry_at",
+          "version",
+          "notes_input",
+          "draft",
+          "notes",
+          "policy",
+          "migration_admission",
+          "backmerges"
+        ],
+        "result_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "backmerges": {
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "batch_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "draft": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "evidence_source": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "flow": {
+              "anyOf": [
+                {
+                  "items": {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "intent": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "migration_admission": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "notes": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "notes_input": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "policy": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "pr_url": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "project_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "promotion": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "promotions": {
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "request_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "retry_at": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "review": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "task_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "version": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "type": "object"
+        },
+        "retry_safe": true,
+        "schema_generation": 1,
+        "sensitive_args": [],
+        "sensitive_result_fields": [],
+        "side_effect": "composite",
+        "supports_preview": false,
+        "timeout_seconds": null
+      },
+      "fingerprint": "sha256:e9d2094939843664a86b48960b551cecc31d4ffa01843f7e064c3af88df1b728",
+      "previous_fingerprint": "sha256:8de47c27d0940dd542064e77804f1315a0774a3f01a151b8b9ebad42ecf2438f"
+    },
+    "promote_repair": {
+      "execution": {
+        "args_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "project_id": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "request_id": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "session_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "task_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "required": [
+            "project_id",
+            "request_id"
+          ],
+          "type": "object"
+        },
+        "capability": "promote_repair",
+        "effects": [
+          {
+            "fields_arg": null,
+            "kind": "update",
+            "subject": "integration_operation",
+            "when": {
+              "arg_equals": null,
+              "arg_present": null
+            }
+          }
+        ],
+        "idempotency": {
+          "key_field": null,
+          "mode": "natural"
+        },
+        "name": "promote_repair",
+        "outcomes": [
+          {
+            "classification": "success",
+            "name": "already_healthy"
+          },
+          {
+            "classification": "failure",
+            "name": "approval_not_required"
+          },
+          {
+            "classification": "failure",
+            "name": "backmerge_ledger_invalid"
+          },
+          {
+            "classification": "failure",
+            "name": "backmerge_pending"
+          },
+          {
+            "classification": "failure",
+            "name": "breaking_migration_override_forbidden"
+          },
+          {
+            "classification": "failure",
+            "name": "hotfix_patch_required"
+          },
+          {
+            "classification": "failure",
+            "name": "migration_range_invalid"
+          },
+          {
+            "classification": "failure",
+            "name": "migrations_not_additive"
+          },
+          {
+            "classification": "failure",
+            "name": "not_found"
+          },
+          {
+            "classification": "failure",
+            "name": "notes_not_reviewed"
+          },
+          {
+            "classification": "failure",
+            "name": "notes_range_invalid"
+          },
+          {
+            "classification": "failure",
+            "name": "notes_range_too_large"
+          },
+          {
+            "classification": "failure",
+            "name": "notes_source_missing"
+          },
+          {
+            "classification": "failure",
+            "name": "notes_stale"
+          },
+          {
+            "classification": "failure",
+            "name": "prepare_in_progress"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_body_too_large"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_flow_changed"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_flow_empty"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_flow_invalid"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_in_progress"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_intent_invalid"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_not_fast_forward"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_not_open"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_pr_identity_mismatch"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_publish_started"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_ref_conflict"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_requester_identity_missing"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_review_invalid"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_source_not_on_chain"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_source_pending"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_source_red"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_source_unavailable"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_source_untrusted"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_train_required"
+          },
+          {
+            "classification": "failure",
+            "name": "rate_limited"
+          },
+          {
+            "classification": "success",
+            "name": "repaired"
+          },
+          {
+            "classification": "failure",
+            "name": "step_not_found"
+          },
+          {
+            "classification": "failure",
+            "name": "step_not_versioned"
+          },
+          {
+            "classification": "failure",
+            "name": "tag_exists"
+          },
+          {
+            "classification": "failure",
+            "name": "unavailable"
+          },
+          {
+            "classification": "failure",
+            "name": "version_mismatch"
+          },
+          {
+            "classification": "failure",
+            "name": "version_not_increasing"
+          }
+        ],
+        "receipt_projection": [
+          "project_id",
+          "request_id",
+          "batch_id",
+          "task_id",
+          "intent",
+          "pr_url",
+          "promotion",
+          "review",
+          "flow",
+          "promotions",
+          "evidence_source",
+          "retry_at",
+          "version",
+          "notes_input",
+          "draft",
+          "notes",
+          "policy",
+          "migration_admission",
+          "backmerges",
+          "backup_path",
+          "previous"
+        ],
+        "result_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "backmerges": {
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "backup_path": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "batch_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "draft": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "evidence_source": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "flow": {
+              "anyOf": [
+                {
+                  "items": {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "intent": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "migration_admission": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "notes": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "notes_input": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "policy": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "pr_url": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "previous": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "project_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "promotion": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "promotions": {
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "request_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "retry_at": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "review": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "task_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "version": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "type": "object"
+        },
+        "retry_safe": true,
+        "schema_generation": 1,
+        "sensitive_args": [],
+        "sensitive_result_fields": [],
+        "side_effect": "composite",
+        "supports_preview": false,
+        "timeout_seconds": null
+      },
+      "fingerprint": "sha256:299486667985f94eb99211d70c95c33a131a032dba371617b28ba18063173ae5",
+      "previous_fingerprint": "sha256:dd5069f2b4a5470af7ff2740dd211fc935e22ed7ae26fb42894ace1ca172a772"
+    },
+    "promote_request": {
+      "execution": {
+        "args_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "allow_breaking_migration": {
+              "default": false,
+              "type": "boolean"
+            },
+            "from_task": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "notes_reviewed": {
+              "default": false,
+              "type": "boolean"
+            },
+            "project_id": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "session_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "source_sha": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "step_id": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "task_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "version": {
+              "anyOf": [
+                {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "required": [
+            "project_id",
+            "step_id"
+          ],
+          "type": "object"
+        },
+        "capability": "promote_request",
+        "effects": [
+          {
+            "fields_arg": null,
+            "kind": "update",
+            "subject": "integration_operation",
+            "when": {
+              "arg_equals": null,
+              "arg_present": null
+            }
+          }
+        ],
+        "idempotency": {
+          "key_field": null,
+          "mode": "natural"
+        },
+        "name": "promote_request",
+        "outcomes": [
+          {
+            "classification": "success",
+            "name": "already_requested"
+          },
+          {
+            "classification": "failure",
+            "name": "approval_not_required"
+          },
+          {
+            "classification": "failure",
+            "name": "backmerge_ledger_invalid"
+          },
+          {
+            "classification": "failure",
+            "name": "backmerge_pending"
+          },
+          {
+            "classification": "failure",
+            "name": "breaking_migration_override_forbidden"
+          },
+          {
+            "classification": "failure",
+            "name": "hotfix_patch_required"
+          },
+          {
+            "classification": "failure",
+            "name": "migration_range_invalid"
+          },
+          {
+            "classification": "failure",
+            "name": "migrations_not_additive"
+          },
+          {
+            "classification": "failure",
+            "name": "not_found"
+          },
+          {
+            "classification": "failure",
+            "name": "notes_not_reviewed"
+          },
+          {
+            "classification": "failure",
+            "name": "notes_range_invalid"
+          },
+          {
+            "classification": "failure",
+            "name": "notes_range_too_large"
+          },
+          {
+            "classification": "failure",
+            "name": "notes_source_missing"
+          },
+          {
+            "classification": "failure",
+            "name": "notes_stale"
+          },
+          {
+            "classification": "failure",
+            "name": "prepare_in_progress"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_body_too_large"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_flow_changed"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_flow_empty"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_flow_invalid"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_in_progress"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_intent_invalid"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_not_fast_forward"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_not_open"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_pr_identity_mismatch"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_publish_started"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_ref_conflict"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_requester_identity_missing"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_review_invalid"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_source_not_on_chain"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_source_pending"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_source_red"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_source_unavailable"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_source_untrusted"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_train_required"
+          },
+          {
+            "classification": "failure",
+            "name": "rate_limited"
+          },
+          {
+            "classification": "success",
+            "name": "requested"
+          },
+          {
+            "classification": "failure",
+            "name": "step_not_found"
+          },
+          {
+            "classification": "failure",
+            "name": "step_not_versioned"
+          },
+          {
+            "classification": "failure",
+            "name": "tag_exists"
+          },
+          {
+            "classification": "failure",
+            "name": "unavailable"
+          },
+          {
+            "classification": "failure",
+            "name": "version_mismatch"
+          },
+          {
+            "classification": "failure",
+            "name": "version_not_increasing"
+          }
+        ],
+        "receipt_projection": [
+          "project_id",
+          "request_id",
+          "batch_id",
+          "task_id",
+          "intent",
+          "pr_url",
+          "promotion",
+          "review",
+          "flow",
+          "promotions",
+          "evidence_source",
+          "retry_at",
+          "version",
+          "notes_input",
+          "draft",
+          "notes",
+          "policy",
+          "migration_admission",
+          "backmerges"
+        ],
+        "result_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "backmerges": {
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "batch_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "draft": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "evidence_source": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "flow": {
+              "anyOf": [
+                {
+                  "items": {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "intent": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "migration_admission": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "notes": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "notes_input": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "policy": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "pr_url": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "project_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "promotion": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "promotions": {
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "request_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "retry_at": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "review": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "task_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "version": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "type": "object"
+        },
+        "retry_safe": true,
+        "schema_generation": 1,
+        "sensitive_args": [],
+        "sensitive_result_fields": [],
+        "side_effect": "composite",
+        "supports_preview": false,
+        "timeout_seconds": null
+      },
+      "fingerprint": "sha256:046d38497a6075b817c7600117fc8b24f5476f991765c80159190d8a11847e84",
+      "previous_fingerprint": "sha256:6701bc830f7599a920f8b0e1e77f706e292c27e0001cc5e3471085788ba12b4c"
+    },
+    "promote_status": {
+      "execution": {
+        "args_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "limit": {
+              "default": 20,
+              "maximum": 100,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "project_id": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "session_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "step_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "task_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "required": [
+            "project_id"
+          ],
+          "type": "object"
+        },
+        "capability": "promote_status",
+        "effects": [
+          {
+            "kind": "read",
+            "subject": "integration_operation",
+            "when": {
+              "arg_equals": null,
+              "arg_present": null
+            }
+          }
+        ],
+        "idempotency": {
+          "key_field": null,
+          "mode": "natural"
+        },
+        "name": "promote_status",
+        "outcomes": [
+          {
+            "classification": "failure",
+            "name": "approval_not_required"
+          },
+          {
+            "classification": "failure",
+            "name": "backmerge_ledger_invalid"
+          },
+          {
+            "classification": "failure",
+            "name": "backmerge_pending"
+          },
+          {
+            "classification": "failure",
+            "name": "breaking_migration_override_forbidden"
+          },
+          {
+            "classification": "failure",
+            "name": "hotfix_patch_required"
+          },
+          {
+            "classification": "failure",
+            "name": "migration_range_invalid"
+          },
+          {
+            "classification": "failure",
+            "name": "migrations_not_additive"
+          },
+          {
+            "classification": "failure",
+            "name": "not_found"
+          },
+          {
+            "classification": "failure",
+            "name": "notes_not_reviewed"
+          },
+          {
+            "classification": "failure",
+            "name": "notes_range_invalid"
+          },
+          {
+            "classification": "failure",
+            "name": "notes_range_too_large"
+          },
+          {
+            "classification": "failure",
+            "name": "notes_source_missing"
+          },
+          {
+            "classification": "failure",
+            "name": "notes_stale"
+          },
+          {
+            "classification": "failure",
+            "name": "prepare_in_progress"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_body_too_large"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_flow_changed"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_flow_empty"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_flow_invalid"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_in_progress"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_intent_invalid"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_not_fast_forward"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_not_open"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_pr_identity_mismatch"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_publish_started"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_ref_conflict"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_requester_identity_missing"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_review_invalid"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_source_not_on_chain"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_source_pending"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_source_red"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_source_unavailable"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_source_untrusted"
+          },
+          {
+            "classification": "failure",
+            "name": "promotion_train_required"
+          },
+          {
+            "classification": "failure",
+            "name": "rate_limited"
+          },
+          {
+            "classification": "success",
+            "name": "status"
+          },
+          {
+            "classification": "failure",
+            "name": "step_not_found"
+          },
+          {
+            "classification": "failure",
+            "name": "step_not_versioned"
+          },
+          {
+            "classification": "failure",
+            "name": "tag_exists"
+          },
+          {
+            "classification": "failure",
+            "name": "unavailable"
+          },
+          {
+            "classification": "failure",
+            "name": "version_mismatch"
+          },
+          {
+            "classification": "failure",
+            "name": "version_not_increasing"
+          }
+        ],
+        "receipt_projection": [
+          "project_id",
+          "request_id",
+          "batch_id",
+          "task_id",
+          "intent",
+          "pr_url",
+          "promotion",
+          "review",
+          "flow",
+          "promotions",
+          "evidence_source",
+          "retry_at",
+          "version",
+          "notes_input",
+          "draft",
+          "notes",
+          "policy",
+          "migration_admission",
+          "backmerges"
+        ],
+        "result_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "backmerges": {
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "batch_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "draft": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "evidence_source": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "flow": {
+              "anyOf": [
+                {
+                  "items": {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "intent": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "migration_admission": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "notes": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "notes_input": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "policy": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "pr_url": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "project_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "promotion": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "promotions": {
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "request_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "retry_at": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "review": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "task_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "version": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "type": "object"
+        },
+        "retry_safe": true,
+        "schema_generation": 1,
+        "sensitive_args": [],
+        "sensitive_result_fields": [],
+        "side_effect": "read",
+        "supports_preview": false,
+        "timeout_seconds": null
+      },
+      "fingerprint": "sha256:fa762aef911db83e3e4ba41f5161256df80c09f9c3b556e5965de7289dd8a0ff",
+      "previous_fingerprint": "sha256:bf17791e90ad219b14e46d2da3482c980e7f8f928c88802e2920fbac22cdbf4d"
+    }
+  },
+  "playbook_fixtures": {
+    "tests/fixtures/playbooks/v2/agent-queue-parent-integration/artifact.json": {
+      "path": "tests/fixtures/playbooks/historical-v2/agent-queue-parent-integration/artifact.json",
+      "previous_sha256": "6bac753c97dddfb8683ebab844c1b9af8ed273d00e334d7d29a75e3e5c10042c",
+      "sha256": "6b0d8f4ad2432eec5a09934ce89cd37f115e1f41f0e9cb7616bc5b96ff2b60ec"
+    },
+    "tests/fixtures/playbooks/v2/agent-queue-parent-integration/diagnostics.json": {
+      "path": "tests/fixtures/playbooks/historical-v2/agent-queue-parent-integration/diagnostics.json",
+      "previous_sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+      "sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570"
+    },
+    "tests/fixtures/playbooks/v2/agent-queue-root-train/artifact.json": {
+      "path": "tests/fixtures/playbooks/historical-v2/agent-queue-root-train/artifact.json",
+      "previous_sha256": "f17f082f3e2e1aae663a61e42ca0be904e46885dcf22a6f7e19f4ffd5b0b0e0e",
+      "sha256": "0b01412a51b1e122fa4f7fd85a79380a2e0e0f3d05b04a4cb5ff2116f172b8bb"
+    },
+    "tests/fixtures/playbooks/v2/agent-queue-root-train/diagnostics.json": {
+      "path": "tests/fixtures/playbooks/historical-v2/agent-queue-root-train/diagnostics.json",
+      "previous_sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+      "sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570"
+    },
+    "tests/fixtures/playbooks/v2/ci-main-sentinel/artifact.json": {
+      "path": "tests/fixtures/playbooks/v2/ci-main-sentinel/artifact.json",
+      "previous_sha256": "b26948267049ce66b380c6e83039d749e42c9800a97769295d9e9ffbbfb743f7",
+      "sha256": "1a72fdfbc5b1979b7be0264eb7336bfd161f4a94fd0fded8ef694c28772648cd"
+    },
+    "tests/fixtures/playbooks/v2/default-assignment-routing/artifact.json": {
+      "path": "tests/fixtures/playbooks/v2/default-assignment-routing/artifact.json",
+      "previous_sha256": "0ffa8bf49c603ef61b656854bc9ee5107050567a4db90650a1bb537130e10e5c",
+      "sha256": "4ec68bae1d26ff1535ae4249fa8ae35989834dc0d7535a637cae05cc503ebae4"
+    },
+    "tests/fixtures/playbooks/v2/default-pipeline/artifact.json": {
+      "path": "tests/fixtures/playbooks/v2/default-pipeline/artifact.json",
+      "previous_sha256": "c5c42720d1b00b9ff14bed22c04b8afef338c090e894660d73be3a8076ed2d31",
+      "sha256": "7d48f95da0d74c368d2271ef99a367c23ceac40fd67291c9ab02081491fa25dd"
+    },
+    "tests/fixtures/playbooks/v2/github-issue-triage/artifact.json": {
+      "path": "tests/fixtures/playbooks/v2/github-issue-triage/artifact.json",
+      "previous_sha256": "5ccd992db470fb89137a3cd8cf57688ff8d116b919e9a511ad8ebcff32adb97f",
+      "sha256": "19bf128ec51bf17251a6edbb549dabd907f9824090b14e4884b0a6367f02f961"
+    },
+    "tests/fixtures/playbooks/v2/morning-report/artifact.json": {
+      "path": "tests/fixtures/playbooks/v2/morning-report/artifact.json",
+      "previous_sha256": "16fde92cca3982a44fa37dc7638fb535066e62200f55bc67bda6e46b0af8c0a2",
+      "sha256": "584735bfad6aa6df0da33f112e62e176b61e039c3071deca86aba6f1c2021195"
+    },
+    "tests/fixtures/playbooks/v2/object-loop/artifact.json": {
+      "path": "tests/fixtures/playbooks/v2/object-loop/artifact.json",
+      "previous_sha256": "e1630040e3ffaebb52ba917826bfdf1755e05d20410e2690d5b500bc31fec27a",
+      "sha256": "f83489a7c46bfa11eaaaa3bc98e642f25452a302909de97a680378118d966f1c"
+    },
+    "tests/fixtures/playbooks/v2/parent-integration/artifact.json": {
+      "path": "tests/fixtures/playbooks/historical-v2/parent-integration/artifact.json",
+      "previous_sha256": "fbc422d0376150126534bca9fa9421a162aba8741062ff7810f42cb892258169",
+      "sha256": "0e53abc1ba7010fd35a51e42bb32c2f793565285c506863ed9ea9326601288ce"
+    },
+    "tests/fixtures/playbooks/v2/parent-integration/diagnostics.json": {
+      "path": "tests/fixtures/playbooks/historical-v2/parent-integration/diagnostics.json",
+      "previous_sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+      "sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570"
+    },
+    "tests/fixtures/playbooks/v2/promotion-continuous/artifact.json": {
+      "path": "tests/fixtures/playbooks/v2/promotion-continuous/artifact.json",
+      "previous_sha256": "b272026e9debbbba6d1d920b59f0fe3b3c819a4b6997e70db7133e5434ab51a9",
+      "sha256": "5d1b280c3c398315a49e6dfe5bdb2ef260c44abb9ba3e83694c42940547d4b00"
+    },
+    "tests/fixtures/playbooks/v2/promotion-request/artifact.json": {
+      "path": "tests/fixtures/playbooks/v2/promotion-request/artifact.json",
+      "previous_sha256": "46e53d4bd804e4a2e68c19898970356837e2df48b97662ea867950570b22f8a7",
+      "sha256": "e23b9ec529926ed9c6207b9f5843d77942bb9690bc9694d8c4b19938f1445a85"
+    },
+    "tests/fixtures/playbooks/v2/provider-failover/artifact.json": {
+      "path": "tests/fixtures/playbooks/v2/provider-failover/artifact.json",
+      "previous_sha256": "b130c149b5cd6a89dc23c0fe1610f131699fe31e1c1137095c0fd111918452c1",
+      "sha256": "e4c946b8eddf8fcbac5ed552887091e1eb822dd851a1647f624bb84276724607"
+    },
+    "tests/fixtures/playbooks/v2/provider-usage-probe/artifact.json": {
+      "path": "tests/fixtures/playbooks/v2/provider-usage-probe/artifact.json",
+      "previous_sha256": "9b3dd865baa880819f5a650e1224a1e4792a4bd4232f03adbf8a71274b1a6485",
+      "sha256": "bb0225c06d98c578213f46b8f3ffb0650e3910a8626fc0bde8f73eb643647ff7"
+    },
+    "tests/fixtures/playbooks/v2/review-pipeline.artifact.json": {
+      "path": "tests/fixtures/playbooks/v2/review-pipeline.artifact.json",
+      "previous_sha256": "b5ec180a7a48d708db4669590766b8f7610e998c3bca3e685aca3c0c5d7f5521",
+      "sha256": "e1ec9ce89cd9943d60073ada5915f0d1fc8a7b0c9ce69a6d961ac84e3eb64c51"
+    },
+    "tests/fixtures/playbooks/v2/review-pipeline.receipts.json": {
+      "path": "tests/fixtures/playbooks/v2/review-pipeline.receipts.json",
+      "previous_sha256": "ab576f0b85ff23fc48589f43e94894c54f72f1e2960000fd218f27f9d1acf000",
+      "sha256": "dd183849626bbb60c1891f197f35e8cfe23ecdfbaed6eeca2cf1730cfde1ce1b"
+    },
+    "tests/fixtures/playbooks/v2/review-pipeline.v6.artifact.json": {
+      "path": "tests/fixtures/playbooks/v2/review-pipeline.v6.artifact.json",
+      "previous_sha256": "117ddd0b629c130b2d5cc61afaa128b52760cbce05c43a8ea7b3f7432cfb3f47",
+      "sha256": "aced2e2f87341fc30dbddd2b5ad1769f2b80c75978f8eae2cc6f8835015bf5d5"
+    },
+    "tests/fixtures/playbooks/v2/root-train/artifact.json": {
+      "path": "tests/fixtures/playbooks/historical-v2/root-train/artifact.json",
+      "previous_sha256": "92617fde23736f359110002c87df676deadc3b70f01e8faad754e8ead2616196",
+      "sha256": "6e28d8dbc4eb93c255813417c6b5d03fdda5bf099dd1be70cf039fb67aa2ed52"
+    },
+    "tests/fixtures/playbooks/v2/root-train/diagnostics.json": {
+      "path": "tests/fixtures/playbooks/historical-v2/root-train/diagnostics.json",
+      "previous_sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+      "sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570"
+    },
+    "tests/fixtures/playbooks/v2/stuck-task-watch/artifact.json": {
+      "path": "tests/fixtures/playbooks/v2/stuck-task-watch/artifact.json",
+      "previous_sha256": "1a74993b0b29772a513b4d83275978a9d056e94f818ccc4538054f0705c4c1c0",
+      "sha256": "91774e5772d5e170e0f8d7c51f217a1ce5f3de4dd8ba86c0617ea9bc8754d8cf"
+    },
+    "tests/fixtures/playbooks/v2/supervisor-failure-triage/artifact.json": {
+      "path": "tests/fixtures/playbooks/v2/supervisor-failure-triage/artifact.json",
+      "previous_sha256": "0c89644f6894a9949a3113ad6654f3d8f7d4b1c822b093b84b0d513278593cc8",
+      "sha256": "6e21cb2f908e13e8cb637c95a653c35e8dc691a22c8428f649e249f8f7d7f241"
+    }
+  },
+  "previous_cli_catalogue_sha256": "2e5172222d620cb5e9997113eaabe278505bce38948a75c69d7ff2304b305220",
+  "review_notes": [
+    "Frozen main adds human decision fences, migration admission receipts, workspace registration and message/review/task transport fields. These are explicit compatibility changes; the original gen1 recording remains immutable.",
+    "Retired train bundles moved to historical-v2 on frozen main; preserve and verify their archived bytes. Active bundles were rebuilt against the combined contract catalogue."
+  ],
+  "source_base": "c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb",
+  "transport_definitions": {
+    "add_workspace": {
+      "previous_sha256": "98e89ce43fa23f0b3ae2aa9205bce3098115ddfa00b9d4bd8eb90ab81b2476c8",
+      "sha256": "4889e327088fc2c249827bd90903b18ba8c65decf4681cf3e0d600fa3d80c15b"
+    },
+    "archive_task": {
+      "previous_sha256": "03ec5165c189001930348e4f74ee990692cc5911e144faaded491d32c8df0865",
+      "sha256": "5d35a32c3449e8957bfceb4b6515339f42bc759c6ad3b6ed78e31f3980a11086"
+    },
+    "escalation_apply_reply": {
+      "previous_sha256": "02494e54dedce14b07dcdb79efcab5a58bb9084d96534751fa983d1ff943f0c7",
+      "sha256": "78d50c29fd5df6ff1c9edf47238298126c9947d92835132cd37e56d45f57fa98"
+    },
+    "gate_create": {
+      "previous_sha256": "b81bd4b1640cc9d076c7e4a2eea073f09ad9830740462d474da15927dac78086",
+      "sha256": "63663c30d4ae3541f03a7ae911fb74f16fb6b3c88608ba069ec6ede1d6f5fc91"
+    },
+    "gate_resolve": {
+      "previous_sha256": "4897e364113f2f68e85ecf9439fa2339a3f081cdef3885d6dcb98c33d1f9470d",
+      "sha256": "28791420b87f4d893b2cbe363f573a850c3ba6211849ca044c63a71cd130f251"
+    },
+    "integration_promotion_policy_input": {
+      "previous_sha256": "acbf087d1526e0eb9d8c9d6b23fbe691df73de6361e144f55916434cc5bb9a94",
+      "sha256": "d949f98c9ed89d74824442eb95b317877ca81444f1bf8e8566075fa2d4215205"
+    },
+    "integration_release_owner": {
+      "previous_sha256": "f5425c8df220bdf54cc5ebbf1cb58302ac75a4c71d497e6a190735860a494d85",
+      "sha256": "d7d32a262b748f0a1bb99f7b58c542fa66527512ff6c68d7a2dded3d09073f30"
+    },
+    "list_workspaces": {
+      "previous_sha256": "9de59f5ccd0250a0ab5d292e317f2334e8ad4514c1a371bb9cce6f22ad30f42b",
+      "sha256": "d240731575c4bd1c1098942df920c0d8fbb4d81967c661f3d00c4ee3ef00d26c"
+    },
+    "message_send": {
+      "previous_sha256": "d13cd2b161922b1eb2721b43bfef6986db68fed095ea1dfaa0e93def6c3da672",
+      "sha256": "5315c4f3e327e981b5cb7488c4e0d62d18634dc637195aefe2d3f48f5f8e3c71"
+    },
+    "promote_request": {
+      "previous_sha256": "b19939d878c1db2a05fb54d6a2e30b91dc45aed781611a24f83ad9b9bc13eebd",
+      "sha256": "bae0dc3f7d7ff98d690393a4daa7b56542444bdb24cbb0a158f96e2b3083f222"
+    },
+    "resume_playbook": {
+      "previous_sha256": "ee368c02448df1c18e0eb7d6d9dd3180d4c3d07d6ad56481ea5efdfd2a262e89",
+      "sha256": "497748094cc3a6d4142986beb1eb7c0f4b3ddfd924ce552f427643a142635370"
+    },
+    "resume_task": {
+      "previous_sha256": "05c54deb25685190bdf3980e28643f7b7eaae22af04d7b99b733924aec257583",
+      "sha256": "0c1bc221eba3e8277e62d00e2419b12c2cb738da6775773409a2e9e82fa8bec5"
+    },
+    "review_comment": {
+      "previous_sha256": "a1352425dfc71220b723f1b1dbcbafe87bef55a095b5b558813a6a7f416cc59c",
+      "sha256": "68f8dbb77cefea23f1a71825d4204b7499e8be215125dfed131082abe70a63d8"
+    },
+    "review_decide": {
+      "previous_sha256": "72736a1e9f13e39ddba560336c2feb404f4f45d09eb728c9cd4f5e1ded50ef51",
+      "sha256": "c8f752867a433dd2b88e13b2820231bbe28eff1267e09a5b9d002802531e99a9"
+    },
+    "task_batch_propose": {
+      "previous_sha256": "dcf0f3cfcb65cfa2646e916dbf58104659fc1a56e8eba6d116d3168c8fff290d",
+      "sha256": "2810863716b4ccb4040ae6c6afe765ea356309101a0c123cd387559900d12b39"
+    },
+    "task_batch_update": {
+      "previous_sha256": "7ddceb30510173b6885850669bf571268b8c67842644cb976d40f1036740f5eb",
+      "sha256": "de3a7a7fabb3e7e5002f2fb9e1099dd466acc9ce10bc3c0146e89215a73999ad"
+    },
+    "task_close": {
+      "previous_sha256": "a463009022ad80bd0cb8e236481d4ec432faa05e31e658e4f4ca59556a36a922",
+      "sha256": "2c935d5be77a1aaee9723cf2a017ca42ae5b0b79806d71764ab72036b5176e13"
+    },
+    "task_recover": {
+      "previous_sha256": "5bacb4cc0ce6067f37e939f01cbb60c254f4e6cd06a662564081de248a67ee42",
+      "sha256": "c07237aa8e897a0092c8ff07af663dbb377f6f80f441aa57277b15f326168f8a"
+    }
+  }
+}

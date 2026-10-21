@@ -435,3 +435,13 @@ def test_sleep_policy_resolves_project_defaults_and_measured_cohorts():
     inputs = measured_inputs(cond, None, policy=resolved, medians=medians,
                              pressure=2, anchor=10, now=20)
     assert inputs.expected_duration_seconds == 77 and inputs.resume_cost_minutes == 5
+
+
+def test_project_policy_applies_canary_rollout_flags():
+    from src.config_wait_policy import WaitPolicyConfig, WaitProjectOverrides
+    from src.waits.decision import project_policy
+
+    policy = WaitPolicyConfig(projects={'canary': WaitProjectOverrides(v2_enabled=True)})
+    assert project_policy(policy, 'canary').v2_enabled
+    assert not project_policy(policy, 'canary').hibernation_enabled
+    assert project_policy(policy, 'other') is policy and not policy.v2_enabled

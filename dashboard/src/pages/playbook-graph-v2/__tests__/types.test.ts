@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  COLLECTION_EXPRESSION_LABELS,
   EDGE_KIND_LABELS,
   EDGE_KIND_STYLES,
   NEUTRAL_EDGE_STYLE,
@@ -7,6 +8,7 @@ import {
   STEP_KIND_TONES,
   UNTRAVERSED_EDGE_OPACITY,
   selectedEdgeStyle,
+  valueDisplay,
   type SemanticEdgeKind,
   type SemanticStepKind,
 } from "../types";
@@ -27,6 +29,7 @@ const EDGE_KINDS: SemanticEdgeKind[] = [
 ];
 
 const STEP_KINDS: SemanticStepKind[] = [
+  "script",
   "command",
   "llm",
   "agent_task",
@@ -37,6 +40,11 @@ const STEP_KINDS: SemanticStepKind[] = [
 ];
 
 describe("semantic graph style maps", () => {
+  it("labels all four collection expressions from the generated DTO union", () => {
+    expect(Object.keys(COLLECTION_EXPRESSION_LABELS)).toEqual(["filter", "map", "len", "diff"]);
+    expect(new Set(Object.values(COLLECTION_EXPRESSION_LABELS)).size).toBe(4);
+  });
+
   it("keeps every edge kind visually distinct without relying on colour", () => {
     const dashes = EDGE_KINDS.map((kind) => String(EDGE_KIND_STYLES[kind]!.strokeDasharray));
     expect(new Set(dashes).size).toBe(EDGE_KINDS.length);
@@ -72,5 +80,14 @@ describe("semantic graph style maps", () => {
       expect(STEP_KIND_LABELS[kind]).toBeTruthy();
       expect(STEP_KIND_TONES[kind]).toBeTruthy();
     }
+  });
+});
+
+
+describe("value visibility", () => {
+  it("withholds protected display text and distinguishes unresolved from null", () => {
+    expect(valueDisplay({ kind: "redacted", display: "secret", redacted: true })).toBe("Protected value");
+    expect(valueDisplay({ kind: "unresolved", display: "scan.rows" })).toBe("Unresolved: scan.rows");
+    expect(valueDisplay({ kind: "literal", display: "null" })).toBe("null");
   });
 });

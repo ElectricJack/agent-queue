@@ -185,7 +185,11 @@ Quarantine reports `launch_backoff` and expiry, rather than captured stderr.
 
 `task_route_apply` refreshes eligibility and load inside the existing fleet
 advisory-lock transaction, checks provider/harness/lifecycle/class compatibility,
-and reselects on current routed backlog. It stores the bounded apply observation
+and locks the task row before reading its fresh routing inputs. A concurrent
+`task_route --prefer ... --prefer-mode strict` either precedes that read or
+clears the applied route afterwards; an older apply cannot overwrite the new
+preference with a route to another harness.
+It then reselects on current routed backlog. It stores the bounded apply observation
 in the route record. Context supplied by a caller is never trusted for eligibility
 or admission. Concurrent decisions observe previously committed routes; claim
 and guarded route writes continue to protect held tasks.

@@ -15,7 +15,6 @@ from sqlalchemy import (
     and_,
     any_,
     bindparam,
-    case,
     delete,
     func,
     insert,
@@ -37,7 +36,6 @@ from src.database.queries.blocked_state import (
 )
 from src.database.queries.ingest_hold import not_ingest_held
 from src.database.tables import (
-    admission_reservations,
     agents,
     archived_tasks,
     continuations,
@@ -64,7 +62,6 @@ from src.database.tables import (
     task_tools,
     task_workspace_requirements,
     tasks,
-    wait_priority_projection,
     wait_records,
     workspaces,
 )
@@ -2606,6 +2603,9 @@ class TaskQueryMixin:
         """The transactional body of :meth:`delete_task`, on a supplied ``conn``."""
         from src.database.queries.hierarchy_queries import HierarchyError
 
+        await lock_component_tasks(conn, {
+            f"task:{tid}" for tid in await self.subtree_ids(task_id, conn=conn)
+        })
         await self.guard_integration_mutation(
             task_id, "delete", conn=conn, retire_pending=True, branch_policy=branch_policy,
             delivery=delivery,
@@ -2697,6 +2697,9 @@ class TaskQueryMixin:
         — which for a human gate means live Approve/Deny buttons in Discord
         for a task that no longer exists.
         """
+        from src.database.queries.continuation_queries import retire_task_waits
+
+        await lock_component_tasks(conn, {f"task:{task_id}"})
         if operator_delete:
             # FK writers take KEY SHARE on the task. Keep them behind the
             # deletion until every owned row (including layouts) has gone.
@@ -2706,6 +2709,10 @@ class TaskQueryMixin:
         comment_project_id = (await conn.execute(
             select(tasks.c.project_id).where(tasks.c.id == task_id)
         )).scalar_one_or_none()
+        await retire_task_waits(
+            conn, task_id, reason="task_archived" if preserve_completion else "task_deleted",
+            now=time.time(),
+        )
         await conn.execute(delete(task_results).where(task_results.c.task_id == task_id))
         if not preserve_completion:
             await conn.execute(
@@ -2800,23 +2807,6 @@ class TaskQueryMixin:
             .values(handoff_state="released", updated_at=time.time())
         )
 
-        # Suspension history survives removal, but may never launch again.
-        await conn.execute(update(continuations).where(
-            continuations.c.task_id == task_id,
-            continuations.c.resume_state.not_in(("acknowledged", "failed", "cancelled")),
-        ).values(resume_state="cancelled", version=continuations.c.version + 1))
-        await conn.execute(update(admission_reservations).where(
-            (admission_reservations.c.task_id == task_id)
-            | admission_reservations.c.continuation_id.in_(
-                select(continuations.c.id).where(continuations.c.task_id == task_id)),
-        ).values(
-            task_id=None,
-            state=case((admission_reservations.c.state.in_(("pending", "overdue", "granted")),
-                        "cancelled"), else_=admission_reservations.c.state),
-        ))
-        await conn.execute(delete(wait_priority_projection).where(
-            wait_priority_projection.c.task_id == task_id,
-        ))
         await conn.execute(delete(tasks).where(tasks.c.id == task_id))
         # The parent DELETE waits for an accepted comment's UPDATE lock.
         # Cleanup afterwards cannot miss a concurrently committed append.

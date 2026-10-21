@@ -567,7 +567,11 @@ def _for_target(snapshot: DeliverySnapshot, target: DeliveryTarget) -> DeliveryS
     """
     if snapshot.target_ref == target.target_ref:
         return snapshot
-    if snapshot.error not in {None, "missing_target"}:
+    if snapshot.acquisition_error:
+        return replace(snapshot, target_ref=target.target_ref, target_oid=None,
+                       error="target_ref_missing" if target.target_ref in
+                       snapshot.absent_target_refs else snapshot.acquisition_error)
+    if snapshot.error not in {None, "target_ref_missing"}:
         return replace(snapshot, target_ref=target.target_ref, target_oid=None)
     oid = snapshot.source_heads.get(
         "refs/remotes/origin/" + target.target_ref.removeprefix("refs/heads/"))
@@ -575,7 +579,7 @@ def _for_target(snapshot: DeliverySnapshot, target: DeliveryTarget) -> DeliveryS
         return replace(snapshot, target_ref=target.target_ref, target_oid=None,
                        error="snapshot_git_error: invalid_target")
     return replace(snapshot, target_ref=target.target_ref, target_oid=oid,
-                   error=None if oid else "missing_target")
+                   error=None if oid else "target_ref_missing")
 
 
 class DeliveryObserver:
@@ -642,10 +646,11 @@ class DeliveryObserver:
         # fetched alone; observers sharing a store read with their own transport.
         snapshot = replace(snapshot, git=self.git, _cache={}, _identities={}, _freshness={})
         own = _for_target(snapshot, target)
-        if snapshot.error in {None, "missing_target"} and self not in flight.recorded:
+        if (snapshot.error in {None, "target_ref_missing"} and not snapshot.acquisition_error
+                and self not in flight.recorded):
             flight.recorded.add(self)
             self._remember(target, snapshot, stamp)
-        elif own.error in {None, "missing_target"} and (
+        elif own.error in {None, "target_ref_missing"} and (
                 target not in self._recent or self._recent[target][0] < stamp):
             # A joiner's own ref, outside the targets its first caller covered.
             self._recent[target] = (stamp, own)

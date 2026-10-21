@@ -7,6 +7,10 @@ These are pure data — no logic.
 from __future__ import annotations
 
 from src.models import TaskStatus
+# Pure-data schema modules: importing the command mixins here would pull the
+# doctor registry and the database into every CLI start.
+from src.commands.doctor_observation_schemas import CATALOG_SCHEMA, RUN_SCHEMA
+from src.commands.playbook_state_schemas import STATE_SCHEMAS
 
 # Which category each tool belongs to.
 # Tools not listed here are "core" (always loaded).
@@ -4522,10 +4526,21 @@ _ALL_TOOL_DEFINITIONS = [
     {
         "name": "playbook_commands",
         "description": (
-            "List every registered Playbook V2 command with its title, summary, "
-            "documentation URL, and typed parameter JSON Schema."
+            "Inspect a bounded page of playbook command contracts, including denied and "
+            "unavailable commands, schemas, caller requirements and execution metadata."
         ),
-        "input_schema": {"type": "object", "properties": {}},
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"}, "prefix": {"type": "string"},
+                "origin": {"type": "string"}, "plugin": {"type": "string"},
+                "schema_quality": {"type": "string"}, "result_mode": {"type": "string"},
+                "available": {"type": "boolean"}, "denied": {"type": "boolean"},
+                "include_schema": {"type": "boolean", "default": True},
+                "offset": {"type": "integer", "minimum": 0, "default": 0},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 50},
+            },
+        },
     },
     {
         "name": "playbook_v2_graph",
@@ -9351,6 +9366,38 @@ _ALL_TOOL_DEFINITIONS.extend([
     for name in sorted(_PUBLIC_WAIT_V2_COMMANDS)
 ])
 
+
+# Shared observation schemas feed every descriptor projection; no playbook registration.
+
+_FALLBACK_INPUT_SCHEMAS.update({"doctor_catalog": CATALOG_SCHEMA, "doctor_run": RUN_SCHEMA,
+                               "observation_snapshot_cleanup": CATALOG_SCHEMA})
+
+# Preserve established transport arguments and expose only the shared paging
+# additions. Typed playbook arguments use the same schema source.
+from src.observations.models import SnapshotArgs as _SnapshotArgs  # noqa: E402
+
+for _definition in _ALL_TOOL_DEFINITIONS:
+    if _definition["name"] in {"list_projects", "list_tasks", "get_stuck_tasks"}:
+        _definition["input_schema"]["properties"].update(
+            _SnapshotArgs.model_json_schema()["properties"]
+        )
+
+_FALLBACK_INPUT_SCHEMAS.update(STATE_SCHEMAS)
+
+# Data-only inputs; run, owner, artifact and program come from the live invocation.
+_ALL_TOOL_DEFINITIONS.append({
+    "name": "playbook_script_run",
+    "description": "Submit or rejoin the current pinned ScriptStep as a durable job.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "arguments": {"type": "array", "items": {"type": "string"}, "maxItems": 256},
+            "environment": {"type": "object", "additionalProperties": {"type": "string"}},
+            "stdin_base64": {"type": "string", "maxLength": 87384},
+        },
+        "additionalProperties": False,
+    },
+})
 
 from src.commands.contracts.builtin import (  # noqa: E402
     TaskBatchUpdateArgs as _TaskBatchUpdateArgs,

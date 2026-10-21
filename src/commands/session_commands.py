@@ -124,30 +124,31 @@ class SessionCommandsMixin:
                 session, ambiguous = await self._session_by_id_prefix(str(session_id))
                 if ambiguous:
                     return None, {
+                        "success": False,
                         "error": (
                             f"'{session_id}' matches {len(ambiguous)} sessions "
                             f"({', '.join(sorted(ambiguous))}); use more of the id"
                         )
                     }
             if session is None:
-                return None, {"error": f"No session '{session_id}'"}
+                return None, {"success": False, "error": f"No session '{session_id}'"}
             return session, None
 
         name = args.get("name")
         if name:
             session = await self.db.get_session_by_name(str(name))
             if session is None:
-                return None, {"error": f"No session named '{name}'"}
+                return None, {"success": False, "error": f"No session named '{name}'"}
             return session, None
 
         task_id = args.get("task_id")
         if task_id:
             session = await self.db.get_session_for_task(str(task_id))
             if session is None:
-                return None, {"error": f"No session for task '{task_id}'"}
+                return None, {"success": False, "error": f"No session for task '{task_id}'"}
             return session, None
 
-        return None, {"error": "session_id, name, or task_id is required"}
+        return None, {"success": False, "error": "session_id, name, or task_id is required"}
 
     def _session_project_scope_error(self, session) -> dict | None:
         """Refuse a session row belonging to another project than the caller's.
@@ -248,11 +249,11 @@ class SessionCommandsMixin:
         limit = args.get("limit")
         offset = args.get("offset")
         if limit is not None and (type(limit) is not int or not 1 <= limit <= 500):
-            return {"error": "limit must be an integer from 1 to 500"}
+            return {"success": False, "error": "limit must be an integer from 1 to 500"}
         if offset is None:
             offset = 0
         if type(offset) is not int or offset < 0:
-            return {"error": "offset must be a non-negative integer"}
+            return {"success": False, "error": "offset must be a non-negative integer"}
         sessions = await self.db.list_sessions(
             state=args.get("state"),
             desired_state=args.get("desired_state"),
@@ -284,6 +285,8 @@ class SessionCommandsMixin:
         session, err = await self._resolve_session(args)
         if err:
             return err
+        if (denied := self._session_project_scope_error(session)) is not None:
+            return denied
         return {"success": True, "session": self._session_dict(session)}
 
     async def _cmd_session_peek(self, args: dict) -> dict:
@@ -295,7 +298,7 @@ class SessionCommandsMixin:
             return denied
         provider = self._provider_for_session(session)
         if provider is None:
-            return {"error": f"Provider '{session.provider}' is not available"}
+            return {"success": False, "error": f"Provider '{session.provider}' is not available"}
         if not provider.supports(Cap.PEEK):
             return {
                 "success": True,
@@ -307,7 +310,7 @@ class SessionCommandsMixin:
         try:
             output = await provider.peek(self._session_handle(session), lines)
         except Exception as exc:
-            return {"error": f"peek failed: {exc}"}
+            return {"success": False, "error": f"peek failed: {exc}"}
         return {"success": True, "session_id": session.id, "output": output}
 
     async def _cmd_session_attach(self, args: dict) -> dict:
@@ -317,13 +320,13 @@ class SessionCommandsMixin:
             return err
         provider = self._provider_for_session(session)
         if provider is None:
-            return {"error": f"Provider '{session.provider}' is not available"}
+            return {"success": False, "error": f"Provider '{session.provider}' is not available"}
         try:
             command = await provider.attach_command(self._session_handle(session))
         except CapabilityUnsupported as exc:
-            return {"error": str(exc)}
+            return {"success": False, "error": str(exc)}
         except Exception as exc:
-            return {"error": f"attach failed: {exc}"}
+            return {"success": False, "error": f"attach failed: {exc}"}
         return {"success": True, "session_id": session.id, "attach_command": command}
 
     async def _cmd_session_input(self, args: dict) -> dict:
@@ -334,30 +337,30 @@ class SessionCommandsMixin:
         if scope and scope.get("kind") != "local" and not (
             scope.get("elevated") and scope.get("project_id") is None
         ):
-            return {"error": "out of scope: direct terminal input requires global admin"}
+            return {"success": False, "error": "out of scope: direct terminal input requires global admin"}
         text, key = args.get("text"), args.get("key")
         try:
             validate_terminal_input(text, key)
         except ValueError as exc:
-            return {"error": str(exc)}
+            return {"success": False, "error": str(exc)}
         session, err = await self._resolve_session(args)
         if err:
             return err
         if session.state not in {"running", "draining"}:
-            return {"error": "No live terminal; start or resume the agent first"}
+            return {"success": False, "error": "No live terminal; start or resume the agent first"}
         if session.agent_id:
             agent = await self.db.get_agent(session.agent_id)
             if agent is None or agent.deleted_at is not None:
-                return {"error": "This agent is no longer available"}
+                return {"success": False, "error": "This agent is no longer available"}
         provider = self._provider_for_session(session)
         if provider is None or not provider.supports(Cap.INPUT):
-            return {"error": "This session provider does not support terminal input"}
+            return {"success": False, "error": "This session provider does not support terminal input"}
         try:
             await provider.send_input(self._session_handle(session), text=text, key=key)
         except Exception:
             # Provider errors can include argv containing the user's text.
             # Neither return nor log it; failed input must not be auto-retried.
-            return {"error": "Terminal input failed. Refresh the session before typing again."}
+            return {"success": False, "error": "Terminal input failed. Refresh the session before typing again."}
         await self.db.update_session(session.id, last_activity=time.time())
         return {"success": True, "session_id": session.id, "accepted": True}
 
@@ -371,13 +374,13 @@ class SessionCommandsMixin:
         """
         text = str(args.get("text") or args.get("message") or "").strip()
         if not text:
-            return {"error": "text is required"}
+            return {"success": False, "error": "text is required"}
         session, err = await self._resolve_session(args)
         if err:
             return err
         provider = self._provider_for_session(session)
         if provider is None:
-            return {"error": f"Provider '{session.provider}' is not available"}
+            return {"success": False, "error": f"Provider '{session.provider}' is not available"}
         try:
             await provider.nudge(self._session_handle(session), text)
         except NotSubmitted:
@@ -385,7 +388,7 @@ class SessionCommandsMixin:
         except CapabilityUnsupported as exc:
             return {"success": False, "error": str(exc), "session_id": session.id}
         except Exception as exc:
-            return {"error": f"nudge failed: {exc}"}
+            return {"success": False, "error": f"nudge failed: {exc}"}
         return {"success": True, "session_id": session.id, "delivered": True}
 
     async def _cmd_session_logs(self, args: dict) -> dict:
@@ -408,7 +411,7 @@ class SessionCommandsMixin:
         if args.get("attempt_id"):
             attempt = await self.db.get_task_session_attempt(str(args["attempt_id"]))
             if attempt is None:
-                return {"error": "No such task session attempt"}
+                return {"success": False, "error": "No such task session attempt"}
             args = {**args, "session_id": args.get("session_id") or args.get("id") or attempt["session_id"]}
         session, err = await self._resolve_session(args)
         if attempt is None and session is not None and session.task_id and session.state in {"stopped", "sleeping", "quarantined"}:
@@ -422,7 +425,7 @@ class SessionCommandsMixin:
                 or (session is None and args["session_id"] != attempt["session_id"])
                 or (args.get("task_id") and args["task_id"] != attempt["task_id"])
             ):
-                return {"error": "Attempt does not belong to this session/task"}
+                return {"success": False, "error": "Attempt does not belong to this session/task"}
             session = SimpleNamespace(**{
                 **attempt, "id": attempt["session_id"],
                 "started_at": attempt["session_started_at"],
@@ -431,13 +434,13 @@ class SessionCommandsMixin:
             return err
         scope = RequestScope(**self._current_scope) if self._current_scope else LOCAL_SCOPE
         if scope.kind != "local" and scope.project_id is not None and scope.project_id != session.project_id:
-            return {"error": "Session project is out of scope"}
+            return {"success": False, "error": "Session project is out of scope"}
         denied = check_command_scope("session_logs", {
             "session_id": session.id, "project_id": session.project_id,
             "task_id": session.task_id,
         }, scope)
         if denied:
-            return {"error": denied}
+            return {"success": False, "error": denied}
 
         # Default cap of 100 entries per call: rereading a large JSONL and
         # returning every entry over the CLI/MCP boundary produces multi-MB
@@ -521,31 +524,31 @@ class SessionCommandsMixin:
             return err
         if (session.lifecycle != "named" or session.state not in {"sleeping", "stopped"}
                 or session.task_id or session.claim_phase):
-            return {"error": "Only sleeping/stopped named sessions without a task can be pruned"}
+            return {"success": False, "error": "Only sleeping/stopped named sessions without a task can be pruned"}
         provider = self._provider_for_session(session)
         if provider is None:
-            return {"error": "Provider unavailable; cannot confirm session is inactive"}
+            return {"success": False, "error": "Provider unavailable; cannot confirm session is inactive"}
         try:
             if not await provider.confirm_instance_stopped(self._session_handle(session)):
-                return {"error": "Session still has a live terminal; stop it before pruning"}
+                return {"success": False, "error": "Session still has a live terminal; stop it before pruning"}
             from src.sessions.proctable import scan_by_env_marker
 
             if any(process.marker == session.instance_token
                    for process in await scan_by_env_marker("AQ_INSTANCE_TOKEN")):
-                return {"error": "Session still has live marked processes; stop them before pruning"}
+                return {"success": False, "error": "Session still has live marked processes; stop them before pruning"}
         except Exception:
-            return {"error": "Could not verify session is inactive"}
+            return {"success": False, "error": "Could not verify session is inactive"}
         changed = await self.db.update_session_instance(
             session.id, session.instance_token, require_desired_state=session.desired_state,
             desired_state="stopped",
         )
         if not changed:
-            return {"error": "Session changed during cleanup; refresh the flock"}
+            return {"success": False, "error": "Session changed during cleanup; refresh the flock"}
         token_store = getattr(self.orchestrator, "token_store", None)
         if token_store is not None:
             await token_store.revoke_session(session.id)
         if not await self.db.prune_named_session(session.id, session.instance_token):
-            return {"error": "Session changed during cleanup; refresh the flock"}
+            return {"success": False, "error": "Session changed during cleanup; refresh the flock"}
         await self.orchestrator.bus.emit("session.pruned", {
             "session_id": session.id, "project_id": session.project_id,
         })
@@ -556,7 +559,7 @@ class SessionCommandsMixin:
         project_id = (self._current_scope or {}).get("project_id")
         requested_project = args.get("project_id")
         if project_id is not None and requested_project not in (None, project_id):
-            return {"error": "out of scope: project mismatch"}
+            return {"success": False, "error": "out of scope: project mismatch"}
         rows = await self.db.list_sessions(
             state="sleeping", lifecycle="named", project_id=project_id or requested_project,
         )
@@ -637,7 +640,7 @@ class SessionCommandsMixin:
             return denied
         provider = self._provider_for_session(session)
         if provider is None:
-            return {"error": f"Provider '{session.provider}' is not available"}
+            return {"success": False, "error": f"Provider '{session.provider}' is not available"}
         # Intent, not observation: state stays live so the exit classifier
         # can still run.  Persist intent before signalling because a tick can
         # observe the death while stop() is waiting for the provider.
@@ -647,7 +650,7 @@ class SessionCommandsMixin:
                 self._session_handle(session), grace=float(args.get("grace") or 2.0)
             )
         except Exception as exc:
-            return {"error": f"kill failed: {exc}"}
+            return {"success": False, "error": f"kill failed: {exc}"}
         await self.orchestrator.bus.emit(
             "session.killed",
             {
@@ -755,27 +758,27 @@ class SessionCommandsMixin:
                 and session.desired_state == "sleeping"):
             if (not session.instance_token or session.task_id is not None
                     or session.claim_phase is not None or session.failed_preparation is not None):
-                return {"error": "Stopped pool session retains work or lacks an instance token"}
+                return {"success": False, "error": "Stopped pool session retains work or lacks an instance token"}
             provider = self._provider_for_session(session)
             if provider is None:
-                return {"error": "Provider unavailable; cannot confirm pool instance is inactive"}
+                return {"success": False, "error": "Provider unavailable; cannot confirm pool instance is inactive"}
             try:
                 if not await provider.confirm_instance_stopped(self._session_handle(session)):
-                    return {"error": "Pool instance is still live; sleep intent was not changed"}
+                    return {"success": False, "error": "Pool instance is still live; sleep intent was not changed"}
                 from src.sessions.proctable import scan_by_env_marker
 
                 if any(process.marker == session.instance_token
                        for process in await scan_by_env_marker("AQ_INSTANCE_TOKEN")):
-                    return {"error": "Pool instance still has live marked processes"}
+                    return {"success": False, "error": "Pool instance still has live marked processes"}
                 stopped_confirmed = True
             except Exception:
-                return {"error": "Could not verify pool instance is inactive"}
+                return {"success": False, "error": "Could not verify pool instance is inactive"}
         try:
             current = await self.db.request_session_sleep(
                 session, stopped_confirmed=stopped_confirmed,
             )
         except ValueError as exc:
-            return {"error": str(exc)}
+            return {"success": False, "error": str(exc)}
         return {
             "success": True,
             "session_id": current.id,
@@ -867,11 +870,11 @@ class SessionCommandsMixin:
             return denied
         provider = self._provider_for_session(session)
         if provider is None:
-            return {"error": f"Provider '{session.provider}' is not available"}
+            return {"success": False, "error": f"Provider '{session.provider}' is not available"}
         try:
             await provider.set_meta(self._session_handle(session), DRAIN_ACK_KEY, "1")
         except Exception as exc:
-            return {"error": f"could not record drain-ack: {exc}"}
+            return {"success": False, "error": f"could not record drain-ack: {exc}"}
         if session.lifecycle == "pool":
             await self.db.update_session(
                 session.id, state="draining", desired_state="stopped"
@@ -1970,7 +1973,7 @@ class SessionCommandsMixin:
 
         task = await self.db.get_task(str(task_id))
         if task is None:
-            return {"error": f"No task '{task_id}'"}
+            return {"success": False, "error": f"No task '{task_id}'"}
 
         now = time.time()
         if session is None:

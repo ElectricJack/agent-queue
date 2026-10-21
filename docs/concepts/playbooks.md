@@ -10,7 +10,7 @@ Some work should happen consistently without putting policy into a daemon branch
 
 * **Source** is the Markdown file in the vault. Its YAML frontmatter states an id, scope and triggers; its body is human-readable policy. See [source parsing](../../src/playbooks/authoring.py).
 * **Semantic body** is the proposed JSON `rules` and `steps` graph. AQ supplies source identity, version and live dependency fingerprints rather than trusting those values from the proposal. See [proposal construction](../../src/playbooks/proposal.py).
-* **Artifact** is the canonical, SHA-256-addressed V2 JSON definition. It has typed rules, seven possible step kinds, and the command/profile contracts it was compiled against. See [the definition model](../../src/playbooks/definition.py).
+* **Artifact** is the canonical, SHA-256-addressed V2 JSON definition. It has typed rules, eight possible step kinds, and the command/profile contracts it was compiled against. See [the definition model](../../src/playbooks/definition.py).
 * **Activation** selects one artifact at a system, project, or agent-type scope and may enable or disable it. An artifact can exist without being active. See [activation health](../../src/playbooks/activation.py).
 * **Run** is one durable execution of one matching rule, pinned to the artifact hash it started with. Its mutable snapshot, receipts and waits are separate from the immutable artifact. See [run state](../../src/playbooks/run_state.py).
 * **Human gate** is a durable, operator-resolved decision checkpoint. It can cause an event or resume a playbook wait; it is not a task dependency. A dependency controls whether a task is ready, whereas a gate waits for a decision and may be attached to several tasks.
@@ -52,7 +52,72 @@ Options:
 
 ## Inputs and outputs
 
+Artifact compatibility is pinned per definition in optional `required_features`.
+Proposal assembly derives the pins from the typed graph and live command
+contracts: generated command contracts, collection expressions, nested foreach
+graphs, and reads of frozen `context.observed_at` or `context.observation_id`
+require `generated_commands_v1`, `collections_v1`, `nested_foreach_v1`, and
+`observation_context_v1`, respectively. Command steps and LLM tool exposure both
+count. Compiler-supplied pins and `trusted_execution` metadata are discarded.
+Command authorization and private-value policy still come from the server's
+execution contracts; feature support grants no capabilities.
+
+`trusted_execution.state_schema_version` is a strict positive integer derived
+from source frontmatter, defaulting to 1 for state command users. The `state_v1`
+and `script_v1` requirements now have executors. Scripts run as ordinary processes
+with timeout/output caps, optional strict JSON parsing and protected output.
+Source `required_capabilities` is pinned for review, never used to manufacture
+caller authority. Source `scripts` manifests include program/dependencies and
+requested execution policy; only the server resolves digest pins.
+See [authoring and rollout](../guides/playbook-building-blocks.md).
+
+Empty feature and execution metadata are omitted without removing any legacy
+defaults: existing canonical artifact bytes and hashes remain unchanged. Unknown
+or unsupported features produce `unsupported_feature` during validation/import,
+activation, and execution (including pinned dispatch, dry-run, shadow, and resume).
+An affected activation is `invalid` with named feature reasons;
+`playbooks.activation_invalid` explains the upgrade remedy. Compatible sibling
+activations stay ready. Inspection can still load the strict definition.
+
+Upgrade every intended executor before deliberately activating a new-feature
+artifact: older engines reject the additive fields under their strict schema.
+Restart does not refresh installed artifacts. Before rollback, disable affected
+activations and settle or pause their runs, then explicitly restore compatible
+reviewed artifacts; retain additive storage and state. Removing feature pins is
+not a compatibility migration.
+
 A rule has one event trigger, an optional typed guard, and an entry step. Triggers can use an equality/membership filter. Within a run, values resolve from the triggering event, the durable run context, prior declared bindings, and a `foreach` item. Validation rejects unavailable names, invalid event paths, incompatible values, unreachable steps, unsafe loops, undeclared outputs, unsupported command outcomes, excessive schemas, and capability violations rather than guessing that they are safe. [Expressions](../../src/playbooks/expressions.py) and [validation](../../src/playbooks/validation.py) implement these checks.
+
+Collection values compose inside inputs, guards, decisions, prompts, and loop
+collections. Each operand must be a list; use `coalesce` with an empty list when
+an absent or null value should mean “no items”.
+
+| Value type | Fields | Result |
+|---|---|---|
+| `filter` | `collection`, `item_binding`, `predicate` | Items whose typed condition is true, in input order. |
+| `map` | `collection`, `item_binding`, `value` | One resolved value per item, in input order. |
+| `len` | `collection` | The nonnegative item count. |
+| `diff` | `left`, `right`, optional `key_path` | First left items whose identities do not occur on the right, deduplicated in left order. |
+
+A `filter` predicate or `map` body reads its item using `loop_ref`. Its binding is
+local to that body and may shadow an outer expression or `foreach` item without
+changing the outer item or any step result. The collection itself resolves in
+the enclosing scope. `loop_ref` with `index: true` reads the local zero-based
+index. Known array schemas carry their item types through these expressions;
+opaque command results are checked against argument types at runtime.
+
+Without `key_path`, `diff` compares canonical JSON identities: object key order
+is irrelevant, equal numbers such as `1` and `1.0` match, and booleans remain
+distinct from numbers. A dotted `key_path` must exist and identify a scalar on
+every item in both operands. Missing paths and non-scalar identities fail.
+
+Evaluation shares a 100,000-visit budget across all inputs of a step or all cases
+of one decision. Expression depth is limited to 10; each intermediate or final
+collection is limited to 10,000 items and 262,144 encoded JSON bytes. Limits are
+checked during construction. Exhaustion produces a named expression diagnostic
+under `input_resolution_failed` before command dispatch. Graph explanations show
+the predicate, mapped value, and diff key; Advanced retains the canonical typed
+expression, subject to the command's redaction policy.
 
 The V2 step vocabulary is deliberately closed:
 

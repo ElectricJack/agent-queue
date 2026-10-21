@@ -711,6 +711,7 @@ class TestRecomputeProperty:
                 # Change a status.
                 tid = rng.choice(ids)
                 from src.database.queries.task_queries import ManualPauseActive
+                from src.state_machine import InvalidTransition
 
                 previous = await db.get_task(tid)
                 # Generate legal moves across the full lifecycle, including
@@ -721,6 +722,10 @@ class TestRecomputeProperty:
                 ]
                 try:
                     await db.transition_task(tid, rng.choice(targets))
+                except InvalidTransition:
+                    # Suspension is service-owned even while legacy transitions
+                    # are permissive. A rejected mutation must leave projection intact.
+                    assert (await db.get_task(tid)).status == previous.status
                 except ManualPauseActive:
                     # Random automatic transitions cannot override a manual hold.
                     assert previous.status == TaskStatus.PAUSED
@@ -953,4 +958,3 @@ class TestDeliveryOf:
             DeliveryView(db, {"leaf": evidence(DeliveryState.CONTAINED)})
         )
         assert not await blocked(db, "root")
-

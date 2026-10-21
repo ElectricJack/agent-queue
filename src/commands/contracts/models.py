@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from enum import StrEnum
-from typing import Annotated, Any, Final, Generic, Literal, Mapping, TypeVar
+from typing import Annotated, Any, Final, Generic, Literal, Mapping, TypeVar, get_origin
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -26,8 +26,10 @@ class CommandValue(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
-A = TypeVar("A", bound=CommandArgs)
-R = TypeVar("R", bound=CommandValue)
+# Typed records and explicit JSON-object RootModels both implement the Pydantic
+# validation/schema/dump interface. Root models dump the object itself.
+A = TypeVar("A", bound=BaseModel)
+R = TypeVar("R", bound=BaseModel)
 
 
 class SideEffectClass(StrEnum):
@@ -163,6 +165,10 @@ class ExecutionContract(BaseModel, Generic[A, R]):
     sensitive_result_fields: frozenset[str] = frozenset()
     receipt_projection: tuple[str, ...] = ()
     supports_preview: bool = False
+    schema_generation: Literal[1, 2] = 1
+    argument_mode: Literal["typed", "json_object"] = "typed"
+    result_mode: Literal["typed", "json_object"] = "typed"
+    descriptor_metadata: dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def _validate_contract(self) -> "ExecutionContract[A, R]":
@@ -173,8 +179,25 @@ class ExecutionContract(BaseModel, Generic[A, R]):
             raise ValueError("outcomes must be unique and may not be reserved")
         if not self.capability or any(char in self.capability for char in WILDCARD_CHARS):
             raise ValueError("capability must be non-empty and contain no wildcard")
-        args = self.args_model.model_fields
-        values = self.result_model.model_fields
+        if self.schema_generation == 1 and (
+            self.argument_mode != "typed" or self.result_mode != "typed" or self.descriptor_metadata
+        ):
+            raise ValueError("generic object metadata requires schema generation 2")
+        for mode, model, typed_base in (
+            (self.argument_mode, self.args_model, CommandArgs),
+            (self.result_mode, self.result_model, CommandValue),
+        ):
+            if mode == "typed" and not issubclass(model, typed_base):
+                raise ValueError("typed contracts require typed argument/result models")
+            if mode == "json_object" and (
+                not model.__pydantic_root_model__
+                or get_origin(model.model_fields["root"].annotation) is not dict
+            ):
+                raise ValueError("json_object contracts require an object root model")
+        args = (self.args_model.model_fields if self.argument_mode == "typed" else
+                self.args_model.model_json_schema().get("properties", {}))
+        values = (self.result_model.model_fields if self.result_mode == "typed" else
+                  self.result_model.model_json_schema().get("properties", {}))
         if self.idempotency.key_field and self.idempotency.key_field not in args:
             raise ValueError("idempotency key_field is not an argument")
         for name in self.sensitive_args:
@@ -262,9 +285,17 @@ def canonical_json_schema(model: type[BaseModel]) -> dict[str, Any]:
 
 
 def canonical_execution_document(ec: ExecutionContract[Any, Any]) -> dict[str, Any]:
-    return {
+    # Generic schemas may name properties "description" or place arbitrary
+    # objects in const/default. The legacy presentation stripper cannot
+    # distinguish those from schema annotations, so retain their full schemas.
+    schemas = [
+        model.model_json_schema(mode="validation") if ec.schema_generation == 2
+        else canonical_json_schema(model)
+        for model in (ec.args_model, ec.result_model)
+    ]
+    document = {
         "schema_generation": SCHEMA_GENERATION, "name": ec.name,
-        "args_schema": canonical_json_schema(ec.args_model), "result_schema": canonical_json_schema(ec.result_model),
+        "args_schema": schemas[0], "result_schema": schemas[1],
         "outcomes": [{"name": o.name, "classification": o.classification.value} for o in sorted(ec.outcomes, key=lambda o: o.name)],
         "capability": ec.capability, "side_effect": ec.side_effect.value,
         "idempotency": {"mode": ec.idempotency.mode, "key_field": ec.idempotency.key_field},
@@ -273,6 +304,14 @@ def canonical_execution_document(ec: ExecutionContract[Any, Any]) -> dict[str, A
         "sensitive_args": sorted(ec.sensitive_args), "sensitive_result_fields": sorted(ec.sensitive_result_fields),
         "receipt_projection": list(ec.receipt_projection), "supports_preview": ec.supports_preview,
     }
+    # Generation 1 is deliberately frozen. New metadata is not allowed to stale
+    # unchanged typed contracts or any reviewed artifacts pinned to them.
+    if ec.schema_generation == 2:
+        document.update(
+            schema_generation=2, argument_mode=ec.argument_mode, result_mode=ec.result_mode,
+            descriptor_metadata=ec.descriptor_metadata,
+        )
+    return document
 
 
 def execution_fingerprint(ec: ExecutionContract[Any, Any]) -> str:

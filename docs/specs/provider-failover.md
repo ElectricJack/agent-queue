@@ -1070,6 +1070,11 @@ recorded, undoable re-route bounded by the D15 per-task limits.
   `tasks.route.candidates`, in the router's order, so a spill never breaks a lane (an
   integration repair never spills to OpenCode, art design never leaves Codex); only a
   legacy task with no candidates keeps the same-class search above.
+  Supply, demand and workspace room are matched to the task's primary repository
+  kind, using the claim path's `pool_primary_kind`. An idle worker or free
+  workspace of another kind cannot serve it. Per-kind placement rows must not
+  overwrite each other; profile, project and global launch limits remain shared
+  across kinds, including moves planned by either pass of the sweep.
 * **S6 — a project's preferred provider.** When `projects.preferred_provider` is set,
   only rungs on that provider are targets. Spill never moves a task off it: a task whose
   source is on the preferred provider with no other same-class pool on that provider

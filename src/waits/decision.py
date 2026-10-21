@@ -1,6 +1,6 @@
 """Measured sleep policy; inputs are server observations, never agent estimates."""
 
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass
 import math
 
 from sqlalchemy import func, select
@@ -45,19 +45,10 @@ def decide_sleep(inputs: SleepInputs) -> SleepDecision:
 
 
 def project_policy(policy, project_id):
-    override = policy.projects.get(project_id)
-    if override is None:
+    """Effective policy for one project, rollout flags included (canary)."""
+    if project_id not in policy.projects:
         return policy
-    values = {name: getattr(override, name) for name in (
-        'in_place_ceiling_seconds', 'resume_cost_minutes', 'hibernate_margin',
-    ) if getattr(override, name) is not None}
-    kinds = dict(policy.kinds)
-    for kind, entry in override.kinds.items():
-        kinds[kind] = replace(kinds[kind], **{
-            name: getattr(entry, name) for name in (
-                'escalate_after_seconds', 'expected_duration_seconds',
-            ) if getattr(entry, name) is not None})
-    return replace(policy, kinds=kinds, **values)
+    return policy.resolve_project(project_id)
 
 
 async def ceiling_anchor(conn, scope, *, now, policy):

@@ -47,7 +47,6 @@ from src.database.tables import (
 #: * ``"history"``  — durable integration audit retained by archive and audited
 #:   operator deletion; unaudited system deletion is refused by the removal guard.
 TASK_REFERENCE_DISPOSITIONS: dict[tuple[str, str], str] = {
-    ("admission_reservations", "task_id"): "nulled",
     ("agents", "current_task_id"): "nulled",
     ("integration_candidate_resolutions", "repair_task_id"): "history",
     ("integration_parent_episodes", "parent_task_id"): "history",

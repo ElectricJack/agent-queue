@@ -208,23 +208,9 @@ class EscalationCommandsMixin:
             # belong to the suspension intent, rather than a pending deadline.
             if conn is None or principal.kind is not PrincipalKind.SERVICE:
                 return _error("invalid_binding", "continuation incidents require the wait transaction")
-            from sqlalchemy import select
-            from src.database.tables import continuations, wait_records
+            from src.wait_runtime.hibernate import validate_hold_binding
 
-            prefix, separator, identity = args["source_identity"].partition(":")
-            continuation_id, separator2, reason = identity.partition(":")
-            intent = (await conn.execute(select(continuations).join(
-                wait_records, wait_records.c.id == continuations.c.wait_id,
-            ).where(
-                continuations.c.id == continuation_id,
-                continuations.c.task_id == task_id,
-                continuations.c.resume_state.not_in(("acknowledged", "failed", "cancelled")),
-                wait_records.c.project_id == project_id,
-                wait_records.c.owner_kind == "task",
-                wait_records.c.owner_id == task_id,
-            ))).mappings().first()
-            if (prefix != "continuation" or not separator or not separator2 or not reason
-                    or not intent or args["incident_key"] != args["source_identity"]):
+            if not await validate_hold_binding(conn, args):
                 return _error("invalid_binding", "continuation incident does not match its intent")
         if args["source_kind"] == "wait":
             # Only the timer/loop command can bind an operational wait incident.

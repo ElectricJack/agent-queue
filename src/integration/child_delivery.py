@@ -25,7 +25,10 @@ from src.database.tables import (
     integration_promotion_intents,
     integration_repair_operations,
     integration_review_evidence,
+    integration_branch_owners,
     projects,
+    repos,
+    sessions,
     task_branch_origins,
     task_completion_records,
     task_delivery_receipts,
@@ -33,8 +36,9 @@ from src.database.tables import (
     task_integration_checkpoints,
     task_metadata,
     tasks,
+    workspaces,
 )
-from src.git.manager import RemoteRefState
+from src.git.manager import GitError, RemoteRefState, safe_git_detail
 from src.integration.promotion_contracts import PromotionError
 from src.models import TaskStatus
 
@@ -457,7 +461,13 @@ class ChildDelivery:
         expected_head_sha: str | None = None,
         reason: str | None = None,
         operator_id: str | None = None,
+        adopt_source: bool = False,
     ) -> dict[str, Any]:
+        if adopt_source:
+            return await self._adopt_source(
+                task_id, dry_run=dry_run, expected_head_sha=expected_head_sha,
+                reason=reason, operator_id=operator_id,
+            )
         diagnosis, snapshot, tree = await self._diagnose(task_id)
         if dry_run or diagnosis["outcome"] != "would_advance":
             return diagnosis
@@ -542,6 +552,142 @@ class ChildDelivery:
         """Report what the child's assembly waits on; writes nothing."""
         diagnosis, _snapshot, _tree = await self._diagnose(task_id)
         return diagnosis
+
+    async def _adoption_snapshot(self, conn, task_id: str) -> tuple[dict, dict, int]:
+        """Read the complete source binding and exclude attached or live writers."""
+        snapshot = await _snapshot_on(conn, task_id)
+        if snapshot is None:
+            raise _ProofFailed("the child does not exist")
+        refusal = _child_refusal(snapshot)
+        if refusal is not None:
+            raise _ProofFailed(refusal[1])
+        parent = snapshot["parent"]
+        if (parent is None or parent["repo_id"] != snapshot["repository_id"]
+                or not parent["branch_name"]):
+            raise _ProofFailed("the current parent has no matching repository and target branch")
+        origin = (await conn.execute(select(task_branch_origins).where(
+            task_branch_origins.c.task_id == task_id,
+            task_branch_origins.c.repository_id == snapshot["repository_id"],
+            task_branch_origins.c.retired_at.is_(None),
+        ))).mappings().one_or_none()
+        if (origin is None or origin["branch_name"] != snapshot["branch"]
+                or origin["parent_repository_id"] != snapshot["repository_id"]
+                or not origin["parent_ref"]
+                or origin["parent_ref"].removeprefix("refs/heads/") !=
+                parent["branch_name"].removeprefix("refs/heads/")):
+            raise _ProofFailed("the recorded origin does not match the child and parent branches")
+        repository = (await conn.execute(select(repos).where(
+            repos.c.id == snapshot["repository_id"],
+        ))).mappings().one_or_none()
+        if repository is None or repository["project_id"] != snapshot["project_id"]:
+            raise _ProofFailed("the repository no longer belongs to the child's project")
+        completion = (await conn.execute(select(task_completion_records).where(
+            task_completion_records.c.id == snapshot["completion_id"],
+        ))).mappings().one_or_none()
+        if completion is None or completion["outcome"] != "pass":
+            raise _ProofFailed("source adoption requires an existing passing completion generation")
+        if completion["branch"] not in (None, snapshot["branch"]):
+            raise _ProofFailed("the completion names a different branch")
+        try:
+            commits = json.loads(completion["commits"])
+        except (TypeError, ValueError) as exc:
+            raise _ProofFailed("the completion has invalid recorded commits") from exc
+        if not isinstance(commits, list) or commits and commits[-1] != snapshot["head_sha"]:
+            raise _ProofFailed("the recorded final completion commit differs from the checkpoint")
+        task = (await conn.execute(select(tasks.c.claim_epoch, tasks.c.assigned_agent_id).where(
+            tasks.c.id == task_id,
+        ))).one_or_none()
+        if task is None:
+            raise _ProofFailed("the child disappeared during source observation")
+        writer_queries = (
+            select(sessions.c.id).where(sessions.c.task_id == task_id,
+                                      sessions.c.state != "stopped"),
+            select(workspaces.c.id).where(workspaces.c.locked_by_task_id == task_id),
+            select(integration_branch_owners.c.owner_id).where(
+                integration_branch_owners.c.repository_id == snapshot["repository_id"],
+                integration_branch_owners.c.ref.in_((snapshot["branch"],
+                                                   "refs/heads/" + snapshot["branch"])),
+                integration_branch_owners.c.handoff_state.in_(("attached", "handoff_pending")),
+            ),
+        )
+        writer_present = bool(task.assigned_agent_id)
+        for query in writer_queries:
+            writer_present |= bool(await conn.scalar(query.exists().select()))
+        if writer_present:
+            raise _ProofFailed("source adoption requires the child session and workspace released")
+        identity = {
+            "task": _snapshot_identity(snapshot), "parent": dict(parent),
+            "completion": dict(completion), "origin": dict(origin), "repository": dict(repository),
+            "claim_epoch": task.claim_epoch, "mode": snapshot["mode"],
+            "integration_repository_id": snapshot["integration_repository_id"],
+        }
+        return snapshot, identity, task.claim_epoch
+
+    async def _adopt_source(self, task_id, *, dry_run, expected_head_sha, reason, operator_id):
+        from src.integration.delivery_observer import prerequisite_observer
+        from src.integration.provenance import CompletedSource, CompletionIdentity, GitProvenance
+
+        result = {"task_id": task_id, "outcome": "blocked"}
+        if prerequisite_observer(self.db) is None:
+            return {**result, "reason": "source adoption requires active Git-first delivery"}
+        if not dry_run and (not operator_id or not reason or not reason.strip()):
+            return {**result, "reason": "adoption requires an operator and a nonblank reason"}
+        try:
+            async with self.db._engine.connect() as conn:
+                snapshot, identity, claim_epoch = await self._adoption_snapshot(conn, task_id)
+            result.update(
+                project_id=snapshot["project_id"], parent_task_id=snapshot["parent_task_id"],
+                branch=snapshot["branch"], head_sha=snapshot["head_sha"],
+                base_sha=snapshot["base_sha"], completion_id=snapshot["completion_id"],
+            )
+            await self._prove(snapshot)
+            if expected_head_sha is not None and expected_head_sha != snapshot["head_sha"]:
+                return {**result, "outcome": "changed", "reason": "the previewed head changed"}
+            if not dry_run and expected_head_sha is None:
+                raise _ProofFailed("applying source adoption requires the previewed exact head")
+            resolved = await self.promotion._resolve_repository(snapshot["repository_id"])
+            store = GitProvenance(self.promotion.git, str(resolved.retained_git_dir),
+                                  repository_url=resolved.origin_url)
+            completed = CompletedSource(CompletionIdentity(
+                snapshot["project_id"], snapshot["repository_id"], task_id,
+                snapshot["completion_id"],
+            ), snapshot["head_sha"])
+            # The hierarchy lock fences reopen/claim, then the repository lock
+            # fences publication. Recheck after the network proof, before any write.
+            async with self.db.immediate() as conn:
+                await self.db.lock_hierarchy_project(conn, snapshot["project_id"])
+                _current, current_identity, _epoch = await self._adoption_snapshot(conn, task_id)
+                if current_identity != identity:
+                    return {**result, "outcome": "changed", "reason": "completion binding changed"}
+                async with self.promotion.git.arepository_transaction(store.checkout):
+                    retained = await store.read_completion(completed.identity)
+                    if retained is not None:
+                        if retained["source_oid"] != completed.source_oid:
+                            raise _ProofFailed("retained generation already binds another source")
+                        return {**result, "outcome": "nothing_to_redrive",
+                                "reason": "the exact completion source is already retained"}
+                    if dry_run:
+                        return {**result, "outcome": "would_advance",
+                                "reason": "would retain the verified existing completion source"}
+                    remote = await self.promotion.git.als_remote_ref(
+                        str(resolved.retained_git_dir), snapshot["branch"],
+                    )
+                    if (remote.state is not RemoteRefState.PRESENT
+                            or remote.oid != completed.source_oid):
+                        raise _ProofFailed("the published source changed after preview")
+                    await store.write_completion(completed, claim_epoch=claim_epoch)
+            await self.db.log_event(
+                REDRIVE_EVENT, project_id=snapshot["project_id"], task_id=task_id,
+                payload=json.dumps({
+                    "operator_id": operator_id, "reason": reason, "action": "adopt_source",
+                    "completion_id": snapshot["completion_id"], "head_sha": completed.source_oid,
+                    "parent_task_id": snapshot["parent_task_id"],
+                }),
+            )
+            return {**result, "outcome": "advanced",
+                    "reason": "retained the completion source; the train owns delivery"}
+        except (_ProofFailed, GitError, ValueError, PromotionError) as exc:
+            return {**result, "reason": safe_git_detail(str(exc))}
 
     # ------------------------------------------------------------------
     # Shared
@@ -719,7 +865,11 @@ class ChildDelivery:
         from src.integration.delivery_truth import DeliveryState
 
         if proof.state is DeliveryState.UNKNOWN:
-            return {**base, "outcome": "blocked", "reason": proof.reason}, snapshot, None
+            reason = proof.reason
+            if reason == "missing_git_provenance":
+                reason += (f"; preview source recovery with `aq integration redrive-child "
+                           f"{task_id} --adopt-source`")
+            return {**base, "outcome": "blocked", "reason": reason}, snapshot, None
         return {
             **base, "outcome": "nothing_to_redrive",
             "reason": ("already delivered into the parent (Git containment)" if proof.satisfied

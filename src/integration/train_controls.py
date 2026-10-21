@@ -19,10 +19,10 @@ from src.database.tables import (
     task_dependencies,
     tasks,
 )
-from src.git.manager import RemoteRefState
+from src.git.manager import GitError, RemoteRefState
 from src.integration.batches import Batch, BatchStore, candidate_ref
 from src.integration.delivery_observer import delivery_targets
-from src.integration.delivery_truth import load_delivery_requests
+from src.integration.delivery_truth import DeliveryState, load_delivery_requests
 from src.integration.train import TrainTarget
 from src.integration.train_sources import project_delivered, project_snapshot
 
@@ -33,6 +33,27 @@ class TrainControlError(ValueError):
     def __init__(self, outcome, message):
         super().__init__(message)
         self.outcome = outcome
+
+
+async def _refresh_contains(snapshot, members, *, same_tree=False):
+    """Strict ancestry of each frozen default head in the observed epic.
+
+    ``same_tree`` adds the train's refresh delivery rule: the epic is the
+    default head's exact tree. None is an unavailable observation.
+    """
+    observed = snapshot.observation
+    store, target = str(observed.store), observed.target_oid
+    proofs = []
+    for member in members:
+        proof = await observed.git.ais_ancestor(store, member.source_sha, target, strict=True)
+        if proof and same_tree:
+            try:
+                proof = (await observed.git.atree_sha(store, member.source_sha)
+                         == await observed.git.atree_sha(store, target))
+            except GitError:
+                proof = None
+        proofs.append(proof)
+    return proofs
 
 
 class TrainControls:
@@ -429,7 +450,7 @@ class TrainControls:
         batch = await store.get(batch_id)
         if batch is None:
             raise TrainControlError("unknown_batch", "Git-first batch is missing")
-        if batch.epic_sync or batch.epic_refresh:
+        if batch.epic_sync:
             raise ValueError("settlement requires an ordinary Git-first batch")
         target = TrainTarget(batch.project_id, batch.repository_id, batch.target_ref)
         snapshot = await self.snapshot(self.db, target)
@@ -438,10 +459,12 @@ class TrainControls:
         if expected_target_sha and snapshot.target_oid != expected_target_sha:
             raise ValueError("batch target changed; preview again")
         members = await store.members(batch.id)
-        if not members or not all([
-            await snapshot.contains_source(m.task_id, m.source_sha, m.base_sha) is True
-            for m in members
-        ]):
+        # A refresh settles once the epic has its frozen default head as an
+        # ancestor, however that merge reached the epic; it publishes nothing.
+        proofs = (await _refresh_contains(snapshot, members) if batch.epic_refresh else [
+            await snapshot.contains_source(m.task_id, m.source_sha, m.base_sha) for m in members
+        ])
+        if not members or not all(proof is True for proof in proofs):
             raise TrainControlError("target_not_settled",
                                     "target does not prove every frozen source was delivered")
         observed = snapshot.observation
@@ -507,10 +530,14 @@ class TrainControls:
         # later conflict can publish only some members. Candidate ancestry
         # cannot prove that the batch's complete frozen inputs were promoted.
         members = await store.members(batch_id)
-        proofs = [
+        # A refresh member is the frozen default head, which a refresh repair
+        # publishes into the epic itself. Containment is not this batch's
+        # promotion: only the train's own refresh delivery rule refuses abort.
+        proofs = (await _refresh_contains(snapshot, members, same_tree=True)
+                  if batch.epic_refresh else [
             await snapshot.contains_source(member.task_id, member.source_sha, member.base_sha)
             for member in members
-        ]
+        ])
         if any(proof is None for proof in proofs):
             raise ValueError("batch promotion cannot be observed")
         if members and all(proof is True for proof in proofs):
@@ -596,6 +623,205 @@ class TrainControls:
             "target_sha": snapshot.target_oid, "target_ref": batch.target_ref,
             "intent": batch.intent if dry_run else "aborted",
         }
+
+    async def release_withheld_source(self, batch_id, task_id, *, dry_run, expected_source_sha,
+                                      expected_target_sha, operator_id, reason, human_authority):
+        """Release one exact source that an aborted batch withholds.
+
+        The aborted batch and the task's completion stay immutable history; the
+        release is an operator note on the batch, never pending work by itself.
+        The next batch freezing the source carries the aborted batch's repair
+        attempt count, so a release never grants a fresh repair budget.
+        """
+        from src.integration.batches import ejection_instruction
+        from src.integration.lock import CRITICAL_SECTION_SECONDS
+        from src.operator_decisions import (
+            WITHHELD_RELEASE_SOURCE,
+            note_on,
+            withheld_release,
+            withheld_release_ref,
+        )
+
+        if not dry_run:
+            if not expected_source_sha or not expected_target_sha or not reason.strip():
+                raise ValueError("apply requires the previewed source and target SHAs "
+                                 "and a nonblank reason")
+            if not human_authority and not operator_id.startswith("supervisor session:"):
+                raise TrainControlError("unauthorized", "an operator or owning supervisor "
+                                        "must apply this release")
+        store = BatchStore(self.db, clock=self.clock)
+        batch = await store.get(batch_id)
+        if batch is None:
+            raise TrainControlError("unknown_batch", "Git-first batch is missing")
+        if batch.intent != "aborted":
+            raise TrainControlError("not_aborted", "only an aborted batch withholds its sources")
+        if batch.epic_sync or batch.epic_refresh:
+            raise ValueError("epic sync and refresh batches keep their own recovery")
+        member = next((m for m in await store.members(batch_id) if m.task_id == task_id), None)
+        if member is None:
+            raise TrainControlError("not_a_member", "task is not a frozen batch member")
+        if expected_source_sha and expected_source_sha != member.source_sha:
+            raise TrainControlError("source_changed", "frozen source differs from the "
+                                    "previewed source; preview again")
+        target = TrainTarget(batch.project_id, batch.repository_id, batch.target_ref)
+        result = {
+            "outcome": "preview", "batch_id": batch.id, "task_id": task_id,
+            "project_id": batch.project_id, "target_ref": batch.target_ref,
+            "source_sha": member.source_sha, "target_sha": None,
+            "repair_attempt_count": batch.repair_attempt_count, "dry_run": dry_run,
+        }
+        async with self.db._engine.connect() as conn:
+            if await conn.scalar(select(withheld_release(batch.id, task_id, member.source_sha))):
+                return {**result, "outcome": "already_released"}
+        snapshot = await self.snapshot(self.db, target)
+        if snapshot is None or snapshot.error or not snapshot.target_oid:
+            raise ValueError("batch target cannot be observed")
+        if expected_target_sha and snapshot.target_oid != expected_target_sha:
+            raise TrainControlError("target_changed", "batch target changed; preview again")
+        result["target_sha"] = snapshot.target_oid
+        requests = await load_delivery_requests(self.db, [task_id],
+            repository_id=batch.repository_id, target_ref=batch.target_ref, reduced=True)
+        request = requests.get(task_id)
+        async with self.db._engine.connect() as conn:
+            base = await self._live_origin_base(conn, task_id, batch.repository_id)
+        if request is None or base is None:
+            raise TrainControlError("identity_retired", "task has no current completion or "
+                                    "live branch origin; nothing remains to release")
+        evidence = await snapshot.is_delivered(request, source_base=base)
+        if evidence.satisfied:
+            raise TrainControlError("source_delivered", "target already contains the task; "
+                                    "nothing remains to release")
+        if (evidence.state is not DeliveryState.PENDING
+                or evidence.reason != "source_not_delivered"
+                or evidence.source_oid != member.source_sha):
+            raise TrainControlError("source_changed", (
+                f"current source {(evidence.source_oid or 'unknown')[:12]} is not the frozen "
+                f"{member.source_sha[:12]}; a new completion is admitted without a release"))
+
+        async def verify(conn, *, lock):
+            row = (await conn.execute(select(integration_batches).where(
+                integration_batches.c.id == batch.id,
+            ).with_for_update() if lock else select(integration_batches).where(
+                integration_batches.c.id == batch.id,
+            ))).mappings().one()
+            if Batch.from_row(row) != batch:
+                raise ValueError("aborted batch changed; preview again")
+            if await conn.scalar(select(ejection_instruction(batch.id))):
+                raise TrainControlError("already_ejected", "batch ejection already "
+                                        "released its inputs")
+            if await load_delivery_requests(self.db, [task_id], conn=conn,
+                    repository_id=batch.repository_id, target_ref=batch.target_ref,
+                    reduced=True) != requests:
+                raise TrainControlError("source_changed", "task completion changed; "
+                                        "preview again")
+            await self._release_refusal(conn, batch, task_id, request, row["policy_snapshot"])
+
+        if dry_run:
+            async with self.db._engine.connect() as conn:
+                await verify(conn, lock=False)
+            return result
+        note = {
+            "object_kind": "batch", "object_id": batch.id, "effect": "note",
+            "operator": operator_id, "decision": reason.strip(),
+            "source": WITHHELD_RELEASE_SOURCE,
+            "source_ref": withheld_release_ref(task_id, member.source_sha),
+            "idempotency_key": "withheld-release:" + hashlib.sha256(
+                repr((batch.id, task_id, member.source_sha)).encode()).hexdigest(),
+        }
+        async with asyncio.timeout(CRITICAL_SECTION_SECONDS), self.db.immediate() as conn:
+            await self.db.lock_hierarchy_project(conn, batch.project_id)
+            await conn.execute(select(projects.c.id).where(
+                projects.c.id == batch.project_id).with_for_update())
+            await store._target_lock(conn, batch)
+            if await conn.scalar(select(withheld_release(batch.id, task_id, member.source_sha))):
+                return {**result, "outcome": "already_released"}
+            await verify(conn, lock=True)
+            if not await snapshot.is_fresh():
+                raise TrainControlError("target_changed", "batch target changed; preview again")
+            await note_on(conn, {**note, "project_id": batch.project_id,
+                                 "recorded_by": operator_id, "created_at": self.clock()})
+            result["outcome"] = "released"
+            await self.db.log_event("integration.withheld_source_released",
+                project_id=batch.project_id, task_id=task_id,
+                payload=json.dumps({**result, "operator_id": operator_id,
+                                    "reason": reason.strip()}), conn=conn)
+        if self.train is not None:
+            self.train.wake(*target.key)
+        return result
+
+    @staticmethod
+    async def _live_origin_base(conn, task_id, repository_id):
+        return await conn.scalar(select(task_branch_origins.c.base_sha).where(
+            task_branch_origins.c.task_id == task_id,
+            task_branch_origins.c.repository_id == repository_id,
+            task_branch_origins.c.retired_at.is_(None),
+        ).order_by(task_branch_origins.c.creation_generation.desc()).limit(1))
+
+    async def _release_refusal(self, conn, batch, task_id, request, policy_snapshot):
+        """Refuse a release that a writer, a hold or the repair history still owns."""
+        from src.database.tables import integration_repair_operations, sessions, workspaces
+        from src.integration.delivery_truth import undeliverable_repairs_on
+        from src.integration.models import RepairPolicy
+        from src.operator_decisions import history_on, related_on
+
+        refs = await related_on(conn, "batch", batch.id) | await related_on(conn, "task", task_id)
+        held = [row for row in await history_on(conn, batch.project_id, refs) if row["active"]]
+        if held:
+            raise TrainControlError("operator_decision_hold", "an operator hold owns this "
+                "source: " + "; ".join(f"{row['id']}: {row['decision']}" for row in held)
+                + "; the holder must release it first")
+        task = (await conn.execute(select(tasks.c.status).where(
+            tasks.c.id == task_id))).mappings().one_or_none()
+        if task is None or request.archived:
+            raise TrainControlError("identity_retired", "task is archived or missing; "
+                                    "nothing remains to release")
+        if task["status"] != "COMPLETED" or request.completion_outcome != "pass":
+            raise TrainControlError("source_not_accepted", "the task's current completion "
+                                    "is not a passing close; its owner must close it again")
+        if await undeliverable_repairs_on(self.db, conn, [task_id],
+                                          repository_id=batch.repository_id):
+            raise TrainControlError("identity_retired", "task is a superseded or terminal "
+                                    "repair; nothing remains to release")
+        if await conn.scalar(select(sessions.c.id).where(
+            sessions.c.task_id == task_id,
+            sessions.c.state.in_(("starting", "running", "draining")),
+        ).limit(1)) or await conn.scalar(select(workspaces.c.id).where(
+            workspaces.c.locked_by_task_id == task_id,
+        ).limit(1)):
+            raise TrainControlError("live_writer", "task still has a live writer or "
+                                    "claimed workspace")
+        member, other = integration_batch_members, integration_batches
+        if await conn.scalar(select(other.c.id).select_from(
+            other.join(member, member.c.batch_id == other.c.id)
+        ).where(
+            member.c.task_id == task_id, other.c.id != batch.id,
+            other.c.project_id == batch.project_id,
+            other.c.repository_id == batch.repository_id,
+            other.c.target_ref == batch.target_ref,
+            other.c.intent != "aborted", other.c.lifecycle != "promoted",
+        ).limit(1)):
+            raise TrainControlError("batch_active", "another live batch already owns the task")
+        repairs = integration_repair_operations
+        if await conn.scalar(select(tasks.c.id).where(
+            tasks.c.dedup_key.like(f"repair:{batch.id}:%"),
+            tasks.c.status.not_in(("COMPLETED", "FAILED", "CANCELLED")),
+        ).limit(1)) or await conn.scalar(select(repairs.c.id).where(
+            repairs.c.batch_id == batch.id,
+            repairs.c.state.in_(("active", "escalated", "human_required")),
+        ).limit(1)):
+            raise TrainControlError("repair_outstanding", "the aborted batch still has an "
+                                    "outstanding repair; settle or cancel it first")
+        repair = ((policy_snapshot or {}).get("root") or {}).get("repair") or {}
+
+        def frozen(name):
+            return repair.get(name, RepairPolicy.model_fields[name].default)
+
+        budget = frozen("primary_attempts") + frozen("debug_attempts")
+        if frozen("on_exhausted") == "human" and batch.repair_attempt_count >= budget:
+            raise TrainControlError("repair_exhausted", (
+                f"the aborted batch spent its repair budget ({batch.repair_attempt_count} of "
+                f"{budget}); a release would carry it exhausted. The owner decides: a new "
+                f"completion of {task_id}, or an explicit repair budget decision"))
 
     async def seal_now(self, project_id, *, train, dry_run):
         if train is None:
