@@ -154,6 +154,13 @@ the remaining authority before the final policy_docs retirement ratchet permits
 activation. Receipt IDs retained on cleanup items and failed delivery diagnostics
 are historical operation identity, never positive eligibility proof.
 
+Unused legacy entry points are retired rather than carried against the transition
+size allowance: `RepairService.return_green_delegate_branch` (the standalone
+wrapper), `RepairService.record_batch_rebuild_conflict_on`, and the unreferenced
+`parent_intents` continuation module. Current delegate close still calls
+`return_green_delegate_branch_on` inside its transaction. Git-first batch conflict
+repair follows `batch-conflict-repair-starts.md`; subject visits own continuations.
+
 Actual SQL writes are `integration_delivery_queries._finalize_integration_promotion_on`,
 `records.RecordsPrimitives.record_receipt_on`, `records.ParentEpisodeRecords.record_disposition`,
 `child_delivery.ChildDelivery._reissue_receipt`, `truth_reconciler.GitTruthReconciler._repair`,

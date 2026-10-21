@@ -1674,6 +1674,8 @@ class TestEndToEndOnFakeProvider:
         from sqlalchemy import insert
         from src.database.tables import task_branch_origins
         from src.integration.batches import BatchService, BatchStore
+        from src.integration.delivery_observer import DeliveryObserver
+        from src.integration.delivery_truth import CONTAINMENT_CONTRACT_VERSION
         from src.integration.git_truth import GitTruth
         from src.integration.gitops import GitOperations, RetainedRepository, SubjectGitAuthority
         from src.integration.provenance import CompletedSource, CompletionIdentity, GitProvenance
@@ -1684,6 +1686,10 @@ class TestEndToEndOnFakeProvider:
 
         wd, git, base = await self._setup_development_git(db, real_orch, tmp_path)
         real_orch.config.integration.git_first = "active"
+        db.set_prerequisite_observer(DeliveryObserver(
+            db, git=git, data_dir=tmp_path / "observer",
+            truth=GitTruth(git, contract_version=CONTAINMENT_CONTRACT_VERSION),
+        ))
         await db.update_project("p1", hierarchical_integration_mode=mode)
         async with db._engine.begin() as conn:
             await conn.execute(insert(task_branch_origins).values(

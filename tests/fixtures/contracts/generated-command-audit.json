@@ -17359,7 +17359,7 @@
   "reopen_with_feedback": {
     "mode": "json_object",
     "producer": "src/commands/task_commands.py:TaskCommandsMixin._cmd_reopen_with_feedback",
-    "source_digest": "sha256:778f67bc82847b5688584946510983bc79fe22fdf3467b1350e1e93328404551",
+    "source_digest": "sha256:9a1817fa572c019b0797de6033cce40542b3a67ffd0e7d938bed27f86dc5a32e",
     "input_schema_source": "explicit_tool",
     "schema_quality": "declared",
     "argument_reads_diagnostic_only": [

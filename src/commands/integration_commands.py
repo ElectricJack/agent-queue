@@ -871,9 +871,12 @@ class IntegrationCommandsMixin:
         from src.integration.source_ci import repair_description
 
         source = observation.source
-        delivery = await self.db.observe_removal_delivery(
-            [observation.task_id], for_mutation=True,
-        )
+        try:
+            delivery = await self.db.observe_removal_delivery(
+                [observation.task_id], for_mutation=True,
+            )
+        except (GitError, OSError):
+            return _failure("delivery_unknown", "Git delivery evidence is unavailable")
         transition = None
         async with self.db.immediate() as conn:
             await self.db.lock_hierarchy_project(conn, source["project_id"])

@@ -5001,6 +5001,9 @@ class TaskCommandsMixin:
         else:
             from src.integration.reviews import ReviewEvidenceProducer
 
+            transition_values["integration_delivery"] = await self.db.observe_removal_delivery(
+                [task_id], for_mutation=True,
+            )
             async with self.db.immediate() as conn:
                 transition = await ReviewEvidenceProducer(
                     self.db, None
