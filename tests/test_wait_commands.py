@@ -924,7 +924,7 @@ async def test_wait_service_installs_a_handler_for_every_wait_command(env, monke
         installed)
     partial = {k: v for k, v in installed.items() if k not in {"wait_cancel", "wait_explain"}}
     with pytest.raises(RuntimeError, match="wait_cancel, wait_explain"):
-        require_wait_handlers(partial)
+        require_wait_handlers(partial, installed["scheduler_wait_sync"])
     monkeypatch.setitem(WAIT_V2_ARGS, "wait_unowned", WaitDecideArgs)
     with pytest.raises(RuntimeError, match="wait_unowned"):
         WaitService(SimpleNamespace(db=env.db, wait_registry=env.registry))

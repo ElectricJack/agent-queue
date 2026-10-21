@@ -66,10 +66,7 @@ class WaitService:
             if name in handlers:
                 raise ValueError(f"duplicate wait lifecycle owner: {name}")
             handlers[name] = callback
-        # scheduler_tick installs the same owner lazily; claim it here so the
-        # startup check below sees it.
-        handlers.setdefault("scheduler_wait_sync", self.scheduler.sync)
-        require_wait_handlers(handlers)
+        require_wait_handlers(handlers, self.scheduler.sync)
         deadlines = getattr(orch, "wait_deadline_handlers", None)
         if deadlines is None:
             deadlines = orch.wait_deadline_handlers = {}
@@ -217,10 +214,13 @@ class WaitService:
                         return
 
 
-def require_wait_handlers(handlers):
+def require_wait_handlers(handlers, scheduler_sync):
     """Fail startup when a verified-wait command would answer "not installed"."""
     from src.commands.contracts.wait_v2 import WAIT_V2_ARGS
 
+    # scheduler_tick installs the same owner lazily; claim it here so the
+    # check below sees it.
+    handlers.setdefault("scheduler_wait_sync", scheduler_sync)
     # wait_checkpoint falls back to src.waits.checkpoint inside the command.
     expected = (set(WAIT_V2_ARGS) | {"wait_register", "wait_cancel"}) - {"wait_checkpoint"}
     missing = sorted(expected - set(handlers))
