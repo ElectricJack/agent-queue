@@ -737,7 +737,8 @@ async def wait_explain(
         ):
             raise WaitError("wait.not_found", "wait owner is outside the query scope or missing")
         query = query.where(
-            wait_records.c.owner_id == task_id, wait_records.c.owner_kind.in_(("task", "scheduler"))
+            wait_records.c.owner_id == task_id,
+            wait_records.c.owner_kind.in_(("task", "scheduler", "integration")),
         )
         if not history:
             query = query.where(wait_records.c.outcome == "pending")

@@ -42,6 +42,7 @@ CANCEL_GRACE_SECONDS = 5.0
 # Ordinary state changes invalidate readiness. Events are hints only: each
 # lane reloads completions, holds, authorization and exact Git/check evidence.
 READINESS_EVENTS = (
+    "integration.publication_verified",
     "task.completed", "task.closed", "task.created", "task.updated", "task.restarted",
     "task.ready", "task.child_added", "task.reparented", "task.paused", "task.unblocked",
     "dependency.added", "dependency.removed", "label.added", "label.removed",

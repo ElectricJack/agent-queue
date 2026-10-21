@@ -406,6 +406,8 @@ areas:
       - tests/test_integration_operator_decisions.py
       - tests/test_integration_cli_controls_present.py
       - tests/test_integration_train.py
+      - tests/test_integration_dispatch_waits.py
+      - tests/test_epic_train_end_to_end.py
       - tests/test_integration_train_sources.py
       - tests/perf/test_train_selection.py
       - tests/test_integration_stacked_branches.py

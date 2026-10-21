@@ -74,6 +74,8 @@ PROMOTION_MAX_WAIT_SECONDS = 300.0
 REPOSITORY_CONCURRENCY = 4
 BLOCKED_WAIT_SECONDS = 10.0
 BLOCKED_MAX_WAIT_SECONDS = 60.0
+# Events accelerate readiness; an idle lane still revisits Git after a lost event.
+IDLE_REOBSERVATION_SECONDS = 30.0
 
 TRAIN_KINDS = ("root", "epic", "development", "promotion")
 _PROGRESS: ContextVar[dict | None] = ContextVar("train_visit_progress", default=None)
@@ -385,6 +387,9 @@ class CandidateChecks:
             self._resolved.pop(next(iter(self._resolved)))
         return checks
 
+    def resolved(self, batch: Batch, candidate_sha: str):
+        return self._resolved.get((batch.id, candidate_sha))
+
     def passes(self, result: ChecksResult) -> bool:
         """Whether a verdict lets publication proceed."""
         return result.green or (self.advisory and result.state == ChecksState.RED)
@@ -487,6 +492,7 @@ class IntegrationTrain:
         visit_timeout_seconds: float = 900.0,
         repository_concurrency: int = REPOSITORY_CONCURRENCY,
         event_driven: bool = False,
+        waits=None,
         clock: Callable[[], float] = time.time,
     ) -> None:
         if visit_timeout_seconds <= 0:
@@ -501,6 +507,7 @@ class IntegrationTrain:
         self.visit_timeout_seconds = visit_timeout_seconds
         self.repository_concurrency = repository_concurrency
         self.event_driven = event_driven
+        self.waits = waits
         self.on_wake: Callable[[], None] | None = None
         self._lanes: dict[tuple[str, str, str], _Lane] = {}
         self._pauses: dict[tuple[str, str], _RateLimitPause] = {}
@@ -535,7 +542,8 @@ class IntegrationTrain:
                 if lane.task is not None and not lane.task.done():
                     running.append(label)
                     continue
-                if (self.event_driven and not lane.requested and lane.last is not None
+                if (self.event_driven and target.kind != "root"
+                        and not lane.requested and lane.last is not None
                         and lane.last.batch_id is None
                         and lane.last.state in {"idle", "held"}
                         and (lane.last.detail or {}).get("reason") != "settling"):
@@ -605,6 +613,13 @@ class IntegrationTrain:
                 # its last known state (the timeout stays in detail/blockers).
                 row["state"] = detail["previous_state"]
             row["running"] = running
+            dispatch = detail.get("dispatch", {})
+            row["lane_state"] = dispatch.get("state", "busy" if row.get("batch_id")
+                                             and row.get("state") != "delivered" else "idle")
+            row["inflight_batch_id"] = dispatch.get("batch_id")
+            row["members"] = dispatch.get("members", [])
+            row["queued_members"] = dispatch.get("queued_members", [])
+            row["wait_ids"] = dispatch.get("wait_ids", [])
             if lane.timing is not None:
                 row["timing"] = lane.timing.as_dict()
             if running and lane.progress:
@@ -647,6 +662,10 @@ class IntegrationTrain:
         elif visit.state == "blocked":
             wait = (visit.batch_id, visit.target_sha, repr(visit.detail))
             initial, maximum = BLOCKED_WAIT_SECONDS, BLOCKED_MAX_WAIT_SECONDS
+        elif target.kind == "root" and visit.state == "idle" and self.event_driven:
+            lane.not_before = self.clock() + IDLE_REOBSERVATION_SECONDS
+            lane.wait, lane.waits = None, 0
+            return visit
         else:
             lane.not_before, lane.wait, lane.waits = 0.0, None, 0
             return visit
@@ -758,17 +777,18 @@ class IntegrationTrain:
                           observed_at=now)
 
     async def visit(self, target: TrainTarget, *, seal_now: bool = False) -> TrainVisit:
-        """Observe the target once and take at most one step toward delivery.
+        """Observe a lane, settle its batch and depart its ready successor.
 
-        ``seal_now`` bypasses cadence for this observation only. Admission and
-        publication still require their ordinary evidence.
+        ``seal_now`` remains accepted for older command callers. Admission and
+        publication always require their ordinary evidence.
         """
         from src.integration.ci import hosted_observation_scope
 
         with hosted_observation_scope():
             return await self._visit_target(target, seal_now=seal_now)
 
-    async def _visit_target(self, target: TrainTarget, *, seal_now: bool = False) -> TrainVisit:
+    async def _visit_target(self, target: TrainTarget, *, seal_now: bool = False,
+                            depart_next: bool = True) -> TrainVisit:
         lane = await self.lane_for(target)
         _progress("fetch_snapshot")
         snapshot = await lane.snapshot()
@@ -814,6 +834,37 @@ class IntegrationTrain:
             visit = replace(visit, detail={
                 **(visit.detail or {}), "blockers": list(blockers),
             })
+        queue = getattr(self.batches, "queued_members", None)
+        if target.kind == "root" and queue is not None:
+            if visit.state == "delivered" and depart_next:
+                # Re-fetch after settlement: the successor must be built and
+                # checked on the newly observed delivery tip, in this turn.
+                successor = await self._visit_target(target, depart_next=False)
+                if successor.batch_id and successor.batch_id != visit.batch_id:
+                    return replace(successor, detail={
+                        **(successor.detail or {}), "settled_batch_id": visit.batch_id,
+                    })
+            inflight = opened.batch if visit.state != "delivered" else None
+            # A departure just froze the ready frontier. Observe later arrivals
+            # on subsequent visits, without repeating its admission side effects.
+            queued = (await queue(target, snapshot, opened.members)
+                      if inflight and opened.existing else ())
+            state = ("idle" if inflight is None else "repairing" if visit.state in
+                     {"repairing", "repair", "conflict", "red", "preexisting"}
+                     or visit.repair else "busy")
+
+            def member_row(member):
+                return {"task_id": member.task_id, "source_sha": member.source_sha,
+                        "source_base_sha": member.source_base_sha}
+
+            dispatch = {"state": state, "batch_id": inflight.id if inflight else None,
+                        "members": [member_row(m) for m in opened.members] if inflight else [],
+                        "queued_members": [member_row(m) for m in queued], "wait_ids": [],
+                        "candidate_sha": visit.candidate_sha, "checks": visit.checks}
+            if self.waits is not None:
+                dispatch.update(await self.waits.sync(target, inflight, visit, queued,
+                    lane.checks.resolved(inflight, visit.candidate_sha) if inflight else None))
+            visit = replace(visit, detail={**(visit.detail or {}), "dispatch": dispatch})
         return visit
 
     async def _visit_batch(
@@ -861,6 +912,9 @@ class IntegrationTrain:
             return self._visit(target, observation.state, batch, observation)
         head = (await lane.checks.head(batch, observation.candidate_sha)
                 if target.kind == "promotion" else candidate_head(batch, observation.candidate_sha))
+        record_candidate = getattr(self.batches, "record_candidate", None)
+        if record_candidate is not None:
+            await record_candidate(batch, observation)
         _progress("resolve_checks")
         checks = await lane.checks.for_candidate(batch, observation.candidate_sha)
         result = None if checks is None else await self._checks(checks, head)
