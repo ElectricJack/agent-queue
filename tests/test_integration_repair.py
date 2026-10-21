@@ -2377,6 +2377,8 @@ async def test_transient_prepare_preserves_legacy_stage_attempts_and_fence(db, t
     before = await _repair_stage(db, "operation", 0)
     commands = ClaimCommandsMixin()
     commands.db = db
+    commands._development_integration = lambda: None
+    commands.config = SimpleNamespace(integration=SimpleNamespace(default_mode="pull_request"))
     commands.orchestrator = SimpleNamespace(
         _task_control_lock=lambda _task_id: asyncio.Lock(), claim_waiters={},
         _worktree_slots=lambda: SimpleNamespace(reset_slot_for_task=AsyncMock(return_value="aq/parent")),

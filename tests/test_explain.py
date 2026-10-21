@@ -609,7 +609,7 @@ class TestExplainCommand:
         d = next(r for r in res["reasons"] if r["code"] == "blocked_dependency")
         assert "proj-other" in d["detail"]
 
-    async def test_delivery_of_reason_names_the_target_and_failure(self, handler, db):
+    async def test_delivery_of_requires_git_even_with_a_historical_failure(self, handler, db):
         from sqlalchemy import insert
 
         from src.database.tables import task_delivery_receipts
@@ -621,18 +621,22 @@ class TestExplainCommand:
         async def detail():
             res = await handler._cmd_explain_task({"task_id": "root"})
             return next(
-                r["detail"] for r in res["reasons"] if r["code"] == "blocked_dependency"
+                r["detail"] for r in res["reasons"]
+                if r["code"] == "delivery_evidence_unavailable" and r["ref"] == "leaf"
             )
 
-        assert await detail() == "waiting_for: delivery-of leaf"
+        expected = "Delivery prerequisite leaf: Git evidence unavailable"
+        assert await detail() == expected
         async with db._engine.begin() as conn:
             await conn.execute(insert(task_delivery_receipts).values(
                 id="failed-receipt", domain_key="failed-receipt", source_task_id="leaf",
                 repository_id="repo", target_branch="main", disposition="failed",
                 resolution_evidence={"reason": "squash conflict"}, created_at=time.time(),
             ))
-        assert await detail() == "waiting_for: delivery-of leaf (delivery failed: squash conflict)"
-        assert (await db.get_task("root")).is_blocked
+        assert await detail() == expected
+        assert await db.delivery_failures(["leaf"]) == {"leaf": "squash conflict"}
+        # SQL projects completion; Git admission separately withholds the task.
+        assert not (await db.get_task("root")).is_blocked
 
     async def test_typed_dependency_reasons_match_the_blocked_projection(self, handler, db):
         """Explain reports only the exact typed edges that currently block.
@@ -1079,7 +1083,7 @@ async def test_cancelled_explanation_does_not_imply_failed_independent_reads(
 
     with monkeypatch.context() as fault:
         if stage == "frontier":
-            fault.setattr(db, "claim_frontier_exclusions", stalled)
+            fault.setattr(db, "claim_frontier_exclusions_many", stalled)
         elif stage == "admission":
             fault.setattr("src.integration.admission.observe_admission", stalled)
         else:

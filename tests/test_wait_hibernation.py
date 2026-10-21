@@ -12,6 +12,7 @@ from src.commands import CommandHandler
 from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_context
 from src.config import AppConfig
 from src.database import Database
+from src.integration.admission import observe_admission
 from src.database.queries.continuation_queries import (
     checkpoint_continuation,
     continuation_prime_context,
@@ -1130,6 +1131,7 @@ async def test_resume_reserves_common_capacity_only_after_idle_process_stops(env
     config.wait_policy.v2_enabled = config.wait_policy.hibernation_enabled = True
     config.swarm.global_max_active = 1
     orch = SimpleNamespace(db=env.db, config=config, _worktrees_enabled=lambda: False,
+                           _delivery_admission=lambda ids: observe_admission(env.db, ids, None),
                            _pool_quarantine_state=lambda *a: (None, None))
     service = SimpleNamespace(orch=orch, scheduler=SchedulerWaitService(orch, clock=lambda: NOW))
     now = [NOW + 30]

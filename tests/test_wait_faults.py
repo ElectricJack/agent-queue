@@ -30,6 +30,7 @@ from src.database.tables import (
     wait_priority_projection,
     wait_records,
 )
+from src.integration.admission import observe_admission
 from src.messages.delivery import MessageDeliveryEngine
 from src.models import Task, TaskStatus
 from src.sessions.reconciler import SessionReconciler
@@ -523,6 +524,7 @@ async def test_matrix_eviction_reclaims_and_grants_reservation_in_same_call(
     config.swarm.global_max_active = 1
     config.wait_policy.v2_enabled = config.wait_policy.scheduler_waits_enabled = True
     arbiter = SimpleNamespace(db=env.db, config=config, bus=SimpleNamespace(emit=AsyncMock()),
+                             _delivery_admission=lambda ids: observe_admission(env.db, ids, None),
                              _worktrees_enabled=lambda: False,
                              _pool_quarantine_state=lambda *a: (None, None))
     scheduler = SchedulerWaitService(arbiter, clock=lambda: NOW)

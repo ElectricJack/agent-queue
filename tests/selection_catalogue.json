@@ -7978,13 +7978,14 @@
         "claims"
       ],
       "default_arm": true,
-      "digest": "sha256:71a3105e737e6257e53ff949b0d0f33a6b298ec1bd542bd9fb521599c47c2716",
+      "digest": "sha256:9d947e3d141b21c63b04fb3058b887b6bdca37d10d9f337a45e395984cde6251",
       "imports": [
         "src.config",
         "src.database.queries.claim_queries",
         "src.database.queries.hierarchy_queries",
         "src.database.queries.routing_queries",
         "src.database.tables",
+        "src.integration.admission",
         "src.integration.delivery_observer",
         "src.models",
         "src.orchestrator",
@@ -19262,12 +19263,13 @@
         "agent-waits"
       ],
       "default_arm": true,
-      "digest": "sha256:8bbbe40e9c960caf540a4f4ead57c6be8a6de71bbbd931d2eeaf6fe306a2ea1d",
+      "digest": "sha256:d53b1ea6efe2086f7014498dc25883eee1698cae2b5bf18bf7e34e83307c3a0b",
       "imports": [
         "src.commands",
         "src.commands.principal",
         "src.config",
         "src.database.tables",
+        "src.integration.admission",
         "src.integration.checks",
         "src.models",
         "src.orchestrator.core",
@@ -19291,7 +19293,7 @@
         "agent-waits"
       ],
       "default_arm": true,
-      "digest": "sha256:9e2352f31ab0a386af212713071ad808a670b1d061eb1a8faa9e89876955fd28",
+      "digest": "sha256:7f06eb91c0c1a7a479c12587c9caf57a5167e5a7130760332a24675e794089fc",
       "imports": [
         "src.api.models.metrics",
         "src.config",
@@ -19300,6 +19302,7 @@
         "src.database.queries.wait_queries",
         "src.database.tables",
         "src.git.manager",
+        "src.integration.admission",
         "src.messages.delivery",
         "src.metrics.sampler",
         "src.metrics.waits",
@@ -19352,7 +19355,7 @@
         "agent-waits"
       ],
       "default_arm": true,
-      "digest": "sha256:d6d6392dcf29f94e6db3e643f5a7f1be49caea48232076dc6adbe335eeb0f318",
+      "digest": "sha256:81806e0f15ffb2605b846f5d4b94da015185e1fae4334b9751d00f3f4a899eba",
       "imports": [
         "src.cli.waits",
         "src.commands",
@@ -19363,6 +19366,7 @@
         "src.database.queries.wait_queries",
         "src.database.tables",
         "src.git.manager",
+        "src.integration.admission",
         "src.models",
         "src.prime",
         "src.prime.budgets",

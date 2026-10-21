@@ -4733,6 +4733,17 @@ class Orchestrator(
         task_snapshot = [
             task for task in task_snapshot if not is_supervisor_profile(task.profile_id)
         ]
+        # Containers settle independently of worker admission, which excludes
+        # them from the claim frontier.
+        withheld = await self._release_ready_containers(
+            [t.id for t in task_snapshot if t.status == TaskStatus.READY and not t.is_blocked]
+        )
+        if withheld:
+            # Releasing a parent can unblock its children in this cycle.
+            task_snapshot = [
+                task for task in await self.db.list_active_tasks(exclude_held_ready=True)
+                if task.id not in withheld and not is_supervisor_profile(task.profile_id)
+            ]
         if hierarchy_modes is None:
             from src.integration.delivery_observer import hierarchy_frontier_modes
 
@@ -4750,17 +4761,6 @@ class Orchestrator(
             [task.id for task in task_snapshot if task.status == TaskStatus.READY],
             hierarchy_modes=delivery_admission.hierarchy_modes,
         )
-        # A flagged container (spec §7) is settle-only work and never
-        # dispatchable.  Promotion releases the ones it promotes; this catches
-        # a container that was already READY when it gained its first child
-        # (``set_parent`` on a READY task) or came back READY from PAUSED,
-        # and withholds it from the reconciler and the scheduler this cycle
-        # even if its release did not land (calm-ember-48).
-        withheld = await self._release_ready_containers(
-            [t.id for t in task_snapshot if t.status == TaskStatus.READY]
-        )
-        if withheld:
-            task_snapshot = [t for t in task_snapshot if t.id not in withheld]
         # Only routed work is launchable (mandatory routing §9.1, I3): a
         # queued task whose route the router, an override or a role did not
         # write -- unrouted, or legacy once its project's router is ready --
