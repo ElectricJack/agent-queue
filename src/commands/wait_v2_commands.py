@@ -127,6 +127,12 @@ class WaitV2CommandsMixin:
         with principal_context(ExecutionPrincipal.service("waits-listener")):
             return await self.wait_listener_drain(listener, watermark)
 
+    async def wait_service_resume_stalls(self, lifecycle):
+        """Internal maintenance boundary; never exposes service authority to agents."""
+        with principal_context(ExecutionPrincipal.service("waits-driver")):
+            self._wait_listener_authorize(lifecycle.service.listener)
+            return await lifecycle.report_resume_stalls()
+
     def _wait_listener_authorize(self, listener, *, release=False):
         principal = current_principal()
         if (principal is None or principal.kind != PrincipalKind.SERVICE

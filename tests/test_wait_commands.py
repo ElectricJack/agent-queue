@@ -41,7 +41,7 @@ from src.database.tables import (
 )
 from src.database.queries.continuation_queries import wait_outcome_envelope
 from src.models import SessionRecord
-from src.wait_runtime.service import WaitService
+from src.wait_runtime.service import WaitService, require_wait_handlers
 from src.mcp_registration import DEFAULT_EXCLUDED_COMMANDS
 from src.profiles.capabilities import AQ_FEATURE_CAPABILITIES, CapabilityPolicy
 from src.profiles.capability_sync import sync_profile_capabilities
@@ -753,7 +753,7 @@ def test_cli_public_verbs_have_inventory_backend_evidence():
         assert _infer_handwritten_backend(wait.commands[path]) == name
 
 
-async def human_runtime(env, subject="task_comment"):
+async def human_runtime(env, subject="task_comment", *, park=True):
     config = AppConfig()
     config.wait_policy.v2_enabled = config.wait_policy.hibernation_enabled = True
     orch = SimpleNamespace(db=env.db, config=config, wait_registry=env.registry,
@@ -789,6 +789,8 @@ async def human_runtime(env, subject="task_comment"):
         work_dir="/tmp/supervisor", started_at=NOW))
     principal = replace(WORKER, session_id="supervisor", session_instance_token="supervisor-token",
                         task_id=None, profile_id="supervisor", elevated=True)
+    if not park:
+        return service, handler, principal, receipt
     async with env.db._engine.begin() as conn:
         await env.db.park_task_for_continuation(
             conn, task_id="owner", wait_id=receipt["wait_id"],
@@ -902,3 +904,113 @@ async def test_human_registration_requires_hibernation_before_any_wait_write(env
     assert error.value.code == "wait.disabled"
     async with env.db._engine.connect() as conn:
         assert not await conn.scalar(select(wait_records.c.id))
+
+
+async def wait_service(env):
+    config = AppConfig()
+    config.wait_policy.v2_enabled = config.wait_policy.hibernation_enabled = True
+    orch = SimpleNamespace(db=env.db, config=config, wait_registry=env.registry,
+                           bus=SimpleNamespace(emit=AsyncMock()), plugin_registry=None)
+    service = WaitService(orch, clock=lambda: NOW)
+    handler = CommandHandler(orch, config)
+    orch._command_handler = handler
+    return service, handler
+
+
+async def test_wait_service_installs_a_handler_for_every_wait_command(env, monkeypatch):
+    _, handler = await wait_service(env)
+    installed = handler.orchestrator.wait_v2_handlers
+    assert (set(WAIT_V2_ARGS) - {"wait_checkpoint"}) | {"wait_register", "wait_cancel"} <= set(
+        installed)
+    partial = {k: v for k, v in installed.items() if k not in {"wait_cancel", "wait_explain"}}
+    with pytest.raises(RuntimeError, match="wait_cancel, wait_explain"):
+        require_wait_handlers(partial, installed["scheduler_wait_sync"])
+    monkeypatch.setitem(WAIT_V2_ARGS, "wait_unowned", WaitDecideArgs)
+    with pytest.raises(RuntimeError, match="wait_unowned"):
+        WaitService(SimpleNamespace(db=env.db, wait_registry=env.registry))
+
+
+@pytest.mark.parametrize("principal", [WORKER, TRUSTED_LOCAL])
+async def test_installed_wait_explain_reads_by_wait_and_by_task(env, principal):
+    receipt = await register(env)
+    _, handler = await wait_service(env)
+    by_wait = await execute(handler, "wait_explain", {"wait_id": receipt["wait_id"]}, principal)
+    assert by_wait["success"], by_wait
+    assert by_wait["explanation"] == by_wait["waits"][0]
+    by_task = await execute(handler, "wait_explain", {"task_id": "owner"}, principal)
+    assert by_task["success"], by_task
+    assert [w["wait_id"] for w in by_task["waits"]] == [receipt["wait_id"]]
+    missing = await execute(handler, "wait_explain", {"wait_id": "absent"}, principal)
+    assert not missing["success"]
+
+
+async def test_holder_cancels_in_place_wait_and_acknowledges_back_to_work(env):
+    receipt = await register(env)
+    async with env.db._engine.begin() as conn:
+        # The register command moves the owner to WAITING after the query commits.
+        await conn.execute(update(tasks).where(tasks.c.id == "owner").values(status="WAITING"))
+    _, handler = await wait_service(env)
+    result = await execute(handler, "wait_cancel", {"wait_id": receipt["wait_id"]})
+    assert result["success"], result
+    WaitResponse.model_validate(result)
+    assert result["wait"]["outcome"] == "cancelled"
+    async with env.db._engine.connect() as conn:
+        outcome = (await conn.execute(select(messages).where(
+            messages.c.id == f"wait:{receipt['wait_id']}:outcome"))).mappings().one()
+        assert not await conn.scalar(select(func.count()).select_from(wait_deadlines).where(
+            wait_deadlines.c.wait_id == receipt["wait_id"], wait_deadlines.c.fired_at.is_(None),
+            wait_deadlines.c.cancelled_at.is_(None)))
+    assert outcome["body_kind"] == "wait_outcome"
+    assert (await env.db.get_task("owner")).status.value == "WAITING"
+    replay = await execute(handler, "wait_cancel", {"wait_id": receipt["wait_id"]})
+    assert replay["success"] and replay["warnings"] == ["wait already resolved: cancelled"]
+    ack = await execute(handler, "wait_ack", {"wait_id": receipt["wait_id"], "claim_epoch": 1})
+    assert ack["success"] and ack["outcome"] == "cancelled", ack
+    assert (await env.db.get_task("owner")).status.value == "IN_PROGRESS"
+
+
+async def test_worker_cannot_cancel_another_owners_wait(env):
+    receipt = await register(env)
+    _, handler = await wait_service(env)
+    stranger = replace(WORKER, session_id="other", task_id="other")
+    result = await execute(handler, "wait_cancel", {"wait_id": receipt["wait_id"]}, stranger)
+    assert not result["success"]
+    async with env.db._engine.connect() as conn:
+        assert await conn.scalar(select(wait_records.c.outcome)) == "pending"
+
+
+async def test_supervisor_cancel_of_parked_wait_queues_the_continuation(env):
+    _, handler, principal, receipt = await human_runtime(env)
+    result = await execute(handler, "wait_cancel", {"wait_id": receipt["wait_id"]}, principal)
+    assert result["success"], result
+    async with env.db._engine.connect() as conn:
+        wait = (await conn.execute(select(wait_records))).mappings().one()
+        intent = (await conn.execute(select(continuations))).mappings().one()
+    assert wait["outcome"] == "cancelled"
+    assert intent["resume_state"] == "queued"
+    assert (await env.db.get_task("owner")).status.value == "RESUME_PENDING"
+
+
+async def test_holder_cancel_withdraws_a_hibernation_intent_before_its_stop(env):
+    _, handler, _, receipt = await human_runtime(env, park=False)
+    result = await execute(handler, "wait_cancel", {"wait_id": receipt["wait_id"]})
+    assert result["success"], result
+    assert result["wait"]["sleep_decision"] == "in_place"
+    async with env.db._engine.connect() as conn:
+        intent = (await conn.execute(select(continuations))).mappings().one()
+    assert (intent["resume_state"], intent["hold_reason"]) == ("cancelled", "wait_cancel")
+    ack = await execute(handler, "wait_ack", {"wait_id": receipt["wait_id"], "claim_epoch": 1})
+    assert ack["success"], ack
+    assert (await env.db.get_task("owner")).status.value == "IN_PROGRESS"
+
+
+async def test_holder_cancel_refuses_once_the_hibernation_stop_began(env):
+    _, handler, _, receipt = await human_runtime(env, park=False)
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(continuations).values(
+            facts={"hibernation": {"stop_started_at": NOW + 5}}))
+    result = await execute(handler, "wait_cancel", {"wait_id": receipt["wait_id"]})
+    assert not result["success"] and result["error_code"] == "wait.unavailable", result
+    async with env.db._engine.connect() as conn:
+        assert await conn.scalar(select(wait_records.c.outcome)) == "pending"
+        assert await conn.scalar(select(continuations.c.resume_state)) == "sleeping"

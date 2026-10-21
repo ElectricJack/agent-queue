@@ -79865,6 +79865,17 @@
           "status": {
             "type": "string",
             "title": "Status"
+          },
+          "decided_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decided At"
           }
         },
         "type": "object",
