@@ -9,13 +9,17 @@ down_revision = "a00000000108"
 branch_labels = None
 depends_on = None
 
+TABLE = "integration_branch_owners"
+
 
 def upgrade():
-    columns = {c["name"] for c in sa.inspect(op.get_bind()).get_columns(
-        "integration_branch_owners")}
-    if "delegation" not in columns:
-        op.add_column("integration_branch_owners",
-                      sa.Column("delegation", JSONB(none_as_null=True), nullable=True))
+    # A schema without the owner table (a sparse restore) has no lease to bind;
+    # creating the table from live metadata later includes the column.
+    inspector = sa.inspect(op.get_bind())
+    if inspector.has_table(TABLE) and "delegation" not in {
+        c["name"] for c in inspector.get_columns(TABLE)
+    }:
+        op.add_column(TABLE, sa.Column("delegation", JSONB(none_as_null=True), nullable=True))
 
 
 def downgrade():
