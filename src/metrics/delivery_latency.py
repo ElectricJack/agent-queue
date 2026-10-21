@@ -62,6 +62,8 @@ CODE_FREE_STATES = frozenset({"no_artifact", "no_change", "not_applicable"})
 CODE_FREE_OUTCOMES = frozenset({"no-op", "no_op", "noop"})
 EXCLUSIONS = ("delivered_by_other_means", "code_free", "abandoned", "superseded", "settled")
 DRILLDOWN_LIMIT = 200
+#: Linked wait records shown per generation, live ones first.
+WAIT_LIMIT = 12
 _ANCESTRY_DEPTH = 32
 
 
@@ -337,7 +339,8 @@ async def load_inputs(conn, *, since: float, until: float, project_id: str | Non
         rows = (await conn.execute(select(
             waits.c.id, waits.c.owner_kind, waits.c.owner_id, waits.c.origin,
             waits.c.condition_kind, waits.c.outcome, waits.c.created_at,
-            waits.c.resolved_at, waits.c.cleared_at, legacy_owner.label("legacy_owner"),
+            waits.c.resolved_at, waits.c.cleared_at, waits.c.evidence_ref,
+            waits.c.result_ref, waits.c.decision_reason, legacy_owner.label("legacy_owner"),
         ).where(or_(
             waits.c.owner_id.in_(sorted(owners)),
             and_(waits.c.owner_id.like("legacy-%"), legacy_owner.in_(task_ids)),
@@ -425,6 +428,7 @@ def _classify(row, inputs, *, now):
     landed = next((obs for obs in on_dev if obs.get("state") == "contained"), None)
     parent = next((obs for obs in elsewhere if obs.get("state") == "contained"), None)
     latest = on_dev[-1] if on_dev else None
+    last_seen = latest or (seen[-1] if seen else None)
     started = inputs["instrumented_at"].get(row["project_id"])
     newer = [cid for at, cid in inputs["completions"].get(tid, ())
              if cid != generation and (at, cid) > (row["completed_at"], generation)]
@@ -441,6 +445,11 @@ def _classify(row, inputs, *, now):
         "on_dev_at": None,
         "parent_at": _observed(parent) if parent else None,
         "parent_ref": parent.get("target_ref") if parent else None,
+        "source_ref": row["branch"] or row["branch_name"],
+        "source_oid": last_seen.get("source_oid") if last_seen else None,
+        "target_oid": last_seen.get("target_oid") if last_seen else None,
+        "observed_at": _observed(last_seen) if last_seen else None,
+        "reason": last_seen.get("reason") if last_seen else None,
     }
     if any(obs.get("exclusion") == "delivered_by_other_means" for obs in seen):
         return {**info, "status": "excluded", "exclusion": "delivered_by_other_means"}
@@ -465,6 +474,27 @@ def _classify(row, inputs, *, now):
         return {**info, "status": "unknown" if live else "historical_unknown",
                 "age_seconds": max(0.0, now - row["completed_at"])}
     return {**info, "status": "pending", "age_seconds": max(0.0, now - row["completed_at"])}
+
+
+def _wait_view(wait):
+    """One linked wait record as drill-down shows it; ``ci_url`` only for http(s)."""
+    result_ref = wait.get("result_ref")
+    ci = wait["condition_kind"] in CI_KINDS and str(result_ref or "").startswith(
+        ("https://", "http://"))
+    return {
+        "wait_id": wait["id"],
+        "origin": wait["origin"],
+        "condition_kind": wait["condition_kind"],
+        "segment": (_segment(wait) if wait["origin"] == "integration"
+                    and wait["condition_kind"] != "human" else None),
+        "outcome": wait["outcome"],
+        "created_at": wait["created_at"],
+        "resolved_at": wait["resolved_at"] or wait["cleared_at"],
+        "evidence_ref": wait.get("evidence_ref"),
+        "result_ref": result_ref,
+        "decision_reason": wait.get("decision_reason"),
+        "ci_url": result_ref if ci else None,
+    }
 
 
 def _observed(obs):
@@ -499,7 +529,7 @@ def aggregate(inputs, *, since: float, until: float, now: float, window: str,
         item.update(anchor_at=anchor_at, anchor_kind=anchor_kind, clock_skew=False,
                     late=False, segments={}, residual_seconds=None,
                     human_wait_seconds=None, rebuild_seconds=None, setup_seconds=None,
-                    cache_hit_rate=None)
+                    cache_hit_rate=None, waits=[])
         if item["status"] == "excluded":
             excluded[item["exclusion"]] += 1
             generations.append(item)
@@ -538,6 +568,8 @@ def aggregate(inputs, *, since: float, until: float, now: float, window: str,
         item["setup_seconds"] = sum(setups) if setups else None
         item["cache_hit_rate"] = (sum(1 for value in rebuilds if value == 0) / len(rebuilds)
                                   if rebuilds else None)
+        item["waits"] = [_wait_view(wait) for wait in sorted(linked, key=lambda wait: (
+            wait["outcome"] != "pending", -wait["created_at"], wait["id"]))][:WAIT_LIMIT]
         item["live_wait"] = any(wait["outcome"] == "pending" and wait["cleared_at"] is None
                                 for wait in linked)
         item["measurements"] = rebuilds

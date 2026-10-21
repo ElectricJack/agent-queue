@@ -345,6 +345,7 @@ from .delivery_latency_histogram_bucket import DeliveryLatencyHistogramBucket
 from .delivery_latency_response import DeliveryLatencyResponse
 from .delivery_latency_segment import DeliveryLatencySegment
 from .delivery_latency_target import DeliveryLatencyTarget
+from .delivery_latency_wait import DeliveryLatencyWait
 from .deployment_event import DeploymentEvent
 from .diff_item import DiffItem
 from .diff_item_original_scope import DiffItemOriginalScope
@@ -2540,6 +2541,7 @@ __all__ = (
     "DeliveryLatencyResponse",
     "DeliveryLatencySegment",
     "DeliveryLatencyTarget",
+    "DeliveryLatencyWait",
     "DeploymentEvent",
     "DiffItem",
     "DiffItemOriginalScope",

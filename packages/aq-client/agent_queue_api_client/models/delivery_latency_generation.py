@@ -10,6 +10,7 @@ from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
     from ..models.delivery_latency_generation_segments import DeliveryLatencyGenerationSegments
+    from ..models.delivery_latency_wait import DeliveryLatencyWait
 
 
 T = TypeVar("T", bound="DeliveryLatencyGeneration")
@@ -22,6 +23,9 @@ class DeliveryLatencyGeneration:
     ``status`` is ``sample``, ``pending``, ``unknown``, ``historical_unknown``,
     ``left_censored`` or ``excluded``. ``current_blocker`` marks a sample whose
     dev ref no longer contains it (a rewrite after the timing was taken).
+    ``observed_at``, ``reason`` and the OIDs come from the latest recorded
+    containment transition (on dev when there is one); transitions are written
+    only when the state changes, so ``observed_at`` is not a freshness probe.
 
         Attributes:
             task_id (str):
@@ -36,6 +40,11 @@ class DeliveryLatencyGeneration:
             parent_at (float | None | Unset):
             parent_ref (None | str | Unset):
             dev_ref (None | str | Unset):
+            source_ref (None | str | Unset):
+            source_oid (None | str | Unset):
+            target_oid (None | str | Unset):
+            observed_at (float | None | Unset):
+            reason (None | str | Unset):
             latest_state (None | str | Unset):
             approval_to_dev_seconds (float | None | Unset):
             completion_to_dev_seconds (float | None | Unset):
@@ -50,6 +59,7 @@ class DeliveryLatencyGeneration:
             clock_skew (bool | Unset):  Default: False.
             late (bool | Unset):  Default: False.
             current_blocker (bool | Unset):  Default: False.
+            waits (list[DeliveryLatencyWait] | Unset):
     """
 
     task_id: str
@@ -64,6 +74,11 @@ class DeliveryLatencyGeneration:
     parent_at: float | None | Unset = UNSET
     parent_ref: None | str | Unset = UNSET
     dev_ref: None | str | Unset = UNSET
+    source_ref: None | str | Unset = UNSET
+    source_oid: None | str | Unset = UNSET
+    target_oid: None | str | Unset = UNSET
+    observed_at: float | None | Unset = UNSET
+    reason: None | str | Unset = UNSET
     latest_state: None | str | Unset = UNSET
     approval_to_dev_seconds: float | None | Unset = UNSET
     completion_to_dev_seconds: float | None | Unset = UNSET
@@ -78,6 +93,7 @@ class DeliveryLatencyGeneration:
     clock_skew: bool | Unset = False
     late: bool | Unset = False
     current_blocker: bool | Unset = False
+    waits: list[DeliveryLatencyWait] | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -140,6 +156,36 @@ class DeliveryLatencyGeneration:
             dev_ref = UNSET
         else:
             dev_ref = self.dev_ref
+
+        source_ref: None | str | Unset
+        if isinstance(self.source_ref, Unset):
+            source_ref = UNSET
+        else:
+            source_ref = self.source_ref
+
+        source_oid: None | str | Unset
+        if isinstance(self.source_oid, Unset):
+            source_oid = UNSET
+        else:
+            source_oid = self.source_oid
+
+        target_oid: None | str | Unset
+        if isinstance(self.target_oid, Unset):
+            target_oid = UNSET
+        else:
+            target_oid = self.target_oid
+
+        observed_at: float | None | Unset
+        if isinstance(self.observed_at, Unset):
+            observed_at = UNSET
+        else:
+            observed_at = self.observed_at
+
+        reason: None | str | Unset
+        if isinstance(self.reason, Unset):
+            reason = UNSET
+        else:
+            reason = self.reason
 
         latest_state: None | str | Unset
         if isinstance(self.latest_state, Unset):
@@ -211,6 +257,13 @@ class DeliveryLatencyGeneration:
 
         current_blocker = self.current_blocker
 
+        waits: list[dict[str, Any]] | Unset = UNSET
+        if not isinstance(self.waits, Unset):
+            waits = []
+            for waits_item_data in self.waits:
+                waits_item = waits_item_data.to_dict()
+                waits.append(waits_item)
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -238,6 +291,16 @@ class DeliveryLatencyGeneration:
             field_dict["parent_ref"] = parent_ref
         if dev_ref is not UNSET:
             field_dict["dev_ref"] = dev_ref
+        if source_ref is not UNSET:
+            field_dict["source_ref"] = source_ref
+        if source_oid is not UNSET:
+            field_dict["source_oid"] = source_oid
+        if target_oid is not UNSET:
+            field_dict["target_oid"] = target_oid
+        if observed_at is not UNSET:
+            field_dict["observed_at"] = observed_at
+        if reason is not UNSET:
+            field_dict["reason"] = reason
         if latest_state is not UNSET:
             field_dict["latest_state"] = latest_state
         if approval_to_dev_seconds is not UNSET:
@@ -266,12 +329,15 @@ class DeliveryLatencyGeneration:
             field_dict["late"] = late
         if current_blocker is not UNSET:
             field_dict["current_blocker"] = current_blocker
+        if waits is not UNSET:
+            field_dict["waits"] = waits
 
         return field_dict
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         from ..models.delivery_latency_generation_segments import DeliveryLatencyGenerationSegments
+        from ..models.delivery_latency_wait import DeliveryLatencyWait
 
         d = dict(src_dict)
         task_id = d.pop("task_id")
@@ -360,6 +426,51 @@ class DeliveryLatencyGeneration:
             return cast(None | str | Unset, data)
 
         dev_ref = _parse_dev_ref(d.pop("dev_ref", UNSET))
+
+        def _parse_source_ref(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        source_ref = _parse_source_ref(d.pop("source_ref", UNSET))
+
+        def _parse_source_oid(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        source_oid = _parse_source_oid(d.pop("source_oid", UNSET))
+
+        def _parse_target_oid(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        target_oid = _parse_target_oid(d.pop("target_oid", UNSET))
+
+        def _parse_observed_at(data: object) -> float | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(float | None | Unset, data)
+
+        observed_at = _parse_observed_at(d.pop("observed_at", UNSET))
+
+        def _parse_reason(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        reason = _parse_reason(d.pop("reason", UNSET))
 
         def _parse_latest_state(data: object) -> None | str | Unset:
             if data is None:
@@ -464,6 +575,15 @@ class DeliveryLatencyGeneration:
 
         current_blocker = d.pop("current_blocker", UNSET)
 
+        _waits = d.pop("waits", UNSET)
+        waits: list[DeliveryLatencyWait] | Unset = UNSET
+        if _waits is not UNSET:
+            waits = []
+            for waits_item_data in _waits:
+                waits_item = DeliveryLatencyWait.from_dict(waits_item_data)
+
+                waits.append(waits_item)
+
         delivery_latency_generation = cls(
             task_id=task_id,
             generation_id=generation_id,
@@ -477,6 +597,11 @@ class DeliveryLatencyGeneration:
             parent_at=parent_at,
             parent_ref=parent_ref,
             dev_ref=dev_ref,
+            source_ref=source_ref,
+            source_oid=source_oid,
+            target_oid=target_oid,
+            observed_at=observed_at,
+            reason=reason,
             latest_state=latest_state,
             approval_to_dev_seconds=approval_to_dev_seconds,
             completion_to_dev_seconds=completion_to_dev_seconds,
@@ -491,6 +616,7 @@ class DeliveryLatencyGeneration:
             clock_skew=clock_skew,
             late=late,
             current_blocker=current_blocker,
+            waits=waits,
         )
 
         delivery_latency_generation.additional_properties = d

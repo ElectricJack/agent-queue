@@ -53,12 +53,35 @@ class DeliveryLatencyBatchDay(BaseModel):
     red_rounds: int = 0
 
 
+class DeliveryLatencyWait(BaseModel):
+    """A wait record linked to a generation (its task, batch or repair).
+
+    ``segment`` names the breakdown segment an ``integration`` wait counts
+    toward; ``ci_url`` is the exact CI run, set only for an http(s) result.
+    """
+
+    wait_id: str
+    origin: str
+    condition_kind: str
+    segment: str | None = None
+    outcome: str
+    created_at: float
+    resolved_at: float | None = None
+    evidence_ref: str | None = None
+    result_ref: str | None = None
+    decision_reason: str | None = None
+    ci_url: str | None = None
+
+
 class DeliveryLatencyGeneration(BaseModel):
     """One completed generation in drill-down.
 
     ``status`` is ``sample``, ``pending``, ``unknown``, ``historical_unknown``,
     ``left_censored`` or ``excluded``. ``current_blocker`` marks a sample whose
     dev ref no longer contains it (a rewrite after the timing was taken).
+    ``observed_at``, ``reason`` and the OIDs come from the latest recorded
+    containment transition (on dev when there is one); transitions are written
+    only when the state changes, so ``observed_at`` is not a freshness probe.
     """
 
     task_id: str
@@ -73,6 +96,11 @@ class DeliveryLatencyGeneration(BaseModel):
     parent_at: float | None = None
     parent_ref: str | None = None
     dev_ref: str | None = None
+    source_ref: str | None = None
+    source_oid: str | None = None
+    target_oid: str | None = None
+    observed_at: float | None = None
+    reason: str | None = None
     latest_state: str | None = None
     approval_to_dev_seconds: float | None = None
     completion_to_dev_seconds: float | None = None
@@ -87,6 +115,7 @@ class DeliveryLatencyGeneration(BaseModel):
     clock_skew: bool = False
     late: bool = False
     current_blocker: bool = False
+    waits: list[DeliveryLatencyWait] = []
 
 
 class DeliveryLatencyResponse(BaseModel):
