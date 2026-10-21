@@ -8892,12 +8892,15 @@
         "integration-promotion"
       ],
       "default_arm": true,
-      "digest": "sha256:4a5ba88e60e0118728308c6549b1e099e35805e7b822b35f7955e9470d911635",
+      "digest": "sha256:48e4bd89e5e222abf6b15e50874bcb71b699d630081bce3b779c220071145ac0",
       "imports": [
         "src.database.tables",
         "src.integration.epics",
         "src.integration.reviews",
-        "src.models"
+        "src.integration.runtime_contracts",
+        "src.integration.train_sources",
+        "src.models",
+        "src.playbooks.definition"
       ],
       "markers": [
         "parametrize"

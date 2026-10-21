@@ -70,7 +70,9 @@ from src.integration.delivery_truth import (
     superseded_source_repairs_on,
     undeliverable_repairs_on,
 )
-from src.integration.epics import EpicGraphReader, EpicPolicy, EpicReadinessEvaluator, HeadChecks
+from src.integration.epics import (
+    EpicGraphReader, EpicPolicy, EpicReadinessEvaluator, HeadChecks, playbook_epic_checks_on,
+)
 from src.integration.git_truth import GitTruth, GitTruthSnapshot
 from src.integration.gitops import GitOperations, RetainedRepository, SubjectGitAuthority
 from src.integration.lock import BranchLock
@@ -2030,7 +2032,7 @@ class DatabaseBatches:
                 return True
             for subject_id, head, tree in notes["heads"]:
                 policy = graph.node(subject_id).policy
-                if policy.check_names:
+                if policy.checks_required and policy.check_names:
                     green = set((await conn.execute(select(
                         integration_check_evidence.c.check_name,
                     ).where(integration_check_evidence.c.repository_id == graph.repository_id,
@@ -2129,7 +2131,13 @@ async def epic_policy_on(conn, row, project) -> EpicPolicy:
     supply identities here; automatic admission never supplies a tree review.
     """
     policy = project["hierarchical_integration_policy"] or {}
+    # The stored parent checks are advisory: read and shown, never a gate. Only
+    # explicit, current project playbook data requires epic checks (6.4).
     required = (policy.get("parent") or {}).get("required_checks") or {}
+    explicit = (await playbook_epic_checks_on(conn, project["id"])
+                if project.get("id") else None)
+    if explicit is not None:
+        required = explicit.model_dump(mode="json")
     boundary = "parent" if row["parent_task_id"] else "root"
     reviewed = (policy.get(boundary) or {}).get("admission") == "reviewed"
     reviewers = set()
@@ -2150,16 +2158,22 @@ async def epic_policy_on(conn, row, project) -> EpicPolicy:
         from src.integration.checks import hybrid_checks_producer_id, local_checks_producer_id
 
         names = tuple(required.get("names") or ())
-        trust = local_checks_producer_id(
-            scope="epic", names=names, version=str(required.get("version") or ""),
-            commands=tuple(ci.commands[name] for name in names),
-            queue_seconds=ci.queue_seconds, run_seconds=ci.run_seconds,
-        )
-        if ci.requires_hosted("epic"):
-            trust = hybrid_checks_producer_id(trust, str(required.get("producer_id") or ""))
+        if set(names) <= set(ci.commands):
+            trust = local_checks_producer_id(
+                scope="epic", names=names, version=str(required.get("version") or ""),
+                commands=tuple(ci.commands[name] for name in names),
+                queue_seconds=ci.queue_seconds, run_seconds=ci.run_seconds,
+            )
+            if ci.requires_hosted("epic"):
+                trust = hybrid_checks_producer_id(trust, str(required.get("producer_id") or ""))
+        else:
+            # local_commands_cover_required_checks: no local producer exists, so
+            # a required check names its missing producer and an advisory one
+            # is shown as unknown.
+            trust = ""
     return EpicPolicy(tuple(required.get("names") or ()), trust,
                       ReviewRequirements(reviewed, frozenset(reviewers)),
-                      str(required.get("version") or ""))
+                      str(required.get("version") or ""), explicit is not None)
 
 
 async def epic_source_base_on(conn, row):
@@ -2174,6 +2188,9 @@ def epic_graph_digest(graph) -> str:
     data = asdict(graph)
     data["dependencies"] = [tuple(edge) for edge in graph.dependencies]
     for node in data["nodes"]:
+        if not node["policy"]["checks_required"]:
+            # Advisory is the default, so completions fenced before 6.4 stay current.
+            node["policy"].pop("checks_required")
         if node["request"]["task_id"] in {graph.epic_id, graph.node(graph.epic_id).parent_id}:
             node["request"]["completion_id"] = None
             node["request"]["completed_at"] = None
@@ -2727,6 +2744,31 @@ class DaemonLanes:
             logger.info("integration batch %s default-branch sync evidence unavailable", batch.id)
             return None
 
+    async def _advisory_epic_checks(self, target, binding, retained, ci, policy, node, batch,
+                                    head, repository_id, resolved):
+        """Show recorded advisory results; never run, wait for or refuse on one.
+
+        An advisory epic check holds nothing (6.4): a local result is read from
+        evidence a train already recorded, a hosted one is observed, and an
+        unavailable producer leaves the head's result unknown.
+        """
+        from src.integration.runtime_contracts import HeadIdentity
+
+        resolved[(head, node.policy)] = None
+        try:
+            if ci is not None and ci.source_for("epic") != "hosted":
+                exact = self._local_checks(target, retained.store, ci, policy, batch)
+            else:
+                exact = await self._hosted(policy, binding, target, batch, head)
+                if exact is not None:
+                    await exact.refresh(HeadIdentity(repository_id=repository_id,
+                                                     ref=node.branch_ref, sha=head, generation=0))
+        except Exception:
+            logger.info("Advisory checks for epic %s at %s are unavailable", node.task_id, head,
+                        exc_info=True)
+            return
+        resolved[(head, node.policy)] = exact
+
     def _epic_completion(self, target, binding, retained):
         from src.integration.checks import HostedChecks, HybridChecks
         from src.integration.runtime_contracts import HeadIdentity
@@ -2735,6 +2777,12 @@ class DaemonLanes:
 
         async def refresh(graph, snapshot):
             policy = await self._policy(target.project_id)
+            async with self.db._engine.connect() as conn:
+                explicit = await playbook_epic_checks_on(conn, target.project_id)
+            if explicit is not None:
+                # The playbook's parent checks replace the stored advisory set.
+                policy = {**policy, "parent": {**(policy.get("parent") or {}),
+                                               "required_checks": explicit.model_dump(mode="json")}}
             ci = integration_ci_policy(policy)
             local = ci is not None and ci.source_for("epic") != "hosted"
             refused: list[dict] = []
@@ -2747,6 +2795,14 @@ class DaemonLanes:
                     continue
                 batch = Batch("epic-readiness-" + node.task_id, target.project_id,
                               target.repository_id, node.branch_ref)
+                if not node.policy.checks_required:
+                    await self._advisory_epic_checks(target, binding, retained, ci, policy, node,
+                                                     batch, head, graph.repository_id, resolved)
+                    continue
+                if not node.policy.check_trust:
+                    # The evaluator names the missing producer; nothing can run.
+                    resolved[(head, node.policy)] = None
+                    continue
                 try:
                     if local:
                         await retain_train_candidate(self.git, retained.store, batch, head)

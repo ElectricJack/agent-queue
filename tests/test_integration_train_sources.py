@@ -112,6 +112,7 @@ from src.database.tables import (
     integration_source_ci,
     integration_legacy_deliveries,
     operator_decisions,
+    playbook_activations,
     projects,
     repos,
     sessions,
@@ -5597,8 +5598,17 @@ async def test_reverify_epic_refuses_stale_or_unheld_source(collected_epic, refu
     assert await case.db.get_task_completion("epic") is None
 
 
+async def require_stored_epic_checks(case, tmp_path):
+    """Make the project's stored parent checks required through playbook data."""
+    from tests.test_integration_epics import require_epic_checks
+
+    project = await case.db.get_project("p")
+    await require_epic_checks(case.db, tmp_path, required=dict(
+        project.hierarchical_integration_policy["parent"]["required_checks"]))
+
+
 @pytest.mark.parametrize("blocker", ["open_child", "checks", "rejection", "hold"])
-async def test_epic_completion_preserves_readiness_constraints(collected_epic, blocker):
+async def test_epic_completion_preserves_readiness_constraints(collected_epic, blocker, tmp_path):
     case = collected_epic
     head = await collect_epic(case)
     await review_epic(case)
@@ -5608,6 +5618,7 @@ async def test_epic_completion_preserves_readiness_constraints(collected_epic, b
         async with case.db.immediate() as conn:
             await conn.execute(update(tasks).where(tasks.c.id == "child-b").values(status="READY"))
     elif blocker == "checks":
+        await require_stored_epic_checks(case, tmp_path)
         del case.github.runs[head]
     elif blocker == "rejection":
         await review_epic(case, verdict="rejected", decision="reject")
@@ -5619,6 +5630,27 @@ async def test_epic_completion_preserves_readiness_constraints(collected_epic, b
     root = await case.train.visit(MAIN)
     assert root.batch_id is None
     assert git(case.origin.url, "rev-parse", "main") == case.base
+
+
+@pytest.mark.parametrize("result", ["missing", "failure"])
+async def test_advisory_epic_checks_never_hold_completion(collected_epic, result, tmp_path):
+    """Without playbook-required parent checks, a red or missing epic check is
+    shown, never waited on; requiring them holds, and removing that applies live."""
+    case = collected_epic
+    head = await collect_epic(case)
+    await review_epic(case)
+    if result == "missing":
+        del case.github.runs[head]
+    else:
+        case.github.runs[head] = "failure"
+    await require_stored_epic_checks(case, tmp_path)
+    held = await case.train.visit(case.target)
+    assert held.state == "blocked", held
+    assert await case.db.get_task_completion("epic") is None
+    async with case.db._engine.begin() as conn:
+        await conn.execute(update(playbook_activations).values(enabled=False))
+    assert (await case.train.visit(case.target)).state == "idle"
+    assert (await case.db.get_task_completion("epic")).commits == [head]
 
 
 async def test_epic_completion_revalidates_after_provenance_and_replays(collected_epic, monkeypatch):
@@ -5644,12 +5676,14 @@ async def test_epic_completion_revalidates_after_provenance_and_replays(collecte
     assert (await case.db.get_task_completion("epic")).commits == [head]
 
 
-async def test_epic_branch_without_trust_manifest_is_a_named_blocker(collected_epic):
+async def test_epic_branch_without_trust_manifest_is_a_named_blocker(collected_epic, tmp_path):
     """An epic branch cut before the repository carried a trust manifest is
-    refused by name on every visit: never a failed visit, never a completion."""
+    refused by name on every visit when its checks are required: never a
+    failed visit, never a completion."""
     case = collected_epic
     head = await collect_epic(case)
     await review_epic(case)
+    await require_stored_epic_checks(case, tmp_path)
     attestation = case.train.lane_for.orchestrator.integration_attestation_service
     # The real trust load reads the exact epic head's tree from a retained store.
     del attestation._load_trust
@@ -5830,8 +5864,11 @@ async def test_completed_root_gets_automatic_aggregate_visit_without_child_origi
 
 
 @pytest.mark.parametrize("change", ["child", "review", "checks", "hold", "policy", "completion"])
-async def test_frozen_epic_rechecks_readiness_before_root_publication(collected_epic, change):
+async def test_frozen_epic_rechecks_readiness_before_root_publication(collected_epic, change,
+                                                                      tmp_path):
     case = collected_epic
+    if change == "checks":
+        await require_stored_epic_checks(case, tmp_path)
     head = await collect_epic(case)
     await review_epic(case)
     assert (await case.train.visit(case.target)).state == "idle"
@@ -8615,6 +8652,7 @@ async def test_local_epic_completion_reads_plan_bound_green_and_invalidates_chan
 ):
     case = collected_epic
     policy = await local_ci_policy(case.world)
+    await require_stored_epic_checks(case, tmp_path)
     case.train.lane_for.orchestrator._command_handler = jobs_handler(case.db, tmp_path)
     testing = await case.train.visit(case.target)
     assert testing.state == "testing", testing
