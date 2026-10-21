@@ -268,7 +268,7 @@ class JobCommandsMixin:
             if wait:
                 if wait_registration is not None:
                     receipt = wait.pop("registration_receipt")
-                    response.update(wait=wait, **{key: receipt[key] for key in (
+                    response.update(wait={**wait, **receipt}, **{key: receipt[key] for key in (
                         "wait_id", "decision", "continuation_id", "generation", "next_step",
                     ) if key in receipt})
                 else:

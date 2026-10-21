@@ -136,7 +136,7 @@ class JobQueriesMixin:
                             wait_records.c.owner_kind == "task",
                             wait_records.c.owner_id == job["owner_id"],
                             wait_records.c.condition_kind == "job",
-                            wait_records.c.condition["job_id"].as_string() == job["id"],
+                            wait_records.c.source_key == f"job:{job['id']}",
                             wait_records.c.outcome.in_(("pending", "satisfied")),
                         ).limit(1))
                     if job["owner_kind"] == "task" and owner_exists and not waiting:
