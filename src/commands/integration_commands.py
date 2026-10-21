@@ -459,8 +459,8 @@ class IntegrationCommandsMixin:
     async def _cmd_integration_release_withheld_source(self, args: dict) -> dict:
         """Preview or release one exact source an aborted batch withholds.
 
-        A supervisor may preview; only a local operator or a granted operator
-        worker (whose grant needs an exact human decision) may apply.
+        The owning supervisor or a local operator may apply. Operator workers
+        still need a grant bound to an exact human decision.
         """
         from src.commands.contracts.integration import IntegrationReleaseWithheldSourceArgs
         from src.integration.batches import BatchStore

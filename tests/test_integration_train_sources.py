@@ -8036,8 +8036,6 @@ async def test_aborted_batch_names_each_withheld_source_instead_of_idling(world)
 
 
 async def test_release_withheld_source_preview_apply_carries_repair_history(world):
-    from src.integration.train_controls import TrainControlError
-
     train, batch_id, heads = await _withheld(world, "a", "b", repair_attempts=2)
     controls = TrainControls(world.db, train=train)
     before = git(world.origin.url, "show-ref")
@@ -8045,17 +8043,14 @@ async def test_release_withheld_source_preview_apply_carries_repair_history(worl
     assert preview["outcome"] == "preview" and preview["source_sha"] == heads["a"]
     assert preview["repair_attempt_count"] == 2
     assert preview["target_sha"] == git(world.origin.url, "rev-parse", "main")
-    with pytest.raises(TrainControlError) as refused:
-        await _release(controls, batch_id, "a", preview, human=False,
-                       operator_id="supervisor session:s")
-    assert refused.value.outcome == "unauthorized"
     for outcome in ("released", "already_released"):
-        assert (await _release(controls, batch_id, "a", preview))["outcome"] == outcome
+        assert (await _release(controls, batch_id, "a", preview, human=False,
+                              operator_id="supervisor session:s"))["outcome"] == outcome
     async with world.db._engine.connect() as conn:
         notes = (await conn.execute(select(operator_decisions).where(
             operator_decisions.c.object_id == batch_id))).mappings().all()
     assert [(n["effect"], n["source_ref"], n["recorded_by"]) for n in notes] == [
-        ("note", "a@" + heads["a"], "human:local-operator")]
+        ("note", "a@" + heads["a"], "supervisor session:s")]
     old = await BatchStore(world.db).get(batch_id)
     assert (old.intent, old.repair_attempt_count) == ("aborted", 2)
     assert git(world.origin.url, "show-ref") == before
@@ -8624,3 +8619,133 @@ async def test_hybrid_epic_hosted_requirement_changes_completion_trust(collected
     exact = await lane.checks.for_candidate(batch, case.base)
     assert isinstance(exact, HybridChecks)
     assert after.check_trust == exact.required.producer_id
+
+
+async def test_preexisting_target_reassembles_with_green_fix_and_delivers_after_restart(world):
+    """A red baseline cannot strand the green PR that fixes it behind a frozen batch."""
+    train, github, _ = await hosted_train(world)
+    train.baseline = CandidateBaselineService(world.db)
+    source = await completed(world, "original")
+    testing = await train.visit(MAIN)
+    base = testing.target_sha
+    github.runs[base] = github.runs[testing.candidate_sha] = "failure"
+    async with world.db.immediate() as conn:
+        await conn.execute(update(integration_batches).where(
+            integration_batches.c.id == testing.batch_id).values(repair_attempt_count=2))
+    old_members = await BatchStore(world.db).members(testing.batch_id)
+    fix = await completed(world, "baseline-fix")
+    red = await train.visit(MAIN)
+    assert (red.state, red.checks) == ("preexisting", "red"), red
+    reassembly = red.detail["reassembly"]
+    assert reassembly["outcome"] == "reassembled"
+    assert reassembly["added_members"] == ["baseline-fix"]
+    store = BatchStore(world.db)
+    old = await store.get(testing.batch_id)
+    assert old.intent == "aborted" and old.repair_attempt_count == 2
+    assert await store.members(old.id) == old_members
+    replacement = await train.batches.current(MAIN)
+    assert replacement.id == reassembly["replacement_batch_id"]
+    assert replacement.repair_attempt_count == 2
+    assert {m.task_id: m.source_sha for m in await store.members(replacement.id)} == {
+        "original": source, "baseline-fix": fix}
+    assert git(world.origin.url, "rev-parse", "main") == base
+    async with world.db._engine.connect() as conn:
+        audit = (await conn.execute(select(events.c.payload).where(
+            events.c.event_type == "integration.batch_reassembled"))).scalars().all()
+    assert len(audit) == 1 and json.loads(audit[0])["replacement_batch_id"] == replacement.id
+
+    batches = SealedBatches(world.db)
+    restarted = IntegrationTrain(targets=DatabaseTargets(world.db), batches=batches,
+        lane_for=DaemonLanes(train.lane_for.orchestrator, batches=batches),
+        repair=OrdinaryRepairService(world.db), baseline=CandidateBaselineService(world.db))
+    checking = await restarted.visit(MAIN)
+    assert checking.batch_id == replacement.id and checking.state == "testing", checking
+    assert git(world.origin.url, "rev-parse", "main") == base
+    github.runs[checking.candidate_sha] = "success"
+    delivered = await restarted.visit(MAIN)
+    assert (delivered.state, delivered.checks) == ("delivered", "green"), delivered
+    for sha in (source, fix):
+        git(world.origin.url, "merge-base", "--is-ancestor", sha, delivered.target_sha)
+
+
+@pytest.mark.parametrize("blocker", ["no_fix", "red_fix", "pending_fix", "hold", "repair"])
+async def test_preexisting_reassembly_keeps_batch_without_an_admissible_fix(world, blocker):
+    from src.operator_decisions import OperatorDecisions
+
+    train, github, _ = await hosted_train(world)
+    train.baseline = CandidateBaselineService(world.db)
+    await completed(world, "original")
+    testing = await train.visit(MAIN)
+    github.runs[testing.target_sha] = github.runs[testing.candidate_sha] = "failure"
+    if blocker != "no_fix":
+        fix = await completed(world, "baseline-fix")
+        if blocker in {"red_fix", "pending_fix"}:
+            github.pr_runs[fix] = "failure" if blocker == "red_fix" else "pending"
+    if blocker == "hold":
+        await OperatorDecisions(world.db).record({
+            "object_kind": "batch", "object_id": testing.batch_id, "operator": "operator",
+            "decision": "keep this candidate", "effect": "hold", "source": "dashboard",
+            "source_ref": "message:baseline-hold", "idempotency_key": "baseline-hold",
+            "releases": None,
+        }, recorded_by="human:local-operator")
+    elif blocker == "repair":
+        await world.db.create_task(Task(id="repair", project_id="p", title="repair",
+            description="", dedup_key=f"repair:{testing.batch_id}:1"))
+    visit = await train.visit(MAIN)
+    assert (await train.batches.current(MAIN)).id == testing.batch_id
+    assert (await BatchStore(world.db).get(testing.batch_id)).intent == "open"
+    assert git(world.origin.url, "rev-parse", "main") == testing.target_sha
+    assert (visit.detail.get("reassembly") or {}).get("outcome") != "reassembled"
+
+
+@pytest.mark.parametrize("project_id,expected", [("p", "released"), (None, "released"),
+                                                ("other", "unauthorized")])
+async def test_release_withheld_handler_allows_only_owning_supervisor(world, monkeypatch,
+                                                                    project_id, expected):
+    from src.commands.integration_commands import IntegrationCommandsMixin
+    from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_context
+    from src.profiles.capabilities import DENY_ALL
+
+    train, batch_id, _ = await _withheld(world, "a", repair_attempts=1)
+    handler = IntegrationCommandsMixin()
+    handler.db = world.db
+    handler.orchestrator = SimpleNamespace(integration_train=train)
+    preview = await _release(TrainControls(world.db), batch_id, "a")
+    monkeypatch.setattr(world.db, "get_session", AsyncMock(return_value=SimpleNamespace(
+        id="supervisor", profile_id="supervisor", lifecycle="named", state="running",
+        desired_state="running", project_id=project_id)))
+    with principal_context(ExecutionPrincipal(kind=PrincipalKind.SESSION, policy=DENY_ALL,
+            session_id="supervisor", elevated=True, project_id=project_id)):
+        result = await handler._cmd_integration_release_withheld_source({
+            "batch_id": batch_id, "task_id": "a", "dry_run": False,
+            "expected_source_sha": preview["source_sha"],
+            "expected_target_sha": preview["target_sha"], "reason": "resume baseline repair"})
+    assert result["outcome"] == expected, result
+
+
+async def test_preexisting_reassembly_rolls_back_abort_if_freezing_replacement_fails(world,
+                                                                                   monkeypatch):
+    train, github, _ = await hosted_train(world)
+    train.baseline = CandidateBaselineService(world.db)
+    await completed(world, "original")
+    testing = await train.visit(MAIN)
+    github.runs[testing.target_sha] = github.runs[testing.candidate_sha] = "failure"
+    await completed(world, "baseline-fix")
+    freeze = BatchStore._freeze_on
+
+    async def refuse(self, conn, batch, members, **kwargs):
+        if batch.id.startswith("train-reassemble-"):
+            raise ValueError("replacement freeze refused")
+        return await freeze(self, conn, batch, members, **kwargs)
+
+    monkeypatch.setattr(BatchStore, "_freeze_on", refuse)
+    with pytest.raises(ValueError, match="replacement freeze refused"):
+        await train.visit(MAIN)
+    assert (await train.batches.current(MAIN)).id == testing.batch_id
+    async with world.db._engine.connect() as conn:
+        row = (await conn.execute(select(integration_batches).where(
+            integration_batches.c.id == testing.batch_id))).mappings().one()
+        assert row["intent"] == "open" and row["ejection_record"] is None
+        assert not await conn.scalar(select(events.c.id).where(
+            events.c.event_type == "integration.batch_reassembled"))
+    assert git(world.origin.url, "rev-parse", "main") == testing.target_sha

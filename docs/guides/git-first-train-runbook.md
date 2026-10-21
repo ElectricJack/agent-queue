@@ -526,9 +526,10 @@ idle. Status also lists every aborted member's disposition (`withheld`,
 ### Release a withheld source
 
 When the unchanged source should be retried on the current target, an operator
+or the owning project supervisor
 releases exactly one (task, source) pair from the aborted batch. Preview is
-read-only and returns the frozen fences; apply needs all three back and a
-human operator principal (a supervisor is refused `unauthorized`):
+read-only and returns the frozen fences; apply needs both exact SHAs back and
+a nonblank reason:
 
 ```bash
 aq integration release-withheld-source <batch-id> --task <task-id>
@@ -546,6 +547,16 @@ source acceptance applies, a writer session or workspace lock is live, the
 batch is still active, a repair task or operation is outstanding, or the repair
 budget is exhausted under `on_exhausted: human` (`repair_exhausted`: reopen the
 task with feedback or archive it).
+
+An ordinary root or development batch blocked solely by proven pre-existing
+target failures can recover automatically. The train scans pending sources for
+trusted green checks covering those failures, rechecks source admission and
+atomically freezes a replacement containing the original members and the fix.
+The old batch and checks remain history; the replacement carries the repair
+count and still needs its own green candidate checks. Visit detail reports
+`reassembly` with the replacement ID and added members, and the event log records
+`integration.batch_reassembled`. Pauses, holds and outstanding repairs prevent
+replacement; without a green fix the existing bounded suite retries continue.
 
 ### Settle a batch the target already contains
 

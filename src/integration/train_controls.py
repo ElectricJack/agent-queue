@@ -646,9 +646,9 @@ class TrainControls:
             if not expected_source_sha or not expected_target_sha or not reason.strip():
                 raise ValueError("apply requires the previewed source and target SHAs "
                                  "and a nonblank reason")
-            if not human_authority:
-                raise TrainControlError("unauthorized", "an operator must apply this release; "
-                                        "a supervisor may only preview it")
+            if not human_authority and not operator_id.startswith("supervisor session:"):
+                raise TrainControlError("unauthorized", "an operator or owning supervisor "
+                                        "must apply this release")
         store = BatchStore(self.db, clock=self.clock)
         batch = await store.get(batch_id)
         if batch is None:
