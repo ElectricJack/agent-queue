@@ -392,6 +392,32 @@ async def test_equal_priority_reservations_use_fifo_even_when_task_ids_sort_othe
         assert selected["task_id"] == "holder"
 
 
+async def test_combined_claim_skips_locked_reservation_and_preserves_allowlist(env):
+    from src.waits.reservations import claim_candidate
+
+    await env.db.create_task(Task(
+        id="ordinary", project_id="p", title="Ordinary", description="",
+        status=TaskStatus.READY, profile_id="worker", route_source="override",
+    ))
+    await sync(env)
+    await fire(env, (await rows(env, wait_deadlines))[0], NOW + 1800)
+    handler = SimpleNamespace(db=env.db, config=env.o.config)
+    args = dict(project_id="p", profile_id="worker", agent_id="worker-agent")
+    async with env.db._engine.begin() as locked:
+        await locked.execute(select(tasks.c.id).where(
+            tasks.c.id == "holder",
+        ).with_for_update())
+        async with env.db._engine.begin() as claimant:
+            assert await claim_candidate(handler, claimant, **args) == ("ordinary", None)
+        async with env.db._engine.begin() as claimant:
+            assert await claim_candidate(
+                handler, claimant, **args, allowed_task_ids={"holder"},
+            ) == (None, None)
+    async with env.db._engine.begin() as claimant:
+        task_id, reservation_id = await claim_candidate(handler, claimant, **args)
+        assert task_id == "holder" and reservation_id
+
+
 async def test_released_branch_owner_retracts_scheduler_priority_donation(env):
     await env.db.create_task(Task(id="urgent", project_id="p", title="Urgent", description="",
                                   priority=10, status=TaskStatus.READY, branch_name="aq/holder",

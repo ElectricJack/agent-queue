@@ -1015,14 +1015,18 @@ class ClaimQueryMixin:
         allowed_task_ids: set[str] | None = None,
         excluded_task_ids: set[str] | None = None,
         reservation_only=False,
+        reservation_first=False,
         effective_priority=False,
         workspace_kind: str = "project-repo",
-    ) -> str | None:
+    ) -> str | dict | None:
         """Select the §10 frontier with FOR UPDATE SKIP LOCKED.
 
         Allow/exclude sets are request-scoped Git admission decisions, re-proven
         on each attempt. A pre-read *hierarchy_mode* only filters candidates:
         the task is re-fenced under lock and preparation re-reads the project.
+
+        With reservation_first, return task/reservation identities together,
+        probing reservations before repairs and affinity in the same statement.
 
         Prefer active train repairs, then this agent's affinity rows, then all admissible rows.
         scans order by priority/created_at so an index can stop at LIMIT 1.
@@ -1084,13 +1088,28 @@ class ClaimQueryMixin:
 
         if task_id is None:
             # COALESCE probes repairs then affinity lazily in one round trip.
+            preferred = [candidate(pinned=False, repair_only=True), candidate(pinned=True)]
+            if reservation_first:
+                from src.waits.reservations import reserved_statement
+
+                # Keep reservation preference in the same lazy probe. An empty
+                # reservation queue must not add a round trip to every claim.
+                preferred = [stmt.with_only_columns(func.jsonb_build_object(
+                    "task_id", tasks.c.id, "reservation_id", None,
+                )) for stmt in preferred]
+                reserved = reserved_statement(candidate(pinned=False), project_id, profile_id)
+                preferred.insert(0, reserved.with_only_columns(func.jsonb_build_object(
+                    "task_id", tasks.c.id, "reservation_id",
+                    reserved.selected_columns.reservation_id,
+                )))
             row = (await conn.execute(select(func.coalesce(
-                candidate(pinned=False, repair_only=True).scalar_subquery(),
-                candidate(pinned=True).scalar_subquery(),
+                *(stmt.scalar_subquery() for stmt in preferred),
             )))).fetchone()
             if row and row[0] is not None:
                 return row[0]
         row = (await conn.execute(candidate(pinned=False))).fetchone()
+        if reservation_first:
+            return {"task_id": row[0], "reservation_id": None} if row else None
         return row[0] if row else None
 
     async def select_reserved_for_profile(self, conn, **kwargs):
