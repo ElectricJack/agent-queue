@@ -46,7 +46,7 @@ class WaitTimerDriver:
         fired = 0
         while self.heap and self.heap[0][0] <= self.clock():
             _, _, row = self.heap[0]
-            async with asyncio.timeout(self.service.listener.renewal_seconds):
+            async with asyncio.timeout(self.service.listener.lease_seconds):
                 result = await self.service.command("wait_deadline_fire", {
                     "wait_id": row["wait_id"], "deadline_type": row["deadline_type"],
                     "generation": row["generation"],

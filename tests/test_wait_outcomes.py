@@ -43,6 +43,28 @@ async def waiting(env, **kwargs):
     return receipt
 
 
+@pytest.mark.parametrize('source_epoch,outcome', [(0, 'pending'), (1, 'source_unavailable')])
+async def test_live_owner_does_not_make_in_progress_source_unavailable(env, source_epoch, outcome):
+    await register(env)
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == 'source').values(
+            status='IN_PROGRESS', claim_epoch=source_epoch,
+        ))
+    # An older committed hint must re-observe the current source generation.
+    await env.db.wait_source_commit(source_key='task:source', generation=0, revision='hint',
+                                   outcome_ref='untrusted', payload={})
+    service = runtime(env, dispatcher=dispatcher(env))
+    assert await service.tick()
+    wait = (await records(env))[0]
+    assert (await env.db.get_task('owner')).status is TaskStatus.IN_PROGRESS
+    assert wait['outcome'] == outcome
+    if source_epoch:
+        assert wait['decision_inputs']['source_unavailable']['reason'] == 'source_changed'
+        assert wait['cleared_at'] is None
+    else:
+        assert 'source_unavailable' not in wait['decision_inputs']
+
+
 async def test_source_commit_one_wake_held_mail_and_atomic_ack(env, monkeypatch):
     prior = await mail(env.db, "owner")
     async with env.db._engine.begin() as conn:
