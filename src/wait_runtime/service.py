@@ -5,6 +5,10 @@ from __future__ import annotations
 import time
 import asyncio
 
+from sqlalchemy import select
+
+from src.waits.conditions import WaitError
+
 from src.waits.listener import WaitSourceListener
 from src.waits.registry import build_registry
 from src.waits.timers import WaitTimerDriver
@@ -53,6 +57,8 @@ class WaitService:
                                ("wait_lift", self.human.lift),
                                ("wait_register", self.lifecycle.register),
                                ("wait_graph", self.graph),
+                               ("wait_explain", self.explain),
+                               ("wait_cancel", self.decisions.cancel),
                                ("wait_ack", self.lifecycle.acknowledge),
                                ("wait_resume_dispatch", self.lifecycle.resume.dispatch),
                                ("wait_evict", self.lifecycle.evict),
@@ -60,6 +66,7 @@ class WaitService:
             if name in handlers:
                 raise ValueError(f"duplicate wait lifecycle owner: {name}")
             handlers[name] = callback
+        require_wait_handlers(handlers, self.scheduler.sync)
         deadlines = getattr(orch, "wait_deadline_handlers", None)
         if deadlines is None:
             deadlines = orch.wait_deadline_handlers = {}
@@ -87,6 +94,29 @@ class WaitService:
                 now=self.lifecycle.clock(),
             )
         return {'success': True, 'graph': result}
+
+    async def explain(self, args, *, principal, scope, handler):
+        from src.database.queries.wait_queries import wait_explain
+        from src.database.tables import tasks, wait_records
+
+        async with self.orch.db._engine.connect() as conn:
+            project_id = (scope or {}).get("project_id")
+            if project_id is None:
+                # A local operator names no project; the target row carries it.
+                table, key = ((wait_records, args["wait_id"]) if args.get("wait_id")
+                              else (tasks, args["task_id"]))
+                project_id = await conn.scalar(
+                    select(table.c.project_id).where(table.c.id == key))
+                if project_id is None:
+                    raise WaitError("wait.not_found", "wait or task not found")
+            result = await wait_explain(
+                conn, project_id=project_id, wait_id=args.get("wait_id"),
+                task_id=args.get("task_id"), history=args.get("history", False),
+                now=self.lifecycle.clock(),
+            )
+        if args.get("wait_id") and result["waits"]:
+            result["explanation"] = result["waits"][0]
+        return result
 
     async def escalation_deadline(self, conn, deadline, wait, *, now, handler):
         callback = (self.scheduler.deadline_locked if wait["origin"] == "scheduler"
@@ -182,3 +212,17 @@ class WaitService:
                     })
                     if not result.get('success'):
                         return
+
+
+def require_wait_handlers(handlers, scheduler_sync):
+    """Fail startup when a verified-wait command would answer "not installed"."""
+    from src.commands.contracts.wait_v2 import WAIT_V2_ARGS
+
+    # scheduler_tick installs the same owner lazily; claim it here so the
+    # check below sees it.
+    handlers.setdefault("scheduler_wait_sync", scheduler_sync)
+    # wait_checkpoint falls back to src.waits.checkpoint inside the command.
+    expected = (set(WAIT_V2_ARGS) | {"wait_register", "wait_cancel"}) - {"wait_checkpoint"}
+    missing = sorted(expected - set(handlers))
+    if missing:
+        raise RuntimeError(f"verified wait commands have no handler: {', '.join(missing)}")
