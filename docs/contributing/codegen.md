@@ -345,6 +345,13 @@ The producer audit records its existing human apply authority and source/target
 fences, plus the `explain_task` addition of the blocker action; older evidence
 files remain unchanged.
 
+The batch repair change at `67575c6b9a43f820d824ff2bdb7d6be41ec21db3`
+records its optional `task_set.repair_batch` argument separately in
+`batch-repair-contract-changes.json`. Removing exactly that property restores
+the publication-delegation catalogue bytes. The producer audit also records
+the reserved metadata, active-mode and assignment validation refusals, with
+worker publication tests covering the supervisor/operator authority boundary.
+
 **Generated invocation remains disabled pending private-value storage and safe
 inspection (A3).** There is no runtime bypass flag. The A2 producer audit is
 pinned in `tests/fixtures/contracts/generated-command-audit.json`, keyed by all
