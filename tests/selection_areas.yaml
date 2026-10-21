@@ -229,6 +229,7 @@ areas:
     match:
       - tests/test_session_spec.py
       - tests/test_session_launch.py
+      - tests/test_codex_trust.py
       - tests/test_handoffs.py
       - tests/test_session_executable.py
       - tests/test_session_provider_conformance.py
