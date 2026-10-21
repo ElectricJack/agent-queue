@@ -2890,27 +2890,53 @@ class TestEndToEndOnFakeProvider:
         )
         assert await db.get_workspace_for_task("t1") == before_workspace
 
+    @pytest.mark.parametrize("cancel_caller", [False, True])
     async def test_verification_reopen_returns_ready_and_releases_resources(
-        self, db, real_orch, real_handler, provider, tmp_path, monkeypatch
+        self, db, real_orch, real_handler, provider, tmp_path, monkeypatch, cancel_caller
     ):
         """A verification retry must return READY and release its old worker."""
-        import asyncio
+        await self._assert_verification_reopen(
+            db, real_orch, real_handler, tmp_path, monkeypatch, cancel_caller=cancel_caller
+        )
 
+    @pytest.mark.perf
+    async def test_verification_reopen_latency_budget(
+        self, perf_strict, db, real_orch, real_handler, tmp_path, monkeypatch
+    ):
+        """Keep the two-second close budget on an opted-in quiet box."""
+        await self._assert_verification_reopen(
+            db, real_orch, real_handler, tmp_path, monkeypatch,
+            synchronize=False, close_timeout=2,
+        )
+
+    async def _assert_verification_reopen(
+        self, db, real_orch, real_handler, tmp_path, monkeypatch, *,
+        cancel_caller=False, synchronize=True, close_timeout=120,
+    ):
         await self._launch_via_execute_task(db, real_orch, monkeypatch, tmp_path)
         session = await db.get_session_for_task("t1")
+        entered = asyncio.Event()
+        release = asyncio.Event()
+        attempts = []
+        if not synchronize:
+            release.set()
 
         async def reopen(ctx):
+            attempts.append(asyncio.current_task())
+            entered.set()
+            await release.wait()
             await db.transition_task(
                 ctx.task.id,
                 TaskStatus.READY,
                 context="verification_reopen",
                 assigned_agent_id=None,
+                accepted_close=ctx.accepted_close,
             )
             ctx.verification_reopened = True
             return None, False
 
         monkeypatch.setattr(real_orch, "_run_completion_pipeline", reopen)
-        close = await asyncio.wait_for(
+        caller = asyncio.create_task(
             real_handler.execute(
                 "task_close",
                 {
@@ -2920,9 +2946,36 @@ class TestEndToEndOnFakeProvider:
                     "work_outcome": "shipped",
                     "summary": "Work completed; git verification requested a retry.",
                 },
-            ),
-            timeout=2,
+            )
         )
+        try:
+            if synchronize:
+                # Observe the close before verification reopens the task. The
+                # default arm checks state and cancellation, while the perf arm
+                # retains the cold-close latency budget on a quiet box.
+                await asyncio.wait_for(entered.wait(), timeout=close_timeout)
+                assert not caller.done()
+                assert (await db.get_task("t1")).status is TaskStatus.IN_PROGRESS
+                assert (await db.get_agent("a1")).state is AgentState.BUSY
+                assert (await db.get_workspace("ws1")).locked_by_task_id == "t1"
+                assert await db.get_task_meta("t1", "pending_completion") is not None
+                assert await db.get_task_meta("t1", "accepted_close") is None
+                if cancel_caller:
+                    caller.cancel()
+                    with pytest.raises(asyncio.CancelledError):
+                        await caller
+                    assert not attempts[0].done(), "the shielded close must survive"
+                release.set()
+            close = await asyncio.wait_for(
+                asyncio.shield(attempts[0] if cancel_caller else caller), timeout=close_timeout
+            )
+        finally:
+            # Drain the shielded close even if a checkpoint assertion fails,
+            # before the database fixture is torn down.
+            release.set()
+            await asyncio.wait_for(
+                asyncio.gather(caller, *attempts, return_exceptions=True), timeout=120
+            )
 
         assert close["success"] is True and close["status"] == "READY"
         task = await db.get_task("t1")
