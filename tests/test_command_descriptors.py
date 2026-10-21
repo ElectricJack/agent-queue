@@ -37,6 +37,8 @@ SCRIPT_CHANGES = ROOT / "tests/fixtures/contracts/script-contract-changes.json"
 MAIN_CHANGES = ROOT / "tests/fixtures/contracts/main-refresh-contract-changes.json"
 DEV_CHANGES = ROOT / "tests/fixtures/contracts/dev-refresh-contract-changes.json"
 WITHHELD_CHANGES = ROOT / "tests/fixtures/contracts/withheld-source-contract-changes.json"
+EPIC_CHANGES = ROOT / "tests/fixtures/contracts/epic-integration-contract-changes.json"
+EPIC_COMMANDS = ("integration_cutover_containment", "integration_reconcile_git_truth")
 WATCH_CHANGES = ROOT / "tests/fixtures/contracts/watch-contract-changes.json"
 
 
@@ -118,6 +120,14 @@ def _dev_changes():
     return changes
 
 
+def _epic_changes():
+    changes = json.loads(EPIC_CHANGES.read_text())
+    assert changes["source_base"] == "f88abe7fd245da853bd328187f01beda41e02e41"
+    assert set(changes["transport_definitions"]) == set(EPIC_COMMANDS)
+    assert set(changes["contract_fingerprints"]) == {"integration_cutover_containment"}
+    return changes
+
+
 def _watch_changes():
     changes = json.loads(WATCH_CHANGES.read_text())
     assert set(changes["playbook_fixtures"]) == {
@@ -192,7 +202,9 @@ def test_transport_views_and_cli_serialization_preserve_golden_evidence():
     assert dev["previous_cli_catalogue_sha256"] == main["cli_catalogue_sha256"]
     withheld = json.loads(WITHHELD_CHANGES.read_text())
     assert withheld["previous_cli_catalogue_sha256"] == dev["cli_catalogue_sha256"]
-    assert actual == withheld["cli_catalogue_sha256"]
+    epic = _epic_changes()
+    assert epic["previous_cli_catalogue_sha256"] == withheld["cli_catalogue_sha256"]
+    assert actual == epic["cli_catalogue_sha256"]
     definitions = {d["name"]: d for d in effective_tool_definitions()}
     for name, definition in _discover_all_commands().items():
         assert definition == snapshot.commands[name].tool_definition()
@@ -205,12 +217,27 @@ def test_withheld_source_catalogue_only_adds_reviewed_command():
     assert evidence["source_base"] == "35d58eee0183bcc25252931ae5958072983606d6"
     name = "integration_release_withheld_source"
     catalogue = json.loads(render_command_catalogue())
+    for later in EPIC_COMMANDS:
+        catalogue["fallback"].pop(later)
     assert catalogue["fallback"].pop(name) == evidence["transport_definition"]
     assert CONTRACTS.require(name).contract.fingerprint() == evidence["contract_fingerprint"]
     # Removing exactly the new command must recover the prior bytes, including
     # schema field ordering. Existing commands and category maps stay pinned.
     previous = json.dumps(catalogue, indent=2) + "\n"
     assert hashlib.sha256(previous.encode()).hexdigest() == _dev_changes()["cli_catalogue_sha256"]
+
+
+def test_epic_catalogue_only_adds_reviewed_commands():
+    evidence = _epic_changes()
+    catalogue = json.loads(render_command_catalogue())
+    for name in EPIC_COMMANDS:
+        assert catalogue["fallback"].pop(name) == evidence["transport_definitions"][name], name
+    for name, fingerprint in evidence["contract_fingerprints"].items():
+        assert CONTRACTS.require(name).contract.fingerprint() == fingerprint, name
+    # Removing exactly the epic's commands recovers the withheld-source bytes.
+    previous = json.dumps(catalogue, indent=2) + "\n"
+    withheld = json.loads(WITHHELD_CHANGES.read_text())
+    assert hashlib.sha256(previous.encode()).hexdigest() == withheld["cli_catalogue_sha256"]
 
 
 def test_dev_redrive_contract_only_adds_explicit_source_adoption():

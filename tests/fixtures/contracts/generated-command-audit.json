@@ -7616,6 +7616,42 @@
       "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
     ]
   },
+  "integration_cutover_containment": {
+    "mode": "typed",
+    "producer": "src/commands/integration_commands.py:IntegrationCommandsMixin._cmd_integration_cutover_containment",
+    "source_digest": "sha256:283edae796b20337e6eeff19ea8937f4443959731a857e26c58f9f9befbacd95",
+    "input_schema_source": "typed_contract",
+    "schema_quality": "typed",
+    "argument_reads_diagnostic_only": [],
+    "effect": "destructive",
+    "retry_safe": true,
+    "principal_requirement": "original_principal",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "denial_reason": null,
+    "result_policy": "retained typed adapter",
+    "return_branches": [
+      {
+        "return": "_failure('refused', 'containment cutover requires the local operator')",
+        "protocol": "delegated_producer"
+      },
+      {
+        "return": "_failure('refused', error)",
+        "protocol": "delegated_producer"
+      },
+      {
+        "return": "{'success': result['outcome'] in {'preview', 'prepared'}, **result}",
+        "protocol": "explicit_boolean: result['outcome'] in {'preview', 'prepared'}"
+      }
+    ],
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_command_descriptors.py::test_epic_catalogue_only_adds_reviewed_commands",
+      "tests/test_integration_containment_cutover.py"
+    ],
+    "review_notes": "Epic fast-smooth-integration-implementation (8ec2dbd8d over target f88abe7fd) adds the typed containment cutover adapter. The handler refuses every principal except the local operator before validating or reading; preview is the default and apply requires the reviewed plan digest. Success is an explicit boolean over the preview/prepared outcomes; driver, Git, GitHub, deploy and timeout errors map to a fixed refusal that never echoes database parameters."
+  },
   "integration_cutover_plan": {
     "mode": "typed",
     "producer": "src/commands/integration_commands.py:IntegrationCommandsMixin._cmd_integration_cutover_plan",
@@ -8238,6 +8274,46 @@
       "tests/test_generated_command_contracts.py::test_generic_result_protocol",
       "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
     ]
+  },
+  "integration_reconcile_git_truth": {
+    "mode": "json_object",
+    "producer": "src/commands/integration_commands.py:IntegrationCommandsMixin._cmd_integration_reconcile_git_truth",
+    "source_digest": "sha256:1417bc266ee93ff71863d64a084d9354ae77f1c95fa85b19ed18cd3d9dec42e0",
+    "input_schema_source": "fallback",
+    "schema_quality": "declared",
+    "argument_reads_diagnostic_only": [
+      "now"
+    ],
+    "effect": "destructive",
+    "retry_safe": false,
+    "principal_requirement": "original_principal",
+    "resource_gates": [
+      "system_scope"
+    ],
+    "denial_reason": null,
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "return_branches": [
+      {
+        "return": "_failure('unauthorized', 'only the daemon may reconcile Git truth')",
+        "protocol": "delegated_producer"
+      },
+      {
+        "return": "_failure('unavailable', 'the Git truth reconciler is not attached')",
+        "protocol": "delegated_producer"
+      },
+      {
+        "return": "{'success': True, **await reconciler.tick(time.time() if now is None else now)}",
+        "protocol": "explicit_boolean: True"
+      }
+    ],
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_command_descriptors.py::test_epic_catalogue_only_adds_reviewed_commands",
+      "tests/test_integration_truth_reconciler.py::test_reconcile_command_requires_daemon_principal",
+      "tests/test_integration_truth_reconciler.py",
+      "tests/test_integration_git_truth.py"
+    ],
+    "review_notes": "Epic fast-smooth-integration-implementation (8ec2dbd8d over target f88abe7fd) adds the daemon-only Git truth reconciler entry point. Like integration_train_tick it is system scope and excluded from CLI, MCP and API; the handler itself refuses any non-service principal and reports an unattached reconciler as unavailable. Only the explicit True branch carries the reconciler tick payload."
   },
   "integration_record_delivered": {
     "mode": "typed",
@@ -22422,7 +22498,7 @@
   "task_set": {
     "mode": "json_object",
     "producer": "src/commands/surface_commands.py:SurfaceCommandsMixin._cmd_task_set",
-    "source_digest": "sha256:163ecbae8376439e33bb7abfeb94581a6076816b9a292546c01db614ca299614",
+    "source_digest": "sha256:391221a9b131fb5ebe8d43316a8f8822844d4cf59f7d99d4cc315de21a1f9f23",
     "input_schema_source": "explicit_tool",
     "schema_quality": "declared",
     "argument_reads_diagnostic_only": [
@@ -22533,7 +22609,7 @@
       "_task_findings_write_fence": "sha256:ddaf185b219090db1d81f785713a571f944b87c778789603de6d4a5b5b9f973f",
       "_task_provider_view": "sha256:bc0669889619cdd9fb0b87f490059d9d607d472e0b96ce5805fb12db1307db26"
     },
-    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled.  Dev reconciliation (4e9a17b8c0adae80acc6cf1195b339b974b69270): reviewed delegated _cmd_get_task dependency batching as recorded on get_task. This wrapper and its producer exits are unchanged; existing held_session authority remains required. Only the reviewed helper digest is refreshed."
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled.  Dev reconciliation (4e9a17b8c0adae80acc6cf1195b339b974b69270): reviewed delegated _cmd_get_task dependency batching as recorded on get_task. This wrapper and its producer exits are unchanged; existing held_session authority remains required. Only the reviewed helper digest is refreshed. Epic c170840ea only emits a task.updated graph change when the description is unchanged, waking the integration lane for closed work; return branches and resource gates are unchanged."
   },
   "task_show": {
     "mode": "json_object",

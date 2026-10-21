@@ -368,6 +368,14 @@ The producer audit records its existing human apply authority and source/target
 fences, plus the `explain_task` addition of the blocker action; older evidence
 files remain unchanged.
 
+The fast-smooth integration epic, refreshed onto `f88abe7fd245da853bd328187f01beda41e02e41`,
+adds `integration_cutover_containment` (typed, local operator only) and the
+daemon-only `integration_reconcile_git_truth` (system scope, like
+`integration_train_tick`). `epic-integration-contract-changes.json` records both
+transport definitions, the typed contract fingerprint and the chained catalogue
+digest; removing exactly those two fallback definitions must reproduce the
+withheld-source catalogue byte for byte.
+
 **Generated invocation remains disabled pending private-value storage and safe
 inspection (A3).** There is no runtime bypass flag. The A2 producer audit is
 pinned in `tests/fixtures/contracts/generated-command-audit.json`, keyed by all
