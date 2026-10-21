@@ -795,9 +795,11 @@ class ExecutionMixin:
         from src.models import SessionRecord
         from src.agents.configuration import apply_agent_overrides, resolve_launch_settings
         current = await self.db.get_task(action.task_id)
+        resuming = getattr(action, "continuation_id", None) is not None
         if (
             current is None
-            or current.status not in (TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS)
+            or current.status not in ((TaskStatus.RESUME_PENDING,) if resuming
+                                      else (TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS))
             or current.assigned_agent_id != action.agent_id
             or current.claim_epoch != task.claim_epoch
         ):
@@ -937,7 +939,8 @@ class ExecutionMixin:
             api_token = _uuid.uuid4().hex
         resume_key = None
         try:
-            resume_key = await self.db.get_task_meta(task.id, "session_resume_key")
+            if not resuming:
+                resume_key = await self.db.get_task_meta(task.id, "session_resume_key")
         except Exception:
             pass
         if resume_key:
@@ -989,7 +992,10 @@ class ExecutionMixin:
             api_token=api_token,
             resume_key=resume_key,
             workspace_source_type=source_type,
-            extra_env={"AQ_CLAIM_EPOCH": str(claim_epoch)},
+            extra_env={"AQ_CLAIM_EPOCH": str(claim_epoch), **({
+                "AQ_CONTINUATION_ID": action.continuation_id,
+                "AQ_CONTINUATION_GENERATION": str(action.generation),
+            } if resuming else {})},
             git_identity=resolve_git_identity(self.config, project).identity,
         )
 
@@ -1011,6 +1017,9 @@ class ExecutionMixin:
             hooks_provisioned=spec.hooks_provisioned,
             git_identity_digest=spec.git_identity_digest,
         )
+
+        if resuming:
+            await self.wait_service.lifecycle.resume.bind_launch(action, launch_record)
 
         hierarchy_enabled = getattr(
             project, "hierarchical_integration_mode", "disabled"
@@ -1088,6 +1097,9 @@ class ExecutionMixin:
         except SessionLaunchUncertain as exc:
             logger.exception("Task %s: launch retained for session reconciliation", task.id)
             release_canary()
+            if resuming:
+                await self._fail_session_launch(action, task, str(exc))
+                return
             if integration_ownership is not None:
                 # Keep the failed writer visible while the existing handoff
                 # protocol proves it stopped. Unknown termination retains
@@ -1191,6 +1203,12 @@ class ExecutionMixin:
         ``session_launch_failed`` backoff below.
         """
         from src.providers import inflight
+
+        if getattr(action, "continuation_id", None):
+            await self.wait_service.lifecycle.resume.failed(
+                action, task, reason, handler=self._command_handler,
+            )
+            return
 
         availability = getattr(self, "provider_availability", None)
         disposition = inflight.decide(availability, failure)

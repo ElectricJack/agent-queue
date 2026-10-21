@@ -522,7 +522,8 @@ def format_status_overview(
 
     # Task summary
     total = sum(task_counts.values())
-    active_statuses = {"READY", "ASSIGNED", "IN_PROGRESS", "WAITING_INPUT", "VERIFYING"}
+    active_statuses = {"READY", "ASSIGNED", "IN_PROGRESS", "WAITING_INPUT", "VERIFYING",
+                       "WAITING", "HIBERNATED", "RESUME_PENDING"}
     active = sum(v for k, v in task_counts.items() if k in active_statuses)
     completed = task_counts.get("COMPLETED", 0)
     failed = task_counts.get("FAILED", 0)

@@ -28,6 +28,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB, insert as pg_insert
 
 from src.routing.sources import LEGACY
+from src.waits.graph import apply_base_priority_change, lock_component_tasks
 
 from src.database.queries.blocked_state import (
     PROJECTION_INPUT_COLUMNS,
@@ -37,6 +38,7 @@ from src.database.queries.ingest_hold import not_ingest_held
 from src.database.tables import (
     agents,
     archived_tasks,
+    continuations,
     events,
     gates,
     integration_branch_owners,
@@ -60,10 +62,12 @@ from src.database.tables import (
     task_tools,
     task_workspace_requirements,
     tasks,
+    wait_records,
     workspaces,
 )
 from src.models import (
     HOLD_LABEL_PREFIX,
+    SUSPENDED_TASK_STATUSES,
     AgentState,
     Task,
     TaskStatus,
@@ -352,6 +356,7 @@ class TaskQueryMixin:
                 title=task.title,
                 description=task.description,
                 priority=task.priority,
+                effective_priority=task.priority,
                 status=task.status.value,
                 verification_type=task.verification_type.value,
                 retry_count=task.retry_count,
@@ -681,6 +686,8 @@ class TaskQueryMixin:
             )
         retired = []
         async with self._engine.begin() as conn:
+            if "priority" in values:
+                await lock_component_tasks(conn, {f"task:{task_id}"})
             comment_source_project = None
             if "project_id" in kwargs:
                 # Project moves serialize with hierarchy mutations before
@@ -757,7 +764,12 @@ class TaskQueryMixin:
             if lifecycle & kwargs.keys():
                 stmt = stmt.where(_not_manually_paused())
             result = await conn.execute(stmt.values(**values))
+            if result.rowcount == 1 and "priority" in values:
+                await apply_base_priority_change(conn, task_id, now=values["updated_at"])
             if result.rowcount == 1 and previous_status is not None:
+                from src.waits.sources import record_task_transition
+
+                await record_task_transition(conn, task_id, previous_status, values["status"])
                 await self._record_recovery_failure_generation_on(
                     conn, task_id, TaskStatus(previous_status), TaskStatus(values["status"]),
                     values["updated_at"],
@@ -1568,6 +1580,21 @@ class TaskQueryMixin:
         if saved.get("cleanup_pending"):
             raise ValueError("Task pause cleanup is pending; repeat Pause to finish cleanup while held.")
         prior = TaskStatus(saved.get("status", "READY"))
+        if prior in SUSPENDED_TASK_STATUSES:
+            # Pause stops the old session. Only an uncleared outcome on the
+            # current continuation can authorize a new resume; never restore
+            # WAITING onto a stopped owner or put a continuation in READY.
+            resolved = await conn.scalar(
+                select(wait_records.c.id)
+                .join(continuations, continuations.c.wait_id == wait_records.c.id)
+                .where(
+                    continuations.c.task_id == task_id,
+                    continuations.c.resume_state.notin_(("acknowledged", "failed", "cancelled")),
+                    wait_records.c.outcome != "pending",
+                    wait_records.c.cleared_at.is_(None),
+                ).limit(1)
+            )
+            prior = TaskStatus.RESUME_PENDING if resolved else TaskStatus.HIBERNATED
         if prior in (TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS, TaskStatus.PAUSED):
             prior = (
                 TaskStatus.IN_PROGRESS if await self.is_container(task_id, conn=conn)
@@ -1903,6 +1930,24 @@ class TaskQueryMixin:
             if extra_values:
                 values = {**values, **extra_values}
             stmt = stmt.values(**values)
+            if current_status != new_status:
+                from src.waits.source_sql import task_transition_statement
+
+                stmt = task_transition_statement(stmt, current_status.value)
+                # The CTE returns the updated row even when the caller only
+                # needs a match count. Preserve existing returning semantics.
+                out = (await conn.execute(stmt)).mappings().fetchone()
+                if out is None and not _manual_pause_control and extra_where is None:
+                    paused = (await conn.execute(select(tasks.c.id).where(
+                        tasks.c.id == task_id, ~_not_manually_paused()
+                    ))).scalar_one_or_none()
+                    if paused:
+                        raise ManualPauseActive(f"Task {task_id} is manually paused; use resume_task.")
+                if out is not None and await record_retry() and returning:
+                    out = (await conn.execute(select(tasks).where(
+                        tasks.c.id == task_id,
+                    ))).mappings().one()
+                return out is not None, dict(out) if returning and out is not None else None
             if returning and supports_returning(conn):
                 out = (await conn.execute(stmt.returning(*tasks.c))).mappings().fetchone()
                 if out is None and not _manual_pause_control and extra_where is None:
@@ -2055,7 +2100,11 @@ class TaskQueryMixin:
                 # WG-5: enforce raises when the flag is on and the
                 # caller didn't opt out via ``force=True``.  Warn-only
                 # otherwise (unchanged pre-flip behaviour).
-                if getattr(self, "_sm_enforce", False) and not force:
+                if (
+                    getattr(self, "_sm_enforce", False)
+                    or current_status in SUSPENDED_TASK_STATUSES
+                    or new_status in SUSPENDED_TASK_STATUSES
+                ) and not force:
                     from src.state_machine import InvalidTransition
 
                     raise InvalidTransition(
@@ -2554,6 +2603,9 @@ class TaskQueryMixin:
         """The transactional body of :meth:`delete_task`, on a supplied ``conn``."""
         from src.database.queries.hierarchy_queries import HierarchyError
 
+        await lock_component_tasks(conn, {
+            f"task:{tid}" for tid in await self.subtree_ids(task_id, conn=conn)
+        })
         await self.guard_integration_mutation(
             task_id, "delete", conn=conn, retire_pending=True, branch_policy=branch_policy,
             delivery=delivery,
@@ -2645,6 +2697,9 @@ class TaskQueryMixin:
         — which for a human gate means live Approve/Deny buttons in Discord
         for a task that no longer exists.
         """
+        from src.database.queries.continuation_queries import retire_task_waits
+
+        await lock_component_tasks(conn, {f"task:{task_id}"})
         if operator_delete:
             # FK writers take KEY SHARE on the task. Keep them behind the
             # deletion until every owned row (including layouts) has gone.
@@ -2654,6 +2709,10 @@ class TaskQueryMixin:
         comment_project_id = (await conn.execute(
             select(tasks.c.project_id).where(tasks.c.id == task_id)
         )).scalar_one_or_none()
+        await retire_task_waits(
+            conn, task_id, reason="task_archived" if preserve_completion else "task_deleted",
+            now=time.time(),
+        )
         await conn.execute(delete(task_results).where(task_results.c.task_id == task_id))
         if not preserve_completion:
             await conn.execute(

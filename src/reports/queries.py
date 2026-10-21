@@ -67,6 +67,12 @@ async def read_morning_snapshot(
                 output["gaps"].append({"source": "projects", "reason": "row_limit"})
             selected_ids = tuple(row["id"] for row in output["projects"])
 
+            from src.database.queries.wait_queries import pending_human_waits
+
+            output["waiting_on_you"] = await pending_human_waits(
+                conn, now=until, project_ids=selected_ids,
+            )
+
             async def read(name, stmt):
                 try:
                     async with conn.begin_nested():

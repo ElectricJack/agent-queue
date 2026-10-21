@@ -14,16 +14,22 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/wait.py`](../../../src/commands/contracts/wait.py) |
-| Contract fingerprint | `sha256:fa37f806a3d005ee7d2e7248a8d75d0ec8aace5e2b5f26385f8693cc4d00d414` |
+| Contract fingerprint | `sha256:bf32cd335bffbc95828bf07acb6a7e5b070480bfeed81ba97dcad415e8f6b729` |
 
 ## Parameters
 
 | Parameter | Type | Required | Default | Description |
 |---|---|---|---|---|
+| `schema_version` | `1 \| 2` | no | `1` | — |
 | `project_id` | `string \| null` | no | `null` | — |
 | `task_id` | `string \| null` | no | `null` | — |
 | `session_id` | `string \| null` | no | `null` | — |
-| `kind` | `"job" \| "task" \| "message" \| "timer"` | yes | — | — |
+| `kind` | `"job" \| "task" \| "message" \| "timer" \| "dependency" \| "ci_check" \| "ci_run" \| "pull_request" \| "batch" \| "human" \| "resource" \| "playbook_condition" \| null` | no | `null` | — |
+| `condition` | `object \| null` | no | `null` | — |
+| `claimed` | `string \| null` | no | `null` | — |
+| `escalate_after_seconds` | `number \| null` | no | `null` | — |
+| `owner_kind` | `"scheduler" \| "integration" \| "playbook" \| null` | no | `null` | — |
+| `owner_id` | `string \| null` | no | `null` | — |
 | `ref` | `string \| null` | no | `null` | — |
 | `after_seq` | `integer \| null` | no | `null` | — |
 | `due_at` | `number \| null` | no | `null` | — |
@@ -35,7 +41,15 @@
 
 | Field | Type | Description |
 |---|---|---|
-| `wait` | `AgentWaitRecord` | — |
+| `wait` | `AgentWaitRecord \| object \| null` | — |
+| `wait_id` | `string \| null` | — |
+| `condition` | `object \| null` | — |
+| `evidence` | `object \| null` | — |
+| `decision` | `object \| null` | — |
+| `escalate_at` | `number \| null` | — |
+| `ceiling_at` | `number \| null` | — |
+| `continuation_id` | `string \| null` | — |
+| `warnings` | `string[]` | — |
 | `next_step` | `string \| null` | — |
 
 ## Nested objects
@@ -78,7 +92,7 @@ This command declares no effect clause, so the playbook graph falls back to its 
 
 | Effect | Subject | Condition |
 |---|---|---|
-| Create using project_id, task_id, session_id, kind, ref, after_seq, due_at, timeout, idempotency_key, claim_epoch | — | always |
+| Create using schema_version, project_id, task_id, session_id, kind, condition, claimed, escalate_after_seconds, owner_kind, owner_id, ref, after_seq, due_at, timeout, idempotency_key, claim_epoch | — | always |
 
 <!-- aq:generated:end -->
 

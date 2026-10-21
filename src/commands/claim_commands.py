@@ -28,7 +28,7 @@ from src.database.queries.hierarchy_queries import ProjectIntegrationMode
 from src.database.queries.ingest_hold import IngestHeld
 from src.git.manager import ForeignSlotClaim
 from src.git.process import PREPARE_CLEANUP_HOLD, ProcessCleanupError
-from src.models import ClaimResult, TaskStatus
+from src.models import SUSPENDED_TASK_STATUSES, ClaimResult, TaskStatus
 from src.pool_claims import pool_claim_cap
 from src.workspace_disable import CLAIM_FAILURES, disable_fields
 
@@ -800,6 +800,12 @@ class ClaimCommandsMixin:
                         row,
                         cap,
                     )
+                if task.status in SUSPENDED_TASK_STATUSES:
+                    # The wait/continuation owns this binding. Claim-loop
+                    # recovery must neither release it nor re-serve the task.
+                    return self._simple(
+                        ClaimResult.NOT_ADMISSIBLE, "wait.task_suspended", row, cap
+                    )
                 if (
                     task.status is not TaskStatus.IN_PROGRESS
                     or task.assigned_agent_id != row.agent_id
@@ -919,8 +925,10 @@ class ClaimCommandsMixin:
                     hierarchy_mode = replace(hierarchy_mode, stackable_prerequisite_ids=frozenset(
                         await stack_view.verified_on(conn, proof_ids)
                     ))
-                tid = await self.db.select_ready_for_profile(
-                    conn,
+                from src.waits.reservations import claim_candidate, consume_reservation
+
+                tid, reservation_id = await claim_candidate(
+                    self, conn,
                     project_id=session.project_id,
                     profile_id=session.profile_id,
                     agent_id=row.agent_id,
@@ -961,6 +969,7 @@ class ClaimCommandsMixin:
                         now=now,
                         agent_reserved=True,
                     )
+                    await consume_reservation(conn, reservation_id, session.id, now=now)
                     new_claim = (row, task, slot)
 
         if stale_binding is not None:

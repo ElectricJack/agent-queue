@@ -30,6 +30,12 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import yaml
 
+from src.config_wait_policy import (
+    WaitKindPolicy as WaitKindPolicy,
+    WaitPolicyConfig as WaitPolicyConfig,
+    WaitProjectOverrides as WaitProjectOverrides,
+    parse_wait_policy,
+)
 from src.docs_urls import DEFAULT_DOCS_BASE_URL
 from src.routing.sources import DEFAULT_ROUTER_PLAYBOOK_ID
 
@@ -3996,6 +4002,7 @@ class AppConfig:
     streams: StreamsConfig = field(default_factory=StreamsConfig)
     security: SecurityConfig = field(default_factory=SecurityConfig)
     pricing: PricingConfig = field(default_factory=PricingConfig)
+    wait_policy: WaitPolicyConfig = field(default_factory=WaitPolicyConfig)
     messages: MessagesConfig = field(default_factory=MessagesConfig)
     events: EventsConfig = field(default_factory=EventsConfig)
     supervisor_agent: SupervisorAgentConfig = field(default_factory=SupervisorAgentConfig)
@@ -4222,6 +4229,7 @@ class AppConfig:
         errors.extend(self.security.validate())
         errors.extend(self.pricing.validate())
         errors.extend(self.messages.validate())
+        errors.extend(self.wait_policy.validate())
         errors.extend(self.supervisor_agent.validate())
         errors.extend(self.api_auth.validate())
         errors.extend(self.surface.validate())
@@ -4427,6 +4435,7 @@ HOT_RELOADABLE_SECTIONS = {
     # reads and ``records`` outbox/export), so an edit bites on the next
     # access without a restart.
     "knowledge",
+    "wait_policy",  # read per decision; flags are snapshotted once per registry cycle
 }
 """Config sections that can be safely updated at runtime without restart."""
 
@@ -4921,6 +4930,15 @@ def _present_kwargs(section: dict, spec: dict) -> dict:
     Passing only supplied values keeps the dataclass as the source of truth.
     """
     return {name: coerce(section[name]) for name, coerce in spec.items() if name in section}
+
+
+def _load_wait_policy(raw: object) -> WaitPolicyConfig:
+    """Parse and validate the policy before making it visible to runtime consumers."""
+    config = parse_wait_policy(raw)
+    errors = config.validate()
+    if errors:
+        raise ConfigValidationError([str(error) for error in errors])
+    return config
 
 
 def load_config(path: str, profile: str | None = None) -> AppConfig:
@@ -5428,6 +5446,9 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
                 )
             )
         config.pricing = PricingConfig(models=entries)
+
+    if "wait_policy" in raw:
+        config.wait_policy = _load_wait_policy(raw["wait_policy"])
 
     if "messages" in raw and isinstance(raw["messages"], dict):
         ms_cfg = raw["messages"]

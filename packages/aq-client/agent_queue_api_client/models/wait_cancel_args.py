@@ -4,43 +4,38 @@ from collections.abc import Mapping
 from typing import Any, TypeVar, cast
 
 from attrs import define as _attrs_define
-from attrs import field as _attrs_field
 
+from ..models.wait_cancel_args_schema_version import WaitCancelArgsSchemaVersion
 from ..types import UNSET, Unset
 
-T = TypeVar("T", bound="WaitListRequest")
+T = TypeVar("T", bound="WaitCancelArgs")
 
 
 @_attrs_define
-class WaitListRequest:
+class WaitCancelArgs:
     """
     Attributes:
-        limit (int | None | Unset):
-        offset (int | None | Unset):
+        wait_id (str):
+        schema_version (WaitCancelArgsSchemaVersion | Unset):  Default: WaitCancelArgsSchemaVersion.VALUE_1.
         project_id (None | str | Unset):
         task_id (None | str | Unset):
         session_id (None | str | Unset):
+        claim_epoch (int | None | Unset):
     """
 
-    limit: int | None | Unset = UNSET
-    offset: int | None | Unset = UNSET
+    wait_id: str
+    schema_version: WaitCancelArgsSchemaVersion | Unset = WaitCancelArgsSchemaVersion.VALUE_1
     project_id: None | str | Unset = UNSET
     task_id: None | str | Unset = UNSET
     session_id: None | str | Unset = UNSET
-    additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
+    claim_epoch: int | None | Unset = UNSET
 
     def to_dict(self) -> dict[str, Any]:
-        limit: int | None | Unset
-        if isinstance(self.limit, Unset):
-            limit = UNSET
-        else:
-            limit = self.limit
+        wait_id = self.wait_id
 
-        offset: int | None | Unset
-        if isinstance(self.offset, Unset):
-            offset = UNSET
-        else:
-            offset = self.offset
+        schema_version: int | Unset = UNSET
+        if not isinstance(self.schema_version, Unset):
+            schema_version = self.schema_version.value
 
         project_id: None | str | Unset
         if isinstance(self.project_id, Unset):
@@ -60,43 +55,43 @@ class WaitListRequest:
         else:
             session_id = self.session_id
 
+        claim_epoch: int | None | Unset
+        if isinstance(self.claim_epoch, Unset):
+            claim_epoch = UNSET
+        else:
+            claim_epoch = self.claim_epoch
+
         field_dict: dict[str, Any] = {}
-        field_dict.update(self.additional_properties)
-        field_dict.update({})
-        if limit is not UNSET:
-            field_dict["limit"] = limit
-        if offset is not UNSET:
-            field_dict["offset"] = offset
+
+        field_dict.update(
+            {
+                "wait_id": wait_id,
+            }
+        )
+        if schema_version is not UNSET:
+            field_dict["schema_version"] = schema_version
         if project_id is not UNSET:
             field_dict["project_id"] = project_id
         if task_id is not UNSET:
             field_dict["task_id"] = task_id
         if session_id is not UNSET:
             field_dict["session_id"] = session_id
+        if claim_epoch is not UNSET:
+            field_dict["claim_epoch"] = claim_epoch
 
         return field_dict
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         d = dict(src_dict)
+        wait_id = d.pop("wait_id")
 
-        def _parse_limit(data: object) -> int | None | Unset:
-            if data is None:
-                return data
-            if isinstance(data, Unset):
-                return data
-            return cast(int | None | Unset, data)
-
-        limit = _parse_limit(d.pop("limit", UNSET))
-
-        def _parse_offset(data: object) -> int | None | Unset:
-            if data is None:
-                return data
-            if isinstance(data, Unset):
-                return data
-            return cast(int | None | Unset, data)
-
-        offset = _parse_offset(d.pop("offset", UNSET))
+        _schema_version = d.pop("schema_version", UNSET)
+        schema_version: WaitCancelArgsSchemaVersion | Unset
+        if isinstance(_schema_version, Unset):
+            schema_version = UNSET
+        else:
+            schema_version = WaitCancelArgsSchemaVersion(_schema_version)
 
         def _parse_project_id(data: object) -> None | str | Unset:
             if data is None:
@@ -125,29 +120,22 @@ class WaitListRequest:
 
         session_id = _parse_session_id(d.pop("session_id", UNSET))
 
-        wait_list_request = cls(
-            limit=limit,
-            offset=offset,
+        def _parse_claim_epoch(data: object) -> int | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(int | None | Unset, data)
+
+        claim_epoch = _parse_claim_epoch(d.pop("claim_epoch", UNSET))
+
+        wait_cancel_args = cls(
+            wait_id=wait_id,
+            schema_version=schema_version,
             project_id=project_id,
             task_id=task_id,
             session_id=session_id,
+            claim_epoch=claim_epoch,
         )
 
-        wait_list_request.additional_properties = d
-        return wait_list_request
-
-    @property
-    def additional_keys(self) -> list[str]:
-        return list(self.additional_properties.keys())
-
-    def __getitem__(self, key: str) -> Any:
-        return self.additional_properties[key]
-
-    def __setitem__(self, key: str, value: Any) -> None:
-        self.additional_properties[key] = value
-
-    def __delitem__(self, key: str) -> None:
-        del self.additional_properties[key]
-
-    def __contains__(self, key: str) -> bool:
-        return key in self.additional_properties
+        return wait_cancel_args
