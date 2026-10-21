@@ -1097,6 +1097,7 @@
         "tests/test_project_onboarding_contract.py",
         "tests/test_project_onboarding_service.py",
         "tests/test_project_paths.py",
+        "tests/test_project_relocation.py",
         "tests/test_project_repository_binding.py",
         "tests/test_project_roots_config.py",
         "tests/test_project_supervisors.py",
@@ -14695,6 +14696,37 @@
         "parametrize"
       ],
       "summary": "Tests for ``src.projects.paths`` — root-relative path validation and safe listing."
+    },
+    "tests/test_project_relocation.py": {
+      "areas": [
+        "projects"
+      ],
+      "default_arm": true,
+      "digest": "sha256:3596fb85f157222b23cc61673048d17f38410d794c10a914f3f6ac2f4d4be195",
+      "imports": [
+        "src.build_cache",
+        "src.commands.principal",
+        "src.commands.project_relocation_commands",
+        "src.config",
+        "src.database",
+        "src.database.tables",
+        "src.git.manager",
+        "src.integration.development",
+        "src.integration.models",
+        "src.integration.repository_git",
+        "src.models",
+        "src.playbooks.artifact_store",
+        "src.profiles.capabilities",
+        "src.projects.relocation",
+        "src.projects.storage_binding",
+        "src.sessions.fake",
+        "src.sessions.launch",
+        "src.sessions.provider"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Real Git and disposable PostgreSQL storage-cutover regressions."
     },
     "tests/test_project_repository_binding.py": {
       "areas": [

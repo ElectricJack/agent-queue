@@ -4275,7 +4275,10 @@ class Orchestrator(
                 publisher = getattr(self, "development_integration", None)
                 if publisher is not None:
                     retained_paths.append(publisher._store_path(repository))
+                from src.projects.storage_binding import bound_path
+
                 for path in retained_paths:
+                    path = bound_path(project.storage_binding, path)
                     extra_paths.append(str(path))
                     if origin:
                         retained_origins[str(Path(path).resolve())] = origin
