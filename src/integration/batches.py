@@ -998,6 +998,24 @@ class BatchService:
             # remain historical delivery evidence, never repair completeness.
             retains_target = bool(candidate and await self.gitops.is_ancestor(repo, target, candidate))
             reusable = retains_target
+            if candidate:
+                marker = await self.gitops.run(repo, "show", "-s", "--format=%s", candidate)
+                if marker.startswith("AQ-Speculative:"):
+                    fields = marker.split()
+                    predecessor = (await self.store.db.get_integration_batch(fields[1])
+                                   if len(fields) == 4 else None)
+                    policy = await self.store.db.get_project(batch.project_id)
+                    enabled = ((policy.hierarchical_integration_policy or {}).get("train")
+                               or {}).get("speculative_ci", False)
+                    valid = bool(predecessor and enabled and
+                        predecessor["lifecycle"] == "promoted" and
+                        predecessor["intent"] == "open" and
+                        str(predecessor["repair_attempt_count"]) == fields[2] and
+                        predecessor["tested_candidate_sha"] == fields[3] == target and
+                        await self.gitops.run(repo, "rev-parse", candidate + "^1") == target)
+                    reusable = reusable and valid
+                    if not valid:
+                        retains_target = False
             if reusable:
                 reusable = all([
                     await self.gitops.is_ancestor(repo, member.source_sha, candidate)

@@ -21,6 +21,7 @@ def digest(value):
 class DispatchWaits:
     def __init__(self, orch, *, lanes=None, clock=time.time):
         self.orch, self.db, self.lanes, self.clock = orch, orch.db, lanes, clock
+        self._speculative = {}
         if lanes is not None:
             watcher = CheckWatcher(self.db, self.commit, orch.git,
                 checks=self.checks, repository=self.repository,
@@ -49,7 +50,7 @@ class DispatchWaits:
                 batches.c.tested_candidate_sha == cond.parameters["head_sha"],
             ).order_by(batches.c.created_at.desc()).limit(1))).mappings().first()
         if row is None:
-            return None
+            return self._speculative.get((repo["id"], cond.parameters["head_sha"]))
         target = TrainTarget(row["project_id"], row["repository_id"], row["target_ref"])
         lane = await self.lanes(target)
         exact = await lane.checks.for_candidate(Batch.from_row(row), cond.parameters["head_sha"])
@@ -87,11 +88,27 @@ class DispatchWaits:
                              "head_sha": visit.candidate_sha, "check_name": check.name}, binding)
         return wanted
 
-    async def sync(self, target, batch, visit, queued, exact):
+    async def sync(self, target, batch, visit, queued, exact, *, speculative=None):
         if not enabled(self.orch.config, target.project_id):
             return {"wait_ids": []}
         prefix = "train:" + digest(target.key) + ":"
         wanted = await self.conditions(target, batch, visit, queued, exact, prefix)
+        # Disposable exact-SHA readers are observation hints, never publication
+        # authority. Restart safely loses them and rebuilds the next batch.
+        for key in list(self._speculative):
+            if key[0] == target.repository_id:
+                self._speculative.pop(key)
+        if speculative and speculative.sha and speculative.exact:
+            self._speculative[(target.repository_id, speculative.sha)] = speculative.exact
+            verdict = await speculative.exact.read(
+                candidate_head(speculative.prepared.batch, speculative.sha))
+            for run_id in {check.run_id for check in verdict.checks if check.run_id and
+                           check.conclusion not in {Conclusion.SUCCESS, Conclusion.FAILURE,
+                                                    Conclusion.CANCELLED}}:
+                condition = {"kind": "ci_run", "repository_id": target.repository_id,
+                             "head_sha": speculative.sha, "run_id": run_id}
+                wanted[prefix + "speculative:" + digest(condition)] = (
+                    condition, speculative.exact.required.model_dump(mode="json"))
         async with self.db._engine.connect() as conn:
             rows = (await conn.execute(select(wait_records).where(
                 wait_records.c.project_id == target.project_id,

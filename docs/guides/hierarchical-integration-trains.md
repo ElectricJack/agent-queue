@@ -138,6 +138,33 @@ snapshot remains unknown and requires operator recovery. Retained clones enable
 Git fsync for committed data. See the
 [recovery contract](../specs/design/integration-repository-recovery.md).
 
+Speculative next-batch CI is disabled by default. Enable it last, per project,
+only after operator validation of hosted root CI and independent runner capacity.
+The policy's `train` block accepts:
+
+```yaml
+train:
+  speculative_ci: true
+  speculative_public_hosted: true
+```
+
+`speculative_public_hosted` records the operator's validation that this repository
+is public and uses free hosted runners. A private repository instead needs
+`speculative_batch_ci_p90_seconds` set to its measured batch CI p90, strictly below
+60 seconds. Without either form of evidence, validation refuses with
+`speculative_ci_compute_not_eligible`. Local or hybrid root CI refuses with
+`speculative_ci_requires_hosted_root`. Keep Matter Engine disabled while it uses
+local compute. No speculative setting is emitted at its default value.
+
+While a root batch waits for CI, the train may build one disposable successor on
+its exact candidate. The successor has no delivery target ownership until ordinary
+admission freezes it after the predecessor lands. Its exact hosted run appears as
+a shared `ci_run` wait. Reuse requires that its first parent is the published tip
+and that the predecessor landed without split or repair. Otherwise the train
+rebuilds normally. Speculative work runs separately; an unfinished build never
+holds up the predecessor's publication. Restart can lose speculative scheduling
+hints; Git parentage, durable predecessor state and current checks still govern reuse.
+
 The `IntegrationTrain.visit(target, seal_now=True)` and
 `DatabaseBatches.open_batch(..., seal_now=True)` hooks bypass the timing
 window for one call. They preserve all admission and publication checks;

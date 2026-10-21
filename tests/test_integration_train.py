@@ -40,6 +40,7 @@ from src.integration.train import (
 from tests import test_integration_gitops
 from tests.test_integration_gitops import commit, git
 from tests.test_integration_gitops import git_history_template as git_history_template
+from tests.test_integration_train_sources import world as world
 
 #: The real Git/PostgreSQL repository substrate, re-exported for the fixture below.
 setup = test_integration_gitops.setup
@@ -2014,3 +2015,139 @@ async def test_deferred_epic_revisits_when_due_without_waking_a_fixer():
     targets.deferred_revisits[epic.key] = 700.0
     assert not (await runtime.tick())["started"]
     assert runtime.visit.await_count == 2
+
+
+@pytest.fixture
+async def speculative_env(world):
+    # Reuse the real Git/PostgreSQL train substrate, with hosted verdicts supplied
+    # explicitly. No daemon or operator configuration is involved.
+    from tests.test_integration_train_sources import lane as real_lane
+    from tests.test_integration_gitops import LocalGit
+    from pathlib import Path
+
+    await world.db.update_project("p", hierarchical_integration_policy={
+        "train": {"speculative_ci": True, "speculative_public_hosted": True},
+    })
+    t, checks, _ = real_lane(world, LocalGit(Path(world.origin.url)), settling=True)
+    original = t.lane_for
+
+    async def lane_for(target):
+        current = await original(target)
+
+        async def prepare(parent, base, snapshot):
+            return await t.batches.prepare_speculative(
+                target, current.service, parent, base, snapshot)
+
+        return replace(current, prepare_speculative=prepare)
+
+    t.lane_for = lane_for
+    yield SimpleNamespace(world=world, train=t, checks=checks)
+    await t.stop()
+
+
+async def speculative_pair(env):
+    from tests.test_integration_train_sources import completed
+
+    await completed(env.world, "first")
+    first = await env.train.visit(ROOT)
+    # The first speculative scan can finish empty before the later arrival.
+    if ROOT.key in env.train._speculative:
+        await env.train._speculative[ROOT.key].task
+        env.train._discard_speculative(ROOT)
+    await completed(env.world, "second")
+    await completed(env.world, "third")
+    again = await env.train.visit(ROOT)
+    assert again.batch_id == first.batch_id
+    item = env.train._speculative[ROOT.key]
+    await item.task
+    assert item.sha and item.prepared
+    return first, item
+
+
+@pytest.mark.parametrize("restart", [False, True])
+async def test_kept_speculative_candidate_publishes_exact_sha_without_rebuild(speculative_env, restart):
+    env = speculative_env
+    first, item = await speculative_pair(env)
+    repo = env.world.origin.clone
+    assert git(repo, "rev-parse", item.sha + "^1") == first.candidate_sha
+    # CI can finish before its base lands; the delivery tip is still unchanged.
+    assert git(repo, "ls-remote", "origin", "refs/heads/main").split()[0] != item.sha
+    if restart:
+        from tests.test_integration_train_sources import lane as real_lane
+        from tests.test_integration_gitops import LocalGit
+        from pathlib import Path
+
+        await env.train.stop()
+        env.train, env.checks, _ = real_lane(
+            env.world, LocalGit(Path(env.world.origin.url)), settling=True)
+    current = await env.train.lane_for(ROOT)
+    current.service.gitops.merge_sources = AsyncMock(side_effect=AssertionError("unexpected rebuild"))
+    # Adopting the already-pushed candidate does not produce another CI push.
+    original_publish = current.service.publish
+
+    async def publish(*args, **kwargs):
+        return await original_publish(*args, **kwargs)
+
+    current.service.publish = AsyncMock(side_effect=publish)
+    original = env.train.lane_for
+
+    async def same_lane(target):
+        assert target == ROOT
+        return current
+
+    env.train.lane_for = same_lane
+    env.checks.green.update({first.candidate_sha, item.sha})
+    delivered = await env.train.visit(ROOT)
+    assert delivered.state == "delivered"
+    assert delivered.candidate_sha == item.sha
+    assert git(repo, "ls-remote", "origin", "refs/heads/main").split()[0] == item.sha
+    current.service.gitops.merge_sources.assert_not_called()
+    candidate_pushes = [call for call in current.service.publish.call_args_list
+                        if call.args[1] == candidate_ref(item.prepared.batch.id)]
+    assert not candidate_pushes
+    env.train.lane_for = original
+
+
+@pytest.mark.parametrize("change", ["split", "rebuild"])
+async def test_speculative_candidate_discarded_after_predecessor_changes(speculative_env, change):
+    env = speculative_env
+    first, item = await speculative_pair(env)
+    if change == "split":
+        await (await env.train.lane_for(ROOT)).service.store.set_intent(first.batch_id, "aborted")
+    else:
+        from sqlalchemy import update
+        async with env.world.db._engine.begin() as conn:
+            await conn.execute(update(integration_batches).where(
+                integration_batches.c.id == first.batch_id,
+            ).values(repair_attempt_count=1))
+    env.checks.green.update({first.candidate_sha, item.sha})
+    visit = await env.train.visit(ROOT)
+    assert visit.candidate_sha != item.sha
+    assert git(env.world.origin.clone, "ls-remote", "origin", "refs/heads/main").split()[0] != item.sha
+
+
+async def test_slow_speculative_build_never_delays_predecessor(speculative_env):
+    from tests.test_integration_train_sources import completed
+
+    env = speculative_env
+    entered, release = asyncio.Event(), asyncio.Event()
+    original = env.train.lane_for
+
+    async def lane_for(target):
+        current = await original(target)
+
+        async def slow(*args):
+            entered.set()
+            await release.wait()
+            return None
+
+        return replace(current, prepare_speculative=slow)
+
+    env.train.lane_for = lane_for
+    await completed(env.world, "first")
+    first = await env.train.visit(ROOT)
+    await entered.wait()
+    env.checks.green.add(first.candidate_sha)
+    delivered = await asyncio.wait_for(env.train.visit(ROOT), 10)
+    assert delivered.state == "delivered"
+    assert not release.is_set()
