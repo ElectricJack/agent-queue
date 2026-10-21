@@ -60,10 +60,16 @@ class RepositoryGit:
         if not origin:
             raise PromotionInvariantError("canonical repository has no immutable origin")
         digest = hashlib.sha256(repository_id.encode("utf-8")).hexdigest()
+        from src.projects.storage_binding import repository_path
+
+        retained = await repository_path(
+            self.db, repository_id,
+            self.data_dir / "integration-repositories" / f"{digest}.git",
+        )
         resolved = ResolvedRepository(
             repo=repo,
             origin_url=origin,
-            retained_git_dir=self.data_dir / "integration-repositories" / f"{digest}.git",
+            retained_git_dir=retained,
         )
         self._retained_repositories[resolved.retained_git_dir] = repo
         return resolved
