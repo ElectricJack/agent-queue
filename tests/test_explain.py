@@ -1071,10 +1071,16 @@ async def test_cancelled_explanation_does_not_imply_failed_independent_reads(
     handler, db, monkeypatch, stage,
 ):
     """Successful controls do not turn an incomplete explanation into evidence."""
+    from src.integration import admission
+    from src.integration.status import IntegrationStatusService
+
     await mktask(db, "slow-explain", status=TaskStatus.READY, profile_id="worker")
     entered, cancelled = asyncio.Event(), asyncio.Event()
 
     async def stalled(*args, **kwargs):
+        # Control reads share these dependencies; only stall the explanation.
+        if asyncio.current_task() is not request:
+            return await original(*args, **kwargs)
         entered.set()
         try:
             await asyncio.Event().wait()
@@ -1083,11 +1089,14 @@ async def test_cancelled_explanation_does_not_imply_failed_independent_reads(
 
     with monkeypatch.context() as fault:
         if stage == "frontier":
+            original = db.claim_frontier_exclusions_many
             fault.setattr(db, "claim_frontier_exclusions_many", stalled)
         elif stage == "admission":
-            fault.setattr("src.integration.admission.observe_admission", stalled)
+            original = admission.observe_admission
+            fault.setattr(admission, "observe_admission", stalled)
         else:
-            fault.setattr("src.integration.status.IntegrationStatusService.task_blockers", stalled)
+            original = IntegrationStatusService.task_blockers
+            fault.setattr(IntegrationStatusService, "task_blockers", stalled)
         request = asyncio.create_task(handler._cmd_explain_task({"task_id": "slow-explain"}))
         try:
             await asyncio.wait_for(entered.wait(), 10)

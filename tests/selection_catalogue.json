@@ -6935,13 +6935,16 @@
         "work-graph"
       ],
       "default_arm": true,
-      "digest": "sha256:dc8aa327405f0d853ad8d7ae74c32a2bd16ed8005047a99a147df95bdf0029bd",
+      "digest": "sha256:4c7791fcc1e328105aedf50d39bc480cd843d1bbbb056ca59c5e7843999b90fd",
       "imports": [
         "src.claim_timing",
         "src.commands.handler",
         "src.config",
         "src.database.tables",
         "src.explain",
+        "src.integration",
+        "src.integration.admission",
+        "src.integration.status",
         "src.intelligence_classes",
         "src.models",
         "src.operator_decisions",
