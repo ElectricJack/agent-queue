@@ -536,6 +536,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`show_playbook_graph`](show_playbook_graph.md) | Show Playbook Graph | Execute the show_playbook_graph command. |
 | [`skip_task`](skip_task.md) | Skip Task | Skip a BLOCKED/FAILED task to unblock its dependency chain. |
 | [`spec_approve`](spec_approve.md) | Spec Approve | Execute the spec_approve command. |
+| [`spec_ingest_legacy_adopt`](spec_ingest_legacy_adopt.md) | Spec Ingest Legacy Adopt | Execute the spec_ingest_legacy_adopt command. |
 | [`spec_ingest_legacy_inventory`](spec_ingest_legacy_inventory.md) | Spec Ingest Legacy Inventory | Execute the spec_ingest_legacy_inventory command. |
 | [`spec_ingest_reconcile`](spec_ingest_reconcile.md) | Spec Ingest Reconcile | Execute the spec_ingest_reconcile command. |
 | [`start_agent_terminal`](start_agent_terminal.md) | Start Agent Terminal | Execute the start_agent_terminal command. |

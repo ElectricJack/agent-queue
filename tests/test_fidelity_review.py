@@ -10,7 +10,7 @@ from __future__ import annotations
 import time
 
 import pytest
-from sqlalchemy import func, select, update
+from sqlalchemy import delete, func, select, update
 
 from src.api.auth import RequestScope
 from src.api.scope import check_request_scope
@@ -317,6 +317,74 @@ async def _record(handler, scope, args):
         "kind": "session", "session_id": scope.session_id,
         "session_instance_token": "instance", "project_id": "p1",
     }})
+
+
+async def _lose_wakeup(handler, batch_id, event_type):
+    async with handler.db.immediate() as conn:
+        await conn.execute(delete(integration_outbox).where(
+            integration_outbox.c.event_type == event_type,
+            integration_outbox.c.payload["batch_id"].as_string() == batch_id,
+        ))
+        await conn.execute(update(ingest_batches).where(
+            ingest_batches.c.batch_id == batch_id,
+        ).values(updated_at=time.time() - 120))
+
+
+async def test_reconcile_reemits_receipt(handler):
+    batch, scope, args = await _review_request(handler)
+    recorded = await _record(handler, scope, args)
+    assert recorded["passing"], recorded
+    await _lose_wakeup(handler, batch["batch_id"], "batch.receipt_recorded")
+    recovered = await handler.execute("batch_reconcile", {})
+    assert not recovered["errors"], recovered
+    assert [row["event_type"] for row in recovered["recovered"]] == ["batch.receipt_recorded"]
+    # Transport acceptance followed by a crash before release must wake policy again.
+    async with handler.db.immediate() as conn:
+        await conn.execute(update(integration_outbox).where(
+            integration_outbox.c.id == recovered["recovered"][0]["event_id"],
+        ).values(delivered_at=time.time()))
+        await conn.execute(update(ingest_batches).where(
+            ingest_batches.c.batch_id == batch["batch_id"],
+        ).values(updated_at=time.time() - 120))
+    replay = await handler.execute("batch_reconcile", {})
+    assert replay["recovered"][0]["event_id"] != recovered["recovered"][0]["event_id"]
+    assert await _holds(handler, batch["task_ids"]) == {batch["batch_id"]}
+    assert (await _batch_row(handler, batch["batch_id"]))["reviewer_task_id"] == (
+        await handler.db.get_session(scope.session_id)
+    ).task_id
+
+
+async def test_reconcile_redispatches_missing_reviewer(handler):
+    batch, _ = await _held_batch(handler)
+    await _lose_wakeup(handler, batch["batch_id"], "batch.held")
+    recovered = await handler.execute("batch_reconcile", {})
+    assert not recovered["errors"], recovered
+    assert recovered["recovered"][0]["event_type"] == "batch.held"
+    first = await _ensure(handler, batch)
+    again = await _ensure(handler, batch)
+    assert first["created"] and not again["created"]
+    assert first["task_id"] == again["task_id"]
+    assert await _holds(handler, batch["task_ids"]) == {batch["batch_id"]}
+
+
+async def test_release_idempotent_after_crash(handler):
+    from tests.test_task_batch_commands import _release, _release_ready
+
+    batch, _, receipt = await _release_ready(handler)
+    first = await _release(handler, batch)
+    assert first["success"] and not first["already_released"], first
+    await _lose_wakeup(handler, batch["batch_id"], "batch.released")
+    recovered = await handler.execute("batch_reconcile", {})
+    assert recovered["recovered"][0]["event_type"] == "batch.released", recovered
+    again = await _release(handler, batch)
+    assert again["success"] and again["already_released"], again
+    assert again["release_receipt"] == first["release_receipt"]
+    assert await _holds(handler, batch["task_ids"]) == {None}
+    async with handler.db._engine.connect() as conn:
+        assert (await conn.execute(select(func.count()).select_from(ingest_batch_receipts).where(
+            ingest_batch_receipts.c.batch_id == batch["batch_id"],
+            ingest_batch_receipts.c.receipt_id == receipt["receipt_id"],
+        ))).scalar_one() == 1
 
 
 async def test_receipt_requires_every_section(handler):

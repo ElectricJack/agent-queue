@@ -6133,12 +6133,14 @@
         "doctor"
       ],
       "default_arm": true,
-      "digest": "sha256:49c54555bc047e21071d990396e1a8d2ad1cb6d76384163828514c777292da05",
+      "digest": "sha256:302e8e61e11b2fca38dd5f5c3c5ed85ccd5c9af0b60914dbbc92e24b8d8a2a65",
       "imports": [
         "src.cli.app",
         "src.commands.ops_commands",
         "src.config",
         "src.database",
+        "src.database.queries.proposal_queries",
+        "src.database.tables",
         "src.doctor",
         "src.doctor.ask_checks",
         "src.doctor.builtin",
@@ -6151,6 +6153,7 @@
         "src.doctor.formula_checks",
         "src.doctor.git_checks",
         "src.doctor.hierarchy_checks",
+        "src.doctor.ingestion_checks",
         "src.doctor.integration_checks",
         "src.doctor.intelligence_class_checks",
         "src.doctor.models",
