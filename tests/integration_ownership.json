@@ -9636,7 +9636,12 @@
     "src/playbooks/private_values.py::REFERENCE_KEY": "Generic protected-value reference key; same-shaped constant AST is not relocated integration logic.",
     "src/playbooks/receipts.py::attempt_key": "Generic playbook step attempt hash; not an integration mutation key or replay ledger.",
     "src/playbooks/script_inputs.py::canonical": "Generic canonical JSON for script input pins; not integration ref serialization.",
-    "src/playbooks/script_inputs.py::digest": "Generic SHA-256 for script bytes; not integration lifecycle storage."
+    "src/playbooks/script_inputs.py::digest": "Generic SHA-256 for script bytes; not integration lifecycle storage.",
+    "src/waits/dispatcher.py::WakeDispatcher.finish": "Universal wait outcome commit: fenced wait_records update, deadline and edge cleanup, measurements, wait events and continuation/message delivery for every source kind. Charged only through the legacy_parked alias; that read-only parking proof stays charged in src/wait_runtime/legacy_parking.py. No integration lifecycle or ref replay state.",
+    "src/wait_runtime/lifecycle.py::WaitLifecycle.register_in_transaction": "Universal verified wait registration shared by atomic producer commands: sleep policy, ceiling anchor, register_wait and suspension intent. Integration is one producer; integration-specific condition verification stays charged to its adapters. No integration lifecycle or ref replay state.",
+    "src/waits/ownership.py::fence_owner": "Universal live-claim or stopped-continuation fence for wait mutations; delegates to the excluded verify_owner and the charged legacy_parked proof. Reads sessions and continuations only, never the integration ledger.",
+    "src/database/queries/continuation_queries.py::retire_task_waits": "Universal archive/deletion tombstone for a task's waits, deadlines, edges, reservations and continuations. Writes generic wait state only; batch retirement callers remain charged independently.",
+    "src/waits/policy.py::enabled": "Generic wait-policy activation switch (v2/scheduler waits) read from configuration; no integration state, lifecycle or ref authority."
   },
   "owned_fingerprints": [
     "0003870bf7ecea2ab9a41288b28bfe85be663baca1c9855bae4671222bd7c9ab",
@@ -17871,7 +17876,10 @@
     "src/playbooks/features.py::execution_metadata_from_source": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/playbooks/features.py::infer_required_features": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/database/tables.py::job_input_pins": "Playbook-only immutable script input retention; no integration owner, workspace lease or ref replay storage.",
-    "src/database/queries/wait_metrics.py::wait_metrics_snapshot": "Read-only fleet wait metrics aggregate owned by metrics; wait_graph's cost projection imports it, but it writes nothing and holds no integration fence or source."
+    "src/database/queries/wait_metrics.py::wait_metrics_snapshot": "Read-only fleet wait metrics aggregate owned by metrics; wait_graph's cost projection imports it, but it writes nothing and holds no integration fence or source.",
+    "src/database/queries/proposal_queries.py::detect_cycles": "Pure Tarjan SCC cycle detection over task and proposal dependency edges; no database access, integration state or delivery authority.",
+    "src/profiles/inheritance.py::resolve_inheritance": "Generic profile template inheritance merge for every agent profile; no integration state, branch ownership or delivery authority.",
+    "src/state_machine.py::validate_waits_for": "Generic task-status waits_for validator shared by all wait kinds; no integration storage, lifecycle or ref authority."
   },
   "exclusion_policy": {
     "tests": "Fixtures and tests do not ship as production mechanisms.",

@@ -20452,7 +20452,9 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/SpecIngestLegacyAdoptResponse"
+                }
               }
             }
           },
@@ -75594,6 +75596,52 @@
           "proposal_id"
         ],
         "title": "SpecIngestLegacyAdoptRequest"
+      },
+      "SpecIngestLegacyAdoptResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "proposal_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Proposal Id"
+          },
+          "left_gated": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Left Gated"
+          },
+          "batch_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Batch Id"
+          }
+        },
+        "additionalProperties": true,
+        "type": "object",
+        "title": "SpecIngestLegacyAdoptResponse",
+        "description": "Either the proposal is left gated, or the adopted batch's held receipt\n(``_batch_receipt`` / ``_create_ingest_batch``) is returned, so\n``extra=\"allow\"`` keeps the receipt fields without pinning one shape."
       },
       "SpecIngestLegacyInventoryRequest": {
         "properties": {

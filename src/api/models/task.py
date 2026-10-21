@@ -1078,6 +1078,19 @@ class SpecIngestLegacyInventoryResponse(BaseModel):
     policy: str
 
 
+class SpecIngestLegacyAdoptResponse(BaseModel):
+    """Either the proposal is left gated, or the adopted batch's held receipt
+    (``_batch_receipt`` / ``_create_ingest_batch``) is returned, so
+    ``extra="allow"`` keeps the receipt fields without pinning one shape.
+    """
+
+    model_config = {"extra": "allow"}
+    success: bool = True
+    proposal_id: str | None = None
+    left_gated: bool | None = None
+    batch_id: str | None = None
+
+
 class TaskBatchProposeResponse(BaseModel):
     """A proposal is created, not applied — unless ingestion applies it live.
 
@@ -1490,6 +1503,7 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "spec_ingest_reconcile": SpecIngestReconcileResponse,
     "batch_reconcile": BatchReconcileResponse,
     "spec_ingest_legacy_inventory": SpecIngestLegacyInventoryResponse,
+    "spec_ingest_legacy_adopt": SpecIngestLegacyAdoptResponse,
     "get_downstream_tasks": GetDownstreamTasksResponse,
     "task_route": TaskRouteResponse,
     "task_route_override": TaskRouteOverrideResponse,

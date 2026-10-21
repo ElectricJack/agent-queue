@@ -49,6 +49,7 @@ BATCH_REPAIR_CHANGES = ROOT / "tests/fixtures/contracts/batch-repair-contract-ch
 WATCH_CHANGES = ROOT / "tests/fixtures/contracts/watch-contract-changes.json"
 INGEST_CHANGES = ROOT / "tests/fixtures/contracts/ingestion-replay-contract-changes.json"
 HIBERNATION_CHANGES = ROOT / "tests/fixtures/contracts/hibernation-contract-changes.json"
+HELD_INGESTION_CHANGES = ROOT / "tests/fixtures/contracts/held-ingestion-contract-changes.json"
 
 
 @pytest.fixture(autouse=True)
@@ -152,8 +153,25 @@ def _publication_changes():
     return changes
 
 
+def _held_ingestion_changes():
+    changes = json.loads(HELD_INGESTION_CHANGES.read_text())
+    assert changes["source_base"] == "5c96f5b5286f72fb7c89eca1f9248eae0c3ba387"
+    assert set(changes["contracts"]) == {"task_batch_release", "task_batch_retire"}
+    assert set(changes["transport_definitions"]) == {"doctor"}
+    for name, fingerprint in changes["contracts"].items():
+        assert CONTRACTS.require(name).contract.fingerprint() == fingerprint, name
+    return changes
+
+
 def _revert_hibernation_catalogue(catalogue):
-    delta = _hibernation_changes()["catalogue_delta"]
+    catalogue = _revert_catalogue_delta(catalogue, _held_ingestion_changes()["catalogue_delta"])
+    previous = json.dumps(catalogue, indent=2) + "\n"
+    assert (hashlib.sha256(previous.encode()).hexdigest()
+            == _hibernation_changes()["cli_catalogue_sha256"])
+    return _revert_catalogue_delta(catalogue, _hibernation_changes()["catalogue_delta"])
+
+
+def _revert_catalogue_delta(catalogue, delta):
     previous = delta["previous_explicit"]
     catalogue["explicit"] = [
         previous.get(entry["name"], entry) for entry in catalogue["explicit"]
@@ -266,6 +284,7 @@ def test_transport_views_and_cli_serialization_preserve_golden_evidence():
     hibernation = _hibernation_changes()
     publication = _publication_changes()
     batch_repair = _batch_repair_changes()
+    held_ingestion = _held_ingestion_changes()
     contracts = {**changes["contracts"], **scripts["contracts"]}
     snapshot = command_snapshot()
     for name, digest in fixture["transport_definitions"].items():
@@ -294,6 +313,10 @@ def test_transport_views_and_cli_serialization_preserve_golden_evidence():
             approved = batch_repair["transport_definitions"][name]
             assert approved["previous_sha256"] == digest
             digest = approved["sha256"]
+        if name in held_ingestion["transport_definitions"]:
+            approved = held_ingestion["transport_definitions"][name]
+            assert approved["previous_sha256"] == digest
+            digest = approved["sha256"]
         assert _digest(snapshot.commands[name].tool_definition()) == digest, name
     actual = hashlib.sha256(render_command_catalogue().encode()).hexdigest()
     assert changes["previous_cli_catalogue_sha256"] == fixture["cli_catalogue_sha256"]
@@ -305,7 +328,8 @@ def test_transport_views_and_cli_serialization_preserve_golden_evidence():
     assert publication["previous_cli_catalogue_sha256"] == withheld["cli_catalogue_sha256"]
     assert batch_repair["previous_cli_catalogue_sha256"] == publication["cli_catalogue_sha256"]
     assert hibernation["previous_cli_catalogue_sha256"] == batch_repair["cli_catalogue_sha256"]
-    assert actual == hibernation["cli_catalogue_sha256"]
+    assert held_ingestion["previous_cli_catalogue_sha256"] == hibernation["cli_catalogue_sha256"]
+    assert actual == held_ingestion["cli_catalogue_sha256"]
     definitions = {d["name"]: d for d in effective_tool_definitions()}
     for name, definition in _discover_all_commands().items():
         assert definition == snapshot.commands[name].tool_definition()
