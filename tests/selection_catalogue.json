@@ -637,6 +637,7 @@
         "tests/test_integration_containment_cutover.py",
         "tests/test_integration_contracts.py",
         "tests/test_integration_cutover.py",
+        "tests/test_integration_delivery_watchdog.py",
         "tests/test_integration_git_truth.py",
         "tests/test_integration_gitops.py",
         "tests/test_integration_hierarchy.py",
@@ -8799,6 +8800,23 @@
         "parametrize"
       ],
       "summary": "Real Git recovery for parents whose children reached main by other routes."
+    },
+    "tests/test_integration_delivery_watchdog.py": {
+      "areas": [
+        "integration-trains"
+      ],
+      "default_arm": true,
+      "digest": "sha256:2b307ef36672dd9b5d931d7a048df17c30fa2d7deb7e9e905ea60e3b808833a5",
+      "imports": [
+        "src.database",
+        "src.database.tables",
+        "src.integration.delivery_watchdog",
+        "src.models"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Threshold and producer progress evidence for the delivery watchdog."
     },
     "tests/test_integration_eject.py": {
       "areas": [
