@@ -817,6 +817,13 @@ class DatabaseBatches:
                     "incident_ids": [item["id"] for item in incidents],
                 },))
         frozen_members = await service.store.members(current.id) if current is not None else ()
+        if (target.kind == "epic" and current is not None and frozen_members
+                and current.intent == "open" and not (current.epic_sync or current.epic_refresh)
+                and await _finish_on_cancel(self._settle_project_delivered(
+                    target, snapshot, service, current, frozen_members))):
+            return BatchSelection(detail={
+                "reason": "batch_inputs_delivered_to_project", "batch_id": current.id,
+            })
         if (current is not None and frozen_members
                 and not (current.epic_sync or current.epic_refresh)
                 and target.kind != "promotion"
@@ -939,7 +946,7 @@ class DatabaseBatches:
                     blockers.append({
                         "code": "batch_inputs_delivered_to_project", "ref": current.id,
                         "detail": "batch contains work already delivered to the project root; "
-                                  "abort the batch before retiring its origins",
+                                  "complete frozen-source proof is required for automatic settlement",
                         "task_ids": sorted(delivered),
                     })
                     return BatchSelection(blockers=tuple(blockers))
@@ -983,6 +990,81 @@ class DatabaseBatches:
         if target.kind == "root":
             await self._clear_admissions(target)
         return BatchSelection(frozen, await service.store.members(frozen.id), tuple(blockers))
+
+    async def _settle_project_delivered(self, target, snapshot, service, batch, members) -> bool:
+        """Release an obsolete epic batch using its frozen inputs, even without its ref.
+
+        This observes delivery to the project, not publication to the epic. Do
+        not emit epic source-settled/promotion policy events or infer delivery
+        of a newer completion from this historical batch's inputs.
+        """
+        from src.operator_decisions import history_on, related_on
+
+        observed = snapshot.observation
+        if (observed.project_id, observed.repository_id, observed.target_ref) != target.key:
+            return False
+        async with self.db._engine.connect() as conn:
+            binding = (await conn.execute(select(repos.c.default_branch, repos.c.url)
+                .join(projects, projects.c.integration_repository_id == repos.c.id)
+                .where(projects.c.id == batch.project_id,
+                       repos.c.id == batch.repository_id))).first()
+        if binding is None:
+            return False
+        root_ref = _branch(binding.default_branch)
+        if root_ref == batch.target_ref:
+            return False
+        root = snapshot.for_target(root_ref)
+        if root.error or not root.target_oid or root.observation.repository_url != binding.url:
+            return False
+        for member in members:
+            if await root.contains_source(
+                member.task_id, member.source_sha, member.base_sha,
+            ) is not True:
+                return False
+        async with self.db.immediate() as conn:
+            await self.db.lock_hierarchy_project(conn, batch.project_id)
+            project = (await conn.execute(select(projects).where(
+                projects.c.id == batch.project_id).with_for_update())).mappings().one()
+            repository = (await conn.execute(select(repos).where(
+                repos.c.id == batch.repository_id).with_for_update())).mappings().one()
+            if (project["integration_repository_id"] != batch.repository_id
+                    or project["status"] != "ACTIVE"
+                    or project["hierarchical_integration_mode"] not in TRAIN_MODES
+                    or _branch(repository["default_branch"]) != root_ref
+                    or repository["url"] != binding.url):
+                return False
+            await service.store._target_lock(conn, batch)
+            row = (await conn.execute(select(integration_batches).where(
+                integration_batches.c.id == batch.id).with_for_update())).mappings().one()
+            frozen = tuple(BatchMember(r.task_id, r.source_sha, r.source_base_sha, r.ordinal)
+                for r in (await conn.execute(select(integration_batch_members).where(
+                    integration_batch_members.c.batch_id == batch.id,
+                ).order_by(integration_batch_members.c.ordinal))).all())
+            if (Batch.from_row(row) != batch or row["intent"] != "open"
+                    or row["lifecycle"] == "promoted" or row["trigger"] == "promotion"
+                    or frozen != members):
+                return False
+            decisions = await history_on(conn, batch.project_id,
+                                         await related_on(conn, "batch", batch.id))
+            if any(decision["active"] for decision in decisions) or not await root.is_fresh():
+                return False
+            candidate = root.observation.source_heads.get(
+                "refs/remotes/origin/" + candidate_ref(batch.id).removeprefix("refs/heads/"))
+            await conn.execute(update(integration_batches).where(
+                integration_batches.c.id == batch.id,
+            ).values(lifecycle="promoted", final_main_sha=root.target_oid,
+                     tested_candidate_sha=candidate, updated_at=self.clock()))
+            from src.integration.repair import OrdinaryRepairService
+
+            await OrdinaryRepairService(self.db)._settle_green_on(conn, batch.id, root.target_oid)
+            await self.db.log_event("integration.batch_delivered_to_project",
+                project_id=batch.project_id, payload=json.dumps({
+                    "batch_id": batch.id, "target_ref": target.target_ref,
+                    "delivered_ref": root_ref, "delivered_sha": root.target_oid,
+                    "members": [asdict(member) for member in members],
+                }), conn=conn)
+        await self.cleanup_settled(batch)
+        return True
 
     async def next_batch_id(self, target, members):
         """Ejected or released sources may return with the same exact frozen inputs.
