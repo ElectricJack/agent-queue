@@ -85,12 +85,14 @@ class WaitTimerDriver:
         db = self.service.orch.db
         now = args.get("now", self.clock())
         async with db._engine.begin() as conn:
+            # Match source dispatch: graph before lease, so a busy graph never
+            # fences out lease renewal and timer/source writers cannot deadlock.
+            await conn.execute(select(func.pg_advisory_xact_lock(REGISTRATION_LOCK)))
             try:
                 cursor = await self.service.listener.locked_lease(conn)
             except LeaseLost:
                 return {"success": False, "error_code": "wait.unavailable",
                         "error": "timer driver no longer owns the source lease"}
-            await conn.execute(select(func.pg_advisory_xact_lock(REGISTRATION_LOCK)))
             # Task before wait before deadline, like registration and dispatch.
             subject = (await conn.execute(select(wait_records).where(
                 wait_records.c.id == args["wait_id"],
