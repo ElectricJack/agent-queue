@@ -1,18 +1,34 @@
 """Threshold and producer progress evidence for the delivery watchdog."""
 
 from dataclasses import replace
+from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import insert
+from sqlalchemy import insert, select, update
 
 from src.database import Database
-from src.database.tables import wait_measurements, wait_records
+from src.database.tables import (
+    escalations,
+    events,
+    messages,
+    projects,
+    system_config,
+    task_labels,
+    tasks,
+    wait_measurements,
+    wait_records,
+)
+from src.integration import delivery_truth
 from src.integration.delivery_watchdog import (
+    CURSOR_KEY,
+    THRESHOLD_KEY,
     classify_delivery_progress,
     derive_threshold,
     measured_threshold_on,
+    scan_stuck_deliveries,
 )
-from src.models import Project
+from src.integration.models import DeliveryWatchdogPolicy
+from src.models import Project, RepoConfig, RepoSourceType, Task, TaskStatus
 from tests.db_fixtures import lease_dsn
 
 
@@ -169,3 +185,303 @@ async def test_measured_threshold_excludes_foreign_non_ci_agent_old_and_future_s
         assert threshold.stuck_after_seconds == 4800
     finally:
         await db.close()
+
+
+# -- the scan: fake clock, fixture inventory and CI durations ---------------
+
+class Inventory:
+    """The Git inventory per project: entries, or an unavailable repository."""
+
+    def __init__(self):
+        self.entries, self.unavailable, self.calls = {}, set(), []
+
+    def owe(self, project_id, task_id, rule="stranded_root"):
+        self.entries.setdefault(project_id, {})[task_id] = {
+            "task_id": task_id, "project_id": project_id, "archived": False, "root": True,
+            "branch": f"aq/{task_id}", "head": "a" * 40, "wip": False, "rule": rule,
+            "accounted": False, "reason": "fixture", "remedy": None,
+        }
+
+    async def __call__(self, db, observer, *, project_ids, now):
+        (project_id,) = project_ids
+        self.calls.append(project_id)
+        if project_id in self.unavailable:
+            return {"entries": [], "unavailable": [{"project_id": project_id}], "projects": 1}
+        return {"entries": list(self.entries.get(project_id, {}).values()),
+                "unavailable": [], "projects": 1}
+
+
+@pytest.fixture
+async def watch(clock, monkeypatch):
+    db = Database(lease_dsn("delivery-watchdog-scan"))
+    await db.initialize()
+    state = SimpleNamespace(db=db)
+    inventory = Inventory()
+    completions = {}
+
+    async def requests(_db, task_ids, **_):
+        return {task_id: SimpleNamespace(
+            completion_id=f"completion-{task_id}", legacy_generation="",
+            completed_at=completions[task_id], has_recorded_source=True,
+            task_status="COMPLETED") for task_id in task_ids if task_id in completions}
+
+    monkeypatch.setattr(delivery_truth, "load_delivery_requests", requests)
+
+    async def restart():
+        """A new daemon: a fresh adapter on the same database, no memory in between."""
+        await state.db.close()
+        state.db = Database(lease_dsn("delivery-watchdog-scan"))
+        await state.db.initialize()
+
+    async def project(project_id, mode="train"):
+        db = state.db
+        await db.create_project(Project(id=project_id, name=project_id))
+        await db.create_repo(RepoConfig(id=f"repo-{project_id}", project_id=project_id,
+                                        source_type=RepoSourceType.LINK))
+        await db.update_project(project_id, hierarchical_integration_mode=mode,
+                                integration_repository_id=f"repo-{project_id}")
+
+    async def complete(project_id, task_id, *, age, rule="stranded_root"):
+        await state.db.create_task(Task(id=task_id, project_id=project_id, title=task_id,
+                                  description="", status=TaskStatus.COMPLETED,
+                                  branch_name=f"aq/{task_id}"))
+        completions[task_id] = clock[0] - age
+        inventory.owe(project_id, task_id, rule)
+
+    async def scan(advance=60, **options):
+        clock[0] += advance
+        return await scan_stuck_deliveries(state.db, observer=object(), now=clock[0],
+                                           observe=inventory, **options)
+
+    async def rows(table, *where):
+        async with state.db._engine.connect() as conn:
+            return [dict(r) for r in (await conn.execute(select(table).where(*where))).mappings()]
+
+    async def blocker(task_id):
+        found = await rows(wait_records, wait_records.c.owner_id == task_id,
+                           wait_records.c.owner_kind == "scheduler")
+        assert len(found) == 1
+        return found[0]
+
+    await project("p")
+    try:
+        yield SimpleNamespace(state=state, inventory=inventory, project=project,
+                              complete=complete, scan=scan, rows=rows, blocker=blocker,
+                              restart=restart)
+    finally:
+        await state.db.close()
+
+
+async def _ci_samples(db, project_id, durations, now):
+    async with db.immediate() as conn:
+        for index, duration in enumerate(durations):
+            wait_id = f"ci-{project_id}-{index}"
+            await conn.execute(insert(wait_records).values(
+                id=wait_id, project_id=project_id, owner_kind="integration", owner_id=wait_id,
+                origin="integration", condition_kind="ci_run", condition={"kind": "ci_run"},
+                source_key=wait_id, source_generation=0, source_watermark_seq=0,
+                verification_state="verified", evidence_ref=wait_id, verified_at=now,
+                created_at=now - duration, outcome="satisfied", resolved_at=now,
+                request_hash=wait_id,
+            ))
+            await conn.execute(insert(wait_measurements).values(
+                id=wait_id, project_id=project_id, condition_kind="ci_run",
+                source_class="fixture", wait_id=wait_id, decision="in_place",
+                waited_seconds=duration, hibernated=False, evicted=False, recorded_at=now,
+            ))
+
+
+def _takeovers(found):
+    return [row for row in found if row["created_by_id"] == "delivery-watchdog"]
+
+
+async def test_threshold_comes_from_measured_ci_and_slow_takes_no_action(watch, clock):
+    await _ci_samples(watch.state.db, "p", [2400] * 10, clock[0])
+    await watch.complete("p", "t1", age=3600, rule="carried")
+    report = await watch.scan()
+    (delivery,) = report["deliveries"]
+    assert (delivery["state"], delivery["reason"]) == ("progressing", "batch_queued")
+    stored = await watch.rows(system_config, system_config.c.key == THRESHOLD_KEY + "p")
+    assert '"stuck_after_seconds": 4800.0' in stored[0]["value"]
+    row = await watch.blocker("t1")
+    assert row["decision_inputs"]["threshold"]["p90_batch_ci_seconds"] == 2400
+    # Past 2 x p90 a carried delivery is slow, never stuck: no handover, no incident.
+    for _ in range(5):
+        report = await watch.scan(advance=600)
+    assert (report["deliveries"][0]["state"], report["deliveries"][0]["reason"]) == (
+        "slow", "batch_queued")
+    assert _takeovers(await watch.rows(tasks)) == []
+    assert await watch.rows(escalations) == []
+
+
+async def test_stuck_generation_gets_one_takeover_and_one_incident_across_restart(watch, clock):
+    await watch.complete("p", "t1", age=1900)
+    first = (await watch.scan())["deliveries"][0]
+    assert (first["state"], first["reason"], first["stuck_scans"]) == (
+        "stuck", "publisher_unavailable", 1)
+    assert first["redrive"] is None
+    second = (await watch.scan())["deliveries"][0]
+    (takeover,) = _takeovers(await watch.rows(tasks))
+    assert second["redrive"]["task_id"] == takeover["id"]
+    assert (second["state"], second["reason"]) == ("stuck", "publisher_unavailable")
+    assert takeover["status"] == "READY" and takeover["title"] == "Land stuck delivery of t1"
+    assert "origin/aq/t1" in takeover["description"]
+    # A restarted daemon holds no memory: every later scan reads the durable projection.
+    await watch.restart()
+    third = (await watch.scan())["deliveries"][0]
+    assert (third["state"], third["reason"]) == ("progressing", "fixer_unclaimed")
+    assert len(_takeovers(await watch.rows(tasks))) == 1
+    assert await watch.rows(escalations) == []
+    # Still owed one threshold after the handover: exactly one incident and notice.
+    for _ in range(2):
+        report = await watch.scan(advance=1800)
+    await watch.restart()
+    report = await watch.scan(advance=1800)
+    incident_id = report["deliveries"][0]["incident_id"]
+    (incident,) = await watch.rows(escalations)
+    assert incident["id"] == incident_id and incident["source_kind"] == (
+        "integration_delivery_stuck")
+    assert len(await watch.rows(messages, messages.c.thread_id == incident_id)) == 1
+    assert len(_takeovers(await watch.rows(tasks))) == 1
+    # Containment settles the projection, resolves the incident, records recovery.
+    watch.inventory.entries["p"].clear()
+    assert (await watch.scan())["deliveries"] == []
+    row = await watch.blocker("t1")
+    assert row["outcome"] == "satisfied"
+    (incident,) = await watch.rows(escalations)
+    assert incident["state"] == "resolved"
+    assert len(await watch.rows(events, events.c.event_type == "delivery.recovered")) == 1
+
+
+async def test_failed_takeover_is_repair_deferred_and_raises_its_incident(watch, clock):
+    await watch.complete("p", "t1", age=1900)
+    await watch.scan()
+    await watch.scan()
+    (takeover,) = _takeovers(await watch.rows(tasks))
+    async with watch.state.db.immediate() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == takeover["id"])
+                           .values(status="FAILED"))
+    delivery = (await watch.scan())["deliveries"][0]
+    assert (delivery["state"], delivery["reason"]) == ("stuck", "repair_deferred")
+    assert delivery["incident_id"]
+    await watch.scan()
+    assert len(await watch.rows(escalations)) == 1
+    assert len(_takeovers(await watch.rows(tasks))) == 1
+
+
+async def test_hold_is_never_bypassed(watch, clock):
+    await watch.complete("p", "t1", age=1900)
+    async with watch.state.db.immediate() as conn:
+        await conn.execute(insert(task_labels).values(task_id="t1", label="hold:operator"))
+    for _ in range(4):
+        delivery = (await watch.scan(advance=1800))["deliveries"][0]
+    assert (delivery["state"], delivery["reason"], delivery["stuck_scans"]) == (
+        "held", "manual_hold", 0)
+    assert (await watch.blocker("t1"))["decision_reason"] == "manual_hold"
+    assert _takeovers(await watch.rows(tasks)) == []
+    assert await watch.rows(escalations) == []
+
+
+async def test_unavailable_git_resets_stuck_scans_and_never_hands_over(watch, clock):
+    await watch.complete("p", "t1", age=1900)
+    assert (await watch.scan())["deliveries"][0]["stuck_scans"] == 1
+    watch.inventory.unavailable.add("p")
+    report = await watch.scan()
+    assert report["unavailable"] == ["p"] and report["deliveries"] == []
+    row = await watch.blocker("t1")
+    assert (row["outcome"], row["verification_state"], row["decision_reason"]) == (
+        "pending", "unavailable", "target_unavailable")
+    assert row["decision_inputs"]["stuck_scans"] == 0
+    assert '"p"' in (await watch.rows(system_config, system_config.c.key == CURSOR_KEY)
+                     )[0]["value"]
+    watch.inventory.unavailable.clear()
+    assert (await watch.scan())["deliveries"][0]["stuck_scans"] == 1
+    assert _takeovers(await watch.rows(tasks)) == []
+
+
+async def test_exact_reason_codes_and_unknown_evidence_never_counts(watch, clock):
+    await watch.complete("p", "t-unknown", age=7200, rule="unknown")
+    await watch.complete("p", "t-missing", age=7200, rule="unreconciled")
+    await watch.complete("p", "t-young", age=60, rule="awaiting_delivery")
+    original = delivery_truth.load_delivery_requests
+
+    async def without_source(*args, **kwargs):
+        found = await original(*args, **kwargs)
+        found["t-missing"].has_recorded_source = False
+        return found
+
+    delivery_truth.load_delivery_requests = without_source
+    try:
+        report = await watch.scan()
+        reasons = {d["task_id"]: (d["state"], d["reason"]) for d in report["deliveries"]}
+        assert reasons == {
+            "t-unknown": ("unknown", "delivery_observation_unavailable"),
+            "t-missing": ("stuck", "missing_source_provenance"),
+            "t-young": ("progressing", "candidate_ci_pending"),
+        }
+        assert (await watch.blocker("t-missing"))["decision_reason"] == (
+            "missing_source_provenance")
+        for _ in range(3):
+            report = await watch.scan()
+    finally:
+        delivery_truth.load_delivery_requests = original
+    reasons = {d["task_id"]: d["reason"] for d in report["deliveries"]}
+    assert reasons["t-unknown"] == "delivery_observation_unavailable"
+    assert reasons["t-missing"] == "fixer_unclaimed"
+    assert [t["title"] for t in _takeovers(await watch.rows(tasks))] == [
+        "Land stuck delivery of t-missing"]
+
+
+async def test_disabled_project_is_reported_without_reading_git(watch, clock):
+    await watch.project("q", mode="disabled")
+    report = await watch.scan()
+    assert report["train_disabled"] == ["q"]
+    assert watch.inventory.calls == ["p"]
+
+
+async def test_cursor_pages_projects_oldest_first(watch, clock):
+    await watch.project("q")
+    await watch.complete("p", "tp", age=10)
+    await watch.complete("q", "tq-new", age=10)
+    await watch.complete("q", "tq-old", age=20)
+    assert (await watch.scan(page_size=1))["projects"] == ["p"]
+    report = await watch.scan(page_size=1)
+    assert report["projects"] == ["q"]
+    assert [d["task_id"] for d in report["deliveries"]] == ["tq-old", "tq-new"]
+    assert (await watch.scan(page_size=1))["projects"] == ["p"]
+
+
+async def test_project_override_replaces_measured_threshold(watch, clock):
+    await _ci_samples(watch.state.db, "p", [2400] * 10, clock[0])
+    async with watch.state.db.immediate() as conn:
+        await conn.execute(update(projects).where(projects.c.id == "p").values(
+            hierarchical_integration_policy={"delivery_watchdog": {"stuck_after_seconds": 600}}))
+    await watch.complete("p", "t1", age=700)
+    await watch.scan()
+    row = await watch.blocker("t1")
+    assert row["decision_inputs"]["threshold"]["stuck_after_seconds"] == 600
+    assert row["decision_inputs"]["delivery_state"] == "stuck"
+
+
+def test_watchdog_policy_is_validated_and_omitted_at_default():
+    with pytest.raises(ValueError):
+        DeliveryWatchdogPolicy(min_seconds=0)
+    assert DeliveryWatchdogPolicy().stuck_after_seconds is None
+
+
+async def test_doctor_names_stuck_generation_reason_and_its_landing_task(watch, clock):
+    from src.doctor.stall_checks import _delivery_stuck_findings
+
+    await watch.complete("p", "t1", age=1900)
+    await watch.complete("p", "t2", age=60, rule="carried")
+    ctx = SimpleNamespace(db=watch.state.db)
+    await watch.scan()
+    (finding,) = await _delivery_stuck_findings(ctx, {"p"})
+    assert (finding["kind"], finding["task_id"], finding["reason"]) == (
+        "delivery_stuck", "t1", "publisher_unavailable")
+    assert "aq wait explain --task t1" in finding["detail"]
+    await watch.scan()
+    (finding,) = await _delivery_stuck_findings(ctx, {"p"})
+    (takeover,) = _takeovers(await watch.rows(tasks))
+    assert finding["takeover_task_id"] == takeover["id"]
+    assert await _delivery_stuck_findings(ctx, {"other"}) == []

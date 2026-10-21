@@ -381,6 +381,19 @@ class IntegrationCIPolicy(BaseModel):
                      or (self.source_for(kind) == "hybrid" and kind != "promotion"))
 
 
+class DeliveryWatchdogPolicy(BaseModel):
+    """Per-project stuck-delivery threshold: max(floor, multiplier x p90 batch CI).
+
+    ``stuck_after_seconds`` replaces the measured value outright.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    min_seconds: float = Field(default=1800, gt=0, allow_inf_nan=False)
+    ci_multiplier: float = Field(default=2, gt=0, allow_inf_nan=False)
+    stuck_after_seconds: float | None = Field(default=None, gt=0, allow_inf_nan=False)
+
+
 class HierarchicalIntegrationPolicy(BaseModel):
     """Validated project policy consumed when reserving an operation."""
 
@@ -401,6 +414,7 @@ class HierarchicalIntegrationPolicy(BaseModel):
     )
     #: Unset is hosted for every target kind.
     ci: IntegrationCIPolicy | None = None
+    delivery_watchdog: DeliveryWatchdogPolicy | None = None
 
     @model_validator(mode="after")
     def local_commands_cover_required_checks(self) -> HierarchicalIntegrationPolicy:
@@ -436,6 +450,8 @@ class HierarchicalIntegrationPolicy(BaseModel):
             dumped.pop("train", None)
         if self.ci is None:
             dumped.pop("ci", None)
+        if self.delivery_watchdog is None:
+            dumped.pop("delivery_watchdog", None)
         return dumped
 
 

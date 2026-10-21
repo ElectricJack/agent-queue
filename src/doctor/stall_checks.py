@@ -514,6 +514,35 @@ async def _unmaterialized_pr_findings(ctx: DoctorContext, active: set[str]) -> l
     ]
 
 
+async def _delivery_stuck_findings(ctx: DoctorContext, active: set[str]) -> list[dict]:
+    """Generations the delivery watchdog projects as stuck, with its exact reason."""
+    from src.database.tables import wait_records
+
+    async with ctx.db._engine.connect() as conn:
+        rows = await _mapping_rows(conn, select(
+            wait_records.c.project_id, wait_records.c.owner_id, wait_records.c.decision_inputs,
+        ).where(
+            wait_records.c.project_id.in_(active), wait_records.c.origin == "integration",
+            wait_records.c.owner_kind == "scheduler", wait_records.c.outcome == "pending",
+        ).order_by(wait_records.c.created_at, wait_records.c.id).limit(MAX_ROWS))
+    findings = []
+    for row in rows:
+        inputs = row["decision_inputs"] or {}
+        if not inputs.get("delivery_watchdog_projection") or inputs.get("delivery_state") != "stuck":
+            continue
+        redrive = (inputs.get("redrive") or {}).get("task_id")
+        findings.append(_finding(
+            "delivery_stuck", row["project_id"],
+            f"delivery of {row['owner_id']} is stuck ({inputs.get('delivery_reason')}) for "
+            f"{int(inputs.get('age_seconds') or 0)}s"
+            + (f"; landing task {redrive}" if redrive else "")
+            + f"; aq wait explain --task {row['owner_id']}",
+            task_id=row["owner_id"], reason=inputs.get("delivery_reason"),
+            takeover_task_id=redrive, incident_id=inputs.get("incident_id"),
+        ))
+    return findings
+
+
 async def _completed_undelivered_findings(
     ctx: DoctorContext, active: set[str], now: float,
 ) -> list[dict]:
@@ -621,6 +650,7 @@ _SUBJECTS = {
     "disabled_provider": ("task", "task_id"),
     "unmaterialized_train_pr": ("task", "task_id"),
     "completed_undelivered": ("task", "task_id"), "conversation_unowned": None,
+    "delivery_stuck": ("task", "task_id"),
     "delivery_engine_unavailable": None, "flock_untracked": None,
     "session_authentication": ("session", "session_id"),
     "container_dependency": ("task", "task_id"), "container_dependencies_truncated": None,
@@ -785,6 +815,8 @@ async def _check_sweep(ctx: DoctorContext) -> CheckResult:
                    lambda c: _unmaterialized_pr_findings(c, active)),
             _probe(ctx, active, ("completed_undelivered",),
                    lambda c: _completed_undelivered_findings(c, active, now)),
+            _probe(ctx, active, ("delivery_stuck",),
+                   lambda c: _delivery_stuck_findings(c, active)),
             _probe(ctx, active, ("unadmitted_parent",),
                    lambda c: _unadmitted_parent_findings(c, active)),
             _probe(ctx, active, ("stranded_child",), lambda c: _stranded_child_findings(c, now)),

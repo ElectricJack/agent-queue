@@ -8824,11 +8824,15 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:2b307ef36672dd9b5d931d7a048df17c30fa2d7deb7e9e905ea60e3b808833a5",
+      "digest": "sha256:75dce18784ab37b8f466152b98f47751a83c31f684bc71ddbc82d6b75cc3c0ac",
       "imports": [
         "src.database",
         "src.database.tables",
+        "src.doctor.stall_checks",
+        "src.integration",
+        "src.integration.delivery_truth",
         "src.integration.delivery_watchdog",
+        "src.integration.models",
         "src.models"
       ],
       "markers": [
