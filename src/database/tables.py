@@ -1611,6 +1611,7 @@ sessions = Table(
     Column("failed_preparation", JSONB, nullable=True),
     # Session-wide refusal streak/cooldown, independent of a failed task's backoff.
     Column("claim_refusal", JSONB, nullable=True),
+    Column("supervisor_health", JSONB, nullable=True),
     Column("session_key", Text, nullable=True),  # harness resume key
     Column("work_dir", Text, nullable=False),
     Column("epoch", Text, nullable=False),  # AQ_DAEMON_EPOCH at launch

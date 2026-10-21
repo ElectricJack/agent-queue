@@ -1069,10 +1069,21 @@ class SupervisorConfig:
     #: The trailing underscore in the attribute name avoids the Python
     #: keyword ``global``. In YAML the section is written as ``global``.
     global_: GlobalSupervisorConfig = field(default_factory=GlobalSupervisorConfig)
+    turn_timeout_seconds: int = 900
+    question_timeout_seconds: int = 900
+    retry_backoff_seconds: int = 60
+    max_turn_retries: int = 2
+    max_session_age_seconds: int = 86400
+    context_ceiling_tokens: int = 160000
 
     def validate(self) -> list[ConfigError]:
         errors: list[ConfigError] = []
         errors.extend(self.global_.validate())
+        for key in ("turn_timeout_seconds", "question_timeout_seconds", "retry_backoff_seconds",
+                    "max_turn_retries", "max_session_age_seconds", "context_ceiling_tokens"):
+            value = getattr(self, key)
+            if type(value) is not int or value <= 0:
+                errors.append(ConfigError("supervisor", key, "must be a positive integer"))
         return errors
 
 
@@ -5261,6 +5272,10 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
         s = raw["supervisor"]
         global_section = s.get("global", {}) or {}
         config.supervisor = SupervisorConfig(
+            **{key: s[key] for key in (
+                "turn_timeout_seconds", "question_timeout_seconds", "retry_backoff_seconds",
+                "max_turn_retries", "max_session_age_seconds", "context_ceiling_tokens",
+            ) if key in s},
             global_=GlobalSupervisorConfig(
                 idle_timeout_seconds=global_section.get("idle_timeout_seconds", 2700),
             ),

@@ -357,6 +357,7 @@ start code work, tests or QA from a digest author turn.
     "session_list",
     "session_logs",
     "session_peek",
+    "supervisor_restart",
     "supervisor_inbox_history",
     "supervisor_inbox_reply",
     "supervisor_inbox_status",

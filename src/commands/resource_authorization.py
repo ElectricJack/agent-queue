@@ -28,7 +28,7 @@ pool_set_enabled pool_set_lifecycle provider_allocation_apply provider_history
 provider_recheck provider_set_state provider_status provider_held_tasks
 reconcile_agent_cron reconcile_agent_waits reconcile_collaborations cron_delivery_begin
 cron_delivery_finish integration_train_tick job_reconcile job_submit_integration
-observe_integration_source_ci queue_sync_workspaces session_cleanup supervisor_restart
+observe_integration_source_ci queue_sync_workspaces session_cleanup
 start_agent_terminal session_input session_token
 playbook_activation_health playbook_health list_playbooks list_playbook_runs
 list_event_triggers playbook_pending_events playbook_pending_event_action
@@ -92,6 +92,7 @@ task_comments task_deps task_progress task_recent_activity task_recover task_rou
 # Do not reinterpret value IDs as unrelated table IDs. Their independent handler
 # gates are required, and plain project_id mismatches are still checked here.
 HANDLER_RESOURCE_GATES = frozenset("""
+supervisor_restart
 message_send message_inbox message_list message_reply message_status message_wait
 review_attachment_add review_attachment_list review_comment review_decide review_delegate
 review_dispatch review_import_edits review_list review_reopen review_show review_submit
@@ -104,6 +105,7 @@ review_feedback_complete
 # commands use live claims, tagged recipients, project selections or operator
 # grants that cannot be replaced by a generic argument-to-row ownership test.
 SESSION_HANDLER_RESOURCE_GATES = frozenset("""
+supervisor_restart
 task_show task_route task_handoff create_task provider_allocation_apply
 provider_allocation_preview object_loop_inputs test_selection_show test_selection_list
 supervisor_inbox_status supervisor_inbox_history escalation_create escalation_get

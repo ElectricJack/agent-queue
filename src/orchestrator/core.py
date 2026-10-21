@@ -576,6 +576,7 @@ class Orchestrator(
 
         self.session_lens = SessionLens(
             db=self.db,
+            availability=self.provider_availability,
             bus=self.bus,
             providers=self.session_providers,
             spec_builder=self.session_spec_builder,

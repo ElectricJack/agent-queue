@@ -987,3 +987,20 @@ def test_auto_deploy_escalates_consecutive_dirty_skips_once(tmp_path):
     _git(live, "merge", "-q", "--ff-only", "origin/dev")
     run()
     assert not state.exists()
+
+
+@pytest.mark.parametrize("sample,alarm", [
+    ({"checked_at": time.time(), "unhealthy": True, "reason": "turn_timeout",
+      "pending_count": 2, "attempts": 2}, "SUPERVISOR-UNHEALTHY"),
+    ({"checked_at": time.time() - 300, "unhealthy": False}, "SUPERVISOR-UNKNOWN"),
+    ({}, "SUPERVISOR-UNKNOWN"),
+])
+def test_supervisor_turn_health_ignores_recent_process_activity(tmp_path, sample, alarm):
+    responses = _scoped_responses([])
+    row = _session("n-supervisor--rom", "rom", None)
+    row.update(lifecycle="named", profile_id="supervisor", last_activity=time.time(),
+               stalled=False, idle_seconds=0, supervisor_health=sample)
+    responses["aq"]["session list"] = [row]
+    proc, _ = _run(tmp_path, responses, "--project", "rom")
+    assert proc.returncode == 0, proc.stderr
+    assert f"{alarm} n-supervisor--rom" in proc.stdout

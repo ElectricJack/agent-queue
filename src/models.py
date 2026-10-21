@@ -1521,6 +1521,9 @@ class SessionRecord:
     #: Persisted pool refusal result/reason/count/retry_at; survives daemon restarts.
     claim_refusal: dict | None = None
 
+    #: Turn health and recovery backoff for named supervisors; instance-fenced.
+    supervisor_health: dict | None = None
+
     llm_provider: str | None = None
     model: str | None = None
     intelligence_class: str | None = None
