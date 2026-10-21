@@ -337,6 +337,14 @@ from .delete_task_response_disposition import DeleteTaskResponseDisposition
 from .delete_task_summary import DeleteTaskSummary
 from .delete_warning import DeleteWarning
 from .delete_worktree import DeleteWorktree
+from .delivery_latency_batch_day import DeliveryLatencyBatchDay
+from .delivery_latency_excluded import DeliveryLatencyExcluded
+from .delivery_latency_generation import DeliveryLatencyGeneration
+from .delivery_latency_generation_segments import DeliveryLatencyGenerationSegments
+from .delivery_latency_histogram_bucket import DeliveryLatencyHistogramBucket
+from .delivery_latency_response import DeliveryLatencyResponse
+from .delivery_latency_segment import DeliveryLatencySegment
+from .delivery_latency_target import DeliveryLatencyTarget
 from .deployment_event import DeploymentEvent
 from .diff_item import DiffItem
 from .diff_item_original_scope import DiffItemOriginalScope
@@ -2523,6 +2531,14 @@ __all__ = (
     "DeleteTaskSummary",
     "DeleteWarning",
     "DeleteWorktree",
+    "DeliveryLatencyBatchDay",
+    "DeliveryLatencyExcluded",
+    "DeliveryLatencyGeneration",
+    "DeliveryLatencyGenerationSegments",
+    "DeliveryLatencyHistogramBucket",
+    "DeliveryLatencyResponse",
+    "DeliveryLatencySegment",
+    "DeliveryLatencyTarget",
     "DeploymentEvent",
     "DiffItem",
     "DiffItemOriginalScope",

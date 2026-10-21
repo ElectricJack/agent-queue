@@ -249,6 +249,7 @@
         "tests/test_close_unpushed_work.py",
         "tests/test_delivery_consumers.py",
         "tests/test_delivery_integration.py",
+        "tests/test_delivery_latency.py",
         "tests/test_delivery_precondition_refusals.py",
         "tests/test_development_integration.py",
         "tests/test_development_subjects.py",
@@ -5661,6 +5662,23 @@
         "skipif"
       ],
       "summary": "P3 end-to-end delivery integration test — supervisor-agent §5/§7/§8."
+    },
+    "tests/test_delivery_latency.py": {
+      "areas": [
+        "development-delivery"
+      ],
+      "default_arm": true,
+      "digest": "sha256:462dd8a95eb166e6f9fecedccfdd6f4f12b2ae2b55e2a2fb2a86ceb7f7d929ce",
+      "imports": [
+        "src.api.metrics",
+        "src.database",
+        "src.database.tables",
+        "src.integration.delivery_observer",
+        "src.metrics.delivery_latency",
+        "src.models"
+      ],
+      "markers": [],
+      "summary": "Generation-based delivery latency: recording transitions and aggregating a cohort."
     },
     "tests/test_delivery_precondition_refusals.py": {
       "areas": [
