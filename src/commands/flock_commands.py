@@ -26,7 +26,8 @@ class FlockCommandsMixin:
         agents = await self.db.list_agents()
         records = await self.db.list_sessions()
         active_tasks = await self.db.list_tasks(statuses={
-            TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS, TaskStatus.WAITING_INPUT,
+            TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS,
+            TaskStatus.WAITING_INPUT, TaskStatus.WAITING,
         })
         rows = await list_agent_flock(
             self.orchestrator, project_id=project_id,

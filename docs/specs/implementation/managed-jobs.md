@@ -97,14 +97,26 @@ revokes result/log access; owner termination cancels execution before cleanup.
 Phase 3 registers `job_submit|get|list|cancel|result|logs` contracts and grants in
 worker templates. `aq job submit --wait` and `aq test --aq-detach --aq-wait`
 commit the job, pin, output reservation and wait together. Replays retain one
-job/pin/wait, including after terminal completion. Job waits snapshot already
-terminal producers and arbitrate using `ended_at`, so a late scan preserves
-completion at or before the deadline. Default deadlines follow the remaining
+job/pin/wait, including after terminal completion. With the effective project
+`wait_policy.v2_enabled`, submission registers a verified `job` condition through
+the wait lifecycle on the same transaction, including the measured sleep decision
+and any suspension intent. The response includes the verified `wait` record and
+top-level `wait_id`, `decision`, `next_step` and any `continuation_id`/`generation`.
+An unavailable verified runtime refuses submission. The source watermark is read
+before locks; the graph fence precedes task, quota and workspace locks. A still-live
+`WAITING` claim may replay an existing submission but cannot create another job.
+Replay uses the current outcome: unacknowledged completion requires acknowledgement,
+and an acknowledged completion continues without putting the task back in `WAITING`.
+
+An explicitly disabled effective project flag selects the legacy atomic path.
+Legacy job waits snapshot already terminal producers and arbitrate using
+`ended_at`, so a late scan preserves completion at or before the deadline.
+Their default deadlines follow the remaining
 queue/run budgets plus 300 seconds, capped at 24 hours. Explicit timeout policy
 is retained in the typed match for stable replay checks. Expiry and wait
 cancellation never implicitly cancel execution or release pins.
 
-Submission locks session/task before the global quota and workspace locks;
+Legacy submission locks session/task before the global quota and workspace locks;
 ordinary submissions use the same task-before-quota order. A refused wait rolls
 back all new producer state. A worker can observe only jobs belonging to its
 task; supervisors can subscribe within their project. Terminal digests retain
@@ -134,8 +146,9 @@ resume/compaction hooks recover these pointers; per-prompt polling hooks remain 
 
 Terminal result delivery consumes at most 100 pending `job_outbox` intents per
 service tick, including with new job admission disabled. A task's matching active
-or satisfied job wait owns its wake, even if its result message is still pending;
-the job dispatcher suppresses its separate notification. Other task completions
+or satisfied legacy job wait, or pending or satisfied verified job wait, owns its
+wake, even if its result message is still pending; the job dispatcher suppresses
+its separate notification. Other task completions
 enqueue `job:<id>:terminal` as a `job_result` message and acknowledge the outbox
 in the same transaction. Disabled messaging or an insertion failure retains
 pending intent and the immutable result. Integration-owned jobs have no worker

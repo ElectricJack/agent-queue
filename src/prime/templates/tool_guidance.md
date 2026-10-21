@@ -49,14 +49,18 @@ your task or justify changing tests: never weaken or skip a test; name it when c
 Task authors specify focused/area checks, not "run the full suite before closing".
 For agent-queue, see docs/guides/resource-gating.md.
 
-Use durable `aq wait register` with an idempotency key for a supported job, task, message
-or timer condition and end the turn; it retains claim/workspace/seat without heartbeat
-polling. Register once instead of sleeping, polling process output or rereading an unchanged
-inbox. Resume with `aq wait show WAIT_ID --consume --json` (reads the result, consumes only
-its notification) and handle the actual failure, cancellation or timeout: a satisfied wait
-is not proof of success. Use task waits for review/task settlement, message waits with the
-returned thread and cursor for replies, and bounded timers for planned delays; follow
-integration-owned CI through its task's settlement, since a timer is not proof CI passed.
+State one verified condition with `aq wait register --task PRODUCER_TASK
+--idempotency-key settlement` (or `--condition` JSON), then end the turn. AQ chooses
+sleep in place or hibernation, maintains ownership and delivers the outcome. If the
+receipt requests a checkpoint, submit `aq wait checkpoint` with the compaction summary
+and end the turn. Resume by acknowledging the outcome with `aq wait show WAIT_ID
+--consume --json`; availability never proves producer success. Message conditions use
+the returned thread and cursor. Human conditions have no deadline and resume only on
+verified human evidence or a supervisor decision. Escalations reach the supervisor;
+workers receive `cancelled`, `source_unavailable`, `lifted_by_supervisor` or `satisfied`.
+A supervisor may extend, reroute, cancel or wake through `aq wait decide`, or relay a
+verified response through `aq wait lift`. These operations are out of scope for
+workers. Keep the same wait and its original age.
 Managed tests: `aq test --aq-detach --aq-wait TEST_ARGS` or
 `aq job submit --preset test --wait --idempotency-key KEY -- TEST_ARGS` (operator must
 enable resources.jobs.enabled; otherwise keep foreground `aq test` resource controls).

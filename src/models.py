@@ -28,20 +28,32 @@ class TaskStatus(Enum):
     through these states based on events like dependency resolution, agent
     completion, rate limiting, and human approval.
 
-    Note: transitions are not enforced by the state machine in production —
-    the orchestrator writes directly via db.update_task(). The state machine
-    module is used only for validation logging. See specs/models-and-state-machine.md.
+    Database lifecycle writes validate VALID_TASK_TRANSITIONS. Invalid moves
+    involving suspended work are always refused; the configured enforcement flag
+    controls legacy transitions. Administrative controls use guarded overrides.
     """
 
     DEFINED = "DEFINED"
     READY = "READY"
     ASSIGNED = "ASSIGNED"
     IN_PROGRESS = "IN_PROGRESS"
+    WAITING = "WAITING"
+    HIBERNATED = "HIBERNATED"
+    RESUME_PENDING = "RESUME_PENDING"
     WAITING_INPUT = "WAITING_INPUT"
     PAUSED = "PAUSED"
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
     BLOCKED = "BLOCKED"
+
+
+# Suspended work remains open but never enters the READY claim frontier.
+SUSPENDED_TASK_STATUSES = frozenset({
+    TaskStatus.WAITING, TaskStatus.HIBERNATED, TaskStatus.RESUME_PENDING,
+})
+OPEN_TASK_STATUSES = frozenset(TaskStatus) - {
+    TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.BLOCKED,
+}
 
 
 class TaskEvent(Enum):
@@ -67,6 +79,15 @@ class TaskEvent(Enum):
     HUMAN_REPLIED = "HUMAN_REPLIED"
     INPUT_TIMEOUT = "INPUT_TIMEOUT"
     RESUME_TIMER = "RESUME_TIMER"
+    WAIT_REGISTERED = "WAIT_REGISTERED"
+    WAIT_ACKNOWLEDGED = "WAIT_ACKNOWLEDGED"
+    HIBERNATION_COMMITTED = "HIBERNATION_COMMITTED"
+    WAIT_RESOLVED = "WAIT_RESOLVED"
+    RESUME_HELD = "RESUME_HELD"
+    MANUAL_PAUSE = "MANUAL_PAUSE"
+    UNPAUSE_RESUME = "UNPAUSE_RESUME"
+    UNPAUSE_HIBERNATE = "UNPAUSE_HIBERNATE"
+    WAIT_REROUTED = "WAIT_REROUTED"
     RETRY = "RETRY"
     MAX_RETRIES = "MAX_RETRIES"
     MERGE_FAILED = "MERGE_FAILED"

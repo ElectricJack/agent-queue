@@ -6,7 +6,7 @@ import asyncio
 import time
 
 import pytest
-from sqlalchemy import insert, update
+from sqlalchemy import insert, select, text, update
 
 from src.database.tables import integration_branch_owners
 from src.integration.models import BranchKey, Fence
@@ -287,17 +287,18 @@ async def test_failed_handoff_can_be_retried_with_the_same_fence(db):
         await ownership.assert_current(parent)
 
 
-async def test_concurrent_handoff_retries_advance_the_fence_once(db):
+@pytest.mark.parametrize("first_to_finish", [0, 1, None], ids=["first", "retry", "together"])
+async def test_concurrent_handoff_retries_advance_the_fence_once(db, first_to_finish):
     """Two successful confirmations must not grant two successor fences."""
-    both_confirming = asyncio.Event()
-    confirmations = 0
+    confirming = [asyncio.Event(), asyncio.Event()]
+    finish = [asyncio.Event(), asyncio.Event()]
+    confirmations = []
 
-    async def confirmed(_row: dict) -> bool:
-        nonlocal confirmations
-        confirmations += 1
-        if confirmations == 2:
-            both_confirming.set()
-        await both_confirming.wait()
+    async def confirmed(row: dict) -> bool:
+        index = len(confirmations)
+        confirmations.append(row)
+        confirming[index].set()
+        await finish[index].wait()
         return True
 
     ownership = BranchOwnership(db, confirm_handoff=confirmed)
@@ -311,20 +312,70 @@ async def test_concurrent_handoff_retries_advance_the_fence_once(db):
             .values(handoff_state="attached", session_id="session-1", workspace_id="slot-1")
         )
 
-    results = await asyncio.wait_for(
-        asyncio.gather(
-            ownership.transfer(parent, "collector-op", "collector"),
-            ownership.transfer(parent, "collector-op", "collector"),
-            return_exceptions=True,
-        ),
-        timeout=1.0,
-    )
+    async def transfer():
+        try:
+            return await ownership.transfer(parent, "collector-op", "collector")
+        except (BranchBusy, StaleFence) as exc:
+            return exc
 
-    assert confirmations == 2
+    async with asyncio.TaskGroup() as group:
+        transfers = [group.create_task(transfer())]
+        await confirming[0].wait()
+        # External confirmation must hold neither a row nor an advisory lock.
+        # Probe before starting the retry so its legitimate SQL transaction
+        # cannot be mistaken for a lock retained by the suspended confirmer.
+        async with db.immediate() as conn:
+            pending = (
+                await conn.execute(
+                    select(integration_branch_owners)
+                    .where(
+                        integration_branch_owners.c.repository_id == target.repository_id,
+                        integration_branch_owners.c.ref == target.branch,
+                    )
+                    .with_for_update(nowait=True)
+                )
+            ).mappings().one()
+            assert pending["handoff_state"] == "handoff_pending"
+            assert pending["fence_token"] == parent.token
+            assert await conn.scalar(text(
+                "SELECT count(*) FROM pg_stat_activity a "
+                "LEFT JOIN pg_locks l ON l.pid = a.pid AND l.locktype = 'advisory' "
+                "WHERE a.datname = current_database() AND a.pid <> pg_backend_pid() "
+                "AND (l.pid IS NOT NULL OR a.state LIKE 'idle in transaction%')"
+            )) == 0
+
+        transfers.append(group.create_task(transfer()))
+        await confirming[1].wait()
+        assert all(row["fence_token"] == parent.token for row in confirmations)
+        assert all(row["owner_id"] == parent.owner_id for row in confirmations)
+        assert all(row["session_id"] == "session-1" for row in confirmations)
+        assert all(row["workspace_id"] == "slot-1" for row in confirmations)
+
+        # Both calls have captured the old fence before either may finalize.
+        # Exercise each winner and real SQL contention without making database
+        # round trips satisfy a one-second latency budget. CI's existing test
+        # watchdog still bounds deadlocks; NOWAIT above diagnoses leaked locks.
+        if first_to_finish is not None:
+            finish[first_to_finish].set()
+            assert await transfers[first_to_finish] == Fence(
+                target=target, owner_id="collector-op", token=2
+            )
+        for release in finish:
+            release.set()
+
+    results = [task.result() for task in transfers]
+    assert len(confirmations) == 2
     assert sum(isinstance(result, Fence) for result in results) == 1
     assert sum(isinstance(result, (BranchBusy, StaleFence)) for result in results) == 1
     winner = next(result for result in results if isinstance(result, Fence))
     assert winner == Fence(target=target, owner_id="collector-op", token=2)
+    with pytest.raises(StaleFence):
+        await ownership.assert_current(parent)
+    with pytest.raises(StaleFence):
+        await ownership.transfer(parent, "collector-op", "collector")
+    assert len(confirmations) == 2
+    assert await ownership.acquire(target, "collector-op", "collector") == winner
+    await ownership.assert_current(winner)
 
 
 async def test_concurrent_initial_acquisition_has_one_winner_and_one_named_busy(db):

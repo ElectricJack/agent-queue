@@ -23,6 +23,9 @@ STATUS_EMOJIS: dict[str, str] = {
     TaskStatus.READY.value: "\U0001f535",  # blue circle
     TaskStatus.ASSIGNED.value: "\U0001f4cb",  # clipboard
     TaskStatus.IN_PROGRESS.value: "\U0001f7e1",  # yellow circle
+    TaskStatus.WAITING.value: "⏳",
+    TaskStatus.HIBERNATED.value: "💤",
+    TaskStatus.RESUME_PENDING.value: "🔄",
     TaskStatus.WAITING_INPUT.value: "\U0001f4ac",  # speech balloon
     TaskStatus.PAUSED.value: "⏸️",  # pause button
     TaskStatus.COMPLETED.value: "\U0001f7e2",  # green circle
@@ -522,6 +525,9 @@ def _format_status_summary(status_counts: dict[str, int], total: int) -> str:
         ("IN_PROGRESS", "in progress"),
         ("ASSIGNED", "assigned"),
         ("WAITING_INPUT", "waiting input"),
+        ("WAITING", "waiting"),
+        ("HIBERNATED", "hibernated"),
+        ("RESUME_PENDING", "resume pending"),
         ("PAUSED", "paused"),
         ("FAILED", "failed"),
         ("BLOCKED", "blocked"),

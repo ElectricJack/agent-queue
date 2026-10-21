@@ -509,6 +509,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`review_withdraw`](review_withdraw.md) | Review Withdraw | Execute the review_withdraw command. |
 | [`run_playbook`](run_playbook.md) | Run Playbook | Execute the run_playbook command. |
 | [`scan_stub_staleness`](scan_stub_staleness.md) | Scan Stub Staleness | Scan vault reference stubs for staleness by comparing source_hash. |
+| [`scheduler_wait_sync`](scheduler_wait_sync.md) | Scheduler Wait Sync | Scheduler wait sync through verified wait state. |
 | [`search_files`](search_files.md) | Search Files | Execute the search_files command. |
 | [`search_github_repositories`](search_github_repositories.md) | Search Github Repositories | Search GitHub repositories visible to the daemon host's gh session. |
 | [`select_files_for_inspection`](select_files_for_inspection.md) | Select Files For Inspection | Execute the select_files_for_inspection command. |
@@ -586,10 +587,22 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`vibecop_check`](vibecop_check.md) | Vibecop Check | Execute the vibecop_check command. |
 | [`vibecop_scan`](vibecop_scan.md) | Vibecop Scan | Execute the vibecop_scan command. |
 | [`vibecop_status`](vibecop_status.md) | Vibecop Status | Execute the vibecop_status command. |
+| [`wait_ack`](wait_ack.md) | Wait Ack | Wait ack through verified wait state. |
 | [`wait_cancel`](wait_cancel.md) | Wait Cancel | Cancel a current-claim wait and queue its result. |
+| [`wait_checkpoint`](wait_checkpoint.md) | Wait Checkpoint | Wait checkpoint through verified wait state. |
+| [`wait_deadline_fire`](wait_deadline_fire.md) | Wait Deadline Fire | Wait deadline fire through verified wait state. |
+| [`wait_decide`](wait_decide.md) | Wait Decide | Wait decide through verified wait state. |
+| [`wait_evict`](wait_evict.md) | Wait Evict | Wait evict through verified wait state. |
+| [`wait_explain`](wait_explain.md) | Wait Explain | Wait explain through verified wait state. |
 | [`wait_get`](wait_get.md) | Wait Get | Read a durable wait, optionally consuming its notification. |
+| [`wait_graph`](wait_graph.md) | Wait Graph | Wait graph through verified wait state. |
+| [`wait_legacy_bridge`](wait_legacy_bridge.md) | Wait Legacy Bridge | Wait legacy bridge through verified wait state. |
+| [`wait_lift`](wait_lift.md) | Wait Lift | Wait lift through verified wait state. |
 | [`wait_list`](wait_list.md) | Wait List | List wait history for the current task or supervisor project. |
 | [`wait_register`](wait_register.md) | Wait Register | Register one bounded typed wait and end the turn. |
+| [`wait_resume_dispatch`](wait_resume_dispatch.md) | Wait Resume Dispatch | Wait resume dispatch through verified wait state. |
+| [`wait_sleep_decide`](wait_sleep_decide.md) | Wait Sleep Decide | Wait sleep decide through verified wait state. |
+| [`wait_source_commit`](wait_source_commit.md) | Wait Source Commit | Wait source commit through verified wait state. |
 | [`workflow_pipeline_view`](workflow_pipeline_view.md) | Workflow Pipeline View | Return structured pipeline view data for dashboard rendering of a workflow. |
 | [`workspace_clear_sentinel`](workspace_clear_sentinel.md) | Workspace Clear Sentinel | Clear a slot sentinel that still names a terminal task. |
 | [`workspace_cutover`](workspace_cutover.md) | Workspace Cutover | Execute the workspace_cutover command. |

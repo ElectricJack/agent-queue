@@ -6919,6 +6919,53 @@ async def test_preparation_failure_counter_fences_changed_session(handler, db, t
     assert (await db.get_workspace("ws-agent-1")).enabled
 
 
+@pytest.mark.parametrize("status", [
+    TaskStatus.WAITING, TaskStatus.HIBERNATED, TaskStatus.RESUME_PENDING,
+])
+async def test_suspended_task_is_never_claimed_from_frontier(handler, db, tmp_path, status):
+    await mktask(db, "suspended", status=status, profile_id="worker")
+    sid, _ = await pool_session(db, tmp_path)
+    result = await scoped(handler, sid)._cmd_task_claim({"next": True})
+    assert result["result"] == "no_ready_work"
+    assert (await db.get_task("suspended")).status is status
+    assert (await db.get_session(sid)).task_id is None
+
+
+@pytest.mark.parametrize("status", [
+    TaskStatus.WAITING, TaskStatus.HIBERNATED, TaskStatus.RESUME_PENDING,
+])
+async def test_suspended_held_claim_is_preserved_and_requires_ack_before_close(
+    handler, db, tmp_path, status,
+):
+    await mktask(db, "held", profile_id="worker")
+    sid, work_dir = await pool_session(db, tmp_path)
+    worker = scoped(handler, sid)
+    claim = await worker._cmd_task_claim({"next": True})
+    before = (work_dir / ".aq" / "claim.json").read_bytes()
+    await db.transition_task("held", status, force=True)
+    refused = await worker._cmd_task_claim({"next": True})
+    assert refused["result"] == "not_admissible"
+    assert refused["reason"] == "wait.task_suspended"
+    closed = await worker._cmd_task_close({
+        "task_id": "held", "outcome": "pass", "summary": "must not close",
+        "claim_epoch": claim["claim_epoch"],
+    })
+    assert closed["code"] == "wait.ack_required"
+    assert not closed["success"]
+    assert (await db.get_task("held")).status is status
+    assert (await db.get_session(sid)).task_id == "held"
+    assert (work_dir / ".aq" / "claim.json").read_bytes() == before
+
+
+async def test_command_handler_preserves_named_wait_transition_refusal(handler, db):
+    await mktask(db, "suspended", status=TaskStatus.HIBERNATED, profile_id="worker")
+    result = await handler.execute("set_task_status", {
+        "task_id": "suspended", "status": "IN_PROGRESS",
+    })
+    assert result["success"] is False
+    assert result["code"] == "task.invalid_transition"
+    assert (await db.get_task("suspended")).status is TaskStatus.HIBERNATED
+
 async def test_slow_claim_returns_progress_and_joins_one_preparation(handler, db, tmp_path):
     await mktask(db, "t1", profile_id="worker")
     sid, _ = await pool_session(db, tmp_path)
@@ -7728,6 +7775,36 @@ async def test_pr_missing_current_source_cannot_erase_recorded_artifact(db, pull
         )
     )
     assert not (await observe_admission(db, ["dependent"], env.service)).allowed
+
+
+@pytest.mark.parametrize('source_status, expected', [
+    (TaskStatus.READY, False), (TaskStatus.IN_PROGRESS, False), (TaskStatus.COMPLETED, True),
+])
+@pytest.mark.parametrize('artifact', ['branch', 'completion', 'legacy', None])
+async def test_project_admission_hint_ignores_unfinished_artifact_sources(
+    db, source_status, expected, artifact,
+):
+    from src.models import TaskCompletion
+
+    await db.create_task(Task(id='source-with-branch', project_id=PROJECT_ID,
+        title='Source', description='', status=source_status,
+        branch_name='aq/source' if artifact == 'branch' else None))
+    if artifact == 'completion':
+        await db.save_task_completion(TaskCompletion(
+            id='source-completion', task_id='source-with-branch', outcome='pass',
+            commits=['a' * 40],
+        ))
+    elif artifact == 'legacy':
+        await db.set_task_meta('source-with-branch', 'development_legacy_artifact',
+                               {'completion_id': None, 'source_sha': 'a' * 40})
+    await db.create_task(Task(id='blocked-dependent', project_id=PROJECT_ID,
+        title='Dependent', description='', status=TaskStatus.READY))
+    await db.add_dependency('blocked-dependent', 'source-with-branch')
+    async with db._engine.connect() as conn:
+        project = await db.get_project_for_claim(PROJECT_ID, conn=conn)
+    assert project._source_admission_required is (expected and artifact is not None)
+
+
 @pytest.mark.parametrize("phase", ["before_checkout", "after_checkout", "after_claim_file"])
 async def test_cancelled_preparation_retains_identity_then_fences_successor(
     handler, db, config, tmp_path, monkeypatch, phase,

@@ -61,6 +61,7 @@ class JobService:
         input_ref=None,
         trusted_band=2,
         wait_identity=None,
+        wait_registration=None,
         queue_seconds=None,
         run_seconds=None,
         adapter_request_hash=None,
@@ -72,6 +73,11 @@ class JobService:
 
             return await submit(self, script)
         cfg = self.settings
+        if wait_identity is not None:
+            from src.waits.policy import enabled
+
+            if enabled(self.config, project_id):
+                raise JobError("jobs.verified_wait_required")
         if not cfg.enabled:
             raise JobError("jobs.disabled")
         if not isinstance(idempotency_key, str) or not 1 <= len(idempotency_key) <= 200:
@@ -163,7 +169,7 @@ class JobService:
             "args": args,
             "input_mode": input_mode,
             "input_ref": input_ref,
-            "wait": wait_identity is not None,
+            "wait": wait_identity is not None or wait_registration is not None,
             "queue_seconds": queue_seconds,
             "run_seconds": run_seconds,
             "adapter_request_hash": adapter_request_hash,
@@ -299,6 +305,7 @@ class JobService:
             log_budget=cfg.log_budget_bytes,
             reservation=cfg.head_bytes + cfg.tail_bytes,
             wait_identity=wait_identity,
+            wait_registration=wait_registration,
         )
 
     async def cancel(self, job: dict):
