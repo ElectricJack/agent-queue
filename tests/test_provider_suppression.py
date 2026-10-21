@@ -79,6 +79,9 @@ async def push_orch(tmp_path):
     # Outage notices can launch a global supervisor once message delivery is
     # due. Keep this fixture's launches scoped to provider suppression.
     orch.config.messages.enabled = False
+    # State-change notices run in detached tasks; these suppression tests do
+    # not exercise notice delivery. Keep them from outliving the database lease.
+    orch.provider_availability.on_half_change = None
     orch.session_spec_builder._intelligence_classes = dict(BOTH_VENDORS)
     orch.harness_registry.upsert(codex_harness())
     orch.provider_availability._probe_impl = Probe("cannot_tell")
@@ -322,6 +325,9 @@ async def pool_orch(pool_db, tmp_path):
     o.bus.emit = AsyncMock()
     o.harness_registry.upsert(codex_harness())
     o.provider_availability._probe_impl = Probe("cannot_tell")
+    # Notification behavior has its own tests; detached sends must not escape
+    # this fixture and write into the next test's pooled database.
+    o.provider_availability.on_half_change = None
     yield o
     await o.wait_for_pool_launches(cancel=True)
     await o.provider_availability.close()
