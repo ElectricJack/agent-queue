@@ -408,7 +408,7 @@ _PROCESS_SITES = {
     ("src/jobs/runner.py", "supervise", "create_subprocess_exec"): 1,
     # Reviewed script programs acquire BoxLock capacity before spawning an ordinary
     # process; they do not create an AQ agent/session. Acceptance tests cover admission.
-    ("src/jobs/script_sandbox.py", "launch", "create_subprocess_exec"): 1,
+    ("src/jobs/script_runner.py", "launch", "create_subprocess_exec"): 1,
     ("src/jobs/service.py", "JobService.launch", "create_subprocess_exec"): 1,
     ("src/jobs/windows_owner.py", "run", "spawn"): 1,
     ("src/llm/cli.py", "ask_cli", "create_subprocess_exec"): 1,

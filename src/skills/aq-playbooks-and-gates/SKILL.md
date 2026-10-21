@@ -206,7 +206,7 @@ no cgroup/namespace/network isolation, launcher or host-prerequisite gate exists
 Timeout and output caps bound execution; ambiguous launch requires operator action,
 never automatic replay. Dry-run/shadow launches nothing and leaves values symbolic.
 Public receipts contain handles; `job_logs` checks run ownership before returning
-bounded protected stdout/stderr. See `docs/guides/playbook-script-sandbox.md`.
+bounded protected stdout/stderr. See `docs/guides/playbook-script-runner.md`.
 
 Source frontmatter declares `state_schema_version`, `required_capabilities`, and
 `scripts` program/dependency/limit policy. These are not compiler-supplied identity

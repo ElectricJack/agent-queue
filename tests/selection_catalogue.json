@@ -1004,7 +1004,7 @@
         "tests/test_playbook_run_repository.py",
         "tests/test_playbook_script.py",
         "tests/test_playbook_script_recovery.py",
-        "tests/test_playbook_script_sandbox.py",
+        "tests/test_playbook_script_runner.py",
         "tests/test_playbook_services.py",
         "tests/test_playbook_state.py",
         "tests/test_playbook_state_notify.py",
@@ -13238,7 +13238,7 @@
         "playbook-engine"
       ],
       "default_arm": true,
-      "digest": "sha256:6c3a4379222ca8fb76cd2b5767d38431cfd659ab437cce603417115b3767b893",
+      "digest": "sha256:0d98634d5b38e1acd3bcebfae16921f81a88d51e9454cb7aa55c2d17e3b4c806",
       "imports": [
         "src.commands.playbook_script_commands",
         "src.commands.principal",
@@ -13248,7 +13248,7 @@
         "src.jobs.artifacts",
         "src.jobs.playbook",
         "src.jobs.policy",
-        "src.jobs.script_sandbox",
+        "src.jobs.script_runner",
         "src.jobs.service",
         "src.playbooks.definition",
         "src.playbooks.invocation",
@@ -13261,18 +13261,18 @@
       ],
       "summary": "Real playbook owners, protected detached capture and no-replay recovery."
     },
-    "tests/test_playbook_script_sandbox.py": {
+    "tests/test_playbook_script_runner.py": {
       "areas": [
         "playbook-engine"
       ],
       "default_arm": true,
-      "digest": "sha256:dfed70bd24fe445c6846a2d5f0c47550d64006a1a0a304db786743767142b5b7",
+      "digest": "sha256:a9a7d98db8185d9c66de8fbb48d425208deb288671ea433b04e43211b5450324",
       "imports": [
         "src.config",
         "src.doctor",
         "src.git.manager",
         "src.jobs",
-        "src.jobs.script_sandbox",
+        "src.jobs.script_runner",
         "src.playbooks.proposal",
         "src.playbooks.script_inputs",
         "src.playbooks.script_policy",

@@ -2733,6 +2733,11 @@
           "runtime_bytes": 1073741824,
           "runtime_manifest": "",
           "runtime_root": "",
+          "search_path": [
+            "/usr/local/bin",
+            "/usr/bin",
+            "/bin"
+          ],
           "state_root": "",
           "stderr_bytes": 1048576,
           "stdout_bytes": 1048576,
@@ -2917,6 +2922,11 @@
             "runtime_bytes": 1073741824,
             "runtime_manifest": "",
             "runtime_root": "",
+            "search_path": [
+              "/usr/local/bin",
+              "/usr/bin",
+              "/bin"
+            ],
             "state_root": "",
             "stderr_bytes": 1048576,
             "stdout_bytes": 1048576,
@@ -2969,6 +2979,17 @@
             "runtime_root": {
               "default": "",
               "type": "string"
+            },
+            "search_path": {
+              "default": [
+                "/usr/local/bin",
+                "/usr/bin",
+                "/bin"
+              ],
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
             },
             "state_root": {
               "default": "",

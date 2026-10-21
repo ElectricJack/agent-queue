@@ -2795,13 +2795,22 @@ class ResourceCgroupConfig:
 
 @dataclass
 class ScriptsConfig:
-    """Ordinary script processes, enabled by default; no isolation prerequisites."""
+    """Ordinary script processes, enabled by default; no isolation prerequisites.
+
+    Empty roots resolve under ``{data_dir}/scripts/`` (see :meth:`resolved`).
+    Without ``runtime_manifest`` a program's executable is an ordinary host
+    file found under ``runtime_root`` or ``search_path``; a manifest opts into
+    digest pinning of the declared runtime files instead.
+    """
 
     enabled: bool = True
     runtime_root: str = ""
     runtime_manifest: str = ""
     input_root: str = ""
     state_root: str = ""
+    search_path: list[str] = field(
+        default_factory=lambda: ["/usr/local/bin", "/usr/bin", "/bin"]
+    )
     env_allowlist: list[str] = field(default_factory=list)
     queue_seconds: int = 300
     wall_seconds: int = 60
@@ -2827,6 +2836,10 @@ class ScriptsConfig:
             if (not isinstance(value, str) or "\0" in value
                     or (value and not value.startswith("/"))):
                 error(name, "must be an absolute path when supplied")
+        if (not isinstance(self.search_path, list)
+                or any(not isinstance(value, str) or "\0" in value or not value.startswith("/")
+                       or ":" in value for value in self.search_path)):
+            error("search_path", "must be a list of absolute directories")
         if not isinstance(self.env_allowlist, list):
             error("env_allowlist", "must be a list of permitted environment names")
         else:
@@ -2845,6 +2858,20 @@ class ScriptsConfig:
             if type(value) is not int or value <= 0:
                 error(name, "must be a positive integer")
         return errors
+
+    def resolved(self, data_dir: str) -> ScriptsConfig:
+        """Copy with every empty root filled in under ``{data_dir}/scripts/``.
+
+        The manifest stays optional: an empty ``runtime_manifest`` selects host
+        executables rather than a default manifest path.
+        """
+        base = os.path.join(os.path.abspath(os.path.expanduser(data_dir)), "scripts")
+        return dataclasses.replace(
+            self,
+            runtime_root=self.runtime_root or os.path.join(base, "runtime"),
+            input_root=self.input_root or os.path.join(base, "inputs"),
+            state_root=self.state_root or os.path.join(base, "state"),
+        )
 
 
 @dataclass
