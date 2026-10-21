@@ -647,6 +647,7 @@
         "tests/test_integration_gitops.py",
         "tests/test_integration_hierarchy.py",
         "tests/test_integration_mode.py",
+        "tests/test_integration_models.py",
         "tests/test_integration_observe.py",
         "tests/test_integration_operator_decisions.py",
         "tests/test_integration_outbox.py",
@@ -8852,7 +8853,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:1ab7afc678b776d5c748b7f537f93451273ca2d8b8920ade3be475a0bbf8e79f",
+      "digest": "sha256:a005c4bf07b08110b40d801b29d95f5f4b02cc3e1b4bc89aa261f1645896b243",
       "imports": [
         "src.commands",
         "src.commands.principal",
@@ -8864,7 +8865,8 @@
         "src.integration.outbox",
         "src.integration.runtime_contracts",
         "src.integration.train",
-        "src.wait_runtime.service"
+        "src.wait_runtime.service",
+        "src.waits.conditions"
       ],
       "markers": [],
       "summary": "The train's shared waits use verified sources and survive policy replacement."
@@ -9178,6 +9180,20 @@
         "parametrize"
       ],
       "summary": "Integration-mode policy tests."
+    },
+    "tests/test_integration_models.py": {
+      "areas": [
+        "integration-trains"
+      ],
+      "default_arm": true,
+      "digest": "sha256:3c560e642d779cccb190e7e5d9b33b43e0a296c2c9c467c8930e7694b21493a6",
+      "imports": [
+        "src.integration.models"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Speculative CI is opt-in and requires independent hosted compute."
     },
     "tests/test_integration_observe.py": {
       "areas": [

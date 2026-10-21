@@ -425,6 +425,9 @@ class TrainLane:
     sync_closed_epic: Callable[[GitTruthSnapshot], Awaitable[BatchSelection | None]] | None = None
     observe_source: Callable[[GitTruthSnapshot], Awaitable[None]] | None = None
     baseline_fix_checks: Callable[[BatchMember], Awaitable[ChecksResult | None]] | None = None
+    prepare_speculative: Callable[
+        [Batch, str, GitTruthSnapshot], Awaitable[BatchSelection | None]
+    ] | None = None
 
 
 @dataclass(frozen=True)
@@ -436,6 +439,17 @@ class BatchSelection:
     blockers: tuple[dict[str, Any], ...] = ()
     detail: dict[str, Any] | None = None
     existing: bool = False
+
+
+@dataclass
+class _Speculation:
+    parent_id: str
+    base: str
+    task: asyncio.Task
+    parent_attempt: int = 0
+    prepared: BatchSelection | None = None
+    sha: str | None = None
+    exact: ExactChecks | None = None
 
 
 @dataclass
@@ -511,6 +525,7 @@ class IntegrationTrain:
         self.on_wake: Callable[[], None] | None = None
         self._lanes: dict[tuple[str, str, str], _Lane] = {}
         self._pauses: dict[tuple[str, str], _RateLimitPause] = {}
+        self._speculative: dict[tuple[str, str, str], _Speculation] = {}
         self._starts = 0
         self._tick_lock = asyncio.Lock()
 
@@ -592,6 +607,8 @@ class IntegrationTrain:
     async def stop(self) -> None:
         tasks = [lane.task for lane in self._lanes.values()
                  if lane.task is not None and not lane.task.done()]
+        tasks += [item.task for item in self._speculative.values() if not item.task.done()]
+        self._speculative.clear()
         for task in tasks:
             task.cancel()
         if tasks:
@@ -804,12 +821,14 @@ class IntegrationTrain:
         if (target.kind == "epic" and opened.batch is None
                 and not opened.blockers and lane.sync_closed_epic):
             opened = await lane.sync_closed_epic(snapshot) or opened
+        await self._adopt_speculative(target, lane, snapshot, opened)
         if opened.batch is None:
             state = ("unknown" if any(b["code"] == "unknown" for b in opened.blockers)
                      else "blocked" if opened.blockers else "settling" if opened.detail else "idle")
             visit = replace(self._visit(target, state, snapshot=snapshot), detail=opened.detail)
         else:
             visit = await self._visit_batch(target, lane, snapshot, opened.batch, opened.members)
+        self._schedule_speculative(target, lane, snapshot, opened, visit)
         blockers = opened.blockers
         window_deferred = (opened.batch is None and opened.blockers and all(
             item["code"] == "selection_deferred" for item in opened.blockers))
@@ -865,9 +884,118 @@ class IntegrationTrain:
                         "candidate_sha": visit.candidate_sha, "checks": visit.checks}
             if self.waits is not None:
                 dispatch.update(await self.waits.sync(target, inflight, visit, queued,
-                    lane.checks.resolved(inflight, visit.candidate_sha) if inflight else None))
+                    lane.checks.resolved(inflight, visit.candidate_sha) if inflight else None,
+                    **({"speculative": self._speculative[target.key]}
+                       if target.key in self._speculative else {})))
             visit = replace(visit, detail={**(visit.detail or {}), "dispatch": dispatch})
         return visit
+
+    def _discard_speculative(self, target):
+        item = self._speculative.pop(target.key, None)
+        if item and not item.task.done():
+            item.task.cancel()
+
+    def _schedule_speculative(self, target, lane, snapshot, opened, visit):
+        item = self._speculative.get(target.key)
+        if item and item.task.done() and item.prepared is None:
+            self._discard_speculative(target)
+            item = None
+        if item and (lane.prepare_speculative is None or not opened.batch or
+                     opened.batch.id != item.parent_id or
+                     opened.batch.repair_attempt_count != item.parent_attempt or
+                     visit.candidate_sha != item.base or
+                     visit.state not in {"testing", "delivered"} or visit.repair):
+            self._discard_speculative(target)
+            item = None
+        if (item is None and lane.prepare_speculative is not None and opened.batch and
+                visit.state == "testing" and visit.candidate_sha and not visit.repair and
+                not opened.batch.repair_attempt_count):
+            # No speculative await belongs to N's visit or publication path.
+            async def run():
+                try:
+                    async with asyncio.timeout(self.visit_timeout_seconds):
+                        await self._build_speculative(target, lane, snapshot, opened.batch, item)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    logger.warning("Speculative CI unavailable for %s", target.key, exc_info=True)
+            task = asyncio.create_task(run(), name="speculative:" + opened.batch.id)
+            item = _Speculation(opened.batch.id, visit.candidate_sha, task,
+                                opened.batch.repair_attempt_count)
+            self._speculative[target.key] = item
+
+    async def _build_speculative(self, target, lane, snapshot, parent, item):
+        prepared = await lane.prepare_speculative(parent, item.base, snapshot)
+        if prepared is None or not prepared.batch or not prepared.members:
+            return
+        service, batch = lane.service, prepared.batch
+        repo = await service.gitops.repository(batch)
+        merged = await service.gitops.merge_sources(
+            repo, item.base, prepared.members, created_at=batch.created_at)
+        if merged["outcome"] != "merged":
+            return
+        # Preserve the assembled history while making the speculative base an
+        # explicit first parent, including for multi-member batches.
+        tree = await service.gitops.git.atree_sha(str(repo.store), merged["head"])
+        sha = await service.gitops.run(
+            repo, *service.gitops.git.resolve_commit_identity().config_args(),
+            "commit-tree", tree, "-p", item.base, "-p", merged["head"],
+            "-m", f"AQ-Speculative: {parent.id} {parent.repair_attempt_count} {item.base}",
+        )
+
+        async def authorize():
+            current = await service.store.db.get_integration_batch(parent.id)
+            successor = await service.store.get(batch.id)
+            project = await service.store.db.get_project(parent.project_id)
+            configured = ((project.hierarchical_integration_policy or {}).get("train") or {})
+            return bool(current and current["intent"] == "open" and
+                        current["lifecycle"] != "promoted" and successor is None and
+                        current["repair_attempt_count"] == parent.repair_attempt_count and
+                        current["tested_candidate_sha"] == item.base and
+                        configured.get("speculative_ci") and
+                        await service.gitops.remote(repo, candidate_ref(parent.id)) == item.base and
+                        await service.eligible(batch, prepared.members))
+
+        # N+1 has its own candidate ref and never owns the delivery target.
+        ref = candidate_ref(batch.id)
+        expected = await service.gitops.remote(repo, ref) or "0" * 40
+        await service.publish(repo, ref, expected_old_oid=expected, new_oid=sha,
+                              authorize=authorize)
+        if await service.gitops.remote(repo, ref) != sha:
+            return
+        exact = await lane.checks.for_candidate(batch, sha)
+        if exact is None or isinstance(exact, HybridChecks):
+            return
+        item.prepared, item.sha, item.exact = prepared, sha, exact
+        await self._checks(exact, candidate_head(batch, sha))
+        self.wake(target.project_id, target.repository_id, target.target_ref)
+
+    async def _adopt_speculative(self, target, lane, snapshot, opened):
+        item = self._speculative.get(target.key)
+        if item is None or (opened.batch and opened.batch.id == item.parent_id):
+            return
+        # Never wait for N+1: an unfinished build is disposable on N's departure.
+        self._speculative.pop(target.key, None)
+        if not item.task.done():
+            item.task.cancel()
+            return
+        prepared = item.prepared
+        if (lane.prepare_speculative is None or not prepared or not opened.batch or
+                not item.sha or snapshot.target_oid != item.base or
+                opened.batch.id != prepared.batch.id or opened.members != prepared.members):
+            return
+        service, batch = lane.service, opened.batch
+        repo = await service.gitops.repository(batch)
+        first_parent = await service.gitops.run(repo, "rev-parse", item.sha + "^1")
+        if first_parent != snapshot.target_oid:
+            return
+        # Freeze and current source/policy checks have already run normally.
+        # Only the candidate ref is adopted; the ordinary service publishes it.
+        ref = candidate_ref(batch.id)
+        expected = await service.gitops.remote(repo, ref) or "0" * 40
+        if expected != item.sha:
+            return
+        await lane.checks.for_candidate(batch, item.sha)
 
     async def _visit_batch(
         self, target: TrainTarget, lane: TrainLane, snapshot: GitTruthSnapshot,

@@ -296,6 +296,34 @@ class IntegrationTrainPolicy(BaseModel):
 
     cadence_seconds: int = Field(default=300, gt=0)
     settling_cap_seconds: int = Field(default=1800, gt=0)
+    speculative_ci: bool = False
+    # Operator-validated compute evidence, scoped to this project's policy.
+    speculative_public_hosted: bool = False
+    speculative_batch_ci_p90_seconds: float | None = Field(
+        default=None, ge=0, allow_inf_nan=False,
+    )
+
+    @model_validator(mode="after")
+    def speculative_compute(self) -> IntegrationTrainPolicy:
+        if self.speculative_ci and not (
+            self.speculative_public_hosted or
+            (self.speculative_batch_ci_p90_seconds is not None and
+             self.speculative_batch_ci_p90_seconds < 60)
+        ):
+            raise ValueError("speculative_ci_compute_not_eligible: public free-hosted runners "
+                             "or measured batch CI p90 below 60 seconds required")
+        return self
+
+    @model_serializer(mode="wrap")
+    def omit_speculative_defaults(self, handler: SerializerFunctionWrapHandler):
+        dumped = handler(self)
+        if not self.speculative_ci:
+            dumped.pop("speculative_ci", None)
+        if not self.speculative_public_hosted:
+            dumped.pop("speculative_public_hosted", None)
+        if self.speculative_batch_ci_p90_seconds is None:
+            dumped.pop("speculative_batch_ci_p90_seconds", None)
+        return dumped
 
 
 CISource = Literal["hosted", "local", "hybrid"]
@@ -409,6 +437,10 @@ class HierarchicalIntegrationPolicy(BaseModel):
     def local_commands_cover_required_checks(self) -> HierarchicalIntegrationPolicy:
         # A local runner must produce the boundary's own named checks, or a
         # green local candidate would mean something a hosted one does not.
+        if (self.train and self.train.speculative_ci and self.ci and
+                self.ci.source_for("root") != "hosted"):
+            raise ValueError("speculative_ci_requires_hosted_root: local/hybrid root CI "
+                             "cannot speculate")
         if self.ci is None:
             return self
         for kind, boundary in (("root", self.root), ("epic", self.parent)):

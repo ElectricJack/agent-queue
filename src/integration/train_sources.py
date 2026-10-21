@@ -806,6 +806,26 @@ class DatabaseBatches:
                 self._conflict_refreshes[task_id] = (pair, refresh)
             blockers[index] = _conflict_action(blocker, snapshot, epic=True, refresh=refresh)
 
+    async def prepare_speculative(self, target, service, parent, base, snapshot):
+        frozen = await service.store.members(parent.id)
+        ids = {member.task_id for member in frozen}
+        pending = await self.pending(target, snapshot, include_ids=ids)
+        if pending is None:
+            return None
+        members, requests, dependencies = pending
+        members = tuple(member for member in members if member.task_id not in ids)
+        if not members:
+            return None
+        dependencies = {key: tuple(dep for dep in value if dep not in ids)
+                        for key, value in dependencies.items() if key not in ids}
+        batch = Batch(await self.next_batch_id(target, members),
+                      target.project_id, target.repository_id, target.target_ref,
+                      created_at=self.clock())
+        members, _ = await service.freeze_inputs(
+            batch, members, requests=requests, snapshot=snapshot,
+            dependencies=dependencies)
+        return BatchSelection(batch, members)
+
     async def queued_members(self, target, snapshot, members):
         """Reconstruct the next queue from durable completions, never frozen writes.
 
@@ -2663,12 +2683,28 @@ class DaemonLanes:
                 repository_id=target.repository_id, ref=_branch(task.branch_name),
                 sha=member.source_sha, generation=0))
 
+        prepare_speculative = None
+        train_policy = policy.get("train") or {}
+        if target.kind == "root" and train_policy.get("speculative_ci"):
+            from src.integration.models import IntegrationTrainPolicy
+
+            # Validate at use as well as policy ingestion. Development/local
+            # compute can never be opted in by a hosted-looking policy block.
+            configured = IntegrationTrainPolicy.model_validate(train_policy)
+            if local or local_ci:
+                raise ValueError("speculative_ci_requires_hosted_root")
+            if configured.speculative_ci:
+                async def prepare_speculative(parent, base, snapshot):
+                    return await self.batches.prepare_speculative(
+                        target, service, parent, base, snapshot)
+
         return TrainLane(snapshot=snapshot, service=service, checks=checks,
                          repair_policy=(RepairPolicy.model_validate(repair_policy)
                                         if repair_policy else None),
                          complete_epic=complete_epic, sync_default_branch=sync_default_branch,
                          sync_closed_epic=sync_closed_epic,
-                         baseline_fix_checks=baseline_fix_checks)
+                         baseline_fix_checks=baseline_fix_checks,
+                         prepare_speculative=prepare_speculative)
 
     async def _default_branch_sync(
         self, target, retained, binding, policy, batch, snapshot, candidate_sha, names,
