@@ -15,6 +15,7 @@ from src.commands.playbook_state_schemas import STATE_SCHEMAS
 # Which category each tool belongs to.
 # Tools not listed here are "core" (always loaded).
 _TOOL_CATEGORIES: dict[str, str] = {
+    "integration_batch_fix": "integration",
     "operator_execute": "operator",
     "operator_preflight": "operator",
     "policy_export": "policy",
@@ -8483,6 +8484,17 @@ _ALL_TOOL_DEFINITIONS.extend([
         },
     },
 ])
+
+
+_ALL_TOOL_DEFINITIONS.append({
+    "name": "integration_batch_fix",
+    "description": "Inspect or push the batch branch bound to this task-free fixer session.",
+    "input_schema": {
+        "type": "object", "additionalProperties": False,
+        "properties": {"action": {"type": "string", "enum": ["status", "push", "rebind"],
+                                   "default": "status"}},
+    },
+})
 
 
 _COLLABORATION_SCOPE = {

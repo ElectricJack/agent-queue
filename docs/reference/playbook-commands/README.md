@@ -82,6 +82,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`integration_app_verify`](integration_app_verify.md) | Integration App Verify | Check the App credential, repository, producer, trust manifest, Actions variables, protection and audit workflow App mode depends on; one item each. |
 | [`integration_authorize_root`](integration_authorize_root.md) | Integration Authorize Root | Authenticated hierarchical integration operational control. |
 | [`integration_backmerge_source`](integration_backmerge_source.md) | Integration Backmerge Source | Author gated back-merge sources and fast-forward intents down the chain. |
+| [`integration_batch_fix`](integration_batch_fix.md) | Integration Batch Fix | Only the bound task-free fixer may inspect or publish its batch. |
 | [`integration_checkpoint_parent`](integration_checkpoint_parent.md) | Checkpoint integration parent | Pin the parent head and generation before waiting for child deliveries. |
 | [`integration_ci_evidence`](integration_ci_evidence.md) | Observe exact root candidate CI | Observe exact root candidate CI |
 | [`integration_cleanup`](integration_cleanup.md) | Advance integration cleanup | Materialize and advance bounded cleanup for one terminal root batch. |

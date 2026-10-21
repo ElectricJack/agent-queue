@@ -60,6 +60,21 @@ def _with_reason(success: bool, payload: dict[str, Any]) -> dict[str, Any]:
 
 
 class IntegrationCommandsMixin:
+    async def _cmd_integration_batch_fix(self, args: dict) -> dict:
+        """Only the bound task-free fixer may inspect or publish its batch."""
+        from src.integration.fixers import BatchFixerService
+        from src.integration.lock import PublishWithdrawn
+
+        train = getattr(self.orchestrator, "integration_train", None)
+        train = getattr(train, "train", train)
+        service = getattr(train, "repair", None)
+        if not isinstance(service, BatchFixerService):
+            return _failure("unavailable", "the in-place batch fixer is not active")
+        try:
+            return await service.command(current_principal(), action=args.get("action", "status"))
+        except (GitError, ValueError, BranchBusy, StaleFence, PublishWithdrawn) as exc:
+            return _failure("refused", str(exc))
+
     async def retained_repository_recovery(self, state, *, load=False):
         """Daemon port for its managed cache, never a caller-supplied repair command."""
         from src.integration.repository_incidents import record_incident

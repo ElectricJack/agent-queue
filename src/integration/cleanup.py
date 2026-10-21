@@ -1431,6 +1431,8 @@ class IntegrationCleanupService:
     @classmethod
     async def materialize_aborted_on(cls, conn, batch, now):
         """Queue audit PR retirement atomically with abort; retain all source work."""
+        if (batch.get("fixer_queue") or {}).get("status") in {"deferred", "companion"}:
+            return CleanupMaterializationResult(outcome="already_materialized", batch_id=batch["id"])
         # Only the aborted batch's detached compatibility reservation is free.
         # Managed leases, attached writers and source-task owners are independent.
         await conn.execute(update(integration_branch_owners).where(
@@ -1518,6 +1520,8 @@ class IntegrationCleanupService:
 
     async def _cleanup_aborted_candidate(self, batch) -> bool:
         """Retire both private candidate refs, preserving every member branch."""
+        if (batch.get("fixer_queue") or {}).get("status") in {"deferred", "companion"}:
+            return False
         from src.integration.batches import candidate_ref
         from src.integration.train_sources import RETAINED_CANDIDATE_PREFIX
 
