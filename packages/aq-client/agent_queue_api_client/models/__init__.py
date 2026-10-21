@@ -1803,6 +1803,8 @@ from .source_scan import SourceScan
 from .spec_approve_request import SpecApproveRequest
 from .spec_approve_response import SpecApproveResponse
 from .spec_approve_response_422 import SpecApproveResponse422
+from .spec_ingest_legacy_adopt_request import SpecIngestLegacyAdoptRequest
+from .spec_ingest_legacy_adopt_response_422 import SpecIngestLegacyAdoptResponse422
 from .spec_ingest_legacy_inventory_request import SpecIngestLegacyInventoryRequest
 from .spec_ingest_legacy_inventory_response import SpecIngestLegacyInventoryResponse
 from .spec_ingest_legacy_inventory_response_422 import SpecIngestLegacyInventoryResponse422
@@ -3979,6 +3981,8 @@ __all__ = (
     "SpecApproveRequest",
     "SpecApproveResponse",
     "SpecApproveResponse422",
+    "SpecIngestLegacyAdoptRequest",
+    "SpecIngestLegacyAdoptResponse422",
     "SpecIngestLegacyInventoryRequest",
     "SpecIngestLegacyInventoryResponse",
     "SpecIngestLegacyInventoryResponse422",

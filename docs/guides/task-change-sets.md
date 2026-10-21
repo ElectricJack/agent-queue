@@ -149,3 +149,30 @@ the revision and usable receipts. The response includes the current revision,
 digest, membership and before/after diff; `check_results.last_diff` retains that
 diff. An applied scope answer permits editing a `needs_scope` batch again;
 the update keeps the graph held for review and release.
+
+## Recovery and legacy proposals
+
+`aq doctor --check ingestion.held_batches` inventories held batches with their
+revision, reviewer identity, retry budget and age. It identifies missing or
+terminal reviewers, stale passing receipts and uncommitted legacy `spec:`
+proposals. `batch_reconcile` repairs at most twenty eligible wakeups per pass
+after a sixty-second retry interval. Domain rows determine recovery; delivered
+events alone do not prove that dispatch or release completed. Reconciliation
+never clears a hold, answers a scope question or resets exhausted dispatches.
+
+`aq doctor --check ingestion.legacy_proposals --fix` can adopt a ready,
+uncommitted legacy proposal into held revision 1. Adoption revalidates the
+graph, retains the original proposal payload and source as audit evidence,
+and reserves normal fidelity-review dispatch in the same transaction. A
+matching immutable approval packet is required; a `spec:` path or mutable
+frontmatter cannot authorize it. Unresolved or declined human gates remain
+gated. Use `--leave-gated` with doctor to keep all legacy proposals on their
+existing approval path. A source without an approval decision first needs an
+explicit operator review or standalone snapshot; `spec_ingest_legacy_adopt`
+then accepts its `proposal_id`, `decision_id` and optional `packet_sha256`.
+Adoption and successful release both return their existing receipts on replay.
+
+Downgrade refuses while any batch is held, reviewing or awaiting scope, before
+dropping any schema objects. Release needs the current passing fidelity receipt.
+Retirement must use the evidence-preserving obsolete lifecycle and resolve
+dependencies; changing task status or clearing `held_batch_id` is not retirement.
