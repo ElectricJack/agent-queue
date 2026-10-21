@@ -4720,22 +4720,28 @@ class TaskCommandsMixin:
                 if incident.get("id") != args.get("incident_id"):
                     return {"success": False, "error": "Incident is stale or not found"}
                 stopped_session = await self._confirm_recovery_worker_stopped(incident)
-        result = await self.db.decide_task_recovery(
-            task_id,
-            args.get("incident_id"),
-            decision,
-            reason.strip(),
-            author_kind="supervisor" if scope.get("kind") == "session" else "user",
-            author_id=actor or scope.get("session_id") or "operator",
-            project_id=scope.get("project_id"),
-            stopped_session=stopped_session,
-            expected_hold_at=expected_hold_at,
-            operator_handoff=operator_handoff,
-            operator_release=operator_release,
-            ask_decision_id=ask_decision["id"] if ask_decision else None,
-            ask_evidence_entry_id=ask_decision["evidence_entry_id"] if ask_decision else None,
-            ask_expected_meaning=ask_decision["packet"]["domain"]["meaning"] if ask_decision else None,
-        )
+        try:
+            result = await self.db.decide_task_recovery(
+                task_id,
+                args.get("incident_id"),
+                decision,
+                reason.strip(),
+                author_kind="supervisor" if scope.get("kind") == "session" else "user",
+                author_id=actor or scope.get("session_id") or "operator",
+                project_id=scope.get("project_id"),
+                stopped_session=stopped_session,
+                expected_hold_at=expected_hold_at,
+                operator_handoff=operator_handoff,
+                operator_release=operator_release,
+                ask_decision_id=ask_decision["id"] if ask_decision else None,
+                ask_evidence_entry_id=ask_decision["evidence_entry_id"] if ask_decision else None,
+                ask_expected_meaning=ask_decision["packet"]["domain"]["meaning"] if ask_decision else None,
+            )
+        except ValueError as exc:
+            if ask_decision:
+                raise  # The ask operation reconciles its own application failures.
+            # The fenced transaction refused (stale incident, closed task); nothing changed.
+            return {"success": False, "error_code": "task_recovery.refused", "error": str(exc)}
         await self._emit_task_graph_change("task.updated", await self.db.get_task(task_id))
         return result
 

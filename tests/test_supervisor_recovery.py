@@ -33,6 +33,7 @@ from src.models import (
     Task, TaskStatus, Workspace, WorkspaceKind,
 )
 from src.orchestrator import Orchestrator
+from src.sessions.obsolete import ObsoleteClose
 from tests.pg_dsn import ensure_worker_postgres_dsn
 from tests.db_fixtures import lease_dsn
 
@@ -978,6 +979,38 @@ async def test_hold_decision_is_durable_and_does_not_restart(env):
     assert "error" in await decide(env, current)
     assert (await env.db.get_task("t")).status == TaskStatus.BLOCKED
     assert (await env.db.get_task_meta("t", "supervisor_recovery_incident"))["decision"] == "hold"
+
+
+@pytest.mark.parametrize("held", [False, True])
+@pytest.mark.parametrize("disposition", ["done", "obsolete"])
+async def test_operator_close_resolves_open_recovery_incident(env, held, disposition):
+    current = await incident(env)
+    if held:
+        assert "error" not in await decide(env, current, "hold")
+    closed = await ObsoleteClose(env.db, release_owner=None).close(
+        "t", reason="Shipped by hand", principal="operator:test", disposition=disposition,
+    )
+    assert closed["outcome"] == "closed"
+    retired = await env.db.get_task_meta("t", "supervisor_recovery_incident")
+    context = "closed_done" if disposition == "done" else "closed_obsolete"
+    assert retired["decision"] == "superseded"
+    assert retired["decided_by"] == f"system:{context}"
+    assert retired["id"] == current["id"] and retired["reason"] == current["reason"]
+    rows = {row["id"]: row for row in await queued_messages(env)}
+    assert rows["msg-" + current["id"]]["archived_at"] is not None
+    explained = await env.handler.execute("task_explain", {"task_id": "t"})
+    assert "recovery_incident" not in json.dumps(explained)
+
+
+async def test_recover_racing_completion_refuses_cleanly(env):
+    current = await incident(env)
+    # The close won the row lock but left the incident open (pre-fix state).
+    await env.db.update_task("t", status=TaskStatus.COMPLETED)
+    result = await decide(env, current, "hold")
+    assert result["success"] is False
+    assert result["error_code"] == "task_recovery.refused"
+    assert "COMPLETED" in result["error"]
+    assert await env.db.get_task_meta("t", "supervisor_recovery_incident") == current
 
 
 async def test_recorded_recovery_hold_excludes_task_projected_back_to_ready(env):
