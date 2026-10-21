@@ -561,7 +561,18 @@ async def _check_worker_git_scope(
             except DELEGATION_ERRORS as exc:
                 return f"out of scope: {exc}"
         elif branch is not None and branch not in branches:
-            return "out of scope: branch mismatch"
+            from src.git.manager import GitError
+            from src.integration.batch_repair_publication import BatchRepairAssignments
+
+            task = await held_task_for_session(db, scope)
+            try:
+                assignment = (await BatchRepairAssignments(db).get(task)
+                              if task is not None and command in {"git_push", "push_branch"}
+                              else None)
+            except GitError:
+                assignment = None
+            if assignment is None or branch != assignment["branch"]:
+                return "out of scope: branch mismatch"
     if command == "git_create_pr":
         base = args.get("base")
         if base is not None and base != default_branch:
