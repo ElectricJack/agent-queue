@@ -113,7 +113,7 @@ def stall_reminder(task_id: str, minutes: int) -> str:
 
 _LIVE_STATES = ("starting", "running", "draining")
 #: Task statuses in which a session still holds the task's claim.
-_HELD_CLAIM_STATUSES = (TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS)
+_HELD_CLAIM_STATUSES = (TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS, TaskStatus.WAITING)
 #: Public alias — other modules ask "is this session row live?" too
 #: (``_cmd_task_close`` decides whether verification feedback can be
 #: handed back in place rather than reopening the task).
@@ -272,6 +272,8 @@ class SessionReconciler:
         #: Names whose destructive handling is deferred this tick because
         #: enumeration was incomplete.  Cleared and rebuilt every tick.
         self._deferred_prefixes: set[str] = set()
+        self._execution_wait_cache = {}
+        self._execution_wait_pass = None
 
     # -- helpers -----------------------------------------------------------
 
@@ -335,6 +337,8 @@ class SessionReconciler:
             return
         now = now if now is not None else time.time()
         self._deferred_prefixes.clear()
+        self._execution_wait_cache.clear()
+        self._execution_wait_pass = now
 
         live = await self._step_observe(now)
         for step in (
@@ -590,6 +594,7 @@ class SessionReconciler:
             closed = task is None or task.status not in (
                 TaskStatus.IN_PROGRESS,
                 TaskStatus.ASSIGNED,
+                TaskStatus.WAITING,
             )
             if not closed:
                 await self._premature_drain(provider, row, task, now)
@@ -1123,11 +1128,17 @@ class SessionReconciler:
 
         waiting, resumed = await self._wait_lease(row, now)
         if waiting:
-            task = await self.db.get_task(row.task_id)
-            wait = await self.db.blocking_wait_for(row, task.claim_epoch, now) if task else None
-            if wait is None:
-                return
-            renew_until = wait["deadline_at"]
+            execution_wait = await self._active_execution_wait(row, now)
+            if execution_wait is not None:
+                renew_until = now + max(
+                    DEFAULT_TTL_SECONDS, float(self.sessions_config.lease_ttl_seconds)
+                )
+            else:
+                task = await self.db.get_task(row.task_id)
+                wait = await self.db.blocking_wait_for(row, task.claim_epoch, now) if task else None
+                if wait is None:
+                    return
+                renew_until = wait["deadline_at"]
         else:
             last = max(row.last_activity or row.started_at or 0.0, resumed)
             renew_until = (
@@ -1846,6 +1857,20 @@ class SessionReconciler:
             return False
         return await service.is_waiting(row, now=now)
 
+    async def _active_execution_wait(self, row, now):
+        from src.waits.holding import active_wait_for
+
+        key = (row.id, row.instance_token, row.task_id, row.last_claim_epoch,
+               row.state, row.desired_state, row.claim_phase)
+        if self._execution_wait_pass != now:
+            self._execution_wait_cache.clear()
+            self._execution_wait_pass = now
+        if key not in self._execution_wait_cache:
+            self._execution_wait_cache[key] = await active_wait_for(
+                self.db, row, include_acknowledged=True,
+            )
+        return self._execution_wait_cache[key]
+
     async def _wait_lease(self, row, now) -> tuple[bool, float]:
         """Bounded dormancy and consumption grace without inventing activity.
 
@@ -1853,6 +1878,11 @@ class SessionReconciler:
         last_claim_epoch is unset. The database additionally checks instance,
         ownership and task status. Death and explicit stops are never exempt.
         """
+        execution_wait = await self._active_execution_wait(row, now)
+        if execution_wait is not None:
+            return (True, 0.0) if execution_wait["cleared_at"] is None else (
+                False, execution_wait["cleared_at"],
+            )
         if not row.task_id:
             return False, 0.0
         task = await self.db.get_task(row.task_id)
@@ -2976,6 +3006,9 @@ class SessionReconciler:
             if row.state != "running" or row.desired_state != "running":
                 continue
             if await self._disabled_project_supervisor(row):
+                continue
+            waiting, _ = await self._wait_lease(row, now)
+            if waiting:
                 continue
             # Named supervisors have no task stall ladder. Recover an owned
             # notification even if its message was consumed through the inbox

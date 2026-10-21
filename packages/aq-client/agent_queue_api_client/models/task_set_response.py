@@ -7,6 +7,7 @@ from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
 from ..models.task_set_response_display_state_type_0 import TaskSetResponseDisplayStateType0
+from ..models.task_set_response_status import TaskSetResponseStatus
 from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
@@ -17,11 +18,13 @@ if TYPE_CHECKING:
     from ..models.task_completion_detail import TaskCompletionDetail
     from ..models.task_ref import TaskRef
     from ..models.task_reroute import TaskReroute
+    from ..models.task_set_response_batch_member_type_0 import TaskSetResponseBatchMemberType0
     from ..models.task_set_response_child_state_counts_type_0 import TaskSetResponseChildStateCountsType0
     from ..models.task_set_response_children_type_0 import TaskSetResponseChildrenType0
     from ..models.task_set_response_context_item import TaskSetResponseContextItem
     from ..models.task_set_response_deliverables_item import TaskSetResponseDeliverablesItem
     from ..models.task_set_response_descendant_state_counts_type_0 import TaskSetResponseDescendantStateCountsType0
+    from ..models.task_set_response_fidelity_type_0 import TaskSetResponseFidelityType0
     from ..models.task_set_response_parent_type_0 import TaskSetResponseParentType0
     from ..models.task_set_response_provenance_item import TaskSetResponseProvenanceItem
     from ..models.task_set_response_route_type_0 import TaskSetResponseRouteType0
@@ -43,7 +46,7 @@ class TaskSetResponse:
         descendant_state_counts (None | TaskSetResponseDescendantStateCountsType0 | Unset):
         claim_readiness (ClaimReadiness | None | Unset):
         description (str | Unset):  Default: ''.
-        status (str | Unset):  Default: ''.
+        status (TaskSetResponseStatus | Unset):  Default: TaskSetResponseStatus.VALUE_0.
         priority (int | Unset):  Default: 0.
         assigned_agent (None | str | Unset):
         retry_count (int | Unset):  Default: 0.
@@ -84,6 +87,8 @@ class TaskSetResponse:
         labels (list[str] | Unset):
         provenance (list[TaskSetResponseProvenanceItem] | Unset):
         claimed_by (ClaimedBy | None | Unset):
+        batch_member (None | TaskSetResponseBatchMemberType0 | Unset):
+        fidelity (None | TaskSetResponseFidelityType0 | Unset):
         fields_changed (list[str] | Unset):
     """
 
@@ -96,7 +101,7 @@ class TaskSetResponse:
     descendant_state_counts: None | TaskSetResponseDescendantStateCountsType0 | Unset = UNSET
     claim_readiness: ClaimReadiness | None | Unset = UNSET
     description: str | Unset = ""
-    status: str | Unset = ""
+    status: TaskSetResponseStatus | Unset = TaskSetResponseStatus.VALUE_0
     priority: int | Unset = 0
     assigned_agent: None | str | Unset = UNSET
     retry_count: int | Unset = 0
@@ -137,6 +142,8 @@ class TaskSetResponse:
     labels: list[str] | Unset = UNSET
     provenance: list[TaskSetResponseProvenanceItem] | Unset = UNSET
     claimed_by: ClaimedBy | None | Unset = UNSET
+    batch_member: None | TaskSetResponseBatchMemberType0 | Unset = UNSET
+    fidelity: None | TaskSetResponseFidelityType0 | Unset = UNSET
     fields_changed: list[str] | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
@@ -147,9 +154,11 @@ class TaskSetResponse:
         from ..models.provider_hold_detail import ProviderHoldDetail
         from ..models.task_completion_detail import TaskCompletionDetail
         from ..models.task_reroute import TaskReroute
+        from ..models.task_set_response_batch_member_type_0 import TaskSetResponseBatchMemberType0
         from ..models.task_set_response_child_state_counts_type_0 import TaskSetResponseChildStateCountsType0
         from ..models.task_set_response_children_type_0 import TaskSetResponseChildrenType0
         from ..models.task_set_response_descendant_state_counts_type_0 import TaskSetResponseDescendantStateCountsType0
+        from ..models.task_set_response_fidelity_type_0 import TaskSetResponseFidelityType0
         from ..models.task_set_response_parent_type_0 import TaskSetResponseParentType0
         from ..models.task_set_response_route_type_0 import TaskSetResponseRouteType0
 
@@ -199,7 +208,9 @@ class TaskSetResponse:
 
         description = self.description
 
-        status = self.status
+        status: str | Unset = UNSET
+        if not isinstance(self.status, Unset):
+            status = self.status.value
 
         priority = self.priority
 
@@ -423,6 +434,22 @@ class TaskSetResponse:
         else:
             claimed_by = self.claimed_by
 
+        batch_member: dict[str, Any] | None | Unset
+        if isinstance(self.batch_member, Unset):
+            batch_member = UNSET
+        elif isinstance(self.batch_member, TaskSetResponseBatchMemberType0):
+            batch_member = self.batch_member.to_dict()
+        else:
+            batch_member = self.batch_member
+
+        fidelity: dict[str, Any] | None | Unset
+        if isinstance(self.fidelity, Unset):
+            fidelity = UNSET
+        elif isinstance(self.fidelity, TaskSetResponseFidelityType0):
+            fidelity = self.fidelity.to_dict()
+        else:
+            fidelity = self.fidelity
+
         fields_changed: list[str] | Unset = UNSET
         if not isinstance(self.fields_changed, Unset):
             fields_changed = self.fields_changed
@@ -530,6 +557,10 @@ class TaskSetResponse:
             field_dict["provenance"] = provenance
         if claimed_by is not UNSET:
             field_dict["claimed_by"] = claimed_by
+        if batch_member is not UNSET:
+            field_dict["batch_member"] = batch_member
+        if fidelity is not UNSET:
+            field_dict["fidelity"] = fidelity
         if fields_changed is not UNSET:
             field_dict["fields_changed"] = fields_changed
 
@@ -544,11 +575,13 @@ class TaskSetResponse:
         from ..models.task_completion_detail import TaskCompletionDetail
         from ..models.task_ref import TaskRef
         from ..models.task_reroute import TaskReroute
+        from ..models.task_set_response_batch_member_type_0 import TaskSetResponseBatchMemberType0
         from ..models.task_set_response_child_state_counts_type_0 import TaskSetResponseChildStateCountsType0
         from ..models.task_set_response_children_type_0 import TaskSetResponseChildrenType0
         from ..models.task_set_response_context_item import TaskSetResponseContextItem
         from ..models.task_set_response_deliverables_item import TaskSetResponseDeliverablesItem
         from ..models.task_set_response_descendant_state_counts_type_0 import TaskSetResponseDescendantStateCountsType0
+        from ..models.task_set_response_fidelity_type_0 import TaskSetResponseFidelityType0
         from ..models.task_set_response_parent_type_0 import TaskSetResponseParentType0
         from ..models.task_set_response_provenance_item import TaskSetResponseProvenanceItem
         from ..models.task_set_response_route_type_0 import TaskSetResponseRouteType0
@@ -639,7 +672,12 @@ class TaskSetResponse:
 
         description = d.pop("description", UNSET)
 
-        status = d.pop("status", UNSET)
+        _status = d.pop("status", UNSET)
+        status: TaskSetResponseStatus | Unset
+        if isinstance(_status, Unset):
+            status = UNSET
+        else:
+            status = TaskSetResponseStatus(_status)
 
         priority = d.pop("priority", UNSET)
 
@@ -988,6 +1026,40 @@ class TaskSetResponse:
 
         claimed_by = _parse_claimed_by(d.pop("claimed_by", UNSET))
 
+        def _parse_batch_member(data: object) -> None | TaskSetResponseBatchMemberType0 | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                batch_member_type_0 = TaskSetResponseBatchMemberType0.from_dict(data)
+
+                return batch_member_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(None | TaskSetResponseBatchMemberType0 | Unset, data)
+
+        batch_member = _parse_batch_member(d.pop("batch_member", UNSET))
+
+        def _parse_fidelity(data: object) -> None | TaskSetResponseFidelityType0 | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                fidelity_type_0 = TaskSetResponseFidelityType0.from_dict(data)
+
+                return fidelity_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(None | TaskSetResponseFidelityType0 | Unset, data)
+
+        fidelity = _parse_fidelity(d.pop("fidelity", UNSET))
+
         fields_changed = cast(list[str], d.pop("fields_changed", UNSET))
 
         task_set_response = cls(
@@ -1041,6 +1113,8 @@ class TaskSetResponse:
             labels=labels,
             provenance=provenance,
             claimed_by=claimed_by,
+            batch_member=batch_member,
+            fidelity=fidelity,
             fields_changed=fields_changed,
         )
 

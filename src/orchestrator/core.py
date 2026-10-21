@@ -630,6 +630,7 @@ class Orchestrator(
         self.integration_service = None
         # IntegrationTrain | None — the delivery engine when git_first is active.
         self.integration_train = None
+        self._batch_push_unsub = None
         #: When this process began; refreshed by ``initialize()`` for playbook recovery.
         self._process_started_at = time.time()
         self._owner_recovery_next_due: float = 0.0
@@ -1097,15 +1098,30 @@ class Orchestrator(
             snapshot = await self.db.pause_task(task_id)
             await self._finish_manual_pause(task_id, snapshot)
 
-    async def resume_task(self, task_id: str):
+    async def resume_task(
+        self, task_id: str, *, recover_stale_pause: bool = False, actor: str = "local-operator"
+    ):
         async with self._task_control_lock(task_id):
             snapshot = await self.db.get_task_meta(task_id, "manual_pause")
             if snapshot:
-                await self._finish_manual_pause(task_id, snapshot)
+                from src.database.queries.task_queries import PauseFenceError
+
+                try:
+                    await self._finish_manual_pause(task_id, snapshot)
+                except PauseFenceError:
+                    snapshot = await self._recover_stale_pause(
+                        task_id, snapshot, retained=recover_stale_pause, actor=actor,
+                    )
+                    await self._finish_manual_pause(task_id, snapshot)
             task = await self.db.get_task(task_id)
+            # A hold placed over a failed slot reset resumes into the same
+            # retry, so the old writer needs the same proof of stop.
+            held = await self.db.get_task_meta(task_id, "manual_pause") if snapshot else None
+            parked = task.status if task is not None else None
+            if parked is TaskStatus.PAUSED and isinstance(held, dict):
+                parked = TaskStatus(held.get("status", "READY"))
             if (
-                task is not None
-                and task.status in {TaskStatus.READY, TaskStatus.BLOCKED}
+                parked in {TaskStatus.READY, TaskStatus.BLOCKED}
                 and await self.db.get_task_meta(task_id, "slot_reset_failure")
             ):
                 from src.sessions.provider import SessionHandle
@@ -1132,6 +1148,51 @@ class Orchestrator(
                     stopped_sessions.append(session)
                 return await self.db.resume_task(task_id, stopped_sessions=stopped_sessions)
             return await self.db.resume_task(task_id)
+
+    async def _recover_stale_pause(self, task_id, snapshot, *, retained, actor):
+        """Prove the captured writers gone before rebinding obsolete pause identities."""
+        from src.database.queries.task_queries import (
+            PauseFenceError, _PAUSE_RECOVERY_SESSION_FIELDS,
+        )
+        from src.sessions.provider import SessionHandle
+
+        execution = self._running_tasks.get(task_id)
+        agent_id = snapshot.get("agent_id")
+        agent = await self.db.get_agent(agent_id) if agent_id else None
+        if (execution is not None and not execution.done()
+                or any(key[1] == task_id and not preparation.done()
+                       for key, preparation in self.claim_preparations.items())
+                or agent is not None and agent.current_task_id == task_id
+                and agent.id in self._adapters):
+            raise PauseFenceError("Paused execution or preparation is still attached; repeat Pause")
+        observed = {}
+        for identity in snapshot.get("sessions", []):
+            session = await self.db.get_session(identity["id"])
+            observed[identity["id"]] = (
+                {field: getattr(session, field) for field in _PAUSE_RECOVERY_SESSION_FIELDS}
+                if session is not None else None
+            )
+            handles = [identity]
+            if session is not None and session.task_id == task_id and any(
+                getattr(session, field) != identity[field]
+                for field in ("name", "provider", "instance_token")
+            ):
+                handles.append(observed[identity["id"]])
+            for handle in handles:
+                try:
+                    provider = self.session_providers.create(handle["provider"], self.config)
+                    stopped = await asyncio.wait_for(provider.confirm_stopped(SessionHandle(
+                        handle["name"], handle["provider"], handle["instance_token"],
+                    )), timeout=10)
+                except Exception as exc:
+                    raise PauseFenceError(
+                        "Stale pause writer termination is unproved; retain resources"
+                    ) from exc
+                if stopped is not True:
+                    raise PauseFenceError("Stale pause writer is still live; repeat Pause")
+        return await self.db.recover_stale_task_pause(
+            task_id, snapshot, observed, retained=retained, actor=actor,
+        )
 
     async def retry_manual_pause_cleanup(self, task_id: str) -> None:
         """Cascade-driven retry of a pause whose stop cleanup has not finished.
@@ -1207,6 +1268,10 @@ class Orchestrator(
         await self.db.validate_task_pause(task_id, snapshot)
         agent_id = snapshot.get("agent_id")
         for identity in snapshot["sessions"]:
+            if identity["id"] in snapshot.get("recovered_sessions", {}):
+                # Recovery proved the original handle stopped. Its row may now
+                # represent another claim; never stop or update that replacement.
+                continue
             async with self._pool_teardown_lock(identity["id"]):
                 session = await self.db.get_session(identity["id"])
                 if (
@@ -1412,11 +1477,12 @@ class Orchestrator(
             task = await self.db.get_task(task_id)
             project = await self.db.get_project(task.project_id) if task else None
             await validate()
-            await validate_checkpoint_branch(self.git, ws.workspace_path, snapshot.get("branch_name"))
+            expected_branch = self._paused_checkpoint_branch(task_id, ws, snapshot)
+            await validate_checkpoint_branch(self.git, ws.workspace_path, expected_branch)
             with commit_identity(self.git.resolve_commit_identity(project)):
                 await capture_checkpoint(
                     self.db, self.git, task_id, ws.workspace_path, validate=validate, save=save,
-                    expected_branch=snapshot.get("branch_name"),
+                    expected_branch=expected_branch,
                 )
         except (PauseFenceError, CheckpointIdentityError, ProcessCleanupError):
             raise
@@ -1479,6 +1545,19 @@ class Orchestrator(
             )
         return True
 
+    @staticmethod
+    def _paused_checkpoint_branch(task_id: str, ws, snapshot: dict) -> str | None:
+        """The branch a paused workspace must be on for its capture to be the task's.
+
+        A managed slot is shared: with no recorded task branch it may still hold
+        another task's checkout, so it is held to the slot default branch name.
+        """
+        if snapshot.get("branch_name") or not ws.is_slot:
+            return snapshot.get("branch_name")
+        from src.orchestrator.worktree_manager import task_branch_name
+
+        return task_branch_name(task_id)
+
     async def _salvage_paused_workspace(self, task_id: str, ws, snapshot: dict) -> bool:
         """Preserve a partial patch without changing the paused task's live index."""
         from src.orchestrator.task_checkpoint import (
@@ -1494,12 +1573,13 @@ class Orchestrator(
         try:
             await self.db.validate_task_pause(task_id, snapshot, stopped=True)
             self._validate_paused_workspace_identity(task_id, ws, snapshot)
-            await validate_checkpoint_branch(self.git, ws.workspace_path, snapshot.get("branch_name"))
+            expected_branch = self._paused_checkpoint_branch(task_id, ws, snapshot)
+            await validate_checkpoint_branch(self.git, ws.workspace_path, expected_branch)
             return await salvage_checkpoint(
                 self.db, self.git, task_id, ws.workspace_path,
                 max_bytes=self.config.worktrees.salvage_max_bytes,
                 save=save,
-                expected_branch=snapshot.get("branch_name"),
+                expected_branch=expected_branch,
             )
         except (PauseFenceError, CheckpointIdentityError, ProcessCleanupError):
             raise
@@ -2303,6 +2383,16 @@ class Orchestrator(
         # git_first: active hands every target to the train; the subject
         # runtimes are never built beside it.
         self.integration_train = train_for(self)
+        if self._batch_push_unsub is not None:
+            self._batch_push_unsub()
+            self._batch_push_unsub = None
+        if self.integration_train is not None:
+            from src.integration.batch_repair_publication import wake_pushed_batch
+
+            async def on_batch_push(event):
+                await wake_pushed_batch(self.db, self.integration_train, event)
+
+            self._batch_push_unsub = self.bus.subscribe("git.push", on_batch_push)
         train_active = self.integration_train is not None
         from src.integration.task_removal import settle_orphaned_parent_operations
 
@@ -3212,6 +3302,9 @@ class Orchestrator(
         if self._development_completion_unsub is not None:
             self._development_completion_unsub()
             self._development_completion_unsub = None
+        if self._batch_push_unsub is not None:
+            self._batch_push_unsub()
+            self._batch_push_unsub = None
         if self.vault_watcher:
             try:
                 await self.vault_watcher.stop()
@@ -3534,6 +3627,19 @@ class Orchestrator(
             # Terminal onboarding requests are durable idempotency state; a
             # failed cleanup must not interrupt scheduling.
             await self._sweep_operational_event_retention()
+
+            # Snapshot expiry is bounded maintenance, independent of whether
+            # playbooks are enabled. Dispatch preserves the single write entry.
+            if (self._command_handler is not None
+                    and now - getattr(self, "_last_observation_cleanup", 0) >= 60):
+                self._last_observation_cleanup = now
+                try:
+                    from src.commands.principal import ExecutionPrincipal, principal_context
+
+                    with principal_context(ExecutionPrincipal.service("observation-retention")):
+                        await self._command_handler.execute("observation_snapshot_cleanup", {})
+                except Exception:
+                    logger.warning("Observation retention sweep failed", exc_info=True)
 
             # Selection records are history, not live state; a failed sweep
             # must not interrupt scheduling.
@@ -4127,17 +4233,22 @@ class Orchestrator(
             retained_origins = {}
             for repository in repositories:
                 origin = repository.url
+                for registered_path in sorted({repository.source_path,
+                                               repository.checkout_base_path}):
+                    if path_is_missing(registered_path):
+                        key = json.dumps(["repository", repository.id, registered_path])
+                        if str(Path(registered_path).resolve()) not in missing_paths:
+                            missing_notices[key] = (
+                                f"repository {repository.id}: {registered_path} is missing; "
+                                "restore the directory or preview aq project "
+                                "repair-repository-checkout with --project-id, --repository-id, "
+                                "--expected-path, --replacement-path and --reason; "
+                                "add --apply after reviewing the before/after evidence"
+                            )
                 if getattr(repository, "source_type", None) is RepoSourceType.LINK:
                     extra_paths.append(repository.source_path)
                     missing = path_is_missing(repository.source_path)
-                    if missing:
-                        key = json.dumps(["repository", repository.id, repository.source_path])
-                        if str(Path(repository.source_path).resolve()) not in missing_paths:
-                            missing_notices[key] = (
-                                f"repository {repository.id}: {repository.source_path} is missing; "
-                                "restore the directory or remove its stale repository registration"
-                            )
-                    if not origin and not missing:
+                    if not origin and repository.source_path and not missing:
                         try:
                             if not repository.source_path or not Path(repository.source_path).is_dir():
                                 raise ValueError("registered source path is unavailable")
@@ -4387,6 +4498,12 @@ class Orchestrator(
             except Exception:
                 logger.error("AgentWaitReconciler tick failed", exc_info=True)
             try:
+                wait_service = getattr(self, "wait_service", None)
+                if wait_service is not None:
+                    await wait_service.tick()
+            except Exception:
+                logger.error("WaitService recovery tick failed", exc_info=True)
+            try:
                 result = await self.agent_cron.tick()
                 if not result.get("success"):
                     logger.error("Agent cron tick refused: %s", result)
@@ -4519,6 +4636,14 @@ class Orchestrator(
                 previous_aspect,
                 current_aspect,
             )
+        from src.waits.resource_sources import resource_invalidation
+
+        await self.db.wait_source_commit(**resource_invalidation(
+            producer="config", identity="global",
+            revision=data.setdefault("source_revision", uuid.uuid4().hex),
+            outcome_ref="config:reload",
+            payload={"changed_sections": list(data.get("changed_sections", []))},
+        ))
         logger.info(
             "Config reloaded: updated sections: %s",
             ", ".join(data.get("changed_sections", [])),

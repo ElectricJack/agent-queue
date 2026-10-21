@@ -75,6 +75,10 @@ ValueKind = Literal[
     "loop_ref",
     "template",
     "expression",
+    "filter",
+    "map",
+    "len",
+    "diff",
     "redacted",
     "unresolved",
 ]
@@ -321,7 +325,7 @@ class PlaybookDeleteResponse(V2Model):
 # ---------------------------------------------------------------------------
 
 
-StepKind = Literal["command", "llm", "agent_task", "decision", "wait", "foreach", "terminal"]
+StepKind = Literal["command", "llm", "agent_task", "decision", "wait", "foreach", "terminal", "script"]
 
 EdgeKind = Literal[
     "success",
@@ -436,6 +440,7 @@ class LoopNodeDetailDTO(V2Model):
     """ForEachStep only."""
 
     collection: ExplanationValueDTO
+    max_iterations: int = 500
     item_binding: str
     failure_policy: Literal["halt", "continue", "collect"]
     body_entry_step_id: str
@@ -500,7 +505,18 @@ class NodeBadgeDTO(V2Model):
     value: str
 
 
+class ScriptNodeDetailDTO(V2Model):
+    program: dict[str, Any]
+    source_revision: str | None = None
+    program_sha256: str | None = None
+    runtime_sha256: str | None = None
+    executable_sha256: str | None = None
+    input_pins: list[dict[str, Any]] = []
+    environment_names: list[str] = []
+
+
 class GraphNodeDTO(V2Model):
+    script: ScriptNodeDetailDTO | None = None
     id: str  # artifact-local step id
     rule_id: str
     step_kind: StepKind
@@ -563,6 +579,14 @@ class GraphLegendDTO(V2Model):
     edge_kinds: dict[str, str] = {}  # EdgeKind  -> label
 
 
+class ExecutionRequirementsDTO(V2Model):
+    """Reviewed requirements, never a grant or a resolved principal."""
+
+    required_features: list[str] = []
+    required_capabilities: list[str] = []
+    state_schema_version: int | None = None
+
+
 class PlaybookV2GraphResponse(V2Model):
     """Filtering is server-side and lossless.  ``playbook_v2_graph(event_type=...)``
     narrows ``rules``/``nodes``/``edges`` to the rules triggered by that event and
@@ -573,6 +597,7 @@ class PlaybookV2GraphResponse(V2Model):
     artifact: ArtifactRefDTO
     activation: ActivationStateDTO
     purpose: str = "routine"  # "routine" | "assignment_routing"
+    execution_requirements: ExecutionRequirementsDTO = ExecutionRequirementsDTO()
     event_groups: list[EventGroupDTO] = []
     rules: list[RuleClusterDTO] = []
     nodes: list[GraphNodeDTO] = []
@@ -597,12 +622,34 @@ class PlaybookCommandCatalogEntryDTO(V2Model):
     summary: str
     docs_url: str
     parameters_schema: dict[str, Any] = {}
+    origin: str | None = None
+    plugin: str | None = None
+    available: bool = True
+    execution_available: bool = False
+    denied: bool = False
+    denial_reason: str | None = None
+    schema_source: str | None = None
+    schema_quality: str | None = None
+    result_mode: str | None = None
+    capability: str | None = None
+    caller_requirements: list[str] = []
+    effect_class: str | None = None
+    idempotency_mechanism: str | None = None
+    idempotency_key_field: str | None = None
+    retry_safe: bool = False
+    timeout_seconds: int | None = None
+    preview_available: bool = False
+    sensitivity: str | None = None
+    receipt_projection: list[str] = []
 
 
 class PlaybookCommandCatalogResponse(V2Model):
     success: bool = True
     commands: list[PlaybookCommandCatalogEntryDTO] = []
     count: int = 0
+    total: int = 0
+    offset: int = 0
+    next_offset: int | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -783,6 +830,21 @@ class CancellationFactsDTO(V2Model):
     cancelled_child: bool = False
 
 
+class ScriptExecutionDTO(V2Model):
+    """Public execution facts and opaque handles, never process output or inputs."""
+    job_id: str
+    execution_id: str | None = None
+    terminal_cause: str | None = None
+    exit_code: int | None = None
+    signal: int | None = None
+    started_at: float | None = None
+    ended_at: float | None = None
+    json_status: str | None = None
+    capture_complete: bool | None = None
+    cleanup_complete: bool | None = None
+    output_refs: dict[str, str] = {}
+
+
 class ReceiptDTO(V2Model):
     receipt_id: str
     step_id: str
@@ -790,6 +852,8 @@ class ReceiptDTO(V2Model):
     step_kind: StepKind
     attempt: int = 1
     iteration_index: int | None = None  # set only inside a foreach body
+    iteration_path: str = ""
+    script: ScriptExecutionDTO | None = None
     outcome: str
     selected_edge_id: str | None = None  # joins GraphEdgeDTO.id
     started_at: float

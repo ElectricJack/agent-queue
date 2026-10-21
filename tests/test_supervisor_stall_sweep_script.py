@@ -514,8 +514,10 @@ def test_empty_project_sweep_stays_in_scope_without_health_probe(tmp_path):
     assert proc.stdout.strip() == "OK: nothing stalled"
 
 
-@pytest.mark.parametrize("tasks", [[], [_task("rom-new", "DEFINED", age_s=60)]])
-def test_successful_task_reads_are_healthy(tmp_path, tasks):
+@pytest.mark.parametrize("has_fresh_task", [False, True])
+def test_successful_task_reads_are_healthy(tmp_path, has_fresh_task):
+    # Collection can precede execution by more than the sweep's stale threshold.
+    tasks = [_task("rom-new", "DEFINED", age_s=60)] if has_fresh_task else []
     proc, calls = _run(tmp_path, _scoped_responses(tasks), "--project", "rom")
 
     assert proc.returncode == 0, proc.stdout + proc.stderr

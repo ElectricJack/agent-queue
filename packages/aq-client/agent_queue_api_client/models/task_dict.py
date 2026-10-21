@@ -6,6 +6,7 @@ from typing import Any, TypeVar
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
+from ..models.task_dict_status import TaskDictStatus
 from ..types import UNSET, Unset
 
 T = TypeVar("T", bound="TaskDict")
@@ -18,12 +19,12 @@ class TaskDict:
     Attributes:
         id (str):
         title (str | Unset):  Default: ''.
-        status (str | Unset):  Default: ''.
+        status (TaskDictStatus | Unset):  Default: TaskDictStatus.VALUE_0.
     """
 
     id: str
     title: str | Unset = ""
-    status: str | Unset = ""
+    status: TaskDictStatus | Unset = TaskDictStatus.VALUE_0
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -31,7 +32,9 @@ class TaskDict:
 
         title = self.title
 
-        status = self.status
+        status: str | Unset = UNSET
+        if not isinstance(self.status, Unset):
+            status = self.status.value
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -54,7 +57,12 @@ class TaskDict:
 
         title = d.pop("title", UNSET)
 
-        status = d.pop("status", UNSET)
+        _status = d.pop("status", UNSET)
+        status: TaskDictStatus | Unset
+        if isinstance(_status, Unset):
+            status = UNSET
+        else:
+            status = TaskDictStatus(_status)
 
         task_dict = cls(
             id=id,

@@ -617,6 +617,99 @@ class TestWorkspaceRetireClaim:
         assert result == {"success": False, "error": "ws-base is not a worktree slot"}
 
 
+class TestWorkspaceClearSentinel:
+    """bold-torrent-46: the supervisor's control for a slot whose sentinel still
+    names a finished task after a path that never released it."""
+
+    async def _finished(self, orch, status="COMPLETED"):
+        slot_ws, slot_dir = await _make_slot_for(orch)
+        await orch.db.update_task("tsk-1", status=status)
+        await orch.db.release_workspace(slot_ws.id)
+        mgr = orch._worktree_slots()
+        assert mgr.read_sentinel(slot_dir).task_id == "tsk-1"
+        return slot_ws, slot_dir, mgr
+
+    async def test_clears_a_terminal_holders_sentinel(self, worktree_handler):
+        handler, orch, _ = worktree_handler
+        slot_ws, slot_dir, mgr = await self._finished(orch)
+        branch = mgr.read_sentinel(slot_dir).branch
+        events = []
+        real = orch.bus.emit
+
+        async def emit(kind, data=None):
+            if kind == "worktree.sentinel_cleared":
+                events.append(data)
+            return await real(kind, data)
+
+        orch.bus.emit = emit
+
+        result = await handler._cmd_workspace_clear_sentinel(
+            {"workspace_id": slot_ws.id, "if_task_terminal": True})
+
+        assert result == {
+            "success": True, "workspace_id": slot_ws.id, "cleared": True,
+            "holder_task_id": "tsk-1", "branch": branch,
+            "reason": "task tsk-1 is COMPLETED",
+        }
+        sentinel = mgr.read_sentinel(slot_dir)
+        assert (sentinel.task_id, sentinel.branch, sentinel.assigned_at) == (None, None, None)
+        assert sentinel.workspace_id == slot_ws.id
+        assert [(e["holder_task_id"], e["workspace_id"]) for e in events] == [
+            ("tsk-1", slot_ws.id)]
+        again = await handler._cmd_workspace_clear_sentinel({"workspace_id": slot_ws.id})
+        assert (again["success"], again["cleared"], again["detail"]) == (
+            True, False, "sentinel names no task")
+
+    @pytest.mark.parametrize("obstacle", ["active", "locked", "claim", "dirty", "unpublished"])
+    async def test_refuses_a_sentinel_that_may_still_be_held(
+        self, worktree_handler, obstacle,
+    ):
+        from src.claim_file import write_claim_file
+
+        handler, orch, _ = worktree_handler
+        slot_ws, slot_dir, mgr = await self._finished(
+            orch, "IN_PROGRESS" if obstacle == "active" else "COMPLETED")
+        if obstacle == "locked":
+            await orch.db.update_workspace(slot_ws.id, locked_by_task_id="tsk-1")
+        elif obstacle == "claim":
+            write_claim_file(slot_dir, {"task_id": "tsk-1", "claim_epoch": 1})
+        elif obstacle == "dirty":
+            (slot_dir / "README.md").write_text("edited\n")
+        elif obstacle == "unpublished":
+            (slot_dir / "local.txt").write_text("local\n")
+            _git_cli(["add", "-A"], cwd=slot_dir)
+            _git_cli(["commit", "-m", "local"], cwd=slot_dir)
+
+        result = await handler._cmd_workspace_clear_sentinel({"workspace_id": slot_ws.id})
+
+        assert result["success"] is False
+        assert result["cleared"] is False
+        assert result["holder_task_id"] == "tsk-1"
+        assert "was not cleared" in result["error"]
+        assert {
+            "active": "is IN_PROGRESS, not terminal",
+            "locked": "slot is locked by task tsk-1",
+            "claim": "retains a claim file",
+            "dirty": "tree is dirty or HEAD is not published",
+            "unpublished": "tree is dirty or HEAD is not published",
+        }[obstacle] in result["error"]
+        assert mgr.read_sentinel(slot_dir).task_id == "tsk-1"
+
+    async def test_refuses_an_unconditional_clear(self, worktree_handler):
+        handler, orch, _ = worktree_handler
+        slot_ws, slot_dir, mgr = await self._finished(orch)
+        result = await handler._cmd_workspace_clear_sentinel(
+            {"workspace_id": slot_ws.id, "if_task_terminal": False})
+        assert result["success"] is False
+        assert "if_task_terminal must be true" in result["error"]
+        assert mgr.read_sentinel(slot_dir).task_id == "tsk-1"
+
+    async def test_refuses_a_non_slot_workspace(self, worktree_handler):
+        handler, _, _ = worktree_handler
+        result = await handler._cmd_workspace_clear_sentinel({"workspace_id": "ws-base"})
+        assert result == {"success": False, "error": "ws-base is not a worktree slot"}
+
+
 class TestWorkspaceReap:
     async def test_reap_refused_when_slot_is_live(
         self, worktree_handler, monkeypatch,

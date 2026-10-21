@@ -314,6 +314,11 @@ function scheduleCoalescedInvalidation(
 function applyEventToCache(queryClient: QueryClient, event: NotifyEvent): void {
   const type = event.event_type;
 
+  if (type.startsWith("wait.") || type.startsWith("continuation.") || type.startsWith("reservation.") || type.startsWith("task.")) {
+    scheduleCoalescedInvalidation(queryClient, ["wait-explain"], 250);
+    scheduleCoalescedInvalidation(queryClient, ["wait-graph"], 250);
+  }
+
   // The metrics sampler ticks once a second and owns no query cache of
   // its own — the Metrics page subscribes to the raw frame directly.
   if (type.startsWith("metrics.")) return;

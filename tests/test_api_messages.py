@@ -371,14 +371,24 @@ async def test_global_chat_is_projectless_and_does_not_include_project_messages(
 
 
 @pytest.mark.parametrize("elevated,project_id", [(False, "proj-a"), (True, "proj-a"), (False, None)])
-async def test_scoped_or_unprivileged_tokens_cannot_access_global_chat(tmp_path, elevated, project_id):
+async def test_unbound_or_unprivileged_tokens_cannot_access_global_chat(
+    tmp_path, elevated, project_id,
+):
     db, store, ch, app = await _seed_messages_app(tmp_path)
     try:
         token = await store.mint(session_id="scoped", task_id=None, project_id=project_id, elevated=elevated)
         with TestClient(app) as client:
             headers = {"Authorization": f"Bearer {token}"}
             assert client.get("/api/sessions/supervisor-global/messages", headers=headers).status_code == 403
-            assert client.post("/api/sessions/supervisor-global/message", headers=headers, json={"body": "denied"}).status_code == 403
+            response = client.post(
+                "/api/sessions/supervisor-global/message", headers=headers, json={"body": "denied"},
+            )
+            # Elevated project tokens reach the report route, whose handler
+            # still requires a persisted live named supervisor launch.
+            assert response.status_code == (422 if elevated else 403), response.text
+            assert response.json()["detail" if elevated else "error"] == (
+                "out of scope: system messages require global admin"
+            )
         assert await db.list_messages() == []
         assert await db.get_project("global") is None
     finally:

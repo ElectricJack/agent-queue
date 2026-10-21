@@ -24,6 +24,97 @@ from src.doctor.models import (
 from src.doctor.runner import DoctorRegistry, exit_code_for, run_doctor
 from tests.db_fixtures import lease_dsn
 
+
+async def _legacy_proposal(handler, *, source=None):
+    from tests.test_task_batch_commands import _implementation_graph, _ingest_assignment
+
+    path, _, decision = await _ingest_assignment(handler)
+    graph = _implementation_graph(path, decision)
+    if source:
+        graph["source"] = source
+    proposal = await handler.execute("task_batch_propose", graph)
+    assert proposal["success"], proposal
+    return proposal["proposal_id"], decision
+
+
+async def test_ingestion_doctor_inventory_and_adoption(command_handler_factory):
+    from src.database.queries.proposal_queries import get_proposal
+    from tests.test_fidelity_review import _holds
+
+    h = await command_handler_factory()
+    proposal_id, _ = await _legacy_proposal(h)
+    context = DoctorContext(config=h.config, db=h.db, handler=h)
+    registry = default_registry()
+    legacy = registry.get("ingestion.legacy_proposals")
+    held = registry.get("ingestion.held_batches")
+    assert (await legacy.run(context)).data["proposals"][0]["id"] == proposal_id
+    assert (await held.run(context)).data["legacy_proposals"] == [proposal_id]
+    fixed = await legacy.fix(context)
+    assert fixed.fix_applied and fixed.data["adopted"] == [proposal_id], fixed
+    assert not fixed.data["errors"]
+    row = await get_proposal(h.db, proposal_id)
+    assert row["status"] == "held"
+    assert row["payload"]["legacy_proposal"]["source"] == row["source"]
+    task_ids = row["payload"]["receipt"]["task_ids"]
+    assert task_ids and await _holds(h, task_ids) == {proposal_id}
+    finding = await held.run(context)
+    assert finding.data["missing_reviewers"] == [proposal_id]
+    assert finding.data["batches"][0]["structure_revision"] == 1
+    again = await h.execute("spec_ingest_legacy_adopt", {"proposal_id": proposal_id})
+    assert again["replayed"] and again["task_ids"] == task_ids
+
+
+@pytest.mark.parametrize("reason", ["leave_gated", "pending_gate", "unapproved", "wrong_source"])
+async def test_legacy_adoption_preserves_gates_and_requires_approval(command_handler_factory, reason):
+    from src.database.queries.proposal_queries import get_proposal
+
+    h = await command_handler_factory()
+    source = "spec:unapproved.md" if reason in {"unapproved", "wrong_source"} else None
+    proposal_id, decision = await _legacy_proposal(h, source=source)
+    before = await get_proposal(h.db, proposal_id)
+    args = {"proposal_id": proposal_id}
+    if reason == "pending_gate":
+        gate = await h.execute("gate_create", {
+            "project_id": "p1", "gate_type": "human", "title": "Review legacy proposal",
+            "await_id": proposal_id,
+        })
+        assert gate["success"], gate
+    elif reason == "leave_gated":
+        args["leave_gated"] = True
+    elif reason == "wrong_source":
+        args["decision_id"] = decision["decision_id"]
+    result = await h.execute("spec_ingest_legacy_adopt", args)
+    if reason in {"leave_gated", "pending_gate"}:
+        assert result["success"] and result["left_gated"], result
+    else:
+        assert not result["success"], result
+    after = await get_proposal(h.db, proposal_id)
+    assert after == before
+    context = DoctorContext(config=h.config, db=h.db, handler=h)
+    assert not (await default_registry().get("ingestion.held_batches").run(context)).data["batches"]
+
+
+async def test_ingestion_doctor_stale_receipt_and_failed_reviewer(command_handler_factory):
+    from sqlalchemy import update
+    from src.database.tables import ingest_batches, tasks
+    from tests.test_fidelity_review import _record, _review_request
+
+    h = await command_handler_factory()
+    batch, scope, args = await _review_request(h)
+    assert (await _record(h, scope, args))["passing"]
+    async with h.db.immediate() as conn:
+        reviewer_id = (await h.db.get_session(scope.session_id)).task_id
+        await conn.execute(update(ingest_batches).where(
+            ingest_batches.c.batch_id == batch["batch_id"],
+        ).values(structure_revision=2))
+        await conn.execute(update(tasks).where(tasks.c.id == reviewer_id).values(status="FAILED"))
+    context = DoctorContext(config=h.config, db=h.db, handler=h)
+    result = await default_registry().get("ingestion.held_batches").run(context)
+    assert result.severity is Severity.WARN
+    assert result.data["stale_receipts"] == [batch["batch_id"]]
+    assert result.data["missing_reviewers"] == [batch["batch_id"]]
+    assert result.data["exhausted_reviewers"] == [batch["batch_id"]]
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -42,6 +133,48 @@ def _fake(check_id: str, severity=Severity.OK, *, fix=None, timeout_s=5.0, delay
 def ctx(tmp_path):
     config = AppConfig(data_dir=str(tmp_path))
     return DoctorContext(config=config, db=None, handler=None)
+
+
+@pytest.mark.parametrize("material", [None, "bad", "eA==", "valid"])
+async def test_private_value_key_diagnostic(ctx, monkeypatch, material):
+    import base64
+
+    variable = "AQ_DOCTOR_TEST_PRIVATE_KEY"
+    monkeypatch.delenv(variable, raising=False)
+    ctx.config.playbooks.enabled = True
+    ctx.config.playbooks.private_value_active_key_id = "k1"
+    ctx.config.playbooks.private_value_key_env = {"k1": variable}
+    encoded = base64.b64encode(b"x" * 32).decode() if material == "valid" else material
+    if encoded is not None:
+        monkeypatch.setenv(variable, encoded)
+    check = default_registry().get("playbooks.private_value_key")
+
+    result = await check.run(ctx)
+
+    assert result.severity is (Severity.OK if material == "valid" else Severity.ERROR)
+    assert check.fix is None
+    if material != "valid":
+        assert "private_storage_key_unavailable" in result.detail
+        assert "Restore the original key" in result.detail
+    if encoded:
+        assert encoded not in json.dumps(result.to_dict())
+
+
+async def test_private_value_key_diagnostic_uses_live_service(ctx, monkeypatch):
+    import base64
+    from types import SimpleNamespace
+
+    from src.playbooks.private_values import PrivateValueService
+
+    ctx.config.playbooks.enabled = True
+    ctx.config.playbooks.private_value_active_key_id = "k1"
+    ctx.config.playbooks.private_value_key_env = {"k1": "AQ_DOCTOR_TEST_PRIVATE_KEY"}
+    monkeypatch.setenv("AQ_DOCTOR_TEST_PRIVATE_KEY", base64.b64encode(b"x" * 32).decode())
+    ctx.db = SimpleNamespace(playbook_private_values=lambda: PrivateValueService(object()))
+    check = default_registry().get("playbooks.private_value_key")
+    assert (await check.run(ctx)).severity is Severity.ERROR
+    ctx.config.playbooks.enabled = False
+    assert (await check.run(ctx)).severity is Severity.INFO
 
 
 # ---------------------------------------------------------------------------
@@ -82,6 +215,7 @@ class TestRegistry:
         from src.doctor.formula_checks import formula_checks
         from src.doctor.git_checks import git_checks
         from src.doctor.hierarchy_checks import hierarchy_checks
+        from src.doctor.ingestion_checks import ingestion_checks
         from src.doctor.integration_checks import integration_checks
         from src.doctor.intelligence_class_checks import intelligence_class_checks
         from src.doctor.perf_checks import perf_checks
@@ -100,12 +234,14 @@ class TestRegistry:
         from src.doctor.stall_checks import stall_checks
         from src.doctor.task_checks import task_checks
         from src.doctor.workspace_checks import workspace_checks
+        from src.doctor.wait_checks import wait_checks
 
         reg = default_registry()
         expected = (
             {c.id for c in builtin_checks()}
             | {c.id for c in ask_checks()}
             | {c.id for c in hierarchy_checks()}
+            | {c.id for c in ingestion_checks()}
             | {c.id for c in pool_checks()}
             | {c.id for c in task_checks()}
             | {c.id for c in formula_checks()}
@@ -132,6 +268,7 @@ class TestRegistry:
             | {c.id for c in routing_checks()}
             | {c.id for c in service_checks()}
             | {c.id for c in record_checks()}
+            | {c.id for c in wait_checks()}
         )
         assert set(reg.ids()) == expected
 

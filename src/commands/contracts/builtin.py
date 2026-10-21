@@ -29,6 +29,7 @@ from src.commands.contracts.models import (
 )
 from src.commands.contracts.registry import CommandContext, CommandRegistration, ContractRegistry
 from src.commands.principal import principal_context
+from src.observations.models import SnapshotArgs, SnapshotValue
 
 
 class CreateTaskArgs(CommandArgs):
@@ -258,7 +259,7 @@ class GateResolveValue(CommandValue):
     unblocked_task_ids: list[str]
 
 
-class ListTasksArgs(CommandArgs):
+class ListTasksArgs(SnapshotArgs, CommandArgs):
     """The arguments ``_cmd_list_tasks`` actually reads.
 
     ``limit`` is deliberately absent.  No path in
@@ -272,9 +273,14 @@ class ListTasksArgs(CommandArgs):
     status: str | None = None
     display_mode: str | None = None
     show_dependencies: bool | None = None
+    include_completed: bool | None = None
+    completed_only: bool | None = None
+    show_all: bool | None = None
+    labels: list[str] | None = None
+    any_label: list[str] | None = None
 
 
-class ListTasksValue(CommandValue):
+class ListTasksValue(SnapshotValue, CommandValue):
     """What ``list_tasks`` returns — in both of the shapes it has.
 
     ``_cmd_list_tasks`` (``src/commands/task_commands.py``) answers with one
@@ -294,10 +300,8 @@ class ListTasksValue(CommandValue):
     failed its contract, in either display mode, while the compiler validated
     against the same fiction and reported nothing.
 
-    Only keys this contract's own arguments can produce are modelled.
-    ``label_filter_scope`` is left out deliberately: it appears only for a
-    ``labels`` / ``any_label`` filter, which ``ListTasksArgs`` does not
-    expose, so no playbook step can reach it.
+    Snapshot mode adds the shared immutable observation envelope. Label
+    filters preserve their root-only annotation in hierarchical modes.
     """
 
     display_mode: str = "flat"
@@ -308,6 +312,7 @@ class ListTasksValue(CommandValue):
     hidden_completed: int = 0
     filtered: bool = False
     dependency_display: str | None = None
+    label_filter_scope: str | None = None
 
     # Tree and compact mode only.
     trees: list[dict[str, Any]] = Field(default_factory=list)
@@ -315,12 +320,12 @@ class ListTasksValue(CommandValue):
     total_tasks: int = 0
 
 
-class ListProjectsArgs(CommandArgs):
+class ListProjectsArgs(SnapshotArgs, CommandArgs):
     pass
 
 
-class ListProjectsValue(CommandValue):
-    projects: list[dict[str, Any]]
+class ListProjectsValue(SnapshotValue, CommandValue):
+    projects: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class GetTaskArgs(CommandArgs):
@@ -485,6 +490,26 @@ class TaskBatchReleaseValue(CommandValue):
     released_task_ids: list[str] = Field(default_factory=list)
     error_code: str | None = None
     retryable: bool = False
+
+
+class TaskBatchRetireArgs(CommandArgs):
+    batch_id: str = Field(min_length=1)
+    expected_revision: int = Field(strict=True, ge=1)
+    reason: str = Field(min_length=1)
+    project_id: str | None = None
+
+    @model_validator(mode="after")
+    def retirement_reason(self):
+        if not self.reason.strip():
+            raise ValueError("Retirement requires a reason")
+        return self
+
+
+class TaskBatchRetireValue(CommandValue):
+    batch_id: str | None = None
+    state: str | None = None
+    already_retired: bool = False
+    error_code: str | None = None
 
 
 class TaskBatchValidateArgs(CommandArgs):
@@ -757,14 +782,14 @@ class TaskFailureTriageNotifyValue(TaskRecoveryNotifyValue):
     """The durable incident receipt returned to the triage playbook."""
 
 
-class GetStuckTasksArgs(CommandArgs):
+class GetStuckTasksArgs(SnapshotArgs, CommandArgs):
     assigned_threshold_seconds: int = Field(default=1800, ge=0)
     in_progress_threshold_seconds: int = Field(default=7200, ge=0)
     now: float | None = None
     project_id: str | None = None
 
 
-class GetStuckTasksValue(CommandValue):
+class GetStuckTasksValue(SnapshotValue, CommandValue):
     stuck: list[dict[str, Any]] = Field(default_factory=list)
     summary: str = ""
     now_used: float | None = None
@@ -908,6 +933,28 @@ def set_handler_provider(provider: Callable[[], Any] | None) -> None:
     """
     global _handler_provider
     _handler_provider = provider
+    from src.commands.contracts.registry import CONTRACTS
+
+    if provider is None:
+        CONTRACTS.configure_snapshot_provider(None)
+        return
+
+    offline = None
+
+    def snapshot_provider():
+        nonlocal offline
+        handler = provider()
+        if isinstance(getattr(type(handler), "command_descriptors", None), property):
+            return handler.command_descriptors
+        # Keep provider installation late-bound. Minimal adapter test doubles
+        # retain a cached offline inventory rather than manufacturing commands.
+        if offline is None:
+            from src.commands.command_inventory import offline_snapshot
+
+            offline = offline_snapshot(CONTRACTS.typed_contracts())
+        return offline
+
+    CONTRACTS.configure_snapshot_provider(snapshot_provider)
 
 
 def handler_provider_installed() -> bool:
@@ -932,6 +979,8 @@ def _outcome_of(name: str, raw: dict[str, Any]) -> str:
     refused = bool(raw.get("error")) or raw.get("success") is False
     if name == "task_batch_release":
         return "error" if refused else "already_released" if raw.get("already_released") else "released"
+    if name == "task_batch_retire":
+        return "error" if refused else "already_retired" if raw.get("already_retired") else "retired"
     if name == "ci_baseline_status" and (raw.get("success") is True or not refused):
         # A successful verdict explains ``unknown`` (no GitHub remote, checks
         # unreadable) in ``error``; that is the next tick's problem, not a
@@ -1065,6 +1114,9 @@ def _adapter(name: str, value_type: type[CommandValue]):
                 provider=str(raw.get("provider") or getattr(args, "provider", None) or "claude"),
                 detail=raw.get("error"),
             )
+        elif name in {"list_tasks", "list_projects", "get_stuck_tasks"} and "complete" in raw:
+            value = value_type(**{field: raw[field] for field in value_type.model_fields
+                                 if field in raw})
         elif outcome in {
             "rejected", "refused_routing_gate", "already_linked", "not_running", "not_approved",
         }:
@@ -1447,6 +1499,17 @@ PRESENTATIONS: dict[str, CommandPresentation] = {
                        "released_task_ids": "Released tasks", "error_code": "Refusal code",
                        "retryable": "Retryable"},
         subject_labels={"task_graph": "the reviewed task graph"},
+    ),
+    "task_batch_retire": CommandPresentation(
+        title="Finalize an obsolete ingestion batch",
+        summary="Require prior supported retirement of every member and reviewer; retain evidence.",
+        arg_labels={"batch_id": "Held batch", "expected_revision": "Expected revision",
+                    "reason": "Retirement reason", "project_id": "Project"},
+        outcome_labels={"retired": "Retired", "already_retired": "Already retired",
+                        "error": "Retirement refused"},
+        result_labels={"batch_id": "Batch", "state": "State", "already_retired": "Replay",
+                       "error_code": "Refusal code"},
+        subject_labels={"task_graph": "the obsolete task graph"},
     ),
     "task_batch_review_record": CommandPresentation(
         title="Record a batch fidelity review",
@@ -2000,7 +2063,7 @@ def register_builtin_contracts(registry: ContractRegistry) -> None:
             "list_tasks",
             ListTasksArgs,
             ListTasksValue,
-            (OutcomeSpec(name="listed", classification=OutcomeClass.SUCCESS),),
+            _outcomes("listed"),
             SideEffectClass.READ,
             (ReadClause(subject=EffectSubject.TASK_LIST),),
             IdempotencySpec(mode="natural"),
@@ -2031,6 +2094,14 @@ def register_builtin_contracts(registry: ContractRegistry) -> None:
             "task_batch_release", TaskBatchReleaseArgs, TaskBatchReleaseValue,
             (OutcomeSpec(name="released", classification=OutcomeClass.SUCCESS),
              OutcomeSpec(name="already_released", classification=OutcomeClass.SUCCESS),
+             OutcomeSpec(name="error", classification=OutcomeClass.FAILURE)),
+            SideEffectClass.COMPOSITE, (UpdateClause(subject=EffectSubject.TASK_GRAPH),),
+            IdempotencySpec(mode="natural"), True,
+        ),
+        (
+            "task_batch_retire", TaskBatchRetireArgs, TaskBatchRetireValue,
+            (OutcomeSpec(name="retired", classification=OutcomeClass.SUCCESS),
+             OutcomeSpec(name="already_retired", classification=OutcomeClass.SUCCESS),
              OutcomeSpec(name="error", classification=OutcomeClass.FAILURE)),
             SideEffectClass.COMPOSITE, (UpdateClause(subject=EffectSubject.TASK_GRAPH),),
             IdempotencySpec(mode="natural"), True,
@@ -2262,6 +2333,10 @@ def register_builtin_contracts(registry: ContractRegistry) -> None:
     from src.commands.contracts.wait import register_wait_contracts
 
     register_wait_contracts(registry)
+
+    from src.commands.contracts.wait_v2 import register_wait_v2_contracts
+
+    register_wait_v2_contracts(registry)
     from src.commands.contracts.cron import register_cron_contracts
 
     register_cron_contracts(registry)

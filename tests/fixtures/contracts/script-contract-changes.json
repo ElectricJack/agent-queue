@@ -1,0 +1,110 @@
+{
+  "cli_catalogue_sha256": "2e5172222d620cb5e9997113eaabe278505bce38948a75c69d7ff2304b305220",
+  "contracts": {
+    "job_logs": {
+      "execution": {
+        "args_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "after": {
+              "default": 0,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "job_id": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "limit": {
+              "default": 65536,
+              "maximum": 1048576,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "stream": {
+              "default": "stdout",
+              "enum": [
+                "stdout",
+                "stderr"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "job_id"
+          ],
+          "type": "object"
+        },
+        "capability": "job_logs",
+        "effects": [],
+        "idempotency": {
+          "key_field": null,
+          "mode": "natural"
+        },
+        "name": "job_logs",
+        "outcomes": [
+          {
+            "classification": "success",
+            "name": "completed"
+          },
+          {
+            "classification": "failure",
+            "name": "rejected"
+          }
+        ],
+        "receipt_projection": [],
+        "result_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "chunks": {
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "gaps": {
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "next": {
+              "type": "integer"
+            },
+            "seen": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "chunks",
+            "gaps",
+            "next",
+            "seen"
+          ],
+          "type": "object"
+        },
+        "retry_safe": true,
+        "schema_generation": 1,
+        "sensitive_args": [],
+        "sensitive_result_fields": [],
+        "side_effect": "read",
+        "supports_preview": false,
+        "timeout_seconds": null
+      },
+      "fingerprint": "sha256:e887c519df805d19caf5bdac4ec7691b432fc08f2ae8cf5605dbad49cbabb6ab",
+      "previous_fingerprint": "sha256:8114f836f814ec65f56f45a067c6f8a45dacf15aed706a05a9b871ed088fa625",
+      "previous_transport_sha256": "6dcea145873d4d2e93da6b4877ccaa08a187ef33562a1266a430c4ce3bf1e2ef",
+      "transport_sha256": "6dcea145873d4d2e93da6b4877ccaa08a187ef33562a1266a430c4ce3bf1e2ef"
+    }
+  },
+  "playbook_fixtures": {
+    "tests/fixtures/playbooks/v2/default-assignment-routing/artifact.json": {
+      "previous_sha256": "e1ce5a7883f9ae482a5dc7d3ede56d4f1cdd2866e026e5fedafefcb2371b7e75",
+      "sha256": "0ffa8bf49c603ef61b656854bc9ee5107050567a4db90650a1bb537130e10e5c"
+    }
+  },
+  "previous_cli_catalogue_sha256": "074ac7979f95e93d367d4d4ea857c8f8617da929648cf293f7e64a428f704bd2",
+  "reason": "E2 adds job_logs.stream for authorized protected script output; E4 explicitly repins default-assignment-routing for the additive authoring contract. The script CI repair declares playbook_script_run data-only inputs in the CLI catalogue. Legacy and C2 evidence remain unchanged."
+}

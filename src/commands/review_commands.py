@@ -354,7 +354,7 @@ class ReviewCommandsMixin:
             return None, _error("not_found", f"review {review_id!r} was not found")
         principal = current_principal() or TRUSTED_LOCAL
         if (
-            principal.kind is PrincipalKind.SESSION
+            principal.enforced
             and principal.project_id is not None
             and principal.project_id != review["project_id"]
         ):
@@ -392,7 +392,7 @@ class ReviewCommandsMixin:
             if task is None:
                 return None, None, _error("not_found", f"task {task_id!r} was not found")
             if (
-                principal.kind is PrincipalKind.SESSION
+                principal.enforced
                 and principal.project_id is not None
                 and task.project_id != principal.project_id
             ):
@@ -405,7 +405,7 @@ class ReviewCommandsMixin:
         if project is None:
             return None, None, _error("not_found", f"project {project_id!r} was not found")
         if (
-            principal.kind is PrincipalKind.SESSION
+            principal.enforced
             and principal.project_id is not None
             and project_id != principal.project_id
         ):
@@ -632,9 +632,11 @@ class ReviewCommandsMixin:
 
         version = source.frontmatter.get("version")
         contracts, profiles, events = await self._v2_lookups()
+        script_pins = await self._v2_script_pins(source)
         proposal = propose(
             source,
             body,
+            script_pins=script_pins,
             contracts=contracts,
             profiles=profiles,
             events=events,
@@ -866,7 +868,7 @@ class ReviewCommandsMixin:
         principal = current_principal() or TRUSTED_LOCAL
         project_id = args.get("project_id")
         task_id = args.get("task_id")
-        if principal.kind is PrincipalKind.SESSION and principal.project_id is not None:
+        if principal.enforced and principal.project_id is not None:
             if project_id not in (None, principal.project_id):
                 return _error("not_your_task", "project belongs to another session")
             project_id = principal.project_id

@@ -9959,8 +9959,8 @@
         "tags": [
           "playbook"
         ],
-        "summary": "List every registered Playbook V2 command with its title, summary, documentation URL, and typed parameter JSON Schema.",
-        "description": "List every registered Playbook V2 command with its title, summary, documentation URL, and typed parameter JSON Schema.",
+        "summary": "Inspect a bounded page of playbook command contracts, including denied and unavailable commands, schemas, caller requirements and execution metadata.",
+        "description": "Inspect a bounded page of playbook command contracts, including denied and unavailable commands, schemas, caller requirements and execution metadata.",
         "operationId": "playbook_commands",
         "requestBody": {
           "content": {
@@ -12861,6 +12861,100 @@
         }
       }
     },
+    "/api/project/repair-repository-checkout": {
+      "post": {
+        "tags": [
+          "project"
+        ],
+        "summary": "Preview or apply an audited replacement for a confirmed missing repository checkout path. Preserves repository identity and verifies the replacement origin. Requires local operator or global supervisor authority.",
+        "description": "Preview or apply an audited replacement for a confirmed missing repository checkout path. Preserves repository identity and verifies the replacement origin. Requires local operator or global supervisor authority.",
+        "operationId": "repair_repository_checkout",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RepairRepositoryCheckoutRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RepairRepositoryCheckoutResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/project/repair-workspace-checkout": {
+      "post": {
+        "tags": [
+          "project"
+        ],
+        "summary": "Preview or apply an audited base workspace path repair. Proves replacement origin and shared Git object store with all existing slots; preserves slots and claims. Apply requires expected_proof from preview. Local operator/global supervisor.",
+        "description": "Preview or apply an audited base workspace path repair. Proves replacement origin and shared Git object store with all existing slots; preserves slots and claims. Apply requires expected_proof from preview. Local operator/global supervisor.",
+        "operationId": "repair_workspace_checkout",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RepairWorkspaceCheckoutRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RepairWorkspaceCheckoutResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/project/resume": {
       "post": {
         "tags": [
@@ -13027,6 +13121,53 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/SetProjectConstraintResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/project/workspace-clear-sentinel": {
+      "post": {
+        "tags": [
+          "project"
+        ],
+        "summary": "Return a worktree slot's .aq-worktree.json sentinel to the free form when the task it still names is completed, failed, blocked or gone. Refuses unless the slot holds no task lock, claim file, live claiming session, integration owner or job pin, and its tree is clean with HEAD published under a remote ref. Use when claim preparation reports 'branch disagrees with its source sentinel' after the named task ended.",
+        "description": "Return a worktree slot's .aq-worktree.json sentinel to the free form when the task it still names is completed, failed, blocked or gone. Refuses unless the slot holds no task lock, claim file, live claiming session, integration owner or job pin, and its tree is clean with HEAD published under a remote ref. Use when claim preparation reports 'branch disagrees with its source sentinel' after the named task ended.",
+        "operationId": "workspace_clear_sentinel",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WorkspaceClearSentinelRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkspaceClearSentinelResponse"
                 }
               }
             }
@@ -16031,8 +16172,8 @@
         "tags": [
           "system"
         ],
-        "summary": "Run the health-check catalog for this install and return one result per check: id, severity (ok/info/warn/error), detail, whether it is fixable, and structured extras.  Checks run concurrently with per-check timeouts; a check that crashes or times out reports 'error' rather than hanging the command.  Pass fix=true to apply the fix of each failing fixable check and re-run it (fixes are idempotent and only touch derived state \u2014 WAL, expired log dirs \u2014 never tasks, vault files or branches).  The returned exit_code is 2 when any check errored, 1 when any warned, otherwise 0.",
-        "description": "Run the health-check catalog for this install and return one result per check: id, severity (ok/info/warn/error), detail, whether it is fixable, and structured extras.  Checks run concurrently with per-check timeouts; a check that crashes or times out reports 'error' rather than hanging the command.  Pass fix=true to apply the fix of each failing fixable check and re-run it (fixes are idempotent and only touch derived state \u2014 WAL, expired log dirs \u2014 never tasks, vault files or branches).  The returned exit_code is 2 when any check errored, 1 when any warned, otherwise 0.",
+        "summary": "Run the health-check catalog for this install and return one result per check: id, severity (ok/info/warn/error), detail, whether it is fixable, and structured extras.  Checks run concurrently with per-check timeouts; a check that crashes or times out reports 'error' rather than hanging the command.  Pass fix=true to apply the fix of each failing fixable check and re-run it. Fixes are idempotent; ingestion.legacy_proposals may materialize an uncommitted proposal into held work only with immutable approval authority. Pass leave_gated=true to retain the legacy approval path. Other checks repair derived state. The returned exit_code is 2 when any check errored, 1 when any warned, otherwise 0.",
+        "description": "Run the health-check catalog for this install and return one result per check: id, severity (ok/info/warn/error), detail, whether it is fixable, and structured extras.  Checks run concurrently with per-check timeouts; a check that crashes or times out reports 'error' rather than hanging the command.  Pass fix=true to apply the fix of each failing fixable check and re-run it. Fixes are idempotent; ingestion.legacy_proposals may materialize an uncommitted proposal into held work only with immutable approval authority. Pass leave_gated=true to retain the legacy approval path. Other checks repair derived state. The returned exit_code is 2 when any check errored, 1 when any warned, otherwise 0.",
         "operationId": "doctor",
         "requestBody": {
           "content": {
@@ -18554,6 +18695,53 @@
         }
       }
     },
+    "/api/task/discard-pause-checkpoint": {
+      "post": {
+        "tags": [
+          "task"
+        ],
+        "summary": "Discard a task's paused Git checkpoint so preparation stops restoring it, e.g. one captured from another task's slot checkout. Its ref and commit stay reachable and are recorded in a manual_pause_checkpoint_discarded audit entry.",
+        "description": "Discard a task's paused Git checkpoint so preparation stops restoring it, e.g. one captured from another task's slot checkout. Its ref and commit stay reachable and are recorded in a manual_pause_checkpoint_discarded audit entry.",
+        "operationId": "discard_pause_checkpoint",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DiscardPauseCheckpointRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DiscardPauseCheckpointResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/task/edit": {
       "post": {
         "tags": [
@@ -20220,6 +20408,51 @@
                 "schema": {
                   "$ref": "#/components/schemas/SpecApproveResponse"
                 }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/task/spec-ingest-legacy-adopt": {
+      "post": {
+        "tags": [
+          "task"
+        ],
+        "summary": "Adopt an uncommitted legacy spec proposal using immutable approval; operator only.",
+        "description": "Adopt an uncommitted legacy spec proposal using immutable approval; operator only.",
+        "operationId": "spec_ingest_legacy_adopt",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SpecIngestLegacyAdoptRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
               }
             }
           },
@@ -21929,6 +22162,53 @@
         }
       }
     },
+    "/api/wait/ack": {
+      "post": {
+        "tags": [
+          "wait"
+        ],
+        "summary": "Acknowledge a verified wait outcome for the held claim.",
+        "description": "Acknowledge a verified wait outcome for the held claim.",
+        "operationId": "wait_ack",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WaitAckArgs"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WaitAckResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/wait/cancel": {
       "post": {
         "tags": [
@@ -21941,7 +22221,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/WaitCancelRequest"
+                "$ref": "#/components/schemas/WaitCancelArgs"
               }
             }
           },
@@ -21954,6 +22234,147 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/WaitResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/wait/checkpoint": {
+      "post": {
+        "tags": [
+          "wait"
+        ],
+        "summary": "Save a continuation checkpoint for the held claim's verified wait.",
+        "description": "Save a continuation checkpoint for the held claim's verified wait.",
+        "operationId": "wait_checkpoint",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WaitCheckpointArgs"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WaitCheckpointResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/wait/decide": {
+      "post": {
+        "tags": [
+          "wait"
+        ],
+        "summary": "Record a supervisor decision for a verified wait.",
+        "description": "Record a supervisor decision for a verified wait.",
+        "operationId": "wait_decide",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WaitDecideArgs"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WaitDecideResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/wait/explain": {
+      "post": {
+        "tags": [
+          "wait"
+        ],
+        "summary": "Explain a verified wait's condition, evidence and outcome.",
+        "description": "Explain a verified wait's condition, evidence and outcome.",
+        "operationId": "wait_explain",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WaitExplainArgs"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WaitExplainResponse"
                 }
               }
             }
@@ -21988,7 +22409,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/WaitGetRequest"
+                "$ref": "#/components/schemas/WaitGetArgs"
               }
             }
           },
@@ -22023,6 +22444,147 @@
         }
       }
     },
+    "/api/wait/graph": {
+      "post": {
+        "tags": [
+          "wait"
+        ],
+        "summary": "Inspect the dependency graph of verified waits.",
+        "description": "Inspect the dependency graph of verified waits.",
+        "operationId": "wait_graph",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WaitGraphArgs"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WaitGraphResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/wait/legacy-bridge": {
+      "post": {
+        "tags": [
+          "wait"
+        ],
+        "summary": "Wait legacy bridge through verified wait state.",
+        "description": "Wait legacy bridge through verified wait state.",
+        "operationId": "wait_legacy_bridge",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WaitLegacyBridgeArgs"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WaitBridgeResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/wait/lift": {
+      "post": {
+        "tags": [
+          "wait"
+        ],
+        "summary": "Lift an escalated verified wait with an authorized decision.",
+        "description": "Lift an escalated verified wait with an authorized decision.",
+        "operationId": "wait_lift",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WaitLiftArgs"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WaitDecideResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/wait/list": {
       "post": {
         "tags": [
@@ -22035,7 +22597,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/WaitListRequest"
+                "$ref": "#/components/schemas/WaitListArgs"
               }
             }
           },
@@ -22082,7 +22644,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/WaitRegisterRequest"
+                "$ref": "#/components/schemas/WaitRegisterArgs"
               }
             }
           },
@@ -24189,6 +24751,18 @@
             },
             "type": "array",
             "title": "Feedback"
+          },
+          "design": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Design"
           }
         },
         "type": "object",
@@ -33477,6 +34051,77 @@
         ],
         "title": "DigestWindowRecord"
       },
+      "DiscardPauseCheckpointRequest": {
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "title": "Task Id",
+            "description": "Task whose checkpoint to discard"
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason",
+            "description": "Why the checkpoint is discarded (audited)"
+          }
+        },
+        "type": "object",
+        "required": [
+          "task_id",
+          "reason"
+        ],
+        "title": "DiscardPauseCheckpointRequest"
+      },
+      "DiscardPauseCheckpointResponse": {
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "title": "Task Id"
+          },
+          "discarded": {
+            "type": "boolean",
+            "title": "Discarded"
+          },
+          "branch": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Branch"
+          },
+          "ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ref"
+          },
+          "commit": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Commit"
+          }
+        },
+        "type": "object",
+        "required": [
+          "task_id",
+          "discarded"
+        ],
+        "title": "DiscardPauseCheckpointResponse"
+      },
       "DiscordCutoverStatus": {
         "properties": {
           "status": {
@@ -33680,6 +34325,18 @@
             ],
             "title": "Fix",
             "description": "Apply fixes for failing fixable checks, then re-run them."
+          },
+          "leave_gated": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Leave Gated",
+            "description": "Leave legacy spec proposals on their existing human gate."
           },
           "checks": {
             "anyOf": [
@@ -34750,7 +35407,7 @@
               }
             ],
             "title": "Status",
-            "description": "New status \u2014 admin override, bypasses state machine (optional)"
+            "description": "New lifecycle status (optional); suspended states require wait controls"
           },
           "max_retries": {
             "anyOf": [
@@ -36912,6 +37569,41 @@
         ],
         "title": "ExecuteRequest"
       },
+      "ExecutionRequirementsDTO": {
+        "properties": {
+          "required_features": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Required Features",
+            "default": []
+          },
+          "required_capabilities": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Required Capabilities",
+            "default": []
+          },
+          "state_schema_version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "State Schema Version"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "ExecutionRequirementsDTO",
+        "description": "Reviewed requirements, never a grant or a resolved principal."
+      },
       "ExplainReason": {
         "properties": {
           "code": {
@@ -37291,6 +37983,10 @@
               "loop_ref",
               "template",
               "expression",
+              "filter",
+              "map",
+              "len",
+              "diff",
               "redacted",
               "unresolved"
             ],
@@ -40383,6 +41079,54 @@
             ],
             "title": "Project Id",
             "description": "Optional project filter.  When omitted, all projects are scanned."
+          },
+          "pagination": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pagination",
+            "description": ""
+          },
+          "snapshot_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Snapshot Id",
+            "description": ""
+          },
+          "page_token": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Page Token",
+            "description": ""
+          },
+          "page_size": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Page Size",
+            "description": ""
           }
         },
         "type": "object",
@@ -40390,6 +41134,209 @@
       },
       "GetStuckTasksResponse": {
         "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "complete": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Complete"
+          },
+          "execution_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Execution Status"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Code"
+          },
+          "reasons": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Reasons"
+          },
+          "snapshot_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Snapshot Id"
+          },
+          "producer": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Producer"
+          },
+          "producer_version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Producer Version"
+          },
+          "observed_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Observed At"
+          },
+          "materialized_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Materialized At"
+          },
+          "expires_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires At"
+          },
+          "interval_started_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Interval Started At"
+          },
+          "interval_finished_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Interval Finished At"
+          },
+          "coverage": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Coverage"
+          },
+          "identity_manifest": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Identity Manifest"
+          },
+          "page_tokens": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Page Tokens"
+          },
+          "artifacts": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Artifacts"
+          },
+          "page_count": {
+            "type": "integer",
+            "title": "Page Count",
+            "default": 0
+          },
+          "page_kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Page Kind"
+          },
+          "page_index": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Page Index"
+          },
           "stuck": {
             "items": {
               "$ref": "#/components/schemas/StuckTask"
@@ -40399,18 +41346,33 @@
             "default": []
           },
           "now_used": {
-            "type": "number",
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Now Used"
           },
           "thresholds": {
-            "$ref": "#/components/schemas/StuckTasksThresholds"
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/StuckTasksThresholds"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "summary": {
+            "type": "string",
+            "title": "Summary",
+            "default": ""
           }
         },
         "type": "object",
-        "required": [
-          "now_used",
-          "thresholds"
-        ],
         "title": "GetStuckTasksResponse"
       },
       "GetTaskDependenciesRequest": {
@@ -40527,6 +41489,21 @@
           },
           "status": {
             "type": "string",
+            "enum": [
+              "",
+              "DEFINED",
+              "READY",
+              "ASSIGNED",
+              "IN_PROGRESS",
+              "WAITING",
+              "HIBERNATED",
+              "RESUME_PENDING",
+              "WAITING_INPUT",
+              "PAUSED",
+              "COMPLETED",
+              "FAILED",
+              "BLOCKED"
+            ],
             "title": "Status",
             "default": ""
           },
@@ -41973,6 +42950,18 @@
             "title": "Expected Remote Oid",
             "description": "Exact remote branch OID expected before the push (40 hex digits); the push may then rewrite the branch, and is refused if the remote holds anything else. All zeros means the branch must still be absent."
           },
+          "publication_delegation_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Publication Delegation Id",
+            "description": "Single-use integration-owner grant for this target branch"
+          },
           "workspace": {
             "anyOf": [
               {
@@ -42882,6 +43871,16 @@
       },
       "GraphNodeDTO": {
         "properties": {
+          "script": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ScriptNodeDetailDTO"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "id": {
             "type": "string",
             "title": "Id"
@@ -42899,7 +43898,8 @@
               "decision",
               "wait",
               "foreach",
-              "terminal"
+              "terminal",
+              "script"
             ],
             "title": "Step Kind"
           },
@@ -44587,6 +45587,15 @@
             "minLength": 1,
             "title": "Job Id"
           },
+          "stream": {
+            "type": "string",
+            "enum": [
+              "stdout",
+              "stderr"
+            ],
+            "title": "Stream",
+            "default": "stdout"
+          },
           "after": {
             "type": "integer",
             "minimum": 0.0,
@@ -44663,9 +45672,59 @@
                 "$ref": "#/components/schemas/AgentWaitRecord"
               },
               {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
                 "type": "null"
               }
-            ]
+            ],
+            "title": "Wait"
+          },
+          "wait_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Wait Id"
+          },
+          "decision": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decision"
+          },
+          "continuation_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Continuation Id"
+          },
+          "generation": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Generation"
           },
           "next_step": {
             "anyOf": [
@@ -49738,12 +50797,264 @@
         "title": "ListProjectRootsResponse"
       },
       "ListProjectsRequest": {
-        "properties": {},
+        "properties": {
+          "pagination": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pagination",
+            "description": ""
+          },
+          "snapshot_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Snapshot Id",
+            "description": ""
+          },
+          "page_token": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Page Token",
+            "description": ""
+          },
+          "page_size": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Page Size",
+            "description": ""
+          }
+        },
         "type": "object",
         "title": "ListProjectsRequest"
       },
       "ListProjectsResponse": {
         "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "complete": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Complete"
+          },
+          "execution_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Execution Status"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Code"
+          },
+          "reasons": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Reasons"
+          },
+          "snapshot_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Snapshot Id"
+          },
+          "producer": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Producer"
+          },
+          "producer_version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Producer Version"
+          },
+          "observed_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Observed At"
+          },
+          "materialized_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Materialized At"
+          },
+          "expires_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires At"
+          },
+          "interval_started_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Interval Started At"
+          },
+          "interval_finished_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Interval Finished At"
+          },
+          "coverage": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Coverage"
+          },
+          "identity_manifest": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Identity Manifest"
+          },
+          "page_tokens": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Page Tokens"
+          },
+          "artifacts": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Artifacts"
+          },
+          "page_count": {
+            "type": "integer",
+            "title": "Page Count",
+            "default": 0
+          },
+          "page_kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Page Kind"
+          },
+          "page_index": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Page Index"
+          },
           "projects": {
             "items": {
               "$ref": "#/components/schemas/ProjectSummary"
@@ -50052,6 +51363,54 @@
             ],
             "title": "Show Dependencies",
             "description": "When true, each task in the result includes 'depends_on' (list of upstream tasks with id and status) and 'blocks' (list of downstream task IDs). Also adds a 'dependency_display' field with pre-formatted text showing dependency relationships. Use this when the user asks about task dependencies, blocking chains, or why a task is waiting. Default false."
+          },
+          "pagination": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pagination",
+            "description": ""
+          },
+          "snapshot_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Snapshot Id",
+            "description": ""
+          },
+          "page_token": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Page Token",
+            "description": ""
+          },
+          "page_size": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Page Size",
+            "description": ""
           }
         },
         "type": "object",
@@ -50059,6 +51418,209 @@
       },
       "ListTasksResponse": {
         "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "complete": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Complete"
+          },
+          "execution_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Execution Status"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Code"
+          },
+          "reasons": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Reasons"
+          },
+          "snapshot_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Snapshot Id"
+          },
+          "producer": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Producer"
+          },
+          "producer_version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Producer Version"
+          },
+          "observed_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Observed At"
+          },
+          "materialized_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Materialized At"
+          },
+          "expires_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires At"
+          },
+          "interval_started_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Interval Started At"
+          },
+          "interval_finished_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Interval Finished At"
+          },
+          "coverage": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Coverage"
+          },
+          "identity_manifest": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Identity Manifest"
+          },
+          "page_tokens": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Page Tokens"
+          },
+          "artifacts": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Artifacts"
+          },
+          "page_count": {
+            "type": "integer",
+            "title": "Page Count",
+            "default": 0
+          },
+          "page_kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Page Kind"
+          },
+          "page_index": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Page Index"
+          },
           "display_mode": {
             "type": "string",
             "title": "Display Mode",
@@ -50421,6 +51983,11 @@
         "properties": {
           "collection": {
             "$ref": "#/components/schemas/ExplanationValueDTO"
+          },
+          "max_iterations": {
+            "type": "integer",
+            "title": "Max Iterations",
+            "default": 500
           },
           "item_binding": {
             "type": "string",
@@ -51355,6 +52922,18 @@
               }
             ],
             "title": "Pane Open"
+          },
+          "provenance": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provenance"
           }
         },
         "additionalProperties": true,
@@ -51753,6 +53332,15 @@
       },
       "MessageWaitArgs": {
         "properties": {
+          "schema_version": {
+            "type": "integer",
+            "enum": [
+              1,
+              2
+            ],
+            "title": "Schema Version",
+            "default": 1
+          },
           "project_id": {
             "anyOf": [
               {
@@ -51954,6 +53542,9 @@
               "PAUSED": 0.0,
               "BLOCKED": 0.0,
               "WAITING_INPUT": 0.0,
+              "WAITING": 0.0,
+              "HIBERNATED": 0.0,
+              "RESUME_PENDING": 0.0,
               "other": 0.0,
               "total": 0.0
             }
@@ -52028,6 +53619,16 @@
             "default": {
               "collect_ms": 0.0
             }
+          },
+          "waits": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WaitMetrics"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "perf": {
             "$ref": "#/components/schemas/PerfMetrics",
@@ -55570,6 +57171,179 @@
             "type": "object",
             "title": "Parameters Schema",
             "default": {}
+          },
+          "origin": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Origin"
+          },
+          "plugin": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Plugin"
+          },
+          "available": {
+            "type": "boolean",
+            "title": "Available",
+            "default": true
+          },
+          "execution_available": {
+            "type": "boolean",
+            "title": "Execution Available",
+            "default": false
+          },
+          "denied": {
+            "type": "boolean",
+            "title": "Denied",
+            "default": false
+          },
+          "denial_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Denial Reason"
+          },
+          "schema_source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Schema Source"
+          },
+          "schema_quality": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Schema Quality"
+          },
+          "result_mode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Result Mode"
+          },
+          "capability": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Capability"
+          },
+          "caller_requirements": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Caller Requirements",
+            "default": []
+          },
+          "effect_class": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Effect Class"
+          },
+          "idempotency_mechanism": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Mechanism"
+          },
+          "idempotency_key_field": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Key Field"
+          },
+          "retry_safe": {
+            "type": "boolean",
+            "title": "Retry Safe",
+            "default": false
+          },
+          "timeout_seconds": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Timeout Seconds"
+          },
+          "preview_available": {
+            "type": "boolean",
+            "title": "Preview Available",
+            "default": false
+          },
+          "sensitivity": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sensitivity"
+          },
+          "receipt_projection": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Receipt Projection",
+            "default": []
           }
         },
         "additionalProperties": false,
@@ -55602,6 +57376,27 @@
             "type": "integer",
             "title": "Count",
             "default": 0
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total",
+            "default": 0
+          },
+          "offset": {
+            "type": "integer",
+            "title": "Offset",
+            "default": 0
+          },
+          "next_offset": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Offset"
           }
         },
         "additionalProperties": false,
@@ -55609,7 +57404,122 @@
         "title": "PlaybookCommandCatalogResponse"
       },
       "PlaybookCommandsRequest": {
-        "properties": {},
+        "properties": {
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name",
+            "description": ""
+          },
+          "prefix": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Prefix",
+            "description": ""
+          },
+          "origin": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Origin",
+            "description": ""
+          },
+          "plugin": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Plugin",
+            "description": ""
+          },
+          "schema_quality": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Schema Quality",
+            "description": ""
+          },
+          "result_mode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Result Mode",
+            "description": ""
+          },
+          "available": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Available",
+            "description": ""
+          },
+          "denied": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Denied",
+            "description": ""
+          },
+          "include_schema": {
+            "type": "boolean",
+            "title": "Include Schema",
+            "description": "",
+            "default": true
+          },
+          "offset": {
+            "type": "integer",
+            "title": "Offset",
+            "description": "",
+            "default": 0
+          },
+          "limit": {
+            "type": "integer",
+            "title": "Limit",
+            "description": "",
+            "default": 50
+          }
+        },
         "type": "object",
         "title": "PlaybookCommandsRequest"
       },
@@ -57246,6 +59156,13 @@
             "title": "Purpose",
             "default": "routine"
           },
+          "execution_requirements": {
+            "$ref": "#/components/schemas/ExecutionRequirementsDTO",
+            "default": {
+              "required_features": [],
+              "required_capabilities": []
+            }
+          },
           "event_groups": {
             "items": {
               "$ref": "#/components/schemas/EventGroupDTO"
@@ -58492,6 +60409,11 @@
             "title": "Running Busy",
             "default": 0
           },
+          "evictable": {
+            "type": "integer",
+            "title": "Evictable",
+            "default": 0
+          },
           "starting": {
             "type": "integer",
             "title": "Starting",
@@ -59171,6 +61093,11 @@
           "running_busy": {
             "type": "integer",
             "title": "Running Busy"
+          },
+          "evictable": {
+            "type": "integer",
+            "title": "Evictable",
+            "default": 0
           },
           "starting": {
             "type": "integer",
@@ -64836,6 +66763,18 @@
             "title": "Expected Remote Oid",
             "description": "Exact remote branch OID expected before the push (40 hex digits); the push may then rewrite the branch, and is refused if the remote holds anything else. All zeros means the branch must still be absent."
           },
+          "publication_delegation_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Publication Delegation Id",
+            "description": "Single-use integration-owner grant for this target branch"
+          },
           "workspace": {
             "anyOf": [
               {
@@ -65489,7 +67428,8 @@
               "decision",
               "wait",
               "foreach",
-              "terminal"
+              "terminal",
+              "script"
             ],
             "title": "Step Kind"
           },
@@ -65508,6 +67448,21 @@
               }
             ],
             "title": "Iteration Index"
+          },
+          "iteration_path": {
+            "type": "string",
+            "title": "Iteration Path",
+            "default": ""
+          },
+          "script": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ScriptExecutionDTO"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "outcome": {
             "type": "string",
@@ -67146,6 +69101,254 @@
         ],
         "title": "ReopenWithFeedbackResponse"
       },
+      "RepairRepositoryCheckoutRequest": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "title": "Project Id",
+            "description": ""
+          },
+          "repository_id": {
+            "type": "string",
+            "title": "Repository Id",
+            "description": ""
+          },
+          "expected_path": {
+            "type": "string",
+            "title": "Expected Path",
+            "description": ""
+          },
+          "replacement_path": {
+            "type": "string",
+            "title": "Replacement Path",
+            "description": ""
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason",
+            "description": ""
+          },
+          "apply": {
+            "type": "boolean",
+            "title": "Apply",
+            "description": "",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "project_id",
+          "repository_id",
+          "expected_path",
+          "replacement_path",
+          "reason"
+        ],
+        "title": "RepairRepositoryCheckoutRequest"
+      },
+      "RepairRepositoryCheckoutResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "project_id": {
+            "type": "string",
+            "title": "Project Id"
+          },
+          "repository_id": {
+            "type": "string",
+            "title": "Repository Id"
+          },
+          "changed": {
+            "type": "boolean",
+            "title": "Changed",
+            "default": false
+          },
+          "preview": {
+            "type": "boolean",
+            "title": "Preview",
+            "default": true
+          },
+          "before": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Before"
+          },
+          "after": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "After"
+          },
+          "event_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Event Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "project_id",
+          "repository_id",
+          "before",
+          "after"
+        ],
+        "title": "RepairRepositoryCheckoutResponse"
+      },
+      "RepairWorkspaceCheckoutRequest": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "title": "Project Id",
+            "description": ""
+          },
+          "workspace_id": {
+            "type": "string",
+            "title": "Workspace Id",
+            "description": ""
+          },
+          "expected_path": {
+            "type": "string",
+            "title": "Expected Path",
+            "description": ""
+          },
+          "replacement_path": {
+            "type": "string",
+            "title": "Replacement Path",
+            "description": ""
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason",
+            "description": ""
+          },
+          "expected_proof": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Proof",
+            "description": ""
+          },
+          "apply": {
+            "type": "boolean",
+            "title": "Apply",
+            "description": "",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "project_id",
+          "workspace_id",
+          "expected_path",
+          "replacement_path",
+          "reason"
+        ],
+        "title": "RepairWorkspaceCheckoutRequest"
+      },
+      "RepairWorkspaceCheckoutResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "project_id": {
+            "type": "string",
+            "title": "Project Id"
+          },
+          "workspace_id": {
+            "type": "string",
+            "title": "Workspace Id"
+          },
+          "changed": {
+            "type": "boolean",
+            "title": "Changed",
+            "default": false
+          },
+          "preview": {
+            "type": "boolean",
+            "title": "Preview",
+            "default": true
+          },
+          "proof": {
+            "type": "string",
+            "title": "Proof"
+          },
+          "before": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Before"
+          },
+          "after": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "After"
+          },
+          "slots": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Slots"
+          },
+          "identity": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Identity"
+          },
+          "authorized_origin": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Authorized Origin"
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason"
+          },
+          "event_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Event Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "project_id",
+          "workspace_id",
+          "proof",
+          "before",
+          "after",
+          "slots",
+          "identity",
+          "reason"
+        ],
+        "title": "RepairWorkspaceCheckoutResponse"
+      },
       "ReparentTaskRequest": {
         "properties": {
           "task_id": {
@@ -68225,6 +70428,18 @@
             "type": "string",
             "title": "Task Id",
             "description": "Task ID to resume"
+          },
+          "recover_stale_pause": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Recover Stale Pause",
+            "description": "Operator/supervisor recovery of a stale pause on an unchanged retained source; still requires writer stop proof and ordinary checkpoint cleanup."
           }
         },
         "type": "object",
@@ -70136,6 +72351,204 @@
           "subtree"
         ],
         "title": "ScopedConftest"
+      },
+      "ScriptExecutionDTO": {
+        "properties": {
+          "job_id": {
+            "type": "string",
+            "title": "Job Id"
+          },
+          "execution_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Execution Id"
+          },
+          "terminal_cause": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Terminal Cause"
+          },
+          "exit_code": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Exit Code"
+          },
+          "signal": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Signal"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "ended_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ended At"
+          },
+          "json_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Json Status"
+          },
+          "capture_complete": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Capture Complete"
+          },
+          "cleanup_complete": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cleanup Complete"
+          },
+          "output_refs": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object",
+            "title": "Output Refs",
+            "default": {}
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "job_id"
+        ],
+        "title": "ScriptExecutionDTO",
+        "description": "Public execution facts and opaque handles, never process output or inputs."
+      },
+      "ScriptNodeDetailDTO": {
+        "properties": {
+          "program": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Program"
+          },
+          "source_revision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Revision"
+          },
+          "program_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Program Sha256"
+          },
+          "runtime_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Runtime Sha256"
+          },
+          "executable_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Executable Sha256"
+          },
+          "input_pins": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Input Pins",
+            "default": []
+          },
+          "environment_names": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Environment Names",
+            "default": []
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "program"
+        ],
+        "title": "ScriptNodeDetailDTO"
       },
       "SearchFilesRequest": {
         "properties": {
@@ -73132,6 +75545,56 @@
         ],
         "title": "SpecApproveResponse"
       },
+      "SpecIngestLegacyAdoptRequest": {
+        "properties": {
+          "proposal_id": {
+            "type": "string",
+            "title": "Proposal Id",
+            "description": ""
+          },
+          "decision_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decision Id",
+            "description": ""
+          },
+          "packet_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Packet Sha256",
+            "description": ""
+          },
+          "leave_gated": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Leave Gated",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "proposal_id"
+        ],
+        "title": "SpecIngestLegacyAdoptRequest"
+      },
       "SpecIngestLegacyInventoryRequest": {
         "properties": {
           "project_id": {
@@ -73312,7 +75775,8 @@
                   "decision",
                   "wait",
                   "foreach",
-                  "terminal"
+                  "terminal",
+                  "script"
                 ]
               },
               {
@@ -73900,6 +76364,39 @@
           "seconds_in_state": {
             "type": "number",
             "title": "Seconds In State"
+          },
+          "kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Kind"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "suggested_command": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Suggested Command"
           }
         },
         "type": "object",
@@ -76560,6 +79057,21 @@
           },
           "status": {
             "type": "string",
+            "enum": [
+              "",
+              "DEFINED",
+              "READY",
+              "ASSIGNED",
+              "IN_PROGRESS",
+              "WAITING",
+              "HIBERNATED",
+              "RESUME_PENDING",
+              "WAITING_INPUT",
+              "PAUSED",
+              "COMPLETED",
+              "FAILED",
+              "BLOCKED"
+            ],
             "title": "Status",
             "default": ""
           },
@@ -76914,6 +79426,21 @@
           },
           "status": {
             "type": "string",
+            "enum": [
+              "",
+              "DEFINED",
+              "READY",
+              "ASSIGNED",
+              "IN_PROGRESS",
+              "WAITING",
+              "HIBERNATED",
+              "RESUME_PENDING",
+              "WAITING_INPUT",
+              "PAUSED",
+              "COMPLETED",
+              "FAILED",
+              "BLOCKED"
+            ],
             "title": "Status",
             "default": ""
           }
@@ -76986,6 +79513,21 @@
           "WAITING_INPUT": {
             "type": "number",
             "title": "Waiting Input",
+            "default": 0
+          },
+          "WAITING": {
+            "type": "number",
+            "title": "Waiting",
+            "default": 0
+          },
+          "HIBERNATED": {
+            "type": "number",
+            "title": "Hibernated",
+            "default": 0
+          },
+          "RESUME_PENDING": {
+            "type": "number",
+            "title": "Resume Pending",
             "default": 0
           },
           "other": {
@@ -77987,6 +80529,18 @@
             "title": "Branch",
             "description": "Branch name for this task's work (optional)."
           },
+          "repair_batch": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Repair Batch",
+            "description": "Supervisor/operator only: assign push authority for this open batch's candidate branch, preserving the task's canonical branch."
+          },
           "pr_url": {
             "anyOf": [
               {
@@ -78167,6 +80721,21 @@
           },
           "status": {
             "type": "string",
+            "enum": [
+              "",
+              "DEFINED",
+              "READY",
+              "ASSIGNED",
+              "IN_PROGRESS",
+              "WAITING",
+              "HIBERNATED",
+              "RESUME_PENDING",
+              "WAITING_INPUT",
+              "PAUSED",
+              "COMPLETED",
+              "FAILED",
+              "BLOCKED"
+            ],
             "title": "Status",
             "default": ""
           },
@@ -78534,6 +81103,30 @@
                 "type": "null"
               }
             ]
+          },
+          "batch_member": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Batch Member"
+          },
+          "fidelity": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fidelity"
           },
           "fields_changed": {
             "items": {
@@ -78676,6 +81269,21 @@
           },
           "status": {
             "type": "string",
+            "enum": [
+              "",
+              "DEFINED",
+              "READY",
+              "ASSIGNED",
+              "IN_PROGRESS",
+              "WAITING",
+              "HIBERNATED",
+              "RESUME_PENDING",
+              "WAITING_INPUT",
+              "PAUSED",
+              "COMPLETED",
+              "FAILED",
+              "BLOCKED"
+            ],
             "title": "Status",
             "default": ""
           },
@@ -79043,6 +81651,30 @@
                 "type": "null"
               }
             ]
+          },
+          "batch_member": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Batch Member"
+          },
+          "fidelity": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fidelity"
           }
         },
         "type": "object",
@@ -81142,25 +83774,8 @@
         ],
         "title": "ValidationError"
       },
-      "WaitCancelRequest": {
+      "WaitAckArgs": {
         "properties": {
-          "wait_id": {
-            "type": "string",
-            "title": "Wait Id",
-            "description": ""
-          },
-          "claim_epoch": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Claim Epoch",
-            "description": ""
-          },
           "project_id": {
             "anyOf": [
               {
@@ -81170,8 +83785,7 @@
                 "type": "null"
               }
             ],
-            "title": "Project Id",
-            "description": ""
+            "title": "Project Id"
           },
           "task_id": {
             "anyOf": [
@@ -81182,8 +83796,7 @@
                 "type": "null"
               }
             ],
-            "title": "Task Id",
-            "description": ""
+            "title": "Task Id"
           },
           "session_id": {
             "anyOf": [
@@ -81194,15 +83807,1053 @@
                 "type": "null"
               }
             ],
-            "title": "Session Id",
-            "description": ""
+            "title": "Session Id"
+          },
+          "claim_epoch": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claim Epoch"
+          },
+          "wait_id": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Wait Id"
+          },
+          "continuation_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Continuation Id"
+          },
+          "generation": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Generation"
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "required": [
           "wait_id"
         ],
-        "title": "WaitCancelRequest"
+        "title": "WaitAckArgs"
+      },
+      "WaitAckResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "wait_id": {
+            "type": "string",
+            "title": "Wait Id"
+          },
+          "acknowledged": {
+            "type": "boolean",
+            "title": "Acknowledged"
+          },
+          "continuation_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Continuation Id"
+          },
+          "generation": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Generation"
+          },
+          "next_step": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Step"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "wait_id",
+          "acknowledged"
+        ],
+        "title": "WaitAckResponse"
+      },
+      "WaitBridgeResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "result": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Result"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "WaitBridgeResponse"
+      },
+      "WaitCancelArgs": {
+        "properties": {
+          "schema_version": {
+            "type": "integer",
+            "enum": [
+              1,
+              2
+            ],
+            "title": "Schema Version",
+            "default": 1
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Id"
+          },
+          "wait_id": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Wait Id"
+          },
+          "claim_epoch": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claim Epoch"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "wait_id"
+        ],
+        "title": "WaitCancelArgs"
+      },
+      "WaitChainEdge": {
+        "properties": {
+          "id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Id"
+          },
+          "wait_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Wait Id"
+          },
+          "from": {
+            "type": "string",
+            "title": "From"
+          },
+          "to": {
+            "type": "string",
+            "title": "To"
+          },
+          "relation": {
+            "type": "string",
+            "title": "Relation"
+          },
+          "source_revision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Revision"
+          },
+          "active": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Active"
+          },
+          "created_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created At"
+          },
+          "cleared_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cleared At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "from",
+          "to",
+          "relation"
+        ],
+        "title": "WaitChainEdge"
+      },
+      "WaitCheckpointArgs": {
+        "properties": {
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Id"
+          },
+          "claim_epoch": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claim Epoch"
+          },
+          "wait_id": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Wait Id"
+          },
+          "summary": {
+            "type": "string",
+            "maxLength": 8192,
+            "minLength": 1,
+            "title": "Summary"
+          },
+          "continuation_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Continuation Id"
+          },
+          "generation": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Generation"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "wait_id",
+          "summary"
+        ],
+        "title": "WaitCheckpointArgs"
+      },
+      "WaitCheckpointResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "continuation_id": {
+            "type": "string",
+            "title": "Continuation Id"
+          },
+          "generation": {
+            "type": "integer",
+            "title": "Generation"
+          },
+          "next_step": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Step"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "continuation_id",
+          "generation"
+        ],
+        "title": "WaitCheckpointResponse"
+      },
+      "WaitCounterfactual": {
+        "properties": {
+          "tokens": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tokens"
+          },
+          "cohort": {
+            "type": "string",
+            "title": "Cohort"
+          },
+          "window": {
+            "type": "string",
+            "title": "Window"
+          }
+        },
+        "type": "object",
+        "required": [
+          "cohort",
+          "window"
+        ],
+        "title": "WaitCounterfactual",
+        "description": "Estimated avoided monitoring tokens, never measured token savings."
+      },
+      "WaitDeadline": {
+        "properties": {
+          "type": {
+            "type": "string",
+            "title": "Type"
+          },
+          "due_at": {
+            "type": "number",
+            "title": "Due At"
+          },
+          "generation": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Generation"
+          },
+          "fired_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fired At"
+          },
+          "cancelled_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cancelled At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "type",
+          "due_at"
+        ],
+        "title": "WaitDeadline"
+      },
+      "WaitDecideArgs": {
+        "properties": {
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id"
+          },
+          "wait_id": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Wait Id"
+          },
+          "decision": {
+            "type": "string",
+            "enum": [
+              "extend",
+              "wake",
+              "cancel",
+              "reroute",
+              "escalate_to_human"
+            ],
+            "title": "Decision"
+          },
+          "note": {
+            "type": "string",
+            "maxLength": 4000,
+            "minLength": 1,
+            "title": "Note"
+          },
+          "extend_seconds": {
+            "anyOf": [
+              {
+                "type": "number",
+                "maximum": 86400.0,
+                "minimum": 60.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Extend Seconds"
+          },
+          "to": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "To"
+          },
+          "expected_generation": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Generation"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "wait_id",
+          "decision",
+          "note"
+        ],
+        "title": "WaitDecideArgs"
+      },
+      "WaitDecideResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "wait_id": {
+            "type": "string",
+            "title": "Wait Id"
+          },
+          "decision": {
+            "type": "string",
+            "title": "Decision"
+          },
+          "outcome": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Outcome"
+          },
+          "generation": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Generation"
+          },
+          "next_step": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Step"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "wait_id",
+          "decision"
+        ],
+        "title": "WaitDecideResponse"
+      },
+      "WaitDurationMetrics": {
+        "properties": {
+          "condition_kind": {
+            "type": "string",
+            "title": "Condition Kind"
+          },
+          "source_class": {
+            "type": "string",
+            "title": "Source Class"
+          },
+          "wait_duration_p50": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Wait Duration P50"
+          },
+          "expected_duration_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Duration Seconds"
+          }
+        },
+        "type": "object",
+        "required": [
+          "condition_kind",
+          "source_class"
+        ],
+        "title": "WaitDurationMetrics"
+      },
+      "WaitEffectivePriority": {
+        "properties": {
+          "value": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Value"
+          },
+          "base": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Base"
+          },
+          "donor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Donor"
+          },
+          "donor_path": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Donor Path"
+          },
+          "graph_version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Graph Version"
+          },
+          "computed_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Computed At"
+          }
+        },
+        "type": "object",
+        "title": "WaitEffectivePriority"
+      },
+      "WaitExplainArgs": {
+        "properties": {
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Id"
+          },
+          "claim_epoch": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claim Epoch"
+          },
+          "wait_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Wait Id"
+          },
+          "history": {
+            "type": "boolean",
+            "title": "History",
+            "default": false
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "WaitExplainArgs"
+      },
+      "WaitExplainResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "explanation": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WaitExplanation"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "waits": {
+            "items": {
+              "$ref": "#/components/schemas/WaitExplanation"
+            },
+            "type": "array",
+            "title": "Waits"
+          },
+          "task": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WaitTaskExplanation"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total",
+            "default": 0
+          },
+          "offset": {
+            "type": "integer",
+            "title": "Offset",
+            "default": 0
+          },
+          "truncated": {
+            "type": "boolean",
+            "title": "Truncated",
+            "default": false
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "WaitExplainResponse"
+      },
+      "WaitExplanation": {
+        "properties": {
+          "wait_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Wait Id"
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id"
+          },
+          "owner": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object",
+            "title": "Owner"
+          },
+          "lifecycle": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lifecycle"
+          },
+          "outcome": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Outcome"
+          },
+          "result_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Result Ref"
+          },
+          "age_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Age Seconds"
+          },
+          "age_unknown": {
+            "type": "boolean",
+            "title": "Age Unknown",
+            "default": false
+          },
+          "verified": {
+            "$ref": "#/components/schemas/WaitVerifiedEvidence"
+          },
+          "claimed": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claimed"
+          },
+          "sleep": {
+            "$ref": "#/components/schemas/WaitSleepExplanation"
+          },
+          "deadlines": {
+            "items": {
+              "$ref": "#/components/schemas/WaitDeadline"
+            },
+            "type": "array",
+            "title": "Deadlines"
+          },
+          "chain": {
+            "items": {
+              "$ref": "#/components/schemas/WaitChainEdge"
+            },
+            "type": "array",
+            "title": "Chain"
+          },
+          "chain_truncated": {
+            "type": "boolean",
+            "title": "Chain Truncated",
+            "default": false
+          },
+          "chain_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Chain At"
+          },
+          "edge_history": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Edge History"
+          },
+          "effective_priority": {
+            "$ref": "#/components/schemas/WaitEffectivePriority"
+          },
+          "escalation": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Escalation"
+          },
+          "escalations": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Escalations"
+          },
+          "reservations": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Reservations"
+          },
+          "continuation": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Continuation"
+          },
+          "policy_layer": {
+            "type": "string",
+            "title": "Policy Layer",
+            "default": "default"
+          }
+        },
+        "type": "object",
+        "title": "WaitExplanation"
       },
       "WaitFactsDTO": {
         "properties": {
@@ -81282,99 +84933,298 @@
         ],
         "title": "WaitFactsDTO"
       },
-      "WaitGetRequest": {
+      "WaitGetArgs": {
         "properties": {
+          "schema_version": {
+            "type": "integer",
+            "enum": [
+              1,
+              2
+            ],
+            "title": "Schema Version",
+            "default": 1
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Id"
+          },
           "wait_id": {
             "type": "string",
-            "title": "Wait Id",
-            "description": ""
+            "minLength": 1,
+            "title": "Wait Id"
           },
           "consume": {
             "type": "boolean",
             "title": "Consume",
-            "description": "",
             "default": false
           },
           "claim_epoch": {
             "anyOf": [
               {
-                "type": "integer"
+                "type": "integer",
+                "minimum": 0.0
               },
               {
                 "type": "null"
               }
             ],
-            "title": "Claim Epoch",
-            "description": ""
-          },
-          "project_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Project Id",
-            "description": ""
-          },
-          "task_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Task Id",
-            "description": ""
-          },
-          "session_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Session Id",
-            "description": ""
+            "title": "Claim Epoch"
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "required": [
           "wait_id"
         ],
-        "title": "WaitGetRequest"
+        "title": "WaitGetArgs"
       },
-      "WaitListRequest": {
+      "WaitGraphArgs": {
         "properties": {
-          "limit": {
+          "project_id": {
             "anyOf": [
               {
-                "type": "integer"
+                "type": "string"
               },
               {
                 "type": "null"
               }
             ],
-            "title": "Limit",
-            "description": ""
+            "title": "Project Id"
+          },
+          "fleet": {
+            "type": "boolean",
+            "title": "Fleet",
+            "default": false
+          },
+          "costs": {
+            "type": "boolean",
+            "title": "Costs",
+            "default": false
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "WaitGraphArgs"
+      },
+      "WaitGraphChain": {
+        "properties": {
+          "components": {
+            "items": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "type": "array",
+            "title": "Components"
+          },
+          "length": {
+            "type": "integer",
+            "title": "Length"
+          },
+          "truncated": {
+            "type": "boolean",
+            "title": "Truncated",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "components",
+          "length"
+        ],
+        "title": "WaitGraphChain"
+      },
+      "WaitGraphProject": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "title": "Project Id"
+          },
+          "counts": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Counts"
+          },
+          "waits": {
+            "items": {
+              "$ref": "#/components/schemas/WaitExplanation"
+            },
+            "type": "array",
+            "title": "Waits"
+          },
+          "total_waits": {
+            "type": "integer",
+            "title": "Total Waits",
+            "default": 0
+          },
+          "escalated_waits": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Escalated Waits"
+          },
+          "branch_blockers": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Branch Blockers"
+          },
+          "held_message_backlog": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Held Message Backlog"
+          },
+          "longest_chains": {
+            "items": {
+              "$ref": "#/components/schemas/WaitGraphChain"
+            },
+            "type": "array",
+            "title": "Longest Chains"
+          },
+          "deadlocks": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Deadlocks"
+          },
+          "truncated": {
+            "additionalProperties": {
+              "type": "boolean"
+            },
+            "type": "object",
+            "title": "Truncated"
+          }
+        },
+        "type": "object",
+        "required": [
+          "project_id"
+        ],
+        "title": "WaitGraphProject"
+      },
+      "WaitGraphProjection": {
+        "properties": {
+          "projects": {
+            "items": {
+              "$ref": "#/components/schemas/WaitGraphProject"
+            },
+            "type": "array",
+            "title": "Projects"
+          },
+          "total_projects": {
+            "type": "integer",
+            "title": "Total Projects",
+            "default": 0
           },
           "offset": {
+            "type": "integer",
+            "title": "Offset",
+            "default": 0
+          },
+          "truncated": {
+            "type": "boolean",
+            "title": "Truncated",
+            "default": false
+          }
+        },
+        "type": "object",
+        "title": "WaitGraphProjection"
+      },
+      "WaitGraphResponse": {
+        "properties": {
+          "projects": {
+            "items": {
+              "$ref": "#/components/schemas/WaitGraphProject"
+            },
+            "type": "array",
+            "title": "Projects"
+          },
+          "total_projects": {
+            "type": "integer",
+            "title": "Total Projects",
+            "default": 0
+          },
+          "offset": {
+            "type": "integer",
+            "title": "Offset",
+            "default": 0
+          },
+          "truncated": {
+            "type": "boolean",
+            "title": "Truncated",
+            "default": false
+          },
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "graph": {
             "anyOf": [
               {
-                "type": "integer"
+                "$ref": "#/components/schemas/WaitGraphProjection"
               },
               {
                 "type": "null"
               }
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "WaitGraphResponse"
+      },
+      "WaitLegacyBridgeArgs": {
+        "properties": {
+          "mode": {
+            "type": "string",
+            "enum": [
+              "project",
+              "agent-waits"
             ],
-            "title": "Offset",
-            "description": ""
+            "title": "Mode",
+            "default": "agent-waits"
           },
           "project_id": {
             "anyOf": [
@@ -81385,8 +85235,84 @@
                 "type": "null"
               }
             ],
-            "title": "Project Id",
-            "description": ""
+            "title": "Project Id"
+          },
+          "apply": {
+            "type": "boolean",
+            "title": "Apply",
+            "default": false
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "WaitLegacyBridgeArgs"
+      },
+      "WaitLiftArgs": {
+        "properties": {
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id"
+          },
+          "wait_id": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Wait Id"
+          },
+          "response": {
+            "type": "string",
+            "maxLength": 4000,
+            "minLength": 1,
+            "title": "Response"
+          },
+          "expected_generation": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Generation"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "wait_id",
+          "response"
+        ],
+        "title": "WaitLiftArgs"
+      },
+      "WaitListArgs": {
+        "properties": {
+          "schema_version": {
+            "type": "integer",
+            "enum": [
+              1,
+              2
+            ],
+            "title": "Schema Version",
+            "default": 1
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id"
           },
           "task_id": {
             "anyOf": [
@@ -81397,8 +85323,7 @@
                 "type": "null"
               }
             ],
-            "title": "Task Id",
-            "description": ""
+            "title": "Task Id"
           },
           "session_id": {
             "anyOf": [
@@ -81409,12 +85334,25 @@
                 "type": "null"
               }
             ],
-            "title": "Session Id",
-            "description": ""
+            "title": "Session Id"
+          },
+          "limit": {
+            "type": "integer",
+            "maximum": 100.0,
+            "minimum": 1.0,
+            "title": "Limit",
+            "default": 100
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Offset",
+            "default": 0
           }
         },
+        "additionalProperties": false,
         "type": "object",
-        "title": "WaitListRequest"
+        "title": "WaitListArgs"
       },
       "WaitListResponse": {
         "properties": {
@@ -81425,7 +85363,15 @@
           },
           "waits": {
             "items": {
-              "$ref": "#/components/schemas/AgentWaitRecord"
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/AgentWaitRecord"
+                },
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              ]
             },
             "type": "array",
             "title": "Waits"
@@ -81442,6 +85388,266 @@
           "count"
         ],
         "title": "WaitListResponse"
+      },
+      "WaitMetrics": {
+        "properties": {
+          "pending_in_place": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pending In Place"
+          },
+          "pending_hibernated": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pending Hibernated"
+          },
+          "pending_human": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pending Human"
+          },
+          "escalated": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Escalated"
+          },
+          "scheduler_by_reason": {
+            "additionalProperties": {
+              "type": "number"
+            },
+            "type": "object",
+            "title": "Scheduler By Reason",
+            "default": {}
+          },
+          "in_place_slot_seconds_1h": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "In Place Slot Seconds 1H"
+          },
+          "released_slot_seconds_1h": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WaitSlotSeconds"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "released_slot_seconds_24h": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WaitSlotSeconds"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "evicted_1h": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evicted 1H"
+          },
+          "ceiling_1h": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ceiling 1H"
+          },
+          "resume_cost_p50": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resume Cost P50"
+          },
+          "resume_cost_p95": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resume Cost P95"
+          },
+          "by_project": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/WaitProjectMetrics"
+            },
+            "type": "object",
+            "title": "By Project",
+            "default": {}
+          },
+          "wakes_1h": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WaitWakes"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "loops_1h": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Loops 1H"
+          },
+          "escalations_1h": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Escalations 1H"
+          },
+          "decisions_1h": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decisions 1H"
+          },
+          "decision_seconds_p50": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decision Seconds P50"
+          },
+          "human_pending": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Human Pending"
+          },
+          "human_age_max_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Human Age Max Seconds"
+          },
+          "priority": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WaitPriorityMetrics"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "wait_seconds_1h": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Wait Seconds 1H"
+          },
+          "overhead_tokens_1h": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Overhead Tokens 1H"
+          },
+          "tokens_saved_counterfactual": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WaitCounterfactual"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object",
+        "title": "WaitMetrics",
+        "description": "Observed wait accounting. Missing observations remain null at every tier.\n\nResume cost percentiles are seconds; configured resume_cost_minutes stays\nin minutes. Duration/cost cohorts cover the preceding thirty days."
       },
       "WaitNodeDetailDTO": {
         "properties": {
@@ -81495,38 +85701,9 @@
         "title": "WaitNodeDetailDTO",
         "description": "WaitStep only."
       },
-      "WaitRegisterRequest": {
+      "WaitPriorityMetrics": {
         "properties": {
-          "kind": {
-            "type": "string",
-            "title": "Kind",
-            "description": ""
-          },
-          "ref": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Ref",
-            "description": ""
-          },
-          "after_seq": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "After Seq",
-            "description": ""
-          },
-          "due_at": {
+          "donors": {
             "anyOf": [
               {
                 "type": "number"
@@ -81535,10 +85712,9 @@
                 "type": "null"
               }
             ],
-            "title": "Due At",
-            "description": ""
+            "title": "Donors"
           },
-          "timeout": {
+          "reservations_pending": {
             "anyOf": [
               {
                 "type": "number"
@@ -81547,25 +85723,157 @@
                 "type": "null"
               }
             ],
-            "title": "Timeout",
-            "description": ""
+            "title": "Reservations Pending"
           },
-          "idempotency_key": {
-            "type": "string",
-            "title": "Idempotency Key",
-            "description": ""
-          },
-          "claim_epoch": {
+          "reservations_overdue": {
             "anyOf": [
               {
-                "type": "integer"
+                "type": "number"
               },
               {
                 "type": "null"
               }
             ],
-            "title": "Claim Epoch",
-            "description": ""
+            "title": "Reservations Overdue"
+          },
+          "deadline_breaches_1h": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Deadline Breaches 1H"
+          },
+          "unexplained": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unexplained"
+          }
+        },
+        "type": "object",
+        "title": "WaitPriorityMetrics"
+      },
+      "WaitProjectMetrics": {
+        "properties": {
+          "resume_cost_p50": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resume Cost P50"
+          },
+          "resume_cost_p95": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resume Cost P95"
+          },
+          "resume_cost_minutes": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resume Cost Minutes"
+          },
+          "summary_tokens": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Summary Tokens"
+          },
+          "resume_tokens": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resume Tokens"
+          },
+          "teardown_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Teardown Seconds"
+          },
+          "setup_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Setup Seconds"
+          },
+          "rebuild_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rebuild Seconds"
+          },
+          "durations": {
+            "items": {
+              "$ref": "#/components/schemas/WaitDurationMetrics"
+            },
+            "type": "array",
+            "title": "Durations",
+            "default": []
+          }
+        },
+        "type": "object",
+        "title": "WaitProjectMetrics"
+      },
+      "WaitRegisterArgs": {
+        "properties": {
+          "schema_version": {
+            "type": "integer",
+            "enum": [
+              1,
+              2
+            ],
+            "title": "Schema Version",
+            "default": 1
           },
           "project_id": {
             "anyOf": [
@@ -81576,8 +85884,7 @@
                 "type": "null"
               }
             ],
-            "title": "Project Id",
-            "description": ""
+            "title": "Project Id"
           },
           "task_id": {
             "anyOf": [
@@ -81588,8 +85895,7 @@
                 "type": "null"
               }
             ],
-            "title": "Task Id",
-            "description": ""
+            "title": "Task Id"
           },
           "session_id": {
             "anyOf": [
@@ -81600,16 +85906,170 @@
                 "type": "null"
               }
             ],
-            "title": "Session Id",
-            "description": ""
+            "title": "Session Id"
+          },
+          "kind": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "job",
+                  "task",
+                  "message",
+                  "timer",
+                  "dependency",
+                  "ci_check",
+                  "ci_run",
+                  "pull_request",
+                  "batch",
+                  "human",
+                  "resource",
+                  "playbook_condition"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Kind"
+          },
+          "condition": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Condition"
+          },
+          "claimed": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 1024
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claimed"
+          },
+          "escalate_after_seconds": {
+            "anyOf": [
+              {
+                "type": "number",
+                "maximum": 86400.0,
+                "exclusiveMinimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Escalate After Seconds"
+          },
+          "owner_kind": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "scheduler",
+                  "integration",
+                  "playbook"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Owner Kind"
+          },
+          "owner_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Owner Id"
+          },
+          "ref": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 256
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ref"
+          },
+          "after_seq": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "After Seq"
+          },
+          "due_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Due At"
+          },
+          "timeout": {
+            "anyOf": [
+              {
+                "type": "number",
+                "maximum": 86400.0,
+                "exclusiveMinimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Timeout"
+          },
+          "idempotency_key": {
+            "type": "string",
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Idempotency Key"
+          },
+          "claim_epoch": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claim Epoch"
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "required": [
-          "kind",
           "idempotency_key"
         ],
-        "title": "WaitRegisterRequest"
+        "title": "WaitRegisterArgs"
       },
       "WaitResponse": {
         "properties": {
@@ -81619,7 +86079,106 @@
             "default": true
           },
           "wait": {
-            "$ref": "#/components/schemas/AgentWaitRecord"
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AgentWaitRecord"
+              },
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Wait"
+          },
+          "wait_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Wait Id"
+          },
+          "condition": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Condition"
+          },
+          "evidence": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evidence"
+          },
+          "decision": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decision"
+          },
+          "escalate_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Escalate At"
+          },
+          "ceiling_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ceiling At"
+          },
+          "continuation_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Continuation Id"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Warnings"
           },
           "next_step": {
             "anyOf": [
@@ -81635,10 +86194,294 @@
         },
         "additionalProperties": false,
         "type": "object",
-        "required": [
-          "wait"
-        ],
         "title": "WaitResponse"
+      },
+      "WaitSleepExplanation": {
+        "properties": {
+          "decision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decision"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "inputs": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Inputs"
+          }
+        },
+        "type": "object",
+        "title": "WaitSleepExplanation"
+      },
+      "WaitSlotSeconds": {
+        "properties": {
+          "condition": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Condition"
+          },
+          "capacity": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Capacity"
+          }
+        },
+        "type": "object",
+        "title": "WaitSlotSeconds"
+      },
+      "WaitTaskExplanation": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "lifecycle": {
+            "type": "string",
+            "title": "Lifecycle"
+          },
+          "base_priority": {
+            "type": "integer",
+            "title": "Base Priority"
+          },
+          "effective_priority": {
+            "type": "integer",
+            "title": "Effective Priority"
+          },
+          "donor_task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Donor Task Id"
+          },
+          "donor_path": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Donor Path"
+          },
+          "graph_version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Graph Version"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "lifecycle",
+          "base_priority",
+          "effective_priority"
+        ],
+        "title": "WaitTaskExplanation"
+      },
+      "WaitVerifiedEvidence": {
+        "properties": {
+          "kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Kind"
+          },
+          "condition": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Condition"
+          },
+          "state": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "State"
+          },
+          "evidence": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evidence"
+          },
+          "source_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Key"
+          },
+          "source_generation": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Generation"
+          },
+          "source_revision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Revision"
+          },
+          "observed_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Observed At"
+          },
+          "freshness_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Freshness Seconds"
+          },
+          "facts": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Facts"
+          }
+        },
+        "type": "object",
+        "title": "WaitVerifiedEvidence",
+        "description": "AQ observations only; claimed commentary is never a source fact."
+      },
+      "WaitWakes": {
+        "properties": {
+          "outcome": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Outcome"
+          },
+          "decision": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decision"
+          },
+          "lift": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lift"
+          },
+          "launch_failed": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Launch Failed"
+          },
+          "other": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Other"
+          }
+        },
+        "type": "object",
+        "title": "WaitWakes"
       },
       "WithheldTask": {
         "properties": {
@@ -81660,6 +86503,88 @@
           "task_id"
         ],
         "title": "WithheldTask"
+      },
+      "WorkspaceClearSentinelRequest": {
+        "properties": {
+          "workspace_id": {
+            "type": "string",
+            "title": "Workspace Id",
+            "description": "Slot workspace id whose sentinel to clear."
+          },
+          "if_task_terminal": {
+            "type": "boolean",
+            "title": "If Task Terminal",
+            "description": "Clear only when the named task is terminal (default true; the only supported mode).",
+            "default": true
+          }
+        },
+        "type": "object",
+        "required": [
+          "workspace_id"
+        ],
+        "title": "WorkspaceClearSentinelRequest"
+      },
+      "WorkspaceClearSentinelResponse": {
+        "properties": {
+          "workspace_id": {
+            "type": "string",
+            "title": "Workspace Id"
+          },
+          "cleared": {
+            "type": "boolean",
+            "title": "Cleared",
+            "default": false
+          },
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detail"
+          },
+          "holder_task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Holder Task Id"
+          },
+          "branch": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Branch"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          }
+        },
+        "type": "object",
+        "required": [
+          "workspace_id"
+        ],
+        "title": "WorkspaceClearSentinelResponse"
       },
       "WorkspaceCutoverRequest": {
         "properties": {

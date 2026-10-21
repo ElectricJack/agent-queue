@@ -185,6 +185,18 @@ already contained work or pending delivery owned by the train, and never
 reissues receipts or invokes the legacy collector. Unknown Git proof remains a
 visible blocker.
 
+For a completed leaf with `missing_git_provenance`, `redrive-child --adopt-source`
+previews retaining its existing passing completion generation. Apply requires the
+previewed full `--head` and a nonblank `--reason`. The materialized origin must
+name the current parent and designated repository; the published branch tip must
+equal the checkpoint, descend from the origin base, and agree with any recorded
+final completion commit. A missing passing completion, container, live writer,
+changed identity, conflicting retained source or failed Git proof refuses adoption.
+Apply publishes immutable completion provenance and an audit event. It changes
+no task status, review evidence or delivery receipt; the train then evaluates
+containment and its usual review and check gates. Repeating the same adoption is
+idempotent. Ordinary redrive remains diagnostic in Git-first mode.
+
 ### 4.2 Recompute triggers
 
 Recomputed **in the same transaction** as the mutation, Beads-style (`issueops/blocked_state.py` semantics):

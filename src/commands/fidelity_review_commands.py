@@ -16,7 +16,10 @@ from pydantic import ValidationError
 from sqlalchemy import select, update
 
 from src.api.auth import RequestScope
-from src.api.scope import fidelity_review_task_for_session, held_task_for_session
+from src.api.scope import (
+    fidelity_read_args_error, fidelity_review_read_context,
+    fidelity_review_task_for_session, held_task_for_session,
+)
 from src.asks.batch_scope import scope_ask, scope_source
 from src.asks.models import AskError
 from src.asks.operations import (
@@ -74,6 +77,102 @@ class _ReviewerExhausted(Exception):
 
 
 class FidelityReviewCommandsMixin:
+    async def _fidelity_read_context(self, command, args):
+        principal = current_principal() or TRUSTED_LOCAL
+        if principal.kind is not PrincipalKind.SESSION:
+            return None
+        scope = RequestScope(
+            kind="session", session_id=principal.session_id,
+            session_instance_token=principal.session_instance_token,
+            project_id=principal.project_id, task_id=principal.task_id,
+            elevated=principal.elevated,
+        )
+        if command == "get_task":
+            session = await self.db.get_session(principal.session_id)
+            if (session is not None and session.profile_id == FIDELITY_REVIEWER_PROFILE_ID
+                    and args.get("task_id") == session.task_id):
+                return None
+        context = await fidelity_review_read_context(self.db, scope)
+        if context is None:
+            if principal.profile_id != FIDELITY_REVIEWER_PROFILE_ID or principal.elevated:
+                return None
+            context = {}
+        if error := fidelity_read_args_error(command, args, scope, context):
+            return {"success": False, "error": error}
+        return context
+
+    async def _fidelity_member_detail(self, task, context):
+        """Member fields and edges only; no ambient queue/parent expansion."""
+        info = self._task_to_dict(task)
+        ids = context["task_ids"]
+        info.update(description=task.description, attachments=task.attachments,
+                    deliverables=task.deliverables,
+                    parent_task_id=task.parent_task_id if task.parent_task_id in ids else None)
+        info["batch_member"] = next(m for m in context["members"] if m["task_id"] == task.id)
+        info["fidelity"] = await self.db.get_task_meta(task.id, batches.MEMBER_FIDELITY_META)
+        info["context"] = await self.db.get_task_contexts(task.id)
+        info["labels"] = await self.db.get_task_labels(task.id)
+        info["depends_on"] = []
+        for edge in await self.db.get_typed_dependencies_detailed(task.id):
+            dep_id = edge["depends_on_task_id"]
+            if dep_id in ids:
+                dep = await self.db.get_task(dep_id)
+                info["depends_on"].append({"id": dep.id, "title": dep.title,
+                    "status": dep.status.value, "dep_type": edge["dep_type"],
+                    "reason": edge["description"]})
+        info["blocks"] = []
+        for dep_id in await self.db.get_dependents(task.id):
+            if dep_id in ids:
+                dep = await self.db.get_task(dep_id)
+                info["blocks"].append({"id": dep.id, "title": dep.title,
+                                       "status": dep.status.value})
+        children = [child for tid in sorted(ids) if (child := await self.db.get_task(tid))
+                    and child.parent_task_id == task.id]
+        info["children"] = {"total": len(children),
+            "done": sum(t.status.value == "COMPLETED" for t in children),
+            "ready": sum(t.status.value == "READY" and not t.is_blocked for t in children),
+            "blocked": sum(bool(t.is_blocked) for t in children),
+            "in_progress": sum(t.status.value in {"ASSIGNED", "IN_PROGRESS"} for t in children),
+        } if children else None
+        return info
+
+    async def _fidelity_list_tasks(self, args, context):
+        from src.commands.helpers import _format_task_tree, _count_subtree, _count_subtree_by_status
+
+        members = [await self.db.get_task(tid) for tid in sorted(context["task_ids"])]
+        members = [t for t in members if t is not None]
+        if args.get("status"):
+            members = [t for t in members if t.status.value == args["status"]]
+        else:
+            members = self._apply_completion_filter(members, args)
+        details = {}
+        for task in members:
+            detail = await self._fidelity_member_detail(task, context)
+            details[task.id] = {key: value for key, value in detail.items()
+                               if key not in {"batch_member", "fidelity", "context", "labels"}}
+        mode = args.get("display_mode") or "flat"
+        if mode == "flat":
+            return {"display_mode": "flat", "tasks": list(details.values()),
+                    "total": len(details), "hidden_completed": 0, "filtered": True}
+        ids = set(details)
+
+        def children(parent, seen):
+            return [{"task": t, "children": children(t.id, seen | {t.id})}
+                    for t in members if t.parent_task_id == parent and t.id not in seen]
+
+        trees = []
+        for root in members:
+            if root.parent_task_id in ids:
+                continue
+            subtree = children(root.id, {root.id})
+            completed, total = _count_subtree(subtree)
+            trees.append({"root": details[root.id],
+                          "formatted": _format_task_tree(root, subtree, compact=mode == "compact"),
+                          "subtask_completed": completed, "subtask_total": total,
+                          "subtask_by_status": _count_subtree_by_status(subtree)})
+        return {"display_mode": mode, "trees": trees, "tasks": list(details.values()),
+                "total": len(details), "total_root_tasks": len(trees), "total_tasks": len(details)}
+
     async def _cmd_task_batch_review_record(self, args):
         """Attest the current graph; scope answers never substitute for review."""
         try:

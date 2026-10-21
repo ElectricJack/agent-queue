@@ -201,6 +201,55 @@ async def test_worker_lease_reaches_the_validated_delivery_push(worker_git, comm
     assert w.git.apush_validated_delivery.await_args.kwargs["expected_remote_oid"] == oid
 
 
+@pytest.mark.parametrize("command", ["git_push", "push_branch"])
+async def test_worker_publication_advances_checkpoint_once_per_published_tip(worker_git, command):
+    from sqlalchemy import insert
+
+    from src.database.tables import task_branch_origins, task_integration_checkpoints
+    from src.git.manager import GitError
+
+    w = worker_git
+    branch = "aq/calm-ember-48"
+    base = "a" * 40
+    await w.db.create_repo(RepoConfig(
+        id="repo", project_id="p", source_type=RepoSourceType.CLONE, url=_REPOSITORY,
+    ))
+    await w.db.update_task("t1", repo_id="repo")
+    async with w.db.immediate() as conn:
+        await conn.execute(insert(task_branch_origins).values(
+            id="origin", task_id="t1", repository_id="repo", parent_ref="main",
+            base_sha=base, creation_generation=0, reserved=True, materialized=True,
+            created_at=1.0, materialized_at=1.0,
+        ))
+        await conn.execute(insert(task_integration_checkpoints).values(
+            task_id="t1", repository_id="repo", branch=branch, generation=0,
+            checkpoint_sha=base, verified_sha=base, verified_generation=0,
+            updated_at=1.0,
+        ))
+    for _ in range(2):
+        result = await w.handler.execute(command, w.scoped())
+        assert result["oid"] == _TIP
+        checkpoint = await w.db.get_integration_checkpoint("t1")
+        assert checkpoint["checkpoint_sha"] == _TIP
+        assert checkpoint["generation"] == checkpoint["version"] == 1
+        assert checkpoint["verified_sha"] is checkpoint["verified_generation"] is None
+
+    # A deliberate leased rewrite is another publication, not stale generation 0.
+    rewritten = "d" * 40
+    w.git.apush_validated_delivery.return_value = rewritten
+    await w.handler.execute(command, w.scoped(expected_remote_oid=_TIP))
+    checkpoint = await w.db.get_integration_checkpoint("t1")
+    assert checkpoint["checkpoint_sha"] == rewritten
+    assert checkpoint["generation"] == 2
+    origin = await w.db.get_task_branch_origin_for_promotion("t1", "repo")
+    assert origin["base_sha"] == base and origin["creation_generation"] == 0
+
+    w.git.apush_validated_delivery.side_effect = GitError("remote moved")
+    result = await w.handler.execute(command, w.scoped())
+    assert "remote moved" in result["error"]
+    assert await w.db.get_integration_checkpoint("t1") == checkpoint
+
+
 async def test_worker_push_without_a_fetched_default_is_a_root_delivery(worker_git):
     w = worker_git
     w.git.aref_exists.return_value = False
@@ -703,3 +752,416 @@ async def test_worker_dry_run_fences_synthetic_context(worker_git, event, invoke
     else:
         assert "error" in result
         run.assert_not_awaited()
+
+
+@pytest.fixture
+async def delegated_git(worker_git):
+    from dataclasses import replace
+
+    from src.integration.publication_delegations import PublicationDelegations
+
+    w = worker_git
+    await w.db.create_repo(RepoConfig(
+        id="delegated-repo", project_id="p", source_type=RepoSourceType.CLONE,
+        url=_REPOSITORY,
+    ))
+    await w.db.update_project("p", hierarchical_integration_mode="train",
+                              integration_repository_id="delegated-repo")
+    await w.db.update_task("t1", repo_id="delegated-repo")
+    w.handler.config.integration.git_first = "active"
+    w.git.arev_parse.return_value = _TIP
+    w.git.ais_ancestor.return_value = True
+    original = w.scoped
+    w.scoped = lambda **args: {
+        **original(**args),
+        "_scope": {**original()["_scope"], "session_instance_token": "instance-a1"},
+    }
+    w.scope = replace(RequestScope(kind="session", session_id="s1", project_id="p",
+                                  task_id=original()["_scope"]["task_id"]),
+                      session_instance_token="instance-a1")
+    w.request = dict(
+        id="delegate-1", project_id="p", repository_id="delegated-repo", task_id="t1",
+        session_id="s1", claim_epoch=0, target_branch="aq/epic/aggregate",
+        expected_target_oid="a" * 40, expected_owner_fence=0, reason="aggregate siblings",
+    )
+    w.service = PublicationDelegations(w.db, active=lambda: True)
+    return w
+
+
+async def _issue(w, **changes):
+    return await w.handler.execute("integration_delegate_publication", {**w.request, **changes})
+
+
+@pytest.fixture
+async def assigned_batch_git(delegated_git):
+    from src.git.manager import RemoteRefResult, RemoteRefState
+    from src.integration.batches import Batch, BatchMember, BatchStore, candidate_ref
+
+    w = delegated_git
+    w.batch = await BatchStore(w.db).freeze(
+        Batch("manual-repair", "p", "delegated-repo", "refs/heads/aq/epic/aggregate"),
+        (BatchMember(task_id="source", source_sha="a" * 40, source_base_sha="b" * 40),),
+        trees={"source": "c" * 40},
+    )
+    w.batch_branch = candidate_ref(w.batch.id).removeprefix("refs/heads/")
+    assigned = await w.handler.execute("task_set", {"task_id": "t1", "repair_batch": w.batch.id})
+    assert assigned["success"], assigned
+    w.git.als_remote_ref.return_value = RemoteRefResult(RemoteRefState.PRESENT, oid="a" * 40)
+    return w
+
+
+@pytest.mark.parametrize("command", ["git_push", "push_branch"])
+@pytest.mark.parametrize("explicit", [False, True])
+async def test_assigned_batch_fixer_publishes_candidate_without_renaming_task(
+    assigned_batch_git, command, explicit,
+):
+    w = assigned_batch_git
+    args = {_BRANCH_KEY[command]: w.batch_branch} if explicit else {}
+    assert await check_request_scope(command, dict(args), w.scope, db=w.db) is None
+    result = await w.handler.execute(command, w.scoped(**args))
+    assert result.get("oid") == _TIP, result
+    w.git.apush_validated_delivery.assert_awaited_once_with(
+        w.work_dir, "a" * 40, _TIP, w.batch_branch,
+        expected_remote_oid="a" * 40, repository_url=_REPOSITORY,
+        event_bus=w.handler._bus, project_id="p", identity_policy=ANY,
+        inherited_oids=("a" * 40,),
+    )
+    assert (await w.db.get_task("t1")).branch_name == "aq/calm-ember-48"
+    assert (await w.db.get_task_meta("t1", "integration_batch_repair"))["batch_id"] == w.batch.id
+
+
+async def test_batch_assignment_cannot_be_self_granted_or_spoofed(delegated_git):
+    w = delegated_git
+    for args in ({"repair_batch": "manual-repair"},
+                 {"meta": {"integration_batch_repair": {"batch_id": "manual-repair"}}}):
+        result = await w.handler.execute("task_set", w.scoped(task_id="t1", **args))
+        assert result.get("success") is False, result
+    assert await w.db.get_task_meta("t1", "integration_batch_repair") is None
+    await w.db.update_task("t1", description="Repair aq/batches/arbitrary directly and push there")
+    assert await check_request_scope(
+        "git_push", {"branch": "aq/batches/arbitrary"}, w.scope, db=w.db,
+    ) == "out of scope: branch mismatch"
+
+
+async def test_batch_assignment_rejects_foreign_repository_and_reassignment_revokes_old_ref(assigned_batch_git):
+    from src.integration.batches import Batch, BatchMember, BatchStore, candidate_ref
+
+    w = assigned_batch_git
+    store = BatchStore(w.db)
+    await store.freeze(Batch("next-repair", "p", "delegated-repo", "refs/heads/aq/epic/next"),
+                       (BatchMember("source-next", "a" * 40, "b" * 40),),
+                       trees={"source-next": "c" * 40})
+    for args in ({"repair_batch": "missing"}, {"repair_batch": ""}):
+        result = await w.handler.execute("task_set", {"task_id": "t1", **args})
+        assert result.get("success") is False, result
+    await w.db.update_task("t1", repo_id=None)
+    result = await w.handler.execute("task_set", {"task_id": "t1", "repair_batch": w.batch.id})
+    assert result.get("success") is False
+    await w.db.update_task("t1", repo_id="delegated-repo")
+    result = await w.handler.execute("task_set", {"task_id": "t1", "repair_batch": "next-repair"})
+    assert result["success"], result
+    assert await check_request_scope(
+        "git_push", {"branch": w.batch_branch}, w.scope, db=w.db,
+    ) == "out of scope: branch mismatch"
+    assert await check_request_scope(
+        "git_push", {"branch": candidate_ref("next-repair").removeprefix("refs/heads/")},
+        w.scope, db=w.db,
+    ) is None
+
+
+@pytest.mark.parametrize("command,args", [
+    ("git_push", {"branch": "main"}),
+    ("git_push", {"branch": "aq/batches/other"}),
+    ("git_create_pr", {"title": "fix"}),
+])
+async def test_batch_assignment_grants_only_candidate_push(assigned_batch_git, command, args):
+    w = assigned_batch_git
+    if command == "git_create_pr":
+        args = {**args, "branch": w.batch_branch}
+    assert await check_request_scope(command, dict(args), w.scope, db=w.db) == "out of scope: branch mismatch"
+    result = await w.handler.execute(command, w.scoped(**args))
+    assert "not this session's task branch" in result["error"]
+    _assert_no_network(w.git)
+
+
+@pytest.mark.parametrize("failure", ["diverged", "remote_moved", "missing", "unavailable", "writer", "aborted", "claim", "inactive"])
+async def test_assigned_batch_push_refuses_stale_or_unsafe_publication(assigned_batch_git, failure):
+    from sqlalchemy import update
+
+    from src.database.tables import integration_batches
+    from src.git.manager import RemoteRefResult, RemoteRefState
+    from src.integration.lock import BranchLock
+    from src.integration.models import BranchKey
+
+    w = assigned_batch_git
+    args = {"branch": w.batch_branch}
+    if failure == "diverged":
+        w.git.ais_ancestor.return_value = False
+    elif failure == "remote_moved":
+        args["expected_remote_oid"] = "d" * 40
+    elif failure in {"missing", "unavailable"}:
+        w.git.als_remote_ref.return_value = RemoteRefResult(
+            RemoteRefState.ABSENT if failure == "missing" else RemoteRefState.ERROR,
+        )
+    elif failure == "writer":
+        await BranchLock(w.db).acquire(
+            BranchKey(repository_id="delegated-repo", branch=w.batch_branch), "another-task",
+        )
+    elif failure == "aborted":
+        async with w.db.immediate() as conn:
+            await conn.execute(update(integration_batches).where(
+                integration_batches.c.id == w.batch.id,
+            ).values(intent="aborted"))
+    elif failure == "claim":
+        await w.db.update_task("t1", claim_epoch=1)
+    elif failure == "inactive":
+        w.handler.config.integration.git_first = "shadow"
+    result = await w.handler.execute("git_push", w.scoped(**args))
+    assert "error" in result, result
+    _assert_no_network(w.git)
+
+
+async def test_assigned_batch_push_rechecks_claim_after_policy_resolution(assigned_batch_git, monkeypatch):
+    from src.plugins.internal.git import GitPlugin
+
+    w = assigned_batch_git
+    original = GitPlugin._publish_policy
+
+    async def lose_claim(*args, **kwargs):
+        policy = await original(*args, **kwargs)
+        await w.db.update_task("t1", claim_epoch=1)
+        return policy
+
+    monkeypatch.setattr(GitPlugin, "_publish_policy", lose_claim)
+    result = await w.handler.execute("git_push", w.scoped(branch=w.batch_branch))
+    assert "current held claim" in result["error"], result
+    _assert_no_network(w.git)
+
+
+@pytest.mark.parametrize("command", ["git_push", "push_branch"])
+async def test_delegated_publication_uses_pinned_source_and_consumes_audited_grant(
+    delegated_git, command,
+):
+    w = delegated_git
+    issued = await _issue(w)
+    assert issued["success"], issued
+    assert (await _issue(w))["owner_fence"] == issued["owner_fence"]
+    args = {_BRANCH_KEY[command]: w.request["target_branch"],
+            "publication_delegation_id": "delegate-1"}
+    assert await check_request_scope(command, args, w.scope, db=w.db) is None
+    result = await w.handler.execute(command, w.scoped(**args))
+    assert "error" not in result, result
+    assert result["oid"] == _TIP
+    w.git.apush_validated_delivery.assert_awaited_once_with(
+        w.work_dir, "a" * 40, _TIP, "aq/epic/aggregate",
+        expected_remote_oid="a" * 40, repository_url=_REPOSITORY,
+        event_bus=w.handler._bus, project_id="p", identity_policy=ANY, inherited_oids=[],
+    )
+    assert w.git.apush_validated_delivery.await_args.kwargs["identity_policy"].enforce
+    async with w.db._engine.connect() as conn:
+        row = await w.service._grant(conn, "delegate-1")
+    assert row["published_oid"] == _TIP and row["published_at"] is not None
+    assert row["issued_by"] == "human:local-operator"
+    assert (await w.db.get_task("t1")).branch_name == "aq/calm-ember-48"
+    assert (await w.service.locks.get(w.service._target(row))).holder is None
+    w.git.apush_validated_delivery.reset_mock()
+    reused = await w.handler.execute(command, w.scoped(**args))
+    assert "delegation" in reused["error"]
+    _assert_no_network(w.git)
+
+
+@pytest.mark.parametrize("change", [
+    "revoked", "expired", "claim_epoch", "session_instance", "source_branch", "repository",
+    "repository_url",
+    "owner", "target", "expected_oid", "worker_instance", "inactive", "nonancestor",
+])
+async def test_delegated_publication_rechecks_every_binding_before_network(delegated_git, change):
+    from sqlalchemy import update
+
+    from src.database import tables as t
+
+    w = delegated_git
+    assert (await _issue(w))["success"]
+    args = dict(branch=w.request["target_branch"], publication_delegation_id="delegate-1")
+    # Dispatch has already accepted this grant. Native execution must freshly refuse it.
+    assert await check_request_scope("git_push", dict(args), w.scope, db=w.db) is None
+    if change == "revoked":
+        result = await w.handler.execute("integration_revoke_publication", dict(
+            id="delegate-1", project_id="p", reason="cancel delegation",
+        ))
+        assert result["success"], result
+    elif change == "claim_epoch":
+        await w.db.update_task("t1", claim_epoch=1)
+    elif change == "session_instance":
+        await w.db.update_session("s1", instance_token="replacement")
+    elif change == "source_branch":
+        await w.db.update_task("t1", branch_name="aq/rebound")
+    elif change == "repository":
+        await w.db.create_repo(RepoConfig(
+            id="replacement-repo", project_id="p", source_type=RepoSourceType.CLONE,
+            url=_REPOSITORY,
+        ))
+        await w.db.update_project("p", integration_repository_id="replacement-repo")
+    elif change == "repository_url":
+        await w.db.update_repo("delegated-repo", url="https://github.com/other/repository")
+    elif change in {"expired", "owner"}:
+        async with w.db.immediate() as conn:
+            await conn.execute(update(t.integration_branch_owners).where(
+                t.integration_branch_owners.c.ref == w.request["target_branch"],
+            ).values(**({"expires_at": time.time() - 1} if change == "expired"
+                        else {"fence": 99, "holder": "another-writer"})))
+    elif change == "target":
+        args["branch"] = "aq/epic/another"
+    elif change == "expected_oid":
+        args["expected_remote_oid"] = "b" * 40
+    elif change == "worker_instance":
+        args["_scope"] = {**w.scoped()["_scope"], "session_instance_token": "old-instance"}
+    elif change == "inactive":
+        w.handler.config.integration.git_first = "shadow"
+    elif change == "nonancestor":
+        w.git.ais_ancestor.return_value = False
+    result = await w.handler.execute(
+        "git_push", args if change == "worker_instance" else w.scoped(**args),
+    )
+    assert "error" in result, result
+    _assert_no_network(w.git)
+
+
+@pytest.mark.parametrize("change", ["worker", "protected", "busy", "fence", "retry", "shadow"])
+async def test_delegation_cannot_expand_authority_or_take_a_live_writer(delegated_git, change):
+    from src.integration.models import BranchKey
+
+    w = delegated_git
+    args = dict(w.request)
+    if change == "worker":
+        args = w.scoped(**args)
+    elif change == "protected":
+        await w.db.update_project("p", promotion_flow=[dict(
+            id="release", source="dev", target="production",
+        )])
+        args["target_branch"] = "refs/heads/production"
+    elif change == "busy":
+        await w.service.locks.acquire(
+            BranchKey(repository_id="delegated-repo", branch=args["target_branch"]),
+            "integration-train", role="integration",
+        )
+        args["expected_owner_fence"] = 1
+    elif change == "fence":
+        args["expected_owner_fence"] = 99
+    elif change == "retry":
+        assert (await _issue(w))["success"]
+        args["ttl_seconds"] = 60
+    elif change == "shadow":
+        w.handler.config.integration.git_first = "shadow"
+    result = await w.handler.execute("integration_delegate_publication", args)
+    assert not result.get("success", False), result
+    _assert_no_network(w.git)
+
+
+@pytest.mark.parametrize("scenario", ["success", "remote_moved", "reserved", "identity", "diverged"])
+async def test_delegated_publication_real_git_preserves_delivery_gates(
+    delegated_git, tmp_path, monkeypatch, scenario,
+):
+    from src.git.identity import GitIdentity, PublishPolicy
+    from src.git.manager import GitError
+    from tests.test_delivery_consumers import Origin, git
+
+    w = delegated_git
+    for key in ("GIT_AUTHOR_NAME", "GIT_COMMITTER_NAME"):
+        monkeypatch.setenv(key, "Tester")
+    for key in ("GIT_AUTHOR_EMAIL", "GIT_COMMITTER_EMAIL"):
+        monkeypatch.setenv(key, "tester@example.test")
+    origin = Origin(tmp_path)
+    base = git(origin.clone, "rev-parse", "HEAD")
+    target = w.request["target_branch"]
+    git(origin.clone, "push", "origin", f"main:{target}")
+    await w.db.update_repo("delegated-repo", url=origin.url)
+    if scenario == "diverged":
+        git(origin.clone, "checkout", "--orphan", "unrelated")
+    else:
+        git(origin.clone, "checkout", "-b", "aq/calm-ember-48")
+    path = origin.clone / (".aq/claim.json" if scenario == "reserved" else "work.txt")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("work\n")
+    git(origin.clone, "add", "-f", str(path))
+    git(origin.clone, "commit", "-m", "work")
+    tip = git(origin.clone, "rev-parse", "HEAD")
+    if scenario == "diverged":
+        git(origin.clone, "branch", "aq/calm-ember-48")
+    issued = await _issue(w, expected_target_oid=base)
+    assert issued["success"], issued
+    remote_before = base
+    if scenario == "remote_moved":
+        git(origin.clone, "checkout", "main")
+        (origin.clone / "external.txt").write_text("external\n")
+        git(origin.clone, "add", ".")
+        git(origin.clone, "commit", "-m", "external writer")
+        git(origin.clone, "push", "origin", f"HEAD:{target}")
+        remote_before = git(origin.clone, "rev-parse", "HEAD")
+    identity = GitIdentity("Other" if scenario == "identity" else "Tester",
+                           "other@example.test" if scenario == "identity" else "tester@example.test")
+    policy = PublishPolicy(identity=identity, source="project", allowed=frozenset({identity.digest}))
+    async def publish():
+        return await w.service.publish(
+            "delegate-1", w.scope, target, git=GitManager(), checkout_path=str(origin.clone),
+            policy=policy,
+        )
+    if scenario == "success":
+        assert await publish() == tip
+    else:
+        with pytest.raises(GitError):
+            await publish()
+    assert git(origin.url, "rev-parse", target) == (tip if scenario == "success" else remote_before)
+
+
+async def test_delegation_revocation_serializes_with_inflight_publication(delegated_git):
+    from src.commands.contracts.integration import IntegrationRevokePublicationArgs
+
+    w = delegated_git
+    assert (await _issue(w))["success"]
+    entered, release = asyncio.Event(), asyncio.Event()
+    async def transport(*args, **kwargs):
+        entered.set()
+        await release.wait()
+        return _TIP
+    w.git.apush_validated_delivery.side_effect = transport
+    publication = asyncio.create_task(w.service.publish(
+        "delegate-1", w.scope, w.request["target_branch"], git=w.git,
+        checkout_path=w.work_dir, policy=None,
+    ))
+    await asyncio.wait_for(entered.wait(), timeout=10)
+    revocation = asyncio.create_task(w.service.revoke(IntegrationRevokePublicationArgs(
+        id="delegate-1", project_id="p", reason="cancel",
+    )))
+    try:
+        await asyncio.sleep(0.05)
+        assert not revocation.done()
+    finally:
+        release.set()
+    assert await publication == _TIP
+    row = await revocation
+    assert row["published_oid"] == _TIP and row["revoked_at"] is None
+
+
+@pytest.mark.parametrize("stale", [False, True])
+async def test_only_current_named_supervisor_can_issue_delegation(delegated_git, stale):
+    from dataclasses import asdict
+
+    w = delegated_git
+    await w.db.upsert_profile(AgentProfile(
+        id="supervisor", name="supervisor", harness="claude", needs_workspace=False,
+        default_class="standard-low",
+    ))
+    await w.db.create_session(SessionRecord(
+        id="supervisor-p", project_id="p", profile_id="supervisor", harness="claude",
+        provider="fake", name="supervisor-p", lifecycle="named", state="running",
+        work_dir=w.work_dir, epoch="test", instance_token="supervisor-current", started_at=time.time(),
+    ))
+    scope = RequestScope(
+        kind="session", project_id="p", session_id="supervisor-p", elevated=True,
+        session_instance_token="stale" if stale else "supervisor-current",
+    )
+    args = dict(w.request)
+    assert await check_request_scope("integration_delegate_publication", args, scope, db=w.db) is None
+    result = await w.handler.execute("integration_delegate_publication", {**args, "_scope": asdict(scope)})
+    assert result.get("success", False) is (not stale), result

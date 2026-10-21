@@ -63,9 +63,10 @@ DESIGN_INTEGRATION_COMMANDS = frozenset(
         "integration_cutover_plan",
         "integration_cutover",
         "integration_abort_batch",
+        "integration_settle_batch",
+        "integration_release_withheld_source",
         "integration_pause_batch",
         "integration_resume_batch",
-        "integration_settle_batch",
         "integration_seal_now",
         "integration_retire_origin",
         "integration_refresh_epic",
@@ -75,6 +76,7 @@ DESIGN_INTEGRATION_COMMANDS = frozenset(
         "integration_eject",
         "integration_reevaluate_repair",
         "integration_release_owner",
+        "integration_restore_task_origin",
         "integration_reserve_owner",
         "integration_clear_retained_recovery",
         "integration_release_stale_owners",
@@ -84,6 +86,8 @@ DESIGN_INTEGRATION_COMMANDS = frozenset(
         "integration_recover_completed_container",
         "integration_reopen_collection",
         "integration_close_delivered_pr",
+        "integration_delegate_publication",
+        "integration_revoke_publication",
     }
 )
 
@@ -96,6 +100,24 @@ def _outcomes(names, successes):
         )
         for name in names
     )
+
+
+def _named_contract(
+    name, args_model, result_model, *, title: str, summary: str, **execution,
+) -> CommandContract:
+    return CommandContract(
+        execution=_natural_execution(
+            name=name, args_model=args_model, result_model=result_model, **execution,
+        ),
+        presentation=CommandPresentation(title=title, summary=summary),
+    )
+
+
+def _with_effects(contract: CommandContract, effects, *, title: str, summary: str):
+    return contract.model_copy(update={
+        "execution": contract.execution.model_copy(update={"effects": effects}),
+        "presentation": CommandPresentation(title=title, summary=summary),
+    })
 
 
 def _natural_execution(*, name, args_model, result_model, **kwargs):
@@ -168,6 +190,44 @@ class IntegrationAbortBatchArgs(CommandArgs):
     dry_run: bool = True
 
 
+class IntegrationSettleBatchArgs(IntegrationAbortBatchArgs):
+    expected_target_sha: str | None = None
+
+    @model_validator(mode="after")
+    def require_preview_target(self):
+        if not self.dry_run and (
+            not is_valid_git_oid(self.expected_target_sha or "") or not self.reason.strip()
+        ):
+            raise ValueError("apply requires the previewed target SHA and a nonblank reason")
+        return self
+
+
+#: Refusals of a withheld-source release; each names the owner decision it needs.
+RELEASE_WITHHELD_REFUSALS = (
+    "unknown_batch", "not_aborted", "not_a_member", "already_ejected",
+    "source_changed", "target_changed", "source_delivered", "identity_retired",
+    "source_not_accepted", "operator_decision_hold", "live_writer", "batch_active",
+    "repair_outstanding", "repair_exhausted",
+)
+
+
+class IntegrationReleaseWithheldSourceArgs(IntegrationAbortBatchArgs):
+    task_id: str = Field(min_length=1)
+    expected_source_sha: str | None = None
+    expected_target_sha: str | None = None
+
+    @model_validator(mode="after")
+    def require_preview_shas(self):
+        if not self.dry_run and (
+            not is_valid_git_oid(self.expected_source_sha or "")
+            or not is_valid_git_oid(self.expected_target_sha or "")
+            or not self.reason.strip()
+        ):
+            raise ValueError("apply requires the previewed source and target SHAs "
+                             "and a nonblank reason")
+        return self
+
+
 class IntegrationCutoverArgs(CommandArgs):
     project_id: str = Field(min_length=1)
     flow: Any = None
@@ -236,6 +296,11 @@ class IntegrationTrainControlValue(CommandValue):
     replacement_batch_id: str | None = None
     members: tuple[str, ...] = ()
     blockers: tuple[dict[str, Any], ...] = ()
+
+
+class IntegrationReleaseWithheldSourceValue(IntegrationTrainControlValue):
+    source_sha: str | None = None
+    repair_attempt_count: int | None = None
 
 
 class IntegrationRefreshEpicValue(IntegrationTrainControlValue):
@@ -327,6 +392,8 @@ class IntegrationReleaseOwnerArgs(CommandArgs):
     task_id: str | None = Field(default=None, min_length=1)
     owner_row_id: str | None = Field(default=None, min_length=1)
     dry_run: bool = True
+    no_push: bool = False
+    self_owned: bool = False
 
     @model_validator(mode="after")
     def exactly_one_target(self) -> "IntegrationReleaseOwnerArgs":
@@ -337,6 +404,83 @@ class IntegrationReleaseOwnerArgs(CommandArgs):
 
 class IntegrationReserveOwnerArgs(CommandArgs):
     task_id: str = Field(min_length=1)
+
+
+class IntegrationDelegatePublicationArgs(CommandArgs):
+    id: str = Field(min_length=1)
+    project_id: str = Field(min_length=1)
+    repository_id: str = Field(min_length=1)
+    task_id: str = Field(min_length=1)
+    session_id: str = Field(min_length=1)
+    claim_epoch: StrictInt = Field(ge=0)
+    target_branch: str = Field(min_length=1)
+    expected_target_oid: str
+    expected_owner_fence: StrictInt = Field(ge=0)
+    ttl_seconds: StrictInt = Field(default=480, ge=1, le=480)
+    reason: str = Field(min_length=1)
+
+    @field_validator("target_branch")
+    @classmethod
+    def valid_target(cls, value):
+        from src.git.manager import GitError, _validate_ref
+
+        value = value.removeprefix("refs/heads/")
+        try:
+            _validate_ref(value)
+        except GitError as exc:
+            raise ValueError(str(exc)) from exc
+        if value.startswith("refs/"):
+            raise ValueError("target must be a branch")
+        return value
+
+    @field_validator("expected_target_oid")
+    @classmethod
+    def valid_target_oid(cls, value):
+        if not is_valid_git_oid(value) or set(value) == {"0"}:
+            raise ValueError("expected target must be an existing full commit OID")
+        return value.lower()
+
+    @field_validator("reason")
+    @classmethod
+    def nonblank_reason(cls, value):
+        if not value.strip():
+            raise ValueError("reason must not be blank")
+        return value
+
+
+class IntegrationRevokePublicationArgs(CommandArgs):
+    id: str = Field(min_length=1)
+    project_id: str = Field(min_length=1)
+    reason: str = Field(min_length=1)
+
+
+class IntegrationPublicationValue(CommandValue):
+    project_id: str | None = None
+    delegation_id: str | None = None
+    target_branch: str | None = None
+    owner_fence: int | None = None
+    expires_at: float | None = None
+    revoked_at: float | None = None
+    published_oid: str | None = None
+
+
+class IntegrationRestoreTaskOriginArgs(CommandArgs):
+    task_id: str = Field(min_length=1)
+    dry_run: bool = True
+    origin_id: str | None = Field(default=None, min_length=1)
+    expected_remote_oid: str | None = None
+    expected_fence_token: StrictInt | None = Field(default=None, ge=0)
+    reason: str = ""
+
+    @model_validator(mode="after")
+    def require_exact_restore(self):
+        if not self.dry_run and (
+            not self.origin_id or not is_valid_git_oid(self.expected_remote_oid or "")
+            or self.expected_fence_token is None or not self.reason.strip()
+        ):
+            raise ValueError("apply requires origin_id, expected_remote_oid, "
+                             "expected_fence_token and a nonblank reason")
+        return self
 
 
 class IntegrationClearRetainedRecoveryArgs(CommandArgs):
@@ -362,14 +506,10 @@ class IntegrationReleaseStaleOwnersArgs(CommandArgs):
         return value
 
 
-class IntegrationRedriveRootArgs(CommandArgs):
-    task_id: str = Field(min_length=1)
-    #: Diagnose only.  Applying needs the head the dry run reported and a reason.
-    dry_run: bool = True
-    expected_head_sha: str | None = Field(default=None, min_length=1)
-    reason: str | None = Field(default=None, min_length=1)
+class _PreviewHeadArgs(CommandArgs):
+    """Shared validation; subclasses retain the reviewed argument field order."""
 
-    @field_validator("expected_head_sha")
+    @field_validator("expected_head_sha", check_fields=False)
     @classmethod
     def expected_head_is_a_commit(cls, value: str | None) -> str | None:
         if value is not None and not is_valid_git_oid(value):
@@ -377,42 +517,34 @@ class IntegrationRedriveRootArgs(CommandArgs):
         return value
 
     @model_validator(mode="after")
-    def applying_names_the_head_and_a_reason(self) -> IntegrationRedriveRootArgs:
+    def applying_names_the_head_and_a_reason(self) -> _PreviewHeadArgs:
         if not self.dry_run and (
             self.expected_head_sha is None or self.reason is None or not self.reason.strip()
         ):
             raise ValueError("applying requires expected_head_sha and reason")
         return self
+
+
+class IntegrationRedriveRootArgs(_PreviewHeadArgs):
+    task_id: str = Field(min_length=1)
+    dry_run: bool = True
+    expected_head_sha: str | None = Field(default=None, min_length=1)
+    reason: str | None = Field(default=None, min_length=1)
 
 
 class IntegrationAuthorizeRootArgs(IntegrationRedriveRootArgs):
     """Dry run by default; applying names the dry run's exact head and a reason."""
 
 
-class IntegrationRedriveChildArgs(CommandArgs):
+class IntegrationRedriveChildArgs(_PreviewHeadArgs):
     task_id: str = Field(min_length=1)
-    #: Diagnose only.  Applying needs the head the dry run reported and a reason.
+    adopt_source: bool = False
     dry_run: bool = True
     expected_head_sha: str | None = Field(default=None, min_length=1)
     reason: str | None = Field(default=None, min_length=1)
 
-    @field_validator("expected_head_sha")
-    @classmethod
-    def expected_head_is_a_commit(cls, value: str | None) -> str | None:
-        if value is not None and not is_valid_git_oid(value):
-            raise ValueError("expected_head_sha must be a full commit id")
-        return value
 
-    @model_validator(mode="after")
-    def applying_names_the_head_and_a_reason(self) -> IntegrationRedriveChildArgs:
-        if not self.dry_run and (
-            self.expected_head_sha is None or self.reason is None or not self.reason.strip()
-        ):
-            raise ValueError("applying requires expected_head_sha and reason")
-        return self
-
-
-class IntegrationRecoverCompletedContainerArgs(IntegrationRedriveChildArgs):
+class IntegrationRecoverCompletedContainerArgs(IntegrationRedriveRootArgs):
     project_id: str = Field(min_length=1)
     repository_id: str = Field(min_length=1)
     branch: str = Field(min_length=1)
@@ -452,112 +584,16 @@ class IntegrationRecoverCompletedContainerValue(CommandValue):
     reason: str | None = None
 
 
-class IntegrationReopenCollectionArgs(IntegrationRedriveChildArgs):
+class IntegrationReopenCollectionArgs(IntegrationRedriveRootArgs):
     """Dry run by default; applying names the parent branch head the dry run reported."""
 
 
-class IntegrationRebindRepairArgs(CommandArgs):
-    task_id: str = Field(min_length=1)
-    dry_run: bool = True
-    expected_head_sha: str | None = None
-
-    @model_validator(mode="after")
-    def apply_requires_proved_head(self) -> IntegrationRebindRepairArgs:
-        if self.expected_head_sha is not None and not is_valid_git_oid(self.expected_head_sha):
-            raise ValueError("expected_head_sha must be a full commit id")
-        if not self.dry_run and self.expected_head_sha is None:
-            raise ValueError("apply requires the candidate head from dry-run")
-        return self
-
-
-class IntegrationRecoverParentHeadArgs(CommandArgs):
-    operation_id: str = Field(min_length=1)
-    head_sha: str
-    dry_run: bool = True
-    expected_episode_id: str | None = None
-    expected_generation: int | None = Field(default=None, ge=0)
-    expected_stage: int | None = Field(default=None, ge=0)
-    expected_fence_token: int | None = Field(default=None, ge=1)
-    reason: str | None = None
-
-    @model_validator(mode="after")
-    def require_exact_recovery(self) -> IntegrationRecoverParentHeadArgs:
-        if not is_valid_git_oid(self.head_sha):
-            raise ValueError("head_sha must be a full commit id")
-        if not self.dry_run and (
-            not self.expected_episode_id or self.expected_generation is None
-            or self.expected_stage is None or self.expected_fence_token is None
-            or not (self.reason or "").strip()
-        ):
-            raise ValueError("apply requires the previewed episode, generation, stage, fence and reason")
-        return self
-
-
-class IntegrationRecoverPreservedRepairArgs(CommandArgs):
-    operation_id: str = Field(min_length=1)
-    intent_id: str = Field(min_length=1)
-    candidate_sha: str
-    dry_run: bool = True
-    expected_stage: int | None = Field(default=None, ge=1)
-    expected_released_fence: int | None = Field(default=None, ge=1)
-    reason: str | None = None
-
-    @model_validator(mode="after")
-    def require_exact_recovery(self) -> IntegrationRecoverPreservedRepairArgs:
-        if not is_valid_git_oid(self.candidate_sha):
-            raise ValueError("candidate_sha must be a full commit id")
-        if not self.dry_run and (
-            self.expected_stage is None or self.expected_released_fence is None
-            or not (self.reason or "").strip()
-        ):
-            raise ValueError("apply requires the previewed stage, released fence and a reason")
-        return self
-
-
-class IntegrationRebindDetachedRepairArgs(CommandArgs):
-    operation_id: str = Field(min_length=1)
-    dry_run: bool = True
-    expected_stage: int | None = Field(default=None, ge=0)
-    expected_remote_head_sha: str | None = None
-    reason: str | None = Field(default=None, min_length=1)
-
-    @model_validator(mode="after")
-    def apply_requires_proved_identity(self) -> IntegrationRebindDetachedRepairArgs:
-        if self.expected_remote_head_sha is not None and not is_valid_git_oid(
-            self.expected_remote_head_sha
-        ):
-            raise ValueError("expected_remote_head_sha must be a full commit id")
-        if not self.dry_run and (
-            self.expected_stage is None
-            or self.expected_remote_head_sha is None
-            or not (self.reason or "").strip()
-        ):
-            raise ValueError("apply requires the stage and remote head from dry-run and a reason")
-        return self
-
-
-class IntegrationCloseDeliveredPrArgs(CommandArgs):
+class IntegrationCloseDeliveredPrArgs(_PreviewHeadArgs):
     project_id: str = Field(min_length=1)
     pr_number: int = Field(gt=0)
-    #: Prove only.  Closing needs the head the dry run reported and a reason.
     dry_run: bool = True
     expected_head_sha: str | None = Field(default=None, min_length=1)
     reason: str | None = Field(default=None, min_length=1)
-
-    @field_validator("expected_head_sha")
-    @classmethod
-    def expected_head_is_a_commit(cls, value: str | None) -> str | None:
-        if value is not None and not is_valid_git_oid(value):
-            raise ValueError("expected_head_sha must be a full commit id")
-        return value
-
-    @model_validator(mode="after")
-    def applying_names_the_head_and_a_reason(self) -> IntegrationCloseDeliveredPrArgs:
-        if not self.dry_run and (
-            self.expected_head_sha is None or self.reason is None or not self.reason.strip()
-        ):
-            raise ValueError("applying requires expected_head_sha and reason")
-        return self
 
 
 class IntegrationOperationalValue(CommandValue):
@@ -727,6 +763,7 @@ class IntegrationRedriveChildValue(CommandValue):
     remote_head_sha: str | None = None
     tree_sha: str | None = None
     evidence_id: str | None = None
+    completion_id: str | None = None
     collection: str | None = None
     checkpoint: dict[str, Any] | None = None
     reason: str | None = None
@@ -1221,21 +1258,15 @@ def _operational_contract(
         if side_effect is SideEffectClass.READ
         else (UpdateClause(subject=EffectSubject.INTEGRATION_OPERATION),)
     )
-    return CommandContract(
-        execution=_natural_execution(
-            name=name,
-            args_model=args_model,
-            result_model=result_model,
-            outcomes=_outcomes(outcomes, successes),
-            side_effect=side_effect,
-            supports_preview=supports_preview,
-            effects=effects,
-            sensitive_args=frozenset({"reason"}) if "reason" in args_model.model_fields else frozenset(),
-        ),
-        presentation=CommandPresentation(
-            title=name.replace("_", " ").title(),
-            summary="Authenticated hierarchical integration operational control.",
-        ),
+    return _named_contract(
+        name, args_model, result_model,
+        outcomes=_outcomes(outcomes, successes),
+        side_effect=side_effect,
+        supports_preview=supports_preview,
+        effects=effects,
+        sensitive_args=frozenset({"reason"}) if "reason" in args_model.model_fields else frozenset(),
+        title=name.replace("_", " ").title(),
+        summary="Authenticated hierarchical integration operational control.",
     )
 
 
@@ -1275,12 +1306,6 @@ INTEGRATION_PROMOTION_PUBLISH = _operational_contract(
 )
 
 
-async def _promotion_publish_adapter(args, ctx):
-    return await _hierarchy_adapter(
-        "integration_promotion_publish", args, ctx, IntegrationPromotionPublishValue,
-        {"delivered", "testing", "held", "moved", "unknown", "published", "unauthorized",
-         "unavailable", "not_found", "promotion_intent_invalid"},
-    )
 #: Every refusal names its cause (spec §3 I6); ``manifest`` is the only success.
 TRUST_MANIFEST_OUTCOMES = (
     "manifest",
@@ -1432,6 +1457,27 @@ INTEGRATION_RESERVE_OWNER = _operational_contract(
     ("acquired", "already_reserved", "not_eligible", "not_found"),
     successes=frozenset({"acquired", "already_reserved"}),
     side_effect=SideEffectClass.UPDATE,
+)
+
+INTEGRATION_DELEGATE_PUBLICATION = _operational_contract(
+    "integration_delegate_publication", IntegrationDelegatePublicationArgs,
+    ("issued", "refused"), successes=frozenset({"issued"}),
+    side_effect=SideEffectClass.UPDATE, result_model=IntegrationPublicationValue,
+)
+
+INTEGRATION_REVOKE_PUBLICATION = _operational_contract(
+    "integration_revoke_publication", IntegrationRevokePublicationArgs,
+    ("revoked", "refused"), successes=frozenset({"revoked"}),
+    side_effect=SideEffectClass.UPDATE, result_model=IntegrationPublicationValue,
+)
+
+INTEGRATION_RESTORE_TASK_ORIGIN = _operational_contract(
+    "integration_restore_task_origin",
+    IntegrationRestoreTaskOriginArgs,
+    ("preview", "restored", "not_eligible", "not_found"),
+    successes=frozenset({"preview", "restored"}),
+    side_effect=SideEffectClass.COMPOSITE,
+    supports_preview=True,
 )
 
 CLEAR_RETAINED_RECOVERY_OUTCOMES = ("cleared", "not_clean", "unavailable", "not_found")
@@ -1611,20 +1657,15 @@ def _repair_contract(
         "not_due",
         "already_terminal",
     }
-    return CommandContract(
-        execution=_natural_execution(
-            name=name,
-            args_model=args_model,
-            result_model=result_model,
-            outcomes=_outcomes(outcomes, successes),
-            side_effect=SideEffectClass.COMPOSITE,
-            effects=effects,
-            sensitive_args=sensitive_args,
-            sensitive_result_fields=sensitive_results,
-        ),
-        presentation=CommandPresentation(
-            title=name.replace("_", " ").title(), summary=summary
-        ),
+    return _named_contract(
+        name, args_model, result_model,
+        outcomes=_outcomes(outcomes, successes),
+        side_effect=SideEffectClass.COMPOSITE,
+        effects=effects,
+        sensitive_args=sensitive_args,
+        sensitive_result_fields=sensitive_results,
+        title=name.replace("_", " ").title(),
+        summary=summary,
     )
 
 
@@ -1687,42 +1728,30 @@ INTEGRATION_REPAIR_TIMEOUT = _repair_contract(
 )
 
 
-DELIVERY_RECEIPTS = CommandContract(
-    execution=_natural_execution(
-        name="delivery_receipts",
-        args_model=DeliveryReceiptsArgs,
-        result_model=DeliveryReceiptsValue,
-        outcomes=_outcomes(('found', 'not_found'), {'found', 'not_found'}),
-        side_effect=SideEffectClass.READ,
-        effects=(ReadClause(subject=EffectSubject.DELIVERY_EVIDENCE),),
-        receipt_projection=(),
-    ),
-    presentation=CommandPresentation(
-        title="Read delivery receipts",
-        summary="Read repository-qualified delivery evidence for one source task.",
-    ),
+DELIVERY_RECEIPTS = _named_contract(
+    "delivery_receipts", DeliveryReceiptsArgs, DeliveryReceiptsValue,
+    outcomes=_outcomes(('found', 'not_found'), {'found', 'not_found'}),
+    side_effect=SideEffectClass.READ,
+    effects=(ReadClause(subject=EffectSubject.DELIVERY_EVIDENCE),),
+    receipt_projection=(),
+    title="Read delivery receipts",
+    summary="Read repository-qualified delivery evidence for one source task.",
 )
 
 
-INTEGRATION_CLEANUP = CommandContract(
-    execution=_natural_execution(
-        name="integration_cleanup",
-        args_model=IntegrationCleanupArgs,
-        result_model=IntegrationCleanupValue,
-        outcomes=_outcomes(
-            (
-                "materialized", "advanced", "complete", "already_complete", "wait", "retryable",
-                "conflict", "failed", "stale", "invariant_error",
-            ),
-            {"materialized", "advanced", "complete", "already_complete"},
+INTEGRATION_CLEANUP = _named_contract(
+    "integration_cleanup", IntegrationCleanupArgs, IntegrationCleanupValue,
+    outcomes=_outcomes(
+        (
+            "materialized", "advanced", "complete", "already_complete", "wait", "retryable",
+            "conflict", "failed", "stale", "invariant_error",
         ),
-        side_effect=SideEffectClass.COMPOSITE,
-        effects=(UpdateClause(subject=EffectSubject.INTEGRATION_OPERATION),),
+        {"materialized", "advanced", "complete", "already_complete"},
     ),
-    presentation=CommandPresentation(
-        title="Advance integration cleanup",
-        summary="Materialize and advance bounded cleanup for one terminal root batch.",
-    ),
+    side_effect=SideEffectClass.COMPOSITE,
+    effects=(UpdateClause(subject=EffectSubject.INTEGRATION_OPERATION),),
+    title="Advance integration cleanup",
+    summary="Materialize and advance bounded cleanup for one terminal root batch.",
 )
 
 
@@ -1734,16 +1763,13 @@ def _root_subject_contract(
     successes: frozenset[str],
     title: str,
 ) -> CommandContract:
-    return CommandContract(
-        execution=_natural_execution(
-            name=name,
-            args_model=args_model,
-            result_model=value_model,
-            outcomes=_outcomes(outcomes, successes),
-            side_effect=SideEffectClass.COMPOSITE,
-            effects=(UpdateClause(subject=EffectSubject.INTEGRATION_OPERATION),),
-        ),
-        presentation=CommandPresentation(title=title, summary=title),
+    return _named_contract(
+        name, args_model, value_model,
+        outcomes=_outcomes(outcomes, successes),
+        side_effect=SideEffectClass.COMPOSITE,
+        effects=(UpdateClause(subject=EffectSubject.INTEGRATION_OPERATION),),
+        title=title,
+        summary=title,
     )
 
 
@@ -1778,72 +1804,54 @@ INTEGRATION_RELEASE = _root_subject_contract(
 )
 
 
-INTEGRATION_FILE_CHILDREN = CommandContract(
-    execution=_natural_execution(
-        name="integration_file_children",
-        args_model=IntegrationFileChildrenArgs,
-        result_model=IntegrationFileChildrenValue,
-        outcomes=_outcomes(('filed', 'stale_parent', 'invalid'), {'filed'}),
-        side_effect=SideEffectClass.COMPOSITE,
-        effects=(
-            UpdateClause(subject=EffectSubject.TASK_GRAPH),
-            UpdateClause(subject=EffectSubject.BRANCH_OWNERSHIP),
-        ),
-        receipt_projection=("generation", "children", "origins"),
+INTEGRATION_FILE_CHILDREN = _named_contract(
+    "integration_file_children", IntegrationFileChildrenArgs, IntegrationFileChildrenValue,
+    outcomes=_outcomes(('filed', 'stale_parent', 'invalid'), {'filed'}),
+    side_effect=SideEffectClass.COMPOSITE,
+    effects=(
+        UpdateClause(subject=EffectSubject.TASK_GRAPH),
+        UpdateClause(subject=EffectSubject.BRANCH_OWNERSHIP),
     ),
-    presentation=CommandPresentation(
-        title="File isolated child tasks",
-        summary="Reserve child origins and advance the parent integration generation atomically.",
-    ),
+    receipt_projection=("generation", "children", "origins"),
+    title="File isolated child tasks",
+    summary="Reserve child origins and advance the parent integration generation atomically.",
 )
 
 
-INTEGRATION_CHECKPOINT_PARENT = CommandContract(
-    execution=_natural_execution(
-        name="integration_checkpoint_parent",
-        args_model=IntegrationCheckpointParentArgs,
-        result_model=IntegrationCheckpointParentValue,
-        outcomes=_outcomes(
-            ("checkpointed", "already_waiting", "dirty", "stale"),
-            {"checkpointed", "already_waiting"},
-        ),
-        side_effect=SideEffectClass.UPDATE,
-        effects=(UpdateClause(subject=EffectSubject.TASK),),
-        sensitive_args=frozenset({"head_sha"}),
-        sensitive_result_fields=frozenset({"head_sha"}),
-        receipt_projection=("task_id", "generation", "head_sha"),
+INTEGRATION_CHECKPOINT_PARENT = _named_contract(
+    "integration_checkpoint_parent", IntegrationCheckpointParentArgs, IntegrationCheckpointParentValue,
+    outcomes=_outcomes(
+        ("checkpointed", "already_waiting", "dirty", "stale"),
+        {"checkpointed", "already_waiting"},
     ),
-    presentation=CommandPresentation(
-        title="Checkpoint integration parent",
-        summary="Pin the parent head and generation before waiting for child deliveries.",
-    ),
+    side_effect=SideEffectClass.UPDATE,
+    effects=(UpdateClause(subject=EffectSubject.TASK),),
+    sensitive_args=frozenset({"head_sha"}),
+    sensitive_result_fields=frozenset({"head_sha"}),
+    receipt_projection=("task_id", "generation", "head_sha"),
+    title="Checkpoint integration parent",
+    summary="Pin the parent head and generation before waiting for child deliveries.",
 )
 
 
 def _parent_contract(name, args_model, result_model, outcomes, *, side_effect, summary):
-    return CommandContract(
-        execution=_natural_execution(
-            name=name,
-            args_model=args_model,
-            result_model=result_model,
-            outcomes=_outcomes(outcomes, {'ready', 'verified', 'completed', 'already_completed'}),
-            side_effect=side_effect,
-            effects=(
-                ReadClause(subject=EffectSubject.DELIVERY_EVIDENCE)
-                if side_effect is SideEffectClass.READ
-                else UpdateClause(subject=EffectSubject.TASK)
-            ,),
-            sensitive_args=frozenset(
-                {"head_sha", "evidence_ids"} & set(args_model.model_fields)
-            ),
-            sensitive_result_fields=frozenset(
-                {"head_sha", "checkpoint_sha"} & set(result_model.model_fields)
-            ),
+    return _named_contract(
+        name, args_model, result_model,
+        outcomes=_outcomes(outcomes, {'ready', 'verified', 'completed', 'already_completed'}),
+        side_effect=side_effect,
+        effects=(
+            ReadClause(subject=EffectSubject.DELIVERY_EVIDENCE)
+            if side_effect is SideEffectClass.READ
+            else UpdateClause(subject=EffectSubject.TASK)
+        ,),
+        sensitive_args=frozenset(
+            {"head_sha", "evidence_ids"} & set(args_model.model_fields)
         ),
-        presentation=CommandPresentation(
-            title=name.replace("_", " ").title(),
-            summary=summary,
+        sensitive_result_fields=frozenset(
+            {"head_sha", "checkpoint_sha"} & set(result_model.model_fields)
         ),
+        title=name.replace("_", " ").title(),
+        summary=summary,
     )
 
 
@@ -1855,28 +1863,22 @@ INTEGRATION_DELIVERY_READINESS = _parent_contract(
     side_effect=SideEffectClass.READ,
     summary="Read whether every child of one parent has delivered, changing nothing.",
 )
-INTEGRATION_RECORD_NOOP = CommandContract(
-    execution=_natural_execution(
-        name="integration_record_noop",
-        args_model=IntegrationRecordNoopArgs,
-        result_model=IntegrationRecordNoopValue,
-        outcomes=_outcomes(
-            ("recorded", "stale_head", "invalid", "delivery_target_fixed"),
-            {"recorded"},
-        ),
-        side_effect=SideEffectClass.UPDATE,
-        effects=(
-            UpdateClause(subject=EffectSubject.DELIVERY_EVIDENCE),
-            UpdateClause(subject=EffectSubject.TASK),
-        ),
-        sensitive_args=frozenset({"expected_head_sha"}),
-        sensitive_result_fields=frozenset({"reviewed_head_sha", "reviewed_tree_sha"}),
-        receipt_projection=("receipt_id", "revision"),
+INTEGRATION_RECORD_NOOP = _named_contract(
+    "integration_record_noop", IntegrationRecordNoopArgs, IntegrationRecordNoopValue,
+    outcomes=_outcomes(
+        ("recorded", "stale_head", "invalid", "delivery_target_fixed"),
+        {"recorded"},
     ),
-    presentation=CommandPresentation(
-        title="Record verified no-code child disposition",
-        summary="Bind a child's current no-op completion and exact Git head to its parent receipt.",
+    side_effect=SideEffectClass.UPDATE,
+    effects=(
+        UpdateClause(subject=EffectSubject.DELIVERY_EVIDENCE),
+        UpdateClause(subject=EffectSubject.TASK),
     ),
+    sensitive_args=frozenset({"expected_head_sha"}),
+    sensitive_result_fields=frozenset({"reviewed_head_sha", "reviewed_tree_sha"}),
+    receipt_projection=("receipt_id", "revision"),
+    title="Record verified no-code child disposition",
+    summary="Bind a child's current no-op completion and exact Git head to its parent receipt.",
 )
 INTEGRATION_PARENT_VERIFY = _parent_contract(
     "integration_parent_verify",
@@ -1907,112 +1909,53 @@ INTEGRATION_COMPLETE_PARENT = _parent_contract(
 )
 
 
-INTEGRATION_MUTATE_HIERARCHY = CommandContract(
-    execution=_natural_execution(
-        name="integration_mutate_hierarchy",
-        args_model=IntegrationMutateHierarchyArgs,
-        result_model=IntegrationMutateHierarchyValue,
-        outcomes=_outcomes(
-            ("updated", "sealed", "delivery_target_fixed", "reopen_required", "invalid"),
-            {"updated"},
-        ),
-        side_effect=SideEffectClass.COMPOSITE,
-        effects=(
-            UpdateClause(subject=EffectSubject.TASK_GRAPH),
-            UpdateClause(subject=EffectSubject.BRANCH_OWNERSHIP),
-        ),
-        receipt_projection=(
-            "task_id",
-            "old_parent_id",
-            "new_parent_id",
-            "old_parent_generation",
-            "new_parent_generation",
-        ),
+INTEGRATION_MUTATE_HIERARCHY = _named_contract(
+    "integration_mutate_hierarchy", IntegrationMutateHierarchyArgs, IntegrationMutateHierarchyValue,
+    outcomes=_outcomes(
+        ("updated", "sealed", "delivery_target_fixed", "reopen_required", "invalid"),
+        {"updated"},
     ),
-    presentation=CommandPresentation(
-        title="Mutate integration hierarchy",
-        summary="Apply a guarded hierarchy change and invalidate affected parent generations.",
+    side_effect=SideEffectClass.COMPOSITE,
+    effects=(
+        UpdateClause(subject=EffectSubject.TASK_GRAPH),
+        UpdateClause(subject=EffectSubject.BRANCH_OWNERSHIP),
     ),
+    receipt_projection=(
+        "task_id",
+        "old_parent_id",
+        "new_parent_id",
+        "old_parent_generation",
+        "new_parent_generation",
+    ),
+    title="Mutate integration hierarchy",
+    summary="Apply a guarded hierarchy change and invalidate affected parent generations.",
 )
 
 
-async def _transfer_adapter(
-    args: IntegrationTransferOwnerArgs, ctx: CommandContext | None
-) -> CommandResult[IntegrationTransferOwnerValue]:
-    return await _hierarchy_adapter(
-        "integration_transfer_owner", args, ctx, IntegrationTransferOwnerValue,
-        {"transferred", "busy", "stale_owner", "human_required"}, failure_outcomes=frozenset(),
-    )
+def _contract_adapter(contract: CommandContract):
+    """Bind the shared typed adapter to its authoritative contract declaration."""
+    execution = contract.execution
+    outcomes = {row.name for row in execution.outcomes}
+    aliases = None
+    failure_outcomes = frozenset({"unauthorized", "runtime_error"})
+    if contract is INTEGRATION_COMPLETE_PARENT:
+        # Keep the frozen playbook routing; surface the precise reason in summary.
+        aliases = {AWAITING_TRUSTED_VERIFICATION: "waiting"}
+    elif contract is INTEGRATION_REPAIR_DISPATCH:
+        aliases = {"unknown": "busy"}
+    elif contract is INTEGRATION_RECORD_REPAIR:
+        # "started" is declared for compatibility but never returned by this adapter.
+        outcomes -= {"started"}
+    elif contract is INTEGRATION_TRANSFER_OWNER:
+        failure_outcomes = frozenset()
 
+    async def invoke(args: CommandArgs, ctx: CommandContext | None) -> CommandResult:
+        return await _hierarchy_adapter(
+            contract.name, args, ctx, execution.result_model, outcomes,
+            aliases=aliases, failure_outcomes=failure_outcomes,
+        )
 
-async def _receipts_adapter(
-    args: DeliveryReceiptsArgs, ctx: CommandContext | None
-) -> CommandResult:
-    return await _hierarchy_adapter(
-        "delivery_receipts", args, ctx, DeliveryReceiptsValue, {"found", "not_found"}
-    )
-
-
-async def _cleanup_adapter(
-    args: IntegrationCleanupArgs, ctx: CommandContext | None
-) -> CommandResult:
-    return await _hierarchy_adapter(
-        "integration_cleanup",
-        args,
-        ctx,
-        IntegrationCleanupValue,
-        {
-            "materialized",
-            "advanced",
-            "complete",
-            "already_complete",
-            "wait",
-            "retryable",
-            "conflict",
-            "failed",
-            "stale",
-            "invariant_error",
-        },
-    )
-
-
-async def _repair_close_current_adapter(
-    args: IntegrationRepairCloseCurrentArgs, ctx: CommandContext | None
-) -> CommandResult:
-    return await _hierarchy_adapter(
-        "integration_repair_close_current",
-        args,
-        ctx,
-        IntegrationRepairCloseCurrentValue,
-        {"current", "not_batch", "stale"},
-    )
-
-
-async def _ci_evidence_adapter(
-    args: IntegrationCIEvidenceArgs, ctx: CommandContext | None
-) -> CommandResult:
-    return await _hierarchy_adapter(
-        "integration_ci_evidence",
-        args,
-        ctx,
-        IntegrationCIEvidenceValue,
-        {
-            "green", "red", "pending", "full_suite_required", "stale_subject",
-            "configuration_blocked",
-        },
-    )
-
-
-async def _release_adapter(
-    args: IntegrationReleaseArgs, ctx: CommandContext | None
-) -> CommandResult:
-    return await _hierarchy_adapter(
-        "integration_release",
-        args,
-        ctx,
-        IntegrationReleaseValue,
-        {"released", "already_released", "empty", "wait", "stale", "invariant_error"},
-    )
+    return invoke
 
 
 async def _hierarchy_adapter(
@@ -2056,162 +1999,6 @@ async def _hierarchy_adapter(
     return CommandResult(outcome=outcome, value=value, summary=str(raw.get("error") or outcome))
 
 
-async def _file_children_adapter(args: IntegrationFileChildrenArgs, ctx: CommandContext | None):
-    return await _hierarchy_adapter(
-        "integration_file_children",
-        args,
-        ctx,
-        IntegrationFileChildrenValue,
-        {"filed", "stale_parent", "invalid"},
-    )
-
-
-async def _checkpoint_parent_adapter(
-    args: IntegrationCheckpointParentArgs, ctx: CommandContext | None
-):
-    return await _hierarchy_adapter(
-        "integration_checkpoint_parent",
-        args,
-        ctx,
-        IntegrationCheckpointParentValue,
-        {"checkpointed", "already_waiting", "dirty", "stale"},
-    )
-
-
-async def _mutate_hierarchy_adapter(
-    args: IntegrationMutateHierarchyArgs, ctx: CommandContext | None
-):
-    return await _hierarchy_adapter(
-        "integration_mutate_hierarchy",
-        args,
-        ctx,
-        IntegrationMutateHierarchyValue,
-        {"updated", "sealed", "delivery_target_fixed", "reopen_required", "invalid"},
-    )
-
-
-async def _delivery_readiness_adapter(
-    args: IntegrationDeliveryReadinessArgs, ctx: CommandContext | None
-):
-    return await _hierarchy_adapter(
-        "integration_delivery_readiness",
-        args,
-        ctx,
-        IntegrationDeliveryReadinessValue,
-        {"ready", "waiting", "failed", "invariant_error"},
-    )
-
-
-async def _parent_verify_adapter(args: IntegrationParentVerifyArgs, ctx: CommandContext | None):
-    return await _hierarchy_adapter(
-        "integration_parent_verify",
-        args,
-        ctx,
-        IntegrationParentVerifyValue,
-        {"verified", "stale_generation", "stale_head", "invalid_evidence"},
-    )
-
-
-async def _record_noop_adapter(args: IntegrationRecordNoopArgs, ctx: CommandContext | None):
-    return await _hierarchy_adapter(
-        "integration_record_noop",
-        args,
-        ctx,
-        IntegrationRecordNoopValue,
-        {"recorded", "stale_head", "invalid", "delivery_target_fixed"},
-    )
-
-
-async def _complete_parent_adapter(
-    args: IntegrationCompleteParentArgs, ctx: CommandContext | None
-):
-    return await _hierarchy_adapter(
-        "integration_complete_parent",
-        args,
-        ctx,
-        IntegrationCompleteParentValue,
-        {
-            "completed",
-            "already_completed",
-            "waiting",
-            "failed",
-            "stale_verification",
-            "invariant_error",
-        },
-        # A checkpoint with no trusted verification binding for this subject is
-        # the same routing as ``waiting`` -- the next tick re-reads readiness
-        # and the ``task.integration_verified`` event re-runs the rule.  The
-        # reviewed playbooks pin this contract's fingerprint, so the precise
-        # reason reaches them in the summary.
-        aliases={AWAITING_TRUSTED_VERIFICATION: "waiting"},
-    )
-
-
-async def _repair_start_adapter(
-    args: IntegrationRepairStartArgs, ctx: CommandContext | None
-):
-    return await _hierarchy_adapter(
-        "integration_repair_start",
-        args,
-        ctx,
-        IntegrationRepairStartValue,
-        {"started", "already_started", "stale", "invariant_error"},
-    )
-
-
-async def _repair_dispatch_adapter(
-    args: IntegrationRepairDispatchArgs, ctx: CommandContext | None
-):
-    return await _hierarchy_adapter(
-        "integration_repair_dispatch",
-        args,
-        ctx,
-        IntegrationRepairDispatchValue,
-        {
-            "dispatched",
-            "already_dispatched",
-            "writer_reused",
-            "busy",
-            "configuration_blocked",
-            "stale",
-            "human_required",
-        },
-        # ``unknown`` is a mechanical, retryable refusal.  Reviewed playbooks
-        # pin this contract's fingerprint, so it reaches them as ``busy``.
-        aliases={"unknown": "busy"},
-    )
-
-
-async def _record_repair_adapter(
-    args: IntegrationRecordRepairArgs, ctx: CommandContext | None
-):
-    return await _hierarchy_adapter(
-        "integration_record_repair",
-        args,
-        ctx,
-        IntegrationRecordRepairValue,
-        {"continue", "escalate", "human_required", "budget_exhausted"},
-    )
-
-
-async def _repair_timeout_adapter(
-    args: IntegrationRepairTimeoutArgs, ctx: CommandContext | None
-):
-    return await _hierarchy_adapter(
-        "integration_repair_timeout",
-        args,
-        ctx,
-        IntegrationRepairTimeoutValue,
-        {"expired", "not_due", "already_terminal", "stale"},
-    )
-
-
-async def _status_adapter(args: IntegrationStatusReadArgs, ctx: CommandContext | None):
-    return await _hierarchy_adapter(
-        "integration_status", args, ctx, IntegrationStatusValue, {"status", "not_found"}
-    )
-
-
 async def _promote_schema_adapter(args: PromoteSchemaArgs, ctx: CommandContext | None):
     from src.commands.contracts.builtin import _handler
 
@@ -2225,146 +2012,16 @@ async def _promote_schema_adapter(args: PromoteSchemaArgs, ctx: CommandContext |
     ), summary="Promotion-flow JSON schema")
 
 
-async def _promote_validate_adapter(args: PromoteValidateArgs, ctx: CommandContext | None):
-    return await _hierarchy_adapter(
-        "promote_validate", args, ctx, PromoteValidateValue, {"valid", "invalid", "not_found"},
-    )
-
-
-async def _promote_rulesets_adapter(args: PromoteValidateArgs, ctx: CommandContext | None):
-    return await _hierarchy_adapter(
-        "promote_rulesets", args, ctx, PromoteRulesetsValue,
-        {"rulesets", "invalid", "not_found", "unauthorized"},
-    )
-
-
-async def _trust_manifest_adapter(
-    args: IntegrationTrustManifestArgs, ctx: CommandContext | None
+def _register_contract(
+    registry: ContractRegistry, contract: CommandContract, *, preview: bool | None = None,
 ):
-    return await _hierarchy_adapter(
-        "integration_trust_manifest", args, ctx, IntegrationTrustManifestValue,
-        set(TRUST_MANIFEST_OUTCOMES),
-    )
+    adapter = (_promote_schema_adapter if contract is PROMOTE_SCHEMA else _contract_adapter(contract))
+    preview_adapter = None
+    if preview or (preview is None and contract.execution.supports_preview):
+        async def preview_adapter(args, ctx):
+            return await adapter(args.model_copy(update={"dry_run": True}), ctx)
 
-
-async def _app_verify_adapter(args: IntegrationAppVerifyArgs, ctx: CommandContext | None):
-    return await _hierarchy_adapter(
-        "integration_app_verify", args, ctx, IntegrationAppVerifyValue,
-        set(APP_VERIFY_OUTCOMES),
-    )
-
-
-async def _eject_adapter(args: IntegrationEjectArgs, ctx: CommandContext | None):
-    return await _hierarchy_adapter(
-        "integration_eject",
-        args,
-        ctx,
-        IntegrationEjectValue,
-        {"preview", "ejected", "refused", "unknown_batch", "not_a_member", "invalid_state"},
-    )
-
-
-async def _reevaluate_repair_adapter(
-    args: IntegrationReevaluateRepairArgs, ctx: CommandContext | None
-):
-    return await _hierarchy_adapter(
-        "integration_reevaluate_repair", args, ctx, IntegrationReevaluateRepairValue,
-        set(REEVALUATE_REPAIR_OUTCOMES),
-    )
-
-
-async def _release_owner_adapter(args: IntegrationReleaseOwnerArgs, ctx: CommandContext | None):
-    return await _hierarchy_adapter(
-        "integration_release_owner",
-        args,
-        ctx,
-        IntegrationOperationalValue,
-        {"released", "preserved_and_released", "not_eligible", "not_found"},
-    )
-
-
-async def _reserve_owner_adapter(args: IntegrationReserveOwnerArgs, ctx: CommandContext | None):
-    return await _hierarchy_adapter(
-        "integration_reserve_owner",
-        args,
-        ctx,
-        IntegrationOperationalValue,
-        {"acquired", "already_reserved", "not_eligible", "not_found"},
-    )
-
-
-async def _clear_retained_recovery_adapter(
-    args: IntegrationClearRetainedRecoveryArgs, ctx: CommandContext | None
-):
-    return await _hierarchy_adapter(
-        "integration_clear_retained_recovery",
-        args,
-        ctx,
-        IntegrationOperationalValue,
-        set(CLEAR_RETAINED_RECOVERY_OUTCOMES),
-    )
-
-
-async def _release_stale_owners_adapter(
-    args: IntegrationReleaseStaleOwnersArgs, ctx: CommandContext | None
-):
-    return await _hierarchy_adapter(
-        "integration_release_stale_owners",
-        args,
-        ctx,
-        IntegrationOperationalValue,
-        set(RELEASE_STALE_OWNERS_OUTCOMES),
-    )
-
-
-async def _redrive_root_adapter(args: IntegrationRedriveRootArgs, ctx: CommandContext | None):
-    return await _hierarchy_adapter(
-        "integration_redrive_root",
-        args,
-        ctx,
-        IntegrationRedriveRootValue,
-        set(REDRIVE_ROOT_OUTCOMES),
-    )
-
-
-async def _authorize_root_adapter(
-    args: IntegrationAuthorizeRootArgs, ctx: CommandContext | None
-):
-    return await _hierarchy_adapter(
-        "integration_authorize_root", args, ctx,
-        IntegrationAuthorizeRootValue, set(AUTHORIZE_ROOT_OUTCOMES),
-    )
-
-
-async def _redrive_child_adapter(args: IntegrationRedriveChildArgs, ctx: CommandContext | None):
-    return await _hierarchy_adapter(
-        "integration_redrive_child",
-        args,
-        ctx,
-        IntegrationRedriveChildValue,
-        set(REDRIVE_CHILD_OUTCOMES),
-    )
-
-
-async def _reopen_collection_adapter(
-    args: IntegrationReopenCollectionArgs, ctx: CommandContext | None
-):
-    return await _hierarchy_adapter(
-        "integration_reopen_collection",
-        args,
-        ctx,
-        IntegrationReopenCollectionValue,
-        set(REOPEN_COLLECTION_OUTCOMES),
-    )
-
-
-async def _close_delivered_pr_adapter(
-    args: IntegrationCloseDeliveredPrArgs, ctx: CommandContext | None
-):
-    return await _hierarchy_adapter(
-        "integration_close_delivered_pr", args, ctx,
-        IntegrationCloseDeliveredPrValue, set(CLOSE_DELIVERED_PR_OUTCOMES),
-    )
+    registry.register(CommandRegistration(contract.name, contract, adapter, preview_adapter))
 
 
 def register_integration_contracts(registry: ContractRegistry) -> None:
@@ -2387,14 +2044,7 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
             side_effect=SideEffectClass.READ if read_only else SideEffectClass.COMPOSITE,
             result_model=IntegrationCutoverValue, supports_preview=not read_only)
 
-        async def cutover_control(args, ctx, command=name, outcomes=outcomes):
-            return await _hierarchy_adapter(command, args, ctx, IntegrationCutoverValue, set(outcomes))
-
-        async def cutover_preview(args, ctx, invoke=cutover_control):
-            return await invoke(args.model_copy(update={"dry_run": True}), ctx)
-
-        registry.register(CommandRegistration(
-            name, contract, cutover_control, None if read_only else cutover_preview))
+        _register_contract(registry, contract, preview=not read_only)
     for name, args_model, applied, value_model in (
         ("integration_off", IntegrationOffArgs, "disabled", IntegrationManualValue),
         ("integration_migrate_provenance_refs", IntegrationMigrateProvenanceRefsArgs, "migrated",
@@ -2409,9 +2059,11 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
         ("integration_record_root_noop", IntegrationRecordRootNoopArgs, "recorded",
          IntegrationRecordRootNoopValue),
         ("integration_abort_batch", IntegrationAbortBatchArgs, "aborted", IntegrationTrainControlValue),
+        ("integration_settle_batch", IntegrationSettleBatchArgs, "settled", IntegrationTrainControlValue),
+        ("integration_release_withheld_source", IntegrationReleaseWithheldSourceArgs, "released",
+         IntegrationReleaseWithheldSourceValue),
         ("integration_pause_batch", IntegrationAbortBatchArgs, "paused", IntegrationTrainControlValue),
         ("integration_resume_batch", IntegrationAbortBatchArgs, "resumed", IntegrationTrainControlValue),
-        ("integration_settle_batch", IntegrationAbortBatchArgs, "settled", IntegrationTrainControlValue),
         ("integration_seal_now", IntegrationSealNowArgs, "sealed", IntegrationTrainControlValue),
         ("integration_retire_origin", IntegrationRetireOriginArgs, "retired", IntegrationTrainControlValue),
         ("integration_refresh_epic", IntegrationRefreshEpicArgs, "refreshed", IntegrationRefreshEpicValue),
@@ -2432,6 +2084,9 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
             successes.update({"no_ready_work", "existing_batch"})
         elif name == "integration_settle_batch":
             outcomes += ("unknown_batch", "target_not_settled")
+        elif name == "integration_release_withheld_source":
+            outcomes += ("already_released", *RELEASE_WITHHELD_REFUSALS)
+            successes.add("already_released")
         elif name == "integration_refresh_epic":
             outcomes += ("pending", "current")
             successes.update({"pending", "current"})
@@ -2445,61 +2100,53 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
         )
         if name == "integration_off":
             subject = EffectSubject.INTEGRATION_OPERATION
-            contract = contract.model_copy(update={
-                "execution": contract.execution.model_copy(update={"effects": (
+            contract = _with_effects(
+                contract, (
                     ReadClause(subject=subject),
                     UpdateClause(subject=subject,
                                  when=ClausePredicate(arg_equals=("dry_run", False))),
-                )}),
-                "presentation": CommandPresentation(
-                    title="Disable automatic integration",
-                    summary="Local operator applies an exact preview while preserving sources and frozen work.",
                 ),
-            })
+                title="Disable automatic integration",
+                summary="Local operator applies an exact preview while preserving sources and frozen work.",
+            )
         if name == "integration_migrate_provenance_refs":
-            contract = contract.model_copy(update={
-                "execution": contract.execution.model_copy(update={"effects": (
+            contract = _with_effects(
+                contract, (
                     ReadClause(subject=EffectSubject.DELIVERY_EVIDENCE),
                     UpdateClause(subject=EffectSubject.DELIVERY_EVIDENCE,
                                  when=ClausePredicate(arg_equals=("dry_run", False))),
-                )}),
-                "presentation": CommandPresentation(
-                    title="Move Git provenance out of branches",
-                    summary="Local operator copies and verifies immutable provenance refs before deleting legacy heads.",
                 ),
-            })
+                title="Move Git provenance out of branches",
+                summary="Local operator copies and verifies immutable provenance refs before deleting legacy heads.",
+            )
         if name == "integration_retire_legacy_park":
-            contract = contract.model_copy(update={
-                "execution": contract.execution.model_copy(update={"effects": (
+            contract = _with_effects(
+                contract, (
                     ReadClause(subject=EffectSubject.INTEGRATION_OPERATION),
                     UpdateClause(subject=EffectSubject.INTEGRATION_OPERATION,
                                  when=ClausePredicate(arg_equals=("dry_run", False))),
-                )}),
-                "presentation": CommandPresentation(
-                    title="Retire a historical parked operation",
-                    summary="Local operator abandons every explicitly selected source under an exact journal fence.",
                 ),
-            })
+                title="Retire a historical parked operation",
+                summary="Local operator abandons every explicitly selected source under an exact journal fence.",
+            )
         if name in {"integration_record_root_noop", "integration_record_delivered"}:
             applying = ClausePredicate(arg_equals=("dry_run", False))
-            contract = contract.model_copy(update={
-                "execution": contract.execution.model_copy(update={"effects": (
+            contract = _with_effects(
+                contract, (
                     ReadClause(subject=EffectSubject.TASK),
                     UpdateClause(subject=EffectSubject.TASK, when=applying),
                     CreateOrReuseClause(subject=EffectSubject.DELIVERY_EVIDENCE,
                                         key_arg="task_id", when=applying),
                     UpdateClause(subject=EffectSubject.DOWNSTREAM_TASKS, when=applying),
-                )}),
-                "presentation": CommandPresentation(
-                    title="Record verified no-code root completion",
-                    summary="Preview or complete an unheld root with exact no-artifact Git provenance.",
                 ),
-            })
+                title="Record verified no-code root completion",
+                summary="Preview or complete an unheld root with exact no-artifact Git provenance.",
+            )
 
         if name == "integration_supersede_completion":
             applying = ClausePredicate(arg_equals=("dry_run", False))
-            contract = contract.model_copy(update={
-                "execution": contract.execution.model_copy(update={"effects": (
+            contract = _with_effects(
+                contract, (
                     ReadClause(subject=EffectSubject.INTEGRATION_OPERATION),
                     ReadClause(subject=EffectSubject.ESCALATION_REPLY),
                     ReadClause(subject=EffectSubject.DELIVERY_EVIDENCE),
@@ -2507,47 +2154,33 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
                     UpdateClause(subject=EffectSubject.TASK, when=applying),
                     UpdateClause(subject=EffectSubject.BRANCH_OWNERSHIP, when=applying),
                     UpdateClause(subject=EffectSubject.DOWNSTREAM_TASKS, when=applying),
-                )}),
-                "presentation": CommandPresentation(
-                    title="Supersede one retained completion",
-                    summary="Operator or owning supervisor retires an exact stopped Subject with original verified human evidence.",
                 ),
-            })
+                title="Supersede one retained completion",
+                summary="Operator or owning supervisor retires an exact stopped Subject with original verified human evidence.",
+            )
         if name == "integration_quiesce":
             applying = ClausePredicate(arg_equals=("dry_run", False))
-            contract = contract.model_copy(update={
-                "execution": contract.execution.model_copy(update={"effects": (
+            contract = _with_effects(
+                contract, (
                     ReadClause(subject=EffectSubject.INTEGRATION_OPERATION),
                     UpdateClause(subject=EffectSubject.INTEGRATION_OPERATION, when=applying),
                     UpdateClause(subject=EffectSubject.BRANCH_OWNERSHIP, when=applying),
-                )}),
-                "presentation": CommandPresentation(
-                    title="Quiesce idle train admission",
-                    summary="Local operator closes an unfrozen root and releases explicitly fenced idle reservations.",
                 ),
-            })
+                title="Quiesce idle train admission",
+                summary="Local operator closes an unfrozen root and releases explicitly fenced idle reservations.",
+            )
         if name == "integration_record_delivered":
-            contract = contract.model_copy(update={
-                "execution": contract.execution.model_copy(update={"effects": (
+            contract = _with_effects(
+                contract, (
                     *contract.execution.effects,
                     UpdateClause(subject=EffectSubject.BRANCH_OWNERSHIP,
                                  when=ClausePredicate(arg_equals=("dry_run", False))),
-                )}),
-                "presentation": CommandPresentation(
-                    title="Record exact externally delivered completion",
-                    summary="Local operator verifies exact source on the designated default and records shipped work.",
                 ),
-            })
-
-        async def train_control(args, ctx, command=name, outcomes=outcomes, value_model=value_model):
-            return await _hierarchy_adapter(
-                command, args, ctx, value_model, set(outcomes),
+                title="Record exact externally delivered completion",
+                summary="Local operator verifies exact source on the designated default and records shipped work.",
             )
 
-        async def train_control_preview(args, ctx, invoke=train_control):
-            return await invoke(args.model_copy(update={"dry_run": True}), ctx)
-
-        registry.register(CommandRegistration(name, contract, train_control, train_control_preview))
+        _register_contract(registry, contract)
     name = "integration_recover_completed_container"
     if registry.get(name) is None:
         outcomes = {"preview", "recovered", "already_recovered", "refused", "invalid"}
@@ -2557,32 +2190,18 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
             side_effect=SideEffectClass.COMPOSITE,
             result_model=IntegrationRecoverCompletedContainerValue, supports_preview=True,
         )
-        contract = contract.model_copy(update={
-            "execution": contract.execution.model_copy(update={"effects": (
+        contract = _with_effects(
+            contract, (
                 ReadClause(subject=EffectSubject.INTEGRATION_OPERATION),
                 ReadClause(subject=EffectSubject.BRANCH_OWNERSHIP),
                 UpdateClause(subject=EffectSubject.INTEGRATION_OPERATION,
                              when=ClausePredicate(arg_equals=("dry_run", False))),
-            )}),
-            "presentation": CommandPresentation(
-                title="Recover a completed container checkpoint",
-                summary="Prove accepted published pass provenance and CAS only its checkpoint; delivery gates remain.",
             ),
-        })
+            title="Recover a completed container checkpoint",
+            summary="Prove accepted published pass provenance and CAS only its checkpoint; delivery gates remain.",
+        )
 
-        async def recover_completed_container(args, ctx):
-            return await _hierarchy_adapter(
-                "integration_recover_completed_container", args, ctx,
-                IntegrationRecoverCompletedContainerValue,
-                {"preview", "recovered", "already_recovered", "refused", "invalid"},
-            )
-
-        async def recover_completed_preview(args, ctx):
-            return await recover_completed_container(args.model_copy(update={"dry_run": True}), ctx)
-
-        registry.register(CommandRegistration(
-            name, contract, recover_completed_container, recover_completed_preview,
-        ))
+        _register_contract(registry, contract)
     name = "integration_reconcile_expired_mutation"
     if registry.get(name) is None:
         outcomes = ("preview", "applied", "superseded", "refused")
@@ -2592,29 +2211,17 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
             successes=frozenset({"preview", "applied", "superseded"}),
             side_effect=SideEffectClass.COMPOSITE, result_model=value_model, supports_preview=True,
         )
-        contract = contract.model_copy(update={
-            "execution": contract.execution.model_copy(update={"effects": (
+        contract = _with_effects(
+            contract, (
                 ReadClause(subject=EffectSubject.INTEGRATION_OPERATION),
                 UpdateClause(subject=EffectSubject.INTEGRATION_OPERATION,
                              when=ClausePredicate(arg_equals=("dry_run", False))),
-            )}),
-            "presentation": CommandPresentation(
-                title="Reconcile an expired mutation after its operation ended",
-                summary="Local operator verifies nonce, fences, stopped authority and actual remote target.",
             ),
-        })
+            title="Reconcile an expired mutation after its operation ended",
+            summary="Local operator verifies nonce, fences, stopped authority and actual remote target.",
+        )
 
-        async def reconcile_expired(args, ctx):
-            return await _hierarchy_adapter(
-                "integration_reconcile_expired_mutation", args, ctx,
-                IntegrationReconcileExpiredMutationValue,
-                {"preview", "applied", "superseded", "refused"},
-            )
-
-        async def reconcile_expired_preview(args, ctx):
-            return await reconcile_expired(args.model_copy(update={"dry_run": True}), ctx)
-
-        registry.register(CommandRegistration(name, contract, reconcile_expired, reconcile_expired_preview))
+        _register_contract(registry, contract)
     name = "integration_release_held_gate"
     if registry.get(name) is None:
         contract = _operational_contract(
@@ -2629,75 +2236,57 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
             }),
         })
 
-        async def release_held_gate(args, ctx):
-            return await _hierarchy_adapter(
-                "integration_release_held_gate", args, ctx, IntegrationReleaseHeldGateValue,
-                {"preview", "released", "refused"},
-            )
-
-        registry.register(CommandRegistration(name, contract, release_held_gate))
+        _register_contract(registry, contract, preview=False)
     name = "integration_engine_transfer"
     if registry.get(name) is None:
         contract = _operational_contract(name, IntegrationEngineTransferArgs,
             ("preview", "transferred", "refused"), successes=frozenset({"preview", "transferred"}),
             side_effect=SideEffectClass.COMPOSITE, result_model=IntegrationEngineTransferValue)
 
-        async def transfer_engine(args, ctx):
-            return await _hierarchy_adapter("integration_engine_transfer", args, ctx, IntegrationEngineTransferValue,
-                                             {"preview", "transferred", "refused"})
-
-        registry.register(CommandRegistration(name, contract, transfer_engine))
-    if registry.get(INTEGRATION_TRANSFER_OWNER.name) is None:
-        registry.register(
-            CommandRegistration(
-                INTEGRATION_TRANSFER_OWNER.name,
-                INTEGRATION_TRANSFER_OWNER,
-                _transfer_adapter,
-            )
-        )
-    for contract, adapter in (
-        (INTEGRATION_STATUS, _status_adapter),
-        (INTEGRATION_PROMOTION_PUBLISH, _promotion_publish_adapter),
-        (PROMOTE_SCHEMA, _promote_schema_adapter),
-        (PROMOTE_VALIDATE, _promote_validate_adapter),
-        (PROMOTE_RULESETS, _promote_rulesets_adapter),
-        (INTEGRATION_TRUST_MANIFEST, _trust_manifest_adapter),
-        (INTEGRATION_APP_VERIFY, _app_verify_adapter),
-        (INTEGRATION_EJECT, _eject_adapter),
-        (INTEGRATION_REEVALUATE_REPAIR, _reevaluate_repair_adapter),
-        (INTEGRATION_RELEASE_OWNER, _release_owner_adapter),
-        (INTEGRATION_RESERVE_OWNER, _reserve_owner_adapter),
-        (INTEGRATION_CLEAR_RETAINED_RECOVERY, _clear_retained_recovery_adapter),
-        (INTEGRATION_RELEASE_STALE_OWNERS, _release_stale_owners_adapter),
-        (INTEGRATION_REDRIVE_ROOT, _redrive_root_adapter),
-        (INTEGRATION_AUTHORIZE_ROOT, _authorize_root_adapter),
-        (INTEGRATION_REDRIVE_CHILD, _redrive_child_adapter),
-        (INTEGRATION_REOPEN_COLLECTION, _reopen_collection_adapter),
-        (INTEGRATION_CLOSE_DELIVERED_PR, _close_delivered_pr_adapter),
-        (INTEGRATION_FILE_CHILDREN, _file_children_adapter),
-        (INTEGRATION_CHECKPOINT_PARENT, _checkpoint_parent_adapter),
-        (INTEGRATION_MUTATE_HIERARCHY, _mutate_hierarchy_adapter),
-        (INTEGRATION_DELIVERY_READINESS, _delivery_readiness_adapter),
-        (INTEGRATION_RECORD_NOOP, _record_noop_adapter),
-        (INTEGRATION_PARENT_VERIFY, _parent_verify_adapter),
-        (INTEGRATION_COMPLETE_PARENT, _complete_parent_adapter),
-        (DELIVERY_RECEIPTS, _receipts_adapter),
-        (INTEGRATION_CLEANUP, _cleanup_adapter),
-        (INTEGRATION_REPAIR_CLOSE_CURRENT, _repair_close_current_adapter),
-        (INTEGRATION_CI_EVIDENCE, _ci_evidence_adapter),
-        (INTEGRATION_RELEASE, _release_adapter),
-        (INTEGRATION_REPAIR_START, _repair_start_adapter),
-        (INTEGRATION_REPAIR_DISPATCH, _repair_dispatch_adapter),
-        (INTEGRATION_RECORD_REPAIR, _record_repair_adapter),
-        (INTEGRATION_REPAIR_TIMEOUT, _repair_timeout_adapter),
+        _register_contract(registry, contract, preview=False)
+    for contract in (
+        INTEGRATION_TRANSFER_OWNER,
+        INTEGRATION_STATUS,
+        INTEGRATION_PROMOTION_PUBLISH,
+        PROMOTE_SCHEMA,
+        PROMOTE_VALIDATE,
+        PROMOTE_RULESETS,
+        INTEGRATION_TRUST_MANIFEST,
+        INTEGRATION_APP_VERIFY,
+        INTEGRATION_EJECT,
+        INTEGRATION_REEVALUATE_REPAIR,
+        INTEGRATION_RELEASE_OWNER,
+        INTEGRATION_RESTORE_TASK_ORIGIN,
+        INTEGRATION_RESERVE_OWNER,
+        INTEGRATION_DELEGATE_PUBLICATION,
+        INTEGRATION_REVOKE_PUBLICATION,
+        INTEGRATION_CLEAR_RETAINED_RECOVERY,
+        INTEGRATION_RELEASE_STALE_OWNERS,
+        INTEGRATION_REDRIVE_ROOT,
+        INTEGRATION_AUTHORIZE_ROOT,
+        INTEGRATION_REDRIVE_CHILD,
+        INTEGRATION_REOPEN_COLLECTION,
+        INTEGRATION_CLOSE_DELIVERED_PR,
+        INTEGRATION_FILE_CHILDREN,
+        INTEGRATION_CHECKPOINT_PARENT,
+        INTEGRATION_MUTATE_HIERARCHY,
+        INTEGRATION_DELIVERY_READINESS,
+        INTEGRATION_RECORD_NOOP,
+        INTEGRATION_PARENT_VERIFY,
+        INTEGRATION_COMPLETE_PARENT,
+        DELIVERY_RECEIPTS,
+        INTEGRATION_CLEANUP,
+        INTEGRATION_REPAIR_CLOSE_CURRENT,
+        INTEGRATION_CI_EVIDENCE,
+        INTEGRATION_RELEASE,
+        INTEGRATION_REPAIR_START,
+        INTEGRATION_REPAIR_DISPATCH,
+        INTEGRATION_RECORD_REPAIR,
+        INTEGRATION_REPAIR_TIMEOUT,
     ):
         if registry.get(contract.name) is None:
-            preview = None
-            if contract.execution.supports_preview:
-                async def preview(args, ctx, invoke=adapter):
-                    return await invoke(args.model_copy(update={"dry_run": True}), ctx)
+            _register_contract(registry, contract)
 
-            registry.register(CommandRegistration(contract.name, contract, adapter, preview))
 
 class IntegrationReleaseHeldGateArgs(CommandArgs):
     subject_id: str = Field(min_length=1)

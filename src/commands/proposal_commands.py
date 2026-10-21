@@ -22,7 +22,7 @@ from src.api.scope import fidelity_review_task_for_session, spec_ingest_task_for
 from src.asks.ingestion import approved_packet, stamp_for, task_stamp
 from src.asks.operations import get_operation, operation, succeed
 from src.asks.models import AskError
-from src.commands.contracts.builtin import TaskBatchReleaseArgs
+from src.commands.contracts.builtin import TaskBatchReleaseArgs, TaskBatchRetireArgs
 from src.commands import task_changes
 from src.commands.principal import PrincipalKind, batch_release_actor, current_principal
 from src.database.queries import ingest_batch_queries as batches
@@ -800,6 +800,63 @@ class TaskProposalCommandsMixin:
         except Exception:
             logger.debug("Release notification failed for %s", batch_id, exc_info=True)
         return result
+
+    async def _cmd_task_batch_retire(self, args: dict) -> dict:
+        """Finalize prior supported retirement; never retire live work or clear holds."""
+        from src.sessions.obsolete import ObsoleteCloseRefused
+        from src.task_graph.batch_retirement import prove_retired_on
+
+        try:
+            request = TaskBatchRetireArgs.model_validate(args)
+        except ValidationError as exc:
+            return batches._error("invalid_arguments", str(exc))
+        async with self.db._engine.connect() as conn:
+            batch = await batches.get_batch(conn, request.batch_id)
+        if batch is None:
+            return batches._error("batch_not_found", "Batch not found")
+        project_id, batch_id = batch["project_id"], request.batch_id
+        if request.project_id not in (None, project_id):
+            return batches._error("not_authorized", "Batch belongs to another project")
+        try:
+            async with task_changes.boundary(self.db, project_id) as conn:
+                batch = await batches.get_batch(conn, batch_id, lock=True)
+                actor = await batch_release_actor(conn, project_id)
+                if actor is None:
+                    return batches._error("not_authorized", "Only ingestion policy or the project "
+                                          "supervisor may retire a batch")
+                if batch is None:
+                    return batches._error("batch_not_found", "Batch not found")
+                if batch["structure_revision"] != request.expected_revision:
+                    return batches._error("stale_revision", "Batch revision changed")
+                if batch["state"] == "retired":
+                    return {"success": True, "batch_id": batch_id, "state": "retired",
+                            "already_retired": True}
+                if batch["state"] not in batches.HELD_STATES or batch["release_receipt"]:
+                    return batches._error("batch_not_held", "Only unreleased batches may retire")
+                members = await batches.members(conn, batch_id, lock=True)
+                evidence = await prove_retired_on(self.db, conn, batch, members)
+                now = time.time()
+                await batches.set_state(conn, batch_id, "retired", now=now)
+                await conn.execute(update(task_proposals).where(
+                    task_proposals.c.id == batch_id,
+                ).values(status="discarded", updated_at=now))
+                await self.db.log_event(
+                    "task.batch_retired", project_id=project_id, conn=conn,
+                    payload=json.dumps({"batch_id": batch_id, "actor": actor,
+                                        "reason": request.reason,
+                                        "structure_revision": request.expected_revision,
+                                        "retirement_evidence": evidence}),
+                )
+        except ObsoleteCloseRefused as exc:
+            return batches._error(exc.code, exc.detail)
+        except Exception as exc:
+            failure = self._change_set_failure(exc, "task_batch_retire")
+            return {**failure, "error_code": failure.get("code", "retirement_failed")}
+        await self._emit_proposal_event("proposal.status_changed", {
+            "project_id": project_id, "proposal_id": batch_id, "status": "discarded",
+        })
+        return {"success": True, "batch_id": batch_id, "state": "retired",
+                "already_retired": False}
 
     async def _cmd_task_batch_discard(self, args: dict) -> dict:
         proposal_id = args.get("proposal_id")

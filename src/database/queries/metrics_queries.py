@@ -19,7 +19,7 @@ import json
 import time
 from typing import Any
 
-from sqlalchemy import Float, and_, case, delete, func, insert, select, update
+from sqlalchemy import Float, and_, case, delete, func, insert, or_, select, update
 from sqlalchemy.exc import IntegrityError
 
 from src.database.tables import (
@@ -41,7 +41,7 @@ LIVE_SESSION_STATES = ("starting", "running")
 #: Task statuses a live worker can hold.  Mirrors
 #: ``src.agents.subagents._ACTIVE_TASKS`` — kept as strings here because this
 #: layer speaks columns, not enums.
-ACTIVE_TASK_STATUSES = ("ASSIGNED", "IN_PROGRESS", "WAITING_INPUT")
+ACTIVE_TASK_STATUSES = ("ASSIGNED", "IN_PROGRESS", "WAITING_INPUT", "WAITING")
 
 #: ``system_config`` key holding the durable daemon-start counter.
 _DAEMON_STARTS_KEY = "metrics.daemon_starts"
@@ -50,6 +50,16 @@ _DAEMON_STARTS_KEY = "metrics.daemon_starts"
 # Statement builders.  Separated from the readers so several can share one
 # connection without each opening its own.
 # ---------------------------------------------------------------------------
+
+
+def _live_task_session_predicate():
+    return ~select(tasks.c.id).where(
+        tasks.c.id == sessions.c.task_id,
+        or_(
+            tasks.c.status == "HIBERNATED",
+            and_(tasks.c.status == "RESUME_PENDING", sessions.c.state != "starting"),
+        ),
+    ).exists()
 
 
 def _live_sessions_stmt():
@@ -61,7 +71,10 @@ def _live_sessions_stmt():
             sessions.c.lifecycle,
             func.count().label("count"),
         )
-        .where(sessions.c.state.in_((*LIVE_SESSION_STATES, "draining")))
+        .where(
+            sessions.c.state.in_((*LIVE_SESSION_STATES, "draining")),
+            _live_task_session_predicate(),
+        )
         .group_by(
             sessions.c.state,
             sessions.c.harness,
@@ -77,7 +90,8 @@ def _task_counts_stmt():
 
 def _live_session_ids_stmt():
     return select(sessions.c.id, sessions.c.name, sessions.c.hooks_provisioned).where(
-        sessions.c.state.in_((*LIVE_SESSION_STATES, "draining"))
+        sessions.c.state.in_((*LIVE_SESSION_STATES, "draining")),
+        _live_task_session_predicate(),
     )
 
 
@@ -228,6 +242,13 @@ class MetricsQueryMixin:
             }
         except Exception:  # noqa: BLE001 - no engine or a foreign pool class is an honest null
             return {"checked_out": None, "overflow": None, "size": None}
+
+    async def metrics_waits_snapshot(self, now: float, window_seconds: float = 3600):
+        """Wait accounting, or null on a database predating verified waits."""
+        from src.database.queries.wait_metrics import wait_metrics_snapshot
+
+        async with self._engine.connect() as conn:
+            return await wait_metrics_snapshot(conn, now=now, window_seconds=window_seconds)
 
     async def metrics_slow_snapshot(
         self,

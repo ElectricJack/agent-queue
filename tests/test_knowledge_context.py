@@ -131,6 +131,41 @@ async def test_required_overflow_persists_empty_diagnostic_and_refuses_delivery(
                                        rendered_sha256=bundle.content_sha256)
 
 
+async def test_session_model_window_applies_to_prepare_and_delivery_recheck(context_setup, monkeypatch):
+    _, config, service, worker, _, _ = context_setup
+    window = 258400
+
+    async def observation(session):
+        assert session.id == worker.session_id
+        return {"model_context_window": window}
+
+    monkeypatch.setattr("src.sessions.context.read_context", observation)
+    # Larger than both the former 32k limit and the no-telemetry fallback.
+    required = "Required policy. " * 9000
+    bundle = await service.prepare(principal=worker, required=required,
+                                   project_ids=["p"], claim_epoch=1)
+    assert bundle.budget["fits"]
+    assert bundle.budget["requested"]["input_tokens"] == window
+    delivered = await service.observe_delivery(
+        bundle_id=bundle.bundle_id, principal=worker, claim_epoch=1,
+        transport="test", transport_key="model-window", rendered_sha256=bundle.content_sha256,
+    )
+    assert delivered["success"]
+    # A model switch rechecks the window rather than trusting a retained budget.
+    window = 32000
+    with pytest.raises(RecordError, match="context.invalidated"):
+        await service.observe_delivery(
+            bundle_id=bundle.bundle_id, principal=worker, claim_epoch=1,
+            transport="test", transport_key="smaller-model", rendered_sha256=bundle.content_sha256,
+        )
+    config.knowledge.context.input_max_tokens = 20000
+    capped = await service.prepare(principal=worker, required=required,
+                                  project_ids=["p"], claim_epoch=1,
+                                  budget=ContextBudget(input_tokens=999999))
+    assert not capped.budget["fits"]
+    assert capped.budget["requested"]["input_tokens"] == 20000
+
+
 async def test_lower_budget_drops_whole_items_with_omissions(context_setup):
     _, config, service, worker, _, _ = context_setup
     full = await prepare(service, worker)
@@ -294,7 +329,9 @@ async def test_renderer_override_and_prompt_builder_use_same_bounded_bundle(cont
     assert builder.build_task_prompt() == rendered.to_markdown()
     assert rendered.to_markdown().count("Observed incident evidence.") == 1
     assert "Legacy" not in builder.build_task_prompt()
-    builder.set_core_tools([{"description": "tool schema" * config.knowledge.context.input_max_tokens}])
+    builder.set_core_tools([{
+        "description": "tool schema" * ContextBudget.from_config(config).input_tokens,
+    }])
     with pytest.raises(RecordError, match="context.required_over_budget"):
         builder.build()
 
@@ -350,8 +387,9 @@ async def test_named_supervisor_launch_injects_worker_selection_only_after_succe
         assert provider.starts[0].prompt.endswith(worker_bundle.to_markdown())
 
 
+@pytest.mark.parametrize("limit_source", ["operator", "model"])
 async def test_prime_command_returns_prepared_bundle_and_delivery_command_records_usage(
-    command_handler_factory,
+    command_handler_factory, monkeypatch, limit_source,
 ):
     from src.commands.principal import principal_context
 
@@ -386,7 +424,14 @@ async def test_prime_command_returns_prepared_bundle_and_delivery_command_record
             rendered_sha256=bundle.content_sha256, claim_epoch=1,
         ))
         assert acknowledged["success"], acknowledged
-        config.knowledge.context.input_max_tokens = 100
+        if limit_source == "operator":
+            config.knowledge.context.input_max_tokens = 100
+        else:
+            from unittest.mock import AsyncMock
+
+            monkeypatch.setattr("src.sessions.context.read_context", AsyncMock(return_value={
+                "model_context_window": 100,
+            }))
         refused = await handler.execute("prime", {"_scope": scope})
         assert refused["error_code"] == "context.required_over_budget"
         accounting = refused["context_budget"]
@@ -395,6 +440,10 @@ async def test_prime_command_returns_prepared_bundle_and_delivery_command_record
         assert accounting["required_tokens"] == refused["required_body_bytes"]
         assert accounting["diagnostic"] == "context.required_over_budget"
         assert refused["required_section_bytes"]["completion_protocol"] > 0
+        largest = sorted(refused["required_section_bytes"].items(), key=lambda item: -item[1])[:3]
+        assert "100" in refused["error"] and "available" in refused["error"]
+        for key, size in largest:
+            assert f"{key}={size}" in refused["error"]
         assert refused["source"] == "default"
         assert "body" not in refused and "context_bundle" not in refused
     async with db.immediate() as conn:
@@ -411,6 +460,7 @@ async def test_prime_fits_required_salvage_and_preserves_full_continuation_reads
     db, config = handler.db, handler.config
     config.data_dir = str(tmp_path)
     config.knowledge = knowledge_config()
+    config.knowledge.context.input_max_tokens = 32768
     config.memory.enabled = True
     worker = await worker_principal(db, grants=["prime", "task_show", "knowledge_show", "record_search"])
     task_id = worker.task_id

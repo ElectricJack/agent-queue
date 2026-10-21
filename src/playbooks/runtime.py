@@ -265,7 +265,9 @@ class V2PlaybookRuntime:
 
     def _on_event(self, event: dict[str, Any]) -> None:
         payload = dict(event)
-        payload.setdefault("_received_at", time.time())
+        # The live publisher cannot choose its own backlog age or observation
+        # time. Replay restores the trusted timestamp from the stored row.
+        payload["_received_at"] = time.time()
         # A run triggered by an event emitted inside a project's commit
         # identity scope must not keep that identity (git identity spec §4).
         from src.git.manager import detached_commit_context
@@ -645,22 +647,31 @@ class V2PlaybookRuntime:
         pending_event_id = row["pending_event_id"]
         actor = "service:integration-outbox"
         now = time.time()
-        claim_token = await self._db.claim_pending_event_dispatch(
-            pending_event_id,
-            claimed_by=actor,
-            now=now,
-            stale_before=now - PENDING_EVENT_DISPATCH_LEASE_SECONDS,
+        # Cancellation during commit/connection cleanup must not lose a
+        # committed token and strand the event until its dispatch lease expires.
+        claim = asyncio.create_task(
+            self._db.claim_pending_event_dispatch(
+                pending_event_id,
+                claimed_by=actor,
+                now=now,
+                stale_before=now - PENDING_EVENT_DISPATCH_LEASE_SECONDS,
+            )
         )
-        if claim_token is None:
-            return
+        claim_token = None
         try:
+            claim_token = await asyncio.shield(claim)
+            if claim_token is None:
+                return
             dispatch_id = hashlib.sha256(
                 "v2-integration|{}|{}|{}".format(
                     row["event_id"], row["activation_id"], row["artifact_sha256"]
                 ).encode()
             ).hexdigest()[:12]
+            payload = dict(row["event"])
+            payload["_received_at"] = row["received_at"]
+            payload.setdefault("event_id", row["event_id"])
             result = await self._engine.dispatch_event(
-                dict(row["event"]),
+                payload,
                 ExecutionPrincipal.service("integration-outbox"),
                 playbook_ids=[row["playbook_id"]],
                 dispatch_id=dispatch_id,
@@ -677,23 +688,26 @@ class V2PlaybookRuntime:
             if not finalized:
                 raise RuntimeError("integration pending-event claim was lost before finalization")
         except asyncio.CancelledError:
-            await asyncio.shield(
-                self._db.record_pending_event_dispatch_failure(
-                    pending_event_id,
-                    claim_token=claim_token,
-                    error="CancelledError: integration runtime shutdown",
+            claim_token = await claim
+            if claim_token is not None:
+                await asyncio.shield(
+                    self._db.record_pending_event_dispatch_failure(
+                        pending_event_id,
+                        claim_token=claim_token,
+                        error="CancelledError: integration runtime shutdown",
+                    )
                 )
-            )
             raise
         except Exception as exc:
             logger.exception(
                 "V2 integration dispatch failed for pending_event=%s", pending_event_id
             )
-            await self._db.record_pending_event_dispatch_failure(
-                pending_event_id,
-                claim_token=claim_token,
-                error=f"{type(exc).__name__}: {exc}"[:2000],
-            )
+            if claim_token is not None:
+                await self._db.record_pending_event_dispatch_failure(
+                    pending_event_id,
+                    claim_token=claim_token,
+                    error=f"{type(exc).__name__}: {exc}"[:2000],
+                )
 
     async def recover_interrupted_runs(self) -> tuple[str, ...]:
         return await self.restart_reconciler.tick()

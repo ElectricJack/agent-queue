@@ -14,6 +14,7 @@ from src.playbooks.definition import DecisionStep, TerminalStep, load_definition
 from src.playbooks.engine import PlaybookEngine
 from src.playbooks.executors.base import EngineServices
 from src.profiles.capabilities import CapabilityPolicy
+from tests._private_values_helper import private_value_service
 from tests.playbook_v2_engine_helpers import (
     InMemoryArtifactStore,
     RecordingRunRepository,
@@ -107,6 +108,7 @@ async def test_failed_delivery_event_runs_real_readiness_and_policy_commands(
             artifact_store=InMemoryArtifactStore({artifact.id: artifact}),
             handler=handler,
             db=db,
+            private_values=private_value_service(db),
         ),
         runs=runs,
         waits=runs,
@@ -197,6 +199,7 @@ async def test_hosted_parent_ci_event_verifies_without_a_live_workspace(command_
             artifact_store=InMemoryArtifactStore({artifact.id: artifact}),
             handler=handler,
             db=db,
+            private_values=private_value_service(db),
         ),
         runs=runs,
         waits=runs,

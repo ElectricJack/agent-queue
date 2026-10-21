@@ -75,6 +75,40 @@ BranchHeadResolver = Callable[[RepoConfig, str], Awaitable[str | None] | str | N
 BranchBaseResolver = Callable[[RepoConfig, str, str], Awaitable[str] | str]
 
 
+async def record_worker_publication(db, task_id: str, branch: str, head_sha: str) -> None:
+    """Keep the working checkpoint current after an authorized successful push.
+
+    Delegates and active parent episodes have their own checkpoint authority.
+    Repeated publication of the same tip does not create another generation.
+    The filing origin remains immutable, including across leased rewrites.
+    """
+    if not is_valid_git_oid(head_sha):
+        raise ValueError("published checkpoint requires an exact commit")
+    async with db.immediate() as conn:
+        task = (await conn.execute(select(tasks).where(
+            tasks.c.id == task_id,
+        ).with_for_update())).mappings().one_or_none()
+        if task is None or task["branch_name"] != branch:
+            return
+        checkpoint = (await conn.execute(select(task_integration_checkpoints).where(
+            task_integration_checkpoints.c.task_id == task_id,
+        ).with_for_update())).mappings().one_or_none()
+        if (checkpoint is None or checkpoint["episode_id"] is not None
+                or checkpoint["repository_id"] != task["repo_id"]
+                or checkpoint["branch"] != branch or checkpoint["checkpoint_sha"] == head_sha):
+            return
+        await conn.execute(update(task_integration_checkpoints).where(
+            task_integration_checkpoints.c.task_id == task_id,
+            task_integration_checkpoints.c.version == checkpoint["version"],
+        ).values(
+            checkpoint_sha=head_sha,
+            generation=checkpoint["generation"] + 1,
+            version=checkpoint["version"] + 1,
+            verified_sha=None, verified_generation=None, current_verification_id=None,
+            updated_at=time.time(),
+        ))
+
+
 async def missing_origin_tasks_on(conn, project_id: str, repository_id: str) -> list[str]:
     """Open work and undelivered completions lacking their live delivery identity.
 
