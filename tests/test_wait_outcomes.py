@@ -314,3 +314,27 @@ async def test_parked_continuation_queues_once_without_message(env, proven_stop)
     assert len(await records(env, wait_measurements)) == 1
     assert await service.tick()
     assert (await records(env, continuations))[0]["version"] == 2
+
+
+async def test_scheduler_hibernate_wait_does_not_require_an_agent_continuation(env):
+    await env.db.create_task(Task(id="tail", project_id="p", title="Tail", description=""))
+    scheduler = await register(
+        env, {"kind": "task", "task_id": "tail"},
+        scope=Scope("p", "scheduler", "source", principal="service"),
+        decide_sleep=lambda *args: SleepDecision("hibernate", "scheduler"),
+    )
+    agent = await waiting(env)
+    await env.db.transition_task("tail", TaskStatus.COMPLETED)
+    await env.db.transition_task("source", TaskStatus.COMPLETED)
+    service = runtime(env, dispatcher=dispatcher(env))
+    assert await service.tick()
+    waits = {row["id"]: row for row in await records(env)}
+    assert waits[scheduler["wait_id"]]["outcome"] == "satisfied"
+    assert waits[scheduler["wait_id"]]["cleared_at"] is not None
+    assert waits[agent["wait_id"]]["outcome"] == "satisfied"
+    assert not await records(env, continuations)
+    envelopes = [row for row in await records(env, messages) if row["body_kind"] == "wait_outcome"]
+    assert len(envelopes) == 1 and envelopes[0]["to_id"] == "s"
+    assert await service.tick()
+    assert len([row for row in await records(env, messages)
+                if row["body_kind"] == "wait_outcome"]) == 1

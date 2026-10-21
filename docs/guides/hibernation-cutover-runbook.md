@@ -192,3 +192,8 @@ lock. It leaves its durable cursor unchanged, releases the transaction and retri
 within the lease-renewal interval. Contention does not require a listener restart
 or a manual wake. Source dispatch and deadline firing acquire the graph fence
 before the lease row, so neither waits on that graph while preventing renewal.
+
+Scheduler waits describe admission blockers; their `hibernate` decision does not
+create an agent continuation. Resolving one clears its explanatory wait and edges
+without launching an agent or demanding a checkpoint. Continuation ownership
+proof remains mandatory for hibernating task owners.
