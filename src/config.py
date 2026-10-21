@@ -4322,7 +4322,6 @@ def config_section_names() -> tuple[str, ...]:
 
 
 HOT_RELOADABLE_SECTIONS = {
-    "wait_policy",
     "scheduling",
     "monitoring",
     "archive",
@@ -4372,6 +4371,7 @@ HOT_RELOADABLE_SECTIONS = {
     # reads and ``records`` outbox/export), so an edit bites on the next
     # access without a restart.
     "knowledge",
+    "wait_policy",  # read per decision; flags are snapshotted once per registry cycle
 }
 """Config sections that can be safely updated at runtime without restart."""
 
