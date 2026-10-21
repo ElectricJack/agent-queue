@@ -1171,9 +1171,7 @@ class WorktreeSlotManager:
             if target_branch is not None:
                 await self._detach_stale_branch_holders(slot_dir, branch, incoming_task_id=task.id)
             if preserve_branch:
-                await self.git.aprepare_child_branch(
-                    str(slot_dir), branch, base_branch, lock_held=True,
-                )
+                await self._prepare_slot_branch(slot_dir, branch, base_branch)
             elif target_branch is not None:
                 await self.git._arun_unlocked(
                     ["switch", "-C", branch, start_ref], cwd=str(slot_dir)
@@ -1661,7 +1659,30 @@ class WorktreeSlotManager:
         start_sha = await self.git.arev_parse(str(slot_dir), start_ref)
         if start_sha is None:
             raise GitError("task branch start commit is unavailable")
-        await self.git.aprepare_child_branch(str(slot_dir), branch, start_sha, lock_held=True)
+        await self._prepare_slot_branch(slot_dir, branch, start_sha)
+
+    async def _prepare_slot_branch(self, slot_dir: Path, branch: str, parent_sha: str) -> None:
+        """Switch a slot to *branch*, drop files its HEAD no longer ignores, then merge.
+
+        The reset's ``clean -fd`` keeps whatever the slot's previous HEAD
+        ignored, so warm caches survive (design §3.4: never ``-x``).  A branch
+        whose base predates that ``.gitignore`` sees them as untracked: the
+        parent merge refuses to overwrite them, or the agent commits them.  The
+        same clean on the switched HEAD removes exactly those files.  The
+        caller holds the repository lock.  Not for the checkpoint path, whose
+        restored untracked files are the task's own work.
+        """
+        run, cwd = self.git._arun_unlocked, str(slot_dir)
+        local, remote = f"refs/heads/{branch}", f"refs/remotes/origin/{branch}"
+        refs = (await run(
+            ["for-each-ref", "--format=%(refname)", "--", local, remote], cwd=cwd,
+        )).splitlines()
+        if local in refs:
+            await run(["switch", branch], cwd=cwd)
+        else:
+            await run(["switch", "-c", branch, remote if remote in refs else parent_sha], cwd=cwd)
+        await run(["clean", "-fd", "-e", WORKTREE_SENTINEL_NAME], cwd=cwd)
+        await self.git.aprepare_child_branch(cwd, branch, parent_sha, lock_held=True)
 
     async def _detach_stale_branch_holders(
         self, slot_dir: Path, branch: str, *, incoming_task_id: str | None = None,
