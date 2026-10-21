@@ -571,6 +571,13 @@ async def _project_frontier_mode(
                                            **({"cached_only": True} if cached_only else {}))
         if stack_views is not None:
             stack_views[project.id] = stack_view
+        # Containment never overrides an explicit source/owning-epic decision.
+        blocked = {row["task_id"] for row in stack_view.rows if not row["authorized"]}
+        verified_mode = replace(
+            verified_mode,
+            delivered_prerequisite_ids=verified_mode.delivered_prerequisite_ids - blocked,
+            default_prerequisite_ids=verified_mode.default_prerequisite_ids - blocked,
+        )
         if await stack_view.fresh():
             async with db._engine.connect() as conn:
                 stackable = frozenset(await stack_view.verified_on(conn))

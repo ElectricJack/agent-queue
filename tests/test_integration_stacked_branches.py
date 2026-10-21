@@ -82,9 +82,6 @@ async def stack_record(stack):
 @pytest.fixture
 async def stack(world):  # noqa: F811 - imported pytest fixture
     db, origin = world.db, world.origin
-    await db.update_project(
-        "p", hierarchical_integration_policy={"prerequisite_branches": "stacked"}
-    )
     base = git(origin.clone, "rev-parse", "main")
     git(origin.clone, "push", "origin", "main:aq/epic")
     await db.create_task(
@@ -134,7 +131,7 @@ async def stack(world):  # noqa: F811 - imported pytest fixture
 
 def test_project_policy_defaults_and_override():
     assert stacked_policy({"id": "agent-queue"})
-    assert not stacked_policy({"id": "other"})
+    assert stacked_policy({"id": "other"})
     assert not stacked_policy(
         {
             "id": "agent-queue",
@@ -165,6 +162,110 @@ async def test_single_stack_starts_at_completed_source_without_epic_delivery(sta
         )
     assert origin["base_sha"] == stack.first  # filing base remains immutable
     assert origin["stack_snapshot"]["prerequisites"]["first"]["checkpoint_sha"] == stack.first
+
+
+@pytest.mark.parametrize("mutation", ["deleted", "moved"])
+async def test_retained_completion_stacks_without_live_source_branch(stack, mutation):
+    if mutation == "deleted":
+        git(stack.origin.clone, "push", "origin", ":aq/first")
+    else:
+        git(stack.origin.clone, "push", "--force", "origin", f"{stack.base}:aq/first")
+    view = await observe_stacks(stack.service.observer, "p", task_id="child")
+    assert view.proofs["first"]["checkpoint_sha"] == stack.first
+    assert await view.fresh()
+    assert await stack.service.current("child")
+    assert (await stack.service.prepare("child"))["base_sha"] == stack.first
+    assert await stack.service.source_contains_stack(
+        "child", stack.child, await snapshot(stack.world),
+    )
+    assert git(stack.origin.url, "rev-parse", "aq/epic") == stack.base
+
+
+async def test_cross_epic_and_root_sources_stack_on_current_parent(stack):
+    await completed(stack.world, "other-epic", done=False, head=stack.base, source_base=stack.base)
+    cross = await completed(stack.world, "cross", parent="other-epic")
+    root = await completed(stack.world, "root")
+    await checkpoint(stack.db, "cross", cross)
+    await checkpoint(stack.db, "root", root)
+    await stack.db.add_dependency("child", "cross")
+    await stack.db.add_dependency("child", "root")
+    git(stack.origin.clone, "push", "origin", ":aq/cross", ":aq/root")
+    await completed(stack.world, "consumer", parent="epic", done=False,
+                    head=stack.base, source_base=stack.base, needs=("first", "cross", "root"))
+    await checkpoint(stack.db, "consumer", stack.base)
+    prepared = await stack.service.prepare("consumer")
+    assert set(prepared.proofs) == {"first", "cross", "root"}
+    for head in (stack.base, stack.first, cross, root):
+        git(prepared["stack_store"], "merge-base", "--is-ancestor", head, prepared["base_sha"])
+    assert git(stack.origin.url, "rev-parse", "aq/epic") == stack.base
+    assert git(stack.origin.url, "rev-parse", "main") == stack.base
+
+
+@pytest.mark.parametrize("contained", [False, True])
+@pytest.mark.parametrize("decision", ["label", "pause", "gate", "rejection", "operator"])
+async def test_cross_epic_parent_decisions_travel_through_transitive_sources(stack, decision, contained):
+    # The foreign epic is still open; no synthetic epic approval is required.
+    from src.database.tables import gates, integration_review_evidence, task_gates, task_labels
+    from src.operator_decisions import OperatorDecisions
+
+    db = stack.db
+    await completed(stack.world, "other-epic", done=False, head=stack.base, source_base=stack.base)
+    await checkpoint(db, "other-epic", stack.base)
+    cross = await completed(stack.world, "cross", parent="other-epic")
+    await checkpoint(db, "cross", cross)
+    await db.add_dependency("first", "cross")
+    if contained:
+        git(stack.origin.clone, "push", "origin", f"{stack.first}:aq/epic", f"{stack.first}:main")
+    assert await db.is_hierarchy_task_runnable("child")
+    assert (await observe_stacks(stack.service.observer, "p", task_id="child")).proofs
+    async with db.immediate() as conn:
+        if decision == "label":
+            await conn.execute(insert(task_labels).values(task_id="other-epic", label="hold:human"))
+        elif decision == "pause":
+            await db._upsert_meta("other-epic", "manual_pause", True, conn=conn)
+        elif decision == "gate":
+            await conn.execute(insert(gates).values(id="human-decision", project_id="p",
+                gate_type="human", title="Human decision", status="open", created_at=1))
+            await conn.execute(insert(task_gates).values(task_id="other-epic", gate_id="human-decision"))
+        elif decision == "rejection":
+            await conn.execute(insert(integration_review_evidence).values(
+                id="rejection", source_task_id="other-epic", repository_id="r",
+                source_base=stack.base, reviewed_head_sha=stack.base,
+                reviewed_tree_sha=git(stack.origin.clone, "rev-parse", stack.base + "^{tree}"),
+                generation=0, verdict="rejected", review_kind="root", evidence={}, created_at=1))
+    if decision == "operator":
+        await OperatorDecisions(db).record({
+            "object_kind": "task", "object_id": "other-epic", "effect": "hold",
+            "source": "cli", "decision": "explicit whole epic hold",
+            "operator": "human:test", "source_ref": "test:hold",
+            "idempotency_key": "cross-epic-hold",
+        }, recorded_by="human:test")
+    assert not (await observe_stacks(stack.service.observer, "p", task_id="child")).proofs
+    assert not await stack.service.current("child")
+    assert not await db.is_hierarchy_task_runnable("child")
+    assert git(stack.origin.url, "rev-parse", "aq/child") == stack.child
+
+
+async def test_multiple_sources_use_topology_and_deduplicate_contained_heads(stack):
+    from src.integration.stacked_branches import ordered_sources
+
+    zulu = await completed(stack.world, "zulu", parent="epic")
+    await checkpoint(stack.db, "zulu", zulu)
+    git(stack.origin.clone, "checkout", "-b", "aq/alpha", zulu)
+    (stack.origin.clone / "alpha.txt").write_text("alpha\n")
+    git(stack.origin.clone, "add", ".")
+    git(stack.origin.clone, "commit", "-qm", "alpha")
+    alpha = git(stack.origin.clone, "rev-parse", "HEAD")
+    git(stack.origin.clone, "push", "origin", "aq/alpha")
+    await completed(stack.world, "alpha", parent="epic", needs=("zulu",), head=alpha)
+    await checkpoint(stack.db, "alpha", alpha)
+    async with stack.db._engine.connect() as conn:
+        assert await ordered_sources(conn, {"alpha", "zulu"}) == ["zulu", "alpha"]
+    merged = await merge_heads(stack.service.observer.git, stack.origin.clone, stack.first,
+                               [zulu, alpha, zulu], stamp=1)
+    assert git(stack.origin.clone, "show", "-s", "--format=%P", merged).split() == [stack.first, alpha]
+    for head in (stack.first, zulu, alpha):
+        git(stack.origin.clone, "merge-base", "--is-ancestor", head, merged)
 
 
 @pytest.mark.parametrize("relation", [
@@ -976,14 +1077,13 @@ async def test_stack_freshness_batches_refs_and_caches_only_advisory_reads(stack
     view = await observe_stacks(observer, "p", task_id="child", max_age=30)
     assert await view.fresh()
     assert batched.await_count == 1
-    assert set(batched.call_args.args[1]) == {"main", "aq/first", "aq/second"}
+    assert set(batched.call_args.args[1]) == {"main"}
     another = await observe_stacks(observer, "p", task_id="child", max_age=30)
     assert await another.fresh()
     assert batched.await_count == 1
-    git(stack.origin.clone, "push", "--force", "origin", f"{stack.base}:aq/second")
     # A guarded writer bypasses the advisory cache even inside its TTL.
     strict = await observe_stacks(observer, "p", task_id="child")
-    strict.proofs = view.proofs
+    git(stack.origin.clone, "push", "origin", f"{second}:main")
     assert not await strict.fresh()
     assert batched.await_count == 2
     now += 3
@@ -1056,16 +1156,17 @@ async def test_stack_refresh_quantum_preserves_guards_and_admits_independent_wor
     assert await generation(stack.db, "child") == 0
 
 
-@pytest.mark.parametrize("operation", ["reopen", "abandon", "missing", "rewind"])
+@pytest.mark.parametrize("operation", ["reopen", "abandon", "provenance_missing"])
 async def test_reopened_abandoned_or_unproved_prerequisite_pauses_delivery(stack, operation):
     if operation == "reopen":
         await stack.db.transition_task("first", TaskStatus.READY, context="reopen", force=True)
     elif operation == "abandon":
         await stack.db.set_task_meta("first", "work_outcome", "abandoned")
-    elif operation == "missing":
-        git(stack.origin.clone, "push", "origin", ":aq/first")
     else:
-        git(stack.origin.clone, "push", "--force", "origin", f"{stack.base}:aq/first")
+        await stack.db.save_task_completion(TaskCompletion(
+            id="unretained-first", task_id="first", outcome="pass", commits=[stack.first],
+            completed_at=(await stack.db.get_task_completion("first")).completed_at + 1,
+        ))
     assert await stack.service.refresh("child", stack.gitops) == "waiting_prerequisite"
     assert not await stack.service.current("child")
     assert (
@@ -1084,7 +1185,7 @@ async def test_stack_view_revalidates_incarnation_and_remote(stack):
     async with stack.db._engine.connect() as conn:
         assert await view.verified_on(conn) == {}
     git(stack.origin.clone, "push", "--force", "origin", f"{stack.base}:aq/first")
-    assert not await view.fresh()
+    assert await view.fresh()  # the frozen source is independent of its branch tip
 
 
 async def test_stack_withholds_prerequisite_when_local_object_validation_fails(stack, monkeypatch):
@@ -1180,8 +1281,8 @@ async def test_cleaned_delivered_source_keeps_dependent_admissible(stack):
     view = await observe_stacks(stack.service.observer, "p", task_id="child")
     assert await view.fresh()
     git(stack.origin.clone, "push", "--force", "origin", f"{stack.base}:aq/epic")
-    assert not await view.fresh()
-    assert await stack.service.refresh("child", stack.gitops) == "waiting_prerequisite"
+    assert await view.fresh()
+    assert await stack.service.refresh("child", stack.gitops) == "unchanged"
 
 
 async def test_live_child_writer_withholds_refresh_without_losing_commits(stack):
@@ -1192,6 +1293,34 @@ async def test_live_child_writer_withholds_refresh_without_losing_commits(stack)
     assert await stack.service.refresh("child", stack.gitops) == "writer_active"
     assert git(stack.origin.url, "rev-parse", "refs/heads/aq/child") == stack.child
     assert not await stack.service.current("child")
+
+
+async def test_running_consumer_merges_replacement_before_close_without_reset(stack):
+    await stack.db.transition_task("child", TaskStatus.IN_PROGRESS, force=True)
+    workspace = stack.origin.clone
+    git(workspace, "checkout", "aq/child")
+    (workspace / "author-work").write_text("keep this work")
+    git(workspace, "add", ".")
+    git(workspace, "commit", "-qm", "author work")
+    author_head = git(workspace, "rev-parse", "HEAD")
+    await stack.db.transition_task("first", TaskStatus.READY, context="reopen", force=True)
+    assert (await stack.service.running_blocker("child"))["code"] == "stack_stale_input"
+    assert (await stack.service.running_blocker("child", workspace=workspace))["code"] == (
+        "stack_stale_input"
+    )
+    next_head = stack.origin.work("first", "revision")
+    await close(stack.db, "first", [next_head], close_id="replacement", origin=stack.origin)
+    await checkpoint(stack.db, "first", next_head)
+    git(workspace, "checkout", "aq/child")
+    blocker = await stack.service.running_blocker("child", workspace=workspace)
+    assert blocker["required_sources"] == {"first": next_head}
+    assert git(workspace, "rev-parse", "HEAD") == author_head
+    git(workspace, "merge", "--no-ff", "-m", "merge replacement prerequisite", next_head)
+    assert await stack.service.running_blocker("child", workspace=workspace) is None
+    assert await stack.service.current("child")
+    git(workspace, "merge-base", "--is-ancestor", author_head, "HEAD")
+    git(workspace, "merge-base", "--is-ancestor", next_head, "HEAD")
+    assert (workspace / "author-work").read_text() == "keep this work"
 
 
 async def test_changed_stack_replaces_frozen_inputs_and_tests_exact_combined_candidate(stack):

@@ -9687,7 +9687,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:393afc2d33b673eaaa7f97633bc43963c7ed5d146d2650c21f6f687ecdfe28e1",
+      "digest": "sha256:474a8c515e74cd29463bfa47beb19e686ab43eb9368a808d00daf22ee3138653",
       "imports": [
         "src.database.queries.claim_queries",
         "src.database.tables",
@@ -9702,7 +9702,8 @@
         "src.integration.train",
         "src.integration.train_controls",
         "src.integration.train_sources",
-        "src.models"
+        "src.models",
+        "src.operator_decisions"
       ],
       "markers": [
         "parametrize"
@@ -16572,7 +16573,7 @@
         "session-runtime"
       ],
       "default_arm": true,
-      "digest": "sha256:be7f8c5cc3c712a4036c50399800546960ce498c366c22030273d04a443f540f",
+      "digest": "sha256:7affc7c4999839f9c914545c658dbd4f50cebff943685e40e43fdd73e10dce74",
       "imports": [
         "src.api.auth",
         "src.api.scope",
@@ -16584,6 +16585,7 @@
         "src.database.tables",
         "src.git.manager",
         "src.integration.batches",
+        "src.integration.delivery_observer",
         "src.integration.delivery_truth",
         "src.integration.development",
         "src.integration.git_truth",

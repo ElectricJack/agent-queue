@@ -1674,6 +1674,7 @@ class TestEndToEndOnFakeProvider:
         from sqlalchemy import insert
         from src.database.tables import task_branch_origins
         from src.integration.batches import BatchService, BatchStore
+        from src.integration.delivery_observer import DeliveryObserver
         from src.integration.git_truth import GitTruth
         from src.integration.gitops import GitOperations, RetainedRepository, SubjectGitAuthority
         from src.integration.provenance import CompletedSource, CompletionIdentity, GitProvenance
@@ -1685,6 +1686,9 @@ class TestEndToEndOnFakeProvider:
         wd, git, base = await self._setup_development_git(db, real_orch, tmp_path)
         real_orch.config.integration.git_first = "active"
         await db.update_project("p1", hierarchical_integration_mode=mode)
+        db.set_prerequisite_observer(DeliveryObserver(
+            db, git=git, truth=GitTruth(git), data_dir=tmp_path / "delivery",
+        ))
         async with db._engine.begin() as conn:
             await conn.execute(insert(task_branch_origins).values(
                 id="t1-origin", task_id="t1", repository_id="repo", branch_name="aq/t1",
@@ -2892,8 +2896,11 @@ class TestEndToEndOnFakeProvider:
 
         await self._launch_via_execute_task(db, real_orch, monkeypatch, tmp_path)
         session = await db.get_session_for_task("t1")
+        entered, release = asyncio.Event(), asyncio.Event()
 
         async def reopen(ctx):
+            entered.set()
+            await release.wait()
             await db.transition_task(
                 ctx.task.id,
                 TaskStatus.READY,
@@ -2904,7 +2911,7 @@ class TestEndToEndOnFakeProvider:
             return None, False
 
         monkeypatch.setattr(real_orch, "_run_completion_pipeline", reopen)
-        close = await asyncio.wait_for(
+        caller = asyncio.create_task(
             real_handler.execute(
                 "task_close",
                 {
@@ -2914,9 +2921,18 @@ class TestEndToEndOnFakeProvider:
                     "work_outcome": "shipped",
                     "summary": "Work completed; git verification requested a retry.",
                 },
-            ),
-            timeout=2,
+            )
         )
+        try:
+            # Bound the reopen/release path after cold admission, as the
+            # neighboring verification tests do for their functional checks.
+            await asyncio.wait_for(entered.wait(), timeout=120)
+            release.set()
+            close = await asyncio.wait_for(asyncio.shield(caller), timeout=2)
+        finally:
+            # A timeout must not let the shielded close race database teardown.
+            release.set()
+            await asyncio.wait_for(caller, timeout=120)
 
         assert close["success"] is True and close["status"] == "READY"
         task = await db.get_task("t1")

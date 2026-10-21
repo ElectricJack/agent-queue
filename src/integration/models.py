@@ -393,7 +393,11 @@ class HierarchicalIntegrationPolicy(BaseModel):
     on_failed_child: Literal["block", "ask"]
     on_main_moved: Literal["rebuild", "wait"] = "rebuild"
     cross_epic_prerequisites: Literal["default_branch", "completed"] = "default_branch"
-    prerequisite_branches: Literal["stacked", "wait-for-parent"] | None = None
+    prerequisite_branches: Literal["stacked", "wait-for-parent"] | None = Field(
+        default=None,
+        description=("Unset stacks completed same-repository sources; "
+                     "wait-for-parent is an explicit opt-out."),
+    )
     cleanup: IntegrationCleanupPolicy = Field(default_factory=IntegrationCleanupPolicy)
     train: IntegrationTrainPolicy | None = None
     max_wait_seconds: float = Field(
