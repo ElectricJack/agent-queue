@@ -4696,10 +4696,11 @@
         "config"
       ],
       "default_arm": true,
-      "digest": "sha256:50a54cbed63f44be76f6cb79efe10783cd077e67a21b54a01b04f48c76b31436",
+      "digest": "sha256:186e40aa211b2efe2f90b6555ff9c6e49ed49202def4a9d9274048c258219e34",
       "imports": [
         "src",
         "src.config",
+        "src.config_wait_policy",
         "src.docs_urls"
       ],
       "markers": [

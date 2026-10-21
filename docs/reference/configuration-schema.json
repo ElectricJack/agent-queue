@@ -3483,7 +3483,7 @@
         },
         "min_samples": 5,
         "projects": {},
-        "resume_cost_minutes": 10,
+        "resume_cost_minutes": 10.0,
         "resume_launch_attempts": 2,
         "scheduler_waits_enabled": false,
         "transition_budget_seconds": 120,
@@ -3493,7 +3493,7 @@
       "properties": {
         "branch_admission_deadline_seconds": {
           "default": 1800,
-          "type": "number"
+          "type": "integer"
         },
         "hibernate_margin": {
           "default": 2.0,
@@ -3505,7 +3505,7 @@
         },
         "in_place_ceiling_seconds": {
           "default": 1800,
-          "type": "number"
+          "type": "integer"
         },
         "kinds": {
           "additionalProperties": {
@@ -3514,14 +3514,14 @@
               "escalate_after_seconds": {
                 "default": null,
                 "type": [
-                  "number",
+                  "integer",
                   "null"
                 ]
               },
               "expected_duration_seconds": {
                 "default": null,
                 "type": [
-                  "number",
+                  "integer",
                   "null"
                 ]
               }
@@ -3586,7 +3586,7 @@
         },
         "loop_window_seconds": {
           "default": 3600,
-          "type": "number"
+          "type": "integer"
         },
         "metrics": {
           "additionalProperties": false,
@@ -3643,10 +3643,17 @@
                   "null"
                 ]
               },
+              "hibernation_enabled": {
+                "default": null,
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
               "in_place_ceiling_seconds": {
                 "default": null,
                 "type": [
-                  "number",
+                  "integer",
                   "null"
                 ]
               },
@@ -3657,14 +3664,14 @@
                     "escalate_after_seconds": {
                       "default": null,
                       "type": [
-                        "number",
+                        "integer",
                         "null"
                       ]
                     },
                     "expected_duration_seconds": {
                       "default": null,
                       "type": [
-                        "number",
+                        "integer",
                         "null"
                       ]
                     }
@@ -3680,6 +3687,20 @@
                   "number",
                   "null"
                 ]
+              },
+              "scheduler_waits_enabled": {
+                "default": null,
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "v2_enabled": {
+                "default": null,
+                "type": [
+                  "boolean",
+                  "null"
+                ]
               }
             },
             "type": "object"
@@ -3688,7 +3709,7 @@
           "type": "object"
         },
         "resume_cost_minutes": {
-          "default": 10,
+          "default": 10.0,
           "type": "number"
         },
         "resume_launch_attempts": {
@@ -3701,7 +3722,7 @@
         },
         "transition_budget_seconds": {
           "default": 120,
-          "type": "number"
+          "type": "integer"
         },
         "v1_bodies": {
           "default": "translate",
