@@ -9883,7 +9883,7 @@
   "job_submit_integration": {
     "mode": "json_object",
     "producer": "src/commands/job_commands.py:JobCommandsMixin._cmd_job_submit_integration",
-    "source_digest": "sha256:92302ea1cda629a11e37f925954a760b43c06d14fa66cf375f3fa728eac44856",
+    "source_digest": "sha256:5fa962c2b886793e09e67e8170e74e2e4dca73c9ef7223f751cdd7dd1499a22f",
     "input_schema_source": "explicit_tool",
     "schema_quality": "declared",
     "argument_reads_diagnostic_only": [
@@ -9894,9 +9894,7 @@
       "preset",
       "project_id",
       "queue_seconds",
-      "run_seconds",
-      "snapshot_group",
-      "store"
+      "run_seconds"
     ],
     "effect": "destructive",
     "retry_safe": false,
@@ -24339,5 +24337,115 @@
     "helper_producers": {
       "_wait_v2_command": "sha256:03fd5f8eef8abced5000704b522faf62458654a25f2cf10fae3aa8fd8310e58d"
     }
+  },
+  "integration_batch_fix": {
+    "mode": "json_object",
+    "producer": "src/commands/integration_commands.py:IntegrationCommandsMixin._cmd_integration_batch_fix",
+    "source_digest": "sha256:b0aee39f3b9a9a06a1dce0d38a8ef568edbe147979d7a5acf3f56c1775c6f111",
+    "input_schema_source": "explicit_tool",
+    "schema_quality": "declared",
+    "argument_reads_diagnostic_only": [
+      "action"
+    ],
+    "effect": "destructive",
+    "retry_safe": false,
+    "principal_requirement": "original_principal",
+    "resource_gates": [
+      "live_session"
+    ],
+    "denial_reason": null,
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "return_branches": [
+      {
+        "return": "_failure('unavailable', 'the in-place batch fixer is not active')",
+        "protocol": "delegated_producer"
+      },
+      {
+        "return": "await service.command(current_principal(), action=args.get('action', 'status'))",
+        "protocol": "delegated_producer"
+      },
+      {
+        "return": "_failure('refused', str(exc))",
+        "protocol": "delegated_producer"
+      }
+    ],
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_integration_fixers.py"
+    ]
+  },
+  "integration_continue_close": {
+    "mode": "typed",
+    "producer": "src/commands/integration_commands.py:IntegrationCommandsMixin._cmd_integration_continue_close",
+    "source_digest": "sha256:8742790f2bf015cc63d1136fca633aa089ffff8e8d90e99a8cefecc000f623d3",
+    "input_schema_source": "typed_contract",
+    "schema_quality": "typed",
+    "argument_reads_diagnostic_only": [],
+    "effect": "destructive",
+    "retry_safe": true,
+    "principal_requirement": "original_principal",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "denial_reason": null,
+    "result_policy": "retained typed adapter",
+    "return_branches": [
+      {
+        "return": "_failure('refused', 'operation is not owned by this author session')",
+        "protocol": "delegated_producer"
+      },
+      {
+        "return": "{'success': response.get('success', False), 'outcome': 'completed' if response.get('success') else 'pending', 'operation_id': op['id'], 'close': response}",
+        "protocol": "delegated_producer"
+      }
+    ],
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_integration_close_merge.py"
+    ]
+  },
+  "project_relocate": {
+    "mode": "json_object",
+    "producer": "src/commands/project_relocation_commands.py:ProjectRelocationCommandsMixin._cmd_project_relocate",
+    "source_digest": "sha256:ed10c97598671d3b6f36e54413f8148d1eb47d1dc13984f9fcb727c8cd567e5c",
+    "input_schema_source": "explicit_tool",
+    "schema_quality": "declared",
+    "argument_reads_diagnostic_only": [
+      "apply",
+      "destination",
+      "expected_digest",
+      "owner_inventory",
+      "project_id"
+    ],
+    "effect": "destructive",
+    "retry_safe": false,
+    "principal_requirement": "original_principal",
+    "resource_gates": [
+      "system_scope"
+    ],
+    "denial_reason": null,
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "return_branches": [
+      {
+        "return": "{'success': False, 'error': 'relocation requires local operator authority'}",
+        "protocol": "explicit_boolean: False"
+      },
+      {
+        "return": "await service.apply(args['project_id'], args['destination'], expected_digest=args['expected_digest'], **common)",
+        "protocol": "delegated_producer"
+      },
+      {
+        "return": "await service.preview(args['project_id'], args['destination'], **common)",
+        "protocol": "delegated_producer"
+      },
+      {
+        "return": "{'success': False, 'error_code': 'relocation_refused', 'error': str(exc)}",
+        "protocol": "explicit_boolean: False"
+      }
+    ],
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_project_relocation.py"
+    ]
   }
 }

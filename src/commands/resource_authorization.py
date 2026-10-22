@@ -39,7 +39,7 @@ set_playbook_enabled playbook_graph_layout_save playbook_v2_graph playbook_graph
 show_playbook_graph playbook_artifact_diff
 batch_reconcile gate_reopen playbook_source_resync repair_repository_checkout
 repair_workspace_checkout spec_ingest_legacy_inventory spec_ingest_reconcile workspace_cutover
-run_command shutdown restart_daemon update_and_restart
+run_command shutdown restart_daemon update_and_restart project_relocate
 """.split())
 
 # Handlers with no resource data (schemas/catalogues only).
@@ -52,6 +52,7 @@ formula_list formula_show list_workspace_kinds doctor_catalog
 # re-derive the current claim/task/agent fence before touching their resources.
 SESSION_COMMANDS = frozenset("""
 prime subagent_event task_claim session_drain_ack operator_execute operator_preflight
+integration_batch_fix
 """.split())
 HELD_COMMANDS = frozenset("""
 task_close task_heartbeat task_set task_comment task_comment_edit task_comment_delete

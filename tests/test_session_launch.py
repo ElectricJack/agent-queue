@@ -301,6 +301,9 @@ _START_SITES = {
     ("src/dashboard_server/proxy.py", "exchange.start"): 1,
     ("src/dashboard_server/proxy.py", "self.start"): 1,
     ("src/discord/adapter.py", "self._bot.start"): 1,
+    # The batch fixer's runtime is DaemonFixerRuntime, which launches through
+    # launch_session (src/integration/fixer_runtime.py).
+    ("src/integration/fixers.py", "self.runtime.start"): 1,
     # Freezes an epic refresh batch; the train visits it without launching an agent.
     ("src/integration/train_sources.py", "EpicRefresh(self.db, clock=self.clock).start"): 1,
     # Changelog section boundaries use re.Match offsets, never agent launches.
@@ -342,6 +345,8 @@ _START_SITES = {
 # and PTY attachment. ask_cli is a tool-free one-shot inference (no AQ tools,
 # task or session); probe_claude_usage only queries account status.
 _PROCESS_SITES = {
+    # Bounded ccache/sccache stats read; telemetry only, never an agent.
+    ("src/build_cache.py", "cache_counters", "create_subprocess_exec"): 1,
     ("src/cli/daemon.py", "_start_dashboard", "Popen"): 1,
     ("src/cli/daemon.py", "_start_docker_desktop", "Popen"): 1,
     ("src/cli/daemon.py", "start_daemon", "Popen"): 1,

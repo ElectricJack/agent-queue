@@ -300,7 +300,9 @@ async def test_daily_retry_skips_projects_already_reported_before_restart(tmp_pa
 def _reporting_orchestrator(tmp_path, result):
     orchestrator = object.__new__(Orchestrator)
     orchestrator.db = SimpleNamespace(
-        list_projects=AsyncMock(return_value=[SimpleNamespace(id="p", name="One")]),
+        list_projects=AsyncMock(return_value=[
+            SimpleNamespace(id="p", name="One", storage_binding=None),
+        ]),
         list_repos=AsyncMock(return_value=[]), list_workspaces=AsyncMock(return_value=[]),
     )
     orchestrator.config = SimpleNamespace(data_dir=str(tmp_path), vault_projects=str(tmp_path))
@@ -698,7 +700,9 @@ async def test_daily_backstop_skips_job_snapshots_and_reports_unregistered_origi
                                  default_branch="main")
     orchestrator = object.__new__(Orchestrator)
     orchestrator.db = SimpleNamespace(
-        list_projects=AsyncMock(return_value=[SimpleNamespace(id="p", name="One")]),
+        list_projects=AsyncMock(return_value=[SimpleNamespace(
+            id="p", name="One", storage_binding=None,
+        )]),
         list_repos=AsyncMock(return_value=[registered]),
         list_workspaces=AsyncMock(return_value=workspaces),
         resolve_workspace_kind=AsyncMock(side_effect=AssertionError("snapshot inspected")),
