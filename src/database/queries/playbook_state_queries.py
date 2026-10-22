@@ -40,7 +40,11 @@ async def locked_namespace(engine, namespace, *, provision=False):
                     table.c.playbook_id == namespace.playbook_id,
                 ).limit(1))
                 if namespace.state_schema_version != 1 or prior_version is not None:
-                    raise StateError("state.migration_required")
+                    # A concurrent first writer may have committed this exact namespace
+                    # after our initial read. Only an absent namespace needs provisioning.
+                    row = await namespace_row(conn, namespace)
+                    if row is None:
+                        raise StateError("state.migration_required")
             now = await transaction_time(conn)
             await conn.execute(pg_insert(t.playbook_state_namespaces).values(
                 namespace_id=namespace.identifier, **namespace.as_dict(),
