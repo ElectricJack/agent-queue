@@ -6,6 +6,8 @@ scope: system
 triggers:
   - spec.approved
   - proposal.ready
+  - batch.held
+  - batch.receipt_recorded
   - event_type: gate.resolved
     filter:
       gate_type: human
@@ -18,9 +20,13 @@ The system default pipeline handles approved specs and task-batch proposals.
 Integration provides code validation and delivery; this pipeline does not create
 per-task reviewers, final branch reviewers, or review/PR gates on downstream work.
 
-Ships three rules:
+Ships five rules:
 
 - **Spec ingest** (`spec.approved`) creates a spec-ingest task.
+- **Fidelity review** (`batch.held`) assigns one fidelity reviewer to a held
+  spec-ingest batch.
+- **Release** (`batch.receipt_recorded`) releases a held batch whose reviewer
+  recorded a passing receipt.
 - **Proposal gate** (`proposal.ready`) requests approval for a task batch.
 - **Proposal commit** (`gate.resolved`, approved human gate) commits the approved batch.
 
@@ -39,10 +45,14 @@ Trigger: `spec.approved`. No guard.
    this task receipt exists; bus delivery alone does not complete ingestion.
    The role reads the approved packet and preserves all feedback obligations
    and existing follow-up links. Design approvals create only an epic and an
-   implementation-spec authoring child; implementation approvals create the
-   grounded graph. Accepted external prerequisites cover every executable leaf
-   unless the decision preview explicitly accepted narrower coverage. Edges
-   and the decision's graph receipt commit with the complete graph.
+   implementation-spec authoring child, released at once with the server
+   receipt `design_authoring_shape` and no reviewer. Implementation approvals
+   propose the grounded graph, which the server materializes `held`: every row,
+   edge and routing gate exists but nothing is ready or claimable until
+   `release-on-receipt` releases it. The role records the batch receipt and
+   closes; it never commits. Accepted external prerequisites cover every
+   executable leaf unless the decision preview explicitly accepted narrower
+   coverage.
    Require authors to follow `docs/templates/spec.md` and the Spec supersession
    checklist in `docs/guides/reviews.md`: identify approved specs replaced or
    overlapped, cite approved revisions, and list every predecessor goal as
@@ -58,8 +68,8 @@ Trigger: `proposal.ready`. No guard.
 
 Only ordinary proposals emit this event. A live spec-ingest assignment's
 approved-spec batch receives a server-owned stamp and emits no `proposal.ready`;
-it commits directly after validation. A caller-supplied `source: spec:...`
-never grants this exception.
+it is held for fidelity review instead (`fidelity-review-on-held`). A
+caller-supplied `source: spec:...` never grants this exception.
 
 1. Call `gate_create` in the event's `project_id` with `gate_type` `human`,
    `title` `Approve task batch?`, `question`
@@ -85,13 +95,45 @@ the rule without invoking a commit.
    `committed` ends the rule `completed`, and so does `already_committed`: a
    replayed approval gets the original receipt and no second graph.
 
+## Rule: fidelity-review-on-held
+
+Trigger: `batch.held`. No guard.
+
+1. Call `ensure_fidelity_review` with the event's `project_id`, `batch_id` and
+   `structure_revision`. The server creates one `fidelity-reviewer` role task
+   per batch (dedup key `fidelity-review:batch:<batch_id>`) and records it as
+   the batch's only reviewer; batch-review authority reaches that live task
+   and nobody else. `created` and `reused` end the rule `completed`. A
+   reviewer never releases anything: the batch stays held until a passing
+   receipt is recorded for its current structure revision.
+
+## Rule: release-on-receipt
+
+Trigger: `batch.receipt_recorded`. No guard.
+
+1. Call `task_batch_release` with the event's `batch_id` and `project_id`,
+   `expected_revision` the event's `structure_revision` and `expected_digest`
+   the event's `structure_digest`, so the release covers exactly the revision
+   the reviewer attested. The server re-reads the batch, the approved source,
+   the live graph and the passing receipt in one transaction before clearing
+   the holds. The result is saved as `release`. `released` and
+   `already_released` end the rule `completed`; a replayed receipt gets the
+   original release receipt.
+2. A refusal whose `error_code` is `needs_scope` ends the rule `completed`
+   without release: the reviewer raised a scope question, the batch waits on
+   its one ask, and the answer returns it to review, never to release. A
+   `batch.needs_scope` event dispatches no rule here for the same reason. Any
+   other refusal ends the rule `failed` and the batch stays held.
+
 ## Failure handling
 
 Successful command outcomes end at a `completed` terminal. `not_approved`,
-`rejected` and `runtime_error` end at a distinct `failed` terminal; they must
-never report completion. There are no automatic retries in these rules.
-Previously completed actions remain in place, and command deduplication
-protects deliberate replays.
+`rejected`, `runtime_error` and every release `error` except `needs_scope` end
+at a distinct `failed` terminal; they must never report completion. There are
+no automatic retries in these rules: `batch_reconcile` re-dispatches a held
+batch's missing reviewer and re-emits `batch.receipt_recorded` for an
+unreleased passing receipt from batch state. Previously completed actions
+remain in place, and command deduplication protects deliberate replays.
 
 Event filtering is not a substitute for authorization. For ordinary proposals,
 `task_batch_commit` re-reads the named gate and answers `not_approved` unless it is a
@@ -102,8 +144,11 @@ so the decision covers exactly the revision that is committed.
 
 
 Spec-ingest batches carry server-derived approved-document provenance and
-bypass the human approval check. They are committed with their epics, children,
-routing gates and edges in one database transaction on every project. The
-exception is created only for a live assigned spec-ingest role, never from
-an arbitrary caller's source or payload. They only create work: edits, edge
-removals and comments on existing tasks need an ordinary, human-approved change set.
+bypass the human approval gate, not review. They are materialized held with
+their epics, children, routing gates and edges in one database transaction on
+every project, and only `task_batch_release` after a passing fidelity receipt
+makes them claimable; `task_batch_commit` on a held batch answers
+`fidelity_review_required`. The exception is created only for a live assigned
+spec-ingest role, never from an arbitrary caller's source or payload. They only
+create work: edits, edge removals and comments on existing tasks need an
+ordinary, human-approved change set.

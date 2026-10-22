@@ -1,17 +1,20 @@
 ---
 playbook_id: default-pipeline
-artifact_sha256: sha256:2aa5acd9e4d2e7399b57edd2625bc850b45427d3c87d1568af109475bdc09b29
-source_sha256: sha256:b761ab57cc68323dbe0d62b9ef55e05ad16b655a1aa09bfe737e9bda4733ce02
-contract_fingerprint: sha256:a0f47bce57968a66c1be8eefe5e1f3c6174773fd8d384c34ef4a5f6d52126fcd
+artifact_sha256: sha256:719a3f794bc215a534e7fbf0a0e2800f772fdfc10b613c8c1e7c520b9562aab0
+source_sha256: sha256:b11d9a8e1e7df8b7449a13cada05094bbe841450fd42990ffa6aa961f6808913
+contract_fingerprint: sha256:3098cb7e8701d5ff63d7727d9ae32d1f817dac5fe499236c2c451104e1ff437d
 questions_resolved: 0
 capabilities_granted:
   aq_commands:
+  - ensure_fidelity_review
   - ensure_spec_ingest
   - gate_create
   - task_batch_commit
+  - task_batch_release
   harness_tools: []
   plugin_tools: []
 profiles_referenced:
+- fidelity-reviewer
 - spec-ingest
 ---
 
@@ -45,3 +48,14 @@ ingestion task receipt after completion, closure as obsolete, and archive.
 Rebuilt against the current command contracts, including `gate_create`;
 the three rules and their transitions are unchanged. Approval paths remain
 display mirrors, while immutable decision receipts establish deduplication.
+
+Updated 2026-10-22 for `nimble-lantern-37.2` (spec ingestion held batches,
+L5.2): approved implementation specs are materialized held, so the pipeline
+gains two rules. `fidelity-review-on-held` answers `batch.held` with
+`ensure_fidelity_review` (role profile `fidelity-reviewer`), and
+`release-on-receipt` answers `batch.receipt_recorded` with `task_batch_release`
+for exactly the attested revision and digest. A release refused `needs_scope`
+ends `completed` without release, the batch waiting on its scope ask; every
+other release refusal reaches the `failed` terminal. The spec-ingest,
+proposal-gate and commit rules and their transitions are unchanged apart from
+the spec-ingest step text; ordinary proposals keep the human gate.

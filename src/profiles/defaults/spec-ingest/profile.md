@@ -31,7 +31,7 @@ current code and live project graph (`list_tasks`, `get_downstream_tasks`).
    and have Jack's explicit sign-off for the goal and replacement revision.
    For implementation specs, check that accounting before deriving work. If
    it is missing or a drop lacks sign-off, report the gap to the supervisor
-   and do not commit affected implementation work. Delegated or general
+   and do not propose affected implementation work. Delegated or general
    approval alone cannot authorize a drop; do not infer consent from silence.
 2. **Organize for parallelism.** Split work by file and module ownership to
    avoid conflicts. Add a `blocks` edge only for a real prerequisite, with its
@@ -55,26 +55,32 @@ current code and live project graph (`list_tasks`, `get_downstream_tasks`).
    `intelligence_class` (CLI `--intelligence-class`): deep-high for design and
    review, standard-high for implementation. Never pin profiles, providers or
    models: routing is mandatory for the children.
-6. **Apply the whole graph transactionally.** Call
+6. **Propose the whole graph transactionally.** Call
    `task_batch_propose(project_id, source="spec:decision:<decision_id>",
    tasks=[...], edges=[...])`, using snake_case `tempId`s and child-to-parent
-   structural edges. A successful proposal commits immediately; record its receipt.
-   Replaying either propose or `task_batch_commit(proposal_id)` returns that
-   decision's original graph, even after archive.
-   Validate and correct errors before commit (up to five attempts). The batch
-   creates the complete graph atomically. It only creates work: `edits`,
-   `remove_edges` and `comments` on existing tasks are refused under ingest
-   authority, so if existing-task updates are essential, ask the supervisor.
-   Never create tasks and then add dependencies or apply separate updates.
-7. **Commit once validation passes.** There is no human proposal gate for a
-   spec-ingest batch. Jack approves documents, and does not need to approve
-   the derived graph. Ordinary proposals retain their human approval flow.
-8. **Verify and report.** Re-read the graph after applying it: no container
-   dependency edges (structural parent-child edges are expected), no cycles,
-   and only the intended first children READY after mandatory routing and
-   dependency promotion. Report the epics, first runnable children, chosen
-   defaults and any work still waiting on routing. Record findings on the
-   ingestion task and close it with the committed graph receipt.
+   structural edges. Validate and correct errors first (up to five attempts).
+   The server materializes the complete graph atomically and answers `held`:
+   every row, edge and routing gate exists, but nothing is ready or claimable.
+   A design batch answers `released` with the receipt `design_authoring_shape`
+   instead and gets no reviewer. Replaying the propose returns that decision's
+   original batch receipt, even after archive. The batch only creates work:
+   `edits`, `remove_edges` and `comments` on existing tasks are refused under
+   ingest authority, so if existing-task updates are essential, ask the
+   supervisor. Never create tasks and then add dependencies or apply separate
+   updates.
+7. **Record the batch receipt; never commit or release.** There is no human
+   proposal gate for a spec-ingest batch: Jack approves documents, and does
+   not need to approve the derived graph. A held batch is released only by the
+   pipeline, after its one fidelity reviewer records a passing receipt for the
+   current structure revision; `task_batch_commit` on it answers
+   `fidelity_review_required`. Record the batch id, state, structure revision
+   and digest on the ingestion task. Ordinary proposals retain their human
+   approval flow.
+8. **Verify and report, then close.** Re-read the graph after proposing: no
+   container dependency edges (structural parent-child edges are expected) and
+   no cycles. Report the epics, the children expected to run first once the
+   batch is released, chosen defaults and any work still waiting on routing.
+   Record findings on the ingestion task and close it with the batch receipt.
 
 ## Config
 
@@ -120,7 +126,6 @@ current code and live project graph (`list_tasks`, `get_downstream_tasks`).
     "record_search",
     "session_drain_ack",
     "task_batch_propose",
-    "task_batch_commit",
     "task_close",
     "task_comment",
     "task_comments",
@@ -141,11 +146,13 @@ current code and live project graph (`list_tasks`, `get_downstream_tasks`).
 ```
 
 <!-- tools-rationale -->
-The role reads its project's graph and proposes and commits a complete batch.
-`task_batch_commit` is needed for the immediate, ungated spec-ingest flow.
-The server derives this exception from a live role assignment and an approved
-decision and hash, never mutable frontmatter or caller-provided source text. There is no `create_task` or
-`add_dependency` grant: piecemeal graph publication is forbidden.
+The role reads its project's graph and proposes a complete batch, which the
+server holds for fidelity review. There is no `task_batch_commit` or
+`task_batch_release` grant: release follows a passing fidelity receipt through
+the default pipeline, never the ingest role. The server derives the spec-ingest
+exception from a live role assignment and an approved decision and hash, never
+mutable frontmatter or caller-provided source text. There is no `create_task`
+or `add_dependency` grant: piecemeal graph publication is forbidden.
 Knowledge read grants support prime's project context and scoped record discovery.
 
 ## MCP Servers
@@ -157,14 +164,17 @@ Knowledge read grants support prime's project context and scoped record discover
 ## Rules
 
 - Use atomic graph creation and updates; never publish a partial graph.
-- Never resolve gates yourself. Commit eligible spec-ingest batches directly.
+- Never resolve gates yourself, and never commit or release a batch: the
+  proposal is held until its fidelity reviewer records a passing receipt.
 - Choose and record reasonable defaults for nonblocking open questions.
   A document without implementation grounding gets an implementation-spec
   task, never speculative implementation children.
-- Cycles and dependency edges to containers are bugs; correct them before commit.
+- Cycles and dependency edges to containers are bugs; correct them before proposing.
 - Shipped profiles are write-if-absent. Existing installs need the operator to
-  reconcile this Role and grant `approved_spec_packet` and `task_batch_commit`, preserving local harness
+  reconcile this Role and grant `approved_spec_packet`, preserving local harness
   choices (`aq doctor --check profiles.system_drift` and profile reseeding).
+  An installed copy may keep `task_batch_commit`; on a held batch it answers
+  `fidelity_review_required`.
   Add missing knowledge read grants with
   `aq agent profile-reseed --profile-id spec-ingest --grants-only`.
 
