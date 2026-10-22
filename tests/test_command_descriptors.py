@@ -59,15 +59,52 @@ BATCH_REPAIR_CHANGES = ROOT / "tests/fixtures/contracts/batch-repair-contract-ch
 DEV_HIBERNATION_CHANGES = ROOT / "tests/fixtures/contracts/hibernation-main-refresh-contract-changes.json"
 SUPERVISOR_HEALTH_CHANGES = ROOT / "tests/fixtures/contracts/supervisor-health-contract-changes.json"
 TARGET_REPAIR_CHANGES = ROOT / "tests/fixtures/contracts/target-repair-contract-changes.json"
+OBSOLETE_CHILD_CHANGES = ROOT / "tests/fixtures/contracts/obsolete-child-contract-changes.json"
 
 
 def _stuck_check_changes():
     return json.loads((ROOT / "tests/fixtures/contracts/stuck-check-contract-changes.json").read_text())
 
 
+def _obsolete_child_changes():
+    changes = json.loads(OBSOLETE_CHILD_CHANGES.read_text())
+    assert changes["source_base"] == "feeb89e65e4bb5e2a4a2033fa32f967d1f66fce9"
+    assert set(changes["contracts"]) == {"integration_redrive_child"}
+    assert set(changes["transport_definitions"]) == {"integration_redrive_child"}
+    return changes
+
+
+def _before_obsolete_child_catalogue():
+    return _revert_catalogue(json.loads(render_command_catalogue()), _obsolete_child_changes())
+
+
+def test_obsolete_child_contract_only_adds_pinned_disposition():
+    changes = _obsolete_child_changes()
+    old = _dev_changes()["contracts"]["integration_redrive_child"]
+    assert changes["contracts"]["integration_redrive_child"]["previous_fingerprint"] == (
+        old["fingerprint"]
+    )
+    old = old["execution"]
+    optional = {"anyOf": [{"type": "string"}, {"type": "null"}], "default": None}
+    old["args_schema"]["properties"].update(
+        dispose_obsolete={"default": False, "type": "boolean"},
+        superseded_by=optional, expected_parent_head_sha=optional,
+    )
+    position = old["receipt_projection"].index("tree_sha")
+    for field in ("parent_head_sha", "merge_head_sha", "superseded_by"):
+        old["result_schema"]["properties"][field] = optional
+        old["receipt_projection"].insert(position, field)
+        position += 1
+    assert changes["contracts"]["integration_redrive_child"]["execution"] == old
+    previous = json.dumps(_before_obsolete_child_catalogue(), indent=2) + "\n"
+    assert hashlib.sha256(previous.encode()).hexdigest() == (
+        changes["previous_cli_catalogue_sha256"]
+    ) == _stuck_check_changes()["cli_catalogue_sha256"]
+
+
 def _before_stuck_check_catalogue():
     evidence = _stuck_check_changes()
-    catalogue = json.loads(render_command_catalogue())
+    catalogue = _before_obsolete_child_catalogue()
     assert catalogue["fallback"].pop(evidence["command"]) == evidence["transport_definition"]
     return catalogue
 
@@ -318,7 +355,7 @@ def test_legacy_execution_documents_and_fingerprints():
             assert expected["previous_fingerprint"] == old["fingerprint"]
             assert expected["fingerprint"] != old["fingerprint"]
         for recording in (_hibernation_changes(), _dispatch_changes(), _merge_changes(),
-                          _leaf_changes(), _completion_changes()):
+                          _leaf_changes(), _completion_changes(), _obsolete_child_changes()):
             later = recording["contracts"].get(name)
             if later:
                 assert later["previous_fingerprint"] == expected["fingerprint"]
@@ -360,7 +397,7 @@ def test_transport_views_and_cli_serialization_preserve_golden_evidence():
             assert approved["previous_sha256"] == digest
             digest = approved["sha256"]
         for recording in (_hibernation_changes(), _dispatch_changes(), _merge_changes(),
-                          _leaf_changes(), _completion_changes()):
+                          _leaf_changes(), _completion_changes(), _obsolete_child_changes()):
             if name in recording["transport_definitions"]:
                 approved = recording["transport_definitions"][name]
                 assert approved["previous_sha256"] == digest
@@ -389,7 +426,9 @@ def test_transport_views_and_cli_serialization_preserve_golden_evidence():
     assert completion["previous_cli_catalogue_sha256"] == leaf["cli_catalogue_sha256"]
     stuck_check = _stuck_check_changes()
     assert stuck_check["previous_cli_catalogue_sha256"] == completion["cli_catalogue_sha256"]
-    assert actual == stuck_check["cli_catalogue_sha256"]
+    obsolete_child = _obsolete_child_changes()
+    assert obsolete_child["previous_cli_catalogue_sha256"] == stuck_check["cli_catalogue_sha256"]
+    assert actual == obsolete_child["cli_catalogue_sha256"]
     previous = json.dumps(_before_batch_fix_catalogue(), indent=2) + "\n"
     assert hashlib.sha256(previous.encode()).hexdigest() == dispatch["cli_catalogue_sha256"]
     previous = json.dumps(_before_dispatch_catalogue(), indent=2) + "\n"
