@@ -1,10 +1,45 @@
-"""Release only quiet, finished, writerless integration reservations.
+"""Release the stale integration owners a project's drain is waiting on.
 
-Attached/handoff owners require owner recovery instead. Refuse live sessions,
-workspace locks, mutations, operations, batches, promotion intents and unpublished
-work. Fetch once to prove containment; a missing branch does not prove a failed
-task delivered. Release by fenced compare-and-swap with audit and task notice.
-Preview writes nothing. Drop expired project leases only for finished batches.
+``aq integration release-stale-owners`` (``integration_release_stale_owners``)
+is the bulk, project-scoped form of ``release-owner`` for the rows that
+command cannot take: ``reserved`` branch-owner rows, which name no writer,
+left behind when a train run's tasks finished, were archived or were deleted.
+Every ``integration_branch_owners`` row that is not ``released`` counts as
+active integration work; disabling delivery preserves these reservations.
+
+A row is released only when it is provably safe:
+
+* it is ``reserved`` and names no session or workspace.  An ``attached`` or
+  ``handoff_pending`` row is reported: it names a writer, and
+  ``release-owner`` owns it, with its stop proof and preservation;
+* its owner is finished -- a task that is COMPLETED or FAILED, archived or
+  deleted, or an integration operation that ended -- and nothing still acts
+  for it: no live session, workspace lock, in-flight candidate ref mutation
+  or running operation, and no hierarchy/train project owns the row
+  (:func:`src.integration.finished_owners._blocker`, the questions the
+  finished-owner maintenance source asks);
+* nothing still relies on its fence: no active integration batch lists the
+  branch and no unsettled promotion intent names it.  A promoted batch whose
+  cleanup is pending keeps its integration branch's owner, because cleanup of
+  that local ref checks the owner's fence -- run ``retry-cleanup`` first.  Its
+  members' rows are not kept: their work is on the default branch, and
+  cleanup refuses to delete a source ref whose owner is not released;
+* its work is on origin, proved after one ``git fetch --prune`` of the
+  repository: the branch tip is an ancestor of the default branch, or the
+  branch is gone and its owner is terminal (COMPLETED, archived, deleted, or
+  an ended operation -- a FAILED task may be retried, so a gone branch proves
+  nothing for it); and no worktree or local branch holds work origin lacks.
+
+Everything else is reported with its reason and left alone.  A release is the
+compare-and-swap ``release-owner`` makes: ``released`` with a fresh fence, one
+``integration_owner_recoveries`` audit row naming the principal, an
+``integration.owner_recovered`` event and a note on the owning task.  A dry
+run fetches but writes nothing.  A released row is never selected again, so
+the command is idempotent.
+
+It also drops the project's integration lease when the lease has expired and
+its batch is finished (``integration.stale_lease_released``): the drain counts
+a lease row however long ago it expired.
 """
 
 from __future__ import annotations
