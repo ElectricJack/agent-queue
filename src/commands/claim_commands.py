@@ -2332,11 +2332,8 @@ class ClaimCommandsMixin:
                 expected_task_id=task.id, expected_claim_epoch=epoch,
                 expected_instance_token=session.instance_token,
                 task_status=TaskStatus.BLOCKED if attempt >= 3 else TaskStatus.READY,
-                context="slot_reset_failed",
-                now=time.time(),
-                result="prepare_failed",
-                needs_attention="slot_reset_failed",
-                prepare_backoff=True,
+                context="slot_reset_failed", now=time.time(), result="prepare_failed",
+                needs_attention="slot_reset_failed", prepare_backoff=True,
                 release_workspace_lock=poisoned, drain_after_release=poisoned,
             )
             await self._record_prepare_failure(
@@ -2346,10 +2343,8 @@ class ClaimCommandsMixin:
             await self.orchestrator.bus.emit(
                 "pool.prepare_failed",
                 {
-                    "project_id": session.project_id,
-                    "profile_id": session.profile_id,
-                    "session_id": session.id,
-                    "task_id": task.id,
+                    "project_id": session.project_id, "profile_id": session.profile_id,
+                    "session_id": session.id, "task_id": task.id,
                     **failure.event_fields(),
                 },
             )
