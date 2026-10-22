@@ -33,6 +33,7 @@ from typing import Any
 
 from src.deliverables import resolve_task_deliverables
 from src.models import ProjectStatus
+from src.waits.policy import enabled as waits_enabled
 
 from . import sections as _sections
 from .models import PrimeDocument
@@ -170,8 +171,6 @@ class PrimeRenderer:
                 continuation = await continuation_prime_context(
                     conn, task_id=task_id, project_id=task.project_id, session_id=sess.id,
                 )
-
-        from src.waits.policy import enabled as waits_enabled
 
         section_tuple = (
             await _sections.build_role_section(self.config, effective_profile_id),

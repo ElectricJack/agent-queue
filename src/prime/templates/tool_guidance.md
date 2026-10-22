@@ -12,8 +12,8 @@ Native equivalents include task_show, task_set, task_comment, task_comments, tas
 task_heartbeat, task_claim, task_handoff, message_send, message_inbox. Use the
 convenient surface; both dispatch through CommandHandler.
 
-Read your project's vault plans/specs with `aq file read projects/<project>/plans/<file>`
-or `aq file read projects/<project>/specs/<file>`. Absolute vault paths also work.
+Read your project's vault plans/specs with `aq file read --path projects/<project>/plans/<file>`
+or `aq file read --path projects/<project>/specs/<file>`. Absolute vault paths also work.
 These reads are read-only and project-scoped; knowledge activation is separate.
 
 For durable references, findings, decisions and procedures, use `aq knowledge create`

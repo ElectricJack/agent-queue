@@ -58,7 +58,7 @@ TOOL_CATEGORY = "files"
 TOOL_DEFINITIONS = [
     {
         "name": "read_file",
-        "description": "Read a workspace file or a project's vault plans/specs. Vault paths use projects/<project_id>/plans/... or projects/<project_id>/specs/... relative to the vault root. Sessions can read only their own project's files. Supports offset/limit.",
+        "description": "Read a file's contents. Path can be absolute or relative to the workspaces root. Supports offset/limit for reading specific portions of large files.",
         "input_schema": {
             "type": "object",
             "properties": {

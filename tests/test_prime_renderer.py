@@ -1582,7 +1582,7 @@ async def test_prime_wait_guidance_matches_project_activation(
     if not expected:
         assert "awaiting inbox delivery" in guidance
         assert "registration is disabled" in completion
-    assert "aq file read projects/<project>/plans/<file>" in guidance
+    assert "aq file read --path projects/<project>/plans/<file>" in guidance
 
 
 async def test_pool_completion_does_not_prescribe_disabled_message_wait():

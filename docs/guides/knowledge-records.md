@@ -47,8 +47,8 @@ disabled or refused, report the limitation; a save request does not authorize
 feature enablement or a silent fallback to a legacy note.
 
 Workers can read their project's vault plans and specs independently of knowledge
-activation, using `aq file read projects/<project>/plans/<file>` or
-`aq file read projects/<project>/specs/<file>`. Absolute vault paths are also accepted.
+activation, using `aq file read --path projects/<project>/plans/<file>` or
+`aq file read --path projects/<project>/specs/<file>`. Absolute vault paths are also accepted.
 This grants read access only: other projects, other vault directories and symlink
 escapes remain inaccessible. Canonical knowledge reads still require the project's
 explicit activation; the supervisor or operator owns that configuration.
