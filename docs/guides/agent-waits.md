@@ -4,6 +4,12 @@ tags: [guide, agents, waits]
 
 # Verified agent waits
 
+Prime follows the effective project `wait_policy.v2_enabled` setting. When it is
+disabled, report a blocker once, preserve the held claim and end the turn awaiting
+supervisor inbox delivery. Do not retry registration or poll inboxes. Run tests in
+the foreground with `aq test`. Existing persisted waits retain their recovery and
+acknowledgement paths during a rollback.
+
 Register a condition once, then end the turn. AQ verifies the source, chooses
 whether to retain the process or hibernate, and delivers a durable outcome.
 Agents do not choose sleep mode, maintain a polling heartbeat, or choose an

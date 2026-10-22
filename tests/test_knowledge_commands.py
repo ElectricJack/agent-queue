@@ -72,6 +72,10 @@ async def test_all_worker_rungs_use_knowledge_from_pool_bearer_scope(handler):
         assert shown["record_id"] == created["record_id"]
         listed = await execute("knowledge_list")
         assert created["record_id"] in [row["record_id"] for row in listed["items"]]
+        searched = await execute("record_search", query="Pool worker evidence")
+        assert created["record_id"] in [row["record_id"] for row in searched["items"]]
+        capabilities = await execute("record_capabilities")
+        assert "record_search" in capabilities["capabilities"]["granted_operations"]
         cited = await execute(
             "knowledge_cite", identity=ident(created), revision_id=created["revision_id"],
             kind="explicit_read", claim_epoch=1, idempotency_key=f"cite-{rung.id}",
@@ -332,3 +336,45 @@ async def test_global_scope_is_explicit_and_cannot_be_combined_with_project(hand
     assert created["success"], created
     denied = await handler.execute("knowledge_create", {**args, "global_scope": True, "project_id": "p"})
     assert not denied["success"]
+
+
+@pytest.mark.parametrize("enabled,project_enabled,writes", [
+    (False, True, True), (True, False, True), (True, True, False), (True, True, True),
+])
+async def test_worker_capabilities_match_activation_and_read_results(
+    handler, enabled, project_enabled, writes
+):
+    from src.commands.principal import principal_context
+
+    grants = ["record_capabilities", "record_search", "knowledge_create"]
+    worker = await worker_principal(handler.db, grants=grants)
+    handler.config.knowledge.enabled = enabled
+    handler.config.knowledge.enabled_projects = ["p"] if project_enabled else []
+    handler.config.knowledge.writes_enabled = writes
+    with principal_context(worker):
+        result = await handler.execute("record_capabilities", {"project_id": "p"})
+        search = await handler.execute("record_search", {"project_id": "p", "query": "test"})
+    assert result["success"], result
+    caps = result["capabilities"]
+    assert caps["profile_granted_operations"] == sorted(grants)
+    active = enabled and project_enabled
+    assert ("record_search" in caps["granted_operations"]) == active
+    assert search["success"] == active
+    assert ("knowledge_create" in caps["granted_operations"]) == (active and writes)
+    if not active:
+        assert caps["unavailable_operations"]["record_search"] == search["error_code"]
+    elif not writes:
+        assert caps["unavailable_operations"]["knowledge_create"] == "knowledge.read_only"
+
+
+async def test_worker_record_reads_reject_other_project(handler):
+    from src.commands.principal import principal_context
+
+    await seed_project(handler.db, "q")
+    handler.config.knowledge.enabled_projects = ["p", "q"]
+    worker = await worker_principal(handler.db, grants=["record_search", "record_capabilities"])
+    with principal_context(worker):
+        result = await handler.execute("record_search", {"project_id": "q", "query": "test"})
+        caps = await handler.execute("record_capabilities", {"project_id": "q"})
+    assert result["error_code"] == "record.not_found"
+    assert "record_search" not in caps["capabilities"]["granted_operations"]

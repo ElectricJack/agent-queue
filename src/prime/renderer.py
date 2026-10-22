@@ -33,6 +33,7 @@ from typing import Any
 
 from src.deliverables import resolve_task_deliverables
 from src.models import ProjectStatus
+from src.waits.policy import enabled as waits_enabled
 
 from . import sections as _sections
 from .models import PrimeDocument
@@ -223,6 +224,7 @@ class PrimeRenderer:
             _sections.build_completion_protocol_section(
                 task_id,
                 lifecycle=session_lifecycle,
+                waits_enabled=waits_enabled(self.config, task.project_id),
                 development=development,
                 regenerate=(
                     (getattr(project, "hierarchical_integration_policy", None) or {}).get(
