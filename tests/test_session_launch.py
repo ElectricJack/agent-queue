@@ -433,10 +433,12 @@ def test_all_agent_launch_paths_use_the_chokepoint():
     assert starts == Counter(_START_SITES), "New .start path: route agents through launch_session"
     assert processes == Counter(_PROCESS_SITES), "Unreviewed OS spawn could bypass the flock"
     # Task launches cover workers, reviews, repairs, verifiers and playbook
-    # delegates; pool and named launches cover workers and both supervisors.
+    # delegates; pool and named launches cover workers and both supervisors;
+    # the batch fixer is a named session the integration service launches.
     assert launches == Counter({
         ("src/orchestrator/execution.py", "ExecutionMixin._launch_session_for_task_locked"): 2,
         ("src/orchestrator/pools.py", "PoolsMixin._launch_pool_session_inner"): 1,
+        ("src/integration/fixer_runtime.py", "DaemonFixerRuntime._start"): 1,
         ("src/agents/terminals.py", "_start_locked"): 1,
         ("src/messages/session_lens.py", "SessionLens._ensure_started_locked"): 1,
     })

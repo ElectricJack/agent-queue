@@ -31,10 +31,10 @@ TRANSITION_BATCH_EXCEPTION = {'batch_id': 'train-56f15aff49843c6989224397ef6d704
                           'msg-dbb0120c6172499081721c033e894b39'],
  'decision_record': 'record:2720bdbe-7521-427e-8e72-1f40a3ff9818',
  'decision_record_revision': '7a219c5d-10dd-4f2f-bfab-60ce7e82071a',
- 'measured_source_revision': 'aeb45642df379314adea0689bbf0c78125ce3f20',
+ 'measured_source_revision': 'cc9938f71350d5fb0e0bdc936fad5e1168506a31',
  'original_owned_total_cap': 155499,
- 'measured_owned_total': 160145,
- 'delta': 4646,
+ 'measured_owned_total': 160152,
+ 'delta': 4653,
  'predecessors': [{'batch_id': 'train-77f0d8e451f6aed08d608e443031047a',
                    'decision_message_id': 'msg-edb5f857de344716a38857406fa69958',
                    'decision_record': 'record:2720bdbe-7521-427e-8e72-1f40a3ff9818',
@@ -50,7 +50,7 @@ TRANSITION_BATCH_EXCEPTION = {'batch_id': 'train-56f15aff49843c6989224397ef6d704
                    'measured_owned_total': 158958,
                    'provenance': 'Supervisor-authorized predecessor; added once after batch77 '
                                  'final delta1293.'}],
- 'batch_measured_delta': 1187,
+ 'batch_measured_delta': 1194,
  'restore_task': 'azure-ridge-72',
  'expires_at': 's4_modules',
  'category_approval_message_id': 'msg-90f9f1b1e0cd4e8e8d28071cffc927a6'}

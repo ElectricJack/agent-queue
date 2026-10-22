@@ -1043,7 +1043,7 @@
     "phase": "transition",
     "fixed_replacement_allowance": 15000,
     "engine_cap": 97627,
-    "owned_total_cap": 160145,
+    "owned_total_cap": 160152,
     "table_cap": 46,
     "expires_at": "s4_modules",
     "automatic_baseline_increase": false,
@@ -1058,10 +1058,10 @@
       ],
       "decision_record": "record:2720bdbe-7521-427e-8e72-1f40a3ff9818",
       "decision_record_revision": "7a219c5d-10dd-4f2f-bfab-60ce7e82071a",
-      "measured_source_revision": "aeb45642df379314adea0689bbf0c78125ce3f20",
+      "measured_source_revision": "cc9938f71350d5fb0e0bdc936fad5e1168506a31",
       "original_owned_total_cap": 155499,
-      "measured_owned_total": 160145,
-      "delta": 4646,
+      "measured_owned_total": 160152,
+      "delta": 4653,
       "predecessors": [
         {
           "batch_id": "train-77f0d8e451f6aed08d608e443031047a",
@@ -1082,7 +1082,7 @@
           "provenance": "Supervisor-authorized predecessor; added once after batch77 final delta1293."
         }
       ],
-      "batch_measured_delta": 1187,
+      "batch_measured_delta": 1194,
       "restore_task": "azure-ridge-72",
       "expires_at": "s4_modules",
       "category_approval_message_id": "msg-90f9f1b1e0cd4e8e8d28071cffc927a6"
@@ -13680,13 +13680,13 @@
   },
   "complete_candidate": {
     "batch_id": "train-56f15aff49843c6989224397ef6d7044",
-    "measured_source_revision": "aeb45642df379314adea0689bbf0c78125ce3f20",
+    "measured_source_revision": "cc9938f71350d5fb0e0bdc936fad5e1168506a31",
     "frozen_sources_in_merge_order": [
       "bbcbd5a61d9c59e0a507f2e30160624e44196fca",
       "2f66afabac4add24a1e4eaa7927ae0798ec344bf"
     ],
     "groups": {
-      "shared": 61322,
+      "shared": 61329,
       "companions": 11877,
       "engine": 84546,
       "policy_sources": 1010,
@@ -13694,7 +13694,7 @@
       "ui": 262,
       "guards": 639
     },
-    "owned_total": 160145,
+    "owned_total": 160152,
     "tables": {
       "integration_source_ci": [
         "src/database/tables.py",
@@ -13939,10 +13939,10 @@
       ],
       "decision_record": "record:2720bdbe-7521-427e-8e72-1f40a3ff9818",
       "decision_record_revision": "7a219c5d-10dd-4f2f-bfab-60ce7e82071a",
-      "measured_source_revision": "aeb45642df379314adea0689bbf0c78125ce3f20",
+      "measured_source_revision": "cc9938f71350d5fb0e0bdc936fad5e1168506a31",
       "original_owned_total_cap": 155499,
-      "measured_owned_total": 160145,
-      "delta": 4646,
+      "measured_owned_total": 160152,
+      "delta": 4653,
       "predecessors": [
         {
           "batch_id": "train-77f0d8e451f6aed08d608e443031047a",
@@ -13963,7 +13963,7 @@
           "provenance": "Supervisor-authorized predecessor; added once after batch77 final delta1293."
         }
       ],
-      "batch_measured_delta": 1187,
+      "batch_measured_delta": 1194,
       "restore_task": "azure-ridge-72",
       "expires_at": "s4_modules",
       "category_approval_message_id": "msg-90f9f1b1e0cd4e8e8d28071cffc927a6"
@@ -15305,5 +15305,63 @@
       }
     },
     "headroom": 0
-  }
+  },
+  "repair_measurements": [
+    {
+      "task_id": "repair-2d46060fa82339e7c313ef8389112d5b6fad07855f062b03bf6180fd6df34e87",
+      "batch_id": "train-56f15aff49843c6989224397ef6d7044",
+      "source_revision": "969b4abd4831d643b1edc5a05db18e653c54b7a5",
+      "starting_revision": "f0a1ea83d639a506aeab41eea08e9d7d55f43598",
+      "measurement_command": "python tests/integration_ownership.py",
+      "owned_lines": 160145,
+      "engine_lines": 84546,
+      "tables": 46,
+      "repair_owned_delta": 0,
+      "batch_owned_delta": 1187,
+      "cumulative_owned_delta": 4646,
+      "remaining_headroom": 0,
+      "approved_storage_categories": [
+        "integration_close_attempts"
+      ],
+      "decision_message_ids": [
+        "msg-7ed85e78d1af4f3e85b485a57967e794",
+        "msg-dbb0120c6172499081721c033e894b39",
+        "msg-90f9f1b1e0cd4e8e8d28071cffc927a6"
+      ],
+      "decision_record": "record:2720bdbe-7521-427e-8e72-1f40a3ff9818",
+      "disposition": "Revision 115 postdates SQLite removal. Legacy import refuses populated PostgreSQL targets and preserves existing close-operation evidence, arguments, identities and retained candidates. Canonical wait coverage retains exact registry equality and verifies service/owner scope, budget reuse and terminal settlement.",
+      "restore_task": "azure-ridge-72",
+      "category_restore_task": "stark-willow-95.17",
+      "restoration_verified_by": "stark-willow-95.18",
+      "expires_at": "s4_modules"
+    },
+    {
+      "task_id": "repair-fd1570e750993fbe60f02fd6a895c936ecfc381edf31fbb9a727e03f389ad366",
+      "batch_id": "train-56f15aff49843c6989224397ef6d7044",
+      "source_revision": "cc9938f71350d5fb0e0bdc936fad5e1168506a31",
+      "starting_revision": "c510df6200937eb098d17e9040a71593c5839a63",
+      "measurement_command": "python tests/integration_ownership.py",
+      "owned_lines": 160152,
+      "engine_lines": 84546,
+      "tables": 46,
+      "repair_owned_delta": 7,
+      "batch_owned_delta": 1194,
+      "cumulative_owned_delta": 4653,
+      "remaining_headroom": 0,
+      "approved_storage_categories": [
+        "integration_close_attempts"
+      ],
+      "decision_message_ids": [
+        "msg-7ed85e78d1af4f3e85b485a57967e794",
+        "msg-dbb0120c6172499081721c033e894b39",
+        "msg-90f9f1b1e0cd4e8e8d28071cffc927a6"
+      ],
+      "decision_record": "record:2720bdbe-7521-427e-8e72-1f40a3ff9818",
+      "disposition": "Remeasured under the standing exact-final allowance (not a second 1187 allowance). +7 shared lines: integration_batch_fix joins SESSION_COMMANDS (live_session gate) so its generated json_object producer has audited resource authority; BatchFixerService requires a session principal.",
+      "restore_task": "azure-ridge-72",
+      "category_restore_task": "stark-willow-95.17",
+      "restoration_verified_by": "stark-willow-95.18",
+      "expires_at": "s4_modules"
+    }
+  ]
 }
