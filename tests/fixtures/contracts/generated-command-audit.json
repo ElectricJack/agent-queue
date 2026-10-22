@@ -9059,6 +9059,43 @@
       "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
     ]
   },
+  "integration_repair_target": {
+    "mode": "typed",
+    "producer": "src/commands/integration_commands.py:IntegrationCommandsMixin._cmd_integration_repair_target",
+    "source_digest": "sha256:6ca7aad272b4a0309c2b6dc3d3fb34c00e3c08897330012f78eb82327b208551",
+    "input_schema_source": "typed_contract",
+    "schema_quality": "typed",
+    "effect": "destructive",
+    "retry_safe": true,
+    "principal_requirement": "original_principal",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "denial_reason": null,
+    "result_policy": "retained typed adapter",
+    "argument_reads_diagnostic_only": [],
+    "return_branches": [
+      {
+        "return": "{'success': True, **result}",
+        "protocol": "explicit_boolean: True"
+      },
+      {
+        "return": "_failure('unauthorized', refusal)",
+        "protocol": "delegated_producer"
+      },
+      {
+        "return": "_failure('refused', str(exc))",
+        "protocol": "delegated_producer"
+      }
+    ],
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_integration_contracts.py",
+      "tests/test_integration_train_sources.py",
+      "tests/test_cli_integration.py"
+    ],
+    "review_notes": "Preview/apply uses integration_operator for the batch project; unauthorized/refused outcomes retain explicit false envelopes. TrainControls.repair_target revalidates target, candidate, sealed subtree and allocator attempt; no authority or budget reset."
+  },
   "integration_repair_timeout": {
     "mode": "typed",
     "producer": "src/commands/integration_commands.py:IntegrationCommandsMixin._cmd_integration_repair_timeout",
@@ -17456,7 +17493,7 @@
   "reopen_with_feedback": {
     "mode": "json_object",
     "producer": "src/commands/task_commands.py:TaskCommandsMixin._cmd_reopen_with_feedback",
-    "source_digest": "sha256:778f67bc82847b5688584946510983bc79fe22fdf3467b1350e1e93328404551",
+    "source_digest": "sha256:299744493b2f3ec7909fda1e8625796c236df3937c47b21b3d7e1bd1ea3ae5ac",
     "input_schema_source": "explicit_tool",
     "schema_quality": "declared",
     "argument_reads_diagnostic_only": [
@@ -17496,6 +17533,10 @@
       {
         "return": "{'success': False, 'error': f'integration review evidence refused: {exc}'}",
         "protocol": "explicit_boolean: False"
+      },
+      {
+        "return": "self._hierarchy_failure(exc)",
+        "protocol": "delegated_producer"
       }
     ],
     "tests": [
@@ -17504,9 +17545,13 @@
       "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
       "tests/test_integration_train_sources.py",
       "tests/test_review_reopen_cascade.py",
-      "tests/test_routing_router.py"
+      "tests/test_routing_router.py",
+      "tests/test_delivery_consumers.py::test_missing_provenance_reopen_requires_operator_control"
     ],
-    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. "
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled.  Sealed-target repair reconciliation: hierarchy exceptions return the existing false envelope with the original delivery refusal code; service, reviewer, foreign and stopped-supervisor guards remain enforced.",
+    "helper_producers": {
+      "_hierarchy_failure": "sha256:abb65e8a19902eb86db00890f0937747a05e8846ab23d421eb0e70059143e42c"
+    }
   },
   "repair_repository_checkout": {
     "mode": "json_object",
