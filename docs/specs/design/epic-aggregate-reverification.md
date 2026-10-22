@@ -29,6 +29,8 @@ refreshed head and still requires its current checks and tree review. No root PR
 or successful old-head trust lookup is needed to start the refresh.
 Conclusive failing aggregate checks retain the existing bounded baseline-sync
 and repair path rather than starting a second repair through a refresh batch.
+Observe current hosted results before choosing that path; a cached green result
+must not start a refresh after the same exact head has turned red.
 
 Discovery retains completed containers as epic targets even when their child
 origins have retired or the container's own live origin is missing. A root

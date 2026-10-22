@@ -1451,6 +1451,19 @@ async def test_rerequesting_a_check_suite_is_a_repository_bound_write():
 
 
 @pytest.mark.asyncio
+async def test_rerun_job_uses_the_exact_repository_job_endpoint():
+    runner = FakeRunner(GitHubCredentialIdentity.existing_login(), [_response(201, b"")])
+    client = GitHubClient(REPOSITORY, runner=runner)
+    await client.rerun_job(119866786990)
+    assert runner.calls[0]["args"][-1] == "repos/acme/widgets/actions/jobs/119866786990/rerun"
+    assert runner.calls[0]["args"][:4] == ["api", "--include", "--method", "POST"]
+    for job_id in (0, -1, True, "1", "1/../../runs/2"):
+        with pytest.raises(ValueError, match="invalid Actions job ID"):
+            await client.rerun_job(job_id)
+    assert len(runner.calls) == 1
+
+
+@pytest.mark.asyncio
 async def test_check_suite_rerequest_refuses_a_credential_that_cannot_write_checks():
     """GitHub documents writes to checks as GitHub-App-only.
 

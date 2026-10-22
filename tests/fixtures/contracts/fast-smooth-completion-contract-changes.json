@@ -1,0 +1,2305 @@
+{
+  "source_base": "5c77d36e52630475059761ff173ddb4824d39ef3",
+  "merged_source": "e0b9fcae5a179a07bbe2cf381d094f890e4ec970",
+  "reason": "Combine the completed integration epic with current dev while retaining both frozen catalogue inputs and the explicit reserve-owner contract change.",
+  "previous_cli_catalogue_sha256": "e4ad5df87c89794875e12da39f01b78b734454cc4cb9933bc49310b3ba407f0d",
+  "source_cli_catalogue_sha256": "64f173d7f562d58688d72ad5691aec9552dbd1220bf659b2bc6e050c6226253b",
+  "cli_catalogue_sha256": "00f36a2dd10cb430c4d14fb590a6188be2fc523957d89be71421058dc718b451",
+  "contracts": {
+    "integration_reserve_owner": {
+      "execution": {
+        "args_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "task_id": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "task_id"
+          ],
+          "type": "object"
+        },
+        "capability": "integration_reserve_owner",
+        "effects": [
+          {
+            "fields_arg": null,
+            "kind": "update",
+            "subject": "integration_operation",
+            "when": {
+              "arg_equals": null,
+              "arg_present": null
+            }
+          }
+        ],
+        "idempotency": {
+          "key_field": null,
+          "mode": "natural"
+        },
+        "name": "integration_reserve_owner",
+        "outcomes": [
+          {
+            "classification": "success",
+            "name": "acquired"
+          },
+          {
+            "classification": "success",
+            "name": "already_reserved"
+          },
+          {
+            "classification": "failure",
+            "name": "not_eligible"
+          },
+          {
+            "classification": "failure",
+            "name": "not_found"
+          },
+          {
+            "classification": "success",
+            "name": "running"
+          }
+        ],
+        "receipt_projection": [
+          "id",
+          "head_sha",
+          "recovered_task_id",
+          "source_sha",
+          "manifest",
+          "evidence",
+          "policy",
+          "deliveries",
+          "pending_publications",
+          "parked",
+          "preserved_owners",
+          "released_delegates",
+          "archived_delegates",
+          "project_id",
+          "operation_id",
+          "batch_id",
+          "task_id",
+          "effective_mode",
+          "desired_mode",
+          "mode",
+          "generation",
+          "draining",
+          "ready",
+          "rollout_ready",
+          "blockers",
+          "blocker_digest",
+          "certification",
+          "repository_id",
+          "schedule",
+          "active_batch",
+          "members",
+          "parent_readiness",
+          "ownership",
+          "lease",
+          "repair",
+          "ci_evidence",
+          "promotion",
+          "reconciliation",
+          "cleanup_pending",
+          "release",
+          "legacy_suppression",
+          "waiver_id",
+          "request_id",
+          "request_sequence",
+          "trigger",
+          "requested_at",
+          "next_due_at",
+          "state",
+          "stage",
+          "deadline_at",
+          "reason",
+          "count",
+          "outcomes",
+          "dry_run",
+          "leases",
+          "bound",
+          "unproven",
+          "verifier_task_id",
+          "children",
+          "retire_delegates",
+          "conclusion"
+        ],
+        "result_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "active_batch": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "archived_delegates": {
+              "default": [],
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "batch_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "blocker_digest": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "blockers": {
+              "default": [],
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "bound": {
+              "default": [],
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "certification": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "children": {
+              "default": [],
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "ci_evidence": {
+              "default": [],
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "cleanup_pending": {
+              "default": [],
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "conclusion": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "count": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "deadline_at": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "deliveries": {
+              "default": [],
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "desired_mode": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "draining": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "dry_run": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "effective_mode": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "evidence": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "generation": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "head_sha": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "lease": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "leases": {
+              "default": [],
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "legacy_suppression": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "manifest": {
+              "default": [],
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "members": {
+              "default": [],
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "mode": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "next_due_at": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "operation_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "outcomes": {
+              "default": [],
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "ownership": {
+              "default": [],
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "parent_readiness": {
+              "default": [],
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "parked": {
+              "default": [],
+              "items": {},
+              "type": "array"
+            },
+            "pending_publications": {
+              "default": [],
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "policy": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "preserved_owners": {
+              "default": [],
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "project_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "promotion": {
+              "default": [],
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "ready": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "reason": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "reconciliation": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "recovered_task_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "release": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "released_delegates": {
+              "default": [],
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "repair": {
+              "default": [],
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "repository_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "request_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "request_sequence": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "requested_at": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "retire_delegates": {
+              "default": [],
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "rollout_ready": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "schedule": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "source_sha": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "stage": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "state": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "task_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "trigger": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "unproven": {
+              "default": [],
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "verifier_task_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "waiver_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "type": "object"
+        },
+        "retry_safe": true,
+        "schema_generation": 1,
+        "sensitive_args": [],
+        "sensitive_result_fields": [],
+        "side_effect": "update",
+        "supports_preview": false,
+        "timeout_seconds": null
+      },
+      "fingerprint": "sha256:a2871c59c48ab5283af17c6a5a38f0aea0c53a6a71c06a1f5a37f262ca3692c4",
+      "previous_fingerprint": "sha256:16bb17888aaa5174b42aab09c24a69d169a7aef0f4c2721a52d792c2fff91e6b"
+    }
+  },
+  "transport_definitions": {},
+  "catalogue_sections": {
+    "fallback": {
+      "list": false,
+      "previous_order": [
+        "advance_workflow_stage",
+        "create_workflow",
+        "cron_delivery_begin",
+        "cron_delivery_finish",
+        "delivery_receipts",
+        "doctor_catalog",
+        "doctor_run",
+        "explain_task",
+        "gate_create",
+        "gate_list",
+        "gate_resolve",
+        "gate_show",
+        "get_workflow",
+        "integration_abort_batch",
+        "integration_app_verify",
+        "integration_authorize_root",
+        "integration_backmerge_source",
+        "integration_checkpoint_parent",
+        "integration_ci_evidence",
+        "integration_cleanup",
+        "integration_clear_retained_recovery",
+        "integration_close_delivered_pr",
+        "integration_complete_parent",
+        "integration_cutover",
+        "integration_cutover_containment",
+        "integration_cutover_plan",
+        "integration_delegate_publication",
+        "integration_delivery_readiness",
+        "integration_eject",
+        "integration_engine_transfer",
+        "integration_file_children",
+        "integration_migrate_provenance_refs",
+        "integration_mutate_hierarchy",
+        "integration_off",
+        "integration_parent_verify",
+        "integration_pause_batch",
+        "integration_promotion_notes_input",
+        "integration_promotion_policy_input",
+        "integration_promotion_publish",
+        "integration_quiesce",
+        "integration_reconcile_expired_mutation",
+        "integration_reconcile_git_truth",
+        "integration_record_delivered",
+        "integration_record_noop",
+        "integration_record_repair",
+        "integration_record_root_noop",
+        "integration_recover_completed_container",
+        "integration_redrive_child",
+        "integration_redrive_root",
+        "integration_reevaluate_repair",
+        "integration_refresh_epic",
+        "integration_release",
+        "integration_release_held_gate",
+        "integration_release_owner",
+        "integration_release_stale_owners",
+        "integration_release_withheld_source",
+        "integration_reopen_collection",
+        "integration_repair_close_current",
+        "integration_repair_dispatch",
+        "integration_repair_start",
+        "integration_repair_timeout",
+        "integration_reserve_owner",
+        "integration_restore_task_origin",
+        "integration_resume_batch",
+        "integration_retire_legacy_park",
+        "integration_retire_origin",
+        "integration_reverify_epic",
+        "integration_revoke_publication",
+        "integration_seal_now",
+        "integration_settle_batch",
+        "integration_status",
+        "integration_supersede_completion",
+        "integration_train_tick",
+        "integration_transfer_owner",
+        "integration_trust_manifest",
+        "job_reconcile",
+        "knowledge_import",
+        "list_workflows",
+        "load_tools",
+        "migrate_profiles",
+        "object_checkpoint_read",
+        "object_loop_inputs",
+        "object_loop_reconcile",
+        "object_loop_start",
+        "object_score_record",
+        "observation_snapshot_cleanup",
+        "observe_integration_source_ci",
+        "playbook_state_delete",
+        "playbook_state_get",
+        "playbook_state_inspect",
+        "playbook_state_list",
+        "playbook_state_notify",
+        "playbook_state_reset",
+        "playbook_state_set",
+        "plugin_config",
+        "plugin_disable",
+        "plugin_enable",
+        "plugin_info",
+        "plugin_install",
+        "plugin_list",
+        "plugin_prompts",
+        "plugin_reload",
+        "plugin_remove",
+        "plugin_reset_prompts",
+        "plugin_update",
+        "prime",
+        "promote_approve",
+        "promote_cancel",
+        "promote_hotfix",
+        "promote_list",
+        "promote_prepare",
+        "promote_repair",
+        "promote_request",
+        "promote_rulesets",
+        "promote_schema",
+        "promote_status",
+        "promote_validate",
+        "provider_availability_notify",
+        "reconcile_agent_cron",
+        "reconcile_agent_waits",
+        "reconcile_collaborations",
+        "scheduler_wait_sync",
+        "session_attach",
+        "session_drain_ack",
+        "session_kill",
+        "session_list",
+        "session_logs",
+        "session_nudge",
+        "session_peek",
+        "session_show",
+        "session_sleep",
+        "session_token",
+        "session_wake",
+        "task_batch_review_record",
+        "task_failure_triage_notify",
+        "task_recovery_notify",
+        "task_route_apply",
+        "task_route_plan",
+        "vault_rebuild_index",
+        "wait_deadline_fire",
+        "wait_evict",
+        "wait_legacy_bridge",
+        "wait_resume_dispatch",
+        "wait_sleep_decide",
+        "wait_source_commit",
+        "workflow_pipeline_view"
+      ],
+      "entries": {
+        "integration_repair_target": {
+          "previous": null,
+          "current": {
+            "name": "integration_repair_target",
+            "description": "Authenticated hierarchical integration operational control.",
+            "input_schema": {
+              "additionalProperties": false,
+              "properties": {
+                "batch_id": {
+                  "minLength": 1,
+                  "title": "Batch Id",
+                  "type": "string"
+                },
+                "reason": {
+                  "default": "",
+                  "title": "Reason",
+                  "type": "string"
+                },
+                "dry_run": {
+                  "default": true,
+                  "title": "Dry Run",
+                  "type": "boolean"
+                },
+                "expected_target_sha": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null,
+                  "title": "Expected Target Sha"
+                },
+                "expected_candidate_sha": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null,
+                  "title": "Expected Candidate Sha"
+                }
+              },
+              "required": [
+                "batch_id"
+              ],
+              "title": "IntegrationRepairTargetArgs",
+              "type": "object"
+            }
+          }
+        }
+      }
+    }
+  },
+  "source_catalogue_sections": {
+    "explicit": {
+      "list": true,
+      "previous_order": [
+        "policy_export",
+        "policy_diff",
+        "policy_apply",
+        "list_projects",
+        "repair_repository_checkout",
+        "repair_workspace_checkout",
+        "project_doctor",
+        "create_project",
+        "pause_project",
+        "resume_project",
+        "set_project_constraint",
+        "release_project_constraint",
+        "edit_project",
+        "bind_project_repository",
+        "get_git_identity",
+        "set_git_identity",
+        "set_default_branch",
+        "get_project",
+        "list_tasks",
+        "list_active_tasks_all_projects",
+        "task_recent_activity",
+        "get_task_tree",
+        "task_children",
+        "task_progress",
+        "reparent_task",
+        "create_task",
+        "ensure_task",
+        "get_downstream_tasks",
+        "task_route",
+        "task_route_override",
+        "add_workspace",
+        "list_workspaces",
+        "list_project_roots",
+        "browse_project_root",
+        "get_github_auth_status",
+        "list_github_owners",
+        "search_github_repositories",
+        "onboard_project",
+        "get_project_onboarding",
+        "list_workspace_kinds",
+        "find_merge_conflict_workspaces",
+        "workspace_doctor",
+        "workspace_cutover",
+        "workspace_retire_claim",
+        "workspace_clear_sentinel",
+        "workspace_reap",
+        "release_workspace",
+        "remove_workspace",
+        "edit_workspace",
+        "queue_sync_workspaces",
+        "list_agents",
+        "get_agent",
+        "create_agent",
+        "edit_agent",
+        "delete_agent",
+        "session_prune",
+        "session_cleanup",
+        "session_input",
+        "supervisor_restart",
+        "start_agent_terminal",
+        "get_task",
+        "edit_task",
+        "pause_task",
+        "resume_task",
+        "discard_pause_checkpoint",
+        "stop_task",
+        "task_recover",
+        "restart_task",
+        "reopen_with_feedback",
+        "remove_task",
+        "delete_task",
+        "archive_task",
+        "list_archived",
+        "skip_task",
+        "get_task_dependencies",
+        "add_dependency",
+        "remove_dependency",
+        "get_chain_health",
+        "get_status",
+        "list_event_triggers",
+        "get_recent_events",
+        "read_logs",
+        "get_task_result",
+        "run_command",
+        "get_stuck_tasks",
+        "delete_project",
+        "get_token_usage",
+        "token_audit",
+        "get_chat_analyzer_metrics",
+        "list_prompts",
+        "read_prompt",
+        "render_prompt",
+        "restart_daemon",
+        "orchestrator_control",
+        "get_agent_error",
+        "list_profiles",
+        "create_profile",
+        "get_profile",
+        "edit_profile",
+        "delete_profile",
+        "list_available_tools",
+        "check_profile",
+        "profile_audit",
+        "profile_drift",
+        "profile_reseed",
+        "install_profile",
+        "export_profile",
+        "import_profile",
+        "scan_stub_staleness",
+        "get_config",
+        "get_config_schema",
+        "preview_portable_config",
+        "export_portable_config",
+        "import_portable_config",
+        "update_config",
+        "reload_config",
+        "claude_usage",
+        "archive_settings",
+        "provide_input",
+        "set_task_status",
+        "task_deps",
+        "discord_purge_channel",
+        "shutdown",
+        "update_and_restart",
+        "find_applicable_tool",
+        "run_playbook",
+        "dry_run_playbook",
+        "show_playbook_graph",
+        "list_playbooks",
+        "list_playbook_runs",
+        "inspect_playbook_run",
+        "resume_playbook",
+        "cancel_playbook_run",
+        "playbook_health",
+        "playbook_graph_view",
+        "playbook_commands",
+        "playbook_v2_graph",
+        "playbook_graph_layout_save",
+        "playbook_activation_health",
+        "playbook_activate",
+        "playbook_artifacts",
+        "playbook_artifact_diff",
+        "playbook_pending_events",
+        "playbook_pending_event_action",
+        "playbook_run_overlay",
+        "get_playbook_source",
+        "playbook_source_resync",
+        "update_playbook_source",
+        "playbook_delete",
+        "set_playbook_enabled",
+        "show_effective_profile",
+        "list_mcp_servers",
+        "get_mcp_server",
+        "list_mcp_tool_catalog",
+        "probe_mcp_server",
+        "create_mcp_server",
+        "edit_mcp_server",
+        "delete_mcp_server",
+        "get_benchmark_report",
+        "doctor",
+        "get_costs",
+        "db_preflight_hierarchy",
+        "get_schema",
+        "project_ready",
+        "task_show",
+        "task_comment",
+        "benchmark_stage_record",
+        "task_comments",
+        "task_comment_edit",
+        "task_comment_delete",
+        "task_subtask_add",
+        "task_subtasks",
+        "task_subtask_get",
+        "task_subtask_update",
+        "phase_create",
+        "phase_list",
+        "task_set",
+        "task_close",
+        "task_heartbeat",
+        "subagent_event",
+        "task_claim",
+        "task_handoff",
+        "message_send",
+        "message_reply",
+        "message_inbox",
+        "message_list",
+        "message_status",
+        "agent_message",
+        "memory_save",
+        "memory_search",
+        "create_task_graph",
+        "formula_list",
+        "formula_show",
+        "formula_cook",
+        "graph_layout_rebuild",
+        "graph_tidy",
+        "graph_reflow_status",
+        "ci_completed_status",
+        "ci_baseline_status",
+        "ci_repair_adopt",
+        "provider_usage_probe",
+        "provider_status",
+        "provider_held_tasks",
+        "provider_allocation_status",
+        "provider_allocation_preview",
+        "provider_allocation_apply",
+        "provider_history",
+        "provider_recheck",
+        "provider_set_state",
+        "provider_reroute",
+        "provider_reroute_undo",
+        "pr_merge",
+        "spec_approve",
+        "task_batch_propose",
+        "task_batch_update",
+        "task_batch_commit",
+        "task_batch_validate",
+        "task_batch_discard",
+        "playbook_v2_validate",
+        "playbook_v2_propose",
+        "playbook_v2_import",
+        "playbook_v2_shadow_compile",
+        "list_intelligence_classes",
+        "edit_intelligence_class",
+        "delete_intelligence_class",
+        "pool_status",
+        "pool_rename",
+        "pool_scale",
+        "pool_set_enabled",
+        "pool_set_lifecycle",
+        "question_list",
+        "question_answer",
+        "question_escalate",
+        "review_attachment_add",
+        "review_attachment_list",
+        "review_submit",
+        "review_show",
+        "review_list",
+        "review_reopen",
+        "review_withdraw",
+        "gate_reopen",
+        "ask_prepare_decision",
+        "ask_decide",
+        "ask_retry_operation",
+        "review_feedback_complete",
+        "review_decide",
+        "approve_pull_request",
+        "review_comment",
+        "review_dispatch",
+        "review_delegate",
+        "review_import_edits",
+        "github_issue_triage",
+        "github_issue_fix_approved",
+        "github_issue_close_rejected",
+        "github_issue_rejection",
+        "dashboard_state_list",
+        "dashboard_state_get",
+        "dashboard_state_put",
+        "dashboard_state_reset",
+        "escalation_create",
+        "escalation_list",
+        "escalation_get",
+        "escalation_reply",
+        "escalation_update",
+        "escalation_resolve",
+        "escalation_apply_reply",
+        "escalation_sweep",
+        "digest_preview",
+        "digest_status",
+        "digest_facts",
+        "digest_post",
+        "digest_request",
+        "morning_report_tick",
+        "report_get",
+        "report_list",
+        "morning_report_preview",
+        "report_reconcile",
+        "report_request",
+        "report_brief",
+        "report_submit",
+        "supervisor_inbox_post",
+        "supervisor_inbox_reply",
+        "supervisor_inbox_status",
+        "supervisor_inbox_history",
+        "message_wait",
+        "wait_register",
+        "wait_get",
+        "wait_list",
+        "wait_cancel",
+        "collaboration_create",
+        "collaboration_accept",
+        "collaboration_get",
+        "collaboration_list",
+        "collaboration_close",
+        "cron_register",
+        "cron_get",
+        "cron_list",
+        "cron_cancel",
+        "job_submit",
+        "job_submit_integration",
+        "job_get",
+        "job_list",
+        "job_cancel",
+        "job_result",
+        "job_logs",
+        "job_retain",
+        "artifact_verify",
+        "test_select",
+        "test_selection_recheck",
+        "test_selection_observe",
+        "test_selection_show",
+        "test_selection_list",
+        "test_selection_policy_show",
+        "test_selection_promote",
+        "test_selection_revoke",
+        "knowledge_create",
+        "knowledge_list",
+        "knowledge_show",
+        "knowledge_update",
+        "knowledge_history",
+        "knowledge_diff",
+        "knowledge_retire",
+        "knowledge_restore",
+        "record_show",
+        "record_search",
+        "knowledge_export",
+        "record_repair",
+        "record_capabilities",
+        "link_create",
+        "link_list",
+        "link_remove",
+        "knowledge_propose",
+        "knowledge_proposal_show",
+        "knowledge_proposal_decide",
+        "knowledge_verify",
+        "knowledge_authority_grant",
+        "knowledge_authority_revoke",
+        "knowledge_share",
+        "knowledge_redact",
+        "knowledge_generation_tick",
+        "knowledge_generation_status",
+        "knowledge_create_task",
+        "knowledge_cite",
+        "knowledge_context_deliver",
+        "decision_record",
+        "decision_list",
+        "operator_execute",
+        "operator_preflight",
+        "wait_ack",
+        "wait_checkpoint",
+        "wait_decide",
+        "wait_explain",
+        "wait_graph",
+        "wait_lift",
+        "playbook_script_run",
+        "ensure_spec_ingest",
+        "ensure_fidelity_review",
+        "approved_spec_packet",
+        "spec_ingest_reconcile",
+        "batch_reconcile",
+        "spec_ingest_legacy_inventory",
+        "ask_list",
+        "ask_show",
+        "ask_history",
+        "ask_reply",
+        "ask_apply_input",
+        "ask_discussion_reply",
+        "ask_update_context",
+        "ask_reconcile",
+        "ask_legacy_reset",
+        "ask_cutover",
+        "ask_cutover_status",
+        "ask_repair_delivery",
+        "ask_intake",
+        "ask_button"
+      ],
+      "entries": {
+        "integration_batch_fix": {
+          "previous": null,
+          "current": {
+            "name": "integration_batch_fix",
+            "description": "Inspect or push the batch branch bound to this task-free fixer session.",
+            "input_schema": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "action": {
+                  "type": "string",
+                  "enum": [
+                    "status",
+                    "push",
+                    "rebind"
+                  ],
+                  "default": "status"
+                }
+              }
+            }
+          }
+        },
+        "integration_continue_close": {
+          "previous": null,
+          "current": {
+            "name": "integration_continue_close",
+            "description": "Continue the parent merge belonging to your held task and session.",
+            "input_schema": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "operation_id"
+              ],
+              "properties": {
+                "operation_id": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "project_relocate": {
+          "previous": null,
+          "current": {
+            "name": "project_relocate",
+            "description": "Preview or apply an atomic project storage relocation. Requires paused admission, disabled/drained train, stopped writers and current required CI. Reverse relocation uses a fresh destination containing current work. Local operator only.",
+            "input_schema": {
+              "type": "object",
+              "properties": {
+                "project_id": {
+                  "type": "string"
+                },
+                "destination": {
+                  "type": "string"
+                },
+                "owner_inventory": {
+                  "type": "object"
+                },
+                "expected_digest": {
+                  "type": "string"
+                },
+                "apply": {
+                  "type": "boolean",
+                  "default": false
+                }
+              },
+              "required": [
+                "project_id",
+                "destination",
+                "owner_inventory"
+              ]
+            }
+          }
+        },
+        "wait_cancel": {
+          "previous": {
+            "name": "wait_cancel",
+            "description": "Cancel a current-claim wait and queue its result.",
+            "input_schema": {
+              "additionalProperties": false,
+              "properties": {
+                "schema_version": {
+                  "default": 1,
+                  "enum": [
+                    1,
+                    2
+                  ],
+                  "title": "Schema Version",
+                  "type": "integer"
+                },
+                "project_id": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null,
+                  "title": "Project Id"
+                },
+                "task_id": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null,
+                  "title": "Task Id"
+                },
+                "session_id": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null,
+                  "title": "Session Id"
+                },
+                "wait_id": {
+                  "minLength": 1,
+                  "title": "Wait Id",
+                  "type": "string"
+                },
+                "claim_epoch": {
+                  "anyOf": [
+                    {
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null,
+                  "title": "Claim Epoch"
+                }
+              },
+              "required": [
+                "wait_id"
+              ],
+              "title": "WaitCancelArgs",
+              "type": "object"
+            }
+          },
+          "current": {
+            "name": "wait_cancel",
+            "description": "Cancel a current-claim wait and queue its result.",
+            "input_schema": {
+              "additionalProperties": false,
+              "properties": {
+                "schema_version": {
+                  "default": 1,
+                  "enum": [
+                    1,
+                    2
+                  ],
+                  "title": "Schema Version",
+                  "type": "integer"
+                },
+                "project_id": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null,
+                  "title": "Project Id"
+                },
+                "task_id": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null,
+                  "title": "Task Id"
+                },
+                "session_id": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null,
+                  "title": "Session Id"
+                },
+                "wait_id": {
+                  "minLength": 1,
+                  "title": "Wait Id",
+                  "type": "string"
+                },
+                "claim_epoch": {
+                  "anyOf": [
+                    {
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null,
+                  "title": "Claim Epoch"
+                },
+                "owner_kind": {
+                  "anyOf": [
+                    {
+                      "enum": [
+                        "scheduler",
+                        "integration",
+                        "playbook"
+                      ],
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null,
+                  "title": "Owner Kind"
+                },
+                "owner_id": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null,
+                  "title": "Owner Id"
+                }
+              },
+              "required": [
+                "wait_id"
+              ],
+              "title": "WaitCancelArgs",
+              "type": "object"
+            }
+          }
+        }
+      }
+    },
+    "fallback": {
+      "list": false,
+      "previous_order": [
+        "advance_workflow_stage",
+        "create_workflow",
+        "cron_delivery_begin",
+        "cron_delivery_finish",
+        "delivery_receipts",
+        "doctor_catalog",
+        "doctor_run",
+        "explain_task",
+        "gate_create",
+        "gate_list",
+        "gate_resolve",
+        "gate_show",
+        "get_workflow",
+        "integration_abort_batch",
+        "integration_app_verify",
+        "integration_authorize_root",
+        "integration_backmerge_source",
+        "integration_checkpoint_parent",
+        "integration_ci_evidence",
+        "integration_cleanup",
+        "integration_clear_retained_recovery",
+        "integration_close_delivered_pr",
+        "integration_complete_parent",
+        "integration_cutover",
+        "integration_cutover_plan",
+        "integration_delegate_publication",
+        "integration_delivery_readiness",
+        "integration_eject",
+        "integration_engine_transfer",
+        "integration_file_children",
+        "integration_migrate_provenance_refs",
+        "integration_mutate_hierarchy",
+        "integration_off",
+        "integration_parent_verify",
+        "integration_pause_batch",
+        "integration_promotion_notes_input",
+        "integration_promotion_policy_input",
+        "integration_promotion_publish",
+        "integration_quiesce",
+        "integration_reconcile_expired_mutation",
+        "integration_record_delivered",
+        "integration_record_noop",
+        "integration_record_repair",
+        "integration_record_root_noop",
+        "integration_recover_completed_container",
+        "integration_redrive_child",
+        "integration_redrive_root",
+        "integration_reevaluate_repair",
+        "integration_refresh_epic",
+        "integration_release",
+        "integration_release_held_gate",
+        "integration_release_owner",
+        "integration_release_stale_owners",
+        "integration_release_withheld_source",
+        "integration_reopen_collection",
+        "integration_repair_close_current",
+        "integration_repair_dispatch",
+        "integration_repair_start",
+        "integration_repair_target",
+        "integration_repair_timeout",
+        "integration_reserve_owner",
+        "integration_restore_task_origin",
+        "integration_resume_batch",
+        "integration_retire_legacy_park",
+        "integration_retire_origin",
+        "integration_reverify_epic",
+        "integration_revoke_publication",
+        "integration_seal_now",
+        "integration_settle_batch",
+        "integration_status",
+        "integration_supersede_completion",
+        "integration_train_tick",
+        "integration_transfer_owner",
+        "integration_trust_manifest",
+        "job_reconcile",
+        "knowledge_import",
+        "list_workflows",
+        "load_tools",
+        "migrate_profiles",
+        "object_checkpoint_read",
+        "object_loop_inputs",
+        "object_loop_reconcile",
+        "object_loop_start",
+        "object_score_record",
+        "observation_snapshot_cleanup",
+        "observe_integration_source_ci",
+        "playbook_state_delete",
+        "playbook_state_get",
+        "playbook_state_inspect",
+        "playbook_state_list",
+        "playbook_state_notify",
+        "playbook_state_reset",
+        "playbook_state_set",
+        "plugin_config",
+        "plugin_disable",
+        "plugin_enable",
+        "plugin_info",
+        "plugin_install",
+        "plugin_list",
+        "plugin_prompts",
+        "plugin_reload",
+        "plugin_remove",
+        "plugin_reset_prompts",
+        "plugin_update",
+        "prime",
+        "promote_approve",
+        "promote_cancel",
+        "promote_hotfix",
+        "promote_list",
+        "promote_prepare",
+        "promote_repair",
+        "promote_request",
+        "promote_rulesets",
+        "promote_schema",
+        "promote_status",
+        "promote_validate",
+        "provider_availability_notify",
+        "reconcile_agent_cron",
+        "reconcile_agent_waits",
+        "reconcile_collaborations",
+        "scheduler_wait_sync",
+        "session_attach",
+        "session_drain_ack",
+        "session_kill",
+        "session_list",
+        "session_logs",
+        "session_nudge",
+        "session_peek",
+        "session_show",
+        "session_sleep",
+        "session_token",
+        "session_wake",
+        "task_batch_review_record",
+        "task_failure_triage_notify",
+        "task_recovery_notify",
+        "task_route_apply",
+        "task_route_plan",
+        "vault_rebuild_index",
+        "wait_deadline_fire",
+        "wait_evict",
+        "wait_legacy_bridge",
+        "wait_resume_dispatch",
+        "wait_sleep_decide",
+        "wait_source_commit",
+        "workflow_pipeline_view"
+      ],
+      "entries": {
+        "integration_cutover_containment": {
+          "previous": null,
+          "current": {
+            "name": "integration_cutover_containment",
+            "description": "Local operator previews and applies exact historical lifecycle exclusions.",
+            "input_schema": {
+              "additionalProperties": false,
+              "properties": {
+                "project_id": {
+                  "minLength": 1,
+                  "title": "Project Id",
+                  "type": "string"
+                },
+                "dry_run": {
+                  "default": true,
+                  "title": "Dry Run",
+                  "type": "boolean"
+                },
+                "choices": {
+                  "additionalProperties": {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  "title": "Choices",
+                  "type": "object"
+                },
+                "plan": {
+                  "anyOf": [
+                    {
+                      "additionalProperties": true,
+                      "type": "object"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null,
+                  "title": "Plan"
+                },
+                "expected_digest": {
+                  "anyOf": [
+                    {
+                      "pattern": "^[0-9a-f]{64}$",
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null,
+                  "title": "Expected Digest"
+                }
+              },
+              "required": [
+                "project_id"
+              ],
+              "title": "IntegrationContainmentCutoverArgs",
+              "type": "object"
+            }
+          }
+        },
+        "integration_reconcile_git_truth": {
+          "previous": null,
+          "current": {
+            "name": "integration_reconcile_git_truth",
+            "description": "Daemon-only repair of Git-derived integration projections.",
+            "input_schema": {
+              "type": "object",
+              "properties": {
+                "now": {
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                }
+              },
+              "additionalProperties": false
+            }
+          }
+        }
+      }
+    },
+    "categories": {
+      "list": false,
+      "previous_order": [
+        "operator",
+        "policy",
+        "cron",
+        "git",
+        "ci",
+        "project",
+        "agent",
+        "supervisor",
+        "memory",
+        "knowledge",
+        "record",
+        "notes",
+        "files",
+        "task",
+        "playbook",
+        "plugin",
+        "system",
+        "message",
+        "escalation",
+        "decision",
+        "supervisor_inbox",
+        "review",
+        "github_issue",
+        "test_selection",
+        "digest",
+        "job",
+        "artifact",
+        "wait",
+        "collaboration",
+        "report",
+        "dashboard",
+        "discord",
+        "mcp",
+        "pool",
+        "provider",
+        "formula",
+        "graph"
+      ],
+      "entries": {
+        "integration": {
+          "previous": null,
+          "current": "Author-assisted close continuations and bound batch repair"
+        }
+      }
+    },
+    "tool_categories": {
+      "list": false,
+      "previous_order": [
+        "operator_execute",
+        "operator_preflight",
+        "policy_export",
+        "policy_diff",
+        "policy_apply",
+        "decision_record",
+        "decision_list",
+        "object_loop_start",
+        "object_loop_inputs",
+        "object_loop_reconcile",
+        "object_score_record",
+        "object_checkpoint_read",
+        "test_select",
+        "test_selection_recheck",
+        "test_selection_observe",
+        "test_selection_show",
+        "test_selection_list",
+        "test_selection_policy_show",
+        "test_selection_promote",
+        "test_selection_revoke",
+        "discord_purge_channel",
+        "list_projects",
+        "create_project",
+        "project_doctor",
+        "repair_repository_checkout",
+        "repair_workspace_checkout",
+        "pause_project",
+        "resume_project",
+        "set_project_constraint",
+        "release_project_constraint",
+        "edit_project",
+        "bind_project_repository",
+        "set_default_branch",
+        "get_project",
+        "delete_project",
+        "add_workspace",
+        "list_workspaces",
+        "list_workspace_kinds",
+        "find_merge_conflict_workspaces",
+        "release_workspace",
+        "remove_workspace",
+        "edit_workspace",
+        "queue_sync_workspaces",
+        "workspace_doctor",
+        "workspace_reap",
+        "workspace_cutover",
+        "workspace_retire_claim",
+        "workspace_clear_sentinel",
+        "list_project_roots",
+        "browse_project_root",
+        "get_github_auth_status",
+        "list_github_owners",
+        "search_github_repositories",
+        "onboard_project",
+        "get_project_onboarding",
+        "list_agents",
+        "get_agent",
+        "create_agent",
+        "edit_agent",
+        "delete_agent",
+        "start_agent_terminal",
+        "get_agent_error",
+        "list_profiles",
+        "create_profile",
+        "get_profile",
+        "edit_profile",
+        "delete_profile",
+        "list_available_tools",
+        "check_profile",
+        "profile_audit",
+        "profile_drift",
+        "profile_reseed",
+        "agent_message",
+        "install_profile",
+        "export_profile",
+        "import_profile",
+        "subagent_event",
+        "show_effective_profile",
+        "list_mcp_servers",
+        "get_mcp_server",
+        "list_mcp_tool_catalog",
+        "probe_mcp_server",
+        "create_mcp_server",
+        "edit_mcp_server",
+        "delete_mcp_server",
+        "message_send",
+        "message_wait",
+        "message_reply",
+        "message_inbox",
+        "message_list",
+        "message_status",
+        "escalation_create",
+        "escalation_list",
+        "escalation_get",
+        "escalation_reply",
+        "escalation_update",
+        "escalation_resolve",
+        "escalation_apply_reply",
+        "escalation_sweep",
+        "supervisor_inbox_post",
+        "supervisor_inbox_reply",
+        "supervisor_inbox_status",
+        "supervisor_inbox_history",
+        "review_submit",
+        "review_attachment_add",
+        "review_attachment_list",
+        "github_issue_triage",
+        "github_issue_fix_approved",
+        "github_issue_rejection",
+        "github_issue_close_rejected",
+        "review_show",
+        "review_list",
+        "review_withdraw",
+        "review_reopen",
+        "review_decide",
+        "ask_prepare_decision",
+        "ask_decide",
+        "ask_retry_operation",
+        "review_feedback_complete",
+        "approve_pull_request",
+        "review_comment",
+        "review_dispatch",
+        "review_delegate",
+        "review_import_edits",
+        "digest_preview",
+        "digest_status",
+        "digest_facts",
+        "digest_post",
+        "digest_request",
+        "job_submit",
+        "job_get",
+        "job_list",
+        "job_cancel",
+        "job_result",
+        "job_logs",
+        "job_retain",
+        "artifact_verify",
+        "wait_register",
+        "wait_get",
+        "wait_list",
+        "wait_cancel",
+        "wait_explain",
+        "wait_graph",
+        "wait_checkpoint",
+        "wait_ack",
+        "wait_decide",
+        "wait_lift",
+        "wait_legacy_bridge",
+        "cron_register",
+        "cron_get",
+        "cron_list",
+        "cron_cancel",
+        "collaboration_create",
+        "collaboration_accept",
+        "collaboration_get",
+        "collaboration_list",
+        "collaboration_close",
+        "report_request",
+        "report_reconcile",
+        "report_brief",
+        "morning_report_preview",
+        "morning_report_tick",
+        "report_get",
+        "report_list",
+        "report_submit",
+        "dashboard_state_list",
+        "dashboard_state_get",
+        "dashboard_state_put",
+        "dashboard_state_reset",
+        "scan_stub_staleness",
+        "stop_task",
+        "pause_task",
+        "resume_task",
+        "discard_pause_checkpoint",
+        "restart_task",
+        "task_recover",
+        "reopen_with_feedback",
+        "delete_task",
+        "remove_task",
+        "skip_task",
+        "set_task_status",
+        "archive_task",
+        "archive_settings",
+        "list_archived",
+        "get_task_result",
+        "get_task_tree",
+        "task_children",
+        "task_progress",
+        "reparent_task",
+        "get_task_dependencies",
+        "task_deps",
+        "add_dependency",
+        "remove_dependency",
+        "get_chain_health",
+        "list_active_tasks_all_projects",
+        "task_recent_activity",
+        "create_task_graph",
+        "formula_list",
+        "formula_show",
+        "formula_cook",
+        "graph_layout_rebuild",
+        "graph_tidy",
+        "graph_reflow_status",
+        "run_playbook",
+        "dry_run_playbook",
+        "show_playbook_graph",
+        "list_playbooks",
+        "list_playbook_runs",
+        "inspect_playbook_run",
+        "resume_playbook",
+        "cancel_playbook_run",
+        "playbook_health",
+        "playbook_graph_view",
+        "get_playbook_source",
+        "update_playbook_source",
+        "set_playbook_enabled",
+        "playbook_delete",
+        "playbook_commands",
+        "playbook_v2_graph",
+        "playbook_graph_layout_save",
+        "playbook_activation_health",
+        "playbook_activate",
+        "playbook_source_resync",
+        "playbook_artifacts",
+        "playbook_artifact_diff",
+        "playbook_pending_events",
+        "playbook_pending_event_action",
+        "playbook_run_overlay",
+        "playbook_v2_validate",
+        "playbook_v2_propose",
+        "playbook_v2_import",
+        "playbook_v2_shadow_compile",
+        "plugin_list",
+        "plugin_info",
+        "plugin_install",
+        "plugin_update",
+        "plugin_remove",
+        "plugin_enable",
+        "plugin_disable",
+        "plugin_reload",
+        "plugin_config",
+        "plugin_prompts",
+        "plugin_reset_prompts",
+        "get_status",
+        "get_recent_events",
+        "list_event_triggers",
+        "read_logs",
+        "get_token_usage",
+        "token_audit",
+        "claude_usage",
+        "get_chat_analyzer_metrics",
+        "reload_config",
+        "get_config",
+        "get_config_schema",
+        "update_config",
+        "get_git_identity",
+        "set_git_identity",
+        "preview_portable_config",
+        "export_portable_config",
+        "import_portable_config",
+        "orchestrator_control",
+        "provide_input",
+        "list_prompts",
+        "read_prompt",
+        "render_prompt",
+        "shutdown",
+        "restart_daemon",
+        "update_and_restart",
+        "run_command",
+        "get_stuck_tasks",
+        "list_intelligence_classes",
+        "edit_intelligence_class",
+        "delete_intelligence_class",
+        "doctor",
+        "get_costs",
+        "get_benchmark_report",
+        "db_preflight_hierarchy",
+        "get_schema",
+        "task_show",
+        "task_set",
+        "task_comment",
+        "benchmark_stage_record",
+        "task_comments",
+        "task_comment_edit",
+        "task_comment_delete",
+        "task_subtask_add",
+        "task_subtasks",
+        "task_subtask_get",
+        "task_subtask_update",
+        "phase_create",
+        "phase_list",
+        "task_close",
+        "task_heartbeat",
+        "task_claim",
+        "memory_save",
+        "memory_search",
+        "knowledge_create",
+        "knowledge_create_task",
+        "knowledge_list",
+        "knowledge_show",
+        "knowledge_cite",
+        "knowledge_context_deliver",
+        "knowledge_update",
+        "knowledge_history",
+        "knowledge_diff",
+        "knowledge_retire",
+        "knowledge_restore",
+        "knowledge_export",
+        "record_show",
+        "record_search",
+        "record_capabilities",
+        "record_repair",
+        "link_create",
+        "link_list",
+        "link_remove",
+        "knowledge_import",
+        "session_list",
+        "session_show",
+        "session_peek",
+        "session_attach",
+        "session_nudge",
+        "session_input",
+        "session_logs",
+        "session_kill",
+        "session_prune",
+        "session_cleanup",
+        "session_sleep",
+        "session_wake",
+        "supervisor_restart",
+        "session_token",
+        "gate_create",
+        "gate_list",
+        "gate_show",
+        "gate_reopen",
+        "gate_resolve",
+        "explain_task",
+        "project_ready",
+        "spec_approve",
+        "task_batch_propose",
+        "task_batch_update",
+        "task_batch_commit",
+        "task_batch_discard",
+        "task_batch_validate",
+        "ensure_task",
+        "get_downstream_tasks",
+        "task_route",
+        "task_route_override",
+        "pr_merge",
+        "ci_baseline_status",
+        "ci_completed_status",
+        "ci_repair_adopt",
+        "provider_status",
+        "provider_history",
+        "provider_held_tasks",
+        "provider_recheck",
+        "provider_set_state",
+        "provider_reroute",
+        "provider_reroute_undo",
+        "provider_allocation_status",
+        "provider_allocation_preview",
+        "provider_allocation_apply",
+        "pool_status",
+        "pool_rename",
+        "pool_scale",
+        "pool_set_lifecycle",
+        "pool_set_enabled",
+        "question_list",
+        "question_answer",
+        "question_escalate",
+        "knowledge_propose",
+        "knowledge_proposal_show",
+        "knowledge_proposal_decide",
+        "knowledge_verify",
+        "knowledge_authority_grant",
+        "knowledge_authority_revoke",
+        "knowledge_share",
+        "knowledge_redact",
+        "knowledge_generation_tick",
+        "knowledge_generation_status",
+        "ensure_spec_ingest",
+        "approved_spec_packet",
+        "spec_ingest_reconcile",
+        "spec_ingest_legacy_inventory",
+        "batch_reconcile",
+        "ensure_fidelity_review",
+        "ask_list",
+        "ask_show",
+        "ask_history",
+        "ask_reply",
+        "ask_apply_input",
+        "ask_discussion_reply",
+        "ask_update_context",
+        "ask_reconcile",
+        "ask_legacy_reset",
+        "ask_cutover",
+        "ask_cutover_status",
+        "ask_repair_delivery",
+        "ask_intake",
+        "ask_button"
+      ],
+      "entries": {
+        "integration_batch_fix": {
+          "previous": null,
+          "current": "integration"
+        },
+        "integration_continue_close": {
+          "previous": null,
+          "current": "integration"
+        },
+        "project_relocate": {
+          "previous": null,
+          "current": "project"
+        }
+      }
+    }
+  }
+}

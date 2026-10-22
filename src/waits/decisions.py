@@ -250,7 +250,8 @@ class WaitDecisions:
         async with self.service.orch.db._engine.begin() as conn:
             await lock_graph(conn)
             candidate = (await conn.execute(select(wait_records).where(
-                wait_records.c.id == args["wait_id"],
+                (wait_records.c.id == args["wait_id"])
+                | (wait_records.c.legacy_id == args["wait_id"]),
             ))).mappings().first()
             if not candidate or not cancel_scope_allows(candidate, scope, principal):
                 raise WaitError("wait.out_of_scope", "wait is outside the caller scope")
@@ -284,8 +285,12 @@ class WaitDecisions:
                 # Replays of an earlier cancel (or a lost race with the source)
                 # report the committed row, as the v1 verb did.
                 return {"success": True, "wait_id": wait["id"], "wait": wait,
+                        "changed": False,
                         "warnings": [f"wait already resolved: {wait['outcome']}"]}
-            if isinstance(scope, Scope) and wait["session_id"] != scope.session_id:
+            if (isinstance(scope, Scope) and scope.principal != "service"
+                    and (wait["session_id"] != scope.session_id
+                         or (scope.claim_epoch is not None
+                             and wait["claim_epoch"] != scope.claim_epoch))):
                 raise WaitError("continuation.stale_generation", "wait holder changed")
             try:
                 _, continuation = await fence_owner(conn, wait, task)
@@ -325,7 +330,7 @@ class WaitDecisions:
             row = dict((await conn.execute(select(wait_records).where(
                 wait_records.c.id == wait["id"],
             ))).mappings().one())
-            return {"success": True, "wait_id": row["id"], "wait": row}
+            return {"success": True, "wait_id": row["id"], "wait": row, "changed": True}
 
     @staticmethod
     async def withdraw_intent(conn, wait):

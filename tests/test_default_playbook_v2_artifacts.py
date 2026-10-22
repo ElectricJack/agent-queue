@@ -51,6 +51,7 @@ PROFILE_DEFAULTS = REPO_ROOT / "src" / "profiles" / "defaults"
 #: Frontmatter id -> the shipped Markdown it was compiled from. Retired policies
 #: retain their reviewed source for audit, outside the auto-installed defaults.
 SHIPPED_SOURCES: dict[str, str] = {
+    "fast-smooth-train": "src/prompts/integration_playbooks/fast-smooth-train.md",
     "stuck-task-watch": "src/prompts/reviewed_playbooks/stuck-task-watch/source.md",
     "stuck-task-watch-reminder": "src/prompts/reviewed_playbooks/stuck-task-watch-reminder/source.md",
     "object-loop": "src/prompts/project_playbooks/matter-engine-cpp/object-loop.md",
