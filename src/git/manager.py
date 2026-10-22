@@ -170,7 +170,7 @@ class ChildPreparationConflict(GitError):
     def __init__(self, child_head, parent_head, merge_head, files, reason):
         self.child_head, self.parent_head, self.merge_head = child_head, parent_head, merge_head
         self.files = tuple(files)
-        super().__init__(reason)
+        super().__init__(f"child merge conflict in {', '.join(self.files)}: {reason}")
 
 
 class ForeignSlotClaim(GitError):

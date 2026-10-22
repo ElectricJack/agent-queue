@@ -500,6 +500,12 @@ class StackedBranches:
 
     async def reserve_child_conflict(self, task_id, conflict, workspace):
         """Retain a checkout's exact inputs after abort, then reserve one repair."""
+        async with self.db._engine.connect() as conn:
+            origin = await self._origin(task_id, conn)
+        if origin is None:
+            # Ordinary pull-request/manual children have no managed train
+            # origin. Leave their conflict to the caller's preparation outcome.
+            return
         task = await self.db.get_task(task_id)
         view = await observe_stacks(
             self.observer, task.project_id, task_id=task_id, require_snapshot=True,
@@ -508,7 +514,8 @@ class StackedBranches:
         async with self.db._engine.connect() as conn:
             proofs = await view.verified_on(conn, ids)
             origin = await self._origin(task_id, conn)
-        if set(proofs) != ids or not view.snapshot or not await view.fresh():
+        if (origin is None or set(proofs) != ids or not view.snapshot
+                or not await view.fresh()):
             raise StackPreparationChanged("child preparation proof changed before repair reservation")
         child_ref = task.branch_name.removeprefix("refs/heads/")
         published = view.snapshot.source_heads.get("refs/remotes/origin/" + child_ref)

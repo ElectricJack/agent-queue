@@ -7511,6 +7511,76 @@ async def pull_request_admission(handler, db, development_admission, monkeypatch
     return env
 
 
+@pytest.mark.parametrize("integration_mode", ["pull_request", "direct"])
+async def test_ordinary_child_parent_conflict_blocks_with_valid_claim_response(
+    handler, db, tmp_path, development_admission, integration_mode,
+):
+    from src.orchestrator.worktree_manager import WorktreeSlotManager
+
+    env, git = development_admission, development_admission.git
+    await db.remove_dependency("dependent", "prerequisite")
+    await mktask(db, "epic", status=TaskStatus.IN_PROGRESS, repo_id="repo",
+                 branch_name="aq/epic")
+    await db.add_dependency("dependent", "epic", "parent-child")
+    await db.update_task("dependent", branch_name="aq/dependent", is_blocked=False)
+    await db.update_project(
+        PROJECT_ID, hierarchical_integration_mode="disabled",
+        integration_mode=integration_mode, repo_url=str(env.remote),
+    )
+    git(env.source, "checkout", "-b", "aq/dependent", env.base)
+    (env.source / "work").write_text("existing child changes")
+    git(env.source, "add", ".")
+    git(env.source, "commit", "-m", "child conflicts with parent")
+    child = git(env.source, "rev-parse", "HEAD")
+    git(env.source, "push", "origin", "aq/dependent", f"{env.head}:refs/heads/aq/epic",
+        f"{env.head}:refs/heads/main")
+    sid, work_dir = await pool_session(db, tmp_path)
+    git(tmp_path, "clone", str(env.remote), str(work_dir))
+    manager = WorktreeSlotManager(
+        db=db, git=handler.orchestrator.git, bus=handler.orchestrator.bus,
+        config=handler.config.worktrees, git_mutex=handler.orchestrator._git_mutex,
+    )
+    handler.orchestrator._worktree_slots = MagicMock(return_value=manager)
+    assert await db.get_task_branch_origin_for_promotion("dependent", "repo") is None
+    events = spy_events(handler)
+
+    result = await settled_claim(scoped(handler, sid), {"next": True})
+
+    # The CLI/API can encode and validate the normal failure envelope.
+    TaskClaimResponse.model_validate(json.loads(json.dumps(result)))
+    assert result["result"] == "prepare_failed", result
+    assert "ChildPreparationConflict" in result["reason"]
+    assert "work" in result["reason"]
+    assert result["retry_after"] > 0
+    assert result["refusal_count"] == 1
+    assert result["session"]["claim_phase"] is None
+    task = await db.get_task("dependent")
+    assert task.status is TaskStatus.BLOCKED and task.assigned_agent_id is None
+    assert await db.get_task_meta("dependent", "blocked_terminal") == "merge_conflict"
+    assert await db.get_task_meta("dependent", "needs_attention") == "child_preparation_conflict"
+    detail = await db.get_task_meta("dependent", "child_preparation_conflict")
+    assert detail == {
+        "child_head": child, "parent_head": env.head, "merge_head": env.head,
+        "files": ["work"], "reason": result["reason"],
+    }
+    diagnosis = await db.get_task_meta("dependent", "prepare_failure")
+    assert diagnosis["disposition"] == "blocked"
+    assert diagnosis["reason"] == result["reason"]
+    assert await db.get_task_meta("dependent", "slot_reset_failure") is None
+    assert await db.get_task_meta("dependent", "stack_prerequisites_conflict") is None
+    assert not (work_dir / ".aq/claim.json").exists()
+    session = await db.get_session(sid)
+    assert session.task_id is None and session.claims == 0
+    workspace = await db.get_workspace("ws-agent-1")
+    assert workspace.enabled and workspace.locked_by_task_id is None
+    assert git(work_dir, "rev-parse", "HEAD") == child
+    assert git(work_dir, "status", "--porcelain") == ""
+    assert (work_dir / "work").read_text() == "existing child changes"
+    assert git(env.remote, "rev-parse", "aq/dependent") == child
+    assert git(env.remote, "rev-parse", "aq/epic") == env.head
+    assert [payload["reason"] for payload in events] == [result["reason"]]
+
+
 @pytest.mark.parametrize("mutation", ["edge", "create", "graph"])
 async def test_pr_late_dependency_mutations_do_not_admit_unmerged_source(
     handler, db, tmp_path, pull_request_admission, mutation
