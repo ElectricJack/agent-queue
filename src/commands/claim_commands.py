@@ -929,6 +929,7 @@ class ClaimCommandsMixin:
                     # The previous request failed or the daemon restarted.
                     # Retry this exact held preparation under the task lock;
                     # never discard its attached fence to manufacture a new claim.
+                    await self._mark_prepare_failure_retried(conn, row.task_id)
                     new_claim = (row, held, None)
                 else:
                     out = self._simple(ClaimResult.CLAIM_IN_PROGRESS, kind, row, cap)
@@ -1653,6 +1654,27 @@ class ClaimCommandsMixin:
             "claimant_task_id": claimant_task_id,
         })
         return retired
+
+    async def _mark_prepare_failure_retried(self, conn, task_id) -> None:
+        """Stamp the last failure record before a same-epoch preparation retry.
+
+        Pause recovery accepts that record as proof the attempt it describes
+        unwound its git children; the retry is a new attempt it says nothing
+        about, and one that dies without its own record must stay unproved.
+        """
+        import json
+
+        from sqlalchemy import select, update
+
+        from src.database.tables import task_metadata
+
+        where = (task_metadata.c.task_id == task_id, task_metadata.c.key == PREPARE_FAILURE)
+        encoded = await conn.scalar(select(task_metadata.c.value).where(*where).with_for_update())
+        record = json.loads(encoded) if encoded is not None else None
+        if isinstance(record, dict) and "retried_at" not in record:
+            await conn.execute(update(task_metadata).where(*where).values(
+                value=json.dumps({**record, "retried_at": time.time()}),
+            ))
 
     async def _record_prepare_failure(
         self, task, failure, *, session, slot, epoch, disposition, attempt=None,
