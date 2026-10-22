@@ -1528,7 +1528,8 @@ async def fresh_rig(env, tmp_path):
                                 git_mutex=lambda path: locks[path])
     slots.reprovision_slot = AsyncMock(wraps=slots.reprovision_slot)
     orch = SimpleNamespace(db=env.db, git=git, _prepare_workspace_locked=AsyncMock(
-        return_value=str(old)), _git_mutex=lambda path: locks[path], _worktree_slots=lambda: slots)
+        return_value=str(old)), _git_mutex=lambda path: locks[path], _worktree_slots=lambda: slots,
+        _worktree_base_paths={})
 
     async def registered():
         return {Path(e['path']).resolve() for e in await git.aworktree_list(str(base_path))}
