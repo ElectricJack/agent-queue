@@ -61,13 +61,40 @@ SUPERVISOR_HEALTH_CHANGES = ROOT / "tests/fixtures/contracts/supervisor-health-c
 TARGET_REPAIR_CHANGES = ROOT / "tests/fixtures/contracts/target-repair-contract-changes.json"
 
 
+def _retention_changes():
+    return json.loads(
+        (ROOT / "tests/fixtures/contracts/operational-retention-contract-changes.json").read_text()
+    )
+
+
+def _before_retention_catalogue():
+    evidence = _retention_changes()
+    catalogue = json.loads(render_command_catalogue())
+    entries = [e for e in catalogue["explicit"] if e.get("name") == evidence["command"]]
+    assert entries == [evidence["explicit_entry"]]
+    catalogue["explicit"].remove(entries[0])
+    assert catalogue["tool_categories"].pop(evidence["command"]) == evidence["tool_category"]
+    return catalogue
+
+
+def test_retention_catalogue_only_adds_reviewed_command():
+    evidence = _retention_changes()
+    assert CONTRACTS.require(evidence["command"]).contract.fingerprint() == (
+        evidence["contract_fingerprint"]
+    )
+    previous = json.dumps(_before_retention_catalogue(), indent=2) + "\n"
+    assert hashlib.sha256(previous.encode()).hexdigest() == (
+        evidence["previous_cli_catalogue_sha256"]
+    )
+
+
 def _stuck_check_changes():
     return json.loads((ROOT / "tests/fixtures/contracts/stuck-check-contract-changes.json").read_text())
 
 
 def _before_stuck_check_catalogue():
     evidence = _stuck_check_changes()
-    catalogue = json.loads(render_command_catalogue())
+    catalogue = _before_retention_catalogue()
     assert catalogue["fallback"].pop(evidence["command"]) == evidence["transport_definition"]
     return catalogue
 
@@ -389,7 +416,9 @@ def test_transport_views_and_cli_serialization_preserve_golden_evidence():
     assert completion["previous_cli_catalogue_sha256"] == leaf["cli_catalogue_sha256"]
     stuck_check = _stuck_check_changes()
     assert stuck_check["previous_cli_catalogue_sha256"] == completion["cli_catalogue_sha256"]
-    assert actual == stuck_check["cli_catalogue_sha256"]
+    retention = _retention_changes()
+    assert retention["previous_cli_catalogue_sha256"] == stuck_check["cli_catalogue_sha256"]
+    assert actual == retention["cli_catalogue_sha256"]
     previous = json.dumps(_before_batch_fix_catalogue(), indent=2) + "\n"
     assert hashlib.sha256(previous.encode()).hexdigest() == dispatch["cli_catalogue_sha256"]
     previous = json.dumps(_before_dispatch_catalogue(), indent=2) + "\n"
