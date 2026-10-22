@@ -6125,22 +6125,25 @@ class GitManager:
         the agent never moved the task branch) counts.
 
         A merged pull request is evidence that the branch's work has already
-        shipped. Closed-but-unmerged PRs deliberately remain a failure.
+        shipped only when its head commit contains the tip: a merged PR from an
+        earlier use of the same branch name does not deliver newer commits.
+        Closed-but-unmerged PRs deliberately remain a failure.
         ``head_ref`` supplies the exact local or remote-tracking ref whose tip
         must match, while ``branch_name`` remains the GitHub branch identity.
         Best-effort throughout: any gh/git failure returns ``None``.
         """
+        refs = [_validate_rev(head_ref, field="PR head") if head_ref else branch_name]
+        if include_workspace_head:
+            refs.append("HEAD")
+        shas = [await self.arev_parse(checkout_path, ref) for ref in refs]
+        tips = {sha for sha in shas if sha}
         if include_workspace_head:
             url = await self._open_pr_url_by_head_name(
-                checkout_path, branch_name, repository=repository
+                checkout_path, branch_name, tips, shas[0], repository=repository
             )
             if url:
                 return url
 
-        refs = [_validate_rev(head_ref, field="PR head") if head_ref else branch_name]
-        if include_workspace_head:
-            refs.append("HEAD")
-        tips = {sha for ref in refs if (sha := await self.arev_parse(checkout_path, ref))}
         if not tips:
             return None
         return await self._open_pr_url_by_head_commit(
@@ -6151,17 +6154,43 @@ class GitManager:
         self,
         checkout_path: str,
         branch_name: str,
+        tips: set[str],
+        branch_tip: str | None,
         *, repository: GitHubRepositoryBinding | None = None,
     ) -> str | None:
+        """URL of an open PR for *branch_name*, or a merged one containing the work.
+
+        An open PR is the branch's current request.  A merged PR is history: a
+        reused branch name (PRs #21/#23 merged, then new work for #65) must not
+        count an earlier merge as delivering newer commits, so a merged PR
+        counts only when its head commit is one of *tips* or descends from
+        *branch_tip* (the exact-delivery rule ``GitHubClient._ordinary_pr_for_head``
+        applies).  Ancestry is never checked against the workspace ``HEAD``,
+        which may still sit at a start point every earlier PR descends from.
+        """
         try:
             prs = await self._github_client(repository).list_pull_requests(
-                state="all", head=branch_name, limit=100
+                state="all", head=branch_name, limit=100, include_head_oid=True
             )
         except (GitError, GitHubAccessError, ValueError):
             return None
-        return next(
-            (pr["url"] for pr in prs if pr.get("state") in {"OPEN", "MERGED"}), None
-        )
+        merged: list[dict] = []
+        for pr in prs:
+            if not isinstance(pr, dict) or not pr.get("url"):
+                continue
+            if pr.get("state") == "OPEN":
+                return pr["url"]
+            if pr.get("state") == "MERGED":
+                merged.append(pr)
+        for pr in merged:
+            head_oid = pr.get("headRefOid")
+            if not isinstance(head_oid, str) or re.fullmatch(r"[0-9a-f]{40}", head_oid) is None:
+                continue
+            if head_oid in tips or (
+                branch_tip and await self.ais_ancestor(checkout_path, branch_tip, head_oid)
+            ):
+                return pr["url"]
+        return None
 
     async def _open_pr_url_by_head_commit(
         self,
