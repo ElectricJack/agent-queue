@@ -263,6 +263,7 @@ start code work, tests or QA from a digest author turn.
     "integration_release_withheld_source",
     "integration_pause_batch",
     "integration_resume_batch",
+    "integration_repair_target",
     "integration_eject",
     "integration_seal_now",
     "integration_record_root_noop",
