@@ -40,9 +40,9 @@ class CloseStore:
         return dict(row) if row else None
 
     async def proposal(self, *, task, session, source, parent, args):
-        key = dict(task_id=task.id, session_id=session.id, claim_epoch=task.claim_epoch,
-                   source_oid=source, target_ref="refs/heads/" + parent.branch_name.removeprefix(
-                       "refs/heads/"))
+        key = {"task_id": task.id, "session_id": session.id, "claim_epoch": task.claim_epoch,
+                   "source_oid": source, "target_ref": "refs/heads/" + parent.branch_name.removeprefix(
+                       "refs/heads/")}
         identity = str(uuid.uuid4())
         now = self.clock()
         async with self.db.immediate() as conn:
@@ -181,7 +181,7 @@ class CloseMerge:
         try:
             await p.publish(repo, row["target_ref"], expected_old_oid=parent,
                             new_oid=head, authorize=authorize)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - every uncertain push needs remote readback.
             # A lost push reply is resolved by readback, never by a duplicate merge.
             row = await self.store.save(row, last_failure=type(exc).__name__)
         try:
@@ -210,13 +210,13 @@ class CloseMerge:
         resume = "aq integration continue-close --operation-id " + row["id"]
         if row["state"] == "needs_author":
             resume = f"Resolve and commit in {row['candidate_path']}; then {resume}"
-        return dict(operation_id=row["id"], state=row["state"], source_oid=row["source_oid"],
-                    candidate_oid=row["candidate_oid"], candidate_path=row["candidate_path"],
-                    completed=completed, reason=reason, evidence=row["evidence"],
-                    budget_wait_id=row["budget_wait_id"],
-                    next_step=("source completed; parent delivery pending" if completed
+        return {"operation_id": row["id"], "state": row["state"], "source_oid": row["source_oid"],
+                    "candidate_oid": row["candidate_oid"], "candidate_path": row["candidate_path"],
+                    "completed": completed, "reason": reason, "evidence": row["evidence"],
+                    "budget_wait_id": row["budget_wait_id"],
+                    "next_step": ("source completed; parent delivery pending" if completed
                                and row["state"] == "deferred" else
-                               resume))
+                               resume)}
 
 
 def policy_digest(value):
