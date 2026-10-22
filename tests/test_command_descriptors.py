@@ -61,16 +61,38 @@ SUPERVISOR_HEALTH_CHANGES = ROOT / "tests/fixtures/contracts/supervisor-health-c
 TARGET_REPAIR_CHANGES = ROOT / "tests/fixtures/contracts/target-repair-contract-changes.json"
 
 
+def _stuck_check_changes():
+    return json.loads((ROOT / "tests/fixtures/contracts/stuck-check-contract-changes.json").read_text())
+
+
+def _before_stuck_check_catalogue():
+    evidence = _stuck_check_changes()
+    catalogue = json.loads(render_command_catalogue())
+    assert catalogue["fallback"].pop(evidence["command"]) == evidence["transport_definition"]
+    return catalogue
+
+
+def test_stuck_check_catalogue_only_adds_reviewed_command():
+    evidence = _stuck_check_changes()
+    assert CONTRACTS.require(evidence["command"]).contract.fingerprint() == (
+        evidence["contract_fingerprint"]
+    )
+    previous = json.dumps(_before_stuck_check_catalogue(), indent=2) + "\n"
+    assert hashlib.sha256(previous.encode()).hexdigest() == (
+        evidence["previous_cli_catalogue_sha256"]
+    )
+
+
 def _completion_changes():
     return json.loads(COMPLETION_CHANGES.read_text())
 
 
 def _before_completion_catalogue():
-    return _revert_catalogue(json.loads(render_command_catalogue()), _completion_changes())
+    return _revert_catalogue(_before_stuck_check_catalogue(), _completion_changes())
 
 
 def _dev_catalogue():
-    return _revert_catalogue(json.loads(render_command_catalogue()), {
+    return _revert_catalogue(_before_stuck_check_catalogue(), {
         "catalogue_sections": _completion_changes()["source_catalogue_sections"],
     })
 
@@ -365,7 +387,9 @@ def test_transport_views_and_cli_serialization_preserve_golden_evidence():
     assert leaf["previous_cli_catalogue_sha256"] == merge["cli_catalogue_sha256"]
     completion = _completion_changes()
     assert completion["previous_cli_catalogue_sha256"] == leaf["cli_catalogue_sha256"]
-    assert actual == completion["cli_catalogue_sha256"]
+    stuck_check = _stuck_check_changes()
+    assert stuck_check["previous_cli_catalogue_sha256"] == completion["cli_catalogue_sha256"]
+    assert actual == stuck_check["cli_catalogue_sha256"]
     previous = json.dumps(_before_batch_fix_catalogue(), indent=2) + "\n"
     assert hashlib.sha256(previous.encode()).hexdigest() == dispatch["cli_catalogue_sha256"]
     previous = json.dumps(_before_dispatch_catalogue(), indent=2) + "\n"

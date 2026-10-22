@@ -16438,6 +16438,53 @@
         "type": "object"
       }
     },
+    "integration_rerequest_check": {
+      "name": "integration_rerequest_check",
+      "description": "Authenticated hierarchical integration operational control.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "batch_id": {
+            "minLength": 1,
+            "title": "Batch Id",
+            "type": "string"
+          },
+          "reason": {
+            "default": "",
+            "title": "Reason",
+            "type": "string"
+          },
+          "dry_run": {
+            "default": true,
+            "title": "Dry Run",
+            "type": "boolean"
+          },
+          "check_name": {
+            "minLength": 1,
+            "title": "Check Name",
+            "type": "string"
+          },
+          "expected_candidate_sha": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Expected Candidate Sha"
+          }
+        },
+        "required": [
+          "batch_id",
+          "check_name"
+        ],
+        "title": "IntegrationRerequestCheckArgs",
+        "type": "object"
+      }
+    },
     "integration_reserve_owner": {
       "name": "integration_reserve_owner",
       "description": "Authenticated hierarchical integration operational control.",

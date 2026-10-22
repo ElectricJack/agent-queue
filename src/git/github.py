@@ -1667,6 +1667,15 @@ class GitHubClient:
             expected_statuses={201},
         )
 
+    async def rerun_job(self, job_id: int) -> dict[str, Any]:
+        """Re-run one exact Actions job (requires Actions write permission)."""
+        if isinstance(job_id, bool) or not isinstance(job_id, int) or job_id <= 0:
+            raise ValueError("invalid Actions job ID")
+        return await self.request_json(
+            "POST", f"repos/{self.repository.full_name}/actions/jobs/{job_id}/rerun",
+            expected_statuses={201},
+        )
+
     async def job_log(self, job_id: int) -> str:
         if isinstance(job_id, bool) or not isinstance(job_id, int) or job_id <= 0:
             raise ValueError("invalid Actions job ID")
