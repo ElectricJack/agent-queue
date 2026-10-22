@@ -268,6 +268,19 @@ class PlaybookArtifactQueryMixin:
         reasons: str,
     ) -> None:
         async with self.immediate() as conn:
+            if scope == "project":
+                # A policy edit/disable cannot race the train's fenced push.
+                # Take the repository fence before changing the activation;
+                # worker source publication does not participate in this fence.
+                from src.database.tables import projects
+                from src.integration.engine import lock_key
+
+                repository_id = await conn.scalar(select(
+                    projects.c.integration_repository_id,
+                ).where(projects.c.id == scope_identifier))
+                if repository_id:
+                    await conn.execute(text("SELECT pg_advisory_xact_lock(:key)"),
+                                       {"key": lock_key(repository_id)})
             if artifact_sha256 is not None:
                 found = await conn.execute(
                     select(playbook_artifacts.c.artifact_sha256).where(

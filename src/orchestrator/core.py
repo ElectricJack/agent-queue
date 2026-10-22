@@ -2391,10 +2391,14 @@ class Orchestrator(
         owner_recovery = owner_recovery_for(self)
         self.development_integration.owner_recovery = owner_recovery
         from src.integration.truth_reconciler import GitTruthReconciler
+        from src.sessions.obsolete import ObsoleteClose, obsolete_owner_release_for
 
         self.git_truth_reconciler = GitTruthReconciler(
             self.db, self.git, data_dir=self.config.data_dir,
             owner_recovery=owner_recovery if self.config.integration.owner_recovery_sweep else None,
+            obsolete_close=ObsoleteClose(
+                self.db, release_owner=obsolete_owner_release_for(self), git_manager=self.git,
+            ),
         )
 
         async def reconcile_git_truth(now):

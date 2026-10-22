@@ -214,8 +214,19 @@
       "limits": "Live inventory, two verified backups, native capacity, current Windows/Linux policy, product health and owner activation remain unresolved. Fixtures cannot supply them."
     }
   ],
-  "unapproved_revision_3_proposals": {
-    "status": "unapproved_proposal_only",
+  "authority_correction": {
+    "date": "2026-10-22",
+    "authority": [
+      "Jack revision-3 playbook-policy decisions, 2026-10-13",
+      "Jack revision-4 retrospective decisions, 2026-10-20",
+      "msg-783a64391ca9486396693940ef3cb409",
+      "User direct completion and dev delivery request, 2026-10-22"
+    ],
+    "repair_disposition": "msg-6bc788cb753744729ef5354ca185620c accepts one in-place session per batch family with dependency-closed splits, retained companions and finite revisits; separate repair task fan-out is superseded.",
+    "historical_evidence": "Original run results remain unchanged; later implementation needs its own verification."
+  },
+  "revision_3_decisions": {
+    "status": "required_by_direct_user_decision",
     "rows": [
       "Policy owns decisions",
       "Project off/on switch",
@@ -224,6 +235,6 @@
       "Never blocked by default",
       "Retained reduction goals"
     ],
-    "disposition": "Separate from the twelve approved rows; neither passing acceptance nor missing approved implementation prerequisites. No policy implementation expansion. Global/human owner reconciles divergent vault review."
+    "disposition": "The original unapproved classification was superseded by the direct decisions above. Complete policy controls and verify them; no new document approval gate."
   }
 }

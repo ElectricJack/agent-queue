@@ -419,6 +419,13 @@ class DatabaseTargets:
                        *([projects.c.id == project_id] if project_id else []))
                 .order_by(projects.c.id)
             )).mappings().all()
+        from src.integration.train_policy import load_train_policy
+
+        active = []
+        for row in rows:
+            if (await load_train_policy(self.db, row["id"])).reason != "train_playbook_disabled":
+                active.append(row)
+        rows = active
         # Root probes run concurrently and outside a held database connection.
         # A stalled probe leaves work owed; visits perform their own root proof.
         for targets in await asyncio.gather(*(
@@ -1045,6 +1052,12 @@ class DatabaseBatches:
                 await self._clear_admissions(target,
                     evaluated_ids=evaluated_ids if blockers else None)
             return BatchSelection(blockers=tuple(blockers))
+        from src.integration.train_policy import load_train_policy
+
+        view = await load_train_policy(self.db, target.project_id)
+        if not view.enabled or (view.policy and view.policy.action("idle") == "wait"):
+            return BatchSelection(detail={"reason": view.reason or "train_policy_wait",
+                "retry_at": self.clock() + (view.policy.wait_seconds if view.policy else 30)})
         members, requests, dependencies = pending
         now = self.clock()
         # A live batch above owns the lane until settlement. With no live batch,
@@ -1238,6 +1251,11 @@ class DatabaseBatches:
         """Release obsolete check pins without rewriting frozen policy or sources."""
         from src.operator_decisions import OperatorDecisions
 
+        from src.integration.train_policy import load_train_policy
+
+        # Live playbook policy applies to this same candidate, without a requeue.
+        if (await load_train_policy(self.db, target.project_id)).policy is not None:
+            return None
         boundary = "parent" if target.kind == "epic" else "root"
         removed = await service.store.removed_required_checks(batch, boundary)
         if not removed:
@@ -2656,8 +2674,16 @@ class DaemonLanes:
 
             return (await exact.refresh(candidate_head(batch, sha))).green
 
+        async def current_gate(batch, candidate_sha, tree_sha):
+            # Rechecked inside the publisher fence, including edits made while
+            # this visit was waiting for CI. Never publish using obsolete green.
+            current = await self._policy(target.project_id)
+            if current != policy:
+                return False
+            return await checks.gate(batch, candidate_sha, tree_sha)
+
         service = BatchService(self.store, gitops, publish=self.publish,
-                               eligible=self.batches.eligible, gate=checks.gate,
+                               eligible=self.batches.eligible, gate=current_gate,
                                attest=None if unattested else attest,
                                require_attestation=not unattested,
                                observe_deferred=observe_deferred)
@@ -2737,7 +2763,12 @@ class DaemonLanes:
                     return await self.batches.prepare_speculative(
                         target, service, parent, base, snapshot)
 
+        from src.integration.train_policy import load_train_policy
+
+        view = await load_train_policy(self.db, target.project_id)
         return TrainLane(snapshot=snapshot, service=service, checks=checks,
+                         train_policy=view.policy, train_policy_enabled=view.enabled,
+                         train_policy_reason=view.reason,
                          repair_policy=(RepairPolicy.model_validate(repair_policy)
                                         if repair_policy else None),
                          complete_epic=complete_epic, sync_default_branch=sync_default_branch,
@@ -3169,7 +3200,10 @@ class DaemonLanes:
                 select(projects.c.hierarchical_integration_policy)
                 .where(projects.c.id == project_id)
             )).scalar_one_or_none()
-        return policy if isinstance(policy, dict) else {}
+        from src.integration.train_policy import current_checks, load_train_policy
+
+        return current_checks(policy if isinstance(policy, dict) else {},
+                              await load_train_policy(self.db, project_id))
 
     async def _settings(self, policy: dict) -> tuple[Any, str | None]:
         from src.integration.development_policy import (

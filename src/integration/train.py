@@ -419,6 +419,9 @@ class TrainLane:
     service: BatchService
     checks: CandidateChecks
     repair_policy: RepairPolicy | None = None
+    train_policy: Any = None
+    train_policy_enabled: bool = True
+    train_policy_reason: str | None = None
     complete_epic: Callable[[GitTruthSnapshot], Awaitable[tuple[dict[str, Any], ...]]] | None = None
     sync_default_branch: Callable[
         [Batch, GitTruthSnapshot, str, tuple[str, ...]], Awaitable[dict[str, Any] | None]
@@ -745,6 +748,8 @@ class IntegrationTrain:
                 lane.progress_at = self.clock()
             lane.progress_identity = identity
         lane.last = self._wait(target, lane, visit)
+        if (visit.detail or {}).get("reason") in {"train_policy_wait", "train_policy_unavailable"}:
+            lane.not_before = visit.detail["retry_at"]
         if lane.requested:
             # A state change while this visit awaited Git/checks belongs to
             # another observation, not the backoff of the stale one.
@@ -810,6 +815,10 @@ class IntegrationTrain:
     async def _visit_target(self, target: TrainTarget, *, seal_now: bool = False,
                             depart_next: bool = True) -> TrainVisit:
         lane = await self.lane_for(target)
+        if not lane.train_policy_enabled:
+            return TrainVisit(target, "unknown", detail={
+                "reason": lane.train_policy_reason or "train_policy_unavailable",
+                "retry_at": self.clock() + 30}, observed_at=self.clock())
         _progress("fetch_snapshot")
         snapshot = await lane.snapshot()
         if lane.observe_source:
@@ -1030,6 +1039,11 @@ class IntegrationTrain:
                 head_sha=observation.candidate_sha, authorize=authorize_reservation,
                 held=batch.intent != "open",
             )
+        if (observation.state == "conflict" and lane.train_policy
+                and lane.train_policy.action("conflict") == "wait"):
+            return replace(self._visit(target, "conflict", batch, observation), detail={
+                "reason": "train_policy_wait", "retry_at": self.clock() +
+                lane.train_policy.wait_seconds})
         if observation.state == "conflict":
             async def completion_blocker(task_id, starting_sha):
                 return await lane.service.repair_completion_blocker(
@@ -1065,6 +1079,10 @@ class IntegrationTrain:
                 await self.batches.settle(batch, published)
             return self._visit(target, published.state, batch, published, result)
         if result.state == ChecksState.RED:
+            if lane.train_policy and lane.train_policy.action("red") == "wait":
+                return replace(self._visit(target, "red", batch, observation, result), detail={
+                    "reason": "train_policy_wait", "retry_at": self.clock() +
+                    lane.train_policy.wait_seconds})
             if target.kind == "promotion":
                 return self._visit(target, "held", batch, replace(observation, detail={
                     "reason": "promotion_checks_failed",
