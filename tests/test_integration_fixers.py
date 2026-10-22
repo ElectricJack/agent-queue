@@ -231,11 +231,16 @@ async def live_fixer(db, tmp_path, monkeypatch):
     runtime = DaemonFixerRuntime(orch, lanes=AsyncMock(return_value=lane))
     runtime.route = AsyncMock(return_value=(profile, {"profile_id": profile.id}))
 
-    async def fetch(destination, *, repository, oid, destination_ref):
-        return await transport._arun(["fetch", str(remote), f"{oid}:{destination_ref}"],
-                                     cwd=destination)
+    # Only the credential and GitHub URL are substituted: launch and rebind go
+    # through the real afetch_repository_oid and its refs/aq/* destination guard.
+    real_fetch = transport._afetch_exact_oid_with_app_auth_to_url
 
-    monkeypatch.setattr(transport, "afetch_repository_oid", fetch)
+    async def file_source_fetch(destination, **kwargs):
+        assert kwargs["destination_url"] == "https://github.com/test/repo.git"
+        return await real_fetch(destination, **(kwargs | {"destination_url": remote.as_uri()}))
+
+    monkeypatch.setattr(transport, "_atoken_for_repository", AsyncMock(return_value=None))
+    monkeypatch.setattr(transport, "_afetch_exact_oid_with_app_auth_to_url", file_source_fetch)
     service = BatchFixerService(db, runtime)
     result = await service.allocate("real", target_ref=candidate_ref("real"), head_sha=source,
                                     authorize=AsyncMock(return_value=True))
@@ -268,6 +273,25 @@ async def test_registered_named_launch_has_no_claim_and_preserves_checkout(db, l
     assert not await db.get_task("real")
     async with db._engine.connect() as conn:
         assert await conn.scalar(select(func.count()).select_from(tasks)) == 0
+
+
+async def test_launch_pins_heads_target_start_in_daemon_namespace(db, live_fixer):
+    from src.git.github_contracts import GitHubRepositoryBinding
+    from src.git.manager import GitError
+    from tests.test_integration_gitops import git
+
+    _service, runtime, _orch, row, _, source, _ = live_fixer
+    state = (await db.get_integration_batch("real"))["fixer_state"]
+    assert state["target_ref"] == candidate_ref("real")
+    assert state["target_ref"].startswith("refs/heads/")
+    store = runtime.git.remote_path.parent / "retained"
+    assert git(store, "rev-parse", f"refs/aq/fixer-sources/{source}") == source
+    assert git(row.work_dir, "branch", "--show-current") == candidate_ref("real")[11:]
+    assert git(row.work_dir, "rev-parse", "HEAD") == source
+    with pytest.raises(GitError, match="daemon recovery namespace"):
+        await runtime.git.afetch_repository_oid(
+            str(store), repository=GitHubRepositoryBinding(123, "test/repo"), oid=source,
+            destination_ref=state["target_ref"])
 
 
 async def test_real_push_is_scoped_cas_idempotent_and_green_revokes_it(db, live_fixer):
