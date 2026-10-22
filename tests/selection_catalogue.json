@@ -17461,7 +17461,7 @@
         "worker-pools"
       ],
       "default_arm": true,
-      "digest": "sha256:17b2c278548153d26c27e5788edc96110af27e0978a5217b1b6f49a7fabeb0fc",
+      "digest": "sha256:3d14ff6d8db17feb0a1d2a70aef3f0bc248db4a73b9391a6f9918527cf247196",
       "imports": [
         "src.api.scope",
         "src.cli",
@@ -17481,7 +17481,9 @@
         "src.sessions.input_prompts",
         "src.tools.definitions"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "Generated surface for the swarm commands — spec §14."
     },
     "tests/test_sync_and_merge.py": {
