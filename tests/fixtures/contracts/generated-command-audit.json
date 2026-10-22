@@ -9130,7 +9130,7 @@
   "integration_reserve_owner": {
     "mode": "typed",
     "producer": "src/commands/integration_commands.py:IntegrationCommandsMixin._cmd_integration_reserve_owner",
-    "source_digest": "sha256:8deb8ae5589dd725bd10a77b89743d251ce56fe821fb3a81452dd4cb46a4e715",
+    "source_digest": "sha256:ea2f53ec98f8114162fb436b6429b586d18c7b243af87e645d98ce85a448b75d",
     "input_schema_source": "typed_contract",
     "schema_quality": "typed",
     "argument_reads_diagnostic_only": [],
@@ -9156,7 +9156,11 @@
         "protocol": "delegated_producer"
       },
       {
-        "return": "_failure('not_eligible', f'invalid reservation request: {exc}')",
+        "return": "_with_reason(result['outcome'] in {'acquired', 'already_reserved'}, result)",
+        "protocol": "delegated_producer"
+      },
+      {
+        "return": "await detached_operations(orchestrator or self).run(f'reserve_owner:{task.id}', reserve, poll=...)",
         "protocol": "delegated_producer"
       }
     ],

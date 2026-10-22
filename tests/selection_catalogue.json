@@ -3361,8 +3361,9 @@
         "integration-ownership"
       ],
       "default_arm": true,
-      "digest": "sha256:fedc61cb29afe255b42b7b01275879c125d737de3f5dad430867f3dcc38d97f0",
+      "digest": "sha256:183e87a56e085cb1bbc4610a3534f76ee94d4b8c0ce0632400f59f4add9ad9d5",
       "imports": [
+        "src.commands.detached",
         "src.commands.integration_commands",
         "src.commands.principal",
         "src.commands.task_commands",

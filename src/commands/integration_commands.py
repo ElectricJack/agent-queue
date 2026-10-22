@@ -16,6 +16,7 @@ from pydantic import ValidationError
 
 from src.waits.sources import insert_message_with_source_event
 from src.commands.operator_authority import local_or_operator
+from src.commands.detached import detached_operations
 from src.commands.principal import PrincipalKind, TRUSTED_LOCAL, current_principal
 from src.commands.supervisor_authority import integration_operator
 from src.git.manager import GitError
@@ -1843,18 +1844,27 @@ class IntegrationCommandsMixin:
         _principal, refusal = await integration_operator(self.db, task.project_id)
         if refusal is not None:
             return _failure("unauthorized", refusal)
-        repair = OrdinaryRepairService(self.db)
-        original = await repair.input(task.id)
-        if original is not None:
-            result = await reserve_ordinary_repair_branch(
-                self.db, task, repair, original,
-                getattr(getattr(self, "orchestrator", None), "integration_train", None),
-            )
-        elif await self.db.get_active_integration_repair_for_task(task.id) is not None:
-            result = await self._integration_repair_service().reserve_delegate(task.id)
-        else:
-            result = await reserve_canonical_task_branch(self.db, task.id)
-        return {"success": result["outcome"] in {"acquired", "already_reserved"}, **result}
+        orchestrator = getattr(self, "orchestrator", None)
+
+        async def reserve() -> dict:
+            repair = OrdinaryRepairService(self.db)
+            original = await repair.input(task.id)
+            if original is not None:
+                result = await reserve_ordinary_repair_branch(
+                    self.db, task, repair, original,
+                    getattr(orchestrator, "integration_train", None),
+                )
+            elif await self.db.get_active_integration_repair_for_task(task.id) is not None:
+                result = await self._integration_repair_service().reserve_delegate(task.id)
+            else:
+                result = await reserve_canonical_task_branch(self.db, task.id)
+            return _with_reason(result["outcome"] in {"acquired", "already_reserved"}, result)
+
+        # Train recovery fetches origin; answer within the CLI timeout with a poll handle.
+        return await detached_operations(orchestrator or self).run(
+            f"reserve_owner:{task.id}", reserve,
+            poll=f"aq integration reserve-owner --task-id {task.id}",
+        )
 
     async def _cmd_integration_release_stale_owners(self, args: dict) -> dict:
         """Release a project's provably safe reserved owners; report every other."""

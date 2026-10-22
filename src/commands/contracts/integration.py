@@ -1469,8 +1469,8 @@ INTEGRATION_RELEASE_OWNER = _operational_contract(
 INTEGRATION_RESERVE_OWNER = _operational_contract(
     "integration_reserve_owner",
     IntegrationReserveOwnerArgs,
-    ("acquired", "already_reserved", "not_eligible", "not_found"),
-    successes=frozenset({"acquired", "already_reserved"}),
+    ("acquired", "already_reserved", "running", "not_eligible", "not_found"),
+    successes=frozenset({"acquired", "already_reserved", "running"}),
     side_effect=SideEffectClass.UPDATE,
 )
 
