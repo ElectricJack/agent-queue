@@ -59,6 +59,7 @@ EXPECTED_AGENT_COMMANDS = {
     "message_status",
     "memory_save",
     "memory_search",
+    "read_file",
     # Knowledge records (K03): worker-safe reads and writes; retire/restore are
     # supervisor-only and remain out of the agent set.
     "knowledge_create",

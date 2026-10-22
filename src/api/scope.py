@@ -81,6 +81,8 @@ AGENT_COMMAND_SET: frozenset[str] = frozenset(
         "message_status",
         "memory_save",
         "memory_search",
+        # File reads retain independent project/path fencing in aq-files.
+        "read_file",
         # Knowledge records (K03). Project-pinned reads that the profile must
         # also grant a capability for; the record service is the independent
         # authorization gate. Retire/restore stay supervisor-only.

@@ -171,6 +171,8 @@ class PrimeRenderer:
                     conn, task_id=task_id, project_id=task.project_id, session_id=sess.id,
                 )
 
+        from src.waits.policy import enabled as waits_enabled
+
         section_tuple = (
             await _sections.build_role_section(self.config, effective_profile_id),
             await _sections.build_project_role_section(
@@ -223,6 +225,7 @@ class PrimeRenderer:
             _sections.build_completion_protocol_section(
                 task_id,
                 lifecycle=session_lifecycle,
+                waits_enabled=waits_enabled(self.config, task.project_id),
                 development=development,
                 regenerate=(
                     (getattr(project, "hierarchical_integration_policy", None) or {}).get(

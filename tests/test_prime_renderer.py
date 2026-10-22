@@ -1311,6 +1311,7 @@ _CLI_TO_COMMAND: dict[str, str | None] = {
     "aq knowledge update": "knowledge_update",
     "aq record capabilities": "record_capabilities",
     "aq record search": "record_search",
+    "aq file read": "read_file",
     "aq memory save": "memory_save",
     "aq memory search": "memory_search",
     "aq project ready": "project_ready",
@@ -1559,3 +1560,35 @@ def test_primed_context_guidance_tracks_what_the_harness_reports(harness, readab
             harness, config=config, session=session,
             observation={"input_tokens": 130000}).body
         assert "Latest measured request input: 130000 tokens." in measured
+
+
+@pytest.mark.parametrize("global_enabled,override,expected", [
+    (False, None, False), (True, None, True), (True, False, False), (False, True, True),
+])
+async def test_prime_wait_guidance_matches_project_activation(
+    db, config, task, global_enabled, override, expected
+):
+    from src.config_wait_policy import WaitProjectOverrides
+
+    config.wait_policy.v2_enabled = global_enabled
+    if override is not None:
+        config.wait_policy.projects[task.project_id] = WaitProjectOverrides(v2_enabled=override)
+    doc = await PrimeRenderer(db, config).render_for_task(task.id)
+    sections = {section.key: section.body for section in doc.sections}
+    guidance = sections["tool_guidance"]
+    completion = sections["completion_protocol"]
+    assert ("aq wait register" in guidance) == expected
+    assert ("--aq-wait" in completion) == expected
+    if not expected:
+        assert "awaiting inbox delivery" in guidance
+        assert "registration is disabled" in completion
+    assert "aq file read projects/<project>/plans/<file>" in guidance
+
+
+async def test_pool_completion_does_not_prescribe_disabled_message_wait():
+    from src.prime.sections import build_completion_protocol_section
+
+    body = build_completion_protocol_section("held", lifecycle="pool", waits_enabled=False).body
+    assert "use ONE durable message wait" not in body
+    assert "preserve it and end the turn awaiting the supervisor's inbox delivery" in body
+    assert "--aq-wait" not in body

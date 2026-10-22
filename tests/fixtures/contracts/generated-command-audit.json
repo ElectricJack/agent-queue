@@ -16971,7 +16971,7 @@
   "record_capabilities": {
     "mode": "typed",
     "producer": "src/commands/knowledge_commands.py:KnowledgeCommandsMixin._cmd_record_capabilities",
-    "source_digest": "sha256:bdf2c34ccb6b2b2da43d803f9ce0958e3c5a2eb0e2f67b3bb65ef718460761a1",
+    "source_digest": "sha256:46d96df8685f0fbadbf1ba54ff93d1ba6b87b3d0714a9f135cff84e8647e110d",
     "input_schema_source": "typed_contract",
     "schema_quality": "typed",
     "argument_reads_diagnostic_only": [],
@@ -16985,14 +16985,16 @@
     "result_policy": "retained typed adapter",
     "return_branches": [
       {
-        "return": "{'success': True, 'outcome': 'read', 'capabilities': {'enabled': cfg.enabled, 'global_enabled': cfg.global_enabled, 'writes_enabled': cfg.writes_enabled, 'ui_enabled': cfg.ui_enabled, 'enabled_projects': [project for project in cfg.enabled_projects if principal is not None and (principal.kind.value == 'local' or principal.project_id == project or (principal.elevated and principal.project_id is None))], 'legacy_memory_mode': cfg.legacy_memory_mode, 'features': {name: getattr(cfg, name).enabled for name in ('context', 'semantic', 'extraction', 'consolidation', 'export', 'import_inventory', 'import_apply')}, 'granted_operations': sorted(grants)}}",
+        "return": "{'success': True, 'outcome': 'read', 'capabilities': {'enabled': cfg.enabled, 'global_enabled': cfg.global_enabled, 'writes_enabled': cfg.writes_enabled, 'ui_enabled': cfg.ui_enabled, 'enabled_projects': [project for project in cfg.enabled_projects if principal is not None and (principal.kind.value == 'local' or principal.project_id == project or (principal.elevated and principal.project_id is None))], 'legacy_memory_mode': cfg.legacy_memory_mode, 'features': {name: getattr(cfg, name).enabled for name in ('context', 'semantic', 'extraction', 'consolidation', 'export', 'import_inventory', 'import_apply')}, 'profile_granted_operations': sorted(grants), 'granted_operations': sorted(available), 'unavailable_operations': unavailable}}",
         "protocol": "explicit_boolean: True"
       }
     ],
     "tests": [
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
       "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
       "tests/test_generated_command_contracts.py::test_generic_result_protocol",
-      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+      "tests/test_knowledge_commands.py::test_worker_capabilities_match_activation_and_read_results",
+      "tests/test_knowledge_commands.py::test_worker_record_reads_reject_other_project"
     ]
   },
   "record_repair": {

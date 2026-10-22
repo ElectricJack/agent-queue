@@ -12,10 +12,16 @@ Native equivalents include task_show, task_set, task_comment, task_comments, tas
 task_heartbeat, task_claim, task_handoff, message_send, message_inbox. Use the
 convenient surface; both dispatch through CommandHandler.
 
+Read your project's vault plans/specs with `aq file read projects/<project>/plans/<file>`
+or `aq file read projects/<project>/specs/<file>`. Absolute vault paths also work.
+These reads are read-only and project-scoped; knowledge activation is separate.
+
 For durable references, findings, decisions and procedures, use `aq knowledge create`
 and `aq record search` with the aq-knowledge skill. Check current `aq record capabilities`
-and granted operations for an explicit project, then use scoped lexical search
-to avoid duplicates. PostgreSQL owns canonical knowledge; legacy notes, vault
+and effective granted operations for an explicit project, then use scoped lexical search
+to avoid duplicates. Profile grants alone do not enable knowledge. If the operation is
+unavailable, report its refusal reason to the supervisor; workers cannot enable features.
+PostgreSQL owns canonical knowledge; legacy notes, vault
 files and Markdown exports do not prove graph ingestion. Optional semantic
 memory is separate. Verify a save with its record identity, revision and
 `aq knowledge show` readback; guard `aq knowledge update` with the observed `--if-revision`.
@@ -49,22 +55,7 @@ your task or justify changing tests: never weaken or skip a test; name it when c
 Task authors specify focused/area checks, not "run the full suite before closing".
 For agent-queue, see docs/guides/resource-gating.md.
 
-State one verified condition with `aq wait register --task PRODUCER_TASK
---idempotency-key settlement` (or `--condition` JSON), then end the turn. AQ chooses
-sleep in place or hibernation, maintains ownership and delivers the outcome. If the
-receipt requests a checkpoint, submit `aq wait checkpoint` with the compaction summary
-and end the turn. Resume by acknowledging the outcome with `aq wait show WAIT_ID
---consume --json`; availability never proves producer success. Message conditions use
-the returned thread and cursor. Human conditions have no deadline and resume only on
-verified human evidence or a supervisor decision. Escalations reach the supervisor;
-workers receive `cancelled`, `source_unavailable`, `lifted_by_supervisor` or `satisfied`.
-A supervisor may extend, reroute, cancel or wake through `aq wait decide`, or relay a
-verified response through `aq wait lift`. These operations are out of scope for
-workers. Keep the same wait and its original age.
-Managed tests: `aq test --aq-detach --aq-wait TEST_ARGS` or
-`aq job submit --preset test --wait --idempotency-key KEY -- TEST_ARGS` (operator must
-enable resources.jobs.enabled; otherwise keep foreground `aq test` resource controls).
-Do not resubmit pending work.
+{wait_guidance}
 
 If close returns `messages.pending_before_close`, handle each mailbox named in the refusal
 with `--inject --json` before retrying; a plain inbox or status read does not consume
