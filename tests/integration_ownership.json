@@ -19499,13 +19499,15 @@
     "decision_message_id": "msg-7ed85e78d1af4f3e85b485a57967e794",
     "decision_message_ids": [
       "msg-7ed85e78d1af4f3e85b485a57967e794",
-      "msg-381054d695e64055979a687c4d811e7e"
+      "msg-381054d695e64055979a687c4d811e7e",
+      "msg-efc241b8ddbb4c1fb63a41f5fe3f0d90",
+      "msg-21f0bc97741343c39d69d7c5c7b97400"
     ],
     "decision_record": "record:2720bdbe-7521-427e-8e72-1f40a3ff9818",
-    "measured_source_revision": "83ef85ec7226f2c0c7c8ef64504919086bc394ba",
+    "measured_source_revision": "aa6a9339e0fcd775a773886fdd14bed36df9687f",
     "original_owned_total_cap": 155499,
-    "measured_owned_total": 160874,
-    "delta": 5375,
+    "measured_owned_total": 161302,
+    "delta": 5803,
     "predecessors": [
       {
         "batch_id": "train-77f0d8e451f6aed08d608e443031047a",
@@ -19525,7 +19527,7 @@
         "measured_owned_total": 158958
       }
     ],
-    "batch_measured_delta": 1916,
+    "batch_measured_delta": 2344,
     "restore_task": "azure-ridge-72",
     "expires_at": "s4_modules",
     "category_approval_message_id": "msg-90f9f1b1e0cd4e8e8d28071cffc927a6",
@@ -19534,7 +19536,7 @@
     ],
     "category_restore_task": "stark-willow-95.17",
     "verification_task": "stark-willow-95.18",
-    "measured_engine_lines": 85331,
+    "measured_engine_lines": 85697,
     "measured_table_count": 45,
     "delivery_method": "operator direct integration; user request 2026-10-22"
   },
