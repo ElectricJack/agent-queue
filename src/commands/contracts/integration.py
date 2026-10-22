@@ -25,9 +25,13 @@ from src.commands.contracts.models import (
 )
 from src.commands.contracts.registry import CommandContext, CommandRegistration, ContractRegistry
 from src.commands.principal import principal_context
-from src.integration.models import AWAITING_TRUSTED_VERIFICATION, BranchKey, Fence, HostedCheckPolicy
 from src.git.manager import is_valid_git_oid
-
+from src.integration.models import (
+    AWAITING_TRUSTED_VERIFICATION,
+    BranchKey,
+    Fence,
+    HostedCheckPolicy,
+)
 
 DESIGN_INTEGRATION_COMMANDS = frozenset(
     {
@@ -413,7 +417,7 @@ class IntegrationReleaseOwnerArgs(CommandArgs):
     self_owned: bool = False
 
     @model_validator(mode="after")
-    def exactly_one_target(self) -> "IntegrationReleaseOwnerArgs":
+    def exactly_one_target(self) -> IntegrationReleaseOwnerArgs:
         if (self.task_id is None) == (self.owner_row_id is None):
             raise ValueError("exactly one of task_id or owner_row_id is required")
         return self

@@ -90,7 +90,7 @@ def _retire_gate_applicability_only_while_empty(connection) -> None:
     from alembic.migration import MigrationContext
     from alembic.operations import Operations
 
-    revision = import_module("migrations.versions.a00000000117_retire_legacy_gate_applicability")
+    revision = import_module("migrations.versions.a00000000119_retire_legacy_gate_applicability")
     table = "integration_legacy_gate_applicability"
 
     def present() -> bool:

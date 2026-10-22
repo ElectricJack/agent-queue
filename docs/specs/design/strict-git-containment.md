@@ -198,7 +198,7 @@ and CI attestations are separate contracts and are not delivery proof.
   `settling_cap_seconds`, and treats it as a threshold. Shipped instructions that
   promise a quiet-period seal fail `tests/test_factory_policy_instructions.py`.
 - Table ratchet: the cap of 45 holds. The never-written
-  `integration_legacy_gate_applicability` is retired (revision `a00000000117`
+  `integration_legacy_gate_applicability` is retired (revision `a00000000119`
   drops it only while it is empty), and the cap was not raised. The integration
   line cap is restored by its own owner task; this stage does not raise it.
 - Worker scope: synced worker templates grant only `integration_continue_close`

@@ -800,7 +800,7 @@ retaining their workspaces. An uncertain push is resolved from current Git
 ancestry, never from the operation's stored `finished` state alone.
 
 Storage disposition: the approved fast-smooth-integration section 5 adds
-`integration_close_attempts` (migration `a00000000115`). It stores version-fenced
+`integration_close_attempts` (migration `a00000000117`). It stores version-fenced
 proposal identity, retained candidate and validation evidence, and links the
 integration budget wait. It is not a delivery receipt or a second scheduler.
 The source completion continues through the existing accepted-close recovery

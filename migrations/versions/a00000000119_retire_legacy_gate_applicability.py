@@ -8,8 +8,8 @@ historical audit rather than losing history.
 import sqlalchemy as sa
 from alembic import op
 
-revision = "a00000000117"
-down_revision = "a00000000116"
+revision = "a00000000119"
+down_revision = "a00000000118"
 branch_labels = depends_on = None
 
 TABLE = "integration_legacy_gate_applicability"
