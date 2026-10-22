@@ -108,6 +108,20 @@ There are two dispatch paths.
   agent rows lazily when push demand needs them. It never creates rows for pool
   profiles.
 
+The push scheduler and lazy agent reconciler enforce the project agent cap
+using live session rows (`starting`, `running`, `draining`) attributed by
+`session.project_id`. Idle pool sessions and sessions whose stop is unconfirmed
+still consume capacity. Stopped/sleeping sessions and agent definitions without
+a live session consume none, even if a retired or deleted definition retains an
+old task pointer. Soft deletion clears `agent.current_task_id`. Retirement
+clears it only when the agent no longer owns that task: a pointer backed by an
+unfinished assignment to the agent, its workspace lock or a session bound to
+the task stays, because pause, orphan and closed-owner recovery return a
+torn-down pool agent to IDLE through it. Task assignments, session bindings and
+workspace locks keep their own guarded release protocols. Push explain and scheduler blocker logs name
+`project_agent_cap` with the live count and `max_concurrent_agents` when full.
+An exclusive project constraint lowers the effective push cap to one.
+
 Both paths are called from the orchestrator cycle (`_schedule` is step 14 and
 `_reconcile_pools` is step 16 of `run_one_cycle` in
 [src/orchestrator/core.py](../../../src/orchestrator/core.py)). The order of

@@ -362,8 +362,9 @@ Collects all state needed by `Scheduler.schedule` and delegates to it:
 2. For each project, compute token usage in the rolling window:
    `window_start = now - (config.scheduling.rolling_window_hours * 3600)`
    `project_usage[p.id] = db.get_project_token_usage(p.id, since=window_start)`
-3. Count active agents per project by iterating agents whose state is `BUSY` or `STARTING`
-   and looking up their `current_task_id`.
+3. Count live sessions (`starting`, `running`, `draining`) by `session.project_id`,
+   including idle pool workers and unconfirmed stops. Historical agent task pointers
+   do not consume project capacity. The agent reconciler uses the same count.
 4. Sum all per-project usage to get `total_used`.
 5. Build a `SchedulerState` dataclass and call `Scheduler.schedule(state)`.
 
