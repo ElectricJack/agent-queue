@@ -17871,7 +17871,21 @@
     "src/playbooks/features.py::execution_metadata_from_source": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/playbooks/features.py::infer_required_features": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/database/tables.py::job_input_pins": "Playbook-only immutable script input retention; no integration owner, workspace lease or ref replay storage.",
-    "src/database/queries/wait_metrics.py::wait_metrics_snapshot": "Read-only fleet wait metrics aggregate owned by metrics; wait_graph's cost projection imports it, but it writes nothing and holds no integration fence or source."
+    "src/database/queries/wait_metrics.py::wait_metrics_snapshot": "Read-only fleet wait metrics aggregate owned by metrics; wait_graph's cost projection imports it, but it writes nothing and holds no integration fence or source.",
+    "src/asks/ingestion.py::approved_packet": "Generic immutable specification/plan approval validation and feedback evidence, shared by ingestion dispatch and replay. It grants no integration branch, code publication or ref replay authority; release and publication callers remain independently charged.",
+    "src/asks/operations.py::operation": "Generic decision-keyed ask operation reservation shared by review application, filing and ingestion. It records a pending operation only; integration source interpretation and outbox adapters remain independently charged.",
+    "src/task_graph/batch_digest.py::compute_structure_digest": "Pure specification-to-task structure attestation; no integration candidate, branch, code publication or ref replay authority. Release callers and their live-row checks remain independently charged.",
+    "src/task_graph/batch_digest.py::canonical_batch_structure": "Pure canonical specification-to-task graph projection used by fidelity attestation. It contains no integration candidate or publication state; release callers remain independently charged.",
+    "src/api/scope.py::fidelity_review_task_for_session": "Generic live assignment and claim-epoch authority for the specification-to-task fidelity reviewer. It reaches only its held ingestion batch, never an integration candidate or code publication; release authority remains independently charged.",
+    "src/database/queries/ingest_batch_queries.py::get_batch": "Generic specification-ingestion batch row lookup; it performs no integration delivery, publication or lifecycle mutation.",
+    "src/database/queries/ingest_batch_queries.py::members": "Generic specification-ingestion membership lookup; integration candidate membership and publication remain independently charged.",
+    "src/database/queries/ingest_batch_queries.py::live_digest": "Generic live specification-to-task graph attestation. It performs no integration delivery or publication; release callers retain their independently charged validation.",
+    "src/database/queries/ingest_batch_queries.py::passing_receipt": "Generic specification-to-task fidelity receipt lookup; it grants no integration delivery or publication authority. Release callers remain independently charged.",
+    "src/asks/batch_scope.py::scope_source": "Generic specification-ingestion scope-question source identity, not an integration subject or publication authority.",
+    "src/asks/batch_scope.py::scope_ask": "Generic specification-ingestion scope-question lookup, not an integration gate or publication authority.",
+    "src/api/scope.py::held_task_for_session": "Generic live worker/task/claim-epoch resolution shared by all task lifecycle commands. It grants no integration branch or publication authority; worker git confinement, release authorization and integration-specific callers remain independently charged.",
+    "src/database/queries/proposal_queries.py::detect_cycles": "Generic task dependency cycle detection shared by ordinary task proposals and held ingestion validation. It neither reads integration state nor grants branch, code publication or ref replay authority; integration callers remain independently charged.",
+    "src/task_graph/batch_digest.py::normalize_description": "Pure whitespace normalization for specification-to-task fidelity attestation; no integration subject, branch or publication state."
   },
   "exclusion_policy": {
     "tests": "Fixtures and tests do not ship as production mechanisms.",

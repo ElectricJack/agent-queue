@@ -1804,7 +1804,12 @@ from .spec_approve_request import SpecApproveRequest
 from .spec_approve_response import SpecApproveResponse
 from .spec_approve_response_422 import SpecApproveResponse422
 from .spec_ingest_legacy_adopt_request import SpecIngestLegacyAdoptRequest
+from .spec_ingest_legacy_adopt_response import SpecIngestLegacyAdoptResponse
 from .spec_ingest_legacy_adopt_response_422 import SpecIngestLegacyAdoptResponse422
+from .spec_ingest_legacy_adopt_response_diff_type_0 import SpecIngestLegacyAdoptResponseDiffType0
+from .spec_ingest_legacy_adopt_response_lineage_type_0 import SpecIngestLegacyAdoptResponseLineageType0
+from .spec_ingest_legacy_adopt_response_members_type_0 import SpecIngestLegacyAdoptResponseMembersType0
+from .spec_ingest_legacy_adopt_response_release_receipt_type_0 import SpecIngestLegacyAdoptResponseReleaseReceiptType0
 from .spec_ingest_legacy_inventory_request import SpecIngestLegacyInventoryRequest
 from .spec_ingest_legacy_inventory_response import SpecIngestLegacyInventoryResponse
 from .spec_ingest_legacy_inventory_response_422 import SpecIngestLegacyInventoryResponse422
@@ -3982,7 +3987,12 @@ __all__ = (
     "SpecApproveResponse",
     "SpecApproveResponse422",
     "SpecIngestLegacyAdoptRequest",
+    "SpecIngestLegacyAdoptResponse",
     "SpecIngestLegacyAdoptResponse422",
+    "SpecIngestLegacyAdoptResponseDiffType0",
+    "SpecIngestLegacyAdoptResponseLineageType0",
+    "SpecIngestLegacyAdoptResponseMembersType0",
+    "SpecIngestLegacyAdoptResponseReleaseReceiptType0",
     "SpecIngestLegacyInventoryRequest",
     "SpecIngestLegacyInventoryResponse",
     "SpecIngestLegacyInventoryResponse422",

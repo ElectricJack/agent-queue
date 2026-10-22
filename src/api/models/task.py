@@ -1128,6 +1128,12 @@ class TaskBatchValidateResponse(BaseModel):
     gaps: list[dict[str, Any]] = Field(default_factory=list)
 
 
+class SpecIngestLegacyAdoptResponse(TaskBatchAckResponse):
+    """Adoption replays a held batch receipt or retains the proposal's human gate."""
+
+    left_gated: bool = False
+
+
 class ClaimSessionSummary(BaseModel):
     """The calling session's claim bookkeeping, echoed back on every ``task_claim`` reply."""
 
@@ -1491,6 +1497,7 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "spec_ingest_reconcile": SpecIngestReconcileResponse,
     "batch_reconcile": BatchReconcileResponse,
     "spec_ingest_legacy_inventory": SpecIngestLegacyInventoryResponse,
+    "spec_ingest_legacy_adopt": SpecIngestLegacyAdoptResponse,
     "get_downstream_tasks": GetDownstreamTasksResponse,
     "task_route": TaskRouteResponse,
     "task_route_override": TaskRouteOverrideResponse,

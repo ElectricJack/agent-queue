@@ -316,6 +316,47 @@ def test_ingest_storage_keeps_outbox_adapter_charged(report, manifest):
     assert "integration_outbox" in report["tables"]
 
 
+def test_ingestion_evidence_keeps_release_and_reviewer_fences_charged(report, manifest):
+    generic = {
+        "src/asks/ingestion.py": ("approved_packet",),
+        "src/asks/operations.py": ("operation",),
+        "src/asks/batch_scope.py": ("scope_source", "scope_ask"),
+        "src/api/scope.py": ("held_task_for_session", "fidelity_review_task_for_session"),
+        "src/database/queries/proposal_queries.py": ("detect_cycles",),
+        "src/database/queries/ingest_batch_queries.py": (
+            "get_batch", "members", "live_digest", "passing_receipt",
+        ),
+        "src/task_graph/batch_digest.py": (
+            "normalize_description", "canonical_batch_structure", "compute_structure_digest",
+        ),
+    }
+    charged = {
+        "src/commands/principal.py": ("batch_release_actor",),
+        "src/commands/proposal_commands.py": (
+            "TaskProposalCommandsMixin._create_ingest_batch",
+            "TaskProposalCommandsMixin._update_held_batch",
+            "TaskProposalCommandsMixin._cmd_task_batch_release",
+        ),
+        "src/commands/fidelity_review_commands.py": (
+            "FidelityReviewCommandsMixin._cmd_task_batch_review_record",
+        ),
+    }
+    for expected, paths in ((False, generic), (True, charged)):
+        for path, names in paths.items():
+            source = ownership.python_source(path, (ROOT / path).read_bytes())
+            units = {unit.name: unit for unit in source.units}
+            for name in names:
+                unit = units[name]
+                rows = set(range(unit.start, unit.end + 1))
+                actual = set(report["spans"].get(path, []))
+                if expected:
+                    assert rows <= actual, unit.key
+                    assert unit.key not in manifest["generic_dependencies"]
+                else:
+                    assert unit.key in manifest["generic_dependencies"]
+                    assert rows.isdisjoint(actual), unit.key
+
+
 def test_transition_budget_cannot_reset_to_current_counts(manifest):
     copy = deepcopy(manifest)
     copy["phase"] = "transition"

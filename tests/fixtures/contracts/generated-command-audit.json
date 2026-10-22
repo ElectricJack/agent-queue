@@ -3510,7 +3510,7 @@
   "doctor": {
     "mode": "json_object",
     "producer": "src/commands/ops_commands.py:OpsCommandsMixin._cmd_doctor",
-    "source_digest": "sha256:b53bc62fa7a75070d9843624793bd0386ac7afe64154c41491a4b24729c8a24a",
+    "source_digest": "sha256:d705a3bb26d9c083fd86b841fde56282f4ccf53b1c0b551fafb5236b209b58cf",
     "input_schema_source": "explicit_tool",
     "schema_quality": "declared",
     "argument_reads_diagnostic_only": [
@@ -20553,6 +20553,33 @@
     ],
     "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. "
   },
+  "spec_ingest_legacy_adopt": {
+    "mode": "json_object",
+    "producer": "src/commands/spec_ingest_commands.py:SpecIngestCommandsMixin._cmd_spec_ingest_legacy_adopt",
+    "argument_reads_diagnostic_only": [],
+    "retry_safe": true,
+    "principal_requirement": "original_principal",
+    "denial_reason": null,
+    "result_policy": "Delegates to adopt_legacy: explicit success boolean; operator-only authority, immutable source approval and unresolved human gates remain enforced.",
+    "tests": [
+      "tests/test_task_batch_commands.py",
+      "tests/test_fidelity_review.py",
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete"
+    ],
+    "source_digest": "sha256:02f127a834f48f07eaba636fe7771fcdf537f011fc5fbc4047f04c5cbde39efd",
+    "input_schema_source": "explicit_tool",
+    "schema_quality": "declared",
+    "effect": "destructive",
+    "resource_gates": [
+      "system_scope"
+    ],
+    "return_branches": [
+      {
+        "return": "await adopt_legacy(self, args)",
+        "protocol": "delegated_producer: adopt_legacy preserves explicit success boolean"
+      }
+    ]
+  },
   "spec_ingest_legacy_inventory": {
     "mode": "json_object",
     "producer": "src/commands/spec_ingest_commands.py:SpecIngestCommandsMixin._cmd_spec_ingest_legacy_inventory",
@@ -21305,6 +21332,172 @@
       "_change_set_failure": "sha256:1ab0076765ff4e55c9b709c73c3734df4415a566889ebd6b721886c232920772"
     },
     "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. "
+  },
+  "task_batch_release": {
+    "mode": "typed",
+    "producer": "src/commands/proposal_commands.py:TaskProposalCommandsMixin._cmd_task_batch_release",
+    "argument_reads_diagnostic_only": [],
+    "retry_safe": true,
+    "principal_requirement": "original_principal",
+    "denial_reason": null,
+    "result_policy": "retained typed adapter",
+    "tests": [
+      "tests/test_task_batch_commands.py",
+      "tests/test_fidelity_review.py",
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete"
+    ],
+    "source_digest": "sha256:0af3561610b58feae2a62bb7723665d2a3999884a003af7cb9cb18f8ca7dd135",
+    "input_schema_source": "typed_contract",
+    "schema_quality": "typed",
+    "effect": "destructive",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "return_branches": [
+      {
+        "return": "result",
+        "protocol": "delegated_producer"
+      },
+      {
+        "return": "batches._error('batch_not_found', 'Batch not found')",
+        "protocol": "delegated_producer"
+      },
+      {
+        "return": "batches._error('not_authorized', 'Batch belongs to another project')",
+        "protocol": "delegated_producer"
+      },
+      {
+        "return": "{'success': False, 'error_code': 'invalid_arguments', 'error': str(exc)}",
+        "protocol": "explicit_boolean: False"
+      },
+      {
+        "return": "{**failure, 'error_code': failure.get('code', 'release_failed')}",
+        "protocol": "delegated_producer"
+      },
+      {
+        "return": "batches._error('batch_not_found', 'Batch not found')",
+        "protocol": "delegated_producer"
+      },
+      {
+        "return": "batches._error('not_authorized', 'Only ingestion policy or the project supervisor may release a batch')",
+        "protocol": "delegated_producer"
+      },
+      {
+        "return": "await batches.release(conn, batch_id, expected_revision=request.expected_revision, expected_digest=request.expected_digest, actor=actor, release_receipt=None)",
+        "protocol": "delegated_producer"
+      },
+      {
+        "return": "batches._error('batch_not_held', 'Batch is not held')",
+        "protocol": "delegated_producer"
+      },
+      {
+        "return": "batches._error('source_diverged', 'Source approval is missing')",
+        "protocol": "delegated_producer"
+      },
+      {
+        "return": "batches._error('source_diverged', 'Approved source identity changed')",
+        "protocol": "delegated_producer"
+      },
+      {
+        "return": "stale",
+        "protocol": "delegated_producer"
+      },
+      {
+        "return": "batches._error('membership', 'Active membership and held tasks differ')",
+        "protocol": "delegated_producer"
+      },
+      {
+        "return": "{**batches._error(report.hard[0].code, report.hard[0].detail), **report.to_dict()}",
+        "protocol": "delegated_producer"
+      },
+      {
+        "return": "batches._error('fidelity_review_required', 'Current reviewer must attest the exact revision and digest')",
+        "protocol": "delegated_producer"
+      },
+      {
+        "return": "batches._error('incomplete_review', 'Every section, reverse coverage and walkthrough requires a passing verdict')",
+        "protocol": "delegated_producer"
+      },
+      {
+        "return": "batches._error('needs_scope', 'Batch has an unresolved scope question')",
+        "protocol": "delegated_producer"
+      },
+      {
+        "return": "result",
+        "protocol": "delegated_producer"
+      },
+      {
+        "return": "batches._error('source_diverged', str(exc))",
+        "protocol": "delegated_producer"
+      }
+    ]
+  },
+  "task_batch_retire": {
+    "mode": "typed",
+    "producer": "src/commands/proposal_commands.py:TaskProposalCommandsMixin._cmd_task_batch_retire",
+    "argument_reads_diagnostic_only": [],
+    "retry_safe": true,
+    "principal_requirement": "original_principal",
+    "denial_reason": null,
+    "result_policy": "retained typed adapter",
+    "tests": [
+      "tests/test_task_batch_commands.py",
+      "tests/test_fidelity_review.py",
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete"
+    ],
+    "source_digest": "sha256:516e5e0b4f15e35de9ca1d8e6dae8c6075ebcdb82157eea8a1e0dd0d1186f4f7",
+    "input_schema_source": "typed_contract",
+    "schema_quality": "typed",
+    "effect": "destructive",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "return_branches": [
+      {
+        "return": "{'success': True, 'batch_id': batch_id, 'state': 'retired', 'already_retired': False}",
+        "protocol": "explicit_boolean: True"
+      },
+      {
+        "return": "batches._error('batch_not_found', 'Batch not found')",
+        "protocol": "delegated_producer"
+      },
+      {
+        "return": "batches._error('not_authorized', 'Batch belongs to another project')",
+        "protocol": "delegated_producer"
+      },
+      {
+        "return": "batches._error('invalid_arguments', str(exc))",
+        "protocol": "delegated_producer"
+      },
+      {
+        "return": "batches._error(exc.code, exc.detail)",
+        "protocol": "delegated_producer"
+      },
+      {
+        "return": "{**failure, 'error_code': failure.get('code', 'retirement_failed')}",
+        "protocol": "delegated_producer"
+      },
+      {
+        "return": "batches._error('not_authorized', 'Only ingestion policy or the project supervisor may retire a batch')",
+        "protocol": "delegated_producer"
+      },
+      {
+        "return": "batches._error('batch_not_found', 'Batch not found')",
+        "protocol": "delegated_producer"
+      },
+      {
+        "return": "batches._error('stale_revision', 'Batch revision changed')",
+        "protocol": "delegated_producer"
+      },
+      {
+        "return": "{'success': True, 'batch_id': batch_id, 'state': 'retired', 'already_retired': True}",
+        "protocol": "explicit_boolean: True"
+      },
+      {
+        "return": "batches._error('batch_not_held', 'Only unreleased batches may retire')",
+        "protocol": "delegated_producer"
+      }
+    ]
   },
   "task_batch_review_record": {
     "mode": "typed",
