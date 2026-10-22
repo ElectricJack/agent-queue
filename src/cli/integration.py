@@ -34,6 +34,24 @@ def integration() -> None:
     """Inspect integration Subjects and apply current recovery proofs."""
 
 
+@integration.command("continue-close")
+@click.option("--operation-id", required=True)
+@click.pass_context
+@_handle_errors
+def integration_continue_close(ctx, operation_id):
+    """Resume your retained parent merge, exact checks and task completion."""
+    _execute(ctx, "integration_continue_close", {"operation_id": operation_id})
+
+
+@integration.command("batch-fix")
+@click.option("--action", type=click.Choice(["status", "push", "rebind"]), default="status")
+@click.pass_context
+@_handle_errors
+def integration_batch_fix(ctx, action):
+    """Inspect or publish the batch bound to this fixer session."""
+    _execute(ctx, "integration_batch_fix", {"action": action})
+
+
 @integration.command("supersede-completion")
 @click.argument("task_id")
 @click.option("--project", "project_id", required=True)
@@ -146,6 +164,39 @@ def _cutover(ctx, command, project_id, flow_file, reverse, allow_epics,
 def integration_cutover_plan(ctx, project_id, flow_file, reverse, allow_epics):
     """Print ordered changes, live authority and PRs without writing state."""
     _cutover(ctx, "integration_cutover_plan", project_id, flow_file, reverse, allow_epics)
+
+
+@integration.command("cutover-containment")
+@click.option("--project", "project_id", envvar="AQ_PROJECT_ID", required=True)
+@click.option("--choices", type=click.Path(exists=True, dir_okay=False),
+              help="JSON per-completion choices; re-preview to bind choices into the digest.")
+@click.option("--plan", type=click.Path(exists=True, dir_okay=False), help="Saved preview JSON.")
+@click.option("--digest", "expected_digest", help="Exact SHA256 digest of the saved preview.")
+@click.option("--apply/--dry-run", default=False, help="Prepare history; default is read-only preview.")
+@click.pass_context
+@_handle_errors
+def integration_cutover_containment(ctx, project_id, choices, plan, expected_digest, apply):
+    """Inventory strict containment and prepare approved legacy exclusions (local only)."""
+    import json
+    from pathlib import Path
+
+    if apply and (not plan or not expected_digest):
+        raise click.UsageError("--apply requires --plan FILE and --digest SHA256")
+    args = {"project_id": project_id, "dry_run": not apply, "expected_digest": expected_digest}
+    for key, path in (("choices", choices), ("plan", plan)):
+        if path:
+            try:
+                value = json.loads(Path(path).read_text(encoding="utf-8"))
+                if key == "plan":
+                    value = value.get("data", value)
+                    value = value.get("value", value)
+                    value = value.get("plan", value)
+                if not isinstance(value, dict):
+                    raise ValueError("expected a JSON object")
+                args[key] = value
+            except (OSError, UnicodeError, ValueError, AttributeError) as exc:
+                raise click.UsageError(f"cannot read {key}: {exc}") from exc
+    _execute(ctx, "integration_cutover_containment", args)
 
 
 @integration.command("cutover")

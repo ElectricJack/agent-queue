@@ -16,6 +16,7 @@ from src.database.tables import (
     wait_escalations, wait_records,
 )
 from src.models import Agent, AgentProfile, Project, RepoConfig, RepoSourceType, Task, TaskStatus
+from src.integration.admission import observe_admission
 from src.waits.admission import AdmissionReader
 from src.waits.conditions import Scope, WaitError
 from src.waits.registry import build_registry
@@ -50,6 +51,10 @@ async def env():
     o = SimpleNamespace(db=db, config=config, bus=SimpleNamespace(emit=AsyncMock()),
                         _worktrees_enabled=lambda: False,
                         _pool_quarantine_state=lambda *a: (None, None))
+    async def admission(ids):
+        return await observe_admission(db, ids, None)
+
+    o._delivery_admission = admission
     service = SchedulerWaitService(o, clock=lambda: NOW)
     yield SimpleNamespace(db=db, o=o, service=service)
     await db.close()
@@ -390,6 +395,32 @@ async def test_equal_priority_reservations_use_fifo_even_when_task_ids_sort_othe
             conn, project_id="p", profile_id="worker", agent_id="worker-agent",
         )
         assert selected["task_id"] == "holder"
+
+
+async def test_combined_claim_skips_locked_reservation_and_preserves_allowlist(env):
+    from src.waits.reservations import claim_candidate
+
+    await env.db.create_task(Task(
+        id="ordinary", project_id="p", title="Ordinary", description="",
+        status=TaskStatus.READY, profile_id="worker", route_source="override",
+    ))
+    await sync(env)
+    await fire(env, (await rows(env, wait_deadlines))[0], NOW + 1800)
+    handler = SimpleNamespace(db=env.db, config=env.o.config)
+    args = dict(project_id="p", profile_id="worker", agent_id="worker-agent")
+    async with env.db._engine.begin() as locked:
+        await locked.execute(select(tasks.c.id).where(
+            tasks.c.id == "holder",
+        ).with_for_update())
+        async with env.db._engine.begin() as claimant:
+            assert await claim_candidate(handler, claimant, **args) == ("ordinary", None)
+        async with env.db._engine.begin() as claimant:
+            assert await claim_candidate(
+                handler, claimant, **args, allowed_task_ids={"holder"},
+            ) == (None, None)
+    async with env.db._engine.begin() as claimant:
+        task_id, reservation_id = await claim_candidate(handler, claimant, **args)
+        assert task_id == "holder" and reservation_id
 
 
 async def test_released_branch_owner_retracts_scheduler_priority_donation(env):

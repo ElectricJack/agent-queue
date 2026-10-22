@@ -576,8 +576,8 @@ class Orchestrator(
 
         self.session_lens = SessionLens(
             db=self.db,
-            availability=self.provider_availability,
             bus=self.bus,
+            availability=self.provider_availability,
             providers=self.session_providers,
             spec_builder=self.session_spec_builder,
             harness_registry=self.harness_registry,
@@ -1957,6 +1957,7 @@ class Orchestrator(
         # Archive/removal guards prove development delivery in git before
         # their transaction; the database layer has no Git of its own.
         self.db.set_delivery_observer(self.delivery_observer)
+        self.db._admission_reader = self._delivery_admission
         # Git-first promotion writes no delivery receipt, so sibling
         # prerequisites are proven from the parent branch in Git instead.
         if self.config.integration.git_first == "active":
@@ -2275,6 +2276,7 @@ class Orchestrator(
         self.integration_outbox = IntegrationOutbox(
             self.db, accept_integration_event,
             project_max_wait=project_max_wait,
+            publication_wake=self.bus.emit,
         )
         github_clients = {}
 
@@ -2388,6 +2390,22 @@ class Orchestrator(
         )
         owner_recovery = owner_recovery_for(self)
         self.development_integration.owner_recovery = owner_recovery
+        from src.integration.truth_reconciler import GitTruthReconciler
+
+        self.git_truth_reconciler = GitTruthReconciler(
+            self.db, self.git, data_dir=self.config.data_dir,
+            owner_recovery=owner_recovery if self.config.integration.owner_recovery_sweep else None,
+        )
+
+        async def reconcile_git_truth(now):
+            from src.commands.principal import ExecutionPrincipal, principal_context
+
+            if self._command_handler is not None:
+                with principal_context(ExecutionPrincipal.service("git-truth-reconciler")):
+                    return await self._command_handler.execute(
+                        "integration_reconcile_git_truth", {"now": now},
+                    )
+
         from src.integration.train_sources import TrainCommandDriver, train_for
 
         self.parent_owner_recovery = owner_recovery
@@ -2415,15 +2433,16 @@ class Orchestrator(
         self.development_subject_runtime = None
         self.integration_service = IntegrationService(
             self.db, self.integration_outbox,
+            bus=self.bus,
             # The service drives the train through integration_train_tick.
             train=TrainCommandDriver(self.integration_train, lambda: self._command_handler)
             if train_active else None,
             maintenance={
+                "git truth": reconcile_git_truth,
                 "orphaned parent operations": settle_orphaned_parents,
                 "batch cleanup": self.integration_cleanup_service.reconcile,
                 "branch discard": self._drain_branch_discards,
                 "branch materialization": self._drain_branch_materializations,
-                "owner recovery": self._sweep_stranded_owners,
                 "delegate cleanup": RepairService(self.db).retire_terminal_delegates,
                 "GitHub PR reviews": GitHubReviewPoller(
                     self.db, ReviewEvidenceProducer(self.db, self.repository_git), self.git,
@@ -4280,7 +4299,10 @@ class Orchestrator(
                 publisher = getattr(self, "development_integration", None)
                 if publisher is not None:
                     retained_paths.append(publisher._store_path(repository))
+                from src.projects.storage_binding import bound_path
+
                 for path in retained_paths:
+                    path = bound_path(project.storage_binding, path)
                     extra_paths.append(str(path))
                     if origin:
                         retained_origins[str(Path(path).resolve())] = origin
@@ -4686,17 +4708,9 @@ class Orchestrator(
 
     async def _notify_provider_half_change(self, transition) -> None:
         """Send the D19 state-change message without blocking the evidence path."""
-        availability = self.provider_availability
-
-        async def _send() -> None:
-            try:
-                await availability.notify_state_change(
-                    transition.provider, transition.generation
-                )
-            except Exception:
-                logger.warning("provider state notification failed", exc_info=True)
-
-        asyncio.get_running_loop().create_task(_send())
+        self.provider_availability.notify_state_change_soon(
+            transition.provider, transition.generation
+        )
 
     async def _schedule(self, *, hierarchy_modes=None) -> list[AssignAction]:
         """Build scheduler state snapshot and compute task-to-agent assignments.
@@ -4740,8 +4754,25 @@ class Orchestrator(
         task_snapshot = [
             task for task in task_snapshot if not is_supervisor_profile(task.profile_id)
         ]
+        # Containers settle independently of worker admission, which excludes
+        # them from the claim frontier.
+        withheld = await self._release_ready_containers(
+            [t.id for t in task_snapshot if t.status == TaskStatus.READY and not t.is_blocked]
+        )
+        if withheld:
+            # Releasing a parent can unblock its children in this cycle.
+            task_snapshot = [
+                task for task in await self.db.list_active_tasks(exclude_held_ready=True)
+                if task.id not in withheld and not is_supervisor_profile(task.profile_id)
+            ]
+        if hierarchy_modes is None:
+            from src.integration.delivery_observer import hierarchy_frontier_modes
+
+            hierarchy_modes = await hierarchy_frontier_modes(self.db)
         delivery_admission = await self._delivery_admission(
-            [task.id for task in task_snapshot if task.status == TaskStatus.READY]
+            [task.id for task in task_snapshot if task.status == TaskStatus.READY],
+            hierarchy_modes=hierarchy_modes,
+            router_ready_projects=await self.router_readiness.ready_projects(),
         )
         task_snapshot = [
             task for task in task_snapshot
@@ -4749,19 +4780,8 @@ class Orchestrator(
         ]
         hierarchy_runnable_task_ids = await self.db.hierarchy_runnable_task_ids(
             [task.id for task in task_snapshot if task.status == TaskStatus.READY],
-            hierarchy_modes=hierarchy_modes,
+            hierarchy_modes=delivery_admission.hierarchy_modes,
         )
-        # A flagged container (spec §7) is settle-only work and never
-        # dispatchable.  Promotion releases the ones it promotes; this catches
-        # a container that was already READY when it gained its first child
-        # (``set_parent`` on a READY task) or came back READY from PAUSED,
-        # and withholds it from the reconciler and the scheduler this cycle
-        # even if its release did not land (calm-ember-48).
-        withheld = await self._release_ready_containers(
-            [t.id for t in task_snapshot if t.status == TaskStatus.READY]
-        )
-        if withheld:
-            task_snapshot = [t for t in task_snapshot if t.id not in withheld]
         # Only routed work is launchable (mandatory routing §9.1, I3): a
         # queued task whose route the router, an override or a role did not
         # write -- unrouted, or legacy once its project's router is ready --

@@ -15,6 +15,8 @@ from src.commands.playbook_state_schemas import STATE_SCHEMAS
 # Which category each tool belongs to.
 # Tools not listed here are "core" (always loaded).
 _TOOL_CATEGORIES: dict[str, str] = {
+    "integration_batch_fix": "integration",
+    "integration_continue_close": "integration",
     "operator_execute": "operator",
     "operator_preflight": "operator",
     "policy_export": "policy",
@@ -51,6 +53,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "release_project_constraint": "project",
     "edit_project": "project",
     "bind_project_repository": "project",
+    "project_relocate": "project",
     "set_default_branch": "project",
     "get_project": "project",
     "delete_project": "project",
@@ -850,6 +853,25 @@ _ALL_TOOL_DEFINITIONS = [
         "name": "list_projects",
         "description": "List all projects in the system.",
         "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "project_relocate",
+        "description": (
+            "Preview or apply an atomic project storage relocation. Requires paused admission, "
+            "disabled/drained train, stopped writers and current required CI. Reverse relocation "
+            "uses a fresh destination containing current work. Local operator only."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string"},
+                "destination": {"type": "string"},
+                "owner_inventory": {"type": "object"},
+                "expected_digest": {"type": "string"},
+                "apply": {"type": "boolean", "default": False},
+            },
+            "required": ["project_id", "destination", "owner_inventory"],
+        },
     },
     {
         "name": "repair_repository_checkout",
@@ -8489,6 +8511,17 @@ _ALL_TOOL_DEFINITIONS.extend([
 ])
 
 
+_ALL_TOOL_DEFINITIONS.append({
+    "name": "integration_batch_fix",
+    "description": "Inspect or push the batch branch bound to this task-free fixer session.",
+    "input_schema": {
+        "type": "object", "additionalProperties": False,
+        "properties": {"action": {"type": "string", "enum": ["status", "push", "rebind"],
+                                   "default": "status"}},
+    },
+})
+
+
 _COLLABORATION_SCOPE = {
     "project_id": {"type": "string"},
     "task_id": {"type": "string"},
@@ -8646,6 +8679,11 @@ _FALLBACK_INPUT_SCHEMAS["reconcile_collaborations"] = {
 # The git-first train's per-tick dispatch (integration.git_first: active).
 # Daemon-only: excluded from MCP, the API and the CLI; the service supplies its clock.
 _FALLBACK_INPUT_SCHEMAS["integration_train_tick"] = {
+    "type": "object",
+    "properties": {"now": {"type": ["number", "null"]}},
+    "additionalProperties": False,
+}
+_FALLBACK_INPUT_SCHEMAS["integration_reconcile_git_truth"] = {
     "type": "object",
     "properties": {"now": {"type": ["number", "null"]}},
     "additionalProperties": False,
@@ -9454,3 +9492,13 @@ for _name, _args in _ASK_ARGS.items():
         _ALL_TOOL_DEFINITIONS.append({"name": _name,
             "description": "Scoped human request communication and decision evidence.",
             "input_schema": _args.model_json_schema()})
+
+_ALL_TOOL_DEFINITIONS.append({
+    "name": "integration_continue_close",
+    "description": "Continue the parent merge belonging to your held task and session.",
+    "input_schema": {
+        "type": "object", "additionalProperties": False,
+        "required": ["operation_id"],
+        "properties": {"operation_id": {"type": "string"}},
+    },
+})

@@ -65,6 +65,7 @@ API_EXCLUDED = {
     "reconcile_agent_waits",  # internal scan; never callable over HTTP
     "reconcile_collaborations",  # daemon-only expiry and retention
     "integration_train_tick",  # daemon-only git-first train dispatch
+    "integration_reconcile_git_truth",  # daemon-only projection repair
     "job_reconcile",
     "job_submit_integration",
 

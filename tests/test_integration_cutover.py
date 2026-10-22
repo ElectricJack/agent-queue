@@ -516,35 +516,75 @@ async def test_cutover_receipt_table_lock_timeout_refuses_and_rolls_back(cutover
 
 
 @pytest.mark.parametrize("cutover_world", ["main", "refs/heads/main"], indirect=True)
-async def test_cutover_and_reverse_preserve_train_archive_delivery_authorization(cutover_world):
+async def test_cutover_and_reverse_preserve_train_archive_delivery_authorization(
+    cutover_world, tmp_path,
+):
+    from src.database.queries.hierarchy_queries import HierarchyError
     from src.database.tables import task_delivery_receipts
+    from src.git.manager import GitManager
+    from src.integration.delivery_observer import DeliveryObserver
+    from src.integration.delivery_truth import CONTAINMENT_CONTRACT_VERSION
+    from src.integration.git_truth import GitTruth
+    from src.integration.provenance import CompletedSource, CompletionIdentity, GitProvenance
     from src.integration.removal_guard import (
         assert_integration_permits_removal,
         undelivered_removal_holders,
     )
+    from src.models import TaskCompletion
+    from tests.test_delivery_consumers import Origin, git
 
     db, service, _port = cutover_world
-    # Without the root receipt matching the current default, this collected
-    # child makes the archive guard return collected_not_promoted.
+    # Receipt retagging is audit history, never archive authorization.
     async with db.immediate() as conn:
         await conn.execute(insert(task_delivery_receipts).values(
             id="collected-child", domain_key="collected-child", source_task_id="child",
             target_task_id="epic", repository_id="repo", target_branch="aq/epic/epic",
             disposition="code", created_at=0))
 
-    async def assert_archive_authorized(default):
-        async with db._engine.connect() as conn:
-            branch, holders = await undelivered_removal_holders(
-                conn, root_id="epic", ids=["epic", "child"], project_id="p", mode="train")
-            assert (branch, holders) == (default, [])
+    async with db._engine.connect() as conn:
+        with pytest.raises(HierarchyError, match="delivery_unknown"):
             await assert_integration_permits_removal(
                 db, conn, root_id="epic", ids=["epic", "child"], project_id="p",
                 mode="train", mutation="archive")
+    origin = Origin(tmp_path)
+    head = origin.work("epic")
+    origin.land("epic")
+    git(origin.clone, "push", "origin", "main:refs/heads/dev")
+    for task_id in ("epic", "child"):
+        await db.update_task(task_id, repo_id="repo")
+        close_id = "close-" + task_id
+        await db.save_task_completion(TaskCompletion(
+            id=close_id, task_id=task_id, outcome="pass", commits=[head], completed_at=2.0,
+        ))
+        await GitProvenance(
+            GitManager(), str(origin.clone), repository_url=origin.url,
+        ).write_completion(CompletedSource(CompletionIdentity("p", "repo", task_id, close_id), head))
+    db.set_prerequisite_observer(DeliveryObserver(
+        db, git=GitManager(), data_dir=tmp_path / "observer",
+        truth=GitTruth(GitManager(), contract_version=CONTAINMENT_CONTRACT_VERSION),
+    ))
+
+    async def assert_archive_authorized(default):
+        # The cutover port models GitHub configuration; its archive consumer
+        # separately observes the same configured target in our local bare repo.
+        await db.update_repo("repo", url=origin.url)
+        try:
+            delivery = await db.observe_removal_delivery(["epic"])
+            async with db._engine.connect() as conn:
+                branch, holders = await undelivered_removal_holders(
+                    conn, root_id="epic", ids=["epic", "child"], project_id="p", mode="train",
+                    delivery=delivery)
+                assert (branch, holders) == (default, [])
+                await assert_integration_permits_removal(
+                    db, conn, root_id="epic", ids=["epic", "child"], project_id="p",
+                    mode="train", mutation="archive", delivery=delivery)
+        finally:
+            await db.update_repo("repo", url="https://github.com/acme/widgets.git")
 
     await assert_archive_authorized("main")
     changed = await apply_cutover(service, "p", FLOW, dry_run=False, expected_generation=7,
                                 operator_id="operator")
-    assert changed["outcome"] == "configured"
+    assert changed["outcome"] == "configured", changed
     await assert_archive_authorized("dev")
     reversed_ = await apply_cutover(service, "p", None, reverse=True, dry_run=False,
                                   expected_generation=8, operator_id="operator")

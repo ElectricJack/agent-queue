@@ -192,6 +192,11 @@ class JobService:
             "AGENT_QUEUE_DB": SCRATCH_DB_SENTINEL,
             **session_env_caps(self.config),
         }
+        from src.build_cache import resolved_cache_settings
+
+        cache = await resolved_cache_settings(self.db, self.config, project_id)
+        if cache:
+            env["CCACHE_DIR" if cache.kind == "ccache" else "SCCACHE_DIR"] = cache.dir
         if preset in NODE_PRESETS:
             # npm/pnpm launchers and package scripts commonly use /usr/bin/env node.
             # Keep that server-resolved runtime on PATH inside the detached job.
@@ -237,6 +242,8 @@ class JobService:
             "adapter_request_hash": adapter_request_hash,
             "tool_versions": {"python": sys.version, "executable": sys.executable},
         }
+        if cache:
+            contract["build_cache"] = {"kind": cache.kind, "dir": cache.dir}
         if preset == "matter_render":
             import hashlib
 
@@ -670,13 +677,18 @@ class JobService:
                 remove_snapshot = False
                 if job["owner_kind"] == "integration" and job["input_mode"] == "snapshot":
                     snapshot = Path(job["contract"]["cwd"])
-                    root = Path(self.config.data_dir) / "job-snapshots"
+                    from src.projects.storage_binding import bound_path, read_binding
+
+                    root = bound_path(await read_binding(self.db, job["project_id"]),
+                                      Path(self.config.data_dir) / "job-snapshots")
                     ws = await self.db.get_workspace(job["workspace_id"])
                     # Only internally provisioned, disabled snapshots may be removed.
                     if (
                         ws and ws.kind_id == "job-snapshot" and not ws.enabled
                         and snapshot.parent == root
                         and job["workspace_id"] == "job-snapshot-" + snapshot.name
+                        and not (root / ".owners" / (snapshot.name + ".json")).exists()
+                        and not (root / ".owners" / (snapshot.name + ".json")).is_symlink()
                     ):
                         snapshot_ws = ws
                         from sqlalchemy import select

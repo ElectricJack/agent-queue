@@ -751,7 +751,8 @@ class ClaimCommandsMixin:
         withheld_source_repairs: dict = {}
         from src.integration.admission import observe_admission, structural_candidates
 
-        if getattr(project, "_source_admission_required", True):
+        if (getattr(project, "_source_admission_required", True)
+                or hierarchy_mode and hierarchy_mode.hierarchical):
             ids = [want_id] if want_id else await structural_candidates(self.db, project.id)
             try:
                 admission = await asyncio.wait_for(observe_admission(
@@ -759,6 +760,7 @@ class ClaimCommandsMixin:
                     ids,
                     self._development_integration(),
                     default_mode=self.config.integration.default_mode,
+                    router_ready_projects={project.id} if router_ready else set(),
                 ), self._observation_budget())
             except TimeoutError:
                 return self._observation_timeout(session, project.id, "delivery admission", cap)
@@ -791,55 +793,15 @@ class ClaimCommandsMixin:
         from src.integration.delivery_observer import prerequisite_observer
 
         observer = prerequisite_observer(self.db)
-        if hierarchy_mode and hierarchy_mode.hierarchical and observer is not None:
-            async def observe_prerequisites():
-                with claim_phase("delivery_admission"):
-                    view = await observer.prerequisite_view(project.id, task_id=want_id)
-                if not await view.fresh():
-                    return view, None
-                return view, await view.mode(hierarchy_mode)
+        if admission is not None:
+            hierarchy_mode = admission.hierarchy_modes.get(project.id, hierarchy_mode)
+            prerequisite_view, stack_view = admission.hierarchy_evidence(project.id)
+        if hierarchy_mode and hierarchy_mode.hierarchical and hierarchy_mode.stacked and observer:
+            from src.integration.stacked_branches import observe_stacks
 
-            try:
-                prerequisite_view, observed_mode = await asyncio.wait_for(
-                    observe_prerequisites(), self._observation_budget(),
-                )
-            except TimeoutError:
-                if self._claim_out_of_time():
-                    return self._observation_timeout(
-                        session, project.id, "prerequisite delivery view", cap,
-                    )
-                # Fail closed as the scheduler's bounded frontier does: no
-                # delivered prerequisite is proven, so only roots stay claimable.
-                logger.warning("claim %s for %s: prerequisite delivery view outlasted the "
-                               "claim's Git budget; claiming without delivery proofs",
-                               session.id, project.id)
-                prerequisites_timed_out = True
-                hierarchy_mode = replace(hierarchy_mode,
-                                         delivered_prerequisite_ids=frozenset(),
-                                         stackable_prerequisite_ids=frozenset())
-            else:
-                if observed_mode is None:
-                    return self._simple(
-                        ClaimResult.NO_READY_WORK, "delivery_snapshot_changed", None, cap
-                    )
-                hierarchy_mode = observed_mode
-        if (hierarchy_mode and hierarchy_mode.hierarchical and hierarchy_mode.stacked and observer
-                and not prerequisites_timed_out):
-            from src.integration.stacked_branches import StackCurrentness, observe_stacks
-
-            async def observe_stack_view():
-                view = await observe_stacks(observer, project.id, task_id=want_id)
-                return view, await view.currentness()
-
-            try:
-                stack_view, stack_state = await asyncio.wait_for(
-                    observe_stack_view(), self._observation_budget(),
-                )
-            except TimeoutError:
-                if self._claim_out_of_time():
-                    return self._observation_timeout(session, project.id, "stack view", cap)
-                stack_view = None
-                stack_state = StackCurrentness("unavailable", "stack_observation_timeout")
+            if stack_view is None:
+                stack_view = await observe_stacks(observer, project.id, task_id=want_id)
+            stack_state = await stack_view.currentness()
             if not stack_state.current:
                 logger.info(
                     "claim %s for %s: stack evidence %s: %s", session.id, project.id,
@@ -1924,16 +1886,16 @@ class ClaimCommandsMixin:
                 # named on the task row, or neither happens.  Discarding it
                 # here is what left development-mode pool tasks with a NULL
                 # ``branch_name`` and an unclosable completion pipeline.
-                stage = "admission_recheck"
-                if admission is not None and (
-                    task.id not in admission.allowed or not await admission.is_fresh(task.id)
-                ):
-                    return None
                 if hierarchy_enabled:
                     from src.integration.stacked_branches import verify_preparation
 
                     stage = "verify_preparation"
                     await verify_preparation(origin, conn=conn)
+                stage = "admission_recheck"
+                if admission is not None and (
+                    task.id not in admission.allowed or not await admission.is_fresh(task.id)
+                ):
+                    return None
                 if (
                     admission is not None
                     and admission.pr is not None

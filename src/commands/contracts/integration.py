@@ -25,12 +25,17 @@ from src.commands.contracts.models import (
 )
 from src.commands.contracts.registry import CommandContext, CommandRegistration, ContractRegistry
 from src.commands.principal import principal_context
-from src.integration.models import AWAITING_TRUSTED_VERIFICATION, BranchKey, Fence, HostedCheckPolicy
 from src.git.manager import is_valid_git_oid
-
+from src.integration.models import (
+    AWAITING_TRUSTED_VERIFICATION,
+    BranchKey,
+    Fence,
+    HostedCheckPolicy,
+)
 
 DESIGN_INTEGRATION_COMMANDS = frozenset(
     {
+        "integration_continue_close",
         "integration_file_children",
         "integration_checkpoint_parent",
         "integration_delivery_readiness",
@@ -62,6 +67,7 @@ DESIGN_INTEGRATION_COMMANDS = frozenset(
         "integration_status",
         "integration_cutover_plan",
         "integration_cutover",
+        "integration_cutover_containment",
         "integration_abort_batch",
         "integration_settle_batch",
         "integration_release_withheld_source",
@@ -189,6 +195,21 @@ class IntegrationAbortBatchArgs(CommandArgs):
     batch_id: str = Field(min_length=1)
     reason: str = ""
     dry_run: bool = True
+
+
+class IntegrationContainmentCutoverArgs(CommandArgs):
+    project_id: str = Field(min_length=1)
+    dry_run: bool = True
+    choices: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    plan: dict[str, Any] | None = None
+    expected_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+
+
+class IntegrationContainmentCutoverValue(CommandValue):
+    plan: dict[str, Any] | None = None
+    blockers: tuple[dict[str, Any], ...] = ()
+    generation: int | None = None
+    replayed: bool = False
 
 
 class IntegrationSettleBatchArgs(IntegrationAbortBatchArgs):
@@ -411,7 +432,7 @@ class IntegrationReleaseOwnerArgs(CommandArgs):
     self_owned: bool = False
 
     @model_validator(mode="after")
-    def exactly_one_target(self) -> "IntegrationReleaseOwnerArgs":
+    def exactly_one_target(self) -> IntegrationReleaseOwnerArgs:
         if (self.task_id is None) == (self.owner_row_id is None):
             raise ValueError("exactly one of task_id or owner_row_id is required")
         return self
@@ -2039,6 +2060,23 @@ def _register_contract(
     registry.register(CommandRegistration(contract.name, contract, adapter, preview_adapter))
 
 
+class IntegrationContinueCloseArgs(CommandArgs):
+    operation_id: str = Field(min_length=1)
+    project_id: str | None = None
+    task_id: str | None = None
+    session_id: str | None = None
+
+
+class IntegrationContinueCloseValue(CommandValue):
+    operation_id: str | None = None
+    close: dict[str, Any] | None = None
+
+
+async def _continue_close(args, ctx):
+    return await _hierarchy_adapter("integration_continue_close", args, ctx,
+        IntegrationContinueCloseValue, {"completed", "pending", "refused"})
+
+
 def register_integration_contracts(registry: ContractRegistry) -> None:
     """Register contracts whose real handlers have landed.
 
@@ -2046,6 +2084,13 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
     declaration together.  Unavailable security-sensitive mutations remain
     outside the allowlist.
     """
+    registry.register(CommandRegistration(
+        "integration_continue_close",
+        _operational_contract("integration_continue_close", IntegrationContinueCloseArgs,
+            ("completed", "pending", "refused"), successes=frozenset({"completed"}),
+            side_effect=SideEffectClass.COMPOSITE, result_model=IntegrationContinueCloseValue),
+        _continue_close,
+    ))
     for name in ("integration_cutover_plan", "integration_cutover"):
         if registry.get(name) is not None:
             continue
@@ -2062,6 +2107,8 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
         _register_contract(registry, contract, preview=not read_only)
     for name, args_model, applied, value_model in (
         ("integration_off", IntegrationOffArgs, "disabled", IntegrationManualValue),
+        ("integration_cutover_containment", IntegrationContainmentCutoverArgs, "prepared",
+         IntegrationContainmentCutoverValue),
         ("integration_migrate_provenance_refs", IntegrationMigrateProvenanceRefsArgs, "migrated",
          IntegrationMigrateProvenanceRefsValue),
         ("integration_retire_legacy_park", IntegrationRetireLegacyParkArgs, "retired",
@@ -2093,7 +2140,7 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
         if name == "integration_supersede_completion":
             outcomes += ("already_superseded",)
             successes.add("already_superseded")
-        if name == "integration_migrate_provenance_refs":
+        if name in {"integration_migrate_provenance_refs", "integration_cutover_containment"}:
             outcomes += ("blocked",)
         if name == "integration_seal_now":
             outcomes += ("no_ready_work", "existing_batch")
@@ -2114,6 +2161,18 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
             side_effect=SideEffectClass.COMPOSITE, result_model=value_model,
             supports_preview=True,
         )
+        if name == "integration_cutover_containment":
+            contract = contract.model_copy(update={
+                "execution": contract.execution.model_copy(update={"effects": (
+                    ReadClause(subject=EffectSubject.DELIVERY_EVIDENCE),
+                    UpdateClause(subject=EffectSubject.DELIVERY_EVIDENCE,
+                                 when=ClausePredicate(arg_equals=("dry_run", False))),
+                )}),
+                "presentation": CommandPresentation(
+                    title="Prepare strict-containment history",
+                    summary="Local operator previews and applies exact historical lifecycle exclusions.",
+                ),
+            })
         if name == "integration_off":
             subject = EffectSubject.INTEGRATION_OPERATION
             contract = _with_effects(

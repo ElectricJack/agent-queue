@@ -1,0 +1,252 @@
+{
+  "schema_version": 1,
+  "kind": "proposed_operator_handoff",
+  "project_scope": "matter-engine",
+  "status": "not_ready_for_live_cutover",
+  "execution_authority": "owning matter-engine supervisor/operator",
+  "live_changes_performed": false,
+  "prepared_source_base": "3e60b49c6ec251d91862e31f6eb3c16a61e3dd44",
+  "specification": "operator-vault:projects/agent-queue/specs/2026-10-12-fast-smooth-integration.md",
+  "checklist": "operator-checklist.md",
+  "fixture_evidence": "fixture-manifests.json",
+  "inventory": {
+    "project_and_repository_ids": {
+      "status": "unresolved",
+      "owner": "owning matter-engine supervisor/operator",
+      "value": null
+    },
+    "remotes_and_repository_identity": {
+      "status": "unresolved",
+      "owner": "owning matter-engine supervisor/operator",
+      "value": null
+    },
+    "default_delivery_and_protected_refs": {
+      "status": "unresolved",
+      "owner": "owning matter-engine supervisor/operator",
+      "value": null
+    },
+    "current_playbook_digest_and_enabled_state": {
+      "status": "unresolved",
+      "owner": "owning matter-engine supervisor/operator",
+      "value": null
+    },
+    "current_required_checks_and_trusted_producers": {
+      "status": "unresolved",
+      "owner": "owning matter-engine supervisor/operator",
+      "value": null
+    },
+    "claims_preparations_sessions_and_branch_owners": {
+      "status": "unresolved",
+      "owner": "owning matter-engine supervisor/operator",
+      "value": null
+    },
+    "batches_repairs_candidates_and_uncertain_publications": {
+      "status": "unresolved",
+      "owner": "owning matter-engine supervisor/operator",
+      "value": null
+    },
+    "generation_source_base_and_provenance_oids": {
+      "status": "unresolved",
+      "owner": "owning matter-engine supervisor/operator",
+      "value": null
+    },
+    "fresh_parent_and_dev_ancestry_per_source": {
+      "status": "unresolved",
+      "owner": "owning matter-engine supervisor/operator",
+      "value": null
+    },
+    "code_free_retired_and_missing_source_dispositions": {
+      "status": "unresolved",
+      "owner": "owning matter-engine supervisor/operator",
+      "value": null
+    },
+    "equivalent_history_per_row_operator_dispositions": {
+      "status": "unresolved",
+      "owner": "owning matter-engine supervisor/operator",
+      "value": null
+    },
+    "explicit_stacking_review_hold_and_release_overrides": {
+      "status": "unresolved",
+      "owner": "owning matter-engine supervisor/operator",
+      "value": null
+    },
+    "deployment_or_package_binding_and_health": {
+      "status": "unresolved",
+      "owner": "owning matter-engine supervisor/operator",
+      "value": null
+    },
+    "code_schema_and_configuration_versions": {
+      "status": "unresolved",
+      "owner": "owning matter-engine supervisor/operator",
+      "value": null
+    },
+    "postgres_backup_and_verified_restore": {
+      "status": "unresolved",
+      "owner": "owning matter-engine supervisor/operator",
+      "value": null
+    },
+    "git_ref_oid_and_private_object_recovery_manifest": {
+      "status": "unresolved",
+      "owner": "owning matter-engine supervisor/operator",
+      "value": null
+    },
+    "dirty_ignored_untracked_and_lfs_recovery": {
+      "status": "unresolved",
+      "owner": "owning matter-engine supervisor/operator",
+      "value": null
+    },
+    "preview_digest_and_fresh_stopped_writer_fence": {
+      "status": "unresolved",
+      "owner": "owning matter-engine supervisor/operator",
+      "value": null
+    },
+    "compatible_strict_containment_rollback_version": {
+      "status": "unresolved",
+      "owner": "owning matter-engine supervisor/operator",
+      "value": null
+    },
+    "live_multi_input_conflict_standalone_and_split_canaries": {
+      "status": "unresolved",
+      "owner": "owning matter-engine supervisor/operator",
+      "value": null
+    },
+    "shared_frontier_demand_and_waiting_views": {
+      "status": "unresolved",
+      "owner": "owning matter-engine supervisor/operator",
+      "value": null
+    },
+    "process_stalls_and_named_remediation_owners": {
+      "status": "unresolved",
+      "owner": "owning matter-engine supervisor/operator",
+      "value": null
+    },
+    "24_hour_observation": {
+      "status": "unresolved",
+      "owner": "owning matter-engine supervisor/operator",
+      "value": null
+    },
+    "seven_day_full_cohort_latency_report": {
+      "status": "unresolved",
+      "owner": "owning matter-engine supervisor/operator",
+      "value": null
+    },
+    "real_products_services_and_named_owners": {
+      "status": "unresolved",
+      "owner": "owning matter-engine supervisor/operator",
+      "value": null
+    },
+    "native_root_and_two_copy_capacity": {
+      "status": "unresolved",
+      "owner": "owning matter-engine supervisor/operator",
+      "value": null
+    },
+    "clone_slot_retained_candidate_fixer_cache_and_common_directory_paths": {
+      "status": "unresolved",
+      "owner": "owning matter-engine supervisor/operator",
+      "value": null
+    },
+    "submodules_lfs_local_only_refs_modes_acls_and_symlinks": {
+      "status": "unresolved",
+      "owner": "owning matter-engine supervisor/operator",
+      "value": null
+    },
+    "mount_service_restart_environment_and_config_path_references": {
+      "status": "unresolved",
+      "owner": "owning matter-engine supervisor/operator",
+      "value": null
+    },
+    "current_windows_required_or_approved_linux_only_policy": {
+      "status": "unresolved",
+      "owner": "owning matter-engine supervisor/operator",
+      "value": null
+    },
+    "native_cold_warm_build_test_package_and_io_measurements": {
+      "status": "unresolved",
+      "owner": "owning matter-engine supervisor/operator",
+      "value": null
+    },
+    "current_dev_epic_candidate_workflow_triggers_and_access": {
+      "status": "unresolved",
+      "owner": "owning matter-engine supervisor/operator",
+      "value": null
+    },
+    "verified_forward_and_reverse_relocation_plans": {
+      "status": "unresolved",
+      "owner": "owning matter-engine supervisor/operator",
+      "value": null
+    },
+    "absence_of_runtime_mnt_d_dependencies": {
+      "status": "unresolved",
+      "owner": "owning matter-engine supervisor/operator",
+      "value": null
+    },
+    "seven_day_old_mount_retention_signoff": {
+      "status": "unresolved",
+      "owner": "owning matter-engine supervisor/operator",
+      "value": null
+    }
+  },
+  "rollback": {
+    "preserve_new_heads": true,
+    "preserve_original_sources_and_dirty_work": true,
+    "restore_receipt_authority": false,
+    "reset_dev_or_epic_refs": false,
+    "destructive_history_cleanup_authorized": false,
+    "approval": {
+      "status": "unresolved",
+      "owner": "owning matter-engine supervisor/operator",
+      "value": null
+    }
+  },
+  "historical_fixtures_only": {
+    "project_ids": [
+      "matter-engine-cpp",
+      "matter-engine-web"
+    ],
+    "runner": "matter-engine-msvc",
+    "windows_command": "./tools/ci-windows.ps1",
+    "proposed_native_root": "/home/jkern/dev/matter-engine-cpp",
+    "verified_live": false
+  },
+  "proposed_policy": {
+    "train_enabled": false,
+    "enable_requires_owning_operator": true,
+    "close_merge.author_assist": false,
+    "speculative_ci": false,
+    "epic_checks": "advisory unless current owner playbook explicitly requires",
+    "watchdog_threshold": "max(1800 seconds, 2 * measured p90 batch CI)",
+    "windows_check_requirement": "read current approved policy; historical fixture is not authority"
+  },
+  "relocation": {
+    "storage_before_flow_activation": true,
+    "preview_default": true,
+    "apply_requires_exact_current_digest": true,
+    "current_verified_independent_copies_required": 2,
+    "reverse_plan_preserves_new_work": true,
+    "train_remains_disabled": true,
+    "old_mount_retention_days": 7,
+    "operator_signoff": {
+      "status": "unresolved",
+      "owner": "owning matter-engine supervisor/operator",
+      "value": null
+    }
+  },
+  "approved_specification": {
+    "review_id": "rev-fair-lantern",
+    "revision": 2,
+    "sha256": "4518d9296649ddc2f0192ff73dd682864fb938e3d9687069282b4f6b0a86453f",
+    "verified_snapshot": "/tmp/aq-approved-fast-smooth-rev2.md",
+    "snapshot_retention": "worker-local; SHA pins native approved review revision, not current divergent vault file",
+    "source_key": "validation",
+    "governing_sections": [
+      11,
+      12,
+      14
+    ],
+    "acceptance_rows": 12,
+    "supervisor_disposition": "msg-6ea46b7503da4e408cbff30726d9ff4b",
+    "wait_reply": "msg-168f1f67262e443bb39249c768d3f22e",
+    "vault_state": "diverged",
+    "proposed_revision_3": "document-only / in_review; review reconciliation belongs to global/human owner"
+  }
+}
