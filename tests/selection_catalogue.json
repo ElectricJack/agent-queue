@@ -626,6 +626,7 @@
         "tests/test_attestation_check_run_id.py",
         "tests/test_branch_sweep.py",
         "tests/test_epic_train_end_to_end.py",
+        "tests/test_fast_smooth_integration_e2e.py",
         "tests/test_hosted_attestation.py",
         "tests/test_integration_attestation.py",
         "tests/test_integration_batches.py",
@@ -7101,6 +7102,23 @@
         "parametrize"
       ],
       "summary": "The fake session provider's file-driven script (provider-failover D23)."
+    },
+    "tests/test_fast_smooth_integration_e2e.py": {
+      "areas": [
+        "integration-trains"
+      ],
+      "default_arm": true,
+      "digest": "sha256:d1413d372d701dc579de96c7b5b9d232495b0d89dc6bf3e0dcab56117a72e5cf",
+      "imports": [
+        "src.database.tables",
+        "src.integration.batches",
+        "src.integration.train",
+        "src.models"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Connected S4 canaries: real Git, disposable PostgreSQL, controlled CI, no LLM."
     },
     "tests/test_fidelity_review.py": {
       "areas": [
