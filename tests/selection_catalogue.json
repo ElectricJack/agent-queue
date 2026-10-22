@@ -3603,7 +3603,7 @@
         "claims"
       ],
       "default_arm": true,
-      "digest": "sha256:c11a202b432defc828dac3f24470e3abb76c6e13862c90d36d9669a7eb4235ed",
+      "digest": "sha256:c557a8d168474c61cb973a7135eca2fed3d872c9ea7c05bae123689da84ab6a1",
       "imports": [
         "src.api.auth",
         "src.api.models.session",
@@ -3611,6 +3611,8 @@
         "src.claim_file",
         "src.claim_preparation",
         "src.claim_timing",
+        "src.cli.client",
+        "src.commands",
         "src.commands.claim_commands",
         "src.commands.handler",
         "src.config",
