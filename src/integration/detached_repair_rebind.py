@@ -31,6 +31,7 @@ from src.database.tables import (
 )
 from src.git.manager import GitError, RemoteRefState, is_valid_git_oid
 from src.integration.promotion_contracts import PromotionError
+from src.integration.row_query import select_row
 from src.integration.writers import OperationSafety
 from src.integration.repair import RepairService, _RepairInvariant
 from src.models import TaskStatus
@@ -134,13 +135,11 @@ class DetachedRepairRebind:
         }
 
     async def _proof_on(self, conn, operation_id: str) -> dict[str, Any]:
-        hint = (
-            await conn.execute(
-                select(integration_repair_operations).where(
-                    integration_repair_operations.c.id == operation_id
-                )
-            )
-        ).mappings().one_or_none()
+        hint = await select_row(
+                   conn,
+                   integration_repair_operations,
+                   integration_repair_operations.c.id == operation_id,
+               )
         if hint is None:
             return {"outcome": "not_found", "operation_id": operation_id}
         base: dict[str, Any] = {"operation_id": operation_id}
@@ -179,18 +178,12 @@ class DetachedRepairRebind:
         if stage["writer_kind"] != "repair_delegate" or not stage["repair_task_id"]:
             return self._blocked(base, "stage has no repair delegate")
 
-        parent = (
-            await conn.execute(
-                select(tasks).where(tasks.c.id == operation["parent_task_id"]).with_for_update()
-            )
-        ).mappings().one_or_none()
-        checkpoint = (
-            await conn.execute(
-                select(task_integration_checkpoints).where(
-                    task_integration_checkpoints.c.task_id == operation["parent_task_id"]
-                )
-            )
-        ).mappings().one_or_none()
+        parent = await select_row(conn, tasks, tasks.c.id == operation['parent_task_id'], lock=True)
+        checkpoint = await select_row(
+                         conn,
+                         task_integration_checkpoints,
+                         task_integration_checkpoints.c.task_id == operation['parent_task_id'],
+                     )
         if parent is None or checkpoint is None or parent["project_id"] != project_id:
             return self._blocked(base, "parent target or checkpoint is missing")
         branch = str(parent["branch_name"] or "")
@@ -245,9 +238,7 @@ class DetachedRepairRebind:
             return self._blocked(base, "stage is not a debug continuation of an exhausted stage")
         if frozen == intent["expected_target"]:
             return self._blocked(base, "stage already starts at the conflict's target")
-        source = (
-            await conn.execute(select(tasks).where(tasks.c.id == intent["source_task_id"]))
-        ).mappings().one_or_none()
+        source = await select_row(conn, tasks, tasks.c.id == intent['source_task_id'])
         if (
             intent["project_id"] != project_id
             or intent["fence_owner_id"] != operation_id
@@ -290,16 +281,13 @@ class DetachedRepairRebind:
             return self._blocked(base, "stage retains writer progress; use owner recovery")
 
         delegate_id = stage["repair_task_id"]
-        owner = (
-            await conn.execute(
-                select(integration_branch_owners)
-                .where(
-                    integration_branch_owners.c.repository_id == parent["repo_id"],
+        owner = await select_row(
+                    conn,
+                    integration_branch_owners,
+                    integration_branch_owners.c.repository_id == parent['repo_id'],
                     integration_branch_owners.c.ref == branch,
+                    lock=True,
                 )
-                .with_for_update()
-            )
-        ).mappings().one_or_none()
         if (
             owner is None
             or owner["owner_id"] != delegate_id
@@ -309,9 +297,7 @@ class DetachedRepairRebind:
             or owner["workspace_id"] is not None
         ):
             return self._blocked(base, "repair writer is not detached and reserved")
-        delegate = (
-            await conn.execute(select(tasks).where(tasks.c.id == delegate_id).with_for_update())
-        ).mappings().one_or_none()
+        delegate = await select_row(conn, tasks, tasks.c.id == delegate_id, lock=True)
         if (
             delegate is None
             or delegate["project_id"] != project_id

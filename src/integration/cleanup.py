@@ -47,6 +47,7 @@ from src.integration.delivery_branches import (
     branch_of, deletable, preserve_branch_tips, repository_protected_branches,
     train_cleanup_hold,
 )
+from src.integration.row_query import select_row
 
 
 logger = logging.getLogger(__name__)
@@ -184,20 +185,13 @@ class IntegrationCleanupService:
         observed_at = self.clock() if now is None else now
         nonce = uuid.uuid4().hex
         async with self.db.immediate() as conn:
-            row = (
-                (
-                    await conn.execute(
-                        select(integration_cleanup_items)
-                        .where(
-                            integration_cleanup_items.c.batch_id == batch_id,
-                            integration_cleanup_items.c.kind == kind,
-                            integration_cleanup_items.c.identity == identity,
-                        )
-                        .with_for_update()
-                    )
-                )
-                .mappings()
-                .one_or_none()
+            row = await select_row(
+                conn,
+                integration_cleanup_items,
+                integration_cleanup_items.c.batch_id == batch_id,
+                integration_cleanup_items.c.kind == kind,
+                integration_cleanup_items.c.identity == identity,
+                lock=True,
             )
             if row is None:
                 return CleanupExecutionResult(
@@ -366,20 +360,13 @@ class IntegrationCleanupService:
             return "reconcile"
         now = float(row["updated_at"])
         async with self.db.immediate() as conn:
-            current = (
-                (
-                    await conn.execute(
-                        select(integration_cleanup_items)
-                        .where(
-                            integration_cleanup_items.c.batch_id == row["batch_id"],
-                            integration_cleanup_items.c.kind == row["kind"],
-                            integration_cleanup_items.c.identity == row["identity"],
-                        )
-                        .with_for_update()
-                    )
-                )
-                .mappings()
-                .one_or_none()
+            current = await select_row(
+                conn,
+                integration_cleanup_items,
+                integration_cleanup_items.c.batch_id == row['batch_id'],
+                integration_cleanup_items.c.kind == row['kind'],
+                integration_cleanup_items.c.identity == row['identity'],
+                lock=True,
             )
             if current is None or current["state"] not in {"pending", "retryable"}:
                 return "stale"
@@ -431,18 +418,12 @@ class IntegrationCleanupService:
             return "conflict", "protected branch cleanup is forbidden"
         if row["member_ordinal"] is not None:
             async with self.db._engine.connect() as conn:
-                owner = (
-                    (
-                        await conn.execute(
-                            select(integration_branch_owners).where(
-                                integration_branch_owners.c.repository_id == row["repository_id"],
-                                integration_branch_owners.c.ref == row["target_ref"],
-                                integration_branch_owners.c.handoff_state != "released",
-                            )
-                        )
-                    )
-                    .mappings()
-                    .one_or_none()
+                owner = await select_row(
+                    conn,
+                    integration_branch_owners,
+                    integration_branch_owners.c.repository_id == row['repository_id'],
+                    integration_branch_owners.c.ref == row['target_ref'],
+                    integration_branch_owners.c.handoff_state != 'released',
                 )
             if owner is not None:
                 return "conflict", "source ref has an active branch owner"
@@ -482,44 +463,25 @@ class IntegrationCleanupService:
             return "retryable", "local cleanup transport is unavailable"
         store = str(self.retained_store(row["repository_id"]))
         async with self.db._engine.connect() as conn:
-            intent = (
-                (
-                    await conn.execute(
-                        select(integration_promotion_intents).where(
-                            integration_promotion_intents.c.intent_kind == "root",
-                            integration_promotion_intents.c.root_batch_id == row["batch_id"],
-                            integration_promotion_intents.c.root_candidate_revision
-                            == row["revision"],
-                        )
-                    )
-                )
-                .mappings()
-                .one_or_none()
+            intent = await select_row(
+                conn,
+                integration_promotion_intents,
+                integration_promotion_intents.c.intent_kind == 'root',
+                integration_promotion_intents.c.root_batch_id == row['batch_id'],
+                integration_promotion_intents.c.root_candidate_revision == row['revision'],
             )
-            mutation = (
-                (
-                    await conn.execute(
-                        select(integration_candidate_ref_mutations).where(
-                            integration_candidate_ref_mutations.c.batch_id == row["batch_id"],
-                            integration_candidate_ref_mutations.c.revision == row["revision"],
-                            integration_candidate_ref_mutations.c.purpose == "root_main",
-                        )
-                    )
-                )
-                .mappings()
-                .one_or_none()
+            mutation = await select_row(
+                conn,
+                integration_candidate_ref_mutations,
+                integration_candidate_ref_mutations.c.batch_id == row['batch_id'],
+                integration_candidate_ref_mutations.c.revision == row['revision'],
+                integration_candidate_ref_mutations.c.purpose == 'root_main',
             )
-            owner = (
-                (
-                    await conn.execute(
-                        select(integration_branch_owners).where(
-                            integration_branch_owners.c.repository_id == row["repository_id"],
-                            integration_branch_owners.c.ref == row["target_ref"],
-                        )
-                    )
-                )
-                .mappings()
-                .one_or_none()
+            owner = await select_row(
+                conn,
+                integration_branch_owners,
+                integration_branch_owners.c.repository_id == row['repository_id'],
+                integration_branch_owners.c.ref == row['target_ref'],
             )
         if (
             intent is None
@@ -554,11 +516,7 @@ class IntegrationCleanupService:
         if self.git is None:
             return "retryable", "worktree cleanup transport is unavailable"
         async with self.db._engine.connect() as conn:
-            workspace = (
-                (await conn.execute(select(workspaces).where(workspaces.c.id == row["identity"])))
-                .mappings()
-                .one_or_none()
-            )
+            workspace = await select_row(conn, workspaces, workspaces.c.id == row['identity'])
             retained = (
                 (
                     await conn.execute(
@@ -834,31 +792,19 @@ class IntegrationCleanupService:
             return CleanupMaterializationResult(outcome="stale", batch_id=batch_id)
         async with self.db.immediate() as conn:
             await self.db.lock_hierarchy_project(conn, str(project_id))
-            batch = (
-                (
-                    await conn.execute(
-                        select(integration_batches)
-                        .where(integration_batches.c.id == batch_id)
-                        .with_for_update()
-                    )
-                )
-                .mappings()
-                .one_or_none()
+            batch = await select_row(
+                conn,
+                integration_batches,
+                integration_batches.c.id == batch_id,
+                lock=True,
             )
             if batch is not None and batch["lifecycle"] == "aborted":
                 return await self.materialize_aborted_on(conn, batch, observed_at)
-            publication = (
-                (
-                    await conn.execute(
-                        select(integration_candidate_publications).where(
-                            integration_candidate_publications.c.batch_id == batch_id,
-                            integration_candidate_publications.c.revision
-                            == (batch["current_revision"] if batch is not None else -1),
-                        )
-                    )
-                )
-                .mappings()
-                .one_or_none()
+            publication = await select_row(
+                conn,
+                integration_candidate_publications,
+                integration_candidate_publications.c.batch_id == batch_id,
+                integration_candidate_publications.c.revision == (batch['current_revision'] if batch is not None else -1),
             )
             if (
                 batch is None

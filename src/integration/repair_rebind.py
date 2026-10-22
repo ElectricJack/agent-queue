@@ -15,6 +15,7 @@ from src.database.tables import (
 from src.git.manager import RemoteRefState, is_valid_git_oid
 from src.integration.models import BranchKey, Fence
 from src.integration.promotion_contracts import PromotionInvariantError, PromotionTargetMoved
+from src.integration.row_query import select_row
 
 
 class RepairRebind:
@@ -32,11 +33,7 @@ class RepairRebind:
         The worker still performs the exact fenced push and close afterward.
         """
         async with self.db.immediate() as conn:
-            delegate = (
-                (await conn.execute(select(tasks).where(tasks.c.id == task_id).with_for_update()))
-                .mappings()
-                .one_or_none()
-            )
+            delegate = await select_row(conn, tasks, tasks.c.id == task_id, lock=True)
             stage_rows = (
                 (
                     await conn.execute(
@@ -62,34 +59,21 @@ class RepairRebind:
                 or delegate["created_by_id"] != stage["operation_id"]
             ):
                 return {"outcome": "blocked", "reason": "task is not this stage's repair delegate"}
-            named = (
-                (
-                    await conn.execute(
-                        select(integration_promotion_intents)
-                        .where(integration_promotion_intents.c.id == stage["trigger_id"])
-                        .with_for_update()
-                    )
-                )
-                .mappings()
-                .one_or_none()
+            named = await select_row(
+                conn,
+                integration_promotion_intents,
+                integration_promotion_intents.c.id == stage['trigger_id'],
+                lock=True,
             )
             if named is None:
                 return {"outcome": "blocked", "reason": "stage has no conflict intent"}
             intent = named
             if named["state"] == "superseded":
-                intent = (
-                    (
-                        await conn.execute(
-                            select(integration_promotion_intents)
-                            .where(
-                                integration_promotion_intents.c.id
-                                == named["superseded_by_intent_id"]
-                            )
-                            .with_for_update()
-                        )
-                    )
-                    .mappings()
-                    .one_or_none()
+                intent = await select_row(
+                    conn,
+                    integration_promotion_intents,
+                    integration_promotion_intents.c.id == named['superseded_by_intent_id'],
+                    lock=True,
                 )
             if intent is None or intent["state"] not in {"conflict", "resolution_reserved"}:
                 return {"outcome": "blocked", "reason": "current conflict intent is unavailable"}
@@ -99,19 +83,12 @@ class RepairRebind:
                 return {"outcome": "blocked", "reason": "intent is outside the repair operation"}
             repository = await self.promotion._resolve_repository(intent["repository_id"])
             self.promotion._assert_resolution_repository(intent, repository)
-            owner = (
-                (
-                    await conn.execute(
-                        select(integration_branch_owners)
-                        .where(
-                            integration_branch_owners.c.repository_id == intent["repository_id"],
-                            integration_branch_owners.c.ref == intent["target_branch"],
-                        )
-                        .with_for_update()
-                    )
-                )
-                .mappings()
-                .one_or_none()
+            owner = await select_row(
+                conn,
+                integration_branch_owners,
+                integration_branch_owners.c.repository_id == intent['repository_id'],
+                integration_branch_owners.c.ref == intent['target_branch'],
+                lock=True,
             )
             if owner is None or not owner["session_id"]:
                 return {"outcome": "blocked", "reason": "repair writer is not attached"}
