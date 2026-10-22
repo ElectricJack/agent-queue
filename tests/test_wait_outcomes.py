@@ -148,9 +148,11 @@ async def test_real_graph_retraction_rolls_back_then_commits_with_outcome(env):
     await env.db.update_task("source", priority=100)
     await env.db.create_task(Task(id="tail", project_id="p", title="Tail", description="",
                                   priority=200))
-    await register(env, {"kind": "task", "task_id": "tail"},
-                   scope=Scope("p", "scheduler", "source", principal="service"),
-                   idempotency_key="source-to-tail")
+    scheduler_receipt = await register(
+        env, {"kind": "task", "task_id": "tail"},
+        scope=Scope("p", "scheduler", "source", principal="service"),
+        idempotency_key="source-to-tail",
+    )
     receipt = await waiting(env)
     for task_id in ("source", "tail"):
         assert (await priorities())[task_id] == 10
@@ -169,11 +171,20 @@ async def test_real_graph_retraction_rolls_back_then_commits_with_outcome(env):
         assert (await priorities())[task_id] == 10
     assert not await records(env, messages)
     assert all(row["outcome"] == "pending" for row in await records(env))
+    assert all(row["cleared_at"] is None for row in await records(env))
+    assert all(row["active"] for row in await records(env, wait_edges))
     disp.recompute_priority = recompute_from
     assert await service.tick()
     assert (await priorities())["source"] == 100
-    assert (await priorities())["tail"] == 100
+    # The completed source also retires its own scheduler wait, retracting the
+    # remaining source-to-tail donation in the same outcome transaction.
+    assert (await priorities())["tail"] == 200
     assert (await env.db.get_task("tail")).priority == 200
+    retired = next(row for row in await records(env)
+                   if row["id"] == scheduler_receipt["wait_id"])
+    assert retired["outcome"] == "cancelled" and retired["cleared_at"] is not None
+    assert retired["decision_inputs"]["registration_receipt"] == scheduler_receipt
+    assert not any(row["active"] for row in await records(env, wait_edges))
     terminal = next(row for row in await records(env) if row["id"] == receipt["wait_id"])
     assert terminal["outcome"] == "satisfied" and terminal["cleared_at"] is None
     assert len(await records(env, messages)) == 1

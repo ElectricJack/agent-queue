@@ -12,11 +12,22 @@ from src.database.queries.continuation_queries import retire_task_waits
 from src.database.tables import (
     continuations, sessions, task_context, tasks, wait_deadlines, wait_records, workspaces,
 )
-from src.waits.graph import clear_edges, lock_graph, recompute_from
+from src.waits.graph import clear_edges, lock_component_tasks, lock_graph, recompute_from
 from src.waits.sources import execute_task_status_mutation
 
 FINAL = ("acknowledged", "failed", "cancelled")
 LIVE = ("starting", "running", "draining", "hibernating", "stopping")
+TERMINAL_TASK_STATUSES = ("COMPLETED", "FAILED", "BLOCKED")
+
+
+async def retire_terminal_task_waits(conn, task_id, *, now):
+    """Reobserve the owner; a delayed terminal event cannot retire a new attempt."""
+    await lock_component_tasks(conn, {f"task:{task_id}"})
+    status = await conn.scalar(select(tasks.c.status).where(tasks.c.id == task_id))
+    if status not in TERMINAL_TASK_STATUSES:
+        return False
+    await retire_task_waits(conn, task_id, reason="task_terminal", now=now)
+    return True
 
 
 async def orphan_report(conn, *, project_id=None):
