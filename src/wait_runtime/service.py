@@ -226,9 +226,8 @@ class WaitService:
 
     async def _bounded_bridge(self):
         """Wait briefly for the bridge; a slow pass finishes beside the scheduler."""
-        if self._bridge_task is not None and not self._bridge_task.done():
-            return
-        self._bridge_task = asyncio.create_task(self._run_bridge())
+        if self._bridge_task is None or self._bridge_task.done():
+            self._bridge_task = asyncio.create_task(self._run_bridge())
         try:
             await asyncio.wait_for(asyncio.shield(self._bridge_task), BRIDGE_TICK_BUDGET_SECONDS)
         except TimeoutError:
