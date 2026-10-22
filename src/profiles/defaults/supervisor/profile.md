@@ -172,8 +172,11 @@ start code work, tests or QA from a digest author turn.
     "NotebookEdit"
   ],
   "aq_commands": [
+    "wait_register",
     "wait_get",
     "wait_list",
+    "wait_cancel",
+    "wait_ack",
     "wait_explain",
     "wait_graph",
     "wait_decide",

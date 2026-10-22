@@ -46,11 +46,13 @@ from src.mcp_registration import DEFAULT_EXCLUDED_COMMANDS
 from src.profiles.capabilities import AQ_FEATURE_CAPABILITIES, CapabilityPolicy
 from src.profiles.capability_sync import sync_profile_capabilities
 from src.profiles.drift import diff_profile, shipped_profile_path, vault_profile_path
+from src.profiles.sync import sync_profile_text_to_db
 from src.tools.definitions import _ALL_TOOL_DEFINITIONS
 from src.waits.legacy import translate_registration
 from src.waits.conditions import Condition, Scope, WaitError
 from src.waits.registry import build_registry
 from tests.test_operator_workers import operator as _operator, execute as operator_execute
+from tests.test_agent_wait_commands import _over_api
 from tests.test_wait_queries import NOW, Policy, decide, env as _env, register
 
 env = _env
@@ -607,8 +609,11 @@ async def test_copied_vault_additive_sync_closes_wait_grant_drift(tmp_path, prof
         {"wait_explain", "wait_checkpoint", "wait_ack"}
         if profile_id.startswith("worker")
         else {
+            "wait_register",
             "wait_get",
             "wait_list",
+            "wait_cancel",
+            "wait_ack",
             "wait_explain",
             "wait_graph",
             "wait_decide",
@@ -967,6 +972,129 @@ async def test_holder_cancels_in_place_wait_and_acknowledges_back_to_work(env):
     ack = await execute(handler, "wait_ack", {"wait_id": receipt["wait_id"], "claim_epoch": 1})
     assert ack["success"] and ack["outcome"] == "cancelled", ack
     assert (await env.db.get_task("owner")).status.value == "IN_PROGRESS"
+
+
+@pytest.mark.parametrize("consume", [False, True], ids=["ack", "show-consume"])
+async def test_shipped_supervisor_can_acknowledge_own_wait_and_release_held_mail(
+    env, tmp_path, consume,
+):
+    _, handler = await wait_service(env)
+    handler.config.security.capability_enforcement = "enforce"
+    handler.config.wait_policy.hibernation_enabled = False
+    # Reproduce an installed profile with registration/cancellation but no ACK,
+    # then repair a disposable vault through the same additive sync as deployment.
+    shipped = Path(shipped_profile_path("supervisor")).read_text()
+    stale = shipped.replace('    "wait_ack",\n', "")
+    vault_path = Path(vault_profile_path(str(tmp_path), "supervisor"))
+    vault_path.parent.mkdir(parents=True)
+    vault_path.write_text(stale)
+    synced = await sync_profile_text_to_db(stale, env.db)
+    assert synced.success, synced.errors
+    await env.db.update_project("p", supervisor_enabled=True)
+    for session_id, project in (("sup-p", "p"), ("other-p", "p"), ("sup-q", "q")):
+        await env.db.create_session(SessionRecord(
+            id=session_id, project_id=project, profile_id="supervisor", harness="codex",
+            provider="fake", name=f"n-supervisor--{project}" if session_id != "other-p"
+            else "other-supervisor", lifecycle="named", state="running",
+            desired_state="running", instance_token=f"{session_id}-token", epoch="boot",
+            work_dir="/tmp/supervisor", started_at=NOW,
+        ))
+    supervisor_scope = dict(session_id="sup-p", session_instance_token="sup-p-token",
+                            project_id="p", elevated=True)
+
+    async def call(name, args, **scope_changes):
+        return await _over_api(handler, name, args, **{**supervisor_scope, **scope_changes})
+
+    request = await call("message_send", dict(
+        to_kind="user", to_id="dashboard", thread_id="expected-reply", body="Owner decision?",
+    ))
+    assert request["success"], request
+    sent = await env.db.get_message(request["message_id"])
+    registered = await call("wait_register", dict(
+        schema_version=2, condition=dict(kind="message", thread_id=sent.thread_id,
+                                        after_seq=sent.created_seq),
+        idempotency_key="supervisor-reply",
+    ))
+    assert registered["success"], registered
+    wait_id = registered["wait_id"]
+    async with env.db._engine.connect() as conn:
+        wait = (await conn.execute(select(wait_records).where(
+            wait_records.c.id == wait_id))).mappings().one()
+    assert (wait["owner_kind"], wait["owner_id"], wait["sleep_decision"]) == (
+        "session", "sup-p", "in_place")
+
+    # The owner's reply is on another thread; an unrelated worker question
+    # arrives through the canonical supervisor alias. Neither satisfies this wait.
+    reply = await env.db.create_message(
+        project_id="p", from_kind="user", from_id="dashboard", to_kind="session",
+        to_id="sup-p", thread_id="off-thread-reply", body="Owner reply on another thread",
+    )
+    question = await env.db.create_message(
+        project_id="p", from_kind="session", from_id="s", to_kind="session",
+        to_id="supervisor-p", thread_id="worker-policy", body="Worker policy question",
+    )
+    held_ids = {reply.id, question.id}
+    for inject in (False, True, False):
+        inbox = await call("message_inbox", dict(to_kind="session", to_id="sup-p", inject=inject))
+        assert inbox["success"], inbox
+        assert held_ids.isdisjoint(row["id"] for row in inbox["messages"])
+    for message_id in held_ids:
+        status = await call("message_status", dict(message_id=message_id))
+        assert status["error_code"] == "wait.held_message", status
+        assert (await env.db.get_message(message_id)).delivered_at is None
+
+    cancelled = await call("wait_cancel", dict(wait_id=wait_id))
+    assert cancelled["success"] and cancelled["wait"]["outcome"] == "cancelled", cancelled
+    denied = await call("wait_ack", dict(wait_id=wait_id))
+    assert not denied["success"] and denied["error_code"] == "capability_denied", denied
+    repaired = sync_profile_capabilities(str(tmp_path), "supervisor")
+    assert repaired.added == {"aq_commands": ["wait_ack"]}
+    synced = await sync_profile_text_to_db(vault_path.read_text(), env.db)
+    assert synced.success, synced.errors
+    handler._invalidate_principal_cache()
+    # Even a fully privileged foreign supervisor cannot acknowledge the owner.
+    for foreign_scope in (
+        dict(session_id="other-p", session_instance_token="other-p-token"),
+        dict(session_id="sup-q", session_instance_token="sup-q-token", project_id="q"),
+        dict(session_instance_token="replacement-token"),
+    ):
+        denied = await call("wait_ack", dict(wait_id=wait_id), **foreign_scope)
+        assert not denied["success"], denied
+        assert denied["error_code"] in {"wait.out_of_scope", "continuation.stale_generation"}
+    denied_worker = await execute(handler, "wait_ack", dict(wait_id=wait_id, claim_epoch=1))
+    assert not denied_worker["success"] and denied_worker["error_code"] == "wait.out_of_scope"
+    async with env.db._engine.connect() as conn:
+        wait = (await conn.execute(select(wait_records).where(
+            wait_records.c.id == wait_id))).mappings().one()
+    assert wait["outcome"] == "cancelled" and not wait["blocking"] and wait["cleared_at"] is None
+    assert (await call("message_status", dict(message_id=reply.id)))["error_code"] == (
+        "wait.held_message")
+
+    result = await call("wait_get" if consume else "wait_ack",
+                        dict(wait_id=wait_id, **({"consume": True} if consume else {})))
+    assert result["success"], result
+    ack = await call("wait_ack", dict(wait_id=wait_id))
+    assert ack["success"] and ack["acknowledged"], ack
+    assert {row["id"] for row in ack["held_messages"]} == held_ids
+    assert {row["body"] for row in ack["held_messages"]} == {reply.body, question.body}
+    assert await call("wait_ack", dict(wait_id=wait_id)) == ack
+    async with env.db._engine.connect() as conn:
+        wait = (await conn.execute(select(wait_records).where(
+            wait_records.c.id == wait_id))).mappings().one()
+    delivery = wait["decision_inputs"]["delivery"]
+    assert wait["cleared_at"] == NOW and not wait["blocking"]
+    assert delivery["held_cursor_seq"] == max(reply.created_seq, question.created_seq)
+    assert delivery["acknowledgement"]["held_messages"] == ack["held_messages"]
+    for message_id in held_ids:
+        message = await env.db.get_message(message_id)
+        assert message.delivered_at == message.read_at == NOW and message.via == "wait_ack"
+        assert (await call("message_status", dict(message_id=message_id)))["success"]
+    later = await env.db.create_message(
+        project_id="p", from_kind="session", from_id="s", to_kind="session",
+        to_id="supervisor-p", thread_id="later", body="Subsequent worker question",
+    )
+    inbox = await call("message_inbox", dict(to_kind="session", to_id="sup-p"))
+    assert inbox["success"] and later.id in {row["id"] for row in inbox["messages"]}, inbox
 
 
 async def test_worker_cannot_cancel_another_owners_wait(env):
