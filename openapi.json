@@ -17251,7 +17251,9 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/OperationalRetentionResponse"
+                }
               }
             }
           },
@@ -56717,6 +56719,68 @@
         },
         "type": "object",
         "title": "OperationalRetentionRequest"
+      },
+      "OperationalRetentionResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success"
+          },
+          "counts": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "integer"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Counts"
+          },
+          "dry_run": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dry Run"
+          },
+          "outcome": {
+            "anyOf": [
+              {
+                "type": "string",
+                "const": "already_running"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Outcome"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          }
+        },
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "title": "OperationalRetentionResponse",
+        "description": "A completed bounded retention pass, overlap acknowledgement, or refusal."
       },
       "OperatorDecisionDTO": {
         "properties": {

@@ -369,6 +369,7 @@ class TestRunCommand:
 
 
 async def test_operational_retention_uses_private_worker_pool(handler):
+    from src.api.models.system import OperationalRetentionResponse
     from src.commands.principal import ExecutionPrincipal, principal_context
 
     with principal_context(ExecutionPrincipal.service("retention-test")):
@@ -378,10 +379,21 @@ async def test_operational_retention_uses_private_worker_pool(handler):
     assert "token_ledger" in result["counts"]
     assert "transcript_usage_calls" not in result["counts"]
     assert not (Path(handler.config.data_dir) / "backups").exists()
+    assert OperationalRetentionResponse.model_validate(result).model_dump(exclude_none=True) == result
+
+
+@pytest.mark.parametrize("batch_size", [True, 0, 1001, "1", 1.5])
+async def test_operational_retention_rejects_invalid_batch_size(handler, batch_size):
+    from src.api.models.system import OperationalRetentionResponse
+
+    result = await handler._cmd_operational_retention({"batch_size": batch_size})
+    assert result == {"success": False, "error": "batch_size must be between 1 and 1000"}
+    assert OperationalRetentionResponse.model_validate(result).model_dump(exclude_none=True) == result
 
 
 async def test_retention_request_cancel_does_not_overlap_worker(handler, monkeypatch):
     import threading
+    from src.api.models.system import OperationalRetentionResponse
     from src.database import operational_retention
 
     entered, release = threading.Event(), threading.Event()
@@ -398,7 +410,11 @@ async def test_retention_request_cancel_does_not_overlap_worker(handler, monkeyp
         request.cancel()
         with pytest.raises(asyncio.CancelledError):
             await request
-        assert (await handler._cmd_operational_retention({}))["outcome"] == "already_running"
+        result = await handler._cmd_operational_retention({})
+        assert result == {"success": True, "outcome": "already_running"}
+        assert OperationalRetentionResponse.model_validate(result).model_dump(
+            exclude_none=True
+        ) == result
     finally:
         release.set()
         await handler.orchestrator._operational_retention_task

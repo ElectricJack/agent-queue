@@ -12764,6 +12764,47 @@
     },
     "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys."
   },
+  "operational_retention": {
+    "mode": "json_object",
+    "producer": "src/commands/system_commands.py:SystemCommandsMixin._cmd_operational_retention",
+    "source_digest": "sha256:c5900cf6111a27dd547867f03ca90e961d9458e3055abd1a5d6aa319ac77947d",
+    "input_schema_source": "explicit_tool",
+    "schema_quality": "declared",
+    "argument_reads_diagnostic_only": [
+      "batch_size",
+      "dry_run"
+    ],
+    "effect": "destructive",
+    "retry_safe": false,
+    "principal_requirement": "original_principal",
+    "resource_gates": [
+      "system_scope"
+    ],
+    "denial_reason": null,
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "return_branches": [
+      {
+        "return": "{'success': True, 'counts': counts, 'dry_run': bool(args.get('dry_run', False))}",
+        "protocol": "explicit_boolean: True"
+      },
+      {
+        "return": "{'success': True, 'outcome': 'already_running'}",
+        "protocol": "explicit_boolean: True"
+      },
+      {
+        "return": "{'success': False, 'error': 'batch_size must be between 1 and 1000'}",
+        "protocol": "explicit_boolean: False"
+      }
+    ],
+    "tests": [
+      "tests/test_system_commands.py::test_operational_retention_uses_private_worker_pool",
+      "tests/test_system_commands.py::test_retention_request_cancel_does_not_overlap_worker",
+      "tests/test_system_commands.py::test_operational_retention_rejects_invalid_batch_size",
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete"
+    ],
+    "helper_producers": {},
+    "review_notes": "System-scoped archive-first mutation. Completed passes return per-table counts and dry_run; overlap is an explicit successful acknowledgement without a second worker; invalid batch size returns false before starting a worker. Exceptions propagate, never become inferred success. Cancellation shields the single pending worker."
+  },
   "operator_execute": {
     "mode": "json_object",
     "producer": "src/commands/operator_commands.py:OperatorCommandsMixin._cmd_operator_execute",
