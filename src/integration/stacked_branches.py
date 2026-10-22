@@ -1402,10 +1402,8 @@ class EpicRefresh:
         if current is not None and not current.epic_refresh:
             from src.database.queries.escalation_queries import OPEN_ESCALATION_STATES
             from src.integration.repair import ordinary_repair_id
-
-            # An escalated batch cannot progress on its own; never queue behind it.
             stuck = await self.db.get_escalation("escalation-" + ordinary_repair_id(current.id, 1))
-            if stuck and stuck["state"] in OPEN_ESCALATION_STATES:
+            if stuck and stuck["state"] in OPEN_ESCALATION_STATES:  # never queue behind it
                 raise ValueError(
                     f"batch {current.id} cannot progress (escalation {stuck['id']}): run aq "
                     f"integration abort-batch {current.id} --apply --reason REASON, then retry "

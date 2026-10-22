@@ -4787,6 +4787,7 @@ class TaskCommandsMixin:
         return None if resumed.get("success") else resumed
 
     async def _cmd_restart_task(self, args: dict) -> dict:
+        from src.integration.repair import OrdinaryRepairService
         from src.wait_runtime.restart import readmit, release_continuations, restart_lock
         from src.waits.conditions import WaitError
 
@@ -4799,8 +4800,6 @@ class TaskCommandsMixin:
                 return {"success": False, "error": f"Task '{args['task_id']}' not found"}
             if task.status == TaskStatus.IN_PROGRESS:
                 return {"success": False, "error": "Task is currently in progress. Stop it first."}
-            from src.integration.repair import OrdinaryRepairService
-
             if stale := await OrdinaryRepairService(self.db).stale(task):
                 return {"success": False, "error": stale, "error_code": "stale_repair"}
             try:
@@ -4808,10 +4807,8 @@ class TaskCommandsMixin:
             except WaitError as exc:
                 return {"success": False, "error": str(exc), "error_code": exc.code}
             project = await self.db.get_project(task.project_id)
-            managed = (
-                project is not None
-                and project.hierarchical_integration_mode in {"hierarchy", "train"}
-            )
+            managed = project is not None and (
+                project.hierarchical_integration_mode in {"hierarchy", "train"})
             if managed and task.status in _RESTART_RESERVATION_STATUSES:
                 # Repair delegates restart through their operation's reserved branch fence.
                 if task.created_by_kind == "integration_repair":
@@ -4819,9 +4816,7 @@ class TaskCommandsMixin:
                 if task.status is TaskStatus.BLOCKED and await self.db.get_integration_checkpoint(
                     task.id
                 ):
-                    from src.integration.canonical_reservation import (
-                        reserve_canonical_task_branch,
-                    )
+                    from src.integration.canonical_reservation import reserve_canonical_task_branch
 
                     reservation = await reserve_canonical_task_branch(self.db, task.id)
                     if reservation["outcome"] not in {"acquired", "already_reserved"}:
