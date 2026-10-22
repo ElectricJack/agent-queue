@@ -73,6 +73,12 @@ aq wait ack --wait-id WAIT_ID --continuation-id CONTINUATION_ID --generation GEN
 
 For an in-place outcome, `aq wait show WAIT_ID --consume` acknowledges its
 notification. Receipt replay preserves the original registration identity.
+Named supervisors can register, cancel and acknowledge their own in-place waits.
+Cancellation resolves the wait but holds routine mail until the owner acknowledges
+the outcome with `aq wait ack --wait-id WAIT_ID` (or `show --consume`). The
+acknowledgement returns held mail and records its delivery atomically; subsequent
+mail appears in the ordinary inbox. Supervisor elevation does not permit
+acknowledging another session's wait or crossing a project boundary.
 `source_unavailable`, cancellation and a failed producer are explicit outcomes;
 none implies success. See [wake context](wake-context-compaction.md).
 

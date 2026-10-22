@@ -19176,7 +19176,7 @@
         "agent-waits"
       ],
       "default_arm": true,
-      "digest": "sha256:f3b35c5721e3532a20bc347c355bd29819a00fed15f29a7e21ae517bd25f65b9",
+      "digest": "sha256:7bc0d019c09efcf9e60bc84de7fa8c02cebdfa467f69206a00bbc2af4d3a575c",
       "imports": [
         "src.api.codegen",
         "src.api.models.wait",
@@ -19200,6 +19200,7 @@
         "src.profiles.capabilities",
         "src.profiles.capability_sync",
         "src.profiles.drift",
+        "src.profiles.sync",
         "src.tools.definitions",
         "src.wait_runtime.lifecycle",
         "src.wait_runtime.service",
