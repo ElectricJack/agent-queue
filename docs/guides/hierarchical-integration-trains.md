@@ -331,6 +331,13 @@ Selection now routes before root proof and reuses its member window within a
 single visit. Root proof still removes delivered work before the member limit;
 historical delivery and out-of-window dependency checks remain active.
 
+Time spent evaluating a root refused for red PR checks or exhausted automatic
+recovery does not spend the candidate-selection quantum. Later independent roots
+can reach admission during the same visit; green and other candidate work still
+spends the quantum. The outer visit deadline remains in effect. Red roots keep
+their named blockers, and their dependents still require delivery or an admitted
+paired repair before they can enter a batch.
+
 Two bounded, isolated benchmarks make the measurements reproducible:
 
 ```bash

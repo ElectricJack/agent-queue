@@ -106,6 +106,12 @@ MEMBER_LIMIT = 200
 # Leave time in the existing visit deadline to freeze and advance an admitted
 # prefix. This is a cooperative quantum, not a deadline for a fenced writer.
 SELECTION_WORK_SECONDS = 60.0
+# A red source still waits for its owner/repair, but cannot spend the budget
+# reserved for considering independent roots. The outer visit deadline remains.
+_RED_PR_REFUSALS = frozenset({
+    "pr_checks_red", "source_ci_repair_exhausted", "root_pr_checks_need_repair",
+    "root_pr_checks_unchanged", "root_pr_checks_recovery_exhausted",
+})
 #: A promotion lane is rebuilt on every visit; its subject trust and App client
 #: are kept per batch this long after last use, so a held request does not
 #: refetch S's manifest each time. S is immutable; the key carries the policy.
@@ -1531,6 +1537,7 @@ class DatabaseBatches:
                         "after_task_id": self._selection_after.get(target.key),
                     })
                 break
+            candidate_started = self._selection_clock()
             if selection_deadline is not None:
                 self._selection_after[target.key] = task_id
             if evaluated_ids is not None:
@@ -1618,6 +1625,8 @@ class DatabaseBatches:
                         "detail": "root PR admission observer is unavailable",
                     })
                 if refusal:
+                    if selection_deadline is not None and refusal["code"] in _RED_PR_REFUSALS:
+                        selection_deadline += self._selection_clock() - candidate_started
                     if refusal["code"] == "pr_checks_red":
                         refused_sources[task_id] = (member, refusal)
                     if blockers is not None:

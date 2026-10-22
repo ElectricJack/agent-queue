@@ -2032,6 +2032,64 @@ async def test_selection_quantum_rotates_past_slow_refusals_and_the_member_cap(w
     assert calls == list(sources)
 
 
+@pytest.mark.parametrize("code", [
+    "pr_checks_red", "source_ci_repair_exhausted", "root_pr_checks_need_repair",
+    "root_pr_checks_unchanged", "root_pr_checks_recovery_exhausted",
+])
+async def test_slow_red_roots_leave_selection_quantum_for_green_root(world, code):
+    for tid in ("a-red", "b-red", "c-green", "d-stalled"):
+        await completed(world, tid)
+    train, _, _ = lane(world, LocalGit(Path(world.origin.url)))
+    batches, calls = train.batches, []
+    elapsed = 0.0
+    batches._selection_clock = lambda: elapsed
+
+    async def gate(target, member):
+        nonlocal elapsed
+        calls.append(member.task_id)
+        elapsed += 61
+        if member.task_id.endswith("red"):
+            return {"code": code, "task_id": member.task_id, "ref": member.task_id}
+        assert member.task_id == "c-green", "Green admission must still spend the quantum"
+
+    batches.pr_gate = gate
+    service = (await train.lane_for(MAIN)).service
+    metrics = SelectionMetrics()
+    with selection_metrics_scope(metrics):
+        selected = await batches.open_batch(MAIN, await snapshot(world), service)
+    assert calls == ["a-red", "b-red", "c-green"]
+    assert [m.task_id for m in selected.members] == ["c-green"]
+    assert selected.batch is not None
+    assert [(b["code"], b.get("task_id")) for b in selected.blockers] == [
+        (code, "a-red"), (code, "b-red"), ("selection_deferred", None)]
+    assert metrics.counts["candidate_work_deferred"] == 1
+
+
+async def test_slow_red_prerequisite_still_withholds_green_dependent(world):
+    await completed(world, "a-red")
+    await completed(world, "b-dependent", needs=("a-red",))
+    train, _, _ = lane(world, LocalGit(Path(world.origin.url)))
+    batches, calls = train.batches, []
+    elapsed = 0.0
+    batches._selection_clock = lambda: elapsed
+
+    async def gate(target, member):
+        nonlocal elapsed
+        calls.append(member.task_id)
+        elapsed += 61
+        if member.task_id == "a-red":
+            return {"code": "source_ci_repair_exhausted", "task_id": member.task_id,
+                    "ref": member.task_id}
+
+    batches.pr_gate = gate
+    service = (await train.lane_for(MAIN)).service
+    selected = await batches.open_batch(MAIN, await snapshot(world), service)
+    assert calls == ["a-red", "b-dependent"]
+    assert selected.batch is None and not selected.members
+    assert "source_ci_repair_exhausted" in {b["code"] for b in selected.blockers}
+    assert "selection_deferred" not in {b["code"] for b in selected.blockers}
+
+
 async def test_selection_freezes_eligible_prefix_before_a_stalled_later_pr(world):
     source = await completed(world, "a-independent")
     await completed(world, "b-stalled")
