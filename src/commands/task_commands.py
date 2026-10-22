@@ -4783,6 +4783,10 @@ class TaskCommandsMixin:
                 return {"success": False, "error": f"Task '{args['task_id']}' not found"}
             if task.status == TaskStatus.IN_PROGRESS:
                 return {"success": False, "error": "Task is currently in progress. Stop it first."}
+            from src.integration.repair import OrdinaryRepairService
+
+            if stale := await OrdinaryRepairService(self.db).stale(task):
+                return {"success": False, "error": stale, "error_code": "stale_repair"}
             try:
                 released = await release_continuations(self, task)
             except WaitError as exc:

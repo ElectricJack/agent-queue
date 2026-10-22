@@ -17995,7 +17995,7 @@
   "restart_task": {
     "mode": "json_object",
     "producer": "src/commands/task_commands.py:TaskCommandsMixin._cmd_restart_task",
-    "source_digest": "sha256:3678105a10f52f8c900f299ca1764708fdcca9002bedf82ed298ff90e2f3bd22",
+    "source_digest": "sha256:f1ef655e5f24a9eee9391def1cebaf223244997e06fa4ed58eda6bd5ceafc04d",
     "input_schema_source": "explicit_tool",
     "schema_quality": "declared",
     "argument_reads_diagnostic_only": [
@@ -18017,6 +18017,10 @@
       },
       {
         "return": "{'success': False, 'error': 'Task is currently in progress. Stop it first.'}",
+        "protocol": "explicit_boolean: False"
+      },
+      {
+        "return": "{'success': False, 'error': stale, 'error_code': 'stale_repair'}",
         "protocol": "explicit_boolean: False"
       },
       {
