@@ -1425,6 +1425,254 @@
       }
     },
     {
+      "path": "aq batch release",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "task_batch_release",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--batch-id",
+          "--expected-revision",
+          "--expected-digest"
+        ],
+        "optional": [
+          "--project-id",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": [
+          "--project-id"
+        ]
+      }
+    },
+    {
+      "path": "aq batch retire",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "task_batch_retire",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--batch-id",
+          "--expected-revision",
+          "--reason"
+        ],
+        "optional": [
+          "--project-id",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": [
+          "--project-id"
+        ]
+      }
+    },
+    {
+      "path": "aq batch review-record",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "task_batch_review_record",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--batch-id",
+          "--expected-revision",
+          "--expected-digest",
+          "--section-verdicts",
+          "--reverse-coverage-verdict",
+          "--walkthrough-verdict",
+          "--structural-findings"
+        ],
+        "optional": [
+          "--project-id",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [
+          "--section-verdicts",
+          "--structural-findings"
+        ],
+        "nullable": [
+          "--project-id"
+        ]
+      }
+    },
+    {
+      "path": "aq batch show",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": null,
+      "callback": "src.cli.batch.show",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "batch_id",
+          "--project"
+        ],
+        "optional": [
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq batch update",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "task_batch_update",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--proposal-id"
+        ],
+        "optional": [
+          "--project-id",
+          "--payload",
+          "--expected-revision",
+          "--operations",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [
+          "--payload",
+          "--operations"
+        ],
+        "nullable": [
+          "--project-id",
+          "--expected-revision"
+        ]
+      }
+    },
+    {
+      "path": "aq batch validate",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "task_batch_validate",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--project-id"
+        ],
+        "optional": [
+          "--source",
+          "--tasks",
+          "--edges",
+          "--edits",
+          "--remove-edges",
+          "--comments",
+          "--batch-id",
+          "--expected-revision",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [
+          "--tasks",
+          "--edges",
+          "--edits",
+          "--remove-edges",
+          "--comments"
+        ],
+        "nullable": []
+      }
+    },
+    {
       "path": "aq benchmark export",
       "registration": "handwritten",
       "owner_kind": "core",
@@ -18393,130 +18641,6 @@
       }
     },
     {
-      "path": "aq system task-batch-release",
-      "registration": "generated",
-      "owner_kind": "core",
-      "owner": "agent-queue",
-      "backend_command": "task_batch_release",
-      "callback": "src.cli.auto_commands.callback",
-      "support": "supported",
-      "alias_for": null,
-      "deprecation": null,
-      "unsupported_reason": null,
-      "evidence_level": "dispatch",
-      "evidence": [
-        "click-registration",
-        "json-schema",
-        "mock-dispatch",
-        "core-handler"
-      ],
-      "acceptance_status": "untested",
-      "acceptance_evidence": [],
-      "parameters": {
-        "required": [
-          "--batch-id",
-          "--expected-revision",
-          "--expected-digest"
-        ],
-        "optional": [
-          "--project-id",
-          "--json",
-          "--brief",
-          "--save-output",
-          "--api-url"
-        ],
-        "structured": [],
-        "nullable": [
-          "--project-id"
-        ]
-      }
-    },
-    {
-      "path": "aq system task-batch-retire",
-      "registration": "generated",
-      "owner_kind": "core",
-      "owner": "agent-queue",
-      "backend_command": "task_batch_retire",
-      "callback": "src.cli.auto_commands.callback",
-      "support": "supported",
-      "alias_for": null,
-      "deprecation": null,
-      "unsupported_reason": null,
-      "evidence_level": "dispatch",
-      "evidence": [
-        "click-registration",
-        "json-schema",
-        "mock-dispatch",
-        "core-handler"
-      ],
-      "acceptance_status": "untested",
-      "acceptance_evidence": [],
-      "parameters": {
-        "required": [
-          "--batch-id",
-          "--expected-revision",
-          "--reason"
-        ],
-        "optional": [
-          "--project-id",
-          "--json",
-          "--brief",
-          "--save-output",
-          "--api-url"
-        ],
-        "structured": [],
-        "nullable": [
-          "--project-id"
-        ]
-      }
-    },
-    {
-      "path": "aq system task-batch-review-record",
-      "registration": "generated",
-      "owner_kind": "core",
-      "owner": "agent-queue",
-      "backend_command": "task_batch_review_record",
-      "callback": "src.cli.auto_commands.callback",
-      "support": "supported",
-      "alias_for": null,
-      "deprecation": null,
-      "unsupported_reason": null,
-      "evidence_level": "dispatch",
-      "evidence": [
-        "click-registration",
-        "json-schema",
-        "mock-dispatch",
-        "core-handler"
-      ],
-      "acceptance_status": "untested",
-      "acceptance_evidence": [],
-      "parameters": {
-        "required": [
-          "--batch-id",
-          "--expected-revision",
-          "--expected-digest",
-          "--section-verdicts",
-          "--reverse-coverage-verdict",
-          "--walkthrough-verdict",
-          "--structural-findings"
-        ],
-        "optional": [
-          "--project-id",
-          "--json",
-          "--brief",
-          "--save-output",
-          "--api-url"
-        ],
-        "structured": [
-          "--section-verdicts",
-          "--structural-findings"
-        ],
-        "nullable": [
-          "--project-id"
-        ]
-      }
-    },
-    {
       "path": "aq system task-route-apply",
       "registration": "generated",
       "owner_kind": "core",
@@ -19028,6 +19152,130 @@
         ],
         "structured": [],
         "nullable": []
+      }
+    },
+    {
+      "path": "aq task batch-release",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "task_batch_release",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--batch-id",
+          "--expected-revision",
+          "--expected-digest"
+        ],
+        "optional": [
+          "--project-id",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": [
+          "--project-id"
+        ]
+      }
+    },
+    {
+      "path": "aq task batch-retire",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "task_batch_retire",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--batch-id",
+          "--expected-revision",
+          "--reason"
+        ],
+        "optional": [
+          "--project-id",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": [
+          "--project-id"
+        ]
+      }
+    },
+    {
+      "path": "aq task batch-review-record",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "task_batch_review_record",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--batch-id",
+          "--expected-revision",
+          "--expected-digest",
+          "--section-verdicts",
+          "--reverse-coverage-verdict",
+          "--walkthrough-verdict",
+          "--structural-findings"
+        ],
+        "optional": [
+          "--project-id",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [
+          "--section-verdicts",
+          "--structural-findings"
+        ],
+        "nullable": [
+          "--project-id"
+        ]
       }
     },
     {

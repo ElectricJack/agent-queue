@@ -20804,6 +20804,141 @@
         }
       }
     },
+    "/api/task/batch-release": {
+      "post": {
+        "tags": [
+          "task"
+        ],
+        "summary": "Verify source approval, the live graph and its fidelity receipt, then release a held batch; service, project supervisor or operator only.",
+        "description": "Verify source approval, the live graph and its fidelity receipt, then release a held batch; service, project supervisor or operator only.",
+        "operationId": "task_batch_release",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TaskBatchReleaseRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/task/batch-retire": {
+      "post": {
+        "tags": [
+          "task"
+        ],
+        "summary": "Retire a held batch whose members and reviewer are already retired, retaining its receipts; service, project supervisor or operator only.",
+        "description": "Retire a held batch whose members and reviewer are already retired, retaining its receipts; service, project supervisor or operator only.",
+        "operationId": "task_batch_retire",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TaskBatchRetireRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/task/batch-review-record": {
+      "post": {
+        "tags": [
+          "task"
+        ],
+        "summary": "Attest every mapped section and whole-batch intent on the exact held graph; only the live assigned fidelity reviewer.",
+        "description": "Attest every mapped section and whole-batch intent on the exact held graph; only the live assigned fidelity reviewer.",
+        "operationId": "task_batch_review_record",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TaskBatchReviewRecordRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/task/batch-update": {
       "post": {
         "tags": [
@@ -78306,6 +78441,146 @@
         "type": "object",
         "title": "TaskBatchProposeResponse",
         "description": "Ordinary proposals stage for approval; ingestion materializes held work.\n\nDesign-kind ingestion returns a released batch with a server receipt.\nImplementation ingestion returns held members pending fidelity review."
+      },
+      "TaskBatchReleaseRequest": {
+        "properties": {
+          "batch_id": {
+            "type": "string",
+            "title": "Batch Id",
+            "description": ""
+          },
+          "expected_revision": {
+            "type": "integer",
+            "title": "Expected Revision",
+            "description": ""
+          },
+          "expected_digest": {
+            "type": "string",
+            "title": "Expected Digest",
+            "description": ""
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "batch_id",
+          "expected_revision",
+          "expected_digest"
+        ],
+        "title": "TaskBatchReleaseRequest"
+      },
+      "TaskBatchRetireRequest": {
+        "properties": {
+          "batch_id": {
+            "type": "string",
+            "title": "Batch Id",
+            "description": ""
+          },
+          "expected_revision": {
+            "type": "integer",
+            "title": "Expected Revision",
+            "description": ""
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason",
+            "description": ""
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "batch_id",
+          "expected_revision",
+          "reason"
+        ],
+        "title": "TaskBatchRetireRequest"
+      },
+      "TaskBatchReviewRecordRequest": {
+        "properties": {
+          "batch_id": {
+            "type": "string",
+            "title": "Batch Id",
+            "description": ""
+          },
+          "expected_revision": {
+            "type": "integer",
+            "title": "Expected Revision",
+            "description": ""
+          },
+          "expected_digest": {
+            "type": "string",
+            "title": "Expected Digest",
+            "description": ""
+          },
+          "section_verdicts": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Section Verdicts",
+            "description": ""
+          },
+          "reverse_coverage_verdict": {
+            "type": "string",
+            "title": "Reverse Coverage Verdict",
+            "description": ""
+          },
+          "walkthrough_verdict": {
+            "type": "string",
+            "title": "Walkthrough Verdict",
+            "description": ""
+          },
+          "structural_findings": {
+            "items": {},
+            "type": "array",
+            "title": "Structural Findings",
+            "description": ""
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "batch_id",
+          "expected_revision",
+          "expected_digest",
+          "section_verdicts",
+          "reverse_coverage_verdict",
+          "walkthrough_verdict",
+          "structural_findings"
+        ],
+        "title": "TaskBatchReviewRecordRequest"
       },
       "TaskBatchUpdateRequest": {
         "properties": {

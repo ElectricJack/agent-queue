@@ -1264,6 +1264,7 @@
     "task-dependencies": {
       "description": "Task dependencies: idempotent dependency edges, downstream and stuck-task queries, and batch propose/commit/discard of task graphs with cycle detection, and held ingestion batch rows, receipts, fidelity reviewer dispatch and release.",
       "modules": [
+        "tests/test_cli_batch.py",
         "tests/test_cli_task_change_sets.py",
         "tests/test_dependency_queries.py",
         "tests/test_fidelity_review.py",
@@ -3752,6 +3753,21 @@
         "parametrize"
       ],
       "summary": "CLI tests for ``aq prime``, ``aq handoff``, ``aq inbox`` (Phase S1)."
+    },
+    "tests/test_cli_batch.py": {
+      "areas": [
+        "task-dependencies"
+      ],
+      "default_arm": true,
+      "digest": "sha256:567f2d778114ad616ab235108f8e289713fe122887ac18185be279da865363e6",
+      "imports": [
+        "src.cli.app",
+        "src.cli.exceptions",
+        "src.commands.contracts.builtin",
+        "src.tools"
+      ],
+      "markers": [],
+      "summary": "``aq batch`` — held spec-ingestion batch CLI and its MCP tools (held batches L6.3)."
     },
     "tests/test_cli_claim_restart.py": {
       "areas": [

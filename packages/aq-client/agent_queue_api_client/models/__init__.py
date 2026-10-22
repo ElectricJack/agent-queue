@@ -1898,6 +1898,13 @@ from .task_batch_propose_response_lineage_type_0 import TaskBatchProposeResponse
 from .task_batch_propose_response_members_type_0 import TaskBatchProposeResponseMembersType0
 from .task_batch_propose_response_release_receipt_type_0 import TaskBatchProposeResponseReleaseReceiptType0
 from .task_batch_propose_response_status_type_0 import TaskBatchProposeResponseStatusType0
+from .task_batch_release_request import TaskBatchReleaseRequest
+from .task_batch_release_response_422 import TaskBatchReleaseResponse422
+from .task_batch_retire_request import TaskBatchRetireRequest
+from .task_batch_retire_response_422 import TaskBatchRetireResponse422
+from .task_batch_review_record_request import TaskBatchReviewRecordRequest
+from .task_batch_review_record_request_section_verdicts import TaskBatchReviewRecordRequestSectionVerdicts
+from .task_batch_review_record_response_422 import TaskBatchReviewRecordResponse422
 from .task_batch_update_request import TaskBatchUpdateRequest
 from .task_batch_update_request_payload_type_0 import TaskBatchUpdateRequestPayloadType0
 from .task_batch_update_response_422 import TaskBatchUpdateResponse422
@@ -4097,6 +4104,13 @@ __all__ = (
     "TaskBatchProposeResponseMembersType0",
     "TaskBatchProposeResponseReleaseReceiptType0",
     "TaskBatchProposeResponseStatusType0",
+    "TaskBatchReleaseRequest",
+    "TaskBatchReleaseResponse422",
+    "TaskBatchRetireRequest",
+    "TaskBatchRetireResponse422",
+    "TaskBatchReviewRecordRequest",
+    "TaskBatchReviewRecordRequestSectionVerdicts",
+    "TaskBatchReviewRecordResponse422",
     "TaskBatchUpdateRequest",
     "TaskBatchUpdateRequestPayloadType0",
     "TaskBatchUpdateResponse422",

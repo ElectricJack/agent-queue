@@ -539,6 +539,19 @@ class CLIClient:
             raise CommandError("stream_tail", _relay_error(resp))
         return resp.json()
 
+    async def get_ingest_batch(self, project_id: str, batch_id: str) -> dict:
+        """GET ``/api/projects/{project_id}/batches/{batch_id}`` (held batches)."""
+        assert self._http is not None, "CLIClient not connected"
+        try:
+            resp = await self._http.get(f"/api/projects/{project_id}/batches/{batch_id}")
+        except httpx.TransportError as exc:
+            raise DaemonNotRunningError(self._base_url, cause=exc) from exc
+        if resp.status_code in (401, 403):
+            raise ScopeDeniedError("get_ingest_batch", _relay_error(resp))
+        if resp.status_code >= 400:
+            raise CommandError("get_ingest_batch", _relay_error(resp))
+        return resp.json()
+
     async def kill_stream(self, stream_id: str) -> dict:
         assert self._http is not None, "CLIClient not connected"
         try:

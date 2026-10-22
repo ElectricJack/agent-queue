@@ -14,6 +14,9 @@ auto_commands.py   Auto-generates a Click command per tool definition (src/tools
 adapters.py        Normalises API responses for the CLI formatters
 agent_messages.py  `aq agent message` — live-worker guidance with delivery status
 agent_surface.py   Agent-facing surface: `aq schema`, `aq prime`, `aq handoff`
+batch.py           `aq batch {show,validate,update,review-record,release,retire}` — held
+                   spec-ingestion batches; `show` reads the REST detail route, the rest
+                   are schema-generated mutators the daemon's scope authorizes
 claim_epoch.py     Shared --claim-epoch resolution for pool-session mutators
                    (reads <work_dir>/.aq/claim.json, falls back to $AQ_CLAIM_EPOCH)
 client.py          CLIClient — async REST client for CLI operations (see Transport below)

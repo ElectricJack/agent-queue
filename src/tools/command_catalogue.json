@@ -12590,6 +12590,177 @@
       }
     },
     {
+      "name": "task_batch_review_record",
+      "description": "Attest every mapped section and whole-batch intent on the exact held graph; only the live assigned fidelity reviewer.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "batch_id": {
+            "minLength": 1,
+            "title": "Batch Id",
+            "type": "string"
+          },
+          "expected_revision": {
+            "minimum": 1,
+            "title": "Expected Revision",
+            "type": "integer"
+          },
+          "expected_digest": {
+            "minLength": 1,
+            "title": "Expected Digest",
+            "type": "string"
+          },
+          "section_verdicts": {
+            "additionalProperties": {
+              "enum": [
+                "faithful",
+                "fixed",
+                "scope_question"
+              ],
+              "type": "string"
+            },
+            "title": "Section Verdicts",
+            "type": "object"
+          },
+          "reverse_coverage_verdict": {
+            "enum": [
+              "faithful",
+              "fixed",
+              "scope_question"
+            ],
+            "title": "Reverse Coverage Verdict",
+            "type": "string"
+          },
+          "walkthrough_verdict": {
+            "enum": [
+              "faithful",
+              "fixed",
+              "scope_question"
+            ],
+            "title": "Walkthrough Verdict",
+            "type": "string"
+          },
+          "structural_findings": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Structural Findings",
+            "type": "array"
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Project Id"
+          }
+        },
+        "required": [
+          "batch_id",
+          "expected_revision",
+          "expected_digest",
+          "section_verdicts",
+          "reverse_coverage_verdict",
+          "walkthrough_verdict",
+          "structural_findings"
+        ],
+        "title": "TaskBatchReviewRecordArgs",
+        "type": "object"
+      }
+    },
+    {
+      "name": "task_batch_release",
+      "description": "Verify source approval, the live graph and its fidelity receipt, then release a held batch; service, project supervisor or operator only.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "batch_id": {
+            "minLength": 1,
+            "title": "Batch Id",
+            "type": "string"
+          },
+          "expected_revision": {
+            "minimum": 1,
+            "title": "Expected Revision",
+            "type": "integer"
+          },
+          "expected_digest": {
+            "minLength": 1,
+            "title": "Expected Digest",
+            "type": "string"
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Project Id"
+          }
+        },
+        "required": [
+          "batch_id",
+          "expected_revision",
+          "expected_digest"
+        ],
+        "title": "TaskBatchReleaseArgs",
+        "type": "object"
+      }
+    },
+    {
+      "name": "task_batch_retire",
+      "description": "Retire a held batch whose members and reviewer are already retired, retaining its receipts; service, project supervisor or operator only.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "batch_id": {
+            "minLength": 1,
+            "title": "Batch Id",
+            "type": "string"
+          },
+          "expected_revision": {
+            "minimum": 1,
+            "title": "Expected Revision",
+            "type": "integer"
+          },
+          "reason": {
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Project Id"
+          }
+        },
+        "required": [
+          "batch_id",
+          "expected_revision",
+          "reason"
+        ],
+        "title": "TaskBatchRetireArgs",
+        "type": "object"
+      }
+    },
+    {
       "name": "ensure_spec_ingest",
       "description": "Ensure one role task per applied approval decision, including archived receipts.",
       "input_schema": {
@@ -19933,177 +20104,6 @@
         }
       }
     },
-    "task_batch_release": {
-      "name": "task_batch_release",
-      "description": "Verify source approval, the live graph and its fidelity receipt before release.",
-      "input_schema": {
-        "additionalProperties": false,
-        "properties": {
-          "batch_id": {
-            "minLength": 1,
-            "title": "Batch Id",
-            "type": "string"
-          },
-          "expected_revision": {
-            "minimum": 1,
-            "title": "Expected Revision",
-            "type": "integer"
-          },
-          "expected_digest": {
-            "minLength": 1,
-            "title": "Expected Digest",
-            "type": "string"
-          },
-          "project_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Project Id"
-          }
-        },
-        "required": [
-          "batch_id",
-          "expected_revision",
-          "expected_digest"
-        ],
-        "title": "TaskBatchReleaseArgs",
-        "type": "object"
-      }
-    },
-    "task_batch_retire": {
-      "name": "task_batch_retire",
-      "description": "Require prior supported retirement of every member and reviewer; retain evidence.",
-      "input_schema": {
-        "additionalProperties": false,
-        "properties": {
-          "batch_id": {
-            "minLength": 1,
-            "title": "Batch Id",
-            "type": "string"
-          },
-          "expected_revision": {
-            "minimum": 1,
-            "title": "Expected Revision",
-            "type": "integer"
-          },
-          "reason": {
-            "minLength": 1,
-            "title": "Reason",
-            "type": "string"
-          },
-          "project_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Project Id"
-          }
-        },
-        "required": [
-          "batch_id",
-          "expected_revision",
-          "reason"
-        ],
-        "title": "TaskBatchRetireArgs",
-        "type": "object"
-      }
-    },
-    "task_batch_review_record": {
-      "name": "task_batch_review_record",
-      "description": "Attest every mapped section and whole-batch intent on the exact held graph.",
-      "input_schema": {
-        "additionalProperties": false,
-        "properties": {
-          "batch_id": {
-            "minLength": 1,
-            "title": "Batch Id",
-            "type": "string"
-          },
-          "expected_revision": {
-            "minimum": 1,
-            "title": "Expected Revision",
-            "type": "integer"
-          },
-          "expected_digest": {
-            "minLength": 1,
-            "title": "Expected Digest",
-            "type": "string"
-          },
-          "section_verdicts": {
-            "additionalProperties": {
-              "enum": [
-                "faithful",
-                "fixed",
-                "scope_question"
-              ],
-              "type": "string"
-            },
-            "title": "Section Verdicts",
-            "type": "object"
-          },
-          "reverse_coverage_verdict": {
-            "enum": [
-              "faithful",
-              "fixed",
-              "scope_question"
-            ],
-            "title": "Reverse Coverage Verdict",
-            "type": "string"
-          },
-          "walkthrough_verdict": {
-            "enum": [
-              "faithful",
-              "fixed",
-              "scope_question"
-            ],
-            "title": "Walkthrough Verdict",
-            "type": "string"
-          },
-          "structural_findings": {
-            "items": {
-              "additionalProperties": true,
-              "type": "object"
-            },
-            "title": "Structural Findings",
-            "type": "array"
-          },
-          "project_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Project Id"
-          }
-        },
-        "required": [
-          "batch_id",
-          "expected_revision",
-          "expected_digest",
-          "section_verdicts",
-          "reverse_coverage_verdict",
-          "walkthrough_verdict",
-          "structural_findings"
-        ],
-        "title": "TaskBatchReviewRecordArgs",
-        "type": "object"
-      }
-    },
     "task_failure_triage_notify": {
       "name": "task_failure_triage_notify",
       "description": "Record or reuse the durable incident for a terminal task failure and queue its single supervisor triage notice; replayed failures reuse the same incident.",
@@ -20936,6 +20936,9 @@
     "batch_reconcile": "task",
     "ensure_fidelity_review": "task",
     "spec_ingest_legacy_adopt": "task",
+    "task_batch_review_record": "task",
+    "task_batch_release": "task",
+    "task_batch_retire": "task",
     "ask_list": "review",
     "ask_show": "review",
     "ask_history": "review",
