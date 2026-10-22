@@ -17997,7 +17997,7 @@
   "restart_task": {
     "mode": "json_object",
     "producer": "src/commands/task_commands.py:TaskCommandsMixin._cmd_restart_task",
-    "source_digest": "sha256:1efef9f83abd33cc070686ed16b650128795cf96f0f84a91b2c83f3c1d737bdc",
+    "source_digest": "sha256:a8eb79126406a84d8d87cfcf82e54afe91d473b3e8e9812984a47c74a50d3491",
     "input_schema_source": "explicit_tool",
     "schema_quality": "declared",
     "argument_reads_diagnostic_only": [
