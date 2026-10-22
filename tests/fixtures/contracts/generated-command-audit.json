@@ -9134,7 +9134,7 @@
   "integration_reserve_owner": {
     "mode": "typed",
     "producer": "src/commands/integration_commands.py:IntegrationCommandsMixin._cmd_integration_reserve_owner",
-    "source_digest": "sha256:27984beb72a29f88ebb4a2a7aa70ff7adfde4b43cfadd8cbfaf590e1e1c25058",
+    "source_digest": "sha256:386778d7aaabe4bfec9568772c3243691165a37b516a7ad0d3b093ee703fb264",
     "input_schema_source": "typed_contract",
     "schema_quality": "typed",
     "argument_reads_diagnostic_only": [],
@@ -9160,8 +9160,12 @@
         "protocol": "delegated_producer"
       },
       {
-        "return": "{'success': result['outcome'] in {'acquired', 'already_reserved'}, **result}",
-        "protocol": "explicit_boolean: result['outcome'] in {'acquired', 'already_reserved'}"
+        "return": "_with_reason(result['outcome'] in {'acquired', 'already_reserved'}, result)",
+        "protocol": "delegated_producer"
+      },
+      {
+        "return": "await detached_operations(orchestrator or self).run(f'reserve_owner:{task.id}', reserve, poll=...)",
+        "protocol": "delegated_producer"
       }
     ],
     "tests": [

@@ -1107,6 +1107,33 @@ async def test_missing_completed_container_target_retires_but_live_work_stays_vi
     assert any(item["task_id"] == "epic" for item in status_view["epics"]) is not retired
 
 
+async def test_scoped_target_read_probes_one_project_and_keeps_tick_retirements(world):
+    db, origin = world.db, world.origin
+    await db.create_task(Task(
+        id="epic", project_id="p", repo_id="r", title="epic", description="",
+        branch_name="aq/epic", status=TaskStatus.COMPLETED,
+    ))
+    git(origin.clone, "push", "origin", "main:aq/epic")
+    await completed(world, "child", parent="epic")
+    git(origin.clone, "push", "origin", ":aq/epic")
+    targets = DatabaseTargets(db)
+    epic = TrainTarget("p", "r", "refs/heads/aq/epic", "epic")
+    assert epic not in await targets.targets(time.time())
+    assert epic.key in targets.retired_targets
+    probed, real = [], targets.snapshot
+
+    async def probe(database, root):
+        probed.append(root.project_id)
+        return await real(database, root)
+
+    targets.snapshot = probe
+    # A control's scoped read (reserve-owner) never fetches other projects'
+    # origins and never resets the retirement set the tick consumes.
+    assert await targets.targets(time.time(), project_id="other") == [] and probed == []
+    assert MAIN in await targets.targets(time.time(), project_id="p")
+    assert probed == ["p"] and targets.retired_targets == {epic.key}
+
+
 @pytest.mark.parametrize("remote_error", [False, True])
 async def test_container_retirement_uses_remote_absence_when_acquisition_is_unavailable(
     world, remote_error,
