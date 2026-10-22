@@ -2,6 +2,7 @@
 
 import asyncio
 import hashlib
+import shutil
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -1467,6 +1468,208 @@ async def test_cold_restart_refuses_without_losing_ownership(cold_restart_checko
     assert (await db.get_workspace('slot-1')).locked_by_task_id == 'owner'
     assert (await intent(case.env))['resume_state'] == 'held'
     assert case.target.is_dir()
+
+
+async def fresh_rig(env, tmp_path):
+    """A slot holding the parked branch, beside a peer whose folder is gone.
+
+    The real ``WorktreeSlotManager`` provisions the fresh checkout, so a drift
+    in its ``reprovision_slot`` signature fails here rather than in production.
+    """
+    from collections import defaultdict
+    from pathlib import Path
+
+    from src.config import WorktreesConfig
+    from src.git.manager import GitManager
+    from src.models import KIND_MODE_WORKTREE, RepoSourceType, Workspace, WorkspaceKind
+    from src.orchestrator.worktree_manager import WorktreeSlotManager
+    from src.wait_runtime.resume import ResumeTransaction
+    from tests.git_seed_helpers import clone_seed, init_bare_seed
+
+    git = GitManager()
+    origin, base_path = tmp_path / 'origin.git', tmp_path / 'base'
+    init_bare_seed(origin)
+    clone_seed(origin, base_path)
+
+    async def run(args, cwd=base_path):
+        return await git._arun(['-c', 'user.name=T', '-c', 'user.email=t@t.test', *args],
+                               cwd=str(cwd))
+
+    (base_path / '.gitignore').write_text('transcript.cache\n')
+    await run(['add', '.gitignore'])
+    await run(['commit', '-m', 'base'])
+    await run(['push', 'origin', 'main'])
+    worktrees = base_path / '.aq' / 'worktrees'
+    old, peer = worktrees / 'slot-0', worktrees / 'slot-1'
+    await run(['worktree', 'add', '--detach', str(peer)])
+    shutil.rmtree(peer)  # registration retained: preserved evidence, never pruned
+    await run(['worktree', 'add', '-b', 'aq/owner', str(old)])
+    (old / 'saved.txt').write_text('saved work\n')
+    await run(['add', 'saved.txt'], old)
+    await run(['commit', '-m', 'saved work'], old)
+    (old / 'transcript.cache').write_text('old process transcript')
+    head = await git._arun(['rev-parse', 'HEAD'], cwd=str(old))
+    await park(env, saved_head=head)
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(continuations).values(resume_state='reserved', launch_attempts=1))
+    workspace = Workspace(id='slot', project_id='p', workspace_path=str(old), slot_index=0,
+                          source_type=RepoSourceType.WORKTREE, base_workspace_id='base',
+                          kind_id='project-repo')
+    base = Workspace(id='base', project_id='p', workspace_path=str(base_path),
+                     source_type=RepoSourceType.CLONE, kind_id='project-repo')
+    env.db.get_workspace_for_task = AsyncMock(return_value=workspace)
+    env.db.get_workspace = AsyncMock(return_value=base)
+    env.db.resolve_workspace_kind = AsyncMock(return_value=WorkspaceKind(
+        project_id='__system__', id='project-repo', is_git_repo=True, mode=KIND_MODE_WORKTREE))
+    env.db.update_workspace = AsyncMock()
+    locks = defaultdict(asyncio.Lock)
+    slots = WorktreeSlotManager(db=env.db, git=git, bus=SimpleNamespace(emit=AsyncMock()),
+                                config=WorktreesConfig(enabled=True, setup_timeout_seconds=60),
+                                git_mutex=lambda path: locks[path])
+    slots.reprovision_slot = AsyncMock(wraps=slots.reprovision_slot)
+    orch = SimpleNamespace(db=env.db, git=git, _prepare_workspace_locked=AsyncMock(
+        return_value=str(old)), _git_mutex=lambda path: locks[path], _worktree_slots=lambda: slots)
+
+    async def registered():
+        return {Path(e['path']).resolve() for e in await git.aworktree_list(str(base_path))}
+
+    return SimpleNamespace(
+        git=git, run=run, base=base_path, old=old, peer=peer, head=head, slots=slots, orch=orch,
+        target=worktrees / 'resume-c-1', registered=registered,
+        driver=ResumeTransaction(SimpleNamespace(orch=orch)))
+
+
+async def resume_fresh(env, rig):
+    from src.scheduler import AssignAction
+
+    return await rig.driver.fresh_workspace(AssignAction('a', 'owner', 'p', 'c', 1),
+        await env.db.get_task('owner'), None, await intent(env))
+
+
+async def stage_recovery(env, rig):
+    """The state a restart leaves after ``worktree add`` and before reprovision."""
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(continuations).values(facts={'fresh_workspace': {
+            'old_path': str(rig.old), 'new_path': str(rig.target), 'workspace_id': 'slot',
+            'attempt': 1}}))
+    await rig.git._arun(['switch', '--detach'], cwd=str(rig.old))
+    await rig.git._arun(['worktree', 'add', str(rig.target), 'aq/owner'], cwd=str(rig.base))
+
+
+def assert_fresh_checkout(env, rig, target):
+    from pathlib import Path
+
+    from src.orchestrator.worktree_manager import WorktreeSlotManager
+
+    assert Path(target) == rig.target
+    sentinel = WorktreeSlotManager.read_sentinel(target)
+    assert (sentinel.workspace_id, sentinel.base_workspace_id, sentinel.slot) == (
+        'slot', 'base', 'slot-0')
+    assert rig.slots.reprovision_slot.await_args.kwargs == {'prune': False}
+    assert not (Path(target) / 'transcript.cache').exists()
+    assert (Path(target) / 'saved.txt').read_text() == 'saved work\n'
+    env.db.update_workspace.assert_awaited_once_with('slot', workspace_path=str(target))
+    assert not rig.old.exists()
+
+
+async def test_fresh_resume_reprovisions_through_real_slot_manager_without_pruning(env, tmp_path):
+    rig = await fresh_rig(env, tmp_path)
+
+    target = await resume_fresh(env, rig)
+
+    assert_fresh_checkout(env, rig, target)
+    registered = await rig.registered()
+    assert rig.peer.resolve() in registered
+    assert rig.target.resolve() in registered and rig.old.resolve() not in registered
+    assert await rig.git._arun(['rev-parse', 'HEAD'], cwd=target) == rig.head
+    assert await rig.git._arun(['branch', '--show-current'], cwd=target) == 'aq/owner'
+    assert (await intent(env))['facts']['fresh_workspace'] == {
+        'old_path': str(rig.old), 'new_path': str(rig.target), 'workspace_id': 'slot',
+        'attempt': 1}
+
+
+async def test_restart_recovery_adopts_added_checkout_and_retires_old_folder(env, tmp_path):
+    rig = await fresh_rig(env, tmp_path)
+    await stage_recovery(env, rig)
+
+    target = await resume_fresh(env, rig)
+
+    rig.orch._prepare_workspace_locked.assert_not_awaited()
+    assert_fresh_checkout(env, rig, target)
+    registered = await rig.registered()
+    assert rig.peer.resolve() in registered and rig.old.resolve() not in registered
+    assert await rig.git._arun(['rev-parse', 'HEAD'], cwd=target) == rig.head
+
+
+@pytest.mark.parametrize('drift', ['dirty', 'branch', 'ancestry'])
+async def test_restart_recovery_fences_refuse_before_reprovision(env, tmp_path, drift):
+    from src.git.manager import GitError
+
+    rig = await fresh_rig(env, tmp_path)
+    await stage_recovery(env, rig)
+    if drift == 'dirty':
+        (rig.target / 'stray.txt').write_text('unsaved\n')
+    elif drift == 'branch':
+        await rig.run(['switch', '-c', 'aq/other'], rig.target)
+    else:
+        await rig.run(['commit', '--allow-empty', '-m', 'elsewhere'])
+        side = await rig.git._arun(['rev-parse', 'HEAD'], cwd=str(rig.base))
+        async with env.db._engine.begin() as conn:
+            await conn.execute(update(continuations).values(saved_head=side))
+
+    with pytest.raises(GitError if drift == 'ancestry' else WaitError) as raised:
+        await resume_fresh(env, rig)
+
+    if drift != 'ancestry':
+        assert raised.value.code == 'continuation.head_drift'
+    rig.orch._prepare_workspace_locked.assert_not_awaited()
+    rig.slots.reprovision_slot.assert_not_awaited()
+    env.db.update_workspace.assert_not_awaited()
+    assert rig.old.is_dir() and rig.target.is_dir()
+    assert {rig.old.resolve(), rig.target.resolve(), rig.peer.resolve()} <= await rig.registered()
+
+
+@pytest.mark.parametrize('drift', ['dirty', 'ancestry'])
+async def test_fresh_resume_fences_refuse_before_any_git_mutation(env, tmp_path, drift):
+    from src.git.manager import GitError
+
+    rig = await fresh_rig(env, tmp_path)
+    if drift == 'dirty':
+        (rig.old / 'saved.txt').write_text('edited after save\n')
+    else:
+        async with env.db._engine.begin() as conn:
+            await conn.execute(update(continuations).values(saved_head='f' * 40))
+
+    with pytest.raises(WaitError if drift == 'dirty' else GitError):
+        await resume_fresh(env, rig)
+
+    rig.slots.reprovision_slot.assert_not_awaited()
+    env.db.update_workspace.assert_not_awaited()
+    assert not rig.target.exists()
+    assert await rig.git._arun(['branch', '--show-current'], cwd=str(rig.old)) == 'aq/owner'
+    assert 'fresh_workspace' not in (await intent(env))['facts']
+
+
+@pytest.mark.parametrize('owner', ['row', 'dirty'])
+async def test_retire_checkout_keeps_a_folder_a_row_names_or_that_holds_work(
+    env, tmp_path, owner,
+):
+    from src.models import RepoSourceType, Workspace
+
+    rig = await fresh_rig(env, tmp_path)
+    await stage_recovery(env, rig)
+    if owner == 'row':
+        await env.db.create_workspace(Workspace(id='other', project_id='p',
+            workspace_path=str(rig.old), source_type=RepoSourceType.WORKTREE))
+    else:
+        (rig.old / 'stray.txt').write_text('unsaved\n')
+
+    await rig.driver.retire_checkout(str(rig.old), str(rig.target), SimpleNamespace(
+        workspace_path=str(rig.base)))
+
+    assert rig.old.is_dir() and rig.old.resolve() in await rig.registered()
+    if owner == 'dirty':
+        assert (rig.old / 'stray.txt').read_text() == 'unsaved\n'
 
 
 async def test_resume_reserves_common_capacity_only_after_idle_process_stops(env):

@@ -1004,7 +1004,7 @@
         "tests/test_playbook_run_repository.py",
         "tests/test_playbook_script.py",
         "tests/test_playbook_script_recovery.py",
-        "tests/test_playbook_script_runner.py",
+        "tests/test_playbook_script_sandbox.py",
         "tests/test_playbook_services.py",
         "tests/test_playbook_state.py",
         "tests/test_playbook_state_notify.py",
@@ -1232,8 +1232,7 @@
         "tests/test_supervisor_inbox_commands.py",
         "tests/test_supervisor_recovery.py",
         "tests/test_supervisor_recovery_api.py",
-        "tests/test_supervisor_stall_sweep_script.py",
-        "tests/test_supervisor_turn_health.py"
+        "tests/test_supervisor_stall_sweep_script.py"
       ]
     },
     "task-activity": {
@@ -3604,7 +3603,7 @@
         "claims"
       ],
       "default_arm": true,
-      "digest": "sha256:c557a8d168474c61cb973a7135eca2fed3d872c9ea7c05bae123689da84ab6a1",
+      "digest": "sha256:c11a202b432defc828dac3f24470e3abb76c6e13862c90d36d9669a7eb4235ed",
       "imports": [
         "src.api.auth",
         "src.api.models.session",
@@ -3612,8 +3611,6 @@
         "src.claim_file",
         "src.claim_preparation",
         "src.claim_timing",
-        "src.cli.client",
-        "src.commands",
         "src.commands.claim_commands",
         "src.commands.handler",
         "src.config",
@@ -9866,7 +9863,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:3f8e9a8e62ee874e45c2d771e4d0e772e6f6284a51749e9d8ecd24193304e4d1",
+      "digest": "sha256:80ae10f07dc32be5d22fbf4bdd0a39849d73f136c5d7a208f2b2da0093454ad2",
       "imports": [
         "src.commands",
         "src.commands.integration_commands",
@@ -9879,7 +9876,6 @@
         "src.database.tables",
         "src.doctor.integration_checks",
         "src.doctor.models",
-        "src.doctor.stall_checks",
         "src.git.github_contracts",
         "src.git.manager",
         "src.integration",
@@ -13242,7 +13238,7 @@
         "playbook-engine"
       ],
       "default_arm": true,
-      "digest": "sha256:0d98634d5b38e1acd3bcebfae16921f81a88d51e9454cb7aa55c2d17e3b4c806",
+      "digest": "sha256:6c3a4379222ca8fb76cd2b5767d38431cfd659ab437cce603417115b3767b893",
       "imports": [
         "src.commands.playbook_script_commands",
         "src.commands.principal",
@@ -13252,7 +13248,7 @@
         "src.jobs.artifacts",
         "src.jobs.playbook",
         "src.jobs.policy",
-        "src.jobs.script_runner",
+        "src.jobs.script_sandbox",
         "src.jobs.service",
         "src.playbooks.definition",
         "src.playbooks.invocation",
@@ -13265,18 +13261,18 @@
       ],
       "summary": "Real playbook owners, protected detached capture and no-replay recovery."
     },
-    "tests/test_playbook_script_runner.py": {
+    "tests/test_playbook_script_sandbox.py": {
       "areas": [
         "playbook-engine"
       ],
       "default_arm": true,
-      "digest": "sha256:a9a7d98db8185d9c66de8fbb48d425208deb288671ea433b04e43211b5450324",
+      "digest": "sha256:dfed70bd24fe445c6846a2d5f0c47550d64006a1a0a304db786743767142b5b7",
       "imports": [
         "src.config",
         "src.doctor",
         "src.git.manager",
         "src.jobs",
-        "src.jobs.script_runner",
+        "src.jobs.script_sandbox",
         "src.playbooks.proposal",
         "src.playbooks.script_inputs",
         "src.playbooks.script_policy",
@@ -14712,14 +14708,11 @@
         "integration-promotion"
       ],
       "default_arm": true,
-      "digest": "sha256:2c4863611309b1238749fee922d9d6f80f384fcd8ac150fb0faeb6d87a1e29bf",
+      "digest": "sha256:ced0f441eb045cafeb71551f3c3715c8375d352fc54303e943c60dfd0bf042bc",
       "imports": [
         "src.commands.integration_commands",
         "src.commands.principal",
-        "src.config",
-        "src.database.queries.task_queries",
         "src.database.tables",
-        "src.doctor.models",
         "src.git.github_contracts",
         "src.git.manager",
         "src.integration.attestation",
@@ -17386,32 +17379,6 @@
       ],
       "summary": "Project isolation of the supervisor stall sweep (scripts/operator-checks/stall-sweep.py)."
     },
-    "tests/test_supervisor_turn_health.py": {
-      "areas": [
-        "supervisor"
-      ],
-      "default_arm": true,
-      "digest": "sha256:fdf9c29e4bb579579cf3db126562d4ab9f86064b56190908c4b099e0b0db59b6",
-      "imports": [
-        "src.commands.principal",
-        "src.config",
-        "src.database.engine",
-        "src.database.tables",
-        "src.intelligence_classes",
-        "src.messages.session_lens",
-        "src.models",
-        "src.profiles.capabilities",
-        "src.sessions",
-        "src.sessions.harness_parser",
-        "src.sessions.reconciler",
-        "src.sessions.supervisor_health"
-      ],
-      "markers": [
-        "migration",
-        "parametrize"
-      ],
-      "summary": "Turn health and recovery with exact transcripts and disposable PostgreSQL."
-    },
     "tests/test_surface_commands.py": {
       "areas": [
         "command-dispatch"
@@ -17461,7 +17428,7 @@
         "worker-pools"
       ],
       "default_arm": true,
-      "digest": "sha256:3d14ff6d8db17feb0a1d2a70aef3f0bc248db4a73b9391a6f9918527cf247196",
+      "digest": "sha256:17b2c278548153d26c27e5788edc96110af27e0978a5217b1b6f49a7fabeb0fc",
       "imports": [
         "src.api.scope",
         "src.cli",
@@ -17481,9 +17448,7 @@
         "src.sessions.input_prompts",
         "src.tools.definitions"
       ],
-      "markers": [
-        "parametrize"
-      ],
+      "markers": [],
       "summary": "Generated surface for the swarm commands — spec §14."
     },
     "tests/test_sync_and_merge.py": {
@@ -19333,12 +19298,11 @@
         "agent-waits"
       ],
       "default_arm": true,
-      "digest": "sha256:db26cbd377d76af340fbf6c9281715ca459d69745230b6621819ffca35150c27",
+      "digest": "sha256:d6012683136f6aea17f20b6682f8eb2dc774885aaa3c0b234a1bbb469e1537dd",
       "imports": [
         "src.cli.waits",
         "src.commands",
         "src.commands.principal",
-        "src.commands.task_commands",
         "src.config",
         "src.database",
         "src.database.queries.continuation_queries",
@@ -19346,6 +19310,7 @@
         "src.database.tables",
         "src.git.manager",
         "src.models",
+        "src.orchestrator.worktree_manager",
         "src.prime",
         "src.prime.budgets",
         "src.prime.hook_envelopes",

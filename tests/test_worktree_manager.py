@@ -505,6 +505,64 @@ class TestCreateSlot:
         assert Path(slot.workspace_path).is_dir()
 
 
+class TestReprovisionSlotPrune:
+    """``reprovision_slot``'s prune contract: pruning stays the default."""
+
+    @staticmethod
+    def _registered(base_repo: Path) -> set[Path]:
+        entries = asyncio.run(GitManager().aworktree_list(str(base_repo)))
+        return {Path(e["path"]).resolve() for e in entries}
+
+    def test_ordinary_reprovision_still_prunes_stale_registrations(
+        self, mgr, base_ws, kind, base_repo
+    ):
+        slot = asyncio.run(mgr.create_slot(base_ws, kind, 0))
+        peer = asyncio.run(mgr.create_slot(base_ws, kind, 1))
+        shutil.rmtree(slot.workspace_path)
+        shutil.rmtree(peer.workspace_path)
+        assert Path(peer.workspace_path).resolve() in self._registered(base_repo)
+
+        asyncio.run(mgr.reprovision_slot(slot, kind))
+
+        registered = self._registered(base_repo)
+        assert Path(slot.workspace_path).resolve() in registered
+        assert Path(peer.workspace_path).resolve() not in registered
+        assert mgr.read_sentinel(slot.workspace_path).workspace_id == slot.id
+
+    @pytest.mark.parametrize("prune", [False, True])
+    def test_no_prune_reprovision_adopts_checkout_and_keeps_preserved_registrations(
+        self, mgr, base_ws, kind, base_repo, monkeypatch, prune
+    ):
+        peer = asyncio.run(mgr.create_slot(base_ws, kind, 1))
+        shutil.rmtree(peer.workspace_path)
+        target = base_repo / ".aq" / "worktrees" / "resume-c-1"
+        _git(["worktree", "add", "-b", "aq/owner", str(target)], cwd=base_repo)
+        (target / "saved.txt").write_text("saved\n")
+        _git(["add", "saved.txt"], cwd=target)
+        _git(["commit", "-m", "saved work"], cwd=target)
+        head = _git(["rev-parse", "HEAD"], cwd=target)
+        slot = Workspace(id="ws-slot", project_id="p1", workspace_path=str(target),
+                         source_type=RepoSourceType.WORKTREE, slot_index=0,
+                         base_workspace_id=base_ws.id, kind_id=kind.id)
+        pruned = AsyncMock(wraps=mgr.git.aworktree_prune)
+        monkeypatch.setattr(mgr.git, "aworktree_prune", pruned)
+
+        if prune:
+            asyncio.run(mgr.reprovision_slot(slot, kind))
+        else:
+            asyncio.run(mgr.reprovision_slot(slot, kind, prune=False))
+
+        assert pruned.await_count == int(prune)
+        registered = self._registered(base_repo)
+        assert target.resolve() in registered
+        assert (Path(peer.workspace_path).resolve() in registered) is not prune
+        assert _git(["rev-parse", "HEAD"], cwd=target) == head
+        assert _git(["branch", "--show-current"], cwd=target) == "aq/owner"
+        assert _git(["status", "--porcelain"], cwd=target) == ""
+        sentinel = mgr.read_sentinel(target)
+        assert (sentinel.workspace_id, sentinel.base_workspace_id) == ("ws-slot", base_ws.id)
+
+
 class TestAbandonedMergeRecovery:
     async def _merge(self, mgr, base_ws, kind, *, conflicted=False):
         slot = await mgr.create_slot(base_ws, kind, 0)
