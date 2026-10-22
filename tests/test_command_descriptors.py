@@ -45,21 +45,47 @@ HIBERNATION_CHANGES = ROOT / "tests/fixtures/contracts/hibernation-contract-chan
 DISPATCH_CHANGES = ROOT / "tests/fixtures/contracts/dispatch-wait-contract-changes.json"
 BATCH_FIX_CHANGES = ROOT / "tests/fixtures/contracts/batch-fix-contract-changes.json"
 MERGE_CHANGES = ROOT / "tests/fixtures/contracts/epic-main-refresh-contract-changes.json"
+LEAF_CHANGES = ROOT / "tests/fixtures/contracts/batch745-leaf-contract-changes.json"
 
 
 def _merge_changes():
     return json.loads(MERGE_CHANGES.read_text())
 
 
+def _leaf_changes():
+    return json.loads(LEAF_CHANGES.read_text())
+
+
+def _before_leaf_catalogue():
+    return _revert_catalogue(json.loads(render_command_catalogue()), _leaf_changes())
+
+
 def _before_merge_catalogue():
-    return _revert_catalogue(json.loads(render_command_catalogue()), _merge_changes())
+    return _revert_catalogue(_before_leaf_catalogue(), _merge_changes())
+
+
+def test_leaf_catalogue_only_adds_reviewed_commands():
+    evidence = _leaf_changes()
+    assert evidence["source_base"] == "120f820ee85acd957525ac2b77c4bacaeed4c728"
+    assert not evidence["contracts"] and not evidence["transport_definitions"]
+    snapshot = command_snapshot()
+    for name, approved in evidence["new_commands"].items():
+        assert evidence["catalogue_sections"]["explicit"]["entries"][name]["previous"] is None
+        assert _digest(snapshot.commands[name].tool_definition()) == (
+            approved["transport_sha256"]), name
+        assert CONTRACTS.require(name).contract.fingerprint() == (
+            approved["contract_fingerprint"]), name
+    # Removing exactly the leaf commands recovers the merged epic bytes.
+    previous = json.dumps(_before_leaf_catalogue(), indent=2) + "\n"
+    assert hashlib.sha256(previous.encode()).hexdigest() == evidence[
+        "previous_cli_catalogue_sha256"] == _merge_changes()["cli_catalogue_sha256"]
 
 
 def test_merged_catalogue_preserves_both_frozen_inputs():
     evidence = _merge_changes()
     for key, expected in (("catalogue_sections", "previous_cli_catalogue_sha256"),
                           ("source_catalogue_sections", "source_cli_catalogue_sha256")):
-        previous = _revert_catalogue(json.loads(render_command_catalogue()),
+        previous = _revert_catalogue(_before_leaf_catalogue(),
                                     {"catalogue_sections": evidence[key]})
         assert hashlib.sha256((json.dumps(previous, indent=2) + "\n").encode()).hexdigest() == (
             evidence[expected])
@@ -227,7 +253,8 @@ def test_legacy_execution_documents_and_fingerprints():
         if name in changes:
             assert expected["previous_fingerprint"] == old["fingerprint"]
             assert expected["fingerprint"] != old["fingerprint"]
-        for recording in (_hibernation_changes(), _dispatch_changes(), _merge_changes()):
+        for recording in (_hibernation_changes(), _dispatch_changes(), _merge_changes(),
+                          _leaf_changes()):
             later = recording["contracts"].get(name)
             if later:
                 assert later["previous_fingerprint"] == expected["fingerprint"]
@@ -268,7 +295,8 @@ def test_transport_views_and_cli_serialization_preserve_golden_evidence():
             approved = dev["transport_definitions"][name]
             assert approved["previous_sha256"] == digest
             digest = approved["sha256"]
-        for recording in (_hibernation_changes(), _dispatch_changes(), _merge_changes()):
+        for recording in (_hibernation_changes(), _dispatch_changes(), _merge_changes(),
+                          _leaf_changes()):
             if name in recording["transport_definitions"]:
                 approved = recording["transport_definitions"][name]
                 assert approved["previous_sha256"] == digest
@@ -291,7 +319,9 @@ def test_transport_views_and_cli_serialization_preserve_golden_evidence():
     assert batch_fix["previous_cli_catalogue_sha256"] == dispatch["cli_catalogue_sha256"]
     merge = _merge_changes()
     assert merge["previous_cli_catalogue_sha256"] == batch_fix["cli_catalogue_sha256"]
-    assert actual == merge["cli_catalogue_sha256"]
+    leaf = _leaf_changes()
+    assert leaf["previous_cli_catalogue_sha256"] == merge["cli_catalogue_sha256"]
+    assert actual == leaf["cli_catalogue_sha256"]
     previous = json.dumps(_before_batch_fix_catalogue(), indent=2) + "\n"
     assert hashlib.sha256(previous.encode()).hexdigest() == dispatch["cli_catalogue_sha256"]
     previous = json.dumps(_before_dispatch_catalogue(), indent=2) + "\n"

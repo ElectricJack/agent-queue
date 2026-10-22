@@ -474,7 +474,11 @@ async def test_container_sibling_contained_by_external_fast_forward_releases_dep
 async def test_container_sibling_shadow_mode_still_requires_receipts(
     orch, db, git_first_frontier,
 ):
-    """Without a truth-bearing observer the receipt predicate is unchanged."""
+    """Without a truth-bearing observer the sibling stays excluded as unknown evidence.
+
+    Receipts no longer prove delivery (fast-smooth §3.3), so a missing observer
+    withholds the dependent and explain names the unavailable evidence.
+    """
     from src.commands.handler import CommandHandler
     from src.integration.delivery_observer import prerequisite_observer
 
@@ -483,7 +487,8 @@ async def test_container_sibling_shadow_mode_still_requires_receipts(
     _fast_forward_epic(env, "aq/first", "aq/group-a", "aq/group-b")
     db.set_delivery_observer(None)
     assert prerequisite_observer(db) is None
-    await _frontier(orch, db, env, CommandHandler(orch, orch.config), False)
+    await _frontier(orch, db, env, CommandHandler(orch, orch.config), False,
+                    evidence_unavailable=True)
 
 
 async def test_stacked_frontier_agrees_for_scheduler_demand_explain_and_claim(

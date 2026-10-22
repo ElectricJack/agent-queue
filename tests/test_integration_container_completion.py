@@ -33,6 +33,7 @@ from tests.test_integration_train_sources import (  # noqa: F401 - pytest fixtur
     MAIN,
     completed,
     hosted_train,
+    require_stored_epic_checks,
     review_epic,
     snapshot,
     world,
@@ -202,12 +203,14 @@ async def test_held_container_closes_at_exact_head_and_is_admitted(held):
     git(held.origin.url, "merge-base", "--is-ancestor", head, "refs/heads/main")
 
 
-async def test_unreviewed_or_unchecked_container_is_not_delivered(held):
+async def test_unreviewed_or_unchecked_container_is_not_delivered(held, tmp_path):
     await integrate_children(held)
     head = held.publish("final")
     await held.checkpoint(head)
     await held.close(head)
     held.target = EPIC
+    # Epic checks are advisory unless playbook data requires them (6.4).
+    await require_stored_epic_checks(held, tmp_path)
     # Checks without review, then review without checks: never a parent completion.
     held.github.runs[head] = "success"
     assert (await held.train.visit(EPIC)).state == "blocked"

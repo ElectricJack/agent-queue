@@ -288,7 +288,8 @@ class WaitDecisions:
                         "warnings": [f"wait already resolved: {wait['outcome']}"]}
             if (isinstance(scope, Scope) and scope.principal != "service"
                     and (wait["session_id"] != scope.session_id
-                         or wait["claim_epoch"] != scope.claim_epoch)):
+                         or (scope.claim_epoch is not None
+                             and wait["claim_epoch"] != scope.claim_epoch))):
                 raise WaitError("continuation.stale_generation", "wait holder changed")
             _, continuation = await fence_owner(conn, wait, task)
             if continuation is None and wait["sleep_decision"] == "hibernate":

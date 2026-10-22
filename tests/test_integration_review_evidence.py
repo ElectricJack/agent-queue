@@ -233,6 +233,11 @@ async def test_leaf_close_records_checkpoint_and_suppresses_legacy_final_review(
 
     case = review_case
     db = case["db"]
+    # The publisher-only close route: this close hands parent delivery to the
+    # train rather than running an author-assisted parent merge.
+    await db.update_project(
+        "p", hierarchical_integration_policy={"close_merge": {"author_assist": False}}
+    )
     await db.create_profile(
         AgentProfile(id="worker", name="Worker", harness="claude", needs_workspace=True)
     )
