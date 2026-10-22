@@ -2552,7 +2552,7 @@ _ALL_TOOL_DEFINITIONS = [
         "description": (
             "Restart a named supervisor through AQ with current profile permissions, model and effort. "
             "Starts a fresh conversation by default; --resume resumes its prior conversation. "
-            "Requires global admin."
+            "Requires a local operator or live supervisor within the target project scope."
         ),
         "input_schema": {
             "type": "object",

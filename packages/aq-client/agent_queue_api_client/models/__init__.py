@@ -1755,6 +1755,7 @@ from .session_sleep_response_422 import SessionSleepResponse422
 from .session_subagents import SessionSubagents
 from .session_summary import SessionSummary
 from .session_summary_failed_preparation_type_0 import SessionSummaryFailedPreparationType0
+from .session_summary_supervisor_health_type_0 import SessionSummarySupervisorHealthType0
 from .session_token_request import SessionTokenRequest
 from .session_token_response import SessionTokenResponse
 from .session_token_response_422 import SessionTokenResponse422
@@ -3931,6 +3932,7 @@ __all__ = (
     "SessionSubagents",
     "SessionSummary",
     "SessionSummaryFailedPreparationType0",
+    "SessionSummarySupervisorHealthType0",
     "SessionTokenRequest",
     "SessionTokenResponse",
     "SessionTokenResponse422",

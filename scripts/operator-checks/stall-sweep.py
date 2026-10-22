@@ -685,6 +685,21 @@ if session_rows is not None:
             else:
                 findings.append(f"IDLE-WORKER {s['name']} holds {t['id']}: live holder has no verified wait; inspect activity and recovery")
 for s in sessions:
+    if (s.get("lifecycle") == "named" and s.get("profile_id") == "supervisor"
+            and s.get("state") == "running" and s.get("desired_state") == "running"):
+        health = s.get("supervisor_health") or {}
+        checked = health.get("checked_at")
+        if not isinstance(checked, (int, float)) or NOW - checked > 120:
+            findings.append(f"SUPERVISOR-UNKNOWN {s['name']}: turn health evidence unavailable or stale")
+        elif health.get("unhealthy"):
+            findings.append(
+                f"SUPERVISOR-UNHEALTHY {s['name']}: {health.get('reason')}; "
+                f"{health.get('pending_count', 0)} pending requests; "
+                f"last completed turn {health.get('last_completed_at')}; "
+                f"recovery attempts {health.get('attempts', 0)}"
+            )
+        elif not health.get("known"):
+            findings.append(f"SUPERVISOR-UNKNOWN {s['name']}: exact turn evidence unavailable")
     failures = s.get("claim_failure_count") or 0
     phase = s.get("claim_phase")
     matching_ready = sum(

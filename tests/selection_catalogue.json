@@ -1232,7 +1232,8 @@
         "tests/test_supervisor_inbox_commands.py",
         "tests/test_supervisor_recovery.py",
         "tests/test_supervisor_recovery_api.py",
-        "tests/test_supervisor_stall_sweep_script.py"
+        "tests/test_supervisor_stall_sweep_script.py",
+        "tests/test_supervisor_turn_health.py"
       ]
     },
     "task-activity": {
@@ -17384,6 +17385,32 @@
         "skipif"
       ],
       "summary": "Project isolation of the supervisor stall sweep (scripts/operator-checks/stall-sweep.py)."
+    },
+    "tests/test_supervisor_turn_health.py": {
+      "areas": [
+        "supervisor"
+      ],
+      "default_arm": true,
+      "digest": "sha256:fdf9c29e4bb579579cf3db126562d4ab9f86064b56190908c4b099e0b0db59b6",
+      "imports": [
+        "src.commands.principal",
+        "src.config",
+        "src.database.engine",
+        "src.database.tables",
+        "src.intelligence_classes",
+        "src.messages.session_lens",
+        "src.models",
+        "src.profiles.capabilities",
+        "src.sessions",
+        "src.sessions.harness_parser",
+        "src.sessions.reconciler",
+        "src.sessions.supervisor_health"
+      ],
+      "markers": [
+        "migration",
+        "parametrize"
+      ],
+      "summary": "Turn health and recovery with exact transcripts and disposable PostgreSQL."
     },
     "tests/test_surface_commands.py": {
       "areas": [

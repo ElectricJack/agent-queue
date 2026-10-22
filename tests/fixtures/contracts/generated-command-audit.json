@@ -21080,7 +21080,7 @@
   "supervisor_restart": {
     "mode": "json_object",
     "producer": "src/commands/session_commands.py:SessionCommandsMixin._cmd_supervisor_restart",
-    "source_digest": "sha256:ee1b9b9cb17c140e2b8467932a2fac69adc00925f4294f3ba31cc5d48cffeae9",
+    "source_digest": "sha256:924db076d107a45309f3ce02bc8f5db412c376e412512565b01266ef1d2724cc",
     "input_schema_source": "explicit_tool",
     "schema_quality": "declared",
     "argument_reads_diagnostic_only": [
@@ -21092,15 +21092,12 @@
     "retry_safe": false,
     "principal_requirement": "original_principal",
     "resource_gates": [
-      "system_scope"
+      "project_resources",
+      "handler_gates"
     ],
     "denial_reason": null,
     "result_policy": "strict boolean success at producer; no inferred outcome",
     "return_branches": [
-      {
-        "return": "{'success': False, 'error': error}",
-        "protocol": "explicit_boolean: False"
-      },
       {
         "return": "{'success': False, 'error': 'name must be a supervisor messaging address'}",
         "protocol": "explicit_boolean: False"
@@ -21111,6 +21108,18 @@
       },
       {
         "return": "{'success': False, 'error': 'session_id must be a non-empty string'}",
+        "protocol": "explicit_boolean: False"
+      },
+      {
+        "return": "{'success': False, 'error': 'out of scope: supervisor restart'}",
+        "protocol": "explicit_boolean: False"
+      },
+      {
+        "return": "{'success': False, 'error': f'out of scope: {error}'}",
+        "protocol": "explicit_boolean: False"
+      },
+      {
+        "return": "{'success': False, 'error': 'out of scope: stale supervisor identity'}",
         "protocol": "explicit_boolean: False"
       },
       {
@@ -21130,7 +21139,8 @@
       "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
       "tests/test_generated_command_contracts.py::test_generic_result_protocol",
       "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
-      "tests/test_agent_terminals.py"
+      "tests/test_agent_terminals.py",
+      "tests/test_supervisor_turn_health.py"
     ],
     "helper_producers": {},
     "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys."

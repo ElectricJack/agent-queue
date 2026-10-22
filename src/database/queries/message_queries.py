@@ -211,6 +211,106 @@ def _competing_delivery(msg: Message, window: float, *, window_start=None):
 
 
 class MessageQueriesMixin:
+    async def supervisor_requests(self, row) -> list[Message]:
+        """Oldest unanswered requests, including consumed worker questions.
+
+        Include prior instance UUIDs: a fresh supervisor inherits obligations
+        sent to an immutable predecessor address as well as its logical mailbox.
+        """
+        prior = select(sessions.c.id).where(
+            sessions.c.name == row.name, sessions.c.profile_id == "supervisor",
+            sessions.c.project_id.is_not_distinct_from(row.project_id),
+        )
+        address = "supervisor-global" if row.project_id is None else f"supervisor-{row.project_id}"
+        reply = messages.alias("supervisor_reply")
+        answered = select(reply.c.id).where(reply.c.reply_to_id == messages.c.id).exists()
+        completed = (row.supervisor_health or {}).get("last_completed_at") or 0
+        # A consumed status report is handled by a successful turn. An
+        # explicit reply wait or native question remains an obligation.
+        waiting = select(wait_records.c.id).where(
+            wait_records.c.condition_kind == "message", wait_records.c.outcome == "pending",
+            wait_records.c.verification_state == "verified",
+            wait_records.c.cleared_at.is_(None),
+            wait_records.c.project_id == messages.c.project_id,
+            wait_records.c.session_id == messages.c.from_id,
+            wait_records.c.condition["thread_id"].astext == messages.c.thread_id,
+        ).correlate(messages).exists()
+        statement = select(messages).where(
+            messages.c.to_kind == "session",
+            or_(messages.c.to_id.in_((address, row.name)), messages.c.to_id.in_(prior)),
+            messages.c.reply_to_id.is_(None), ~answered,
+            ~func.coalesce(_obsolete_notice(), False),
+            or_(and_(messages.c.from_kind == "session", waiting),
+                messages.c.body_kind == "agent_question",
+                messages.c.created_at > completed),
+        ).order_by(messages.c.provenance["supervisor_escalated_at"].is_not(None),
+                   messages.c.created_at, messages.c.id).limit(100)
+        async with self._engine.begin() as conn:
+            return [_row_to_message(item) for item in (await conn.execute(statement)).mappings()]
+
+    async def escalate_supervisor_request(self, msg, row, *, now: float) -> bool:
+        """One global notice per request, without fabricating a worker reply."""
+        async with self._engine.begin() as conn:
+            current = (await conn.execute(select(messages).where(
+                messages.c.id == msg.id,
+            ).with_for_update())).mappings().first()
+            if current is None:
+                return False
+            provenance = dict(current["provenance"] or {})
+            if provenance.get("supervisor_escalated_at"):
+                return False
+            if (await conn.execute(_reply_covering(msg))).first() is not None:
+                return False
+            provenance["supervisor_escalated_at"] = now
+            await conn.execute(update(messages).where(messages.c.id == msg.id).values(
+                provenance=provenance,
+            ))
+            await self.create_message_in_transaction(
+                conn, project_id=msg.project_id, from_kind="system", from_id="supervisor-health",
+                to_kind="session" if row.project_id else "user",
+                to_id="supervisor-global" if row.project_id else "dashboard",
+                thread_id=msg.thread_id,
+                body=f"Unanswered worker request {msg.id} to {row.name} after "
+                     f"{int(now - msg.created_at)} seconds. Sender: {msg.from_kind}:{msg.from_id}. "
+                     f"Reply explicitly to the original request; its wait remains active.\n{msg.body[:2000]}",
+                body_kind="supervisor_health",
+            )
+        return True
+
+    async def supervisor_recovery_notice(self, row, health, requests, *, reason, now):
+        """Persist handoff and alert atomically with a recovery-attempt fence."""
+        async with self._engine.begin() as conn:
+            current = (await conn.execute(select(sessions).where(
+                sessions.c.id == row.id, sessions.c.instance_token == row.instance_token,
+                sessions.c.desired_state == "running",
+            ).with_for_update())).mappings().first()
+            if current is None:
+                return
+            saved = dict(current["supervisor_health"] or {})
+            if saved.get("notified_attempt") == health["attempts"]:
+                return
+            saved.update(health, notified_attempt=health["attempts"])
+            await conn.execute(update(sessions).where(sessions.c.id == row.id).values(
+                supervisor_health=saved,
+            ))
+            address = "supervisor-global" if row.project_id is None else f"supervisor-{row.project_id}"
+            handoff = (f"Supervisor recovery handoff: {reason}. Previous session {row.id}, "
+                       f"conversation {row.session_key}, harness {row.harness}, model {row.model}. "
+                       f"Last completed turn: {health.get('last_completed_at')}. "
+                       f"Pending request IDs: {', '.join(msg.id for msg in requests)}. "
+                       "Inspect those originals and reply explicitly; do not infer answers from delivery.")
+            await self.create_message_in_transaction(
+                conn, project_id=row.project_id, from_kind="system", from_id="supervisor-health",
+                to_kind="session", to_id=address, body=handoff, body_kind="supervisor_handoff",
+            )
+            await self.create_message_in_transaction(
+                conn, project_id=row.project_id, from_kind="system", from_id="supervisor-health",
+                to_kind="session" if row.project_id else "user",
+                to_id="supervisor-global" if row.project_id else "dashboard",
+                body=f"Restarting {row.name} fresh after {health['attempts']} recovery attempts. "
+                     + handoff, body_kind="supervisor_health",
+            )
+
     """Query mixin for ``messages``.  Expects ``self._engine``."""
 
     async def _supervisor_recipient(self, conn, to_kind, to_id, project_id):
