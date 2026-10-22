@@ -5640,7 +5640,7 @@
         "development-delivery"
       ],
       "default_arm": true,
-      "digest": "sha256:912e9c33f8f0e70e7695c68cdbe7f2366ea1e5eb85a5a8a201864cde88f911c2",
+      "digest": "sha256:2f0f1eeee4a08fa342730ec0657db0638df889a8ec6d543f3f6fd48406c3bea0",
       "imports": [
         "src.commands.handler",
         "src.commands.principal",
@@ -5667,6 +5667,7 @@
         "src.integration.repository_recovery",
         "src.integration.service",
         "src.integration.source_trailer",
+        "src.integration.stacked_branches",
         "src.integration.status",
         "src.models",
         "src.orchestrator",
@@ -9802,13 +9803,12 @@
         "integration-promotion"
       ],
       "default_arm": true,
-      "digest": "sha256:6aa55f243dd9ff569c118e8f77c5fc0ecf40a467bfd50ad2de353f2d81ee7677",
+      "digest": "sha256:78630cc5d10fca38d9cfac83028b502df041e2495550c21950d61276e1c96e31",
       "imports": [
         "src.commands.contracts",
         "src.commands.contracts.builtin",
         "src.commands.principal",
         "src.commands.task_commands",
-        "src.database.queries.hierarchy_queries",
         "src.database.tables",
         "src.git.manager",
         "src.integration.delivery_observer",

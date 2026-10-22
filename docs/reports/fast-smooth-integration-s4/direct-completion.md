@@ -63,6 +63,15 @@ assert actual pending selection, explicit rejection and authored check policy;
 all ten affected and parametrized cases passed on rerun. Hosted checks remain
 the exact-candidate delivery evidence.
 
+Hosted CI additionally found a query-hoisting regression in the train-off
+overlay. Project identity is now hoisted while activation is still read fresh;
+298 related tests passed. Historical-backup and bundle-inventory fixtures now
+include their real table/template, and command refusal tests assert the structured
+command result. Remaining container tests cover explicit holds and rejection
+instead of treating absent review paperwork as a hold. Resume-admission tests
+use a controlled cache clock and separately prove that expired evidence refuses
+admission, avoiding a two-second wall-clock race under shared CI load.
+
 Delivery uses a push-triggered candidate CI run and the existing authenticated
 attestation verifier, followed by an expected-old fast-forward of that exact SHA
 to `dev`. It does not require an AQ batch, task claim or repair queue. GitHub
