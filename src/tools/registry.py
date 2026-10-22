@@ -77,6 +77,9 @@ class CategoryMeta:
 
 # Category definitions with human-readable descriptions
 CATEGORIES: dict[str, CategoryMeta] = {
+    "integration": CategoryMeta(
+        name="integration", description="Bound batch repair and author-close continuation"
+    ),
     "operator": CategoryMeta(name="operator", description="Scoped operator setup and preflight"),
     "policy": CategoryMeta(
         name="policy", description="Portable project policy profiles: export, diff and selective import"

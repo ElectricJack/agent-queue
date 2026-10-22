@@ -272,6 +272,16 @@ class CiRepairAdoptResponse(BaseModel):
     error: str | None = None
 
 
+class IntegrationBatchFixResponse(BaseModel):
+    success: bool = True
+    outcome: str | None = None
+    fixer: dict[str, Any] | None = None
+    head_sha: str | None = None
+    branch: str | None = None
+    error_code: str | None = None
+    error: str | None = None
+
+
 class IntegrationContinueCloseResponse(BaseModel):
     success: bool = True
     outcome: str
@@ -282,6 +292,7 @@ class IntegrationContinueCloseResponse(BaseModel):
 
 
 RESPONSE_MODELS: dict[str, type[BaseModel]] = {
+    "integration_batch_fix": IntegrationBatchFixResponse,
     "integration_continue_close": IntegrationContinueCloseResponse,
     "ci_completed_status": CiCompletedStatusResponse,
     "ci_baseline_status": CiBaselineStatusResponse,
