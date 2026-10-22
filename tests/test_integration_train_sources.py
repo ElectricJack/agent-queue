@@ -3319,7 +3319,7 @@ async def test_abort_cannot_release_a_member_also_in_another_active_batch(world)
     await db.transition_task("rework", TaskStatus.READY, context="reopen_with_feedback")
 
 
-async def test_retire_origin_preview_apply_removes_pending_and_requires_delivery(world):
+async def test_retire_origin_preserves_base_and_filters_delivered_pending_work(world):
     db = world.db
     await completed(world, "a", land=True)
     await completed(world, "pending")
@@ -3337,9 +3337,12 @@ async def test_retire_origin_preview_apply_removes_pending_and_requires_delivery
     assert (await controls.retire_origin("a", dry_run=False, origin_id=preview["origin_id"],
                                          operator_id="operator", reason="delivered"))["outcome"] == "retired"
     async with db._engine.connect() as conn:
-        assert await _pending_tasks(conn, "p", "r", limit=200) == ["pending"]
+        # Retirement preserves the real filing base; fresh Git decides whether
+        # its source is still owed, rather than the origin's lifecycle flag.
+        assert await _pending_tasks(conn, "p", "r", limit=200) == ["a", "pending"]
         [audit] = (await conn.execute(select(events.c.payload).where(
             events.c.event_type == "integration.origin_retired"))).scalars().all()
+    assert await DatabaseBatches(db)._candidate_ids(MAIN, await snapshot(world)) == ["pending"]
     assert "delivered" in audit
 
 
@@ -6338,12 +6341,14 @@ async def test_frozen_epic_rechecks_readiness_before_root_publication(collected_
         policy["parent"] = {**policy["parent"], "required_checks": {
             **policy["parent"]["required_checks"], "version": "v2"}}
         await case.db.update_project("p", hierarchical_integration_policy=policy)
+        # Only authored required-check policy gates the current source.
+        await require_stored_epic_checks(case, tmp_path)
     refused = await case.train.visit(MAIN)
     assert refused.state == "held", refused
     assert git(case.origin.url, "rev-parse", "main") == case.base
 
 
-async def test_epic_recompletes_same_head_when_check_policy_changes(collected_epic):
+async def test_epic_recompletes_same_head_when_check_policy_changes(collected_epic, tmp_path):
     case = collected_epic
     head = await collect_epic(case)
     await review_epic(case)
@@ -6354,6 +6359,7 @@ async def test_epic_recompletes_same_head_when_check_policy_changes(collected_ep
     policy["parent"] = {**policy["parent"], "required_checks": {
         **policy["parent"]["required_checks"], "version": "v2"}}
     await case.db.update_project("p", hierarchical_integration_policy=policy)
+    await require_stored_epic_checks(case, tmp_path)
     assert (await case.train.visit(MAIN)).batch_id is None
     assert (await case.train.visit(case.target)).state == "idle"
     second = await case.db.get_task_completion("epic")
@@ -7845,6 +7851,7 @@ async def test_fidelity_replay_pr_repair_promotion_cleanup(collected_epic, tmp_p
     case.children.append(await completed(case.world, "child-c", parent="epic"))
     await db.transition_task("epic", TaskStatus.COMPLETED)
     collected = await train.visit(case.target)
+    await hold_epic_review(case, collected.candidate_sha)
     github.runs[collected.candidate_sha] = "success"
     assert (await train.visit(case.target)).state == "delivered"
     head = git(origin.url, "rev-parse", "aq/epic")

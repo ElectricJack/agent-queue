@@ -8,9 +8,12 @@ were left running. Implementation used an independent Git worktree.
 ## Sources and authority
 
 The starting `dev` was `e0b9fcae5`. The epic tip was
-`5c77d36e52630475059761ff173ddb4824d39ef3`, containing every completion commit
-recorded for `stark-willow-95.1` through `.25`. Its 94 commits absent from `dev`
-were merged, preserving current development fixes. The published stuck-check
+`5c77d36e52630475059761ff173ddb4824d39ef3`, containing the completion commits
+recorded for `stark-willow-95.1` through `.24`. Its 94 commits absent from `dev`
+were merged, preserving current development fixes. The `.25` repair commit
+`216d83592` is not an ancestor: its storage-after-close-attempts migration ordering
+was already incorporated by `c1a613534`, with those revisions renumbered to 118
+and 117 respectively. The published stuck-check
 fix (`597b44ff5`, PR 1776) and unmanaged child-conflict fix (`9d3db06cb`, PR 1755)
 were integrated into the same candidate. Migration heads were reconciled to a
 single linear chain, ending at `a00000000120`.
@@ -44,11 +47,21 @@ Existing projects install/activate the shipped project policy deliberately.
 
 ## Verification and delivery
 
-Focused regressions use real Git and disposable PostgreSQL. The initial combined
-connected-flow run passed six canaries; the isolated daemon smoke passed all
-20 scenarios. Dashboard typechecking and 43 focused tests passed. Further combined
-area, migration, generated-artifact and hosted checks are recorded with the final
-candidate's delivery evidence.
+Focused regressions use real Git and disposable PostgreSQL. The combined
+connected-flow run passed six canaries; both isolated daemon smoke runs passed
+all 20 scenarios. Dashboard typechecking and 43 focused tests passed. Command and
+worker compatibility passed 755 tests; artifact, ownership and selection checks
+passed 124 tests. Fresh PostgreSQL upgrade and empty-autogenerate checks passed,
+and full generated-file regeneration reported no drift.
+
+The initial combined integration run passed 1,348 tests and exposed one test
+fixture missing its required CI producer identity. That fixture was corrected;
+the same test passed in the focused policy run and the compatibility suite.
+The final affected-area run passed 764 tests and exposed four expectations tied
+to the superseded origin/review/check-policy gates. Test-only corrections now
+assert actual pending selection, explicit rejection and authored check policy;
+all ten affected and parametrized cases passed on rerun. Hosted checks remain
+the exact-candidate delivery evidence.
 
 Delivery uses a push-triggered candidate CI run and the existing authenticated
 attestation verifier, followed by an expected-old fast-forward of that exact SHA
