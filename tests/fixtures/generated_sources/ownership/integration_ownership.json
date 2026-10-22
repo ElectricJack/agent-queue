@@ -19505,8 +19505,8 @@
     "decision_record": "record:2720bdbe-7521-427e-8e72-1f40a3ff9818",
     "measured_source_revision": "bf0314f79433b66c2f60cdd377a77c2e9996278a",
     "original_owned_total_cap": 155499,
-    "measured_owned_total": 160820,
-    "delta": 5321,
+    "measured_owned_total": 160825,
+    "delta": 5326,
     "predecessors": [
       {
         "batch_id": "train-77f0d8e451f6aed08d608e443031047a",
@@ -19526,7 +19526,7 @@
         "measured_owned_total": 158958
       }
     ],
-    "batch_measured_delta": 1862,
+    "batch_measured_delta": 1867,
     "restore_task": "azure-ridge-72",
     "expires_at": "s4_modules",
     "category_approval_message_id": "msg-90f9f1b1e0cd4e8e8d28071cffc927a6",
@@ -19535,9 +19535,21 @@
     ],
     "category_restore_task": "stark-willow-95.17",
     "verification_task": "stark-willow-95.18",
-    "measured_engine_lines": 85301,
+    "measured_engine_lines": 85306,
     "measured_table_count": 45,
-    "delivery_method": "operator direct integration; user request 2026-10-22"
+    "delivery_method": "operator direct integration; user request 2026-10-22",
+    "supplemental_grants": [
+      {
+        "task_id": "fresh-apex-30",
+        "approval_message_id": "msg-f433abd4",
+        "relay_message_id": "msg-d145f0ea3fd44b9aa679c60aa0af7f99",
+        "measured_source_revision": "d9c50555a1d87beaefbfc8de3b13229a6ab9f061",
+        "prior_owned_total_cap": 160820,
+        "authorized_delta": 5,
+        "measured_owned_total": 160825,
+        "reason": "Verify registered linked fixer worktrees before permission bypass."
+      }
+    ]
   },
   "storage_dispositions": {
     "integration_close_attempts": {
