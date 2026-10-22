@@ -4790,7 +4790,7 @@ class TaskCommandsMixin:
         from src.wait_runtime.restart import readmit, release_continuations, restart_lock
         from src.waits.conditions import WaitError
 
-        if (refused := await self._resume_manual_pause(args["task_id"])) is not None:
+        if (refused := await TaskCommandsMixin._resume_manual_pause(self, args["task_id"])) is not None:
             return refused
         # Resume's task-control lock covers continuation cleanup and readmission.
         async with restart_lock(self, args["task_id"]):
@@ -4809,10 +4809,7 @@ class TaskCommandsMixin:
                 and project.hierarchical_integration_mode in {"hierarchy", "train"}
             )
             if managed and task.status in _RESTART_RESERVATION_STATUSES:
-                # A repair delegate owns no branch origin of its own: the claim
-                # frontier admits it only on the exact reserved ``repair`` fence of
-                # its operation's branch, so it restarts through that handoff
-                # rather than through a bare status flip.
+                # Repair delegates restart through their operation's reserved branch fence.
                 if task.created_by_kind == "integration_repair":
                     return await self._restart_repair_delegate(task)
                 if task.status is TaskStatus.BLOCKED and await self.db.get_integration_checkpoint(
