@@ -934,14 +934,13 @@ async def test_multi_target_fetch_warms_every_target_without_renewing_age(world,
 
     observer._store = AsyncMock(side_effect=AssertionError("display attempted fetch"))
     warm = await observer.observe(ids, max_age=30, cached_only=True)
-    assert {tid: (proof.state, proof.reason) for tid, proof in warm.evidence.items()
-            if tid != "missing"} == {
+    # Unprovable answers are decided by Git, so the warm read repeats them:
+    # a display must withhold exactly what a claim withholds.
+    assert {tid: (proof.state, proof.reason) for tid, proof in warm.evidence.items()} == {
         tid: (proof.state, proof.reason) for tid, proof in view.evidence.items()
-        if tid != "missing"
     }
     assert view.get("missing").reason == "missing_git_provenance"
-    assert warm.get("missing").state is view.get("missing").state
-    assert warm.get("missing").reason == "proof_unavailable"
+    assert not warm.get("missing").unloaded
     assert not warm.satisfied("missing")
     assert {observer._recent[target][0] for target in targets.values()} == stamps
     observer._store.assert_not_awaited()
