@@ -1427,7 +1427,49 @@ class TestClaim:
         slots.ensure_slot_checkout.assert_awaited_once()
         slots.reset_slot_for_task.assert_not_awaited()
 
-    @pytest.mark.parametrize("protection", [None, "task", "session", "claim", "other_project"])
+    @pytest.mark.parametrize("poisoned", [True, False])
+    async def test_a_slot_contradicting_its_sentinel_releases_its_own_lock(
+        self, handler, db, tmp_path, poisoned,
+    ):
+        """sharp-quest-65 (2026-10-21): a restarted task's slot was left
+        detached under its sentinel.  The failed prepare kept the session's
+        agent lock, so the session retried there and slot restore skipped it.
+        A sentinel disagreement now gives the lock back, drains, and
+        quarantines the slot; a transient git error keeps the old ladder."""
+        from src.git.manager import GitError, SlotSourceDisagreement
+        from src.workspace_disable import CLAIM_FAILURES, reason_code
+
+        await mktask(db, "t1", profile_id="worker")
+        sid, _wd = await pool_session(db, tmp_path)
+        await db.update_workspace("ws-agent-1", slot_index=0, base_workspace_id="base")
+        slots = handler.orchestrator._worktree_slots.return_value
+        message = "slot ws-agent-1 branch disagrees with its source sentinel; checkout left unchanged"
+        slots.ensure_slot_checkout = AsyncMock(
+            side_effect=SlotSourceDisagreement(message) if poisoned else GitError(message)
+        )
+
+        result = await settled_claim(scoped(handler, sid), {"next": True})
+
+        task = await db.get_task("t1")
+        assert task.status == TaskStatus.READY
+        assert (await db.get_task_meta("t1", "slot_reset_failure"))["attempt"] == 1
+        assert await db.get_task_meta("t1", "claim_prepare_backoff_until")
+        ws = await db.get_workspace("ws-agent-1")
+        session = await db.get_session(sid)
+        if poisoned:
+            assert result["result"] == "drain_requested"
+            assert "drain-ack" in result["reason"] and "quarantined" in result["reason"]
+            assert ws.locked_by_agent_id is None
+            assert not ws.enabled
+            assert reason_code(ws.disabled_reason) == CLAIM_FAILURES
+            assert session.desired_state == "stopped"
+        else:
+            assert result["result"] == "prepare_failed"
+            assert ws.locked_by_agent_id == "agent-1"
+            assert ws.enabled
+            assert session.desired_state != "stopped"
+
+    @pytest.mark.parametrize("protection",[None, "task", "session", "claim", "other_project"])
     async def test_claim_preserves_misplaced_workspace_locks(
         self, handler, db, tmp_path, protection,
     ):

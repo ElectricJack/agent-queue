@@ -181,6 +181,10 @@ class ForeignSlotClaim(GitError):
         super().__init__(reason)
 
 
+class SlotSourceDisagreement(GitError):
+    """A slot whose checkout contradicts its sentinel: every claim there fails alike."""
+
+
 # ---------------------------------------------------------------------------
 # Commit identity (docs/specs/git-identity.md)
 # ---------------------------------------------------------------------------

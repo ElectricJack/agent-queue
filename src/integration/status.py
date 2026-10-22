@@ -35,6 +35,7 @@ from src.integration.delivery_truth import DeliveryState
 from src.integration.models import RepairPolicy, integration_ci_sources
 from src.integration.promotion_steps import flow_status
 from src.integration.records import ParentEpisodeRecords
+from src.integration.repair import ordinary_repair_id
 
 TERMINAL_TASK_STATES = ("COMPLETED", "FAILED", "CANCELLED")
 # What a train visit's state asks of whoever reads the status.
@@ -949,9 +950,13 @@ class IntegrationStatusService:
                 conn, row["project_id"], await related_on(conn, "batch", row["id"])
             )
             row["candidate_ref"] = candidate_ref(row["id"])
+            # A retired BLOCKED primary remains history after a successor is
+            # allocated; only the batch's current filing can own its candidate.
             row["repairs"] = [
                 {"task_id": r["id"], "status": r["status"]}
                 for r in repairs if r["created_by_id"] == row["id"]
+                and row["repair_attempt_count"] > 0
+                and r["id"] == ordinary_repair_id(row["id"], row["repair_attempt_count"])
             ]
             visit = self._train_visits(row["project_id"]).get(
                 (row["repository_id"], row["target_ref"])

@@ -147,7 +147,7 @@ from src.integration.lock import BranchLock
 from src.integration.models import BranchKey, Fence, IntegrationTrainPolicy
 from src.integration.ownership import BranchBusy
 from src.integration.regeneration import DEFAULT_REGENERATE_COMMAND
-from src.integration.repair import OrdinaryRepairService
+from src.integration.repair import OrdinaryRepairService, ordinary_repair_id
 from src.integration.reviews import ReviewRequirements, TreeReviews
 from src.integration.selection_metrics import SelectionMetrics, selection_metrics_scope
 from src.integration.status import IntegrationStatusService
@@ -2476,6 +2476,156 @@ async def test_settle_batch_refuses_an_undelivered_member(world):
         await TrainControls(db).settle_batch("missing", dry_run=True, expected_target_sha=None, operator_id="operator",
                                              reason="")
     assert missing.value.outcome == "unknown_batch"
+
+
+async def legacy_sync_batch(world, *, delivered=True, promotion=False):
+    db, origin = world.db, world.origin
+    await db.create_task(Task(id="epic", project_id="p", repo_id="r", title="epic",
+        description="", branch_name="aq/epic", status=TaskStatus.COMPLETED))
+    sources = {tid: await completed(world, tid, parent="epic", pr=False)
+               for tid in ("child-a", "child-b")}
+    # The epic already contains all inputs, even in the refusal scenarios.
+    for tid in sources:
+        origin.land(tid)
+    epic_head = git(origin.url, "rev-parse", "main")
+    git(origin.clone, "push", "origin", "main:aq/epic")
+    default = epic_head if delivered else git(origin.clone, "rev-parse", sources["child-a"])
+    git(origin.clone, "push", "origin", default + ":refs/heads/development")
+    await db.update_repo("r", default_branch="development")
+    batch = Batch("train-epic-sync-legacy", "p", "r", "refs/heads/aq/epic")
+    members = tuple(BatchMember(tid, head, git(origin.clone, "rev-parse", f"{head}^"), n)
+                    for n, (tid, head) in enumerate(sources.items()))
+    await BatchStore(db).freeze(batch, members,
+        trees={tid: tree(world, head) for tid, head in sources.items()},
+        promotion={"repository_id": "r", "request_id": "promotion:r:release:1",
+                   "step": {"id": "release"}} if promotion else None)
+    git(origin.clone, "push", "origin", epic_head + ":" + candidate_ref(batch.id))
+    async with db._engine.begin() as conn:
+        await conn.execute(update(integration_batches).where(integration_batches.c.id == batch.id)
+            .values(repair_attempt_count=4, baseline_candidate_sha=epic_head,
+                    baseline_observations=7, baseline_reruns=2,
+                    tested_candidate_sha=epic_head))
+    return await BatchStore(db).get(batch.id), default
+
+
+@pytest.mark.parametrize("promoted", [False, True])
+async def test_settle_legacy_epic_sync_on_default_preserves_history_and_cleans_missing_epic(
+    world, tmp_path, promoted,
+):
+    from src.database.tables import wait_source_events
+
+    batch, default = await legacy_sync_batch(world)
+    if promoted:
+        # Recovery also accepts a promoted batch whose cleanup was interrupted.
+        previous_landing = git(world.origin.url, "rev-parse", "aq/child-a")
+        async with world.db._engine.begin() as conn:
+            await conn.execute(update(integration_batches).where(
+                integration_batches.c.id == batch.id).values(
+                    lifecycle="promoted", final_main_sha=previous_landing))
+    before = await world.db.get_integration_batch(batch.id)
+    members = await BatchStore(world.db).members(batch.id)
+    git(world.origin.clone, "push", "origin", "--delete", "aq/epic")
+    cleanup = train_cleanup(world, tmp_path)
+    batches = DatabaseBatches(world.db, cleanup=cleanup)
+    controls = TrainControls(world.db, train=SimpleNamespace(
+        batches=batches, repair=OrdinaryRepairService(world.db)))
+    refs = git(world.origin.clone, "ls-remote", "origin")
+    preview = await controls.settle_batch(batch.id, dry_run=True, expected_target_sha=None,
+                                        operator_id="supervisor", reason="")
+    assert preview["target_ref"] == "refs/heads/development"
+    assert preview["target_sha"] == default
+    assert await world.db.get_integration_batch(batch.id) == before
+    assert git(world.origin.clone, "ls-remote", "origin") == refs
+    for _ in range(2):
+        result = await controls.settle_batch(batch.id, dry_run=False, expected_target_sha=default,
+                                            operator_id="supervisor", reason="already on default")
+        assert result["outcome"] == "settled"
+    after = await world.db.get_integration_batch(batch.id)
+    assert after["lifecycle"] == "promoted" and after["cleanup_state"] == "complete"
+    assert after["final_main_sha"] == (before["final_main_sha"] if promoted else default)
+    for key, value in before.items():
+        if key not in {"lifecycle", "final_main_sha", "cleanup_state", "updated_at"}:
+            assert after[key] == value, key
+    assert await BatchStore(world.db).members(batch.id) == members
+    assert git(world.origin.url, "rev-parse", "development") == default
+    assert not git(world.origin.url, "for-each-ref", "--format=%(refname)", candidate_ref(batch.id))
+    status = await IntegrationStatusService(world.db, git_first="active").control_status("p")
+    assert not status["batches"]
+    async with world.db._engine.connect() as conn:
+        audits = (await conn.execute(select(events.c.payload).where(
+            events.c.event_type == "integration.batch_settled"))).scalars().all()
+        changes = (await conn.execute(select(wait_source_events.c.payload).where(
+            wait_source_events.c.source_key == f"batch:{batch.id}",
+        ))).scalars().all()
+    assert all(json.loads(a)["target_ref"] == "refs/heads/development" for a in audits)
+    assert sum(change["lifecycle"] == "promoted" for change in changes) == int(not promoted)
+
+
+@pytest.mark.parametrize("guard", ["partial", "unknown", "paused", "hold", "binding",
+                                   "identity", "moved", "attempt", "aborted", "promotion"])
+async def test_settle_legacy_epic_sync_refuses_incomplete_held_or_stale_proof(world, guard):
+    from src.integration.train_sources import project_snapshot
+    from src.operator_decisions import OperatorDecisions
+
+    batch, default = await legacy_sync_batch(world, delivered=guard != "partial",
+                                             promotion=guard == "promotion")
+    if guard in {"paused", "aborted"}:
+        await BatchStore(world.db).set_intent(batch.id, guard)
+    if guard == "hold":
+        await OperatorDecisions(world.db).record({
+            "object_kind": "batch", "object_id": batch.id, "operator": "operator",
+            "decision": "Keep sync", "effect": "hold", "source": "dashboard",
+            "source_ref": "message:hold", "idempotency_key": "hold", "releases": None,
+        }, recorded_by="human:local-operator")
+
+    async def observed(db, target):
+        snap = await project_snapshot(db, target)
+        if guard == "identity":
+            return replace(snap, observation=replace(snap.observation, repository_id="other"))
+
+        async def proof(*args):
+            if guard == "binding":
+                await db.update_repo("r", default_branch="main")
+            if guard == "attempt":
+                async with db._engine.begin() as conn:
+                    await conn.execute(update(integration_batches).where(
+                        integration_batches.c.id == batch.id).values(repair_attempt_count=5))
+            return None if guard == "unknown" else await snap.contains_source(*args)
+
+        return SimpleNamespace(error=snap.error, target_oid=snap.target_oid,
+            observation=snap.observation, contains_source=proof,
+            is_fresh=AsyncMock(return_value=False) if guard == "moved" else snap.is_fresh)
+
+    expected = {"partial": "every frozen source", "unknown": "every frozen source",
+        "paused": "paused epic sync", "aborted": "aborted batch", "hold": "operator hold",
+        "binding": "binding changed", "identity": "identity changed", "moved": "target changed",
+        "attempt": "frozen batch changed", "promotion": "promotion settlement"}[guard]
+    with pytest.raises(ValueError, match=expected):
+        await TrainControls(world.db, snapshot=observed).settle_batch(batch.id, dry_run=False,
+            expected_target_sha=default, operator_id="supervisor", reason="legacy cleanup")
+    row = await world.db.get_integration_batch(batch.id)
+    assert row["lifecycle"] != "promoted" and row["final_main_sha"] is None
+
+
+async def test_train_status_only_current_repair_blocks_after_blocked_primary(world):
+    batch, _ = await legacy_sync_batch(world)
+    primary, successor = (ordinary_repair_id(batch.id, n) for n in (3, 4))
+    for task_id, attempt, state in ((primary, 3, TaskStatus.BLOCKED),
+                                    (successor, 4, TaskStatus.READY)):
+        await world.db.create_task(Task(id=task_id, project_id="p", title="repair", description="",
+            status=state, created_by_kind="system", created_by_id=batch.id,
+            dedup_key=f"repair:{batch.id}:{attempt}"))
+    status = IntegrationStatusService(world.db, git_first="active")
+    result = await status.control_status("p")
+    [own] = result["batches"]
+    assert own["repairs"] == [{"task_id": successor, "status": "READY"}]
+    assert [b["ref"] for b in result["blockers"] if b["code"] == "repair_open"] == [successor]
+    await world.db.update_task(successor, status="COMPLETED")
+    result = await status.control_status("p")
+    assert not result["batches"][0]["repairs"]
+    assert not [b for b in result["blockers"] if b["code"] == "repair_open"]
+    assert (await world.db.get_task(primary)).status is TaskStatus.BLOCKED
+    assert (await BatchStore(world.db).get(batch.id)).repair_attempt_count == 4
 
 
 async def test_abort_first_member_conflict_at_target_releases_member(world):
