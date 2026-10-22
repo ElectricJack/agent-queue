@@ -32,6 +32,7 @@ from src.integration.stacked_branches import (
     StackedBranches,
     merge_heads,
     observe_stacks,
+    shared_stack_inputs,
     stacked_policy,
 )
 from src.integration.train import TrainTarget
@@ -1186,6 +1187,58 @@ async def test_stack_view_revalidates_incarnation_and_remote(stack):
         assert await view.verified_on(conn) == {}
     git(stack.origin.clone, "push", "--force", "origin", f"{stack.base}:aq/first")
     assert await view.fresh()  # the frozen source is independent of its branch tip
+
+
+@pytest.mark.parametrize("interruption", [None, RuntimeError, asyncio.CancelledError])
+async def test_shared_stack_inputs_are_per_project_and_reset_after_exit(monkeypatch, interruption):
+    read = AsyncMock(return_value=())
+    monkeypatch.setattr("src.integration.stacked_branches._inputs", read)
+    conn = object()
+    first, second = StackView(None, "p"), StackView(None, "q")
+
+    async def scoped():
+        async with shared_stack_inputs():
+            for _ in range(3):
+                await first.verified_on(conn)
+                await second.verified_on(conn)
+            assert read.await_count == 2
+            if interruption:
+                raise interruption()
+
+    if interruption:
+        with pytest.raises(interruption):
+            await scoped()
+    else:
+        await scoped()
+    for _ in range(2):
+        await first.verified_on(conn)
+    assert read.await_args_list == [((conn, "p"),), ((conn, "q"),),
+                                   ((conn, "p"),), ((conn, "p"),)]
+
+
+async def test_shared_stack_inputs_isolate_overlapping_passes(monkeypatch):
+    read = AsyncMock(return_value=())
+    monkeypatch.setattr("src.integration.stacked_branches._inputs", read)
+    entered, finished = asyncio.Event(), asyncio.Event()
+    conn = object()
+    view = StackView(None, "p")
+
+    async def first_pass():
+        async with shared_stack_inputs():
+            await view.verified_on(conn)
+            entered.set()
+            await finished.wait()
+            await view.verified_on(conn)
+
+    async def second_pass():
+        await entered.wait()
+        async with shared_stack_inputs():
+            await view.verified_on(conn)
+            await view.verified_on(conn)
+        finished.set()
+
+    await asyncio.gather(first_pass(), second_pass())
+    assert read.await_count == 2
 
 
 async def test_stack_withholds_prerequisite_when_local_object_validation_fails(stack, monkeypatch):
