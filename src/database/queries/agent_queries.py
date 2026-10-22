@@ -102,16 +102,56 @@ class AgentQueryMixin:
             if isinstance(value, AgentState):
                 value = value.value
             values[key] = value
-        if values.get("state") == AgentState.RETIRED.value:
-            # Ownership/recovery evidence remains on tasks, sessions and
-            # workspaces; this transient pointer must not outlive retirement.
-            values["current_task_id"] = None
         async with self._engine.begin() as conn:
             await conn.execute(
                 update(agents)
                 .where(agents.c.id == agent_id, agents.c.deleted_at.is_(None))
                 .values(**values)
             )
+            if values.get("state") == AgentState.RETIRED.value:
+                await self._clear_stale_retired_pointer_on(conn, agent_id)
+
+    async def _clear_stale_retired_pointer_on(self, conn, agent_id: str) -> None:
+        """Drop a retired agent's task pointer unless it still owns that task.
+
+        Teardown retires a pool agent while its claim can be retained; pause,
+        orphan and closed-owner recovery find the agent through this pointer to
+        return it to IDLE, so an owned pointer stays. A pointer to finished or
+        reassigned work is history and must not outlive retirement.
+        """
+        pointer = agents.c.current_task_id
+        owned_task = (
+            select(tasks.c.id)
+            .where(
+                tasks.c.id == pointer,
+                tasks.c.assigned_agent_id == agent_id,
+                tasks.c.status.not_in((TaskStatus.COMPLETED.value, TaskStatus.FAILED.value)),
+            )
+            .exists()
+        )
+        held_workspace = (
+            select(workspaces.c.id)
+            .where(
+                workspaces.c.locked_by_agent_id == agent_id,
+                workspaces.c.locked_by_task_id == pointer,
+            )
+            .exists()
+        )
+        bound_session = (
+            select(sessions.c.id)
+            .where(sessions.c.agent_id == agent_id, sessions.c.task_id == pointer)
+            .exists()
+        )
+        await conn.execute(
+            update(agents)
+            .where(
+                agents.c.id == agent_id,
+                agents.c.state == AgentState.RETIRED.value,
+                pointer.is_not(None),
+                ~owned_task, ~held_workspace, ~bound_session,
+            )
+            .values(current_task_id=None)
+        )
 
     async def soft_delete_agent(self, agent_id: str) -> bool:
         """Hide one idle, unowned worker while retaining all execution history.

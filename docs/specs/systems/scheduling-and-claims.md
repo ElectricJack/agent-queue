@@ -113,9 +113,12 @@ using live session rows (`starting`, `running`, `draining`) attributed by
 `session.project_id`. Idle pool sessions and sessions whose stop is unconfirmed
 still consume capacity. Stopped/sleeping sessions and agent definitions without
 a live session consume none, even if a retired or deleted definition retains an
-old task pointer. Retirement and soft deletion clear `agent.current_task_id`;
-task assignments, session bindings and workspace locks keep their own guarded
-release protocols. Push explain and scheduler blocker logs name
+old task pointer. Soft deletion clears `agent.current_task_id`. Retirement
+clears it only when the agent no longer owns that task: a pointer backed by an
+unfinished assignment to the agent, its workspace lock or a session bound to
+the task stays, because pause, orphan and closed-owner recovery return a
+torn-down pool agent to IDLE through it. Task assignments, session bindings and
+workspace locks keep their own guarded release protocols. Push explain and scheduler blocker logs name
 `project_agent_cap` with the live count and `max_concurrent_agents` when full.
 An exclusive project constraint lowers the effective push cap to one.
 

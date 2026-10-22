@@ -40,8 +40,8 @@ async def reset_stale_busy_agent(
 
     ``reset_state=False`` clears the pointer alone and leaves the agent's
     state exactly as it was. Only a BUSY agent is *supposed* to become IDLE:
-    older production versions set ERROR and RETIRED without clearing
-    ``current_task_id``, and RETIRED is what gates workspace
+    production sets ERROR, and RETIRED while the agent still owns the task,
+    without clearing ``current_task_id``, and RETIRED is what gates workspace
     reclaim, so a caller that sweeps agents in any state (the
     ``agents.dangling_current_task`` doctor fix) must not write IDLE over
     them. The reconciler's own rescue rule only ever sees BUSY agents and
