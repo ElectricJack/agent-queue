@@ -5003,7 +5003,7 @@
   "explain_task": {
     "mode": "json_object",
     "producer": "src/commands/task_commands.py:TaskCommandsMixin._cmd_explain_task",
-    "source_digest": "sha256:7ee3e496c529bd3a69c99e3796a728da6711e5baef9cf30547b692803a3671d2",
+    "source_digest": "sha256:30bd0caab1c0e2049895422f97793c9e6b98c414c09b8687cf687deb9475f046",
     "input_schema_source": "fallback",
     "schema_quality": "declared",
     "argument_reads_diagnostic_only": [
@@ -17996,7 +17996,7 @@
   "restart_task": {
     "mode": "json_object",
     "producer": "src/commands/task_commands.py:TaskCommandsMixin._cmd_restart_task",
-    "source_digest": "sha256:97965dbd79eee4047f249ae56e5737f2282dfcdad0ba645f9c977e493e54d2db",
+    "source_digest": "sha256:9559903767857486338a36b1b734038600d6f8129122977717a438dd1ff32c36",
     "input_schema_source": "explicit_tool",
     "schema_quality": "declared",
     "argument_reads_diagnostic_only": [
@@ -18048,8 +18048,8 @@
       "tests/test_supervisor_recovery.py"
     ],
     "helper_producers": {
-      "_restart_task": "sha256:c2bc920f3f3c5d2bff9fa5d95056631700ec14b57ca825f11698cb4ea43fc0d2",
-      "_restart_repair_delegate": "sha256:60abe97071aeefb1f90efabadf2641f635fa9cc4da4855d3d08507d3519465d4"
+      "_restart_task": "sha256:d25cda1f54bec6e90bb1a6917e1d68e5f6873b532762a75e8157fe5b025746f8",
+      "_restart_repair_delegate": "sha256:36da9e3baf68fa15433b6caf181834518d2975156216297a369d1006fca9f8f8"
     },
     "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled.  Restart hold correction: explain includes decided hold owner/reason; restart requires a reasoned authorized exact-hold override. Releasing actor and reason are audited; return protocol and project resource gates remain unchanged."
   },

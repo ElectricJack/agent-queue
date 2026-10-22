@@ -1825,8 +1825,8 @@ class TaskQueryMixin:
         explicit_restart = new_status == TaskStatus.READY and context in {
             "restart_task", "reopen_with_feedback",
         }
-        if new_status == TaskStatus.READY and context == "restart_task":
-            await self._guard_restart_recovery_hold_on(conn, task_id, _recovery_hold_override)
+        await self._guard_restart_recovery_hold_on(conn, task_id, _recovery_hold_override,
+                                                   new_status == TaskStatus.READY and context)
 
         if assume_pre_state is not None:
             current_status, pre_blocked = assume_pre_state

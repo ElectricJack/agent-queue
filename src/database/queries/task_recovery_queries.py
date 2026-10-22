@@ -839,20 +839,46 @@ class TaskRecoveryQueryMixin:
                 .values(archived_at=now)
             )
 
-    async def _guard_restart_recovery_hold_on(self, conn, task_id, override):
+    async def restart_hold_override(self, task_id, override, reason, *, authority):
+        """Validate a restart's hold override; return ``(hold_override, error)``."""
+        if not isinstance(override, bool):
+            return None, 'override_hold must be a boolean'
+        if not override:
+            return None, None
+        if not isinstance(reason, str) or not 1 <= len(reason.strip()) <= 4000:
+            return None, 'override_hold requires a reason of 1 to 4000 characters'
+        actor, refusal = await authority(self)
+        incident = None if refusal else await self.get_task_meta(task_id, INCIDENT_KEY)
+        if not isinstance(incident, dict) or incident.get('decision') != 'hold':
+            return None, refusal
+        return {'incident_id': incident['id'], 'expected_hold_at': incident.get('decided_at'),
+                'reason': reason.strip(), 'actor': actor,
+                'author_kind': 'user' if actor == 'human:local-operator' else 'supervisor'}, None
+
+    async def _guard_restart_recovery_hold_on(
+        self, conn, task_id, override, context="restart_task",
+    ):
+        """Refuse a restart that does not authorize the exact decided recovery hold."""
+        if context != "restart_task":
+            return
         # Share the recovery decision's task-row lock. A hold arriving after
         # the command's preflight cannot be silently released by the READY write.
         await conn.execute(select(tasks.c.id).where(tasks.c.id == task_id).with_for_update())
-        raw = await conn.scalar(select(task_metadata.c.value).where(
+        incident = await self._recovery_incident_on(conn, task_id)
+        held = isinstance(incident, dict) and incident.get('id') and incident.get('decision') == 'hold'
+        if held and ((override or {}).get('incident_id'), (override or {}).get('expected_hold_at')
+                     ) != (incident['id'], incident.get('decided_at')):
+            raise RecoveryHoldError(incident)
+
+    async def guard_restart_recovery_hold(self, task_id, override):
+        """Preflight the hold before continuation cleanup or branch reservation."""
+        async with self.immediate() as conn:
+            await self._guard_restart_recovery_hold_on(conn, task_id, override)
+
+    async def _recovery_incident_on(self, conn, task_id):
+        return _decoded(await conn.scalar(select(task_metadata.c.value).where(
             task_metadata.c.task_id == task_id, task_metadata.c.key == INCIDENT_KEY,
-        ))
-        incident = _decoded(raw)
-        if isinstance(incident, dict) and incident.get('id') and incident.get('decision') == 'hold':
-            if not override or (
-                override['incident_id'] != incident['id']
-                or override['expected_hold_at'] != incident.get('decided_at')
-            ):
-                raise RecoveryHoldError(incident)
+        )))
 
     async def _supersede_restarted_task_recovery_on(
         self, conn, task_id, *, context, hold_override=None,
@@ -866,10 +892,7 @@ class TaskRecoveryQueryMixin:
         the incident, and archive its notifications before claim waiters wake.
         Return whether a hold was released so READY-to-READY can announce it too.
         """
-        raw = await conn.scalar(select(task_metadata.c.value).where(
-            task_metadata.c.task_id == task_id, task_metadata.c.key == INCIDENT_KEY,
-        ))
-        incident = _decoded(raw)
+        incident = await self._recovery_incident_on(conn, task_id)
         if (
             not isinstance(incident, dict)
             or not incident.get("id")
