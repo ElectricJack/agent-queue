@@ -445,6 +445,7 @@ At most `MAX_SUBTASKS_PER_TASK` (200) rows per task, and at most `MAX_SUBTASKS_P
 | `hierarchical_integration_policy` | JSON | nullable | Frozen policy pins (required checks, repair tiers, source-branch retention, legacy-route suppression) snapshotted into each batch and repair operation; NULL uses config defaults. Added by Alembic `e4c6a8b20d31` |
 | `promotion_flow` | JSONB | nullable | Validated ordered promotion steps, configured separately from hierarchical policy pins; NULL means no promotion flow. Added by Alembic `a00000000085` |
 | `default_branch_cutover` | JSONB | nullable | Generation-fenced cutover binding: repository ID, old and new defaults, activated generation and cutover time. Resolves pre-cutover top-level origins to the current default without rewriting immutable provenance; nested and later origins keep their recorded targets. Reverse clears the binding in the same transaction. Added by Alembic `a00000000086` |
+| `storage_binding` | JSONB | nullable | The project's current storage generation, written only by `aq project relocate` (`src/projects/relocation.py`) in one fenced transaction: `generation` (monotone), `paths` (old physical root → relocated root), `plan_digest`, `receipt`, `cache` and the `previous` binding. Readers map recorded paths through it (`src/projects/storage_binding.py`); NULL means configuration paths apply unchanged ([storage relocation runbook](../guides/matter-engine-storage-relocation.md)). Added by Alembic `a00000000118` |
 | `hierarchical_integration_desired_mode` | TEXT | NOT NULL DEFAULT 'disabled' | Mode the operator asked for with `integration_enable`; same value set as `hierarchical_integration_mode`. Differs from the effective mode while a drain is in progress. Added by Alembic `a11a5e1e4f04` |
 | `hierarchical_integration_draining` | BOOLEAN | NOT NULL DEFAULT false | True while in-flight batches/repairs are being drained before the effective mode drops to the desired one. Added by Alembic `a11a5e1e4f04` |
 | `hierarchical_integration_generation` | INTEGER | NOT NULL DEFAULT 0 | Monotone rollout fence (`>= 0`); every mode transition increments it and is recorded in `integration_rollout_transitions`. Operator controls pass `expected_generation` and are rejected on mismatch. Added by Alembic `a11a5e1e4f04` |
@@ -3367,6 +3368,44 @@ values.
 | `operator_id` | TEXT | NOT NULL | Audit label of the local operator or supervisor session that ran the command |
  | `reason` | TEXT | NOT NULL | The supplied reason, or `legacy delivery proven by <proof>` |
  | `created_at` | REAL | NOT NULL | Unix timestamp |
+
+### Table: `integration_close_attempts`
+
+Author-assisted close proposals (`src/integration/close_merge.py`): one row per
+close generation that merges a worker's source into its parent branch through a
+retained candidate ref.  A row describes retained work, never delivery: every
+resume re-observes Git, current policy and the live claim, including after an
+uncertain push, and only the publisher transports parent writes.  Each save is a
+compare-and-set on `version` and records a `close_merge:<id>` wait source event,
+so author budgets are verified waits (`wait_records.condition_kind`
+`close_merge`).  Revision `a00000000117` creates the table conditionally and
+widens `ck_wait_records_condition_kind`.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `id` | TEXT | PRIMARY KEY | Operation id (UUID); names the candidate ref |
+| `project_id` | TEXT | NOT NULL, FK `projects.id` | Project |
+| `task_id` | TEXT | NOT NULL | Closing task; with `session_id`, `claim_epoch`, `source_oid` and `target_ref`: UNIQUE (`uq_integration_close_generation`), so a repeated close resumes the same proposal |
+| `session_id` | TEXT | NOT NULL | Session that proposed the close |
+| `claim_epoch` | INTEGER | NOT NULL | Claim epoch of the proposing claim |
+| `repository_id` | TEXT | NOT NULL | Integration repository |
+| `target_task_id` | TEXT | NOT NULL | Parent task whose branch receives the merge |
+| `target_ref` | TEXT | NOT NULL | Parent branch ref (`refs/heads/…`) |
+| `source_oid` | TEXT | NOT NULL | Worker source commit being merged |
+| `base_oid` | TEXT | nullable | Parent tip the candidate was built on; a rewritten parent defers the close |
+| `candidate_oid` | TEXT | nullable | Candidate merge commit |
+| `candidate_path` | TEXT | nullable | Checkout holding the candidate while the author resolves it |
+| `candidate_ref` | TEXT | NOT NULL | `refs/heads/aq/close/<id>` |
+| `state` | TEXT | NOT NULL | One of: preparing, needs_author, checking, publish_uncertain, finished, deferred, cancelled (`ck_integration_close_state`); `cancelled` when the source or policy changed |
+| `version` | INTEGER | NOT NULL DEFAULT 0 | Compare-and-set counter (`ck_integration_close_counters`: `>= 0`) |
+| `attempts` | INTEGER | NOT NULL DEFAULT 0 | Rebuilds after parent movement; the limit defers to the publisher |
+| `policy_digest` | TEXT | nullable | Digest of the close policy the candidate was checked under |
+| `evidence` | JSONB | NOT NULL | Exact-check evidence for the candidate |
+| `close_args` | JSONB | NOT NULL | The original close arguments, replayed on completion |
+| `budget_wait_id` | TEXT | nullable | Verified wait bounding the author's budget while `needs_author` |
+| `last_failure` | TEXT | nullable | Last deferral or cancellation reason |
+| `created_at` | REAL | NOT NULL | Unix timestamp |
+| `updated_at` | REAL | NOT NULL | Unix timestamp |
 
 ### Table: `test_selections`
 
