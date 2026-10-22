@@ -165,6 +165,7 @@ HANDCRAFTED_COVERAGE = {
     "integration_recover_completed_container",
     "integration_reopen_collection",
     "integration_close_delivered_pr",
+    "integration_fast_forward_pr",
     "integration_record_root_noop",
     "integration_supersede_completion",
     # plugins.py (all plugin commands are hand-crafted with direct-DB access)

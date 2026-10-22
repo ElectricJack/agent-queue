@@ -495,6 +495,7 @@ areas:
       - tests/test_integration_root_authorization.py
       - tests/test_integration_legacy_*.py
       - tests/test_integration_pr_delivery.py
+      - tests/test_integration_pr_repair_publication.py
       - tests/test_parent_ci_publication.py
       - tests/test_repair_checkout_refs.py
       - tests/test_integration_child_delivery.py
