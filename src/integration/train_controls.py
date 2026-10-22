@@ -60,6 +60,72 @@ class TrainControls:
     def __init__(self, db, *, snapshot=project_snapshot, clock=time.time, train=None):
         self.db, self.snapshot, self.clock, self.train = db, snapshot, clock, train
 
+    async def repair_target(self, batch_id, *, dry_run, expected_candidate_sha,
+                            expected_target_sha, operator_id, reason):
+        """Repair proven inherited failures without changing the sealed hierarchy."""
+        from src.integration.candidate_baseline import (
+            candidate_head, compare, red_brief, sealed_epic_target, target_head,
+        )
+        from src.integration.checks import ChecksState
+
+        if not dry_run and (not expected_candidate_sha or not expected_target_sha
+                            or not reason.strip()):
+            raise ValueError("apply requires previewed candidate/target SHAs and a nonblank reason")
+        store = BatchStore(self.db)
+        batch = await store.get(batch_id)
+        if batch is None or batch.epic_refresh:
+            raise ValueError("an ordinary sealed epic batch is required")
+        epic = await sealed_epic_target(self.db, batch)
+        if not epic or self.train is None:
+            raise ValueError("batch must seal its epic target and have an active train")
+        target = TrainTarget(batch.project_id, batch.repository_id, batch.target_ref, "epic")
+        lane = await self.train.lane_for(target)
+        snapshot = await lane.snapshot()
+        if snapshot is None or snapshot.error or not snapshot.target_oid:
+            raise ValueError("batch target cannot be observed")
+        candidate = snapshot.observation.source_heads.get(
+            "refs/remotes/origin/" + candidate_ref(batch.id).removeprefix("refs/heads/"))
+        if not candidate:
+            raise ValueError("retained candidate cannot be observed")
+        if ((expected_candidate_sha and expected_candidate_sha != candidate)
+                or (expected_target_sha and expected_target_sha != snapshot.target_oid)):
+            raise ValueError("candidate or target changed; preview again")
+        checks = await lane.checks.for_candidate(batch, candidate)
+        if checks is None or not checks.compares_targets:
+            raise ValueError("trusted comparable candidate and target checks are required")
+        observe = checks.read if dry_run else checks.refresh
+        result = await observe(candidate_head(batch, candidate))
+        baseline = compare(result, await observe(target_head(batch, snapshot.target_oid)))
+        if result.state != ChecksState.RED or not baseline.pre_existing:
+            raise ValueError("no proven pre-existing target failures; use the normal train visit")
+        evidence = {"epic_task_id": epic, "operator_id": operator_id, "reason": reason,
+                    **baseline.detail()}
+        answer = {"outcome": "preview", "batch_id": batch.id,
+                  "project_id": batch.project_id, "target_ref": batch.target_ref,
+                  "candidate_sha": candidate, "target_sha": snapshot.target_oid,
+                  "dry_run": dry_run, "evidence": evidence}
+        if dry_run:
+            return answer
+        members = await store.members(batch.id)
+
+        async def authorize():
+            repo = await lane.service.gitops.repository(batch)
+            return (await sealed_epic_target(self.db, batch) == epic
+                    and await lane.service.gitops.remote(repo, batch.target_ref) == snapshot.target_oid
+                    and await lane.service.repair_authorized(batch, members, candidate))
+
+        repair = await self.train.repair.allocate(
+            batch.id, target_ref=candidate_ref(batch.id), head_sha=candidate,
+            authorize=authorize, policy=lane.repair_policy,
+            brief=(red_brief(baseline, candidate, candidate=result, sealed_target=epic)
+                   + f"\nRequested by {operator_id}: {reason}"),
+            expected_attempt=batch.repair_attempt_count,
+        )
+        if repair.get("outcome") not in {"filed", "exists"}:
+            raise ValueError(f"target repair refused: {repair}")
+        return {**answer, "outcome": "repairing", "task_id": repair["task_id"],
+                "evidence": {**evidence, "repair": repair}}
+
     async def _root_noop_identity(self, conn, task_id):
         from src.database.queries.task_subtask_queries import OPEN_SUBTASK_STATUSES
         from src.database.tables import archived_tasks, task_completion_records, task_subtasks

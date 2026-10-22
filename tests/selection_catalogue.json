@@ -8490,17 +8490,19 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:14a39086f9129ea204d0e9b93df660f10b279e32e0d61841349eb2ce5b7c2b42",
+      "digest": "sha256:33084a017635987a3ffcc8df401166bc004cc4edbfc79c7c2b6d07103d097b1b",
       "imports": [
         "src.database.tables",
         "src.integration.batches",
         "src.integration.candidate_baseline",
         "src.integration.checks",
         "src.integration.ci_producers",
+        "src.integration.models",
         "src.integration.repair",
         "src.integration.runtime_contracts",
         "src.integration.status",
         "src.integration.train",
+        "src.integration.train_controls",
         "src.models"
       ],
       "markers": [

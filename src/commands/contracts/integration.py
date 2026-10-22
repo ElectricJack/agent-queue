@@ -67,6 +67,7 @@ DESIGN_INTEGRATION_COMMANDS = frozenset(
         "integration_release_withheld_source",
         "integration_pause_batch",
         "integration_resume_batch",
+        "integration_repair_target",
         "integration_seal_now",
         "integration_retire_origin",
         "integration_refresh_epic",
@@ -202,6 +203,16 @@ class IntegrationSettleBatchArgs(IntegrationAbortBatchArgs):
         return self
 
 
+class IntegrationRepairTargetArgs(IntegrationSettleBatchArgs):
+    expected_candidate_sha: str | None = None
+
+    @model_validator(mode="after")
+    def require_preview_candidate(self):
+        if not self.dry_run and not is_valid_git_oid(self.expected_candidate_sha or ""):
+            raise ValueError("apply requires the previewed candidate SHA")
+        return self
+
+
 #: Refusals of a withheld-source release; each names the owner decision it needs.
 RELEASE_WITHHELD_REFUSALS = (
     "unknown_batch", "not_aborted", "not_a_member", "already_ejected",
@@ -296,6 +307,10 @@ class IntegrationTrainControlValue(CommandValue):
     replacement_batch_id: str | None = None
     members: tuple[str, ...] = ()
     blockers: tuple[dict[str, Any], ...] = ()
+
+
+class IntegrationRepairTargetValue(IntegrationTrainControlValue):
+    evidence: dict[str, Any] = Field(default_factory=dict)
 
 
 class IntegrationReleaseWithheldSourceValue(IntegrationTrainControlValue):
@@ -2064,6 +2079,7 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
          IntegrationReleaseWithheldSourceValue),
         ("integration_pause_batch", IntegrationAbortBatchArgs, "paused", IntegrationTrainControlValue),
         ("integration_resume_batch", IntegrationAbortBatchArgs, "resumed", IntegrationTrainControlValue),
+        ("integration_repair_target", IntegrationRepairTargetArgs, "repairing", IntegrationRepairTargetValue),
         ("integration_seal_now", IntegrationSealNowArgs, "sealed", IntegrationTrainControlValue),
         ("integration_retire_origin", IntegrationRetireOriginArgs, "retired", IntegrationTrainControlValue),
         ("integration_refresh_epic", IntegrationRefreshEpicArgs, "refreshed", IntegrationRefreshEpicValue),

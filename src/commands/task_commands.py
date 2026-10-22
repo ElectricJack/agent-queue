@@ -4978,7 +4978,6 @@ class TaskCommandsMixin:
             review_task = await self.db.get_task(review_task_id) if review_task_id else None
             session = await self.db.get_session(session_id) if session_id else None
             if review_task is not None and review_task.profile_id in REVIEW_PROFILE_IDS:
-                from src.database.queries.hierarchy_queries import HierarchyError
                 from src.integration.reviews import ReviewEvidenceProducer
 
                 try:
@@ -5020,24 +5019,27 @@ class TaskCommandsMixin:
             self.db, task.project_id, subject="task reopen"
         )
         transition_values["allow_missing_provenance_reopen"] = recovery_refusal is None
-        if review_evidence_snapshot is None:
-            await self.db.transition_task(task_id, TaskStatus.READY, **transition_values)
-        else:
-            from src.integration.reviews import ReviewEvidenceProducer
+        try:
+            if review_evidence_snapshot is None:
+                await self.db.transition_task(task_id, TaskStatus.READY, **transition_values)
+            else:
+                from src.integration.reviews import ReviewEvidenceProducer
 
-            async with self.db.immediate() as conn:
-                transition = await ReviewEvidenceProducer(
-                    self.db, None
-                ).reject_and_reopen_on(
-                    conn,
-                    task_id,
-                    review_evidence_snapshot["reviewer_task_id"],
-                    review_evidence_snapshot,
-                    **transition_values,
-                )
-            await self.db.log_blocked_flips(transition.flipped)
-            await self.db._notify_settled(transition.settled)
-            await self.db._notify_ready(transition.ready)
+                async with self.db.immediate() as conn:
+                    transition = await ReviewEvidenceProducer(
+                        self.db, None
+                    ).reject_and_reopen_on(
+                        conn,
+                        task_id,
+                        review_evidence_snapshot["reviewer_task_id"],
+                        review_evidence_snapshot,
+                        **transition_values,
+                    )
+                await self.db.log_blocked_flips(transition.flipped)
+                await self.db._notify_settled(transition.settled)
+                await self.db._notify_ready(transition.ready)
+        except HierarchyError as exc:
+            return self._hierarchy_failure(exc)
 
         # Store feedback as a structured task_context entry so agents and
         # tooling can access individual reopen comments programmatically.

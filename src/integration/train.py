@@ -14,8 +14,9 @@ lock; the batch gate reads only the cached verdict.
 
 A red candidate is refreshed before a repair is allocated: a green observation
 ends the repair with no attempt counted. A red candidate is then measured against
-the target commit it was built on, and only a failure the target does not also
-fail reaches the repair. An epic with only pre-existing failures can instead
+the target commit it was built on. An open batch sealing its own epic subtree
+can repair proven inherited failures on its candidate; otherwise only failures
+the target does not also fail reach repair. An epic with pre-existing failures can
 receive one default-branch sync repair when that exact branch has trusted green
 checks and train-produced or attested provenance. An ordinary root can admit
 green pending baseline fixes through an atomic replacement batch. Otherwise
@@ -876,11 +877,12 @@ class IntegrationTrain:
         members: tuple[BatchMember, ...], observation: BatchObservation, result: ChecksResult,
         head: HeadIdentity, checks: ExactChecks, snapshot: GitTruthSnapshot,
     ) -> TrainVisit:
-        """A red candidate is repaired only where the target is not already red.
+        """Classify red checks and admit bounded repairs on the retained candidate.
 
         A required check that also fails on the target commit this candidate was
         built on is a pre-existing failure, and one the target has not decided is
-        nobody's. An epic can merge a verified default head; an ordinary root
+        nobody's. A sealed epic can repair proven inherited failures when a
+        verified default sync cannot resolve them. An ordinary root
         can admit a green pending baseline fix through a replacement batch.
         Otherwise re-request the candidate's own suites under bounded backoff.
         """
@@ -906,10 +908,13 @@ class IntegrationTrain:
             batch, candidate=result, target_sha=baseline_sha, checks=checks,
             target_ref=baseline_ref,
         )
+        sealed_target = (await self.baseline.sealed_target(batch)
+                         if target.kind == "epic" and not batch.epic_refresh
+                         and baseline.pre_existing else None)
         if baseline.repair:
             visit = await self._repair(
                 target, lane, batch, members, observation, result,
-                brief=red_brief(baseline, head.sha, candidate=result),
+                brief=red_brief(baseline, head.sha, candidate=result, sealed_target=sealed_target),
             )
             detail = {**(visit.detail or {}), **baseline.detail()}
             if batch.epic_refresh and baseline.repairable:
@@ -945,6 +950,18 @@ class IntegrationTrain:
                     return replace(visit, detail={
                         **(visit.detail or {}), **baseline.detail(), "sync_default_branch": sync,
                     })
+        if sealed_target and baseline.pre_existing:
+            visit = await self._repair(
+                target, lane, batch, members, observation, result,
+                brief=red_brief(baseline, head.sha, candidate=result, sealed_target=sealed_target),
+            )
+            return replace(visit, detail={
+                **(visit.detail or {}), **baseline.detail(),
+                **({"sync_default_branch": sync} if sync else {}), "target_repair": {
+                    "epic_task_id": sealed_target,
+                    "checks": list(baseline.pre_existing),
+                },
+            })
         reassembly = None
         if (target.kind in {"root", "development"} and baseline.state == "pre_existing"
                 and lane.baseline_fix_checks is not None):
