@@ -432,6 +432,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`profile_reseed`](profile_reseed.md) | Profile Reseed | Restore or repair one vault system profile from its shipped default. |
 | [`project_doctor`](project_doctor.md) | Project Doctor | Diagnose the local-first project authorization gap without changing it. |
 | [`project_ready`](project_ready.md) | Project Ready | Ready frontier for a project + withheld tasks with reasons. |
+| [`project_relocate`](project_relocate.md) | Project Relocate | Execute the project_relocate command. |
 | [`promote_approve`](promote_approve.md) | Promote Approve | Post a pinned GitHub approval using the authenticated human gh login. |
 | [`promote_cancel`](promote_cancel.md) | Promote Cancel | Close an unpublished promotion PR and abort its intent. |
 | [`promote_hotfix`](promote_hotfix.md) | Promote Hotfix | File a hotfix based on a promotion target, through ordinary task routing. |

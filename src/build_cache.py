@@ -87,3 +87,14 @@ def build_measurements(job, before, after, elapsed):
             values.update(cache_hit_rate=hits / (hits + misses), cache_hits=hits,
                           cache_misses=misses, cache_scope="shared_cache")
     return values
+
+
+async def resolved_cache_settings(db, config, project_id):
+    from src.config import BuildCacheConfig
+    from src.projects.storage_binding import read_binding
+
+    binding = await read_binding(db, project_id)
+    if binding is not None:
+        cache = binding.get("cache")
+        return BuildCacheConfig(**cache) if cache else None
+    return cache_settings(config, project_id)

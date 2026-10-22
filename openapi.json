@@ -12745,6 +12745,51 @@
         }
       }
     },
+    "/api/project/relocate": {
+      "post": {
+        "tags": [
+          "project"
+        ],
+        "summary": "Preview or apply an atomic project storage relocation. Requires paused admission, disabled/drained train, stopped writers and current required CI. Reverse relocation uses a fresh destination containing current work. Local operator only.",
+        "description": "Preview or apply an atomic project storage relocation. Requires paused admission, disabled/drained train, stopped writers and current required CI. Reverse relocation uses a fresh destination containing current work. Local operator only.",
+        "operationId": "project_relocate",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProjectRelocateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/project/queue-sync-workspaces": {
       "post": {
         "tags": [
@@ -63293,6 +63338,51 @@
         },
         "type": "object",
         "title": "ProjectReadyResponse"
+      },
+      "ProjectRelocateRequest": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "title": "Project Id",
+            "description": ""
+          },
+          "destination": {
+            "type": "string",
+            "title": "Destination",
+            "description": ""
+          },
+          "owner_inventory": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Owner Inventory",
+            "description": ""
+          },
+          "expected_digest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Digest",
+            "description": ""
+          },
+          "apply": {
+            "type": "boolean",
+            "title": "Apply",
+            "description": "",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "project_id",
+          "destination",
+          "owner_inventory"
+        ],
+        "title": "ProjectRelocateRequest"
       },
       "ProjectRootInfo": {
         "properties": {

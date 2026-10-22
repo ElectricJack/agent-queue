@@ -468,6 +468,7 @@ class Project:
     git_identity_name: str | None = None
     git_identity_email: str | None = None
     supervisor_enabled: bool = False
+    storage_binding: dict | None = None
 
 
 @dataclass
