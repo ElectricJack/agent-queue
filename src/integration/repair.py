@@ -26,49 +26,24 @@ from src.waits.sources import execute_batch_mutation
 from src.waits.sources import insert_message_with_source_event
 from src.task_templates import render_task_template
 from src.database.tables import (
-    agents,
-    archived_tasks,
-    escalations,
-    integration_attestation_publications,
-    integration_batch_members,
-    integration_batches,
-    integration_branch_owners,
-    integration_candidate_member_results,
-    integration_candidate_publications,
-    integration_candidate_ref_mutations,
-    integration_candidate_revisions,
-    integration_check_evidence,
-    integration_operation_artifact_pins,
-    integration_outbox,
-    integration_promotion_intents,
-    integration_repair_operations,
-    integration_repair_stage_evidence,
-    integration_repair_stages,
-    messages,
-    playbook_artifacts,
-    project_integration_leases,
-    projects,
-    sessions,
-    task_context,
-    task_delivery_receipts,
-    task_integration_checkpoints,
-    task_metadata,
-    tasks,
-    workspaces,
+    agents, archived_tasks, escalations, integration_attestation_publications,
+    integration_batch_members, integration_batches, integration_branch_owners,
+    integration_candidate_member_results, integration_candidate_publications,
+    integration_candidate_ref_mutations, integration_candidate_revisions,
+    integration_check_evidence, integration_operation_artifact_pins, integration_outbox,
+    integration_promotion_intents, integration_repair_operations,
+    integration_repair_stage_evidence, integration_repair_stages, messages, playbook_artifacts,
+    project_integration_leases, projects, sessions, task_context, task_delivery_receipts,
+    task_integration_checkpoints, task_metadata, tasks, workspaces,
 )
 from src.git.manager import GitError, is_valid_git_oid
 from src.integration.batches import BatchStore
 from src.integration.engine import root_engine_guard
 from src.integration.green_continuation import (
-    enqueue_green_continuation_on,
-    promotion_fingerprint,
+    enqueue_green_continuation_on, promotion_fingerprint,
 )
 from src.integration.models import (
-    INTEGRATION_REPAIR_PRIORITY,
-    BranchKey,
-    Fence,
-    HierarchicalIntegrationPolicy,
-    RepairPolicy,
+    INTEGRATION_REPAIR_PRIORITY, BranchKey, Fence, HierarchicalIntegrationPolicy, RepairPolicy,
 )
 from src.integration.outbox import enqueue_integration_event
 from src.integration.ownership import BranchBusy, BranchOwnership, StaleFence
@@ -750,9 +725,7 @@ class RepairService:
             )
         )
         if self._owner_recovery is not None and owner_row_ids:
-            await self._owner_recovery.recover_many(
-                owner_row_ids, principal="delegate_retirement"
-            )
+            await self._owner_recovery.recover_many(owner_row_ids, principal="delegate_retirement")
         from src.integration.delegate_release import archive_obsolete_delegates
 
         archived = await archive_obsolete_delegates(
@@ -793,9 +766,7 @@ class RepairService:
             return dict(existing)
 
         project = (
-            await conn.execute(
-                select(projects).where(projects.c.id == batch["project_id"])
-            )
+            await conn.execute(select(projects).where(projects.c.id == batch["project_id"]))
         ).mappings().one_or_none()
         if (
             project is None
@@ -824,22 +795,14 @@ class RepairService:
         ):
             raise ValueError("batch route artifact identity is not stored and frozen")
         operation = {
-            "id": f"repair-batch-{batch_id}",
-            "target_kind": "batch",
-            "batch_id": batch_id,
-            "parent_task_id": None,
-            "episode_id": batch_id,
-            "active_stage": 0,
-            "state": "active",
+            "id": f"repair-batch-{batch_id}", "target_kind": "batch", "batch_id": batch_id,
+            "parent_task_id": None, "episode_id": batch_id, "active_stage": 0, "state": "active",
             "policy_snapshot": policy.model_dump(mode="json"),
             "artifact_snapshot": boundary.route.artifact.model_dump(mode="json"),
-            "required_check_version": boundary.required_checks.version,
-            "verifier_task_id": None,
-            "route_playbook_id": boundary.route.playbook_id,
-            "route_scope": boundary.route.scope,
+            "required_check_version": boundary.required_checks.version, "verifier_task_id": None,
+            "route_playbook_id": boundary.route.playbook_id, "route_scope": boundary.route.scope,
             "route_scope_identifier": boundary.route.scope_identifier,
-            "route_activation_id": boundary.route.activation_id,
-            "created_at": reserved_at,
+            "route_activation_id": boundary.route.activation_id, "created_at": reserved_at,
             "updated_at": reserved_at,
         }
         await conn.execute(insert(integration_repair_operations).values(**operation))
@@ -1109,10 +1072,8 @@ class RepairService:
             now=now,
             extra={
                 "previous_stage": {
-                    "ordinal": int(previous["ordinal"]),
-                    "state": previous["state"],
-                    "trigger_id": previous["trigger_id"],
-                    "starting_sha": previous["starting_sha"],
+                    "ordinal": int(previous["ordinal"]), "state": previous["state"],
+                    "trigger_id": previous["trigger_id"], "starting_sha": previous["starting_sha"],
                 },
             },
         )
@@ -1170,11 +1131,8 @@ class RepairService:
             intelligence_class = repair.debug_intelligence_class
             timeout, limit = repair.debug_seconds, repair.debug_attempts
         return {
-            "ordinal": ordinal,
-            "intelligence_class": intelligence_class,
-            "timeout_seconds": timeout,
-            "attempt_limit": limit,
-            "boundary": boundary,
+            "ordinal": ordinal, "intelligence_class": intelligence_class,
+            "timeout_seconds": timeout, "attempt_limit": limit, "boundary": boundary,
             "subject": subject,
         }
 
@@ -1207,19 +1165,13 @@ class RepairService:
             deadline_at=deadline_at,
         )
         dossier["budget"] = {
-            "ordinal": ordinal,
-            "started_at": now,
-            "deadline_at": deadline_at,
-            "attempt_limit": plan["attempt_limit"],
-            "attempts": 0,
+            "ordinal": ordinal, "started_at": now, "deadline_at": deadline_at,
+            "attempt_limit": plan["attempt_limit"], "attempts": 0,
         }
         dossier["current_conflict"] = {
-            "intent_id": conflict["id"],
-            "source_task_id": conflict["source_task_id"],
-            "source_head": conflict["source_head"],
-            "source_base": conflict["source_base"],
-            "expected_target": starting_sha,
-            "diagnostics": conflict["conflict_diagnostics"] or {},
+            "intent_id": conflict["id"], "source_task_id": conflict["source_task_id"],
+            "source_head": conflict["source_head"], "source_base": conflict["source_base"],
+            "expected_target": starting_sha, "diagnostics": conflict["conflict_diagnostics"] or {},
         }
         dossier["continuations"] = [
             {"intent_id": conflict["id"], "starting_sha": starting_sha, "recorded_at": now}
@@ -1331,9 +1283,7 @@ class RepairService:
             return None
         _policy, _boundary, subject = context
         parent = (
-            await conn.execute(
-                select(tasks).where(tasks.c.id == operation["parent_task_id"])
-            )
+            await conn.execute(select(tasks).where(tasks.c.id == operation["parent_task_id"]))
         ).mappings().one_or_none()
         checkpoint = (
             await conn.execute(
@@ -1462,11 +1412,7 @@ class RepairService:
         dossier = dict(stage["dossier"] or {})
         continuations = list(dossier.get("continuations", []))
         continuations.append(
-            {
-                "intent_id": trigger_id,
-                "starting_sha": starting_sha,
-                "recorded_at": now,
-            }
+            {"intent_id": trigger_id, "starting_sha": starting_sha, "recorded_at": now}
         )
         dossier.update(
             {
@@ -1476,22 +1422,16 @@ class RepairService:
                 "receipts": await self._current_receipts_on(conn, operation),
                 "continuations": continuations,
                 "current_conflict": {
-                    "intent_id": trigger_id,
-                    "source_task_id": conflict["source_task_id"],
-                    "source_head": conflict["source_head"],
-                    "source_base": conflict["source_base"],
+                    "intent_id": trigger_id, "source_task_id": conflict["source_task_id"],
+                    "source_head": conflict["source_head"], "source_base": conflict["source_base"],
                     "expected_target": starting_sha,
                     "diagnostics": conflict["conflict_diagnostics"] or {},
                 },
             }
         )
         updated_stage = stage | {
-            "starting_sha": starting_sha,
-            "trigger_id": trigger_id,
-            "current_subject": subject,
-            "success_subject": None,
-            "success_evidence_id": None,
-            "state": "active",
+            "starting_sha": starting_sha, "trigger_id": trigger_id, "current_subject": subject,
+            "success_subject": None, "success_evidence_id": None, "state": "active",
             "dossier": dossier,
         }
         changed = await conn.execute(
@@ -1526,9 +1466,7 @@ class RepairService:
             assigned_agent_id=None,
             description=self._delegate_description(operation, updated_stage),
         )
-        return self._start_value(updated_stage, outcome="already_started") | {
-            "continued": True
-        }, transition
+        return self._start_value(updated_stage, outcome="already_started") | {"continued": True}, transition
 
     @parent_engine_guard("operation", outcome="continue", refusal={"action": "stale", "attempts": 0})
     @root_engine_guard("operation", outcome="continue", refusal={"action": "stale", "attempts": 0})
@@ -1628,9 +1566,7 @@ class RepairService:
                 )
             ).mappings().one_or_none()
             if not self._evidence_matches(operation, stage, evidence):
-                return self._result_value(
-                    "continue", "stale", int(stage["attempts"])
-                )
+                return self._result_value("continue", "stale", int(stage["attempts"]))
             counted = bool(
                 evidence["classification"] != "infrastructure"
                 and evidence["conclusion"] in {"success", "failure"}
@@ -1643,9 +1579,7 @@ class RepairService:
                     else "inconclusive"
                 )
             attempts = int(stage["attempts"]) + int(counted)
-            dossier = self._dossier_with_evidence(
-                stage["dossier"], evidence, attempts=attempts
-            )
+            dossier = self._dossier_with_evidence(stage["dossier"], evidence, attempts=attempts)
             if operation["target_kind"] == "batch" and counted:
                 dossier["batch_failure_streak"] = (
                     int((stage["dossier"] or {}).get("batch_failure_streak", 0)) + 1
@@ -1857,20 +1791,13 @@ class RepairService:
         )
         if settled is not None:
             dossier["budget"] = {
-                "ordinal": ordinal,
-                "started_at": now,
-                "deadline_at": deadline_at,
-                "attempt_limit": repair.debug_attempts,
-                "attempts": 0,
+                "ordinal": ordinal, "started_at": now, "deadline_at": deadline_at,
+                "attempt_limit": repair.debug_attempts, "attempts": 0,
             }
-            dossier["allocation"] = {
-                "subject_sha": head, "ordinal": ordinal, "allocated_at": now,
-            }
+            dossier["allocation"] = {"subject_sha": head, "ordinal": ordinal, "allocated_at": now}
             previous_stage = {
-                "ordinal": int(settled["ordinal"]),
-                "state": settled["state"],
-                "trigger_id": settled["trigger_id"],
-                "starting_sha": settled["starting_sha"],
+                "ordinal": int(settled["ordinal"]), "state": settled["state"],
+                "trigger_id": settled["trigger_id"], "starting_sha": settled["starting_sha"],
             }
             verification = (settled["dossier"] or {}).get("resolution_verification")
             if verification:
@@ -1941,9 +1868,7 @@ class RepairService:
         if not verifier_task_id:
             return
         parent = (
-            await conn.execute(
-                select(tasks).where(tasks.c.id == operation["parent_task_id"])
-            )
+            await conn.execute(select(tasks).where(tasks.c.id == operation["parent_task_id"]))
         ).mappings().one_or_none()
         if parent is None:
             return
@@ -1982,9 +1907,7 @@ class RepairService:
         identity or policy problem no retry resolves.
         """
         parent = (
-            await conn.execute(
-                select(tasks).where(tasks.c.id == operation["parent_task_id"])
-            )
+            await conn.execute(select(tasks).where(tasks.c.id == operation["parent_task_id"]))
         ).mappings().one_or_none()
         if parent is None:
             return
@@ -2534,9 +2457,7 @@ class RepairService:
             return False
         dossier = dict(stage["dossier"] or {})
         dossier["resolution_verification"] = {
-            "intent_id": intent["id"],
-            "resolution_head_sha": head,
-            "stage": int(stage["ordinal"]),
+            "intent_id": intent["id"], "resolution_head_sha": head, "stage": int(stage["ordinal"]),
             "recorded_at": now,
         }
         ended = await conn.execute(
@@ -2772,9 +2693,7 @@ class RepairService:
                 # deprecated and never chooses one.
                 intelligence_class = repair_stage["intelligence_class"]
                 if not intelligence_class:
-                    return self._dispatch_value(
-                        "configuration_blocked", operation_id, stage
-                    )
+                    return self._dispatch_value("configuration_blocked", operation_id, stage)
                 repair_task_id = f"repair-{operation_id}-{stage}"
                 if (repair_stage["dossier"] or {}).get("membership_ejections"):
                     repair_task_id += f"-r{repair_stage['current_subject']['revision']}"
@@ -2934,9 +2853,7 @@ class RepairService:
                 released_primary = stage > 0 and await self._is_primary_writer(
                     owner, operation_id, ordinal=stage - 1, states=_TRANSFERABLE_PRIMARY_STATES
                 )
-                if not released_primary and not self._predecessor_matches(
-                    owner, operation
-                ):
+                if not released_primary and not self._predecessor_matches(owner, operation):
                     return await self._dispatch_unknown(
                         operation_id, stage, "owner_not_predecessor",
                         f"the fence belongs to {owner['owner_id']} ({owner['owner_role']}, "
@@ -2950,9 +2867,7 @@ class RepairService:
                     token=int(owner["fence_token"]),
                 )
                 try:
-                    fence = await self._ownership.transfer(
-                        old_fence, repair_task_id, "repair"
-                    )
+                    fence = await self._ownership.transfer(old_fence, repair_task_id, "repair")
                 except (BranchBusy, StaleFence):
                     return self._dispatch_value(
                         "busy",
@@ -3130,13 +3045,9 @@ class RepairService:
                 repair_task_id, session_id=session_id, conn=conn
             )
             expected = {
-                "operation_id": operation_id,
-                "stage": stage,
-                "writer_kind": "repair_delegate",
-                "session_id": session_id,
-                "instance_token": instance_token,
-                "workspace_id": workspace_id,
-                "fence_token": fence_token,
+                "operation_id": operation_id, "stage": stage, "writer_kind": "repair_delegate",
+                "session_id": session_id, "instance_token": instance_token,
+                "workspace_id": workspace_id, "fence_token": fence_token,
             }
             actual = (
                 {
@@ -3224,13 +3135,9 @@ class RepairService:
             event_id = (f"repair-delegate-closed-{operation_id}-{stage}-{repair_task_id}"
                         f"-{fence_token}-{session_id}")
             event_payload = {
-                "operation_id": operation_id,
-                "stage": stage,
-                "task_id": repair_task_id,
-                "session_id": session_id,
-                "instance_token": instance_token,
-                "workspace_id": workspace_id,
-                "fence_token": fence_token,
+                "operation_id": operation_id, "stage": stage, "task_id": repair_task_id,
+                "session_id": session_id, "instance_token": instance_token,
+                "workspace_id": workspace_id, "fence_token": fence_token,
             }
             if scope["target_kind"] == "batch":
                 current = (await conn.execute(
@@ -3334,9 +3241,7 @@ class RepairService:
                     stage + 1 if continues else stage,
                 )
             if row["state"] in {"passed", "cancelled"}:
-                return self._timeout_value(
-                    "already_terminal", "none", operation_id, stage
-                )
+                return self._timeout_value("already_terminal", "none", operation_id, stage)
             if (
                 int(operation["active_stage"]) != stage
                 or operation["state"] not in {"active", "escalated"}
@@ -3379,9 +3284,7 @@ class RepairService:
                 and row["state"] == "awaiting_completion"
                 and await self._root_success_is_current_on(conn, operation, row)
             ):
-                return self._timeout_value(
-                    "not_due", "awaiting_promotion", operation_id, stage
-                )
+                return self._timeout_value("not_due", "awaiting_promotion", operation_id, stage)
             if operation["target_kind"] == "batch":
                 from src.integration.accepted_repair import accepted_candidate_on
 
@@ -3436,9 +3339,7 @@ class RepairService:
                 now=observed_at,
                 terminal_state="expired",
             )
-            result = self._timeout_value(
-                "expired", "block_for_human", operation_id, 1
-            )
+            result = self._timeout_value("expired", "block_for_human", operation_id, 1)
         if transition is not None:
             await self.db.log_blocked_flips(transition.flipped)
             await self.db._notify_settled(transition.settled)
@@ -3533,9 +3434,7 @@ class RepairService:
             or stage["deadline_at"] is None
         ):
             return None
-        task = (await conn.execute(
-            select(tasks).where(tasks.c.id == task_id).with_for_update()
-        )).mappings().one_or_none()
+        task = (await conn.execute(select(tasks).where(tasks.c.id == task_id).with_for_update())).mappings().one_or_none()
         context = await self._dispatch_context_on(conn, operation["id"], int(stage["ordinal"]))
         if task is None or context is None:
             return None
@@ -3549,17 +3448,11 @@ class RepairService:
         rows = await self._stage_rows_on(conn, operation["id"])
         subject_sha = self._subject_sha(stage["current_subject"])
         facts = {
-            "operation_id": operation["id"],
-            "batch_id": operation.get("batch_id"),
-            "stage": int(stage["ordinal"]),
-            "task_id": task_id,
-            "task_status": task["status"],
-            "claim_epoch": int(task["claim_epoch"] or 0),
-            "attempts": int(stage["attempts"]),
-            "deadline_at": float(stage["deadline_at"]),
-            "subject_sha": subject_sha,
-            "allocation_sha": self._writer_allocation_sha(stage, rows),
-            "target": target,
+            "operation_id": operation["id"], "batch_id": operation.get("batch_id"),
+            "stage": int(stage["ordinal"]), "task_id": task_id, "task_status": task["status"],
+            "claim_epoch": int(task["claim_epoch"] or 0), "attempts": int(stage["attempts"]),
+            "deadline_at": float(stage["deadline_at"]), "subject_sha": subject_sha,
+            "allocation_sha": self._writer_allocation_sha(stage, rows), "target": target,
             "owner": dict(owner) if owner is not None else None,
         }
 
@@ -3743,12 +3636,8 @@ class RepairService:
         previous = float(stage["deadline_at"])
         deadline = max(previous, now) + seconds
         entry = {
-            "reason": reason,
-            "at": now,
-            "previous_deadline_at": previous,
-            "deadline_at": deadline,
-            "task_id": facts["task_id"],
-            "task_status": facts["task_status"],
+            "reason": reason, "at": now, "previous_deadline_at": previous, "deadline_at": deadline,
+            "task_id": facts["task_id"], "task_status": facts["task_status"],
             "claim_epoch": facts["claim_epoch"],
         }
         if detail:
@@ -3934,8 +3823,7 @@ class RepairService:
                 }
             if row["deadline_at"] is None or claimed_at < float(row["deadline_at"]):
                 return {
-                    "outcome": "within_budget",
-                    "operation_id": operation["id"],
+                    "outcome": "within_budget", "operation_id": operation["id"],
                     "stage": int(row["ordinal"]),
                     "deadline_at": None if row["deadline_at"] is None else float(row["deadline_at"]),
                 }
@@ -3956,14 +3844,10 @@ class RepairService:
                     "operation_id": operation["id"], "stage": int(row["ordinal"]),
                 }
             facts = {
-                "operation_id": operation["id"],
-                "batch_id": operation.get("batch_id"),
-                "stage": int(row["ordinal"]),
-                "task_id": repair_task_id,
-                "task_status": task["status"],
-                "claim_epoch": int(task["claim_epoch"] or 0),
-                "attempts": int(row["attempts"]),
-                "deadline_at": float(row["deadline_at"]),
+                "operation_id": operation["id"], "batch_id": operation.get("batch_id"),
+                "stage": int(row["ordinal"]), "task_id": repair_task_id,
+                "task_status": task["status"], "claim_epoch": int(task["claim_epoch"] or 0),
+                "attempts": int(row["attempts"]), "deadline_at": float(row["deadline_at"]),
             }
             deferred = await self._defer_expiry_on(
                 conn, dict(operation), dict(row), facts,
@@ -4031,9 +3915,8 @@ class RepairService:
         deadline = float(row["deadline_at"]) if row["deadline_at"] is not None else None
         if deadline is None or now < deadline:
             return {
-                "deferred": False, "reason": "within_budget",
-                "operation_id": operation_id, "stage": int(row["ordinal"]),
-                "deadline_at": deadline,
+                "deferred": False, "reason": "within_budget", "operation_id": operation_id,
+                "stage": int(row["ordinal"]), "deadline_at": deadline,
             }
         task = (
             (
@@ -4054,13 +3937,9 @@ class RepairService:
                 "operation_id": operation_id, "stage": int(row["ordinal"]),
             }
         facts = {
-            "operation_id": operation_id,
-            "batch_id": operation["batch_id"],
-            "stage": int(row["ordinal"]),
-            "task_id": repair_task_id,
-            "task_status": task["status"],
-            "claim_epoch": int(task["claim_epoch"] or 0),
-            "attempts": int(row["attempts"]),
+            "operation_id": operation_id, "batch_id": operation["batch_id"],
+            "stage": int(row["ordinal"]), "task_id": repair_task_id, "task_status": task["status"],
+            "claim_epoch": int(task["claim_epoch"] or 0), "attempts": int(row["attempts"]),
             "deadline_at": deadline,
         }
         deferred = await self._defer_expiry_on(
@@ -4074,9 +3953,8 @@ class RepairService:
                 "operation_id": operation_id, "stage": int(row["ordinal"]),
             }
         return {
-            "deferred": True, "reason": "writer_live",
-            "operation_id": operation_id, "stage": int(row["ordinal"]),
-            "deadline_at": deferred["deadline_at"],
+            "deferred": True, "reason": "writer_live", "operation_id": operation_id,
+            "stage": int(row["ordinal"]), "deadline_at": deferred["deadline_at"],
         }
 
     async def _expire_stopped_writer(
@@ -4090,9 +3968,7 @@ class RepairService:
         preserve is released and its own ordinal is re-armed for a new claim.
         """
         from src.integration.owner_recovery import (
-            NOT_ELIGIBLE,
-            PRESERVED_AND_RELEASED,
-            RECOVERABLE_STATES,
+            NOT_ELIGIBLE, PRESERVED_AND_RELEASED, RECOVERABLE_STATES,
         )
 
         owner = facts["owner"]
@@ -4121,8 +3997,7 @@ class RepairService:
                 proofs.append(recovered)
             evidence = proofs[-1].evidence or {}
             proof = {
-                "owner_row_id": owner["id"],
-                "outcome": proofs[-1].outcome,
+                "owner_row_id": owner["id"], "outcome": proofs[-1].outcome,
                 "released_fence_token": evidence.get("released_fence_token"),
                 "stop_proof": evidence.get("stop_proof"),
                 "claim_released": evidence.get("claim_released"),
@@ -4134,11 +4009,8 @@ class RepairService:
                     operation_id, stage, facts, reason="stale_fence", now=now, detail=refusal
                 )
             proof = {
-                "owner_row_id": owner["id"],
-                "outcome": "detached",
-                "owner_id": owner["owner_id"],
-                "handoff_state": owner["handoff_state"],
-                "fence_token": int(owner["fence_token"]),
+                "owner_row_id": owner["id"], "outcome": "detached", "owner_id": owner["owner_id"],
+                "handoff_state": owner["handoff_state"], "fence_token": int(owner["fence_token"]),
             }
         return await self._refile_stage(operation_id, stage, facts, proof, now)
 
@@ -4222,14 +4094,10 @@ class RepairService:
             deadline = now + (policy.primary_seconds if stage == 0 else policy.debug_seconds)
             dossier = dict(row["dossier"] or {})
             dossier["writer_refiles"] = list(dossier.get("writer_refiles") or []) + [{
-                "task_id": task_id,
-                "claim_epoch": int(task["claim_epoch"] or 0),
-                "task_status": task["status"],
-                "subject_sha": facts["subject_sha"],
-                "previous_deadline_at": float(row["deadline_at"]),
-                "deadline_at": deadline,
-                "refiled_at": now,
-                "stop_proof": proof,
+                "task_id": task_id, "claim_epoch": int(task["claim_epoch"] or 0),
+                "task_status": task["status"], "subject_sha": facts["subject_sha"],
+                "previous_deadline_at": float(row["deadline_at"]), "deadline_at": deadline,
+                "refiled_at": now, "stop_proof": proof,
             }]
             dossier["budget"] = dict(dossier.get("budget") or {}) | {"deadline_at": deadline}
             changed = await conn.execute(
@@ -4547,14 +4415,10 @@ class RepairService:
         handoffs = list(dossier.get("green_handoffs", []))
         handoffs.append(
             {
-                "task_id": task["id"],
-                "from_fence": int(owner["fence_token"]),
-                "to_owner_id": fence.owner_id,
-                "to_fence": fence.token,
-                "candidate_sha": revision["head_sha"],
-                "revision": int(revision["revision"]),
-                "evidence_id": revision["ci_evidence_id"],
-                "at": now,
+                "task_id": task["id"], "from_fence": int(owner["fence_token"]),
+                "to_owner_id": fence.owner_id, "to_fence": fence.token,
+                "candidate_sha": revision["head_sha"], "revision": int(revision["revision"]),
+                "evidence_id": revision["ci_evidence_id"], "at": now,
             }
         )
         dossier["green_handoffs"] = handoffs
@@ -4688,13 +4552,7 @@ class RepairService:
                 )
             construction_base_sha = rebuild_conflict["new_base_sha"]
             history = list(stage_dossier.get("candidate_rebuild_conflicts", []))
-            history.append(
-                {
-                    **rebuild_conflict,
-                    "resolved_head_sha": head_sha,
-                    "resolved_at": now,
-                }
-            )
+            history.append({**rebuild_conflict, "resolved_head_sha": head_sha, "resolved_at": now})
             stage_dossier["candidate_rebuild_conflicts"] = history
             stage_dossier.pop("candidate_rebuild_conflict", None)
         dossier = self._dossier_with_repair_commits(
@@ -4749,9 +4607,7 @@ class RepairService:
             await conn.execute(
                 insert(integration_candidate_member_results).values(
                     **{
-                        **dict(member),
-                        "revision": next_revision,
-                        "created_at": now,
+                        **dict(member), "revision": next_revision, "created_at": now,
                         "updated_at": now,
                     }
                 )
@@ -4817,9 +4673,7 @@ class RepairService:
                 )
             )
         return {
-            "operation_id": operation_id,
-            "stage": int(stage["ordinal"]),
-            "subject": subject,
+            "operation_id": operation_id, "stage": int(stage["ordinal"]), "subject": subject,
             "deadline_due": observed_at >= float(stage["deadline_at"]),
         }
 
@@ -4919,17 +4773,13 @@ class RepairService:
             "new_base_sha": new_base_sha,
             "integration_branch": batch["integration_branch"],
             "diagnostics": diagnostics,
-            "resolution": {
-                "kind": "two_parent_merge",
-                "parents": [candidate_sha, new_base_sha],
-            },
+            "resolution": {"kind": "two_parent_merge", "parents": [candidate_sha, new_base_sha]},
         }
         dossier = dict(stage["dossier"] or {})
         existing = dossier.get("candidate_rebuild_conflict")
         if existing is not None and existing.get("id") != conflict_id:
             return {
-                "outcome": "conflict_already_frozen",
-                "stage": int(stage["ordinal"]),
+                "outcome": "conflict_already_frozen", "stage": int(stage["ordinal"]),
                 "deadline_due": now >= float(stage["deadline_at"]),
             }
         if existing is not None:
@@ -4957,9 +4807,7 @@ class RepairService:
             ):
                 return {"outcome": "busy"}
             sessions_for_delegate = (
-                await conn.execute(
-                    select(sessions).where(sessions.c.task_id == repair_task_id)
-                )
+                await conn.execute(select(sessions).where(sessions.c.task_id == repair_task_id))
             ).mappings().all()
             locked_workspace = (
                 await conn.execute(
@@ -5029,10 +4877,8 @@ class RepairService:
             )
         return {
             "outcome": "replayed" if existing is not None else "recorded",
-            "stage": int(stage["ordinal"]),
-            "deadline_due": now >= float(stage["deadline_at"]),
-            "conflict_id": conflict_id,
-            "transition": transition,
+            "stage": int(stage["ordinal"]), "deadline_due": now >= float(stage["deadline_at"]),
+            "conflict_id": conflict_id, "transition": transition,
         }
 
     async def bind_current_parent_subject_on(
@@ -5077,9 +4923,7 @@ class RepairService:
         if stage is None or stage["state"] not in {"active", "awaiting_completion"}:
             raise ValueError("parent repair stage is not current")
         subject = {
-            "kind": "parent",
-            "generation": int(checkpoint["generation"]),
-            "head_sha": head_sha,
+            "kind": "parent", "generation": int(checkpoint["generation"]), "head_sha": head_sha,
         }
         changed = stage["current_subject"] != subject
         if changed:
@@ -5089,9 +4933,7 @@ class RepairService:
             )
             if commit_proof is not None and previous_sha != head_sha:
                 from src.integration.parent_repair_heads import (
-                    EXTENSIONS,
-                    advance_checkpoint_on,
-                    extension,
+                    EXTENSIONS, advance_checkpoint_on, extension,
                 )
 
                 owner = (await conn.execute(select(integration_branch_owners).where(
@@ -5147,11 +4989,8 @@ class RepairService:
                 )
             )
         return {
-            "operation_id": operation_id,
-            "stage": int(stage["ordinal"]),
-            "subject": subject,
-            "deadline_due": observed_at >= float(stage["deadline_at"]),
-            "changed": changed,
+            "operation_id": operation_id, "stage": int(stage["ordinal"]), "subject": subject,
+            "deadline_due": observed_at >= float(stage["deadline_at"]), "changed": changed,
         }
 
     async def _committed_resolution_receipt_on(
@@ -5234,12 +5073,9 @@ class RepairService:
             # for the edge; a delivery to another target proves nothing here.
             return None
         return {
-            "intent_id": intent["id"],
-            "receipt_id": intent["receipt_id"],
-            "source_task_id": intent["source_task_id"],
-            "before_sha": previous_sha,
-            "after_sha": head_sha,
-            "committed_at": intent["committed_at"],
+            "intent_id": intent["id"], "receipt_id": intent["receipt_id"],
+            "source_task_id": intent["source_task_id"], "before_sha": previous_sha,
+            "after_sha": head_sha, "committed_at": intent["committed_at"],
         }
 
     async def _root_success_is_current_on(self, conn, operation, stage) -> bool:
@@ -5319,9 +5155,7 @@ class RepairService:
             return None
         if operation["target_kind"] == "parent":
             parent = (
-                await conn.execute(
-                    select(tasks).where(tasks.c.id == operation["parent_task_id"])
-                )
+                await conn.execute(select(tasks).where(tasks.c.id == operation["parent_task_id"]))
             ).mappings().one_or_none()
             checkpoint = (
                 await conn.execute(
@@ -5340,9 +5174,7 @@ class RepairService:
             ):
                 return None
             project_id = parent["project_id"]
-            target = BranchKey(
-                repository_id=parent["repo_id"], branch=parent["branch_name"]
-            )
+            target = BranchKey(repository_id=parent["repo_id"], branch=parent["branch_name"])
         elif operation["target_kind"] == "batch":
             batch = (
                 await conn.execute(
@@ -5385,9 +5217,7 @@ class RepairService:
     ) -> dict[str, Any] | None:
         if operation["target_kind"] != "parent" or int(repair_stage["ordinal"]) != 0:
             return None
-        expected_task_id = operation.get("verifier_task_id") or operation.get(
-            "parent_task_id"
-        )
+        expected_task_id = operation.get("verifier_task_id") or operation.get("parent_task_id")
         if repair_stage["repair_task_id"] is not None:
             if (
                 repair_stage["repair_task_id"] != expected_task_id
@@ -5417,14 +5247,10 @@ class RepairService:
             await conn.execute(select(tasks).where(tasks.c.id == expected_task_id))
         ).mappings().one_or_none()
         session = (
-            await conn.execute(
-                select(sessions).where(sessions.c.id == owner["session_id"])
-            )
+            await conn.execute(select(sessions).where(sessions.c.id == owner["session_id"]))
         ).mappings().one_or_none()
         workspace = (
-            await conn.execute(
-                select(workspaces).where(workspaces.c.id == owner["workspace_id"])
-            )
+            await conn.execute(select(workspaces).where(workspaces.c.id == owner["workspace_id"]))
         ).mappings().one_or_none()
         if (
             task is None
@@ -5461,11 +5287,7 @@ class RepairService:
             0,
             repair_task_id=expected_task_id,
             writer_kind="existing_verifier",
-            fence=Fence(
-                target=target,
-                owner_id=expected_task_id,
-                token=int(owner["fence_token"]),
-            ),
+            fence=Fence(target=target, owner_id=expected_task_id, token=int(owner["fence_token"])),
         )
 
     async def _is_primary_writer(
@@ -5504,9 +5326,7 @@ class RepairService:
         return bool(
             primary is not None
             and primary["repair_task_id"] == owner["owner_id"]
-            and self._writer_role_matches(
-                primary["writer_kind"], owner["owner_role"]
-            )
+            and self._writer_role_matches(primary["writer_kind"], owner["owner_role"])
             and owner["handoff_state"] in states
         )
 
@@ -5653,13 +5473,9 @@ class RepairService:
                 )
             )
             provenance = {
-                "old_task_id": old_task_id,
-                "new_task_id": debug_task_id,
-                "old_session_id": session_id,
-                "workspace_id": workspace_id,
-                "old_fence_token": old_token,
-                "new_fence_token": new_token,
-                "head_sha": head_sha,
+                "old_task_id": old_task_id, "new_task_id": debug_task_id,
+                "old_session_id": session_id, "workspace_id": workspace_id,
+                "old_fence_token": old_token, "new_fence_token": new_token, "head_sha": head_sha,
                 "instance_token": instance_token,
             }
             current_debug = (
@@ -6072,9 +5888,7 @@ class RepairService:
     def _batch_subject(revision: dict[str, Any]) -> dict[str, Any]:
         candidate_sha = revision.get("head_sha") or revision["construction_base_sha"]
         return {
-            "kind": "batch",
-            "revision": int(revision["revision"]),
-            "candidate_sha": candidate_sha,
+            "kind": "batch", "revision": int(revision["revision"]), "candidate_sha": candidate_sha,
         }
 
     async def _initial_dossier_on(
@@ -6091,10 +5905,8 @@ class RepairService:
     ) -> dict[str, Any]:
         if operation["target_kind"] == "parent":
             manifest = {
-                "kind": "parent_episode",
-                "parent_task_id": operation["parent_task_id"],
-                "episode_id": operation["episode_id"],
-                "generation": int(subject["generation"]),
+                "kind": "parent_episode", "parent_task_id": operation["parent_task_id"],
+                "episode_id": operation["episode_id"], "generation": int(subject["generation"]),
             }
         else:
             batch = (
@@ -6105,8 +5917,7 @@ class RepairService:
                 )
             ).mappings().one()
             manifest = {
-                "kind": "batch",
-                "batch_id": operation["batch_id"],
+                "kind": "batch", "batch_id": operation["batch_id"],
                 "source_manifest_digest": batch["source_manifest_digest"],
                 "revision": int(subject["revision"]),
             }
@@ -6129,11 +5940,8 @@ class RepairService:
             "hypotheses": [],
             "commands_attempted": [],
             "budget": {
-                "ordinal": 0,
-                "started_at": started_at,
-                "deadline_at": deadline_at,
-                "attempt_limit": limit,
-                "attempts": 0,
+                "ordinal": 0, "started_at": started_at, "deadline_at": deadline_at,
+                "attempt_limit": limit, "attempts": 0,
             },
         }
 
@@ -6147,9 +5955,7 @@ class RepairService:
         updated = dict(dossier or {})
         failed_checks = list(updated.get("failed_checks", []))
         if evidence["conclusion"] == "failure":
-            failed_checks.append(
-                {"evidence_id": evidence["id"], "checks": evidence["checks"]}
-            )
+            failed_checks.append({"evidence_id": evidence["id"], "checks": evidence["checks"]})
         updated["failed_checks"] = failed_checks
         metadata = dict(evidence, evidence_id=evidence["id"], attempt=int(evidence["attempt"]))
         sections = {
@@ -6292,11 +6098,9 @@ class RepairService:
         debug_dossier["starting_sha"] = self._subject_sha(primary["current_subject"])
         debug_dossier["branch_sha"] = self._subject_sha(primary["current_subject"])
         debug_dossier["budget"] = {
-            "ordinal": next_ordinal,
-            "started_at": now,
+            "ordinal": next_ordinal, "started_at": now,
             "deadline_at": now + boundary.repair.debug_seconds,
-            "attempt_limit": boundary.repair.debug_attempts,
-            "attempts": 0,
+            "attempt_limit": boundary.repair.debug_attempts, "attempts": 0,
         }
         debug_dossier["previous_stage"] = {
             "ordinal": previous_ordinal,
@@ -6317,10 +6121,8 @@ class RepairService:
             trigger_id = conflict["id"]
             debug_dossier["trigger_id"] = trigger_id
             debug_dossier["current_conflict"] = {
-                "intent_id": trigger_id,
-                "source_task_id": conflict["source_task_id"],
-                "source_head": conflict["source_head"],
-                "source_base": conflict["source_base"],
+                "intent_id": trigger_id, "source_task_id": conflict["source_task_id"],
+                "source_head": conflict["source_head"], "source_base": conflict["source_base"],
                 "expected_target": conflict["expected_target"],
                 "diagnostics": conflict["conflict_diagnostics"] or {},
             }
@@ -6425,13 +6227,9 @@ class RepairService:
         incident_id = f"repair-no-progress:{operation['id']}:{stage['ordinal']}"
         dossier = dict(stage["dossier"] or {})
         dossier["supervisor_recovery"] = {
-            "incident_id": incident_id,
-            "reason": reason,
-            "subject": stage["current_subject"],
-            "stage": int(stage["ordinal"]),
-            "attempts": attempts,
-            "deadline_at": stage["deadline_at"],
-            "repair_task_id": stage["repair_task_id"],
+            "incident_id": incident_id, "reason": reason, "subject": stage["current_subject"],
+            "stage": int(stage["ordinal"]), "attempts": attempts,
+            "deadline_at": stage["deadline_at"], "repair_task_id": stage["repair_task_id"],
             "recorded_at": now,
         }
         await conn.execute(update(integration_repair_stages).where(
@@ -6483,9 +6281,7 @@ class RepairService:
             .where(
                 integration_repair_stages.c.operation_id == operation["id"],
                 integration_repair_stages.c.ordinal == stage["ordinal"],
-                integration_repair_stages.c.state.in_(
-                    ("active", "awaiting_completion")
-                ),
+                integration_repair_stages.c.state.in_(("active", "awaiting_completion")),
             )
             .values(
                 state=terminal_state,
@@ -6563,9 +6359,7 @@ class RepairService:
         trigger_id: str,
     ):
         try:
-            policy = HierarchicalIntegrationPolicy.model_validate(
-                operation["policy_snapshot"]
-            )
+            policy = HierarchicalIntegrationPolicy.model_validate(operation["policy_snapshot"])
         except Exception as exc:
             raise _RepairInvariant("repair policy snapshot is corrupt") from exc
         if operation["target_kind"] not in {"parent", "batch"}:
@@ -6589,9 +6383,7 @@ class RepairService:
             except ValueError as exc:
                 raise _RepairInvariant(str(exc)) from exc
             project = (
-                await conn.execute(
-                    select(projects).where(projects.c.id == batch["project_id"])
-                )
+                await conn.execute(select(projects).where(projects.c.id == batch["project_id"]))
             ).mappings().one_or_none()
             subject = self._batch_subject(revision)
             if project is None or project["integration_repository_id"] != batch["repository_id"]:
@@ -6610,9 +6402,7 @@ class RepairService:
                 return None
             return policy, boundary, subject
         parent = (
-            await conn.execute(
-                select(tasks).where(tasks.c.id == operation["parent_task_id"])
-            )
+            await conn.execute(select(tasks).where(tasks.c.id == operation["parent_task_id"]))
         ).mappings().one_or_none()
         if parent is None:
             raise _RepairInvariant("parent repair target is missing")
@@ -6669,8 +6459,7 @@ class RepairService:
         ):
             return None
         subject = {
-            "kind": "parent",
-            "generation": int(checkpoint["generation"]),
+            "kind": "parent", "generation": int(checkpoint["generation"]),
             "head_sha": starting_sha,
         }
         return policy, boundary, subject
@@ -6752,9 +6541,7 @@ class RepairService:
                     own, operation_id, stage, reason_code, reason
                 )
         else:
-            await self._dispatch_unknown_notice_on(
-                conn, operation_id, stage, reason_code, reason
-            )
+            await self._dispatch_unknown_notice_on(conn, operation_id, stage, reason_code, reason)
         return self._dispatch_value(
             "unknown", operation_id, stage,
             repair_task_id=repair_task_id, writer_kind=writer_kind,
@@ -6787,10 +6574,7 @@ class RepairService:
     @staticmethod
     def _start_value(stage: Any, *, outcome: str) -> dict[str, Any]:
         return {
-            "outcome": outcome,
-            "operation_id": stage["operation_id"],
-            "stage": int(stage["ordinal"]),
-            "starting_sha": stage["starting_sha"],
-            "started_at": float(stage["started_at"]),
-            "deadline_at": float(stage["deadline_at"]),
+            "outcome": outcome, "operation_id": stage["operation_id"],
+            "stage": int(stage["ordinal"]), "starting_sha": stage["starting_sha"],
+            "started_at": float(stage["started_at"]), "deadline_at": float(stage["deadline_at"]),
         }

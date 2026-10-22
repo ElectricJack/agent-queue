@@ -52,6 +52,7 @@ HIBERNATION_CHANGES = ROOT / "tests/fixtures/contracts/hibernation-contract-chan
 SUPERVISOR_HEALTH_CHANGES = (
     ROOT / "tests/fixtures/contracts/supervisor-health-contract-changes.json"
 )
+SEALED_TARGET_CHANGES = ROOT / "tests/fixtures/contracts/sealed-target-repair-contract-changes.json"
 
 
 @pytest.fixture(autouse=True)
@@ -164,6 +165,18 @@ def _revert_supervisor_health_catalogue(catalogue):
     return catalogue
 
 
+def _revert_sealed_target_catalogue(catalogue):
+    """Remove exactly the sealed-target repair command, preserving prior bytes."""
+    changes = json.loads(SEALED_TARGET_CHANGES.read_text())
+    assert set(changes["added_commands"]) == {"integration_repair_target"}
+    for name, added in changes["added_commands"].items():
+        assert catalogue["fallback"].pop(name) == added["transport_definition"]
+        assert CONTRACTS.require(name).contract.fingerprint() == added["contract_fingerprint"]
+    previous = json.dumps(catalogue, indent=2) + "\n"
+    assert hashlib.sha256(previous.encode()).hexdigest() == changes["previous_cli_catalogue_sha256"]
+    return catalogue
+
+
 def _publication_changes():
     changes = json.loads(PUBLICATION_CHANGES.read_text())
     assert changes["source_base"] == "f9a7591766d69481b309e8733be795e62ab0e59e"
@@ -220,7 +233,9 @@ def _publication_catalogue():
     """Remove only the optional batch assignment to recover prior catalogue bytes."""
     changes = _batch_repair_changes()
     catalogue = _revert_hibernation_catalogue(
-        _revert_supervisor_health_catalogue(json.loads(render_command_catalogue()))
+        _revert_supervisor_health_catalogue(
+            _revert_sealed_target_catalogue(json.loads(render_command_catalogue()))
+        )
     )
     [(prop, schema)] = changes["added_property"].items()
     [definition] = [item for item in catalogue["explicit"] if item["name"] == "task_set"]
@@ -335,7 +350,10 @@ def test_transport_views_and_cli_serialization_preserve_golden_evidence():
     assert batch_repair["previous_cli_catalogue_sha256"] == publication["cli_catalogue_sha256"]
     assert hibernation["previous_cli_catalogue_sha256"] == batch_repair["cli_catalogue_sha256"]
     assert supervisor_health["previous_cli_catalogue_sha256"] == hibernation["cli_catalogue_sha256"]
-    assert actual == supervisor_health["cli_catalogue_sha256"]
+    sealed_target = json.loads(SEALED_TARGET_CHANGES.read_text())
+    assert sealed_target["previous_cli_catalogue_sha256"] == supervisor_health["cli_catalogue_sha256"]
+    assert actual == sealed_target["cli_catalogue_sha256"]
+    _revert_sealed_target_catalogue(json.loads(render_command_catalogue()))
     definitions = {d["name"]: d for d in effective_tool_definitions()}
     for name, definition in _discover_all_commands().items():
         assert definition == snapshot.commands[name].tool_definition()
