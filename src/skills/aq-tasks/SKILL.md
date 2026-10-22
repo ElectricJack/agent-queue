@@ -519,7 +519,8 @@ gating edge onto the filer or the filing's own parent chain is refused as
 `dependency_on_ancestor`, by a graph and by `aq task add-dependency`
 alike. Order the new tasks among themselves with local `needs`. A delivered
 plan still satisfies anything that depends on it after its branch is cleaned
-up, because readiness trusts the delivery receipt rather than the branch.
+up, because readiness checks Git containment of its retained source commit, not
+the branch or a delivery receipt.
 
 **Checklist ownership.** An unphased planner graph may put `subtasks:` on a
 child task. Those are checklist rows owned and settled by the worker that

@@ -45,31 +45,16 @@ Policy routes must resolve to reviewed artifacts available to the project.
 Configuration changes never replace an in-flight subject's frozen artifact.
 
 The git-first train accepts an optional `train` block in the hierarchical
-integration policy:
-
-```json
-{
-  "train": {
-    "cadence_seconds": 300,
-    "settling_cap_seconds": 1800
-  }
-}
-```
-
-This fragment belongs alongside the required `parent`, `root`,
-`branchless_parent` and `on_failed_child` fields. Both train timing values
-must be positive integers. Omitting `train` uses the timing defaults at
-runtime and keeps the field absent from serialized policy snapshots, so
-pre-existing snapshots still compare equal.
-
-A root seals after a quiet period of `cadence_seconds` since the latest
-admission, or at `settling_cap_seconds` since the first admission, whichever
-comes first. With the defaults, roots admitted at 0 s and 10 s share a batch
-at 310 s; arrivals every 200 s share a batch at the 1800 s cap. This corrects
-the fidelity spec's 300 s example to use the old settling rule, latest
-admission plus cadence. The status state is `settling`, with the admission
-times and `seal_at` in `detail`. Admission timing survives daemon restarts
-but never substitutes for the current PR gate or Git delivery proof.
+integration policy. Its `cadence_seconds` and `settling_cap_seconds` fields are
+**deprecated**: they still parse, so stored `policy_snapshot` values validate,
+but the fast flow ignores them. A lane dispatches as soon as it is idle and
+batches everything eligible while it is busy; there is no timer, and sealing
+now is the normal path rather than a bypass (spec 2026-10-12
+fast-smooth-integration §6.2). The one
+remaining reader is the `aq doctor` no-progress alert, which uses
+`settling_cap_seconds` (default 1800) as its threshold. Omitting `train` keeps
+the block absent from serialized snapshots, so pre-existing snapshots still
+compare equal; do not add the deprecated fields to new policy.
 Epic collection and local development targets freeze immediately.
 
 A red batch starts one task-free fixer session on its existing candidate branch.
@@ -117,7 +102,7 @@ Passing a legacy ordinary repair close reseals its current open batch and wakes
 the delivery target. A later visit recovers a missed close handoff, including after
 repair archival. Neither action changes frozen sources or bypasses candidate
 checks. `integration.train_batches_stalled` and `stall.sweep` flag sealed batches
-with no progress past the settling cap, allowing bounded visits and announced
+with no progress past `settling_cap_seconds` (an alert threshold only), allowing bounded visits and announced
 retry deadlines. Paused batches and unfinished repairs retain their own
 diagnostics. Inspect the named lane and checks before changing batch intent.
 
@@ -223,7 +208,7 @@ can resume; aborted or promoted batches cannot.
 
 The git-first path still rebuilds on target movement. It does not implement
 `on_main_moved: wait` or a `max_wait_seconds` limit on candidate rebuilds;
-these policy gaps are tracked separately from cadence and settling.
+these policy gaps are tracked separately.
 
 The project policy `hierarchical_integration_policy.prerequisite_branches` accepts
 `stacked` or `wait-for-parent`. Every project defaults to `stacked`; an explicitly

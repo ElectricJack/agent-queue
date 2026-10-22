@@ -161,20 +161,50 @@ wrapper), `RepairService.record_batch_rebuild_conflict_on`, and the unreferenced
 `return_green_delegate_branch_on` inside its transaction. Git-first batch conflict
 repair follows `batch-conflict-repair-starts.md`; subject visits own continuations.
 
-Actual SQL writes are `integration_delivery_queries._finalize_integration_promotion_on`,
-`records.RecordsPrimitives.record_receipt_on`, `records.ParentEpisodeRecords.record_disposition`,
-`child_delivery.ChildDelivery._reissue_receipt`, `truth_reconciler.GitTruthReconciler._repair`,
-and `cutover` receipt retagging.
-The records class names are described by their methods; future retirement must
-remove the write statements and their command/primitive routes, not just readers.
-S1 does not invoke or change these writes. Historical tables/foreign keys remain
-until rollback retention and separately approved destructive migration permit deletion.
+### Receipt writer retirement (S4 policy_docs)
+
+Receipts are read-only historical audit (spec §3.3); nothing active writes one as
+delivery authority. The S1 writers are retired: the promotion finalizer
+`finalize_integration_promotion` and its `DatabaseBackend` stub,
+`RecordsPrimitives.record_receipt[_on]` with its `RECORD_RECEIPT` binding (the
+primitive is unbound and invokes as `primitive_unavailable`), the
+`ChildDelivery._reissue_receipt` path (a receipt predating the current completion
+now blocks until Git-first delivery proves containment), and the
+settled-claim receipt fallback in `claim_queries`.
+
+Three write statements remain, none granting delivery:
+`truth_reconciler.GitTruthReconciler._repair` (audit after fresh Git
+verification, watchdog), `cutover._Activation.write_on` (operator target retag,
+cutover) and `records.ParentEpisodeRecords.record_disposition` (failed/withdrawn
+lifecycle audit, close_merge). `task_deletion` and `legacy_sqlite_import` copy
+rows through generic helpers. `tests/test_delivery_receipt_retirement.py` pins
+these writers and every module that still names the table with its owner;
+both sets only shrink, and admission consumers read none. Historical
+tables/foreign keys remain until rollback retention and a separately approved
+destructive migration permit deletion.
 
 `main_promotion.py`, named in the approved spec's baseline inventory, is absent in
 this checkout. Promotion runtime uses `promotion_steps.py` and train publication;
 there is no file to retire under the old name. `parent_adapters.py` has no receipt
 read/write at this base. Unrelated knowledge request receipts, playbook step receipts
 and CI attestations are separate contracts and are not delivery proof.
+
+### §16 supersession closure (S4 policy_docs)
+
+- Receipt authority: retired as above and ratcheted; §11.3 never restores it.
+- Timed root sealing: `train.cadence_seconds` and `train.settling_cap_seconds`
+  are deprecated. They parse so stored `policy_snapshot` values validate, and
+  dispatch ignores them. The doctor no-progress alert is the only reader of
+  `settling_cap_seconds`, and treats it as a threshold. Shipped instructions that
+  promise a quiet-period seal fail `tests/test_factory_policy_instructions.py`.
+- Table ratchet: the cap of 45 holds. The never-written
+  `integration_legacy_gate_applicability` is retired (revision `a00000000117`
+  drops it only while it is empty), and the cap was not raised. The integration
+  line cap is restored by its own owner task; this stage does not raise it.
+- Worker scope: synced worker templates grant only `integration_continue_close`
+  and `integration_batch_fix`. Both are session-scoped in `src/api/scope.py`.
+- Deferred: destroying historical tables needs its own approved migration. Files
+  missing from this checkout are not re-created.
 
 ## Equivalent-proof and retained-source consumers
 

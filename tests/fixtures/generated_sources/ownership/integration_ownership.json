@@ -2664,17 +2664,6 @@
         200
       ]
     },
-    "src/database/base.py::DatabaseBackend.finalize_integration_promotion": {
-      "reason": "Integration import, registered surface, schema, policy or adapter.",
-      "landing_span": [
-        857,
-        859
-      ],
-      "baseline_span": [
-        860,
-        862
-      ]
-    },
     "src/database/base.py::DatabaseBackend.get_active_integration_repair_for_task": {
       "reason": "Integration import, registered surface, schema, policy or adapter.",
       "landing_span": [
@@ -3126,17 +3115,6 @@
         398
       ]
     },
-    "src/database/legacy_sqlite_import.py::_ORDERED_TABLES[integration_legacy_gate_applicability]": {
-      "reason": "Integration import, registered surface, schema, policy or adapter.",
-      "landing_span": [
-        437,
-        438
-      ],
-      "baseline_span": [
-        437,
-        438
-      ]
-    },
     "src/database/legacy_sqlite_import.py::_ORDERED_TABLES[integration_legacy_suppression]": {
       "reason": "Integration import, registered surface, schema, policy or adapter.",
       "landing_span": [
@@ -3379,11 +3357,11 @@
         465
       ]
     },
-    "src/database/legacy_sqlite_import.py::import from src.database.tables import agent_profiles, agent_questions, agent_waits, agents, api_session_tokens, archived_tasks, chat_analyzer_suggestions, conversation_backfill_cursors, conversation_inputs, conversation_intake_gaps, dashboard_state_documents, digest_windows, doc_review_comments, doc_review_dispatches, doc_review_revisions, doc_reviews, epic_dependencies, escalation_actions, escalation_deliveries, escalation_messages, escalations, events, gates, hierarchy_migration_rejects, integration_attestation_publications, integration_batch_members, integration_batches, integration_branch_owners, integration_delegate_releases, integration_owner_recoveries, integration_candidate_member_results, integration_candidate_publications, integration_candidate_ref_mutations, integration_candidate_resolutions, integration_candidate_revisions, integration_check_evidence, integration_child_dispositions, integration_cleanup_items, integration_episode_receipt_acceptances, integration_history_waiver_consumptions, integration_history_waivers, integration_legacy_deliveries, integration_legacy_gate_applicability, integration_legacy_suppression, integration_operation_artifact_pins, integration_outbox, integration_outbox_artifact_pins, integration_parent_episodes, integration_parent_operation_completions, integration_parent_verification_evidence, integration_parent_verifications, integration_promotion_intents, integration_release_results, integration_repair_operations, integration_repair_stage_evidence, integration_repair_stages, integration_review_evidence, integration_rollout_transitions, integration_root_intent_members, job_outbox, job_workspace_pins, jobs, layout_dirty, layout_jobs, layout_reflow_requests, layout_tidy_request_pairs, layout_tidy_requests, merge_slots, message_discord_receipts, messages, metrics_samples, morning_report_coverage, morning_report_facts, morning_reports, outbound_deliveries, playbook_activations, playbook_artifacts, playbook_pending_events, playbook_step_receipts, playbook_v2_runs, playbook_waits, plugin_data, plugins, project_constraints, project_integration_leases, project_integration_schedules, project_layout_meta, project_onboarding_requests, projects, provider_availability, provider_availability_transitions, provider_usage_snapshots, rate_limits, repos, sessions, subagent_events, supervisor_conversations, supervisor_report_requests, system_config, task_assignment_routes, task_branch_origins, task_comments, task_completion_records, task_context, task_criteria, task_delivery_receipts, task_dependencies, task_gates, task_integration_checkpoints, task_labels, task_layout_cells, task_layouts, task_metadata, task_proposals, task_reroutes, task_results, task_session_attempts, task_subtasks, task_tools, task_workspace_requirements, tasks, token_ledger, transcript_checkpoints, workflows, workspace_kinds, workspaces": {
+    "src/database/legacy_sqlite_import.py::import from src.database.tables import agent_profiles, agent_questions, agent_waits, agents, api_session_tokens, archived_tasks, chat_analyzer_suggestions, conversation_backfill_cursors, conversation_inputs, conversation_intake_gaps, dashboard_state_documents, digest_windows, doc_review_comments, doc_review_dispatches, doc_review_revisions, doc_reviews, epic_dependencies, escalation_actions, escalation_deliveries, escalation_messages, escalations, events, gates, hierarchy_migration_rejects, integration_attestation_publications, integration_batch_members, integration_batches, integration_branch_owners, integration_delegate_releases, integration_owner_recoveries, integration_candidate_member_results, integration_candidate_publications, integration_candidate_ref_mutations, integration_candidate_resolutions, integration_candidate_revisions, integration_check_evidence, integration_child_dispositions, integration_cleanup_items, integration_episode_receipt_acceptances, integration_history_waiver_consumptions, integration_history_waivers, integration_legacy_deliveries, integration_legacy_suppression, integration_operation_artifact_pins, integration_outbox, integration_outbox_artifact_pins, integration_parent_episodes, integration_parent_operation_completions, integration_parent_verification_evidence, integration_parent_verifications, integration_promotion_intents, integration_release_results, integration_repair_operations, integration_repair_stage_evidence, integration_repair_stages, integration_review_evidence, integration_rollout_transitions, integration_root_intent_members, job_outbox, job_workspace_pins, jobs, layout_dirty, layout_jobs, layout_reflow_requests, layout_tidy_request_pairs, layout_tidy_requests, merge_slots, message_discord_receipts, messages, metrics_samples, morning_report_coverage, morning_report_facts, morning_reports, outbound_deliveries, playbook_activations, playbook_artifacts, playbook_pending_events, playbook_step_receipts, playbook_v2_runs, playbook_waits, plugin_data, plugins, project_constraints, project_integration_leases, project_integration_schedules, project_layout_meta, project_onboarding_requests, projects, provider_availability, provider_availability_transitions, provider_usage_snapshots, rate_limits, repos, sessions, subagent_events, supervisor_conversations, supervisor_report_requests, system_config, task_assignment_routes, task_branch_origins, task_comments, task_completion_records, task_context, task_criteria, task_delivery_receipts, task_dependencies, task_gates, task_integration_checkpoints, task_labels, task_layout_cells, task_layouts, task_metadata, task_proposals, task_reroutes, task_results, task_session_attempts, task_subtasks, task_tools, task_workspace_requirements, tasks, token_ledger, transcript_checkpoints, workflows, workspace_kinds, workspaces": {
       "reason": "Integration import, registered surface, schema, policy or adapter.",
       "landing_span": [
         24,
-        151
+        150
       ],
       "baseline_span": [
         24,
@@ -4885,17 +4863,6 @@
       "baseline_span": [
         4810,
         4852
-      ]
-    },
-    "src/database/tables.py::integration_legacy_gate_applicability": {
-      "reason": "Integration import, registered surface, schema, policy or adapter.",
-      "landing_span": [
-        4639,
-        4679
-      ],
-      "baseline_span": [
-        4706,
-        4746
       ]
     },
     "src/database/tables.py::integration_legacy_suppression": {
@@ -8854,9 +8821,12 @@
       "landing_span": null,
       "baseline_span": null
     },
-    "src/database/queries/claim_queries.py::import from src.database.tables import agents, integration_batches, integration_branch_owners, integration_repair_operations, integration_repair_stages, projects, sessions, task_branch_origins, task_completion_records, task_delivery_receipts, task_integration_checkpoints, task_metadata, task_session_attempts, task_workspace_requirements, tasks, workspace_kinds, workspaces": {
+    "src/database/queries/claim_queries.py::import from src.database.tables import agents, integration_batches, integration_branch_owners, integration_repair_operations, integration_repair_stages, projects, sessions, task_branch_origins, task_completion_records, task_integration_checkpoints, task_metadata, task_session_attempts, task_workspace_requirements, tasks, workspace_kinds, workspaces": {
       "reason": "Integration table imports used by shared workspace/claim ownership guards.",
-      "landing_span": null,
+      "landing_span": [
+        58,
+        75
+      ],
       "baseline_span": null
     },
     "src/database/queries/workspace_queries.py::WorkspaceQueryMixin.acquire_one_unlocked": {
@@ -19344,10 +19314,6 @@
       "reason": "Legacy integration lifecycle/protocol projection or replay state."
     },
     "src/database/tables.py::integration_legacy_deliveries": {
-      "classification": "retire",
-      "reason": "Legacy integration lifecycle/protocol projection or replay state."
-    },
-    "src/database/tables.py::integration_legacy_gate_applicability": {
       "classification": "retire",
       "reason": "Legacy integration lifecycle/protocol projection or replay state."
     },

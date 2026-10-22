@@ -65,7 +65,6 @@ from src.database.tables import (
     sessions,
     task_branch_origins,
     task_completion_records,
-    task_delivery_receipts,
     task_integration_checkpoints,
     task_metadata,
     task_session_attempts,
@@ -2457,25 +2456,6 @@ class ClaimQueryMixin:
                 "id": record["id"],
                 "detail": f"completion record {record['id']} (outcome {record['outcome']})",
             }
-        else:
-            receipt = (
-                await conn.execute(
-                    select(task_delivery_receipts.c.id, task_delivery_receipts.c.disposition)
-                    .where(
-                        task_delivery_receipts.c.source_task_id == task_id,
-                        task_delivery_receipts.c.disposition.in_(("code", "noop")),
-                        task_delivery_receipts.c.created_at >= attempt_started,
-                    )
-                    .order_by(task_delivery_receipts.c.created_at.desc())
-                    .limit(1)
-                )
-            ).mappings().first()
-            if receipt is not None:
-                evidence = {
-                    "kind": "delivery_receipt",
-                    "id": receipt["id"],
-                    "detail": f"{receipt['disposition']} delivery receipt {receipt['id']}",
-                }
         if evidence is None:
             marker = (
                 await conn.execute(
