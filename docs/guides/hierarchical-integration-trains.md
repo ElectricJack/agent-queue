@@ -57,6 +57,29 @@ the block absent from serialized snapshots, so pre-existing snapshots still
 compare equal; do not add the deprecated fields to new policy.
 Epic collection and local development targets freeze immediately.
 
+The installable `fast-smooth-train` playbook supplies the current train policy.
+Copy its shipped source into the project's playbooks, set its scope to
+`project:PROJECT_ID`, and compile and activate it through the ordinary playbook
+commands. Its `integration-policy.train` block chooses immediate admission or a
+finite wait, in-place repair or a finite wait for red/conflicting candidates, and
+the current required checks. Exact green proceeds through the existing publisher
+fence; explicit holds and competing live writers remain binding. Unknown facts
+are retried with a due time. This policy has no repair tasks or exhaustion gates.
+
+Disabling that project activation stops new train batches and fenced writes,
+including author-assisted integration, while workers can publish and close their
+source branches. It preserves frozen sources and candidates. Re-enabling resumes
+from Git. Editing required check names/version/producer affects the same pending
+candidate; it does not abort and requeue that batch. The publisher rechecks the
+current check policy inside its fence, and activation edits serialize with writes.
+
+The conventional activation id is `fast-smooth-train`. For a renamed project
+copy, set the project integration policy's `train.playbook_id` to its id. A missing,
+unreadable or unhealthy bound artifact causes a finite retry, never legacy
+publication. Existing projects without this activation or binding keep their
+pre-install behavior until their operator installs it. The shipped template is
+available on installation but is not automatically activated on existing projects.
+
 A red batch starts one task-free fixer session on its existing candidate branch.
 The session uses a retained checkout outside task slots; subsequent red results
 reuse both the session and checkout. It creates no repair task, claim or successor
