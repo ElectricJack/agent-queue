@@ -237,6 +237,61 @@ async def test_budget_expiry_only_notifies_supervisor_and_keeps_claim(scenario):
     assert (await s.db.get_session("author")).desired_state == "running"
 
 
+@pytest.mark.parametrize("principal,owner_kind,owner_id,project_id", [
+    ("agent", "integration", "own", "p"),
+    ("service", "task", "own", "p"),
+    ("service", "integration", "foreign", "p"),
+    ("service", "integration", "own", "foreign"),
+])
+async def test_close_budget_refuses_foreign_service_or_owner(
+    scenario, principal, owner_kind, owner_id, project_id,
+):
+    from src.waits.conditions import Scope, WaitError
+    from src.waits.registry import build_registry
+
+    s = scenario
+    registry = build_registry()
+    condition = registry.normalise({"kind": "close_merge", "operation_id": s.row["id"],
+                                    "budget_seconds": 90})
+    scope = Scope(project_id, owner_kind, s.row["id"] if owner_id == "own" else owner_id,
+                  principal=principal)
+    async with s.db._engine.connect() as conn:
+        with pytest.raises(WaitError) as error:
+            await registry.verify(conn, condition, scope)
+    assert error.value.code == "wait.out_of_scope"
+
+
+@pytest.mark.parametrize("state", ["finished", "deferred", "cancelled"])
+async def test_close_budget_reuses_one_wait_and_settles_from_operation(scenario, state):
+    from src.waits.conditions import Condition
+    from src.waits.registry import build_registry
+    from tests.test_wait_decisions import service_for
+
+    s = scenario
+    s.runtime.policy.return_value = ClosePolicy(True, author_budget_seconds=90, digest="live")
+    s.runtime.check.return_value = {"state": "failed"}
+    first = await s.runtime.run(s.row["id"])
+    second = await s.runtime.run(s.row["id"])
+    assert first["budget_wait_id"] == second["budget_wait_id"]
+    async with s.db._engine.connect() as conn:
+        wait = (await conn.execute(select(wait_records))).mappings().one()
+        assert wait["origin"] == "integration" and wait["owner_id"] == s.row["id"]
+        assert wait["escalate_at"] - wait["created_at"] == 90
+        assert wait["session_id"] is None and wait["outcome"] == "pending"
+        condition = Condition.from_record(wait["condition"])
+        assert (await build_registry().observe(conn, condition)).state == "unsatisfied"
+    row = await s.runtime.store.get(s.row["id"])
+    await s.runtime.store.save(row, state=state)
+    service = service_for(SimpleNamespace(db=s.db, registry=build_registry()),
+                          [wait["created_at"] + 1])
+    assert await service.lease()
+    assert await service.tick()
+    async with s.db._engine.connect() as conn:
+        settled = (await conn.execute(select(wait_records))).mappings().one()
+        assert settled["outcome"] == "satisfied"
+        assert settled["result_ref"] == "close_merge:" + s.row["id"]
+
+
 async def test_live_policy_edits_and_retired_route_do_not_pin_close(scenario):
     from src.integration.close_runtime import current_policy
 

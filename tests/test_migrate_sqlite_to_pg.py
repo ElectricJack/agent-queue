@@ -254,6 +254,45 @@ async def _empty_pg_adapter():
     return adapter
 
 
+@pytest.mark.skipif(not POSTGRES_DSN, reason="POSTGRES_TEST_DSN not set")
+async def test_legacy_import_preserves_existing_postgres_close_audit(tmp_path) -> None:
+    """Revision 115 has no legacy source; populated PG audit targets must refuse import."""
+    from sqlalchemy import insert, select
+
+    from src.database.legacy_sqlite_import import migrate_sqlite_to_postgres
+
+    assert "integration_close_attempts" not in _legacy_source_metadata().tables
+    target = await _empty_pg_adapter()
+    attempts = metadata.tables["integration_close_attempts"]
+    retained = {
+        "id": "close-audit", "project_id": "existing", "task_id": "child",
+        "session_id": "author", "claim_epoch": 3, "repository_id": "repo",
+        "target_task_id": "parent", "target_ref": "refs/heads/parent",
+        "source_oid": "a" * 40, "candidate_oid": "b" * 40,
+        "candidate_ref": "refs/heads/aq/close/close-audit", "candidate_path": "/retained",
+        "state": "deferred", "version": 4, "attempts": 2,
+        "evidence": {"checks": {"head": "b" * 40, "outcome": "failed"}},
+        "close_args": {"summary": "Retain author's work"},
+        "budget_wait_id": "budget", "created_at": 1.0, "updated_at": 2.0,
+    }
+    try:
+        async with target._engine.begin() as conn:
+            await conn.execute(insert(metadata.tables["projects"]),
+                               {"id": "existing", "name": "Existing", "created_at": 0.0})
+            await conn.execute(insert(attempts), retained)
+        path = await _seeded_source(tmp_path)
+        with pytest.raises(RuntimeError, match="already contains data"):
+            await migrate_sqlite_to_postgres(path, POSTGRES_DSN)
+        async with target._engine.connect() as conn:
+            actual = (await conn.execute(select(attempts))).mappings().one()
+            assert {key: actual[key] for key in retained} == retained
+            assert (await conn.execute(select(metadata.tables["projects"].c.id))).scalars().all() == [
+                "existing",
+            ]
+    finally:
+        await target.close()
+
+
 async def _seeded_source(tmp_path, *, with_legacy_identities: bool = False) -> str:
     """A synthetic legacy SQLite source with rows across the deferred-FK tables:
     a self-FK parent pointer (tasks) and the agents⇄tasks circular FK."""
