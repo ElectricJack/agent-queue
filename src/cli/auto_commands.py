@@ -149,6 +149,7 @@ HANDCRAFTED_COVERAGE = {
     # integration.py — positional identities and explicit rollout CAS fences.
     "integration_release_held_gate",
     "integration_status",
+    "integration_continue_close",
     "integration_trust_manifest",
     "integration_app_verify",
     "integration_reevaluate_repair",
@@ -201,6 +202,7 @@ EXCLUDED = {
     "wait_source_commit", "wait_deadline_fire", "wait_resume_dispatch",
     "wait_sleep_decide", "wait_evict", "scheduler_wait_sync",
     "integration_train_tick",  # daemon-only git-first train dispatch
+    "integration_reconcile_git_truth",  # daemon-only projection repair
     "job_reconcile",
     "job_submit_integration",
 

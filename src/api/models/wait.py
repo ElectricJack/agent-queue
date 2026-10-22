@@ -24,6 +24,7 @@ class WaitResponse(BaseModel):
     continuation_id: str | None = None
     warnings: list[str] = Field(default_factory=list)
     next_step: str | None = None
+    changed: bool | None = None
 
 
 class WaitListResponse(BaseModel):

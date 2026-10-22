@@ -136,7 +136,7 @@ class ArchiveQueryMixin:
     async def observe_removal_delivery(self, root_ids, *, for_mutation=False):
         """Git evidence for the subtrees of *root_ids*, taken before any transaction.
 
-        Development work and active Git-first hierarchy work are fetched and
+        Development and hierarchical work are fetched and
         evaluated once per repository however many roots a sweep archives. A target
         that keeps moving yields no view: the guard then holds that work as
         unknown rather than trusting a stale answer.
@@ -157,13 +157,12 @@ class ArchiveQueryMixin:
             for root_id in dict.fromkeys(root_ids):
                 sensitive |= await delivery_sensitive_ids(
                     conn, await self.subtree_ids(root_id, conn=conn),
-                    hierarchical=truthful is not None,
+                    hierarchical=True,
                 )
         if not sensitive:
             return None
         view = await observer.observe(
-            sensitive, **({"target_loader": delivery_targets} if truthful is not None
-                          and not for_mutation else {}),
+            sensitive, **({"target_loader": delivery_targets} if not for_mutation else {}),
         )
         return view if await view.fresh() else None
 
