@@ -15890,8 +15890,8 @@
         "tags": [
           "supervisor"
         ],
-        "summary": "Restart a named supervisor through AQ with current profile permissions, model and effort. Starts a fresh conversation by default; --resume resumes its prior conversation. Requires global admin.",
-        "description": "Restart a named supervisor through AQ with current profile permissions, model and effort. Starts a fresh conversation by default; --resume resumes its prior conversation. Requires global admin.",
+        "summary": "Restart a named supervisor through AQ with current profile permissions, model and effort. Starts a fresh conversation by default; --resume resumes its prior conversation. Requires a local operator or live supervisor within the target project scope.",
+        "description": "Restart a named supervisor through AQ with current profile permissions, model and effort. Starts a fresh conversation by default; --resume resumes its prior conversation. Requires a local operator or live supervisor within the target project scope.",
         "operationId": "supervisor_restart",
         "requestBody": {
           "content": {
@@ -74653,6 +74653,18 @@
               }
             ],
             "title": "Failed Preparation"
+          },
+          "supervisor_health": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Supervisor Health"
           },
           "quarantined_at": {
             "anyOf": [

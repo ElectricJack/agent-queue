@@ -185,6 +185,42 @@ async def test_native_dispatch_owns_defaults_and_explicit_own_sender(api, explic
     assert (row["from_kind"], row["from_id"]) == ("session", "s")
 
 
+async def test_global_supervisor_cli_status_acknowledges_its_report(api, env, monkeypatch):
+    message = await env.db.create_message(
+        project_id="p", from_kind="session", from_id="sup-p", to_kind="session",
+        to_id="supervisor-global", body="report for the global supervisor",
+    )
+    assert await env.db.claim_message_notification(message.id, now=time.time(), retry_delay=0)
+    loop = asyncio.get_running_loop()
+    real_client = CLIClient(base_url="http://test", token=api.tokens["sup-global"])
+    async with httpx.AsyncClient(
+        transport=api.http._transport, base_url="http://test",
+        headers={"Authorization": f"Bearer {api.tokens['sup-global']}"},
+    ) as http:
+        real_client._http = http
+
+        async def execute(name, args):
+            return await asyncio.wrap_future(asyncio.run_coroutine_threadsafe(
+                real_client.execute(name, args), loop,
+            ))
+
+        @asynccontextmanager
+        async def cli_client(_api_url):
+            yield SimpleNamespace(execute=execute)
+
+        monkeypatch.setattr("src.cli.messages._get_client", cli_client)
+        result = await asyncio.to_thread(CliRunner().invoke, cli, [
+            "message", "status", message.id, "--json",
+        ])
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.output)["data"]
+    assert data["state"] == "acknowledged"
+    assert data["message"]["body"] == message.body
+    stored = await env.db.get_message(message.id)
+    assert stored.read_at is not None and stored.delivered_at is not None
+    assert not await env.db.claim_message_notification(message.id, now=time.time() + 600, retry_delay=0)
+
+
 @pytest.mark.parametrize("named", [False, True])
 @pytest.mark.parametrize("generated", [False, True])
 async def test_request_model_serialization_preserves_server_sender_default(api, env, named, generated):

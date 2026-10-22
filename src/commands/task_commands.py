@@ -4786,52 +4786,56 @@ class TaskCommandsMixin:
         return result
 
     async def _cmd_restart_task(self, args: dict) -> dict:
-        task = await self.db.get_task(args["task_id"])
-        if not task:
-            return {"success": False, "error": f"Task '{args['task_id']}' not found"}
-        if task.status == TaskStatus.IN_PROGRESS:
-            return {"success": False, "error": "Task is currently in progress. Stop it first."}
-        project = await self.db.get_project(task.project_id)
-        managed = (
-            project is not None
-            and project.hierarchical_integration_mode in {"hierarchy", "train"}
-        )
-        if managed and task.status in _RESTART_RESERVATION_STATUSES:
-            # A repair delegate owns no branch origin of its own: the claim
-            # frontier admits it only on the exact reserved ``repair`` fence of
-            # its operation's branch, so it restarts through that handoff
-            # rather than through a bare status flip.
-            if task.created_by_kind == "integration_repair":
-                return await self._restart_repair_delegate(task)
-            if task.status is TaskStatus.BLOCKED and await self.db.get_integration_checkpoint(
-                task.id
-            ):
-                from src.integration.canonical_reservation import (
-                    reserve_canonical_task_branch,
-                )
+        from src.wait_runtime.restart import readmit, release_continuations, restart_lock
+        from src.waits.conditions import WaitError
 
-                reservation = await reserve_canonical_task_branch(self.db, task.id)
-                if reservation["outcome"] not in {"acquired", "already_reserved"}:
-                    return {"success": False, "error": (
-                        f"Cannot restart integration task: {reservation['reason']}. "
-                        "For a stopped writer, preview "
-                        f"aq integration release-owner --task-id {task.id} --dry-run; "
-                        "apply only after its provider-backed proof succeeds, then retry restart."
-                    )}
-        old_status = task.status.value
-        await self.db.transition_task(
-            args["task_id"],
-            TaskStatus.READY,
-            context="restart_task",
-            retry_count=0,
-            assigned_agent_id=None,
-        )
-        return {
-            "success": True,
-            "restarted": args["task_id"],
-            "title": task.title,
-            "previous_status": old_status,
-        }
+        # Resume's task-control lock covers continuation cleanup and readmission.
+        async with restart_lock(self, args["task_id"]):
+            task = await self.db.get_task(args["task_id"])
+            if not task:
+                return {"success": False, "error": f"Task '{args['task_id']}' not found"}
+            if task.status == TaskStatus.IN_PROGRESS:
+                return {"success": False, "error": "Task is currently in progress. Stop it first."}
+            try:
+                released = await release_continuations(self, task)
+            except WaitError as exc:
+                return {"success": False, "error": str(exc), "error_code": exc.code}
+            project = await self.db.get_project(task.project_id)
+            managed = (
+                project is not None
+                and project.hierarchical_integration_mode in {"hierarchy", "train"}
+            )
+            if managed and task.status in _RESTART_RESERVATION_STATUSES:
+                # A repair delegate owns no branch origin of its own: the claim
+                # frontier admits it only on the exact reserved ``repair`` fence of
+                # its operation's branch, so it restarts through that handoff
+                # rather than through a bare status flip.
+                if task.created_by_kind == "integration_repair":
+                    return await self._restart_repair_delegate(task)
+                if task.status is TaskStatus.BLOCKED and await self.db.get_integration_checkpoint(
+                    task.id
+                ):
+                    from src.integration.canonical_reservation import (
+                        reserve_canonical_task_branch,
+                    )
+
+                    reservation = await reserve_canonical_task_branch(self.db, task.id)
+                    if reservation["outcome"] not in {"acquired", "already_reserved"}:
+                        return {"success": False, "error": (
+                            f"Cannot restart integration task: {reservation['reason']}. "
+                            "For a stopped writer, preview "
+                            f"aq integration release-owner --task-id {task.id} --dry-run; "
+                            "apply only after its provider-backed proof succeeds, then retry restart."
+                        )}
+            old_status = task.status.value
+            if not await readmit(self, task, released):
+                return {"success": False, "error": "Task changed during cold restart; retry."}
+            return {
+                "success": True,
+                "restarted": args["task_id"],
+                "title": task.title,
+                "previous_status": old_status,
+            }
 
     async def _restart_repair_delegate(self, task) -> dict:
         """Restart an integration repair delegate through its own reservation.

@@ -1157,3 +1157,54 @@ async def test_publish_command_refuses_worker_then_settles_via_service(promotion
         assert json.loads(await conn.scalar(select(task_context.c.content))) == e.meta
         assert json.loads(await conn.scalar(select(task_metadata.c.value).where(
             task_metadata.c.key == "promotion_result")))["tag_oid"]
+
+
+async def test_aborting_a_promotion_intent_fails_its_task(promotion):
+    """`aq integration abort` must not leave the intent's task IN_PROGRESS forever."""
+    from src.database.queries.task_queries import RECOVERY_FAILURE_AT_KEY
+
+    e = promotion
+    await e.store.set_intent(e.batch.id, "aborted", reason="red on dev", operator_id="operator")
+    async with e.db._engine.connect() as conn:
+        assert await conn.scalar(select(tasks.c.status)) == "FAILED"
+        assert await conn.scalar(select(task_metadata.c.value).where(
+            task_metadata.c.key == RECOVERY_FAILURE_AT_KEY)) is not None
+
+
+async def test_stranded_promotion_task_reaches_sweep_and_cleanup_fails_it(promotion):
+    from importlib import import_module
+
+    from src.config import AppConfig
+    from src.doctor.models import DoctorContext
+    from src.integration.promotion_steps import fail_stranded_promotion_tasks_on
+
+    e = promotion
+    stall = import_module("src.doctor.stall_checks")
+    ctx = DoctorContext(db=e.db, config=AppConfig())
+    assert await stall._stranded_promotion_findings(ctx, {"p"}) == []
+    async with e.db._engine.begin() as conn:
+        # A terminal intent written by a path that never projected its task.
+        await conn.execute(update(integration_batches).values(
+            intent="aborted", lifecycle="aborted", human_abort_reason="red on dev"))
+    [finding] = await stall._stranded_promotion_findings(ctx, {"p"})
+    assert finding["kind"] == "stranded_promotion_task" and finding["severity"] == "error"
+    assert finding["task_id"] == e.member.task_id and finding["batch_id"] == e.batch.id
+    assert finding["human_abort_reason"] == "red on dev"
+    assert stall._SUBJECTS[finding["kind"]] == ("task", "task_id")
+    assert await stall._stranded_promotion_findings(ctx, {"other"}) == []
+    async with e.db.immediate() as conn:
+        assert await fail_stranded_promotion_tasks_on(e.db, conn, now=2) == [e.member.task_id]
+    async with e.db.immediate() as conn:
+        assert await fail_stranded_promotion_tasks_on(e.db, conn, now=3) == []
+    assert await stall._stranded_promotion_findings(ctx, {"p"}) == []
+
+
+async def test_promoted_intent_task_is_never_failed_as_stranded(promotion):
+    from src.integration.promotion_steps import fail_stranded_promotion_tasks_on
+
+    e = promotion
+    async with e.db._engine.begin() as conn:
+        await conn.execute(update(integration_batches).values(lifecycle="promoted"))
+    async with e.db.immediate() as conn:
+        assert await fail_stranded_promotion_tasks_on(e.db, conn, now=2) == []
+        assert await conn.scalar(select(tasks.c.status)) == "IN_PROGRESS"

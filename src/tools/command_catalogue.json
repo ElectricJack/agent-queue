@@ -1875,7 +1875,7 @@
     },
     {
       "name": "supervisor_restart",
-      "description": "Restart a named supervisor through AQ with current profile permissions, model and effort. Starts a fresh conversation by default; --resume resumes its prior conversation. Requires global admin.",
+      "description": "Restart a named supervisor through AQ with current profile permissions, model and effort. Starts a fresh conversation by default; --resume resumes its prior conversation. Requires a local operator or live supervisor within the target project scope.",
       "input_schema": {
         "type": "object",
         "properties": {

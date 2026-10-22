@@ -1427,7 +1427,49 @@ class TestClaim:
         slots.ensure_slot_checkout.assert_awaited_once()
         slots.reset_slot_for_task.assert_not_awaited()
 
-    @pytest.mark.parametrize("protection", [None, "task", "session", "claim", "other_project"])
+    @pytest.mark.parametrize("poisoned", [True, False])
+    async def test_a_slot_contradicting_its_sentinel_releases_its_own_lock(
+        self, handler, db, tmp_path, poisoned,
+    ):
+        """sharp-quest-65 (2026-10-21): a restarted task's slot was left
+        detached under its sentinel.  The failed prepare kept the session's
+        agent lock, so the session retried there and slot restore skipped it.
+        A sentinel disagreement now gives the lock back, drains, and
+        quarantines the slot; a transient git error keeps the old ladder."""
+        from src.git.manager import GitError, SlotSourceDisagreement
+        from src.workspace_disable import CLAIM_FAILURES, reason_code
+
+        await mktask(db, "t1", profile_id="worker")
+        sid, _wd = await pool_session(db, tmp_path)
+        await db.update_workspace("ws-agent-1", slot_index=0, base_workspace_id="base")
+        slots = handler.orchestrator._worktree_slots.return_value
+        message = "slot ws-agent-1 branch disagrees with its source sentinel; checkout left unchanged"
+        slots.ensure_slot_checkout = AsyncMock(
+            side_effect=SlotSourceDisagreement(message) if poisoned else GitError(message)
+        )
+
+        result = await settled_claim(scoped(handler, sid), {"next": True})
+
+        task = await db.get_task("t1")
+        assert task.status == TaskStatus.READY
+        assert (await db.get_task_meta("t1", "slot_reset_failure"))["attempt"] == 1
+        assert await db.get_task_meta("t1", "claim_prepare_backoff_until")
+        ws = await db.get_workspace("ws-agent-1")
+        session = await db.get_session(sid)
+        if poisoned:
+            assert result["result"] == "drain_requested"
+            assert "drain-ack" in result["reason"] and "quarantined" in result["reason"]
+            assert ws.locked_by_agent_id is None
+            assert not ws.enabled
+            assert reason_code(ws.disabled_reason) == CLAIM_FAILURES
+            assert session.desired_state == "stopped"
+        else:
+            assert result["result"] == "prepare_failed"
+            assert ws.locked_by_agent_id == "agent-1"
+            assert ws.enabled
+            assert session.desired_state != "stopped"
+
+    @pytest.mark.parametrize("protection",[None, "task", "session", "claim", "other_project"])
     async def test_claim_preserves_misplaced_workspace_locks(
         self, handler, db, tmp_path, protection,
     ):
@@ -6545,6 +6587,69 @@ async def test_slow_frontier_view_fails_closed_within_its_bound(
         assert mode.delivered_prerequisite_ids == frozenset()
         assert mode.default_prerequisite_ids == frozenset()
         assert mode.parent_contained_task_ids == frozenset()
+
+
+def test_claim_request_limit_answers_inside_the_cli_read_timeout():
+    from src.cli.client import _COMMAND_TIMEOUTS
+    from src.commands import claim_commands
+
+    assert claim_commands._CLAIM_REQUEST_LIMIT_SECONDS < _COMMAND_TIMEOUTS["task_claim"]
+
+
+@pytest.mark.parametrize("bound", ["observation", "request"])
+async def test_claim_with_a_hanging_git_view_answers_and_takes_no_slot(
+    handler, db, tmp_path, monkeypatch, development_admission, bound,
+):
+    """A Git observation that never answers ends the claim with a definite no-work
+    answer inside its bound, and the session takes no slot and no task."""
+    import asyncio
+
+    import src.integration.delivery_observer as module
+    from src.commands import claim_commands
+
+    await db.update_project(PROJECT_ID, hierarchical_integration_mode="train",
+                            repo_url=str(development_admission.remote))
+
+    class Hanging:
+        truth = object()
+        READ_MAX_AGE = 30.0
+
+        async def prerequisite_view(self, *args, **kwargs):
+            await asyncio.sleep(3600)
+
+    db.set_prerequisite_observer(Hanging())
+    if bound == "observation":
+        monkeypatch.setattr(module, "FRONTIER_MODE_TIMEOUT_SECONDS", 0.05)
+    else:
+        monkeypatch.setattr(claim_commands, "_CLAIM_REQUEST_LIMIT_SECONDS", 0.05)
+    sid, work_dir = await pool_session(db, tmp_path)
+    result = await asyncio.wait_for(
+        scoped(handler, sid)._cmd_task_claim({"next": True}), 5,
+    )
+    assert result["result"] == "no_ready_work"
+    assert result["reason"] == {
+        "observation": "delivery_observation_timeout", "request": "claim_deadline_exceeded",
+    }[bound]
+    task = await db.get_task("dependent")
+    assert task.status == TaskStatus.READY and not task.claim_epoch
+    session = await db.get_session(sid)
+    assert session.task_id is None and session.claim_phase is None
+    assert not (work_dir / ".aq" / "claim.json").exists()
+
+
+async def test_claim_past_its_request_limit_takes_no_task(handler, db, tmp_path, monkeypatch):
+    """A request whose caller has given up never takes the slot, even with work ready."""
+    from src.commands import claim_commands
+
+    await mktask(db, "t1", profile_id="worker")
+    monkeypatch.setattr(claim_commands, "_CLAIM_REQUEST_LIMIT_SECONDS", 0.0)
+    sid, work_dir = await pool_session(db, tmp_path)
+    result = await scoped(handler, sid)._cmd_task_claim({"next": True})
+    assert (result["result"], result["reason"]) == ("no_ready_work", "claim_deadline_exceeded")
+    task = await db.get_task("t1")
+    assert task.status == TaskStatus.READY and not task.claim_epoch
+    assert (await db.get_session(sid)).task_id is None
+    assert not (work_dir / ".aq" / "claim.json").exists()
 
 
 @pytest.mark.parametrize("misleading_history", [False, True])
