@@ -81,7 +81,9 @@ logger = logging.getLogger(__name__)
 #: ``build_capacity_reasons`` produces still applies to the pull path: a
 #: paused project or an exhausted budget fails ``_admission_reason`` on the
 #: claim, and no free workspace starves ``_launch_pool_session``.
-_PUSH_ONLY_REASON_CODES = frozenset({"no_idle_agent", "no_compatible_agent"})
+_PUSH_ONLY_REASON_CODES = frozenset({
+    "no_idle_agent", "no_compatible_agent", "project_agent_cap",
+})
 
 #: Two-key PostgreSQL advisory-lock namespace "AQPK" — the standing-parent
 #: resolver (graph-visibility A2).  Deliberately **not**
