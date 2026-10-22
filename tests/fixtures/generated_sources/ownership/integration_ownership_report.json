@@ -1043,20 +1043,62 @@
     "phase": "transition",
     "fixed_replacement_allowance": 15000,
     "engine_cap": 97627,
-    "owned_total_cap": 156792,
-    "table_cap": 45,
+    "owned_total_cap": 160145,
+    "table_cap": 46,
     "expires_at": "s4_modules",
     "automatic_baseline_increase": false,
     "original_owned_total_cap": 155499,
     "batch_exception": {
-      "batch_id": "train-77f0d8e451f6aed08d608e443031047a",
-      "decision_message_id": "msg-edb5f857de344716a38857406fa69958",
+      "batch_id": "train-56f15aff49843c6989224397ef6d7044",
+      "decision_message_id": "msg-dbb0120c6172499081721c033e894b39",
+      "decision_message_ids": [
+        "msg-7ed85e78d1af4f3e85b485a57967e794",
+        "msg-381054d695e64055979a687c4d811e7e",
+        "msg-dbb0120c6172499081721c033e894b39"
+      ],
       "decision_record": "record:2720bdbe-7521-427e-8e72-1f40a3ff9818",
-      "measured_source_revision": "d00e25221856145f24777f8b016a008b4e954bca",
+      "decision_record_revision": "9aa415ea-fe89-4f8e-a636-a4328d676b66",
+      "measured_source_revision": "aeb45642df379314adea0689bbf0c78125ce3f20",
       "original_owned_total_cap": 155499,
-      "measured_owned_total": 156792,
-      "delta": 1293,
+      "measured_owned_total": 160145,
+      "delta": 4646,
+      "predecessors": [
+        {
+          "batch_id": "train-77f0d8e451f6aed08d608e443031047a",
+          "decision_message_id": "msg-edb5f857de344716a38857406fa69958",
+          "decision_record": "record:2720bdbe-7521-427e-8e72-1f40a3ff9818",
+          "measured_source_revision": "d00e25221856145f24777f8b016a008b4e954bca",
+          "original_owned_total_cap": 155499,
+          "measured_owned_total": 156792,
+          "delta": 1293,
+          "restore_task": "azure-ridge-72",
+          "expires_at": "s4_modules"
+        },
+        {
+          "batch_id": "batch48",
+          "measured_source_revision": "cbfd455b0e9f053854a2c1becfa1efaeef231582",
+          "authorized_delta": 2166,
+          "measured_owned_total": 158958,
+          "provenance": "Supervisor-authorized predecessor; added once after batch77 final delta1293."
+        }
+      ],
+      "batch_measured_delta": 1187,
       "restore_task": "azure-ridge-72",
+      "expires_at": "s4_modules"
+    },
+    "table_exception": {
+      "batch_id": "train-56f15aff49843c6989224397ef6d7044",
+      "decision_message_id": "msg-dbb0120c6172499081721c033e894b39",
+      "decision_record": "record:2720bdbe-7521-427e-8e72-1f40a3ff9818",
+      "source_revision": "2f66afabac4add24a1e4eaa7927ae0798ec344bf",
+      "original_table_cap": 45,
+      "delta": 1,
+      "table_cap": 46,
+      "tables": [
+        "integration_close_attempts"
+      ],
+      "restore_task": "stark-willow-95.17",
+      "verification_task": "stark-willow-95.18",
       "expires_at": "s4_modules"
     }
   },
@@ -13605,7 +13647,1643 @@
     "integration_close_attempts": {
       "task": "stark-willow-95.15",
       "authority": "Approved fast-smooth-integration section 5 and current task close contract, 2026-10-21",
-      "purpose": "Version-fenced retained author candidate and wait evidence, never delivery truth. Additive table charged; no cap increase."
+      "purpose": "Version-fenced retained author candidate and wait evidence, never delivery truth. Charged as the sole approved temporary +1 transition table, with cap46 and zero table headroom.",
+      "exception": {
+        "batch_id": "train-56f15aff49843c6989224397ef6d7044",
+        "decision_message_id": "msg-dbb0120c6172499081721c033e894b39",
+        "decision_record": "record:2720bdbe-7521-427e-8e72-1f40a3ff9818",
+        "source_revision": "2f66afabac4add24a1e4eaa7927ae0798ec344bf",
+        "original_table_cap": 45,
+        "delta": 1,
+        "table_cap": 46,
+        "tables": [
+          "integration_close_attempts"
+        ],
+        "restore_task": "stark-willow-95.17",
+        "verification_task": "stark-willow-95.18",
+        "expires_at": "s4_modules"
+      }
     }
+  },
+  "complete_candidate": {
+    "batch_id": "train-56f15aff49843c6989224397ef6d7044",
+    "measured_source_revision": "aeb45642df379314adea0689bbf0c78125ce3f20",
+    "frozen_sources_in_merge_order": [
+      "bbcbd5a61d9c59e0a507f2e30160624e44196fca",
+      "2f66afabac4add24a1e4eaa7927ae0798ec344bf"
+    ],
+    "groups": {
+      "shared": 61322,
+      "companions": 11877,
+      "engine": 84546,
+      "policy_sources": 1010,
+      "policy": 489,
+      "ui": 262,
+      "guards": 639
+    },
+    "owned_total": 160145,
+    "tables": {
+      "integration_source_ci": [
+        "src/database/tables.py",
+        726,
+        758
+      ],
+      "task_integration_checkpoints": [
+        "src/database/tables.py",
+        3270,
+        3336
+      ],
+      "task_branch_origins": [
+        "src/database/tables.py",
+        3365,
+        3427
+      ],
+      "integration_branch_owners": [
+        "src/database/tables.py",
+        3486,
+        3517
+      ],
+      "integration_review_evidence": [
+        "src/database/tables.py",
+        3519,
+        3560
+      ],
+      "integration_root_authorizations": [
+        "src/database/tables.py",
+        3565,
+        3597
+      ],
+      "integration_promotion_intents": [
+        "src/database/tables.py",
+        3599,
+        3734
+      ],
+      "task_delivery_receipts": [
+        "src/database/tables.py",
+        3736,
+        3828
+      ],
+      "integration_batches": [
+        "src/database/tables.py",
+        3830,
+        3911
+      ],
+      "integration_batch_members": [
+        "src/database/tables.py",
+        3913,
+        3956
+      ],
+      "integration_candidate_revisions": [
+        "src/database/tables.py",
+        3958,
+        3986
+      ],
+      "integration_candidate_member_results": [
+        "src/database/tables.py",
+        3988,
+        4030
+      ],
+      "integration_candidate_publications": [
+        "src/database/tables.py",
+        4032,
+        4071
+      ],
+      "integration_candidate_resolutions": [
+        "src/database/tables.py",
+        4073,
+        4169
+      ],
+      "integration_candidate_ref_mutations": [
+        "src/database/tables.py",
+        4188,
+        4255
+      ],
+      "integration_root_intent_members": [
+        "src/database/tables.py",
+        4257,
+        4345
+      ],
+      "integration_repair_operations": [
+        "src/database/tables.py",
+        4347,
+        4411
+      ],
+      "integration_parent_episodes": [
+        "src/database/tables.py",
+        4413,
+        4430
+      ],
+      "integration_child_dispositions": [
+        "src/database/tables.py",
+        4432,
+        4459
+      ],
+      "integration_repair_stages": [
+        "src/database/tables.py",
+        4461,
+        4502
+      ],
+      "integration_delegate_releases": [
+        "src/database/tables.py",
+        4518,
+        4547
+      ],
+      "integration_owner_recoveries": [
+        "src/database/tables.py",
+        4556,
+        4574
+      ],
+      "integration_check_evidence": [
+        "src/database/tables.py",
+        4576,
+        4638
+      ],
+      "integration_attestation_publications": [
+        "src/database/tables.py",
+        4640,
+        4696
+      ],
+      "integration_cleanup_items": [
+        "src/database/tables.py",
+        4698,
+        4811
+      ],
+      "integration_repair_stage_evidence": [
+        "src/database/tables.py",
+        4813,
+        4836
+      ],
+      "integration_parent_verifications": [
+        "src/database/tables.py",
+        4838,
+        4876
+      ],
+      "integration_parent_operation_completions": [
+        "src/database/tables.py",
+        4878,
+        4910
+      ],
+      "integration_episode_receipt_acceptances": [
+        "src/database/tables.py",
+        4912,
+        4960
+      ],
+      "integration_parent_verification_evidence": [
+        "src/database/tables.py",
+        4962,
+        4978
+      ],
+      "integration_operation_artifact_pins": [
+        "src/database/tables.py",
+        4980,
+        4997
+      ],
+      "epic_dependencies": [
+        "src/database/tables.py",
+        4999,
+        5009
+      ],
+      "project_integration_schedules": [
+        "src/database/tables.py",
+        5011,
+        5046
+      ],
+      "project_integration_leases": [
+        "src/database/tables.py",
+        5048,
+        5060
+      ],
+      "integration_release_results": [
+        "src/database/tables.py",
+        5062,
+        5076
+      ],
+      "integration_history_waivers": [
+        "src/database/tables.py",
+        5082,
+        5104
+      ],
+      "integration_rollout_transitions": [
+        "src/database/tables.py",
+        5106,
+        5154
+      ],
+      "integration_history_waiver_consumptions": [
+        "src/database/tables.py",
+        5156,
+        5190
+      ],
+      "integration_legacy_gate_applicability": [
+        "src/database/tables.py",
+        5192,
+        5231
+      ],
+      "integration_legacy_suppression": [
+        "src/database/tables.py",
+        5233,
+        5251
+      ],
+      "integration_outbox": [
+        "src/database/tables.py",
+        5253,
+        5276
+      ],
+      "integration_outbox_artifact_pins": [
+        "src/database/tables.py",
+        5278,
+        5294
+      ],
+      "integration_legacy_deliveries": [
+        "src/database/tables.py",
+        5305,
+        5337
+      ],
+      "integration_subjects": [
+        "src/database/tables.py",
+        5395,
+        5572
+      ],
+      "integration_subject_journal": [
+        "src/database/tables.py",
+        5579,
+        5646
+      ],
+      "integration_close_attempts": [
+        "src/database/tables.py",
+        7764,
+        7794
+      ]
+    },
+    "uninventoried_definitions": [],
+    "unreviewed_storage_writers": [],
+    "line_exception": {
+      "batch_id": "train-56f15aff49843c6989224397ef6d7044",
+      "decision_message_id": "msg-dbb0120c6172499081721c033e894b39",
+      "decision_message_ids": [
+        "msg-7ed85e78d1af4f3e85b485a57967e794",
+        "msg-381054d695e64055979a687c4d811e7e",
+        "msg-dbb0120c6172499081721c033e894b39"
+      ],
+      "decision_record": "record:2720bdbe-7521-427e-8e72-1f40a3ff9818",
+      "decision_record_revision": "9aa415ea-fe89-4f8e-a636-a4328d676b66",
+      "measured_source_revision": "aeb45642df379314adea0689bbf0c78125ce3f20",
+      "original_owned_total_cap": 155499,
+      "measured_owned_total": 160145,
+      "delta": 4646,
+      "predecessors": [
+        {
+          "batch_id": "train-77f0d8e451f6aed08d608e443031047a",
+          "decision_message_id": "msg-edb5f857de344716a38857406fa69958",
+          "decision_record": "record:2720bdbe-7521-427e-8e72-1f40a3ff9818",
+          "measured_source_revision": "d00e25221856145f24777f8b016a008b4e954bca",
+          "original_owned_total_cap": 155499,
+          "measured_owned_total": 156792,
+          "delta": 1293,
+          "restore_task": "azure-ridge-72",
+          "expires_at": "s4_modules"
+        },
+        {
+          "batch_id": "batch48",
+          "measured_source_revision": "cbfd455b0e9f053854a2c1becfa1efaeef231582",
+          "authorized_delta": 2166,
+          "measured_owned_total": 158958,
+          "provenance": "Supervisor-authorized predecessor; added once after batch77 final delta1293."
+        }
+      ],
+      "batch_measured_delta": 1187,
+      "restore_task": "azure-ridge-72",
+      "expires_at": "s4_modules"
+    },
+    "table_exception": {
+      "batch_id": "train-56f15aff49843c6989224397ef6d7044",
+      "decision_message_id": "msg-dbb0120c6172499081721c033e894b39",
+      "decision_record": "record:2720bdbe-7521-427e-8e72-1f40a3ff9818",
+      "source_revision": "2f66afabac4add24a1e4eaa7927ae0798ec344bf",
+      "original_table_cap": 45,
+      "delta": 1,
+      "table_cap": 46,
+      "tables": [
+        "integration_close_attempts"
+      ],
+      "restore_task": "stark-willow-95.17",
+      "verification_task": "stark-willow-95.18",
+      "expires_at": "s4_modules"
+    },
+    "consolidation": "Reuse AuthorCloseMerge.defer for the existing deferred visit path (-2 owned lines); flatten the combined CI authorization guard (-1 owned line). All features and guard checks retained.",
+    "ownership_review": "Complete candidate definitions charged by explicit fingerprints with spans and reasons in candidate_definition_reviews; existing exclusions unchanged. Storage writer contexts re-reviewed in canonical storage_sinks.",
+    "reviewed_definitions": {
+      "src/api/graph.py::build_graph_router": {
+        "span": [
+          32,
+          131
+        ],
+        "fingerprint": "e15bb1b9c0d1cf79b5f4d9d1f4da2a8264fdb5a44749812f1e72ce07516007b5",
+        "reason": "Charge the complete discovered definition/import; its newline span was already included in the measured candidate. Preserve ownership on relocation without adding an exclusion."
+      },
+      "src/api/graph.py::import from src.task_graph.readiness import load_readiness": {
+        "span": [
+          29,
+          29
+        ],
+        "fingerprint": "35aaceece5d461f27373841ea8dd05cc2d4c1a5b4b75f2b3cb8ee8bf7d983eec",
+        "reason": "Charge the complete discovered definition/import; its newline span was already included in the measured candidate. Preserve ownership on relocation without adding an exclusion."
+      },
+      "src/assignment_routing.py::claimable_routes": {
+        "span": [
+          79,
+          109
+        ],
+        "fingerprint": "6c0113bedc6beaf820549a6afa19d0d0fa6bca0fa3bfda52bb2c45a1f9417d6b",
+        "reason": "Charge the complete discovered definition/import; its newline span was already included in the measured candidate. Preserve ownership on relocation without adding an exclusion."
+      },
+      "src/build_cache.py::cache_environment": {
+        "span": [
+          21,
+          27
+        ],
+        "fingerprint": "5d53947d0850fa729a260660803b234fda0c5ca04c00cdacd8afde864bc640e1",
+        "reason": "Charge the complete discovered definition/import; its newline span was already included in the measured candidate. Preserve ownership on relocation without adding an exclusion."
+      },
+      "src/build_cache.py::resolved_cache_settings": {
+        "span": [
+          90,
+          100
+        ],
+        "fingerprint": "f5cd38cb10f14f133bd383720f8f86105d9f248dc0ea707c124816bcd5757202",
+        "reason": "Charge the complete discovered definition/import; its newline span was already included in the measured candidate. Preserve ownership on relocation without adding an exclusion."
+      },
+      "src/cli/auto_commands.py::HANDCRAFTED_COVERAGE['integration_restore_task_origin']": {
+        "span": [
+          157,
+          157
+        ],
+        "fingerprint": "eabb0e552d82f663948fbafa77af9c7e57b39bf2e96d84810a8fc851b0dea440",
+        "reason": "Charge the complete discovered definition/import; its newline span was already included in the measured candidate. Preserve ownership on relocation without adding an exclusion."
+      },
+      "src/cli/client.py::_COMMAND_TIMEOUTS['integration_release_withheld_source']": {
+        "span": [
+          135,
+          135
+        ],
+        "fingerprint": "e450d6faf7a2c317ac076a863ae0d4b3f5df44e3e96f7b1722b02c736d84cb2b",
+        "reason": "Charge the complete discovered definition/import; its newline span was already included in the measured candidate. Preserve ownership on relocation without adding an exclusion."
+      },
+      "src/cli/client.py::_COMMAND_TIMEOUTS['integration_restore_task_origin']": {
+        "span": [
+          131,
+          131
+        ],
+        "fingerprint": "7a9cde85605326e89215cfbd2f4cfd00b9ae40c0e0b5a1d6354f5c764969ad47",
+        "reason": "Charge the complete discovered definition/import; its newline span was already included in the measured candidate. Preserve ownership on relocation without adding an exclusion."
+      },
+      "src/commands/contracts/wait.py::WaitCancelArgs.owner_kind": {
+        "span": [
+          87,
+          87
+        ],
+        "fingerprint": "bb039279ba77e89d31eca6edca1130dccc1041bc7b4e573c5c03759b66f84734",
+        "reason": "Charge the complete discovered definition/import; its newline span was already included in the measured candidate. Preserve ownership on relocation without adding an exclusion."
+      },
+      "src/commands/helpers.py::_collect_tree_tasks": {
+        "span": [
+          419,
+          440
+        ],
+        "fingerprint": "da0416adaf00a6ced6f11eba88de06fd1150df22fbc7d23490662c94375cc883",
+        "reason": "Charge the complete discovered definition/import; its newline span was already included in the measured candidate. Preserve ownership on relocation without adding an exclusion."
+      },
+      "src/commands/helpers.py::_count_subtree": {
+        "span": [
+          441,
+          468
+        ],
+        "fingerprint": "c227f899e89e61fbe5e3bff649ef46fe518056bbf6d454c0633c936730319ff7",
+        "reason": "Charge the complete discovered definition/import; its newline span was already included in the measured candidate. Preserve ownership on relocation without adding an exclusion."
+      },
+      "src/commands/helpers.py::_count_subtree_by_status": {
+        "span": [
+          469,
+          494
+        ],
+        "fingerprint": "ff6e8a33cad4cedcdb0805447401399ca97b5b5196f2fd7d2b92fe0c590f940b",
+        "reason": "Charge the complete discovered definition/import; its newline span was already included in the measured candidate. Preserve ownership on relocation without adding an exclusion."
+      },
+      "src/commands/helpers.py::_format_task_tree": {
+        "span": [
+          636,
+          785
+        ],
+        "fingerprint": "2244390bb5614739cdde30950b9845a1b1836f993a3db09d2d03ab68fedd9aee",
+        "reason": "Charge the complete discovered definition/import; its newline span was already included in the measured candidate. Preserve ownership on relocation without adding an exclusion."
+      },
+      "src/commands/helpers.py::format_dependency_list": {
+        "span": [
+          842,
+          899
+        ],
+        "fingerprint": "f3d1132b0f0d8668daf2661dd8b161979e3ba05ce4cb9960a3e1dae460b60257",
+        "reason": "Charge the complete discovered definition/import; its newline span was already included in the measured candidate. Preserve ownership on relocation without adding an exclusion."
+      },
+      "src/commands/helpers.py::progress_bar": {
+        "span": [
+          35,
+          52
+        ],
+        "fingerprint": "a6d3fb347dd2c5453edc276d07c7a547037fde2c2b26e97964b70972c61e87f6",
+        "reason": "Charge the complete discovered definition/import; its newline span was already included in the measured candidate. Preserve ownership on relocation without adding an exclusion."
+      },
+      "src/commands/project_relocation_commands.py::ProjectRelocationCommandsMixin._cmd_project_relocate": {
+        "span": [
+          17,
+          65
+        ],
+        "fingerprint": "2962f2de4e1f3900cbf1bba94862f51a6923340c0c14f598ce0b1bbd4034d0f1",
+        "reason": "Charge the complete discovered definition/import; its newline span was already included in the measured candidate. Preserve ownership on relocation without adding an exclusion."
+      },
+      "src/commands/project_relocation_commands.py::import from src.integration.checks import ChecksState, ExactChecks, RequiredChecks": {
+        "span": [
+          9,
+          9
+        ],
+        "fingerprint": "4cce2ec42c147531332cd0a8b460907b13fb85e5e23090e7c41a17c6d35a6aeb",
+        "reason": "Charge the complete discovered definition/import; its newline span was already included in the measured candidate. Preserve ownership on relocation without adding an exclusion."
+      },
+      "src/commands/project_relocation_commands.py::import from src.integration.development_policy import project_development_pin": {
+        "span": [
+          10,
+          10
+        ],
+        "fingerprint": "e06ea2c9fd0cb0862fa7aea718340ee855dd8a9165d5bc5a8550cbbeb98f226f",
+        "reason": "Charge the complete discovered definition/import; its newline span was already included in the measured candidate. Preserve ownership on relocation without adding an exclusion."
+      },
+      "src/commands/project_relocation_commands.py::import from src.integration.runtime_contracts import HeadIdentity": {
+        "span": [
+          11,
+          11
+        ],
+        "fingerprint": "22e8da93f245e510ec49dd0446faec6f710ed0bc77e49acbe67ebdcc867f794b",
+        "reason": "Charge the complete discovered definition/import; its newline span was already included in the measured candidate. Preserve ownership on relocation without adding an exclusion."
+      },
+      "src/commands/session_commands.py::SessionCommandsMixin._cmd_task_heartbeat": {
+        "span": [
+          1991,
+          2050
+        ],
+        "fingerprint": "b4a2ea5386c320fc58123882b97e219a59c0451746bfe746eff28b5e2ac6e1e7",
+        "reason": "Charge the complete discovered definition/import; its newline span was already included in the measured candidate. Preserve ownership on relocation without adding an exclusion."
+      },
+      "src/commands/task_commands.py::TaskCommandsMixin._cmd_get_task_tree": {
+        "span": [
+          1263,
+          1332
+        ],
+        "fingerprint": "8ba3cea58a8d0c448ddc972cd89b4aa276d2a5a6f970815a2caf369607eaf208",
+        "reason": "Charge the complete discovered definition/import; its newline span was already included in the measured candidate. Preserve ownership on relocation without adding an exclusion."
+      },
+      "src/commands/task_commands.py::TaskCommandsMixin._cmd_task_children": {
+        "span": [
+          1333,
+          1356
+        ],
+        "fingerprint": "0bbedd76b2b58af0aae3af05d01f42f605e627d1f6e60532d06458b4efec0a75",
+        "reason": "Charge the complete discovered definition/import; its newline span was already included in the measured candidate. Preserve ownership on relocation without adding an exclusion."
+      },
+      "src/commands/task_commands.py::TaskCommandsMixin._list_tasks_flat": {
+        "span": [
+          700,
+          756
+        ],
+        "fingerprint": "1045e505ab785105d1eaf889931e6bdd0b4cee82677dce1625ac904626fa9d55",
+        "reason": "Charge the complete discovered definition/import; its newline span was already included in the measured candidate. Preserve ownership on relocation without adding an exclusion."
+      },
+      "src/commands/task_commands.py::TaskCommandsMixin._list_tasks_hierarchical": {
+        "span": [
+          901,
+          1044
+        ],
+        "fingerprint": "b0139244a28564991f5175717b88352f897e3758a76e268a9e0c14a9147195d1",
+        "reason": "Charge the complete discovered definition/import; its newline span was already included in the measured candidate. Preserve ownership on relocation without adding an exclusion."
+      },
+      "src/commands/worktree_commands.py::WorktreeCommandsMixin._cmd_repair_workspace_checkout": {
+        "span": [
+          34,
+          38
+        ],
+        "fingerprint": "4461797f531af83aaa0958457cd9cf83ec6a9fadb4ef5bd949dc586139315ce9",
+        "reason": "Charge the complete discovered definition/import; its newline span was already included in the measured candidate. Preserve ownership on relocation without adding an exclusion."
+      },
+      "src/database/queries/blocked_state.py::import from src.database.tables import events, gates, task_completion_records, task_delivery_receipts, task_dependencies, task_gates, task_labels, task_metadata, tasks": {
+        "span": [
+          29,
+          39
+        ],
+        "fingerprint": "29f097536f9ddccfcb0bc91831874b8e022925dcf2c12ce0e82879275d2849be",
+        "reason": "Charge the complete discovered definition/import; its newline span was already included in the measured candidate. Preserve ownership on relocation without adding an exclusion."
+      },
+      "src/database/queries/claim_queries.py::pool_primary_kind": {
+        "span": [
+          561,
+          572
+        ],
+        "fingerprint": "5a961220c0e28cde688b981edb12c85afa0646b4b47478845e299250c5e43677",
+        "reason": "Charge the complete discovered definition/import; its newline span was already included in the measured candidate. Preserve ownership on relocation without adding an exclusion."
+      },
+      "src/database/queries/continuation_queries.py::retire_task_waits": {
+        "span": [
+          48,
+          119
+        ],
+        "fingerprint": "544e23efaff1f77c5c59fbbfb412d63dd243aaa9dad80e96ad8976ec4bbdc5fe",
+        "reason": "Charge the complete discovered definition/import; its newline span was already included in the measured candidate. Preserve ownership on relocation without adding an exclusion."
+      },
+      "src/database/queries/hierarchy_queries.py::import from src.database.tables import agents, integration_batch_members, integration_batches, integration_branch_owners, integration_repair_operations, integration_repair_stages, projects, sessions, task_branch_origins, task_context, task_dependencies, task_integration_checkpoints, task_metadata, tasks, workspaces": {
+        "span": [
+          45,
+          61
+        ],
+        "fingerprint": "8db461ca6476869f0fb1a076504d232ba3e9301514486ac496f6f3755cf9eefb",
+        "reason": "Charge the complete discovered definition/import; its newline span was already included in the measured candidate. Preserve ownership on relocation without adding an exclusion."
+      },
+      "src/database/queries/task_reroute_queries.py::import from src.database.queries.claim_queries import _frontier_predicates, pool_primary_kind, route_claimable_in": {
+        "span": [
+          23,
+          27
+        ],
+        "fingerprint": "37b68547ef12452f4c71df04a75b299b02a84849dcc27daff67de21ac53152bd",
+        "reason": "Charge the complete discovered definition/import; its newline span was already included in the measured candidate. Preserve ownership on relocation without adding an exclusion."
+      },
+      "src/database/queries/task_session_queries.py::import from src.database.tables import agents, integration_batch_members, integration_source_ci, sessions, task_branch_origins, task_dependencies, task_session_attempts, tasks": {
+        "span": [
+          9,
+          19
+        ],
+        "fingerprint": "455c28d55acee925165d18e6c76c13978a42ebff92c767bdd1f9fa1adbab8dfd",
+        "reason": "Charge the complete discovered definition/import; its newline span was already included in the measured candidate. Preserve ownership on relocation without adding an exclusion."
+      },
+      "src/database/queries/wait_queries.py::wait_explain": {
+        "span": [
+          715,
+          789
+        ],
+        "fingerprint": "1485a87b1b977b2183c2448d2efa6e6664cde69d37ec3b841e4190756d1951d5",
+        "reason": "Charge the complete discovered definition/import; its newline span was already included in the measured candidate. Preserve ownership on relocation without adding an exclusion."
+      },
+      "src/doctor/stall_checks.py::_delivery_stuck_findings": {
+        "span": [
+          515,
+          543
+        ],
+        "fingerprint": "9456a38c5a679cd2d2a265f076b9aa328666c4ade0a2641e47409b895fcb3dc7",
+        "reason": "Charge the complete discovered definition/import; its newline span was already included in the measured candidate. Preserve ownership on relocation without adding an exclusion."
+      },
+      "src/doctor/wait_checks.py::wait_checks": {
+        "span": [
+          73,
+          80
+        ],
+        "fingerprint": "c20902183f20184a569f288bde050a6ee07ac43c9b829a81a413cb896025ec8b",
+        "reason": "Charge the complete discovered definition/import; its newline span was already included in the measured candidate. Preserve ownership on relocation without adding an exclusion."
+      },
+      "src/event_schemas.py::_INTEGRATION_SCHEMAS['integration.publication_verified']": {
+        "span": [
+          1790,
+          1795
+        ],
+        "fingerprint": "f678cb8a2927073604b7d5b2556468f7aa87bb6275d22138d3eb6256ec03ff54",
+        "reason": "Charge the complete discovered definition/import; its newline span was already included in the measured candidate. Preserve ownership on relocation without adding an exclusion."
+      },
+      "src/event_schemas.py::_INTEGRATION_SCHEMAS['integration.readiness_changed']": {
+        "span": [
+          1768,
+          1777
+        ],
+        "fingerprint": "48462459748b9d385291bcdd0fc6b195009dd8b5964c0b52e3a83bd7a68a6679",
+        "reason": "Charge the complete discovered definition/import; its newline span was already included in the measured candidate. Preserve ownership on relocation without adding an exclusion."
+      },
+      "src/git/manager.py::detached_commit_context": {
+        "span": [
+          217,
+          227
+        ],
+        "fingerprint": "cbaa86c9c3444afd19be6d3c0426578457c53bdf717e2167102176863cc11744",
+        "reason": "Charge the complete discovered definition/import; its newline span was already included in the measured candidate. Preserve ownership on relocation without adding an exclusion."
+      },
+      "src/install/deploy.py::read_record": {
+        "span": [
+          202,
+          220
+        ],
+        "fingerprint": "14e34003314ce4666b58a21859912f205e984e2c3d2dac1de632c5f08a0e55aa",
+        "reason": "Charge the complete discovered definition/import; its newline span was already included in the measured candidate. Preserve ownership on relocation without adding an exclusion."
+      },
+      "src/jobs/runner.py::import from src.resources.semaphore import SlotSemaphore, SlotTimeout, full_suite_lock_dir": {
+        "span": [
+          22,
+          22
+        ],
+        "fingerprint": "6f7cdd8bc111e943af6312f06a2331bea326a37ee34a7eadd4ffcd191f739a7d",
+        "reason": "Charge the complete discovered definition/import; its newline span was already included in the measured candidate. Preserve ownership on relocation without adding an exclusion."
+      },
+      "src/jobs/workspace.py::candidate_workspace": {
+        "span": [
+          69,
+          144
+        ],
+        "fingerprint": "e31e98e366e8d849337be99228b5f8c22adc9861cbc9c6d566dd1f6013bfa40d",
+        "reason": "Charge the complete discovered definition/import; its newline span was already included in the measured candidate. Preserve ownership on relocation without adding an exclusion."
+      },
+      "src/metrics/delivery_latency.py::_wait_view": {
+        "span": [
+          477,
+          497
+        ],
+        "fingerprint": "a0a72eef1fb26362b07ab69346ba8cd165cfec35a3f98d403ae2b308ca20e872",
+        "reason": "Charge the complete discovered definition/import; its newline span was already included in the measured candidate. Preserve ownership on relocation without adding an exclusion."
+      },
+      "src/metrics/delivery_latency.py::generation_of": {
+        "span": [
+          68,
+          77
+        ],
+        "fingerprint": "ed978ec120f1468b39a5c797520f18f7ac962c479177ae1700f9fbce14cea178",
+        "reason": "Charge the complete discovered definition/import; its newline span was already included in the measured candidate. Preserve ownership on relocation without adding an exclusion."
+      },
+      "src/operator_decisions.py::WITHHELD_RELEASE_SOURCE": {
+        "span": [
+          57,
+          61
+        ],
+        "fingerprint": "4c689932914e07d72d9fcdbb96e21d8d77f0affe50828581553e8bbbd72068ac",
+        "reason": "Charge the complete discovered definition/import; its newline span was already included in the measured candidate. Preserve ownership on relocation without adding an exclusion."
+      },
+      "src/operator_decisions.py::note_on": {
+        "span": [
+          76,
+          81
+        ],
+        "fingerprint": "6c907f5c0da104047821f60fdc9ab0949820556a4b737054cb71152b8e2211d4",
+        "reason": "Charge the complete discovered definition/import; its newline span was already included in the measured candidate. Preserve ownership on relocation without adding an exclusion."
+      },
+      "src/operator_decisions.py::withheld_release": {
+        "span": [
+          66,
+          75
+        ],
+        "fingerprint": "ae0331d7efac742564fc8a37c783e100a50dbd8ffa2e689faa2d5f77508fac2f",
+        "reason": "Charge the complete discovered definition/import; its newline span was already included in the measured candidate. Preserve ownership on relocation without adding an exclusion."
+      },
+      "src/operator_decisions.py::withheld_release_ref": {
+        "span": [
+          62,
+          65
+        ],
+        "fingerprint": "2586be8e9686cf0c268e701fbe3464375b2745566009ce6713a8d6ff294e4e60",
+        "reason": "Charge the complete discovered definition/import; its newline span was already included in the measured candidate. Preserve ownership on relocation without adding an exclusion."
+      },
+      "src/orchestrator/core.py::Orchestrator._schedule": {
+        "span": [
+          4690,
+          4935
+        ],
+        "fingerprint": "6ac2cdad1c42cdcf9b84add0e7f58aee9ab6621056f7359a1d8ae8974d593d6f",
+        "reason": "Charge the complete discovered definition/import; its newline span was already included in the measured candidate. Preserve ownership on relocation without adding an exclusion."
+      },
+      "src/orchestrator/workspace_binding_audit.py::import from src.database.tables import integration_branch_owners, job_workspace_pins, jobs, sessions": {
+        "span": [
+          10,
+          10
+        ],
+        "fingerprint": "8aa93526fcb1866a453755d3a440a0655f95c10e2e057ea1c579cded7d2efff6",
+        "reason": "Charge the complete discovered definition/import; its newline span was already included in the measured candidate. Preserve ownership on relocation without adding an exclusion."
+      },
+      "src/playbooks/private_values.py::private_value_key_health": {
+        "span": [
+          43,
+          61
+        ],
+        "fingerprint": "522dc6e1b744399c79e301987747b6a1cfd12b3553e9fefbe7128737394e193b",
+        "reason": "Charge the complete discovered definition/import; its newline span was already included in the measured candidate. Preserve ownership on relocation without adding an exclusion."
+      },
+      "src/playbooks/routing.py::_loaded_activations": {
+        "span": [
+          155,
+          206
+        ],
+        "fingerprint": "6d193906ad83b99293647600a18af366abdc7020267a564978cf90709a448d5a",
+        "reason": "Charge the complete discovered definition/import; its newline span was already included in the measured candidate. Preserve ownership on relocation without adding an exclusion."
+      },
+      "src/playbooks/runtime.py::V2PlaybookRuntime._on_event": {
+        "span": [
+          265,
+          285
+        ],
+        "fingerprint": "f5cd9afff4d32f3a89946d84ca262ff2a13426f0e7be214cd6540a7a7d74ea66",
+        "reason": "Charge the complete discovered definition/import; its newline span was already included in the measured candidate. Preserve ownership on relocation without adding an exclusion."
+      },
+      "src/profiles/task_execution.py::is_supervisor_profile": {
+        "span": [
+          15,
+          27
+        ],
+        "fingerprint": "551e11de0ac0a4c061ec4c41ae39d358b07ab31d7a1e17134cc3cede95418303",
+        "reason": "Charge the complete discovered definition/import; its newline span was already included in the measured candidate. Preserve ownership on relocation without adding an exclusion."
+      },
+      "src/projects/relocation.py::ProjectRelocation._fences": {
+        "span": [
+          212,
+          268
+        ],
+        "fingerprint": "2f12c2f012d049c1bde4f2a8d2b07ac504fc60b94b0a9bb755751f81a692222b",
+        "reason": "Charge the complete discovered definition/import; its newline span was already included in the measured candidate. Preserve ownership on relocation without adding an exclusion."
+      },
+      "src/projects/relocation.py::ProjectRelocation.apply": {
+        "span": [
+          397,
+          489
+        ],
+        "fingerprint": "2bc6761df7123ba1e40d1776a139d157aae04b31823b5e404c83f76e80c376ae",
+        "reason": "Charge the complete discovered definition/import; its newline span was already included in the measured candidate. Preserve ownership on relocation without adding an exclusion."
+      },
+      "src/projects/relocation.py::import from src.database.tables import integration_branch_owners, jobs, job_workspace_pins, project_integration_leases, projects, repos, sessions, tasks, workspaces": {
+        "span": [
+          22,
+          25
+        ],
+        "fingerprint": "3956e0bfb8bae13e8ec3a724a481ed2355ca35c3f7dbe442c65f332784afe336",
+        "reason": "Charge the complete discovered definition/import; its newline span was already included in the measured candidate. Preserve ownership on relocation without adding an exclusion."
+      },
+      "src/projects/relocation.py::import from src.jobs.artifacts import atomic_json, read_json": {
+        "span": [
+          26,
+          26
+        ],
+        "fingerprint": "568b9a05cdb236f57597ac641dc97b7af95e411cd4b70bbdb8aa1011cc806e1f",
+        "reason": "Charge the complete discovered definition/import; its newline span was already included in the measured candidate. Preserve ownership on relocation without adding an exclusion."
+      },
+      "src/projects/storage_binding.py::bound_path": {
+        "span": [
+          9,
+          17
+        ],
+        "fingerprint": "db842c810250424952ff9e902420e44cd2bc25851725694337fcaf6058a2b5de",
+        "reason": "Charge the complete discovered definition/import; its newline span was already included in the measured candidate. Preserve ownership on relocation without adding an exclusion."
+      },
+      "src/projects/storage_binding.py::read_binding": {
+        "span": [
+          18,
+          25
+        ],
+        "fingerprint": "c48fff2cbda2d031eaec01dd605684963ea2d024153f1c601a9433e77a2f1a14",
+        "reason": "Charge the complete discovered definition/import; its newline span was already included in the measured candidate. Preserve ownership on relocation without adding an exclusion."
+      },
+      "src/projects/storage_binding.py::repository_path": {
+        "span": [
+          26,
+          36
+        ],
+        "fingerprint": "fa442cf4b92d6e2b61d37d4a80cc5abfad71f2eca59e2dff167dab5d1fe8a11a",
+        "reason": "Charge the complete discovered definition/import; its newline span was already included in the measured candidate. Preserve ownership on relocation without adding an exclusion."
+      },
+      "src/routing/planner.py::plan_route": {
+        "span": [
+          1258,
+          1474
+        ],
+        "fingerprint": "40efe4051648e7a744115e39f961b6b89ffc73350d7b359164de532e6c5408ad",
+        "reason": "Charge the complete discovered definition/import; its newline span was already included in the measured candidate. Preserve ownership on relocation without adding an exclusion."
+      },
+      "src/routing/sources.py::route_is_claimable": {
+        "span": [
+          52,
+          58
+        ],
+        "fingerprint": "90c6b36b586c8dd855b5951e5a83f1a03700bb5f4703a73b55cdbd22b601cd9f",
+        "reason": "Charge the complete discovered definition/import; its newline span was already included in the measured candidate. Preserve ownership on relocation without adding an exclusion."
+      },
+      "src/sessions/env.py::session_db_isolation": {
+        "span": [
+          135,
+          161
+        ],
+        "fingerprint": "f3e4cda89a1a6df12d91e626fb8cbd27d31c8b1915f0e5cc51f5e59f47b413fc",
+        "reason": "Charge the complete discovered definition/import; its newline span was already included in the measured candidate. Preserve ownership on relocation without adding an exclusion."
+      },
+      "src/sessions/obsolete.py::prepare_retirement_on": {
+        "span": [
+          151,
+          284
+        ],
+        "fingerprint": "170ef9bd5b6fc26112fbb9ca7b45ebcc7cc67cc0ebadf05481a76ff292f37dae",
+        "reason": "Charge the complete discovered definition/import; its newline span was already included in the measured candidate. Preserve ownership on relocation without adding an exclusion."
+      },
+      "src/task_graph/activity.py::attach_activity": {
+        "span": [
+          199,
+          205
+        ],
+        "fingerprint": "1ef7f3073d7ddedaa3cc31dd6b830848e2c4a3fef166b07a190b9379ced6c693",
+        "reason": "Charge the complete discovered definition/import; its newline span was already included in the measured candidate. Preserve ownership on relocation without adding an exclusion."
+      },
+      "src/task_graph/activity.py::load_activity": {
+        "span": [
+          178,
+          198
+        ],
+        "fingerprint": "848b8244b579e43443b96a77cdb9ea63679d38c4fcdd5f4fe65543852a2cfa80",
+        "reason": "Charge the complete discovered definition/import; its newline span was already included in the measured candidate. Preserve ownership on relocation without adding an exclusion."
+      },
+      "src/tools/definitions.py::_TOOL_CATEGORIES['integration_batch_fix']": {
+        "span": [
+          18,
+          18
+        ],
+        "fingerprint": "c8da975ebc4570e403c47ce3728ea47115998bb2f0fd3143bef551df5a2f6e93",
+        "reason": "Charge the complete discovered definition/import; its newline span was already included in the measured candidate. Preserve ownership on relocation without adding an exclusion."
+      },
+      "src/tools/definitions.py::statement:9dbb3d96e20fc1cb": {
+        "span": [
+          8508,
+          8518
+        ],
+        "fingerprint": "9dbb3d96e20fc1cbf2da9089e4cb9e4bb0fdf453f06477f6a142b00315d066d8",
+        "reason": "Charge the complete discovered definition/import; its newline span was already included in the measured candidate. Preserve ownership on relocation without adding an exclusion."
+      },
+      "src/wait_runtime/cancellation.py::cancel": {
+        "span": [
+          11,
+          59
+        ],
+        "fingerprint": "91fc764f79bc79b92b12144a8a4b2c6d1fb34f760464178b5ccabb6fe8db1556",
+        "reason": "Charge the complete discovered definition/import; its newline span was already included in the measured candidate. Preserve ownership on relocation without adding an exclusion."
+      },
+      "src/wait_runtime/lifecycle.py::WaitLifecycle.register_in_transaction": {
+        "span": [
+          36,
+          102
+        ],
+        "fingerprint": "f0336f75b6ecf24d1fe8b7a80af515f42cea4f443445dad67ee78311e85cffe8",
+        "reason": "Charge the complete discovered definition/import; its newline span was already included in the measured candidate. Preserve ownership on relocation without adding an exclusion."
+      },
+      "src/wait_runtime/resume.py::import from src.wait_runtime.legacy_parking import parked": {
+        "span": [
+          22,
+          22
+        ],
+        "fingerprint": "5e07e31f569e550fdcf8ca882ff3291f60c0d2866d9b0f2badb21b7f83d9ad68",
+        "reason": "Charge the complete discovered definition/import; its newline span was already included in the measured candidate. Preserve ownership on relocation without adding an exclusion."
+      },
+      "src/waits/adapters/base.py::fields": {
+        "span": [
+          35,
+          43
+        ],
+        "fingerprint": "f7b56f319fde43b844893f65881eed6bccb7178de27d094ccb1248f8725ee77d",
+        "reason": "Charge the complete discovered definition/import; its newline span was already included in the measured candidate. Preserve ownership on relocation without adding an exclusion."
+      },
+      "src/waits/adapters/base.py::string": {
+        "span": [
+          44,
+          49
+        ],
+        "fingerprint": "40121e68125f379002c8c18d02e129ea26a5bbb2a385ce712f86add95d01bbfc",
+        "reason": "Charge the complete discovered definition/import; its newline span was already included in the measured candidate. Preserve ownership on relocation without adding an exclusion."
+      },
+      "src/waits/dispatcher.py::WakeDispatcher.finish": {
+        "span": [
+          129,
+          239
+        ],
+        "fingerprint": "85430e648b982385a062c88bb921208577b73d5fde00e6748d9a9c95185ba1ea",
+        "reason": "Charge the complete discovered definition/import; its newline span was already included in the measured candidate. Preserve ownership on relocation without adding an exclusion."
+      },
+      "src/waits/dispatcher.py::import from src.wait_runtime.legacy_parking import legacy_parked": {
+        "span": [
+          28,
+          28
+        ],
+        "fingerprint": "d17fd7e44a3789eee16d2431375a60574724f88b4deb4e755922c961b6d7c080",
+        "reason": "Charge the complete discovered definition/import; its newline span was already included in the measured candidate. Preserve ownership on relocation without adding an exclusion."
+      },
+      "src/waits/holding.py::active_wait_for": {
+        "span": [
+          114,
+          122
+        ],
+        "fingerprint": "9b7ee03548bf6aa05c0696875c97797ef487fa57476cc3646c86151c2b92c8f6",
+        "reason": "Charge the complete discovered definition/import; its newline span was already included in the measured candidate. Preserve ownership on relocation without adding an exclusion."
+      },
+      "src/waits/ownership.py::fence_owner": {
+        "span": [
+          8,
+          55
+        ],
+        "fingerprint": "022d690a42c2501a28cdc4a72a2a0e6f3c3c5ed8d0d7adf10f62b89bbac837d4",
+        "reason": "Charge the complete discovered definition/import; its newline span was already included in the measured candidate. Preserve ownership on relocation without adding an exclusion."
+      },
+      "src/waits/watchers/ci.py::CheckWatcher._ci": {
+        "span": [
+          148,
+          190
+        ],
+        "fingerprint": "e5897082d82fe42ec7e1d439616c011d0fed719753c39d5926cbb929b87822c8",
+        "reason": "Charge the complete discovered definition/import; its newline span was already included in the measured candidate. Preserve ownership on relocation without adding an exclusion."
+      },
+      "src/waits/watchers/ci.py::CheckWatcher.head": {
+        "span": [
+          99,
+          104
+        ],
+        "fingerprint": "a0ce0529a4e3b0524ab2d8ec7b02e59e93975a2b1f563aeaca490c7bba6a3304",
+        "reason": "Charge the complete discovered definition/import; its newline span was already included in the measured candidate. Preserve ownership on relocation without adding an exclusion."
+      },
+      "src/waits/watchers/ci.py::CheckWatcher.lock_source": {
+        "span": [
+          82,
+          98
+        ],
+        "fingerprint": "1133c09b2699b4412ebb71f652ca7a4ef1ba9652a1704f63744bde3905a11d81",
+        "reason": "Charge the complete discovered definition/import; its newline span was already included in the measured candidate. Preserve ownership on relocation without adding an exclusion."
+      },
+      "src/waits/watchers/ci.py::TERMINAL": {
+        "span": [
+          32,
+          34
+        ],
+        "fingerprint": "65c4f565e0fb2611cdb857956bd8bf6f59702529ac371ead59557e8d5248e7e4",
+        "reason": "Charge the complete discovered definition/import; its newline span was already included in the measured candidate. Preserve ownership on relocation without adding an exclusion."
+      },
+      "src/waits/watchers/ci.py::import from src.database.tables import integration_check_evidence, repos, wait_records": {
+        "span": [
+          19,
+          20
+        ],
+        "fingerprint": "fd5e88c5e33b2415f6462bf38be0bb4ee8277ec2f83eaeb215aa0266c061177b",
+        "reason": "Charge the complete discovered definition/import; its newline span was already included in the measured candidate. Preserve ownership on relocation without adding an exclusion."
+      },
+      "src/waits/watchers/ci.py::import from src.integration.checks import Conclusion, evaluate": {
+        "span": [
+          22,
+          22
+        ],
+        "fingerprint": "6645f103edd952aacbe39942ccd3f4f75b619b18f6f607a5ea2bd2fb57ddd508",
+        "reason": "Charge the complete discovered definition/import; its newline span was already included in the measured candidate. Preserve ownership on relocation without adding an exclusion."
+      },
+      "src/waits/watchers/ci.py::import from src.integration.runtime_contracts import HeadIdentity": {
+        "span": [
+          23,
+          23
+        ],
+        "fingerprint": "22e8da93f245e510ec49dd0446faec6f710ed0bc77e49acbe67ebdcc867f794b",
+        "reason": "Charge the complete discovered definition/import; its newline span was already included in the measured candidate. Preserve ownership on relocation without adding an exclusion."
+      },
+      "src/warm_workspaces.py::WarmWorkspacePool.acquire": {
+        "span": [
+          42,
+          115
+        ],
+        "fingerprint": "594da60d2768d139ef27fa6e042562f05c961585421b7023183132718d5210d4",
+        "reason": "Charge the complete discovered definition/import; its newline span was already included in the measured candidate. Preserve ownership on relocation without adding an exclusion."
+      },
+      "src/warm_workspaces.py::import from src.jobs.artifacts import atomic_json, read_json": {
+        "span": [
+          16,
+          16
+        ],
+        "fingerprint": "568b9a05cdb236f57597ac641dc97b7af95e411cd4b70bbdb8aa1011cc806e1f",
+        "reason": "Charge the complete discovered definition/import; its newline span was already included in the measured candidate. Preserve ownership on relocation without adding an exclusion."
+      },
+      "src/warm_workspaces.py::primary_store": {
+        "span": [
+          17,
+          34
+        ],
+        "fingerprint": "cfc4b630f6c68addd9edcb923416ab74e5400a1791cdc763ab2c1ced74cfbf6c",
+        "reason": "Charge the complete discovered definition/import; its newline span was already included in the measured candidate. Preserve ownership on relocation without adding an exclusion."
+      }
+    },
+    "storage_context_reviews": {
+      "src/commands/claim_commands.py::ClaimCommandsMixin._prepare_and_activate_locked::3d42ccd676d8e3ea97e225f6a3ff602b9f5b68a48a3950e76d6d7fabbd3e03b9": {
+        "line": 2058,
+        "owner": "ClaimCommandsMixin._prepare_and_activate_locked",
+        "call": "set_task_meta",
+        "owner_fingerprint": "6a8ab4a93b416736d660760620f93afbe7c3fbdf033d44c748f90db0d67728c1",
+        "integration_signal": true,
+        "disposition": "ordinary",
+        "reason": "Sets needs_attention to the typed preparation exception code when the attached writer cannot safely be released; the existing owner fence controls recovery. Complete-candidate enclosing context re-reviewed; original disposition retained."
+      },
+      "src/commands/claim_commands.py::ClaimCommandsMixin._prepare_and_activate_locked::47e4081469e519ba1ff4517fb4e3b8ec7bda6f9adecd25f10447a5341f89d18a": {
+        "line": 1937,
+        "owner": "ClaimCommandsMixin._prepare_and_activate_locked",
+        "call": "set_task_meta",
+        "owner_fingerprint": "6a8ab4a93b416736d660760620f93afbe7c3fbdf033d44c748f90db0d67728c1",
+        "integration_signal": true,
+        "disposition": "ordinary",
+        "reason": "Sets needs_attention=ingest_held when a selected task is held by ingestion; the marker explains refusal and does not release the batch or publish code. Complete-candidate enclosing context re-reviewed; original disposition retained."
+      },
+      "src/commands/claim_commands.py::ClaimCommandsMixin._prepare_and_activate_locked::6a228f11c57cb47938f52d2fd7326591678f2c7af3ca331ebf2cb0fd60c52b3a": {
+        "line": 2164,
+        "owner": "ClaimCommandsMixin._prepare_and_activate_locked",
+        "call": "set_task_meta",
+        "owner_fingerprint": "6a8ab4a93b416736d660760620f93afbe7c3fbdf033d44c748f90db0d67728c1",
+        "integration_signal": true,
+        "disposition": "ordinary",
+        "reason": "Marks integration_prepare_failed_attached for manual attention after failed detachment; it preserves the writer reservation rather than supplying handoff authority. Complete-candidate enclosing context re-reviewed; original disposition retained."
+      },
+      "src/commands/claim_commands.py::ClaimCommandsMixin._prepare_and_activate_locked::7a916a65e9151b75a342cc96b899777719a789274ba927f08edaabe5af70d879": {
+        "line": 2117,
+        "owner": "ClaimCommandsMixin._prepare_and_activate_locked",
+        "call": "set_task_meta",
+        "owner_fingerprint": "6a8ab4a93b416736d660760620f93afbe7c3fbdf033d44c748f90db0d67728c1",
+        "integration_signal": true,
+        "disposition": "ordinary",
+        "reason": "Marks repair_target_unpublished when the target is absent and the managed fence cannot be released; no remote OID or replay instruction is written. Complete-candidate enclosing context re-reviewed; original disposition retained."
+      },
+      "src/commands/claim_commands.py::ClaimCommandsMixin._prepare_and_activate_locked::a013c7a46d34c2c833b5b1129a77bc31978b9ed19c44d76097646187d4fe028d": {
+        "line": 2198,
+        "owner": "ClaimCommandsMixin._prepare_and_activate_locked",
+        "call": "set_task_meta",
+        "owner_fingerprint": "6a8ab4a93b416736d660760620f93afbe7c3fbdf033d44c748f90db0d67728c1",
+        "integration_signal": true,
+        "disposition": "ordinary",
+        "reason": "Stores slot_reset_failure stage, error type, attempt and retry diagnostics; these describe preparation backoff and do not prove branch delivery. Complete-candidate enclosing context re-reviewed; original disposition retained."
+      },
+      "src/commands/escalation_commands.py::EscalationCommandsMixin._create_escalation::7f9a172d90564131599dcbc17c8abdfadd20f21c0ea0e36f65fa816d1433dfc8": {
+        "line": 297,
+        "owner": "EscalationCommandsMixin._create_escalation",
+        "call": "insert",
+        "owner_fingerprint": "49a35f001da0a9d9e4ef15a9676fa9e42346f8b374f2738b1f57817b32592a55",
+        "integration_signal": false,
+        "disposition": "ordinary",
+        "reason": "Wait registration, continuation park/delivery/ACK or existing task recovery audit; no new integration journal or reference replay authority. Complete-candidate enclosing context re-reviewed; original disposition retained."
+      },
+      "src/commands/integration_commands.py::IntegrationCommandsMixin._reopen_source_ci_once::99067e5d5da4bc5efd63f84a8dbf3d8a88481ddf555f7b70a646a51fe37b5581": {
+        "line": 1004,
+        "owner": "IntegrationCommandsMixin._reopen_source_ci_once",
+        "call": "log_event",
+        "owner_fingerprint": "a5dd41ee7e5f597bbeab91f46f593e6fe3e6f40aa7db636870aab388eed00972",
+        "integration_signal": true,
+        "disposition": "ordinary",
+        "reason": "Audits integration.source_ci_reopened with the already selected source head, generation and attempt; the event reports a guarded reopen and is not its authority. Complete-candidate enclosing context re-reviewed; original disposition retained."
+      },
+      "src/commands/surface_commands.py::SurfaceCommandsMixin._cmd_task_set::6081f9d27dc57e18ce5f31c465cfb8159e76c4d4c1a37d2b8b8d0c741d9fbeca": {
+        "line": 366,
+        "owner": "SurfaceCommandsMixin._cmd_task_set",
+        "call": "log_event",
+        "owner_fingerprint": "01f5ef4b185f108d02e96b986d4a7e63015a291600666fd3ada58902fb779d6c",
+        "integration_signal": true,
+        "disposition": "ordinary",
+        "reason": "Audits removal of an ordinary task label; label history does not control Git integration or branch reservations. Complete-candidate enclosing context re-reviewed; original disposition retained."
+      },
+      "src/commands/surface_commands.py::SurfaceCommandsMixin._cmd_task_set::8513b8ad44440cd5bfaed1abc65ab824b7856f8b84f009f84e3bd7f9a0f86647": {
+        "line": 373,
+        "owner": "SurfaceCommandsMixin._cmd_task_set",
+        "call": "set_task_meta",
+        "owner_fingerprint": "01f5ef4b185f108d02e96b986d4a7e63015a291600666fd3ada58902fb779d6c",
+        "integration_signal": true,
+        "disposition": "ordinary",
+        "reason": "Stores the task work_dir display/context field through the scoped task-set command; it does not release workspace locks or integration owners. Complete-candidate enclosing context re-reviewed; original disposition retained."
+      },
+      "src/commands/surface_commands.py::SurfaceCommandsMixin._cmd_task_set::cc1e1a1a54bb465b81b098e4b9a03d3717342bf5a286fd44dbf8b548c7a49003": {
+        "line": 378,
+        "owner": "SurfaceCommandsMixin._cmd_task_set",
+        "call": "set_task_meta",
+        "owner_fingerprint": "01f5ef4b185f108d02e96b986d4a7e63015a291600666fd3ada58902fb779d6c",
+        "integration_signal": true,
+        "disposition": "ordinary",
+        "reason": "Writes task-set metadata through the command's key/authority checks and set_task_meta protections; the generic adapter creates no separate integration journal. Complete-candidate enclosing context re-reviewed; original disposition retained."
+      },
+      "src/commands/surface_commands.py::SurfaceCommandsMixin._cmd_task_set::efc628222166414397713182d90d1198aedc0c7804e05b3ccfd55c64a58c99f5": {
+        "line": 359,
+        "owner": "SurfaceCommandsMixin._cmd_task_set",
+        "call": "log_event",
+        "owner_fingerprint": "01f5ef4b185f108d02e96b986d4a7e63015a291600666fd3ada58902fb779d6c",
+        "integration_signal": true,
+        "disposition": "ordinary",
+        "reason": "Audits addition of an ordinary task label; the event contains only the label and grants no delivery authority. Complete-candidate enclosing context re-reviewed; original disposition retained."
+      },
+      "src/commands/task_commands.py::TaskCommandsMixin._cmd_add_dependency::a4b11d12e44641f31dec92eda6c8cd14f1b9c6975b961f527226962bd27130a5": {
+        "line": 4032,
+        "owner": "TaskCommandsMixin._cmd_add_dependency",
+        "call": "log_event",
+        "owner_fingerprint": "c24d8f9e23cb63fa1fe9c0db25f352448fdf85f6cb19356d1aba8fae6f073f76",
+        "integration_signal": false,
+        "disposition": "ordinary",
+        "reason": "Dependency changes log the caller, reason and edge as ordinary task-graph audit evidence after worker container admission; the event authorizes neither ref replay nor integration publication. Complete-candidate enclosing context re-reviewed; original disposition retained."
+      },
+      "src/commands/task_commands.py::TaskCommandsMixin._cmd_archive_task::513842f306aa56e3e63cfa84b52c59c27b3f94d7c784a662f64170e6c03e1d30": {
+        "line": 5366,
+        "owner": "TaskCommandsMixin._cmd_archive_task",
+        "call": "log_event",
+        "owner_fingerprint": "5f99f4ff0559d6d01f0a8a4930449f800ca33235aa82882caee2a70a434de6ca",
+        "integration_signal": true,
+        "disposition": "ordinary",
+        "reason": "Emits task_archived for a guarded child archive after archive/removal checks; it records the action rather than proving landing. Complete-candidate enclosing context re-reviewed; original disposition retained."
+      },
+      "src/commands/task_commands.py::TaskCommandsMixin._cmd_archive_task::b611360d398cc725e9ada50f9112d9c7be31f747e1251e86de6d9f03c44ab5f7": {
+        "line": 5297,
+        "owner": "TaskCommandsMixin._cmd_archive_task",
+        "call": "log_event",
+        "owner_fingerprint": "5f99f4ff0559d6d01f0a8a4930449f800ca33235aa82882caee2a70a434de6ca",
+        "integration_signal": true,
+        "disposition": "ordinary",
+        "reason": "Emits task_archived for the requested task after the guarded archive; the event does not bypass integration removal guards. Complete-candidate enclosing context re-reviewed; original disposition retained."
+      },
+      "src/commands/task_commands.py::TaskCommandsMixin._cmd_edit_task::b6009fee9d6fc35151315162ef7595d81bde3db54b069841732e5140523619ff": {
+        "line": 4286,
+        "owner": "TaskCommandsMixin._cmd_edit_task",
+        "call": "set_task_meta",
+        "owner_fingerprint": "ac38ba8606da44c879996f47f91c2e0557d7239927a07b09e1c6ea7a9623348c",
+        "integration_signal": true,
+        "disposition": "ordinary",
+        "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'needs_attention' Complete-candidate enclosing context re-reviewed; original disposition retained."
+      },
+      "src/commands/task_commands.py::TaskCommandsMixin._cmd_provide_input::0f34c5a5cf7ffa0b7470a2802a0e0a7b49b19ff72d497f0aad42650f0e0ae892": {
+        "line": 5496,
+        "owner": "TaskCommandsMixin._cmd_provide_input",
+        "call": "log_event",
+        "owner_fingerprint": "13fd7f7a031f58b82006d0099726841f1235e6d0f758ce418920fe9f6d14aa53",
+        "integration_signal": false,
+        "disposition": "ordinary",
+        "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Complete-candidate enclosing context re-reviewed; original disposition retained."
+      },
+      "src/commands/task_commands.py::TaskCommandsMixin._cmd_remove_dependency::1a08ef791aced41453b664c03655d329ac97c44ad54bc8079a0e8061b3e7eb93": {
+        "line": 4093,
+        "owner": "TaskCommandsMixin._cmd_remove_dependency",
+        "call": "log_event",
+        "owner_fingerprint": "07083975f1063606902d4c788c394882ebbadd6576dc6510c121ff25cafa48f5",
+        "integration_signal": false,
+        "disposition": "ordinary",
+        "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Complete-candidate enclosing context re-reviewed; original disposition retained."
+      },
+      "src/commands/task_commands.py::TaskCommandsMixin._cmd_reopen_with_feedback::223d0f7e6c4889256e3ed2ac86b057584987bd73625610bcb54d446246a0bbcb": {
+        "line": 5030,
+        "owner": "TaskCommandsMixin._cmd_reopen_with_feedback",
+        "call": "log_event",
+        "owner_fingerprint": "5c5c505c528c407c9773bf74276b5852e14988eeb7fb3da3d6bb0396915200c0",
+        "integration_signal": true,
+        "disposition": "ordinary",
+        "reason": "Audits reopen_with_feedback with bounded feedback text; explicit reopen/transition checks own the state change, not this historical event. Complete-candidate enclosing context re-reviewed; original disposition retained."
+      },
+      "src/commands/task_commands.py::TaskCommandsMixin._cmd_reopen_with_feedback::d0a23678072f424218ac0a4925ebf887c82e58359a4b99b3a16f86a3e1b51529": {
+        "line": 5083,
+        "owner": "TaskCommandsMixin._cmd_reopen_with_feedback",
+        "call": "log_event",
+        "owner_fingerprint": "5c5c505c528c407c9773bf74276b5852e14988eeb7fb3da3d6bb0396915200c0",
+        "integration_signal": true,
+        "disposition": "ordinary",
+        "reason": "Audits a stale-review cascade as task.transition with reopen_cascade:stale_review; the event records the graph review invalidation. Complete-candidate enclosing context re-reviewed; original disposition retained."
+      },
+      "src/commands/task_commands.py::TaskCommandsMixin._create_task::0dfb7d71a735cf01bf69eb2924994003433c6ecb4da10f0c4921536d9b0bfd9a": {
+        "line": 3096,
+        "owner": "TaskCommandsMixin._create_task",
+        "call": "log_event",
+        "owner_fingerprint": "2aaf7826bce4dca54e0d7d96573f9933c2b68d43aef63700b8d31eb9623a5d7e",
+        "integration_signal": true,
+        "disposition": "ordinary",
+        "reason": "Task label.added audit only; source-owned pre-create locking hooks change the enclosing task creation AST, not this call or payload. No ref replay or duplicate integration lifecycle. Complete-candidate enclosing context re-reviewed; original disposition retained."
+      },
+      "src/commands/task_commands.py::TaskCommandsMixin._create_task::410a02b90473dd130b922788f002d371e50f4de6ba4daff1847591088f3deff6": {
+        "line": 3089,
+        "owner": "TaskCommandsMixin._create_task",
+        "call": "log_event",
+        "owner_fingerprint": "2aaf7826bce4dca54e0d7d96573f9933c2b68d43aef63700b8d31eb9623a5d7e",
+        "integration_signal": true,
+        "disposition": "ordinary",
+        "reason": "Task dependency.added audit only; source-owned pre-create locking hooks change the enclosing task creation AST, not this call or payload. No ref replay or duplicate integration lifecycle. Complete-candidate enclosing context re-reviewed; original disposition retained."
+      },
+      "src/commands/task_commands.py::TaskCommandsMixin._keep_for_delivery::e1c6bc5706b2248baa0f518cec6fe5c9457f7459885dd70390548c8ff888ecea": {
+        "line": 5601,
+        "owner": "TaskCommandsMixin._keep_for_delivery",
+        "call": "log_event",
+        "owner_fingerprint": "f81ecfd983ec4f7b748850582cc569a4067af6a860f0a6023dd5897dc891b807",
+        "integration_signal": true,
+        "disposition": "ordinary",
+        "reason": "Operator task.delivery_disposition audit for a deliver decision that archives nothing; records the task identity and how many holders wait, not ref mutation, replay or delivery state. Complete-candidate enclosing context re-reviewed; original disposition retained."
+      },
+      "src/commands/task_commands.py::TaskCommandsMixin._restart_repair_delegate::422567dd28fcecb1a80d03028773f3ba177b912a1b2e264195e8ad9a0e83101f": {
+        "line": 4877,
+        "owner": "TaskCommandsMixin._restart_repair_delegate",
+        "call": "set_task_meta",
+        "owner_fingerprint": "4e3bdbd95756c81e5781aacff51f40d2a58acc6e06d1322554decdf126cd8c1d",
+        "integration_signal": true,
+        "disposition": "ordinary",
+        "reason": "Ordinary recovery hold supersession only after a guarded repair-delegate branch handoff succeeds; refused reservation restores the worker failure streak and retains the prior incident. Integration reservation guards remain authoritative; no ref replay or duplicate integration lifecycle storage. Complete-candidate enclosing context re-reviewed; original disposition retained."
+      },
+      "src/database/queries/archive_queries.py::ArchiveQueryMixin._archive_task_on::6ee0195b41e365a4f138cbf111c69b21f7782f9b3bc5c059df2281abfd263cfe": {
+        "line": 450,
+        "owner": "ArchiveQueryMixin._archive_task_on",
+        "call": "log_event",
+        "owner_fingerprint": "0f49ad9000380dc5b017b45f3422a828518a2801c3159301c1cbe5a34d567ee7",
+        "integration_signal": true,
+        "disposition": "ordinary",
+        "reason": "Audits task.delivery_abandoned with the explicit archive disposition; the event reports accepted abandonment and never asserts successful delivery. Complete-candidate enclosing context re-reviewed; original disposition retained."
+      },
+      "src/database/queries/claim_queries.py::ClaimQueryMixin.activate_claim::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
+        "line": 1651,
+        "owner": "ClaimQueryMixin.activate_claim",
+        "call": "delete",
+        "owner_fingerprint": "455a8188c4eb48517f4ba8e811067cd71057f14e3c763425090ccb31be48683f",
+        "integration_signal": true,
+        "disposition": "ordinary",
+        "reason": "Deletes stale preparation/attention markers and the exact claimed_by_session binding under claim activation fences; this is claim lifecycle cleanup, not ref replay. Complete-candidate enclosing context re-reviewed; original disposition retained."
+      },
+      "src/database/queries/continuation_queries.py::retire_task_waits::7f9a172d90564131599dcbc17c8abdfadd20f21c0ea0e36f65fa816d1433dfc8": {
+        "line": 76,
+        "owner": "retire_task_waits",
+        "call": "insert",
+        "owner_fingerprint": "544e23efaff1f77c5c59fbbfb412d63dd243aaa9dad80e96ad8976ec4bbdc5fe",
+        "integration_signal": false,
+        "disposition": "ordinary",
+        "reason": "Immutable ordinary event audit of the fenced operation named by this writer; existing Git/source/claim guards authorize mutation, never event replay."
+      },
+      "src/database/queries/task_queries.py::TaskQueryMixin._apply_transition::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
+        "line": 2222,
+        "owner": "TaskQueryMixin._apply_transition",
+        "call": "delete",
+        "owner_fingerprint": "5ff37c321e8781e6e2e112c69a3ba9358b37d4dff8a171c7811ada023c2efeff",
+        "integration_signal": true,
+        "disposition": "ordinary",
+        "reason": "Cleans transition-specific task metadata, claim bindings, pause/recovery markers and stale completion pointers; typed transition and handoff guards govern cleanup, not this storage call. Complete-candidate enclosing context re-reviewed; original disposition retained."
+      },
+      "src/database/queries/task_queries.py::TaskQueryMixin._delete_one::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
+        "line": 2733,
+        "owner": "TaskQueryMixin._delete_one",
+        "call": "delete",
+        "owner_fingerprint": "c344b044288ad635522f43dbecd5a39593504eb44db3535e261e0632ff580080",
+        "integration_signal": true,
+        "disposition": "ordinary",
+        "reason": "Ordinary task metadata cleanup after audited operator deletion; completion records, comments, subtask evidence and integration audit identities remain intact. No ref replay or duplicate integration lifecycle storage. Complete-candidate enclosing context re-reviewed; original disposition retained."
+      },
+      "src/database/queries/task_queries.py::TaskQueryMixin._resume_locked::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
+        "line": 1636,
+        "owner": "TaskQueryMixin._resume_locked",
+        "call": "delete",
+        "owner_fingerprint": "dc55f9cb198f74851dff7d2ec3ce06218c1526f3dbef589af68e47a33d92e78c",
+        "integration_signal": true,
+        "disposition": "ordinary",
+        "reason": "Deletes manual-pause and attention metadata as part of guarded resume; managed integration episodes retain their separate pause and handoff controls. Complete-candidate enclosing context re-reviewed; original disposition retained."
+      },
+      "src/database/queries/task_queries.py::TaskQueryMixin._retry_slot_reset_locked::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
+        "line": 1482,
+        "owner": "TaskQueryMixin._retry_slot_reset_locked",
+        "call": "delete",
+        "owner_fingerprint": "6b7876d2e9ca51c04380af53740e21f476fb2b801d8e7e0da3449e78e993b5e6",
+        "integration_signal": false,
+        "disposition": "ordinary",
+        "reason": "Removes row-local claim preparation/pause checkpoint metadata under existing task guards; no integration journal or replay authority."
+      },
+      "src/database/queries/task_queries.py::TaskQueryMixin.discard_task_pause_checkpoint::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
+        "line": 1214,
+        "owner": "TaskQueryMixin.discard_task_pause_checkpoint",
+        "call": "delete",
+        "owner_fingerprint": "549248b7ee6dfb247963b7cb69cf67d96d7636b144f0d85b18b13e05822716b8",
+        "integration_signal": false,
+        "disposition": "ordinary",
+        "reason": "Removes row-local claim preparation/pause checkpoint metadata under existing task guards; no integration journal or replay authority."
+      },
+      "src/integration/batches.py::BatchStore.reassemble::d5c9659229fbd1c20968daa9af0ba70bc514ac8ab9a77410d85fb433459d14a7": {
+        "line": 673,
+        "owner": "BatchStore.reassemble",
+        "call": "log_event",
+        "owner_fingerprint": "6d77da83e387409ebb404bbc2d80c856e9001df92c351510c2989a6b0d1baa87",
+        "integration_signal": true,
+        "disposition": "ordinary",
+        "reason": "Immutable ordinary event audit of the fenced operation named by this writer; existing Git/source/claim guards authorize mutation, never event replay."
+      },
+      "src/integration/batches.py::BatchStore.set_intent::6d729f7a8f24a4746d37ecea7871dfd209ea8cce995ce7499c8290475b86f660": {
+        "line": 724,
+        "owner": "BatchStore.set_intent",
+        "call": "log_event",
+        "owner_fingerprint": "10164d0f974c7dfc7baa29a058d712c45ae257f700be0cd07d9911b01f5dccc1",
+        "integration_signal": true,
+        "disposition": "ordinary",
+        "reason": "Operator audit of batch intent with principal and reason. Intent and terminal abort projection remain on the batch row; this event is never replayed and carries no ref-update lifecycle. Re-reviewed at the branch-retirement landing: the same transaction now queues an ordinary branch_retirements request; no ref replay or duplicate lifecycle. Complete-candidate enclosing context re-reviewed; original disposition retained."
+      },
+      "src/integration/child_delivery.py::ChildDelivery._adopt_source::c7d104449a70d66ca26fe189a9a028a871a53fdf1db34120d93a682b87d109f1": {
+        "line": 679,
+        "owner": "ChildDelivery._adopt_source",
+        "call": "log_event",
+        "owner_fingerprint": "7b2852f5cb7ec91a4e8d1836faaa995b800db74b66cd1a17f3767bca3d1272d8",
+        "integration_signal": true,
+        "disposition": "ordinary",
+        "reason": "Immutable ordinary event audit of the fenced operation named by this writer; existing Git/source/claim guards authorize mutation, never event replay."
+      },
+      "src/integration/child_delivery.py::ChildDelivery.run::ec1a6f074eeb4a11b5b2dccbdfa9655731669c03f0b01ac74e350940d0cb455b": {
+        "line": 529,
+        "owner": "ChildDelivery.run",
+        "call": "log_event",
+        "owner_fingerprint": "f47e7a460ea30a9c742748fda640e034fbd6988cc3aa5ec1b9f271f5ff67d432",
+        "integration_signal": false,
+        "disposition": "ordinary",
+        "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Complete-candidate enclosing context re-reviewed; original disposition retained."
+      },
+      "src/integration/delivery_watchdog.py::_settle_on::5381566393e68ec633aa72ea3aad0b79439276976a942ce34b089ceda48094a7": {
+        "line": 319,
+        "owner": "_settle_on",
+        "call": "log_event",
+        "owner_fingerprint": "7501d3ba7924cbffae1324e6e9f5f680437720f79bca5704948e49ee459c8244",
+        "integration_signal": false,
+        "disposition": "ordinary",
+        "reason": "Watchdog threshold/maintenance cursor or recovered-event audit; live Git/wait generations authorize recovery, never this stored observation."
+      },
+      "src/integration/development.py::DevelopmentPrimitives.stale_branches::1a8916f711dc47c080cb0bac5599a46fa61aee803ddea03d9439036c30b321e9": {
+        "line": 947,
+        "owner": "DevelopmentPrimitives.stale_branches",
+        "call": "log_event",
+        "owner_fingerprint": "1f173a3c75d29afd835477d8e4998dcc98f0c1d9c42733a2b893cb0e9d67aeef",
+        "integration_signal": true,
+        "disposition": "ordinary",
+        "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Complete-candidate enclosing context re-reviewed; original disposition retained."
+      },
+      "src/integration/owner_recovery.py::OwnerRecovery.restore_task_origin::276a197ddd79d76a1d551da4fcd30b6950a3c8601b16556364400f491731b484": {
+        "line": 479,
+        "owner": "OwnerRecovery.restore_task_origin",
+        "call": "log_event",
+        "owner_fingerprint": "f022d2b1cb5c0862d34211f26f1f793d4b30fcbfa27a11607c744775d2f71c8c",
+        "integration_signal": true,
+        "disposition": "ordinary",
+        "reason": "Immutable ordinary event audit of the fenced operation named by this writer; existing Git/source/claim guards authorize mutation, never event replay."
+      },
+      "src/integration/owner_recovery.py::OwnerRecovery.restore_task_origin::f32cc9138004b6a635be06be83beecf1193497268ffe9a70f838e041b3400aa1": {
+        "line": 507,
+        "owner": "OwnerRecovery.restore_task_origin",
+        "call": "log_event",
+        "owner_fingerprint": "f022d2b1cb5c0862d34211f26f1f793d4b30fcbfa27a11607c744775d2f71c8c",
+        "integration_signal": true,
+        "disposition": "ordinary",
+        "reason": "Immutable ordinary event audit of the fenced operation named by this writer; existing Git/source/claim guards authorize mutation, never event replay."
+      },
+      "src/integration/preparation_handoff.py::recover_preparation_handoffs::608f2360bd225b1ababc8c68f1c89fa535c9aa8aac7a17e52b6b902351dd8c82": {
+        "line": 135,
+        "owner": "recover_preparation_handoffs",
+        "call": "log_event",
+        "owner_fingerprint": "ab1084ec2089e77e47910c182fe17e6a7e54ce820a1657f9ce4b71edecc1eb65",
+        "integration_signal": true,
+        "disposition": "ordinary",
+        "reason": "Immutable ordinary event audit of the fenced operation named by this writer; existing Git/source/claim guards authorize mutation, never event replay."
+      },
+      "src/integration/stacked_branches.py::StackedBranches._file_repair::2d36ab3da05dcd99c7a0cb4b8a22925dd23e723147d1b0fe6a07ff4716ee55ac": {
+        "line": 1503,
+        "owner": "StackedBranches._file_repair",
+        "call": "insert",
+        "owner_fingerprint": "a6679b5ddc3e948023d277c0272c79671b80fcde208f5d67bb67246cfa4d3afa",
+        "integration_signal": true,
+        "disposition": "ordinary",
+        "reason": "Associates an isolated conflict repair with its preserved dependent for adoption. Claim-time diagnostic metadata mirrors the origin preparation hold and names exact inputs and paths; it cannot authorize publication or replay refs. Git ancestry, completion identity and current branch fences remain authoritative. Re-reviewed after moving task-description wording to read-only vault templates: the metadata write, locking and admission remain unchanged, with no new ref replay or duplicate lifecycle authority. Complete-candidate enclosing context re-reviewed; original disposition retained."
+      },
+      "src/integration/stacked_branches.py::StackedBranches.refresh::be3be394bad4eaa21aa8a28db135b02557490ddb64be7fdc9e1c1efef1d879ec": {
+        "line": 1335,
+        "owner": "StackedBranches.refresh",
+        "call": "pg_insert",
+        "owner_fingerprint": "73bafa448db36c6d1ad8b2793b4a0ac8e75e003e3eda9ae8b527fc2095e39e59",
+        "integration_signal": true,
+        "disposition": "ordinary",
+        "reason": "Upserts DEVELOPMENT_COMPLETION_ID_KEY to locate the immutable completion produced by a fenced stacked-source merge; it is a completion pointer, not a delivery state machine. Complete-candidate enclosing context re-reviewed; original disposition retained."
+      },
+      "src/integration/train_controls.py::TrainControls.release_withheld_source::2d9df3e813a854d8f9680885a47ef904674d4760deb8ba30239b389450e4d599": {
+        "line": 744,
+        "owner": "TrainControls.release_withheld_source",
+        "call": "log_event",
+        "owner_fingerprint": "e745b316629a5fb784b829277cecb40278f7f148dfaa32c8887023397bd87809",
+        "integration_signal": true,
+        "disposition": "ordinary",
+        "reason": "Immutable ordinary event audit of the fenced operation named by this writer; existing Git/source/claim guards authorize mutation, never event replay."
+      },
+      "src/integration/train_controls.py::TrainControls.settle_batch::6fa9338facb753efbf7dff7ccb989f3f5c856235d9d47d5823156f2d1809121b": {
+        "line": 504,
+        "owner": "TrainControls.settle_batch",
+        "call": "log_event",
+        "owner_fingerprint": "16688b677be175968cc8c40c4fc29008057489e872aa3eecaff12e4386fe1f11",
+        "integration_signal": true,
+        "disposition": "ordinary",
+        "reason": "Audits a batch settlement result with operator and reason after the settlement command; current batch and Git proof remain authoritative. Complete-candidate enclosing context re-reviewed; original disposition retained."
+      },
+      "src/integration/train_sources.py::DatabaseBatches._settle_project_delivered::f12935a5a7da1d808ebe870d62412725e218483dee20eff5a7c1e739fe766bfe": {
+        "line": 1108,
+        "owner": "DatabaseBatches._settle_project_delivered",
+        "call": "log_event",
+        "owner_fingerprint": "3c534a5b4ac17e14e78d61816db2fbfdef9cbfa73519758888c2889b50a3c617",
+        "integration_signal": true,
+        "disposition": "ordinary",
+        "reason": "Immutable ordinary event audit of the fenced operation named by this writer; existing Git/source/claim guards authorize mutation, never event replay."
+      },
+      "src/integration/train_sources.py::EpicCompletions.settle::2d36ab3da05dcd99c7a0cb4b8a22925dd23e723147d1b0fe6a07ff4716ee55ac": {
+        "line": 2342,
+        "owner": "EpicCompletions.settle",
+        "call": "insert",
+        "owner_fingerprint": "58b22d226cca2c3985aff1f9200c7678bbcc4571c3f80d9a20aac937a6829842",
+        "integration_signal": true,
+        "disposition": "ordinary",
+        "reason": "Inserts DEVELOPMENT_COMPLETION_ID_KEY under the hierarchy lock beside the immutable epic completion after readiness recheck; it is an identity locator without ref publication intent. Complete-candidate enclosing context re-reviewed; original disposition retained."
+      },
+      "src/orchestrator/core.py::Orchestrator._checkpoint_paused_workspace::2a67d31d352ea3e6d723c1927b29f55f52d855576c04aa1ff9899093637f01ad": {
+        "line": 1496,
+        "owner": "Orchestrator._checkpoint_paused_workspace",
+        "call": "set_task_meta",
+        "owner_fingerprint": "c00929cffd9d2ff3b1e09bc3022684eec03a6773aac95acc184d51a628973ba9",
+        "integration_signal": false,
+        "disposition": "ordinary",
+        "reason": "Stores pause-checkpoint retry attempts, next retry time and reason; this backoff telemetry cannot prove a handoff or move a ref. Complete-candidate enclosing context re-reviewed; original disposition retained."
+      },
+      "src/orchestrator/core.py::Orchestrator._checkpoint_paused_workspace::cda00a809de8dac8c704f9da910433579b679b64df6e34c7ec8b86d4e6dc3882": {
+        "line": 1539,
+        "owner": "Orchestrator._checkpoint_paused_workspace",
+        "call": "set_task_meta",
+        "owner_fingerprint": "c00929cffd9d2ff3b1e09bc3022684eec03a6773aac95acc184d51a628973ba9",
+        "integration_signal": false,
+        "disposition": "ordinary",
+        "reason": "Stores exhausted pause-checkpoint attempts and reason for diagnosis; the failure record leaves actual retained branch ownership intact. Complete-candidate enclosing context re-reviewed; original disposition retained."
+      },
+      "src/orchestrator/execution.py::ExecutionMixin._preserve_unpushed_on_failure::8984da29e38cdef16a89fdb5710ce864b3017bdca5db3309dce9f87f9f13fe70": {
+        "line": 2630,
+        "owner": "ExecutionMixin._preserve_unpushed_on_failure",
+        "call": "set_task_meta",
+        "owner_fingerprint": "884a13a1ea23502c63fa9f4bc9a2820ed8b47143bc3e7d34e631e35d7c10fb33",
+        "integration_signal": false,
+        "disposition": "ordinary",
+        "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: UNMERGED_BRANCH_META Complete-candidate enclosing context re-reviewed; original disposition retained."
+      },
+      "src/orchestrator/execution.py::ExecutionMixin._preserve_unpushed_on_failure::f2a065e87b9ac1c2c29f709808b528c8ed38ee71d4c075de9a7daf013baee912": {
+        "line": 2632,
+        "owner": "ExecutionMixin._preserve_unpushed_on_failure",
+        "call": "set_task_meta",
+        "owner_fingerprint": "884a13a1ea23502c63fa9f4bc9a2820ed8b47143bc3e7d34e631e35d7c10fb33",
+        "integration_signal": false,
+        "disposition": "ordinary",
+        "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: UNMERGED_COMMIT_META Complete-candidate enclosing context re-reviewed; original disposition retained."
+      },
+      "src/orchestrator/pools.py::PoolsMixin._check_pool_progress::f6acd075b5bd9a6a9104d37e66f4885432fd8fd46ebb5c13cd8902504da0de5e": {
+        "line": 608,
+        "owner": "PoolsMixin._check_pool_progress",
+        "call": "log_event",
+        "owner_fingerprint": "20adb22eaaf2d13b5bde464567e2ec796b42260ab2f55c1dab72a97e57ae244f",
+        "integration_signal": false,
+        "disposition": "ordinary",
+        "reason": "Audits pool.scaler_stalled with progress diagnostics; the event does not alter admission, reservations or delivery state. Complete-candidate enclosing context re-reviewed; original disposition retained."
+      },
+      "src/projects/relocation.py::ProjectRelocation.apply::b0443b1cbdcbd2be1c20e315c1e018f45472e7e6804310ecf08bf7c6abc4dd35": {
+        "line": 483,
+        "owner": "ProjectRelocation.apply",
+        "call": "log_event",
+        "owner_fingerprint": "2bc6761df7123ba1e40d1776a139d157aae04b31823b5e404c83f76e80c376ae",
+        "integration_signal": true,
+        "disposition": "ordinary",
+        "reason": "Audits the transactionally published storage binding; relocation digest, quiescence and exact checks authorize the operation."
+      },
+      "src/wait_runtime/lifecycle.py::WaitLifecycle.suspend::7f9a172d90564131599dcbc17c8abdfadd20f21c0ea0e36f65fa816d1433dfc8": {
+        "line": 185,
+        "owner": "WaitLifecycle.suspend",
+        "call": "insert",
+        "owner_fingerprint": "29aa5a9de17a64b88e93233b7653acc1e808296edd8862b8a8398664020446c5",
+        "integration_signal": false,
+        "disposition": "ordinary",
+        "reason": "Wait registration, continuation park/delivery/ACK or existing task recovery audit; no new integration journal or reference replay authority. Complete-candidate enclosing context re-reviewed; original disposition retained."
+      },
+      "src/wait_runtime/resume.py::ResumeTransaction.failed::7f9a172d90564131599dcbc17c8abdfadd20f21c0ea0e36f65fa816d1433dfc8": {
+        "line": 323,
+        "owner": "ResumeTransaction.failed",
+        "call": "insert",
+        "owner_fingerprint": "9ec22a2fd3ec9a96aff94efe3dcf2d9157266a4698236edf4d9dfd20f997b795",
+        "integration_signal": true,
+        "disposition": "ordinary",
+        "reason": "Immutable ordinary event audit of the fenced operation named by this writer; existing Git/source/claim guards authorize mutation, never event replay."
+      },
+      "src/wait_runtime/scheduler.py::SchedulerWaitService.deadline_locked::e5139650d0a374a5e87df9bbfe8b5821ca25c26574dd678280b656466cf16ca5": {
+        "line": 300,
+        "owner": "SchedulerWaitService.deadline_locked",
+        "call": "log_event",
+        "owner_fingerprint": "937c709bcfeea07e6c222eb5f84ff32b07d835f8564ebfbfe4716d5deeead14b",
+        "integration_signal": false,
+        "disposition": "ordinary",
+        "reason": "Wait registration, continuation park/delivery/ACK or existing task recovery audit; no new integration journal or reference replay authority. Complete-candidate enclosing context re-reviewed; original disposition retained."
+      },
+      "src/waits/decisions.py::WaitDecisions.human::7f9a172d90564131599dcbc17c8abdfadd20f21c0ea0e36f65fa816d1433dfc8": {
+        "line": 373,
+        "owner": "WaitDecisions.human",
+        "call": "insert",
+        "owner_fingerprint": "999ab49b84c4c1375d86d3cda753351fd1d1bc361c43b8451d558ac5dd621d77",
+        "integration_signal": false,
+        "disposition": "ordinary",
+        "reason": "Wait registration, continuation park/delivery/ACK or existing task recovery audit; no new integration journal or reference replay authority. Complete-candidate enclosing context re-reviewed; original disposition retained."
+      },
+      "src/waits/decisions.py::WaitDecisions.resolve_escalation::7f9a172d90564131599dcbc17c8abdfadd20f21c0ea0e36f65fa816d1433dfc8": {
+        "line": 125,
+        "owner": "WaitDecisions.resolve_escalation",
+        "call": "insert",
+        "owner_fingerprint": "2d7ada026c5b899cc2fc4e8916a33155abd2fa544db009b85d27c09e89663e3f",
+        "integration_signal": false,
+        "disposition": "ordinary",
+        "reason": "Wait registration, continuation park/delivery/ACK or existing task recovery audit; no new integration journal or reference replay authority. Complete-candidate enclosing context re-reviewed; original disposition retained."
+      },
+      "src/waits/dispatcher.py::WakeDispatcher.finish::7f9a172d90564131599dcbc17c8abdfadd20f21c0ea0e36f65fa816d1433dfc8": {
+        "line": 193,
+        "owner": "WakeDispatcher.finish",
+        "call": "insert",
+        "owner_fingerprint": "85430e648b982385a062c88bb921208577b73d5fde00e6748d9a9c95185ba1ea",
+        "integration_signal": false,
+        "disposition": "ordinary",
+        "reason": "Wait registration, continuation park/delivery/ACK or existing task recovery audit; no new integration journal or reference replay authority. Complete-candidate enclosing context re-reviewed; original disposition retained."
+      },
+      "src/asks/legacy_reset.py::discard::00635d16d37fb1dd71c4bae42449b7d1281cf5e926bbed2a8b06dc6bec86e325": {
+        "line": 181,
+        "owner": "discard",
+        "call": "insert",
+        "owner_fingerprint": "76a9bd4dba2093787284104099d8f6f0fd5bd4c3839b09dfdf94e30b8e332d91",
+        "integration_signal": false,
+        "disposition": "ordinary",
+        "reason": "Ask reconciliation/reset maintenance cursor in its reserved namespace; source decisions remain in the ask ledger."
+      },
+      "src/asks/legacy_reset.py::reset::df54c52ad52d09fa866acba8659fc74d57631883065d45dc4f204d939e848188": {
+        "line": 289,
+        "owner": "reset",
+        "call": "update",
+        "owner_fingerprint": "f679429603adbd8c31d904145dcc0c62c05da4af3c7dd4be41bf32edf372954d",
+        "integration_signal": false,
+        "disposition": "ordinary",
+        "reason": "Ask reconciliation/reset maintenance cursor in its reserved namespace; source decisions remain in the ask ledger."
+      },
+      "src/asks/reconcile.py::scan::71e404c9258ff6031e83ca705bb1737ab820adab28d43b8a1d4cdd1064021268": {
+        "line": 431,
+        "owner": "scan",
+        "call": "pg_insert",
+        "owner_fingerprint": "bb3c5d031fcbb8027b400ae81763cb186b47b50fb116a858ef42d3ea414e594e",
+        "integration_signal": false,
+        "disposition": "ordinary",
+        "reason": "Ask reconciliation/reset maintenance cursor in its reserved namespace; source decisions remain in the ask ledger."
+      },
+      "src/database/queries/metrics_queries.py::MetricsQueryMixin.bump_daemon_start_count::405210247fc3975ac2a63695a080f841d7c3a987a585423a7a608e1810fd4437": {
+        "line": 559,
+        "owner": "MetricsQueryMixin.bump_daemon_start_count",
+        "call": "insert",
+        "owner_fingerprint": "eb8308a7b227640b5578cb2cc5f4241cbfef71afb15a061ec0fa4f266e32e352",
+        "integration_signal": false,
+        "disposition": "ordinary",
+        "reason": "Fixed metrics/provider-health counter namespace; no delivery or ref mutation authority."
+      },
+      "src/database/queries/metrics_queries.py::MetricsQueryMixin.bump_daemon_start_count::551b9ea04b33a934623b7691280a965c834b661f15da627d4d741e1dd08ea30b": {
+        "line": 565,
+        "owner": "MetricsQueryMixin.bump_daemon_start_count",
+        "call": "update",
+        "owner_fingerprint": "eb8308a7b227640b5578cb2cc5f4241cbfef71afb15a061ec0fa4f266e32e352",
+        "integration_signal": false,
+        "disposition": "ordinary",
+        "reason": "Fixed metrics/provider-health counter namespace; no delivery or ref mutation authority."
+      },
+      "src/database/queries/provider_usage_queries.py::ProviderUsageQueryMixin.record_probe_health::405210247fc3975ac2a63695a080f841d7c3a987a585423a7a608e1810fd4437": {
+        "line": 427,
+        "owner": "ProviderUsageQueryMixin.record_probe_health",
+        "call": "insert",
+        "owner_fingerprint": "28672c6e41bd8e0845b813b7ada8a4cebdb8526c0acb2c3677ce07c54b66c8cf",
+        "integration_signal": false,
+        "disposition": "ordinary",
+        "reason": "Fixed metrics/provider-health counter namespace; no delivery or ref mutation authority."
+      },
+      "src/database/queries/provider_usage_queries.py::ProviderUsageQueryMixin.record_probe_health::551b9ea04b33a934623b7691280a965c834b661f15da627d4d741e1dd08ea30b": {
+        "line": 430,
+        "owner": "ProviderUsageQueryMixin.record_probe_health",
+        "call": "update",
+        "owner_fingerprint": "28672c6e41bd8e0845b813b7ada8a4cebdb8526c0acb2c3677ce07c54b66c8cf",
+        "integration_signal": false,
+        "disposition": "ordinary",
+        "reason": "Fixed metrics/provider-health counter namespace; no delivery or ref mutation authority."
+      },
+      "src/integration/containment_audit.py::insert_audit::405210247fc3975ac2a63695a080f841d7c3a987a585423a7a608e1810fd4437": {
+        "line": 142,
+        "owner": "insert_audit",
+        "call": "insert",
+        "owner_fingerprint": "c958a34cd8533a43dbdc2e5a7cdca55b7c3afe1c978121366a6744b5870bff07",
+        "integration_signal": false,
+        "disposition": "intent",
+        "reason": "Bounded operator containment audit or repository admission hold; explicit operator/configuration authority, not a ref replay journal."
+      },
+      "src/integration/delivery_watchdog.py::_config_put::71e404c9258ff6031e83ca705bb1737ab820adab28d43b8a1d4cdd1064021268": {
+        "line": 212,
+        "owner": "_config_put",
+        "call": "pg_insert",
+        "owner_fingerprint": "1aa840eacb47adca5f4b14f0d79ee3c9aeb6be2dabb8f04c036c5dbb84206f96",
+        "integration_signal": false,
+        "disposition": "ordinary",
+        "reason": "Watchdog threshold/maintenance cursor; live Git/wait generations authorize recovery, never this stored observation."
+      },
+      "src/integration/repository_incidents.py::clear_incident::551b9ea04b33a934623b7691280a965c834b661f15da627d4d741e1dd08ea30b": {
+        "line": 155,
+        "owner": "clear_incident",
+        "call": "update",
+        "owner_fingerprint": "16c5ff21e272d1e26911b1411209295707ffd13a1bad7693e7384a153283e8bc",
+        "integration_signal": true,
+        "disposition": "intent",
+        "reason": "Bounded operator containment audit or repository admission hold; explicit operator/configuration authority, not a ref replay journal."
+      },
+      "src/integration/repository_incidents.py::record_incident::71e404c9258ff6031e83ca705bb1737ab820adab28d43b8a1d4cdd1064021268": {
+        "line": 80,
+        "owner": "record_incident",
+        "call": "pg_insert",
+        "owner_fingerprint": "923e15afca2b4feabc142a58557cbbffcffc93b324897b56b9b17728f774fda6",
+        "integration_signal": false,
+        "disposition": "intent",
+        "reason": "Bounded operator containment audit or repository admission hold; explicit operator/configuration authority, not a ref replay journal."
+      }
+    },
+    "headroom": 0
   }
 }

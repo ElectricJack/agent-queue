@@ -9,12 +9,12 @@ the final caps, with no allowance to carry forward.
 from __future__ import annotations
 
 import ast
-from copy import deepcopy
 import hashlib
 import json
-from pathlib import Path
 import runpy
 import sys
+from copy import deepcopy
+from pathlib import Path
 
 import pytest
 
@@ -73,7 +73,8 @@ def test_pinned_table_predicate_names_all_45(manifest):
 
 
 def test_replacement_adds_no_new_integration_storage_category(report, manifest):
-    assert report["tables"].keys() <= manifest["baseline"]["tables"].keys(), (
+    approved = manifest.get("transition_table_exception", {}).get("tables", [])
+    assert set(report["tables"]) - set(manifest["baseline"]["tables"]) == set(approved), (
         "Replacement reshapes the existing five tables; a renamed journal or "
         "new storage category needs a design disposition, not unused table allowance."
     )
@@ -110,6 +111,8 @@ def test_recorded_ownership_report_and_landing_delta(manifest):
     assert recorded["transition"]["original_owned_total_cap"] == 155_499
     assert recorded["transition"]["owned_total_cap"] == ownership.transition_owned_cap(manifest)
     assert recorded["transition"]["batch_exception"] == manifest["transition_exception"]
+    assert recorded["transition"]["table_cap"] == ownership.transition_table_cap(manifest)
+    assert recorded["transition"]["table_exception"] == manifest["transition_table_exception"]
     assert recorded["transition"]["expires_at"] == "s4_modules"
     assert recorded["landing_delta"]["owned_lines"] == -2_431
     assert recorded["landing_delta"]["remaining_owned_allowance"] == 17_431
@@ -182,10 +185,10 @@ def test_extracting_short_owned_definition_still_charges_it(tmp_path):
 
 
 @pytest.mark.parametrize("text", [
-    "from src.integration.lock import acquire as renamed\n\n"
-    "def new_helper():\n    return renamed()\n",
-    "from sqlalchemy import select\n\n"
-    "def new_helper(db):\n    return db.execute(select(project_integration_leases))\n",
+    ("from src.integration.lock import acquire as renamed\n\n"
+    "def new_helper():\n    return renamed()\n"),
+    ("from sqlalchemy import select\n\n"
+    "def new_helper(db):\n    return db.execute(select(project_integration_leases))\n"),
     "REGISTRY = {'integration_hidden': hidden_handler}\n",
     "def integration_hidden():\n    return 1\n",
 ])
@@ -198,19 +201,19 @@ def test_unknown_owned_definitions_fail_coverage(tmp_path, text):
 
 
 @pytest.mark.parametrize("text", [
-    "async def replay(db):\n"
-    "    await db.set_task_meta('task', 'ref_updates', {'expected_oid': 'x', 'new_oid': 'y'})\n",
+    ("async def replay(db):\n"
+    "    await db.set_task_meta('task', 'ref_updates', {'expected_oid': 'x', 'new_oid': 'y'})\n"),
     "def replay(conn):\n    conn.execute(insert(op_events).values(ref='main', new_oid='y'))\n",
     "async def replay(db):\n    await db.log_event('ref_changed', payload='replay')\n",
-    "from src.database.tables import task_metadata as hidden\n"
-    "def replay(conn):\n    conn.execute(insert(hidden).values(key='ref_updates'))\n",
+    ("from src.database.tables import task_metadata as hidden\n"
+    "def replay(conn):\n    conn.execute(insert(hidden).values(key='ref_updates'))\n"),
     "def replay(conn):\n    conn.execute(text('INSERT INTO op_events VALUES (1)'))\n",
     "def replay(conn):\n    conn.execute(insert(system_config).values(key='ref_updates'))\n",
-    "from src.database.tables import system_config as hidden\n"
-    "def replay(conn):\n    conn.execute(update(hidden).values(value='replay'))\n",
+    ("from src.database.tables import system_config as hidden\n"
+    "def replay(conn):\n    conn.execute(update(hidden).values(value='replay'))\n"),
     "def replay(conn):\n    conn.execute(text('DELETE FROM system_config'))\n",
-    "from src.database.tables import events as hidden\n"
-    "def replay(conn):\n    conn.execute(insert(hidden).values(payload='ref_updates'))\n",
+    ("from src.database.tables import events as hidden\n"
+    "def replay(conn):\n    conn.execute(insert(hidden).values(payload='ref_updates'))\n"),
 ])
 def test_hidden_journal_writers_fail_without_integration_name(tmp_path, text):
     manifest = _fixture_manifest(tmp_path)
@@ -351,12 +354,24 @@ def test_batch_exception_is_exact_and_has_no_remaining_headroom(report, manifest
     assert exception == ownership.TRANSITION_BATCH_EXCEPTION
     assert exception["original_owned_total_cap"] == 155_499
     measured = exception["measured_owned_total"]
-    assert measured == 156_792
-    assert exception["delta"] == measured - 155_499 == 1_293
+    assert measured == report["total"]
+    assert exception["delta"] == measured - 155_499
+    predecessors = exception["predecessors"]
+    assert predecessors[0]["delta"] == 1_293
+    assert predecessors[1]["authorized_delta"] == 2_166
+    assert predecessors[1]["batch_id"] == "batch48"
+    assert predecessors[1]["measured_source_revision"] == (
+        "cbfd455b0e9f053854a2c1becfa1efaeef231582"
+    )
+    assert exception["batch_measured_delta"] == measured - 158_958
+    assert exception["delta"] == (
+        predecessors[0]["delta"] + predecessors[1]["authorized_delta"]
+        + exception["batch_measured_delta"]
+    )
     assert ownership.transition_owned_cap(manifest) == measured
     too_large = {**report, "total": measured + 1}
     assert ownership.budget_errors(too_large, manifest) == [
-        "owned total: 156,793 exceeds 156,792 in transition",
+        f"owned total: {measured + 1:,} exceeds {measured:,} in transition",
     ]
     # Changing the historical snapshot still cannot enlarge the exception.
     copy = deepcopy(manifest)
@@ -365,7 +380,7 @@ def test_batch_exception_is_exact_and_has_no_remaining_headroom(report, manifest
     copy.pop("transition_exception")
     assert ownership.transition_owned_cap(copy) == 155_499
     assert ownership.budget_errors({**report, "total": measured}, copy) == [
-        "owned total: 156,792 exceeds 155,499 in transition",
+        f"owned total: {measured:,} exceeds 155,499 in transition",
     ]
     # The exception is an upper bound: later genuine reductions still pass.
     assert ownership.budget_errors({**report, "total": measured - 1}, manifest) == []
@@ -397,15 +412,15 @@ def test_cutover_evidence_uses_the_enforced_caps(manifest, report, monkeypatch, 
     result = script["ownership"]()
     assert result["budget_errors"] == ownership.budget_errors(report, copy)
     transition = phase == "transition"
-    assert result["owned_cap_in_phase"] == (156_792 if transition else 19_999)
+    assert result["owned_cap_in_phase"] == (ownership.transition_owned_cap(copy) if transition else 19_999)
     assert result["engine_cap_in_phase"] == (97_627 if transition else 11_999)
-    assert result["table_cap_in_phase"] == (45 if transition else 10)
+    assert result["table_cap_in_phase"] == (ownership.transition_table_cap(copy) if transition else 10)
     assert result["transition_exception"] == (copy["transition_exception"] if transition else None)
     ledger = json.loads((ROOT / "docs/gates/git-first-cutover/ledger.json").read_text())
     ledger["ownership"] = result
     rendered = script["render"](ledger)
     if transition:
-        assert "156,792 transition cap" in rendered
+        assert f"{ownership.transition_owned_cap(copy):,} transition cap" in rendered
         assert copy["transition_exception"]["decision_message_id"] in rendered
     else:
         assert f"19,999 {phase} cap" in rendered
@@ -433,3 +448,24 @@ def test_size_ratchet_runs_in_default_ci_and_selection_catalogue():
     assert "pytest tests/" in workflow
     assert "--ignore=tests/test_integration_size.py" not in workflow
     assert not getattr(test_integration_size_and_table_budget, "pytestmark", [])
+
+
+def test_table_exception_is_exact_and_expires(manifest, report):
+    assert manifest["transition_table_exception"] == ownership.TRANSITION_TABLE_EXCEPTION
+    assert ownership.transition_table_cap(manifest) == len(report["tables"]) == 46
+    assert ownership.budget_errors({**report, "tables": {str(n): None for n in range(47)}},
+                                   manifest) == ["tables: 47 exceeds 46 in transition"]
+    copy = deepcopy(manifest)
+    copy.pop("transition_table_exception")
+    assert ownership.transition_table_cap(copy) == 45
+    assert ownership.budget_errors(report, copy) == ["tables: 46 exceeds 45 in transition"]
+    copy = deepcopy(manifest)
+    copy["transition_table_exception"]["delta"] = 2
+    assert ownership.budget_errors({}, copy) == [
+        "unapproved integration transition table exception",
+    ]
+    for phase in ("s4_modules", "final"):
+        copy = deepcopy(manifest)
+        copy["phase"] = phase
+        small = {**report, "groups": {"engine": 0}, "total": 0}
+        assert ownership.budget_errors(small, copy) == [f"tables: 46 exceeds 10 in {phase}"]

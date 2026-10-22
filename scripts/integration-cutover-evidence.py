@@ -42,7 +42,8 @@ def ownership() -> dict:
         "groups": report["groups"],
         "total": report["total"],
         "tables": len(report["tables"]),
-        "table_cap_in_phase": 45 if transition else io.FINAL_TABLE_CAP,
+        "table_cap_in_phase": (io.transition_table_cap(manifest)
+                               if transition else io.FINAL_TABLE_CAP),
         "uninventoried": report["unknown"],
         "unreviewed_writers": report["unknown_sinks"],
         "legacy_sinks_pending_stage4": report["legacy_sinks"],
@@ -52,6 +53,8 @@ def ownership() -> dict:
         "owned_cap_in_phase": (io.transition_owned_cap(manifest)
                                if transition else io.FINAL_TOTAL_CAP),
         "transition_exception": manifest.get("transition_exception") if transition else None,
+        "transition_table_exception": (manifest.get("transition_table_exception")
+                                       if transition else None),
         "final_caps": {
             "engine": io.FINAL_ENGINE_CAP, "owned_total": io.FINAL_TOTAL_CAP,
             "tables": io.FINAL_TABLE_CAP, "target_tables": io.TARGET_TABLES,
@@ -179,6 +182,7 @@ def render(ledger: dict) -> str:
          f"{len(own['legacy_sinks_pending_stage4'])}"),
         f"- budget errors: {own['budget_errors'] or 'none'}",
         f"- one-time batch exception: {own.get('transition_exception') or 'none'}",
+        f"- one-time table exception: {own.get('transition_table_exception') or 'none'}",
         "",
         "## Replay",
         "",

@@ -9,14 +9,13 @@ imports and component bodies). All measurements count newline bytes, like wc -l.
 from __future__ import annotations
 
 import ast
+import hashlib
+import json
+import re
 from collections import defaultdict
 from dataclasses import dataclass
 from functools import lru_cache
-import hashlib
-import json
 from pathlib import Path
-import re
-
 
 PINNED_REVISION = "2483f634aef2ece9fd3a6e5d92174cc145aa564a"
 LANDING_REVISION = "8e73e088fa5050621a165b9d13f90ef88334572d"
@@ -25,15 +24,48 @@ BASELINE_OWNED_LINES = 140_499
 REPLACEMENT_ALLOWANCE = 15_000
 # One approved batch exception, not a new replacement allowance. Remove its
 # manifest opt-in when azure-ridge-72 restores the original transition cap.
-TRANSITION_BATCH_EXCEPTION = {
-    "batch_id": "train-77f0d8e451f6aed08d608e443031047a",
-    "decision_message_id": "msg-edb5f857de344716a38857406fa69958",
+TRANSITION_BATCH_EXCEPTION = {'batch_id': 'train-56f15aff49843c6989224397ef6d7044',
+ 'decision_message_id': 'msg-dbb0120c6172499081721c033e894b39',
+ 'decision_message_ids': ['msg-7ed85e78d1af4f3e85b485a57967e794',
+                          'msg-381054d695e64055979a687c4d811e7e',
+                          'msg-dbb0120c6172499081721c033e894b39'],
+ 'decision_record': 'record:2720bdbe-7521-427e-8e72-1f40a3ff9818',
+ 'decision_record_revision': '9aa415ea-fe89-4f8e-a636-a4328d676b66',
+ 'measured_source_revision': 'aeb45642df379314adea0689bbf0c78125ce3f20',
+ 'original_owned_total_cap': 155499,
+ 'measured_owned_total': 160145,
+ 'delta': 4646,
+ 'predecessors': [{'batch_id': 'train-77f0d8e451f6aed08d608e443031047a',
+                   'decision_message_id': 'msg-edb5f857de344716a38857406fa69958',
+                   'decision_record': 'record:2720bdbe-7521-427e-8e72-1f40a3ff9818',
+                   'measured_source_revision': 'd00e25221856145f24777f8b016a008b4e954bca',
+                   'original_owned_total_cap': 155499,
+                   'measured_owned_total': 156792,
+                   'delta': 1293,
+                   'restore_task': 'azure-ridge-72',
+                   'expires_at': 's4_modules'},
+                  {'batch_id': 'batch48',
+                   'measured_source_revision': 'cbfd455b0e9f053854a2c1becfa1efaeef231582',
+                   'authorized_delta': 2166,
+                   'measured_owned_total': 158958,
+                   'provenance': 'Supervisor-authorized predecessor; added once after batch77 '
+                                 'final delta1293.'}],
+ 'batch_measured_delta': 1187,
+ 'restore_task': 'azure-ridge-72',
+ 'expires_at': 's4_modules'}
+# Exact approved temporary storage for the frozen author-close source. This
+# expires with the line exception; it cannot authorize another storage category.
+TRANSITION_TABLE_EXCEPTION = {
+    "batch_id": "train-56f15aff49843c6989224397ef6d7044",
+    "decision_message_id": "msg-dbb0120c6172499081721c033e894b39",
     "decision_record": "record:2720bdbe-7521-427e-8e72-1f40a3ff9818",
-    "measured_source_revision": "d00e25221856145f24777f8b016a008b4e954bca",
-    "original_owned_total_cap": 155_499,
-    "measured_owned_total": 156_792,
-    "delta": 1_293,
-    "restore_task": "azure-ridge-72",
+    "source_revision": "2f66afabac4add24a1e4eaa7927ae0798ec344bf",
+    "original_table_cap": 45,
+    "delta": 1,
+    "table_cap": 46,
+    "tables": ["integration_close_attempts"],
+    "restore_task": "stark-willow-95.17",
+    "verification_task": "stark-willow-95.18",
     "expires_at": "s4_modules",
 }
 FINAL_ENGINE_CAP = 11_999
@@ -456,6 +488,16 @@ def transition_owned_cap(manifest: dict) -> int:
     return original + TRANSITION_BATCH_EXCEPTION["delta"]
 
 
+def transition_table_cap(manifest: dict) -> int:
+    """Only the exact approved author-close storage can extend the transition."""
+    exception = manifest.get("transition_table_exception")
+    if exception is None:
+        return 45
+    if exception != TRANSITION_TABLE_EXCEPTION:
+        raise ValueError("unapproved integration transition table exception")
+    return TRANSITION_TABLE_EXCEPTION["table_cap"]
+
+
 def budget_errors(report: dict, manifest: dict) -> list[str]:
     phase = manifest["phase"]
     if phase not in {"transition", "s4_modules", "final"}:
@@ -464,9 +506,9 @@ def budget_errors(report: dict, manifest: dict) -> list[str]:
         engine_cap = BASELINE_ENGINE_LINES + REPLACEMENT_ALLOWANCE
         try:
             total_cap = transition_owned_cap(manifest)
+            table_cap = transition_table_cap(manifest)
         except ValueError as exc:
             return [str(exc)]
-        table_cap = 45  # replacement reshapes the existing five, adds no table
     else:
         engine_cap, total_cap, table_cap = FINAL_ENGINE_CAP, FINAL_TOTAL_CAP, FINAL_TABLE_CAP
     errors = []
