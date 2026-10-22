@@ -123,9 +123,7 @@ class CloseMerge:
         policy = await p.policy(row)
         if not policy.enabled or not policy.author_assist or row["state"] == "deferred":
             reason = "train_disabled" if not policy.enabled else "publisher_handoff"
-            row = await self.store.save(row, state="deferred", last_failure=reason)
-            await p.handoff(row, enabled=policy.enabled)
-            return self.result(row, completed=True, reason=reason)
+            return await self.defer(row, reason)
         # A finished DB row cannot prove a current remote contains the source.
         repo, parent = await p.observe(row)
         if await p.contains(repo, row["source_oid"], parent):
