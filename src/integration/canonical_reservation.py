@@ -18,6 +18,10 @@ from src.integration.models import BranchKey
 from src.integration.ownership import BranchBusy, BranchOwnership
 
 
+async def _row(conn, statement):
+    return (await conn.execute(statement)).mappings().one_or_none()
+
+
 async def reserve_ordinary_repair_branch(db, task, repair, original, train) -> dict:
     """Restore the current batch allocation, never a producer origin or a new repair."""
     from src.integration.batches import BatchStore
@@ -60,24 +64,14 @@ async def reserve_canonical_task_branch(db, task_id: str) -> dict:
     Attached rows are left for the provider-backed owner recovery path.
     """
     async with db.immediate() as conn:
-        identity = (
-            await conn.execute(select(tasks.c.project_id).where(tasks.c.id == task_id))
-        ).scalar_one_or_none()
+        identity = await conn.scalar(select(tasks.c.project_id).where(tasks.c.id == task_id))
         if identity is None:
             return {"outcome": "not_found", "reason": "task does not exist"}
         await db.lock_hierarchy_project(conn, identity)
-        task = (
-            (await conn.execute(select(tasks).where(tasks.c.id == task_id).with_for_update()))
-            .mappings()
-            .one_or_none()
-        )
+        task = await _row(conn, select(tasks).where(tasks.c.id == task_id).with_for_update())
         if task is None or task["project_id"] != identity:
             return {"outcome": "not_found", "reason": "task changed while reserving"}
-        project = (
-            (await conn.execute(select(projects).where(projects.c.id == identity)))
-            .mappings()
-            .one_or_none()
-        )
+        project = await _row(conn, select(projects).where(projects.c.id == identity))
         repository_id, branch = task["repo_id"], task["branch_name"]
         if (
             project is None
@@ -88,30 +82,14 @@ async def reserve_canonical_task_branch(db, task_id: str) -> dict:
             or task["created_by_kind"] == "integration_repair"
         ):
             return {"outcome": "not_eligible", "reason": "task is not a detached train producer"}
-        checkpoint = (
-            (
-                await conn.execute(
-                    select(task_integration_checkpoints).where(
-                        task_integration_checkpoints.c.task_id == task_id
-                    )
-                )
-            )
-            .mappings()
-            .one_or_none()
-        )
-        origin = (
-            (
-                await conn.execute(
-                    select(task_branch_origins).where(
-                        task_branch_origins.c.task_id == task_id,
-                        task_branch_origins.c.repository_id == repository_id,
-                        task_branch_origins.c.retired_at.is_(None),
-                    )
-                )
-            )
-            .mappings()
-            .one_or_none()
-        )
+        checkpoint = await _row(conn, select(task_integration_checkpoints).where(
+            task_integration_checkpoints.c.task_id == task_id,
+        ))
+        origin = await _row(conn, select(task_branch_origins).where(
+            task_branch_origins.c.task_id == task_id,
+            task_branch_origins.c.repository_id == repository_id,
+            task_branch_origins.c.retired_at.is_(None),
+        ))
         if (
             checkpoint is None
             or checkpoint["repository_id"] != repository_id
@@ -123,34 +101,22 @@ async def reserve_canonical_task_branch(db, task_id: str) -> dict:
             or not origin["materialized"]
         ):
             return {"outcome": "not_eligible", "reason": "canonical branch evidence disagrees"}
-        live_session = (
-            await conn.execute(
-                select(sessions.c.id)
-                .where(sessions.c.task_id == task_id, session_attached_clause())
-                .limit(1)
-            )
-        ).scalar_one_or_none()
-        held_workspace = (
-            await conn.execute(
-                select(workspaces.c.id).where(workspaces.c.locked_by_task_id == task_id).limit(1)
-            )
-        ).scalar_one_or_none()
+        live_session = await conn.scalar(select(sessions.c.id).where(
+            sessions.c.task_id == task_id, session_attached_clause(),
+        ).limit(1))
+        held_workspace = await conn.scalar(select(workspaces.c.id).where(
+            workspaces.c.locked_by_task_id == task_id,
+        ).limit(1))
         if task["assigned_agent_id"] or live_session or held_workspace:
             return {"outcome": "not_eligible", "reason": "task still has a writer or workspace"}
         # Verifiers and repair delegates can share their parent's branch. A
         # missing owner row must not let this producer override their turn.
-        other_task = (
-            await conn.execute(
-                select(tasks.c.id)
-                .where(
-                    tasks.c.id != task_id,
-                    tasks.c.repo_id == repository_id,
-                    tasks.c.branch_name == branch,
-                    tasks.c.status.in_(("READY", "ASSIGNED", "IN_PROGRESS", "BLOCKED")),
-                )
-                .limit(1)
-            )
-        ).scalar_one_or_none()
+        other_task = await conn.scalar(select(tasks.c.id).where(
+            tasks.c.id != task_id,
+            tasks.c.repo_id == repository_id,
+            tasks.c.branch_name == branch,
+            tasks.c.status.in_(("READY", "ASSIGNED", "IN_PROGRESS", "BLOCKED")),
+        ).limit(1))
         if other_task is not None:
             return {"outcome": "not_eligible", "reason": "another task uses the canonical branch"}
         refs = {
@@ -158,20 +124,10 @@ async def reserve_canonical_task_branch(db, task_id: str) -> dict:
             f"refs/heads/{branch.removeprefix('refs/heads/')}",
             branch.removeprefix("refs/heads/"),
         }
-        rows = (
-            (
-                await conn.execute(
-                    select(integration_branch_owners)
-                    .where(
-                        integration_branch_owners.c.repository_id == repository_id,
-                        integration_branch_owners.c.ref.in_(refs),
-                    )
-                    .with_for_update()
-                )
-            )
-            .mappings()
-            .all()
-        )
+        rows = (await conn.execute(select(integration_branch_owners).where(
+            integration_branch_owners.c.repository_id == repository_id,
+            integration_branch_owners.c.ref.in_(refs),
+        ).with_for_update())).mappings().all()
         if any(row["ref"] != branch and row["handoff_state"] != "released" for row in rows):
             return {"outcome": "not_eligible", "reason": "another spelling of branch has an owner"}
         owner = next((row for row in rows if row["ref"] == branch), None)
