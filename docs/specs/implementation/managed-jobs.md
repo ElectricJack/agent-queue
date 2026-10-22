@@ -21,6 +21,13 @@ are inherited. This is separation on one OS account, not a sandbox.
 Publisher snapshots are standalone clones, so a foreign project whose snapshot
 has no virtual environment needs a `resources.test_interpreters` pin.
 
+The `test` preset accepts explicit serial execution as `-n 0`, `-n0`,
+`--numprocesses 0` or `--numprocesses=0`. These normalize to `-n 0` when
+xdist is available; when it is missing or explicitly disabled, the worker-count
+option is omitted. Nonzero and malformed worker-count overrides remain refused
+with `jobs.preset_denied`. Serial execution retains the usual slot admission,
+full-suite weight, workspace pin and durable producer/wait semantics.
+
 Full-suite pytest jobs use shared admission, with weight
 `max(1, test_slots - resources.jobs.full_suite_reserved_slots)`; the reserve
 defaults to two and must be a positive integer. On small boxes the full suite

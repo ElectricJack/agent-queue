@@ -307,11 +307,65 @@ def runtime(env, *, clock=lambda: NOW, dispatcher=None, enabled=True, registry=N
     config = AppConfig()
     config.wait_policy.v2_enabled = enabled
     orch = SimpleNamespace(db=env.db, config=config, bus=SimpleNamespace(emit=AsyncMock()),
-                           _delivery_admission=lambda ids: observe_admission(env.db, ids, None),
+                           _delivery_admission=lambda ids, **kwargs: observe_admission(env.db, ids, None, **kwargs),
                            plugin_registry=None, wait_registry=registry or env.registry,
                            wait_dispatcher=dispatcher)
     orch._command_handler = CommandHandler(orch, config)
     return WaitService(orch, clock=clock)
+
+
+async def test_source_batch_can_exceed_renewal_cadence_without_restarting(runtime_env):
+    env = runtime_env
+    await register(env)
+    dispatcher = ObservingDispatcher(env.registry)
+    original = dispatcher.commit
+
+    async def slow(conn, row, event, **kwargs):
+        await asyncio.sleep(0.03)
+        return await original(conn, row, event, **kwargs)
+
+    dispatcher.commit = slow
+    service = runtime(env, dispatcher=dispatcher)
+    service.listener.renewal_seconds = 0.01
+    await env.db.transition_task("source", TaskStatus.COMPLETED)
+    assert await service.tick()
+    assert (await records(env))[0]["outcome"] == "satisfied"
+    assert (await records(env, wait_listener_cursors))[0]["last_seq"] > 0
+
+
+async def test_slow_batches_commit_only_processed_prefix_and_renew_before_continuing(runtime_env):
+    now = [NOW]
+    service = runtime(runtime_env, clock=lambda: now[0])
+    for n in range(8):
+        await runtime_env.db.wait_source_commit(source_key='test:slow', generation=0,
+            revision=str(n), outcome_ref=f'test:{n}', payload={})
+    expected = [row['seq'] for row in await records(runtime_env, wait_source_events)]
+    seen = []
+    async def slow(conn, event):
+        seen.append(event['seq'])
+        now[0] += 6
+    service.listener._dispatch = slow
+    assert await service.listener.tick()
+    assert seen == sorted(expected)
+    assert now[0] - NOW > service.listener.lease_seconds
+    cursor = (await records(runtime_env, wait_listener_cursors))[0]
+    assert cursor['last_seq'] == max(expected)
+    assert all(row['dispatched_at'] is not None
+               for row in await records(runtime_env, wait_source_events))
+
+
+async def test_deadline_command_can_exceed_renewal_cadence(runtime_env):
+    service = runtime(runtime_env)
+    service.listener.renewal_seconds = 0.01
+    async def slow(*args):
+        await asyncio.sleep(0.03)
+        return {'success': True}
+    service.command = slow
+    service.timers.heap = [(NOW, 'deadline', {
+        'wait_id': 'w', 'deadline_type': 'due', 'generation': 1,
+    })]
+    assert await service.timers.tick() == 1
+    assert not service.timers.heap
 
 
 async def test_listener_two_daemons_share_one_renewable_lease(runtime_env):
@@ -680,3 +734,64 @@ async def test_deadline_insert_notifies_only_after_registration_commit(runtime_e
     finally:
         env.registry.observe = original
         await connection.close()
+
+
+async def test_busy_graph_yields_without_losing_lease_or_skipping_wake(runtime_env):
+    from src.waits.graph import lock_graph
+
+    env = runtime_env
+    await register(env)
+    await env.db.transition_task("source", TaskStatus.COMPLETED)
+    dispatcher = ObservingDispatcher(env.registry)
+    service = runtime(env, dispatcher=dispatcher)
+    assert await service.lease()
+    watermark = await env.db.wait_source_watermark()
+    service.listener.renewal_seconds = 0.05
+    async with env.db._engine.begin() as blocker:
+        await lock_graph(blocker)
+        # A scheduler-held graph fence is normal contention, not a listener crash.
+        assert await service.drain(watermark) == 0
+        assert await service.lease()  # Drain did not retain the lease row lock.
+        assert (await records(env, wait_listener_cursors))[0]["last_seq"] == 0
+        assert (await records(env))[0]["outcome"] == "pending"
+    service.listener.renewal_seconds = 10
+    assert await service.tick()
+    assert (await records(env))[0]["outcome"] == "satisfied"
+    count = len(dispatcher.calls)
+    assert count == 1
+    assert await service.tick()
+    assert len(dispatcher.calls) == count
+
+
+async def test_deadline_waits_for_graph_without_blocking_lease_renewal(runtime_env):
+    from sqlalchemy import event
+
+    from src.waits.graph import lock_graph
+
+    env = runtime_env
+    await register(env, {"kind": "timer", "due_at": NOW + 10})
+    service = runtime(env, clock=lambda: NOW + 11)
+    assert await service.lease()
+    await service.timers.rearm()
+    pending = None
+    waiting = asyncio.Event()
+
+    def before_execute(conn, cursor, statement, parameters, context, executemany):
+        if "pg_advisory_xact_lock" in statement:
+            waiting.set()
+
+    try:
+        async with env.db._engine.begin() as blocker:
+            await lock_graph(blocker)
+            event.listen(env.db._engine.sync_engine, "before_cursor_execute", before_execute)
+            pending = asyncio.create_task(service.timers.tick())
+            await asyncio.wait_for(waiting.wait(), 10)
+            assert not pending.done()
+            # A timer must not hold the lease row while waiting for the graph.
+            assert await asyncio.wait_for(service.lease(), 1)
+        assert await asyncio.wait_for(pending, 5) == 1
+    finally:
+        event.remove(env.db._engine.sync_engine, "before_cursor_execute", before_execute)
+        if pending and not pending.done():
+            pending.cancel()
+            await asyncio.gather(pending, return_exceptions=True)

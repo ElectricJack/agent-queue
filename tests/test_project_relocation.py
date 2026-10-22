@@ -318,7 +318,7 @@ async def test_schema_column_is_jsonb_on_disposable_database(relocation):
     from sqlalchemy import text
 
     f = relocation
-    path = Path(__file__).parents[1] / "migrations/versions/a00000000116_project_storage_binding.py"
+    path = Path(__file__).parents[1] / "migrations/versions/a00000000117_project_storage_binding.py"
     spec = importlib.util.spec_from_file_location("relocation_revision", path)
     revision = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(revision)

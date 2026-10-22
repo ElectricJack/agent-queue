@@ -17,6 +17,7 @@ import re
 import time
 import weakref
 from collections.abc import Iterable, Mapping
+from contextlib import nullcontext
 from dataclasses import dataclass, field, replace
 from functools import partial
 from pathlib import Path
@@ -458,7 +459,7 @@ def prerequisite_observer(db):
 async def hierarchy_frontier_modes(
     db, *, project_ids=None, task_id=None, cached_only=False, display_unavailable=None,
     views=None, stack_views=None,
-    max_age=None,
+    max_age=None, conn=None,
 ):
     """Share revalidated Git prerequisites across scheduler, pool and claim reads.
 
@@ -501,7 +502,7 @@ async def hierarchy_frontier_modes(
                 db, observer, project, mode, task_id=task_id, cached_only=cached_only,
                 display_unavailable=display_unavailable,
                 views=views, stack_views=stack_views,
-                max_age=max_age,
+                max_age=max_age, conn=conn,
             ), timeout)
         except TimeoutError:
             # Fail closed for this read: no Git-proven prerequisite admits work,
@@ -527,7 +528,7 @@ FRONTIER_DISPLAY_TIMEOUT_SECONDS = 10.0
 async def _project_frontier_mode(
     db, observer, project, mode, *, task_id, cached_only, display_unavailable=None,
     views=None, stack_views=None,
-    max_age=None,
+    max_age=None, conn=None,
 ):
     from dataclasses import replace
 
@@ -560,8 +561,8 @@ async def _project_frontier_mode(
             return replace(mode, observation_unavailable=True)
     # fresh() marks each target independently. verified_on discards only the
     # identities whose own target moved; a peer's unavailable parent is local.
-    async with db._engine.connect() as conn:
-        verified_mode = await view.mode(mode, conn=conn)
+    async with db._engine.connect() if conn is None else nullcontext(conn) as read:
+        verified_mode = await view.mode(mode, conn=read)
     stackable = frozenset()
     if mode.stacked:
         from src.integration.stacked_branches import observe_stacks
@@ -579,8 +580,8 @@ async def _project_frontier_mode(
             default_prerequisite_ids=verified_mode.default_prerequisite_ids - blocked,
         )
         if await stack_view.fresh():
-            async with db._engine.connect() as conn:
-                stackable = frozenset(await stack_view.verified_on(conn))
+            async with db._engine.connect() if conn is None else nullcontext(conn) as read:
+                stackable = frozenset(await stack_view.verified_on(read))
     return replace(verified_mode, stackable_prerequisite_ids=stackable)
 
 
@@ -673,7 +674,9 @@ class DeliveryObserver:
         self.db = db
         self.git = git
         self.truth = truth
-        self.request_loader = partial(load_delivery_requests, reduced=truth is not None)
+        # Git truth proves a sourceless completed container from its children.
+        self.request_loader = partial(load_delivery_requests, reduced=truth is not None,
+                                      containers=truth is not None)
         self.target_loader = partial(delivery_targets, reduced=truth is not None)
         self.data_dir = Path(data_dir) / "development-integration"
         self._recent: dict[DeliveryTarget, tuple[float, DeliverySnapshot]] = {}
@@ -897,7 +900,7 @@ class DeliveryObserver:
             dependent_parent, dependent_parent.c.id == dependent.c.parent_task_id,
         )).where(
             dependent.c.project_id == project_id,
-            dependent.c.status.in_(("READY", "IN_PROGRESS")),
+            dependent.c.status.in_(("READY", "IN_PROGRESS", "RESUME_PENDING")),
             tasks.c.status == "COMPLETED", task_dependencies.c.dep_type == "blocks",
         )
         if task_id is not None:

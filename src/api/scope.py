@@ -216,6 +216,8 @@ OPERATOR_INTEGRATION_CONTROLS = frozenset(
         "integration_retire_origin",
         "integration_reevaluate_repair",
         "integration_release_owner",
+        "integration_delegate_publication",
+        "integration_revoke_publication",
         "integration_restore_task_origin",
         "integration_release_stale_owners",
         "integration_clear_retained_recovery",
@@ -549,8 +551,33 @@ async def _check_worker_git_scope(
         return "out of scope: branch mismatch"
     if command in _WORKER_GIT_WRITE_COMMANDS:
         branch = args.get("branch_name" if command == "push_branch" else "branch")
-        if branch is not None and branch not in branches:
-            return "out of scope: branch mismatch"
+        delegation_id = args.get("publication_delegation_id")
+        if delegation_id is not None:
+            if command not in {"git_push", "push_branch"}:
+                return "out of scope: publication delegation applies only to push"
+            from src.integration.publication_delegations import (
+                DELEGATION_ERRORS, PublicationDelegations,
+            )
+
+            try:
+                await PublicationDelegations(db).validate(
+                    delegation_id, scope, branch, args.get("expected_remote_oid"),
+                )
+            except DELEGATION_ERRORS as exc:
+                return f"out of scope: {exc}"
+        elif branch is not None and branch not in branches:
+            from src.git.manager import GitError
+            from src.integration.batch_repair_publication import BatchRepairAssignments
+
+            task = await held_task_for_session(db, scope)
+            try:
+                assignment = (await BatchRepairAssignments(db).get(task)
+                              if task is not None and command in {"git_push", "push_branch"}
+                              else None)
+            except GitError:
+                assignment = None
+            if assignment is None or branch != assignment["branch"]:
+                return "out of scope: branch mismatch"
     if command == "git_create_pr":
         base = args.get("base")
         if base is not None and base != default_branch:

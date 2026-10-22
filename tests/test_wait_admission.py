@@ -51,8 +51,8 @@ async def env():
     o = SimpleNamespace(db=db, config=config, bus=SimpleNamespace(emit=AsyncMock()),
                         _worktrees_enabled=lambda: False,
                         _pool_quarantine_state=lambda *a: (None, None))
-    async def admission(ids):
-        return await observe_admission(db, ids, None)
+    async def admission(ids, **kwargs):
+        return await observe_admission(db, ids, None, **kwargs)
 
     o._delivery_admission = admission
     service = SchedulerWaitService(o, clock=lambda: NOW)

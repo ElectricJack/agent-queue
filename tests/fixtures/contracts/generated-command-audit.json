@@ -4562,6 +4562,26 @@
       {
         "return": "await self._create_escalation(args)",
         "protocol": "delegated_producer"
+      },
+      {
+        "return": "await self._create_escalation(args)",
+        "protocol": "delegated_producer"
+      },
+      {
+        "return": "_error('invalid_binding', 'continuation incidents require the wait transaction')",
+        "protocol": "delegated_producer"
+      },
+      {
+        "return": "_error('invalid_binding', 'continuation incident does not match its intent')",
+        "protocol": "delegated_producer"
+      },
+      {
+        "return": "_error('invalid_binding', 'wait incidents require the wait transaction')",
+        "protocol": "delegated_producer"
+      },
+      {
+        "return": "_error('invalid_binding', 'wait incident does not match its generation')",
+        "protocol": "delegated_producer"
       }
     ],
     "tests": [
@@ -4791,6 +4811,10 @@
       {
         "return": "{'success': True, 'resolved': True, 'escalation': current}",
         "protocol": "explicit_boolean: True"
+      },
+      {
+        "return": "_error('wait.decide_required', 'resolve a wait escalation through wait_decide')",
+        "protocol": "delegated_producer"
       }
     ],
     "tests": [
@@ -7622,6 +7646,49 @@
       "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
     ]
   },
+  "integration_delegate_publication": {
+    "mode": "typed",
+    "producer": "src/commands/integration_commands.py:IntegrationCommandsMixin._cmd_integration_delegate_publication",
+    "source_digest": "sha256:fa671890b177ef7462fc5449cab86aeff9461881ea6c0eaa3f7139690864f025",
+    "input_schema_source": "typed_contract",
+    "schema_quality": "typed",
+    "argument_reads_diagnostic_only": [],
+    "effect": "destructive",
+    "retry_safe": true,
+    "principal_requirement": "original_principal",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "denial_reason": null,
+    "result_policy": "retained typed adapter",
+    "return_branches": [
+      {
+        "return": "self._publication_delegation_result('issued', row)",
+        "protocol": "explicit_boolean: True"
+      },
+      {
+        "return": "_failure('refused', 'publication delegation requires Git-first active mode')",
+        "protocol": "delegated_producer"
+      },
+      {
+        "return": "_failure('refused', str(exc))",
+        "protocol": "delegated_producer"
+      }
+    ],
+    "helper_producers": {
+      "_publication_delegation_result": "sha256:e0768f47847aec450d165b1893eb6b9dfaece9f86f70f09477b5560a85b39a21"
+    },
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_publication_delegation_catalogue_only_adds_reviewed_commands_and_grant",
+      "tests/test_worker_git_scope.py::test_delegated_publication_uses_pinned_source_and_consumes_audited_grant",
+      "tests/test_worker_git_scope.py::test_delegation_cannot_expand_authority_or_take_a_live_writer",
+      "tests/test_worker_git_scope.py::test_only_current_named_supervisor_can_issue_delegation",
+      "tests/test_cli_integration.py::test_delegate_publication_preserves_explicit_grantee_and_fences"
+    ],
+    "review_notes": "Delegated integration publication (source base f9a7591766d69481b309e8733be795e62ab0e59e): operator integration controls; refusals carry the delegation service's reason, success returns the typed audit view. An exact retry returns the existing audit without reviving authority."
+  },
   "integration_delivery_readiness": {
     "mode": "typed",
     "producer": "src/commands/integration_commands.py:IntegrationCommandsMixin._cmd_integration_delivery_readiness",
@@ -9261,6 +9328,44 @@
       "tests/test_cli_integration.py"
     ],
     "review_notes": "Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. "
+  },
+  "integration_revoke_publication": {
+    "mode": "typed",
+    "producer": "src/commands/integration_commands.py:IntegrationCommandsMixin._cmd_integration_revoke_publication",
+    "source_digest": "sha256:ac7718397c7c0c5259d129e7994c794600f41a911070d84aab70ee6faab3bf5f",
+    "input_schema_source": "typed_contract",
+    "schema_quality": "typed",
+    "argument_reads_diagnostic_only": [],
+    "effect": "destructive",
+    "retry_safe": true,
+    "principal_requirement": "original_principal",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "denial_reason": null,
+    "result_policy": "retained typed adapter",
+    "return_branches": [
+      {
+        "return": "self._publication_delegation_result('revoked', row)",
+        "protocol": "explicit_boolean: True"
+      },
+      {
+        "return": "_failure('refused', str(exc))",
+        "protocol": "delegated_producer"
+      }
+    ],
+    "helper_producers": {
+      "_publication_delegation_result": "sha256:e0768f47847aec450d165b1893eb6b9dfaece9f86f70f09477b5560a85b39a21"
+    },
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_publication_delegation_catalogue_only_adds_reviewed_commands_and_grant",
+      "tests/test_worker_git_scope.py::test_delegated_publication_rechecks_every_binding_before_network",
+      "tests/test_worker_git_scope.py::test_delegation_revocation_serializes_with_inflight_publication",
+      "tests/test_cli_integration.py::test_revoke_publication_uses_native_control"
+    ],
+    "review_notes": "Delegated integration publication (source base f9a7591766d69481b309e8733be795e62ab0e59e): operator integration controls; refusals carry the delegation service's reason, success returns the typed audit view. An exact retry returns the existing audit without reviving authority."
   },
   "integration_seal_now": {
     "mode": "typed",
@@ -11943,6 +12048,10 @@
       {
         "return": "{'success': True, 'message_id': message.id, 'state': state, 'via': message.via, 'delivered_at': message.delivered_at, 'acknowledged_at': message.read_at, 'message': message_to_dict(message)}",
         "protocol": "explicit_boolean: True"
+      },
+      {
+        "return": "{'success': False, 'error_code': 'wait.held_message', 'error': 'Message is held until wait acknowledgement'}",
+        "protocol": "explicit_boolean: False"
       }
     ],
     "tests": [
@@ -13546,7 +13655,7 @@
     "principal_requirement": "original_principal",
     "denial_reason": null,
     "result_policy": "metadata only; protected output references",
-    "source_digest": "sha256:02b7be905be5965a6a0e498396ff84e16f954abe5cc40b3b069a2a93783d728d",
+    "source_digest": "sha256:18cdc651469f34b021530cd7ba2a5758ad58d1b552adda8ed690edb6ee4e8bc0",
     "input_schema_source": "explicit_tool",
     "schema_quality": "declared",
     "effect": "destructive",
@@ -14109,7 +14218,7 @@
       "tests/test_playbook_script.py"
     ],
     "helper_producers": {
-      "_v2_script_pins": "sha256:c37016b964d6eb5cbb3ea5c2e3b618d15a8f294a0f036d402efa8cdc4bf39939"
+      "_v2_script_pins": "sha256:df9571fab0a09392b96e81813381b44e8ae9121ec9b69beda17eb67a483daed3"
     },
     "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. E3 resolves source-declared script pins from scoped repository/vault roots and server-configured runtime/storage before proposal validation; command return branches and their boolean envelopes are unchanged."
   },
@@ -15457,7 +15566,7 @@
   "promote_cancel": {
     "mode": "typed",
     "producer": "src/commands/promote_commands.py:PromoteCommandsMixin._cmd_promote_cancel",
-    "source_digest": "sha256:2d75efa7dc0a08fcd8dc9901d979fbe8de6eb9dd3ce35ab42bd66ead3cdbe012",
+    "source_digest": "sha256:707bf4782ae31ddec91c4944e32098b1187c61faf34cf1f2856104e422b59a38",
     "input_schema_source": "typed_contract",
     "schema_quality": "typed",
     "argument_reads_diagnostic_only": [],
@@ -17898,7 +18007,7 @@
   "restart_task": {
     "mode": "json_object",
     "producer": "src/commands/task_commands.py:TaskCommandsMixin._cmd_restart_task",
-    "source_digest": "sha256:ddcf2c275b6df177e6958bcde55493611e906347ed1aa2c8bedf1af060956847",
+    "source_digest": "sha256:3678105a10f52f8c900f299ca1764708fdcca9002bedf82ed298ff90e2f3bd22",
     "input_schema_source": "explicit_tool",
     "schema_quality": "declared",
     "argument_reads_diagnostic_only": [
@@ -17923,11 +18032,19 @@
         "protocol": "explicit_boolean: False"
       },
       {
+        "return": "{'success': False, 'error': str(exc), 'error_code': exc.code}",
+        "protocol": "explicit_boolean: False"
+      },
+      {
         "return": "await self._restart_repair_delegate(task)",
         "protocol": "delegated_producer"
       },
       {
         "return": "{'success': False, 'error': f'Cannot restart integration task: {reservation['reason']}. For a stopped writer, preview aq integration release-owner --task-id {task.id} --dry-run; apply only after its provider-backed proof succeeds, then retry restart.'}",
+        "protocol": "explicit_boolean: False"
+      },
+      {
+        "return": "{'success': False, 'error': 'Task changed during cold restart; retry.'}",
         "protocol": "explicit_boolean: False"
       },
       {
@@ -17943,7 +18060,8 @@
       "tests/test_integration_owner_recovery.py",
       "tests/test_integration_repair.py",
       "tests/test_integration_repair_rollover.py",
-      "tests/test_routing_router.py"
+      "tests/test_routing_router.py",
+      "tests/test_wait_hibernation.py"
     ],
     "helper_producers": {
       "_restart_repair_delegate": "sha256:f0c30ea3c6ca7bed8d1af73e47146c5c9ba72c5e7f1f991c79453cfd996589d0"
@@ -18918,7 +19036,7 @@
       "_review_playbook_pin": "sha256:e0fb56414704076cfdd63e56da6972761b6702d14eeb054772b0162cd06e294a",
       "_submit_project": "sha256:a7139bc097b09acbd47f2ce432970a9f84829e7d8e0df592a03c930b669d3684",
       "_worker_held_task": "sha256:6d48bbeae1cdd530fb341d40b13c643d33f094fed0b66cb502e64605c4a76c6b",
-      "_v2_script_pins": "sha256:c37016b964d6eb5cbb3ea5c2e3b618d15a8f294a0f036d402efa8cdc4bf39939"
+      "_v2_script_pins": "sha256:df9571fab0a09392b96e81813381b44e8ae9121ec9b69beda17eb67a483daed3"
     },
     "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. E3 resolves source-declared script pins from scoped repository/vault roots and server-configured runtime/storage before proposal validation; command return branches and their boolean envelopes are unchanged. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. "
   },
@@ -19115,6 +19233,36 @@
     ],
     "helper_producers": {},
     "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys."
+  },
+  "scheduler_wait_sync": {
+    "mode": "typed",
+    "producer": "src/commands/wait_v2_commands.py:WaitV2CommandsMixin._cmd_scheduler_wait_sync",
+    "source_digest": "sha256:a626d8ab2f1329c24b8fd16b623dd506b0190dc2867cac944c84e5c60f905199",
+    "input_schema_source": "typed_contract",
+    "schema_quality": "typed",
+    "argument_reads_diagnostic_only": [],
+    "effect": "destructive",
+    "retry_safe": true,
+    "principal_requirement": "original_principal",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "denial_reason": null,
+    "result_policy": "retained typed adapter",
+    "return_branches": [
+      {
+        "return": "await self._wait_v2_command('scheduler_wait_sync', args)",
+        "protocol": "delegated_producer"
+      }
+    ],
+    "tests": [
+      "tests/test_wait_commands.py",
+      "tests/test_wait_surfaces.py",
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete"
+    ],
+    "helper_producers": {
+      "_wait_v2_command": "sha256:03fd5f8eef8abced5000704b522faf62458654a25f2cf10fae3aa8fd8310e58d"
+    }
   },
   "search_github_repositories": {
     "mode": "json_object",
@@ -21458,7 +21606,7 @@
       "_refusal_response": "sha256:3d822aff2b782bcd5ddf3cfec3a6f085095a046cb78df46d756c558b1f869aeb",
       "_simple": "sha256:3b1acbb957374551ded2f0ce7f134fab1e60c0944e77b3a9773ea71354df0f28"
     },
-    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled.  Reviewed unified hierarchy admission and admission recheck after preparation verification; helpers retain their claim result envelopes, boolean success values, and original-principal resource gates."
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled.  Reviewed unified hierarchy admission and admission recheck after preparation verification; helpers retain their claim result envelopes, boolean success values, and original-principal resource gates. Pinned-default train merge: Retains exact-session claim preparation and shared source/branch admission checks after the pinned default merge; claim-result envelopes remain delegated."
   },
   "task_close": {
     "mode": "json_object",
@@ -21517,7 +21665,7 @@
       "_refusal_response": "sha256:3d822aff2b782bcd5ddf3cfec3a6f085095a046cb78df46d756c558b1f869aeb",
       "_simple": "sha256:3b1acbb957374551ded2f0ce7f134fab1e60c0944e77b3a9773ea71354df0f28"
     },
-    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled.  Reviewed unified hierarchy admission and admission recheck after preparation verification; helpers retain their claim result envelopes, boolean success values, and original-principal resource gates."
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled.  Reviewed unified hierarchy admission and admission recheck after preparation verification; helpers retain their claim result envelopes, boolean success values, and original-principal resource gates. Pinned-default train merge: Retains ordinary author-close outcomes and exact-session claim-next preparation from the pinned default merge; delegated claim refusals keep success=false."
   },
   "task_comment": {
     "mode": "json_object",
@@ -21895,6 +22043,10 @@
     "result_policy": "strict boolean success at producer; no inferred outcome",
     "return_branches": [
       {
+        "return": "{'success': True, 'task_id': task_id, 'session_id': session.id if session else None, 'heartbeat_at': now, 'lease_expires_at': now + ttl if ttl > 0 else None, **({'blockers': [blocker]} if blocker else {})}",
+        "protocol": "explicit_boolean: True"
+      },
+      {
         "return": "{'success': False, 'error': 'no task_id and the session holds no task'}",
         "protocol": "explicit_boolean: False"
       },
@@ -21909,10 +22061,6 @@
       {
         "return": "{'success': True, 'ignored': 'wait_active'}",
         "protocol": "explicit_boolean: True"
-      },
-      {
-        "return": "{'success': True, 'task_id': task_id, 'session_id': session.id if session else None, 'heartbeat_at': now, 'lease_expires_at': now + ttl if ttl > 0 else None, **({'blockers': [blocker]} if blocker else {})}",
-        "protocol": "explicit_boolean: True"
       }
     ],
     "tests": [
@@ -21925,7 +22073,7 @@
     "helper_producers": {
       "_assert_session_owns": "sha256:71e593f004f04a082031f118625f21eceebed926b1718d3c8e89d6fdc0825ec3"
     },
-    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Repair assembly audit: retained prerequisite stack currentness adds optional blockers to the successful heartbeat result; ownership refusals and lease renewal retain their existing protocols."
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Repair assembly audit: retained prerequisite stack currentness adds optional blockers to the successful heartbeat result; ownership refusals and lease renewal retain their existing protocols. Pinned-default train merge: Combines active-wait liveness suppression with strict stacked-source blocker reporting; both ignored and refreshed heartbeat returns explicitly succeed."
   },
   "task_progress": {
     "mode": "json_object",
@@ -22025,7 +22173,7 @@
   "task_recover": {
     "mode": "json_object",
     "producer": "src/commands/task_commands.py:TaskCommandsMixin._cmd_task_recover",
-    "source_digest": "sha256:bfbb6be741df05c76ae9f2bf3e690c9f43419f9919b78a7311343e0b7bb17b19",
+    "source_digest": "sha256:7e3b79eb18e3676887b507b6b50cffe4070441d2a69a5979ba16687526fb55f9",
     "input_schema_source": "explicit_tool",
     "schema_quality": "declared",
     "argument_reads_diagnostic_only": [
@@ -22097,20 +22245,26 @@
       {
         "return": "{'success': False, 'error': 'Incident is stale or not found'}",
         "protocol": "explicit_boolean: False"
+      },
+      {
+        "return": "{'success': False, 'error_code': 'task_recovery.refused', 'error': str(exc)}",
+        "protocol": "explicit_boolean: False"
       }
     ],
     "tests": [
       "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
       "tests/test_generated_command_contracts.py::test_generic_result_protocol",
       "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
-      "tests/test_integration_owner_recovery.py"
+      "tests/test_integration_owner_recovery.py",
+      "tests/test_supervisor_recovery.py::test_operator_close_resolves_open_recovery_incident",
+      "tests/test_supervisor_recovery.py::test_recover_racing_completion_refuses_cleanly"
     ],
     "helper_producers": {
       "_confirm_recovery_worker_stopped": "sha256:782b33c9f86faaa3e7d7bc88e33d0c5e0d5f9d110610d849a3069149e6f448af",
       "_task_control_scope_error": "sha256:1a958b28c3c21a13a924724bd84dbb483c7f9902e5870f9560a6e412c5356e9b",
       "_task_findings_scope_error": "sha256:f5380416ec0bf188bc7b4d7ec48bd2abc812325fc775319abf2e5f55dc962fb6"
     },
-    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. "
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. Completion racing a direct recovery decision returns task_recovery.refused with success false; ask decisions still raise for their operation reconciler. "
   },
   "task_recovery_notify": {
     "mode": "typed",
@@ -22447,7 +22601,7 @@
   "task_set": {
     "mode": "json_object",
     "producer": "src/commands/surface_commands.py:SurfaceCommandsMixin._cmd_task_set",
-    "source_digest": "sha256:391221a9b131fb5ebe8d43316a8f8822844d4cf59f7d99d4cc315de21a1f9f23",
+    "source_digest": "sha256:92888940066cf3e10d1f70a35119810d9f80af8c18f40fcf8b35c557889bf5b9",
     "input_schema_source": "explicit_tool",
     "schema_quality": "declared",
     "argument_reads_diagnostic_only": [
@@ -22460,6 +22614,7 @@
       "meta",
       "note",
       "pr_url",
+      "repair_batch",
       "task_id",
       "work_dir"
     ],
@@ -22486,6 +22641,10 @@
       },
       {
         "return": "{'success': False, 'error': 'retained_workspace_stop is reserved; use stop_task.'}",
+        "protocol": "explicit_boolean: False"
+      },
+      {
+        "return": "{'success': False, 'error': 'integration_batch_repair is reserved; use --repair-batch.'}",
         "protocol": "explicit_boolean: False"
       },
       {
@@ -22529,8 +22688,16 @@
         "protocol": "explicit_boolean: False"
       },
       {
+        "return": "{'success': False, 'error': 'batch repair assignment requires Git-first active mode'}",
+        "protocol": "explicit_boolean: False"
+      },
+      {
         "return": "error",
         "protocol": "delegated_producer"
+      },
+      {
+        "return": "{'success': False, 'error': str(exc)}",
+        "protocol": "explicit_boolean: False"
       },
       {
         "return": "self._task_findings_conflict(error)",
@@ -22545,7 +22712,11 @@
       "tests/test_claim_commands.py",
       "tests/test_integration_train_sources.py",
       "tests/test_surface_commands.py",
-      "tests/test_work_graph_commands.py"
+      "tests/test_work_graph_commands.py",
+      "tests/test_worker_git_scope.py::test_assigned_batch_fixer_publishes_candidate_without_renaming_task",
+      "tests/test_worker_git_scope.py::test_batch_assignment_cannot_be_self_granted_or_spoofed",
+      "tests/test_worker_git_scope.py::test_batch_assignment_rejects_foreign_repository_and_reassignment_revokes_old_ref",
+      "tests/test_cli_task_comments.py::test_task_set_forwards_explicit_batch_repair_assignment"
     ],
     "helper_producers": {
       "_assert_session_owns": "sha256:71e593f004f04a082031f118625f21eceebed926b1718d3c8e89d6fdc0825ec3",
@@ -22558,7 +22729,7 @@
       "_task_findings_write_fence": "sha256:ddaf185b219090db1d81f785713a571f944b87c778789603de6d4a5b5b9f973f",
       "_task_provider_view": "sha256:bc0669889619cdd9fb0b87f490059d9d607d472e0b96ce5805fb12db1307db26"
     },
-    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled.  Dev reconciliation (4e9a17b8c0adae80acc6cf1195b339b974b69270): reviewed delegated _cmd_get_task dependency batching as recorded on get_task. This wrapper and its producer exits are unchanged; existing held_session authority remains required. Only the reviewed helper digest is refreshed. Epic c170840ea only emits a task.updated graph change when the description is unchanged, waking the integration lane for closed work; return branches and resource gates are unchanged."
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled.  Dev reconciliation (4e9a17b8c0adae80acc6cf1195b339b974b69270): reviewed delegated _cmd_get_task dependency batching as recorded on get_task. This wrapper and its producer exits are unchanged; existing held_session authority remains required. Only the reviewed helper digest is refreshed. Batch repair assignment (67575c6b9a43f820d824ff2bdb7d6be41ec21db3): reviewed the reserved integration_batch_repair metadata refusal, Git-first active-mode refusal, and delegated BatchRepairAssignments.assign GitError refusal. Each returns success=false; successful assignment retains the task_show envelope and fields_changed. BatchRepairAssignments.assign checks integration_operator authority and open-batch project/repository bindings; generated invocation remains disabled and existing held_session resource authority is unchanged. Pinned-default train merge: Combines authenticated repair_batch publication assignment with author findings compare-and-swap. Refused assignments and stale findings fail without writing, and task_show remains the successful delegated producer."
   },
   "task_show": {
     "mode": "json_object",
@@ -23447,7 +23618,7 @@
       "tests/test_playbook_script.py"
     ],
     "helper_producers": {
-      "_v2_script_pins": "sha256:c37016b964d6eb5cbb3ea5c2e3b618d15a8f294a0f036d402efa8cdc4bf39939"
+      "_v2_script_pins": "sha256:df9571fab0a09392b96e81813381b44e8ae9121ec9b69beda17eb67a483daed3"
     },
     "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. E3 resolves source-declared script pins from scoped repository/vault roots and server-configured runtime/storage before proposal validation; command return branches and their boolean envelopes are unchanged."
   },
@@ -23486,6 +23657,36 @@
     "helper_producers": {},
     "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys."
   },
+  "wait_ack": {
+    "mode": "typed",
+    "producer": "src/commands/wait_v2_commands.py:WaitV2CommandsMixin._cmd_wait_ack",
+    "source_digest": "sha256:76a63119cbcc38e02ab5f761939370ae05023e8ece26c86e1357d9ebbce32979",
+    "input_schema_source": "typed_contract",
+    "schema_quality": "typed",
+    "argument_reads_diagnostic_only": [],
+    "effect": "destructive",
+    "retry_safe": true,
+    "principal_requirement": "original_principal",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "denial_reason": null,
+    "result_policy": "retained typed adapter",
+    "return_branches": [
+      {
+        "return": "await self._wait_v2_command('wait_ack', args)",
+        "protocol": "delegated_producer"
+      }
+    ],
+    "tests": [
+      "tests/test_wait_commands.py",
+      "tests/test_wait_surfaces.py",
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete"
+    ],
+    "helper_producers": {
+      "_wait_v2_command": "sha256:03fd5f8eef8abced5000704b522faf62458654a25f2cf10fae3aa8fd8310e58d"
+    }
+  },
   "wait_cancel": {
     "mode": "typed",
     "producer": "src/commands/wait_commands.py:WaitCommandsMixin._cmd_wait_cancel",
@@ -23522,6 +23723,10 @@
         "protocol": "delegated_producer"
       },
       {
+        "return": "await self._wait_v2_cancel(args)",
+        "protocol": "delegated_producer"
+      },
+      {
         "return": "_error('wait.invalid', exc)",
         "protocol": "delegated_producer"
       }
@@ -23530,7 +23735,162 @@
       "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
       "tests/test_generated_command_contracts.py::test_generic_result_protocol",
       "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
-    ]
+    ],
+    "helper_producers": {
+      "_wait_v2_cancel": "sha256:9c20723417c1bab3707371bcc915086cd93936fed91e3d68b3f2a7eaf1d1cf21",
+      "_wait_v2_invoke": "sha256:e5d57e0aa1100246ea63aa4688240808e35ccc1db1e786691ab2032a2b3e9968"
+    },
+    "review_notes": " Pinned-default train merge: Authorizes service owner scope or the current holder/supervisor before invoking the transactional decision owner. Owner identifiers cannot be nominated by a worker; typed cancellation returns the closed WaitResponse shape and wakes or queues its outcome."
+  },
+  "wait_checkpoint": {
+    "mode": "typed",
+    "producer": "src/commands/wait_v2_commands.py:WaitV2CommandsMixin._cmd_wait_checkpoint",
+    "source_digest": "sha256:c2c8f7faae2bc51d11320ae759542280d7f0beab335f2a311de999ed0aaaf065",
+    "input_schema_source": "typed_contract",
+    "schema_quality": "typed",
+    "argument_reads_diagnostic_only": [],
+    "effect": "destructive",
+    "retry_safe": true,
+    "principal_requirement": "original_principal",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "denial_reason": null,
+    "result_policy": "retained typed adapter",
+    "return_branches": [
+      {
+        "return": "await self._wait_v2_command('wait_checkpoint', args)",
+        "protocol": "delegated_producer"
+      }
+    ],
+    "tests": [
+      "tests/test_wait_commands.py",
+      "tests/test_wait_surfaces.py",
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete"
+    ],
+    "helper_producers": {
+      "_wait_v2_command": "sha256:03fd5f8eef8abced5000704b522faf62458654a25f2cf10fae3aa8fd8310e58d"
+    }
+  },
+  "wait_deadline_fire": {
+    "mode": "typed",
+    "producer": "src/commands/wait_v2_commands.py:WaitV2CommandsMixin._cmd_wait_deadline_fire",
+    "source_digest": "sha256:c4aba90c3685a08bcbaae3f2aef7ff4d242b27d23ab7dd2ca6c1d8dd382d095f",
+    "input_schema_source": "typed_contract",
+    "schema_quality": "typed",
+    "argument_reads_diagnostic_only": [],
+    "effect": "destructive",
+    "retry_safe": true,
+    "principal_requirement": "original_principal",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "denial_reason": null,
+    "result_policy": "retained typed adapter",
+    "return_branches": [
+      {
+        "return": "await self._wait_v2_command('wait_deadline_fire', args)",
+        "protocol": "delegated_producer"
+      }
+    ],
+    "tests": [
+      "tests/test_wait_commands.py",
+      "tests/test_wait_surfaces.py",
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete"
+    ],
+    "helper_producers": {
+      "_wait_v2_command": "sha256:03fd5f8eef8abced5000704b522faf62458654a25f2cf10fae3aa8fd8310e58d"
+    }
+  },
+  "wait_decide": {
+    "mode": "typed",
+    "producer": "src/commands/wait_v2_commands.py:WaitV2CommandsMixin._cmd_wait_decide",
+    "source_digest": "sha256:3d5ff907983296a28e35e0ff7ac244c6228c68c28b3519173467447933def5d5",
+    "input_schema_source": "typed_contract",
+    "schema_quality": "typed",
+    "argument_reads_diagnostic_only": [],
+    "effect": "destructive",
+    "retry_safe": true,
+    "principal_requirement": "original_principal",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "denial_reason": null,
+    "result_policy": "retained typed adapter",
+    "return_branches": [
+      {
+        "return": "await self._wait_v2_command('wait_decide', args)",
+        "protocol": "delegated_producer"
+      }
+    ],
+    "tests": [
+      "tests/test_wait_commands.py",
+      "tests/test_wait_surfaces.py",
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete"
+    ],
+    "helper_producers": {
+      "_wait_v2_command": "sha256:03fd5f8eef8abced5000704b522faf62458654a25f2cf10fae3aa8fd8310e58d"
+    }
+  },
+  "wait_evict": {
+    "mode": "typed",
+    "producer": "src/commands/wait_v2_commands.py:WaitV2CommandsMixin._cmd_wait_evict",
+    "source_digest": "sha256:f365bcb20a8626b009d751a2d745632a24002a3f741ce475fc37046cde7fc822",
+    "input_schema_source": "typed_contract",
+    "schema_quality": "typed",
+    "argument_reads_diagnostic_only": [],
+    "effect": "destructive",
+    "retry_safe": true,
+    "principal_requirement": "original_principal",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "denial_reason": null,
+    "result_policy": "retained typed adapter",
+    "return_branches": [
+      {
+        "return": "await self._wait_v2_command('wait_evict', args)",
+        "protocol": "delegated_producer"
+      }
+    ],
+    "tests": [
+      "tests/test_wait_commands.py",
+      "tests/test_wait_surfaces.py",
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete"
+    ],
+    "helper_producers": {
+      "_wait_v2_command": "sha256:03fd5f8eef8abced5000704b522faf62458654a25f2cf10fae3aa8fd8310e58d"
+    }
+  },
+  "wait_explain": {
+    "mode": "typed",
+    "producer": "src/commands/wait_v2_commands.py:WaitV2CommandsMixin._cmd_wait_explain",
+    "source_digest": "sha256:d1fbf07a0171121177ab6eb1a0c4849d1396cbbeab1daec755a3956ac03fd75c",
+    "input_schema_source": "typed_contract",
+    "schema_quality": "typed",
+    "argument_reads_diagnostic_only": [],
+    "effect": "read",
+    "retry_safe": true,
+    "principal_requirement": "original_principal",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "denial_reason": null,
+    "result_policy": "retained typed adapter",
+    "return_branches": [
+      {
+        "return": "await self._wait_v2_command('wait_explain', args)",
+        "protocol": "delegated_producer"
+      }
+    ],
+    "tests": [
+      "tests/test_wait_commands.py",
+      "tests/test_wait_surfaces.py",
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete"
+    ],
+    "helper_producers": {
+      "_wait_v2_command": "sha256:03fd5f8eef8abced5000704b522faf62458654a25f2cf10fae3aa8fd8310e58d"
+    }
   },
   "wait_get": {
     "mode": "typed",
@@ -23571,13 +23931,110 @@
       {
         "return": "_error('wait.invalid', exc)",
         "protocol": "delegated_producer"
+      },
+      {
+        "return": "await self._wait_v2_get(values, args)",
+        "protocol": "delegated_producer"
       }
     ],
     "tests": [
       "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
       "tests/test_generated_command_contracts.py::test_generic_result_protocol",
       "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
-    ]
+    ],
+    "helper_producers": {
+      "_wait_v2_get": "sha256:59355ed0d490dae5ff7b817d2349d2e9ca420c729367d88e2b2c5911f93d0c9c"
+    }
+  },
+  "wait_graph": {
+    "mode": "typed",
+    "producer": "src/commands/wait_v2_commands.py:WaitV2CommandsMixin._cmd_wait_graph",
+    "source_digest": "sha256:8646007167ef165f6f4f77d11759cd33ff3bb6ab832857b29c138daa85b85c93",
+    "input_schema_source": "typed_contract",
+    "schema_quality": "typed",
+    "argument_reads_diagnostic_only": [],
+    "effect": "read",
+    "retry_safe": true,
+    "principal_requirement": "original_principal",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "denial_reason": null,
+    "result_policy": "retained typed adapter",
+    "return_branches": [
+      {
+        "return": "await self._wait_v2_command('wait_graph', args)",
+        "protocol": "delegated_producer"
+      }
+    ],
+    "tests": [
+      "tests/test_wait_commands.py",
+      "tests/test_wait_surfaces.py",
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete"
+    ],
+    "helper_producers": {
+      "_wait_v2_command": "sha256:03fd5f8eef8abced5000704b522faf62458654a25f2cf10fae3aa8fd8310e58d"
+    }
+  },
+  "wait_legacy_bridge": {
+    "mode": "typed",
+    "producer": "src/commands/wait_v2_commands.py:WaitV2CommandsMixin._cmd_wait_legacy_bridge",
+    "source_digest": "sha256:d46cbdaaaa6b185c87d716e2fc175aa6028faacc619e1a3a34e0528e11a0f862",
+    "input_schema_source": "typed_contract",
+    "schema_quality": "typed",
+    "argument_reads_diagnostic_only": [],
+    "effect": "destructive",
+    "retry_safe": true,
+    "principal_requirement": "original_principal",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "denial_reason": null,
+    "result_policy": "retained typed adapter",
+    "return_branches": [
+      {
+        "return": "await self._wait_v2_command('wait_legacy_bridge', args)",
+        "protocol": "delegated_producer"
+      }
+    ],
+    "tests": [
+      "tests/test_wait_commands.py",
+      "tests/test_wait_surfaces.py",
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete"
+    ],
+    "helper_producers": {
+      "_wait_v2_command": "sha256:03fd5f8eef8abced5000704b522faf62458654a25f2cf10fae3aa8fd8310e58d"
+    }
+  },
+  "wait_lift": {
+    "mode": "typed",
+    "producer": "src/commands/wait_v2_commands.py:WaitV2CommandsMixin._cmd_wait_lift",
+    "source_digest": "sha256:62b51ed97aa759e4105aebdb46df1103bfc51fbac2a9519031fdc60bd53e3f9c",
+    "input_schema_source": "typed_contract",
+    "schema_quality": "typed",
+    "argument_reads_diagnostic_only": [],
+    "effect": "destructive",
+    "retry_safe": true,
+    "principal_requirement": "original_principal",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "denial_reason": null,
+    "result_policy": "retained typed adapter",
+    "return_branches": [
+      {
+        "return": "await self._wait_v2_command('wait_lift', args)",
+        "protocol": "delegated_producer"
+      }
+    ],
+    "tests": [
+      "tests/test_wait_commands.py",
+      "tests/test_wait_surfaces.py",
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete"
+    ],
+    "helper_producers": {
+      "_wait_v2_command": "sha256:03fd5f8eef8abced5000704b522faf62458654a25f2cf10fae3aa8fd8310e58d"
+    }
   },
   "wait_list": {
     "mode": "typed",
@@ -23609,13 +24066,20 @@
       {
         "return": "_error(getattr(exc, 'code', 'wait.invalid'), exc)",
         "protocol": "delegated_producer"
+      },
+      {
+        "return": "await self._wait_v2_list(args)",
+        "protocol": "delegated_producer"
       }
     ],
     "tests": [
       "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
       "tests/test_generated_command_contracts.py::test_generic_result_protocol",
       "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
-    ]
+    ],
+    "helper_producers": {
+      "_wait_v2_list": "sha256:84c8445ce922aa796c45d377fd25cbc30a6797e7a55bbf19d0305319407296a0"
+    }
   },
   "wait_register": {
     "mode": "typed",
@@ -23652,13 +24116,115 @@
       {
         "return": "_error('wait.invalid', exc)",
         "protocol": "delegated_producer"
+      },
+      {
+        "return": "_error('wait.condition_required', 'version 2 requires a typed condition')",
+        "protocol": "delegated_producer"
+      },
+      {
+        "return": "await self._wait_v2_register(values, args)",
+        "protocol": "delegated_producer"
       }
     ],
     "tests": [
       "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
       "tests/test_generated_command_contracts.py::test_generic_result_protocol",
       "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
-    ]
+    ],
+    "helper_producers": {
+      "_wait_v2_register": "sha256:7fcfcac28708c6bbe69983ac51f195383f6187ae3f5481c84d59a5c65c175749",
+      "_wait_v2_invoke": "sha256:e5d57e0aa1100246ea63aa4688240808e35ccc1db1e786691ab2032a2b3e9968"
+    }
+  },
+  "wait_resume_dispatch": {
+    "mode": "typed",
+    "producer": "src/commands/wait_v2_commands.py:WaitV2CommandsMixin._cmd_wait_resume_dispatch",
+    "source_digest": "sha256:027113c0274f6eda3bec5c57ee86e72e6f721078dfcb3a20572a2bc42285cc14",
+    "input_schema_source": "typed_contract",
+    "schema_quality": "typed",
+    "argument_reads_diagnostic_only": [],
+    "effect": "destructive",
+    "retry_safe": true,
+    "principal_requirement": "original_principal",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "denial_reason": null,
+    "result_policy": "retained typed adapter",
+    "return_branches": [
+      {
+        "return": "await self._wait_v2_command('wait_resume_dispatch', args)",
+        "protocol": "delegated_producer"
+      }
+    ],
+    "tests": [
+      "tests/test_wait_commands.py",
+      "tests/test_wait_surfaces.py",
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete"
+    ],
+    "helper_producers": {
+      "_wait_v2_command": "sha256:03fd5f8eef8abced5000704b522faf62458654a25f2cf10fae3aa8fd8310e58d"
+    }
+  },
+  "wait_sleep_decide": {
+    "mode": "typed",
+    "producer": "src/commands/wait_v2_commands.py:WaitV2CommandsMixin._cmd_wait_sleep_decide",
+    "source_digest": "sha256:11e3f179cf1b9bbdd7ede080cb9bcfdf68e33a8bd47116bce38bd6edb662edf3",
+    "input_schema_source": "typed_contract",
+    "schema_quality": "typed",
+    "argument_reads_diagnostic_only": [],
+    "effect": "destructive",
+    "retry_safe": true,
+    "principal_requirement": "original_principal",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "denial_reason": null,
+    "result_policy": "retained typed adapter",
+    "return_branches": [
+      {
+        "return": "await self._wait_v2_command('wait_sleep_decide', args)",
+        "protocol": "delegated_producer"
+      }
+    ],
+    "tests": [
+      "tests/test_wait_commands.py",
+      "tests/test_wait_surfaces.py",
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete"
+    ],
+    "helper_producers": {
+      "_wait_v2_command": "sha256:03fd5f8eef8abced5000704b522faf62458654a25f2cf10fae3aa8fd8310e58d"
+    }
+  },
+  "wait_source_commit": {
+    "mode": "typed",
+    "producer": "src/commands/wait_v2_commands.py:WaitV2CommandsMixin._cmd_wait_source_commit",
+    "source_digest": "sha256:8129e03d78c7053e751464ff526a24bbb761c8d08c0a70b1109760778dcdf7e4",
+    "input_schema_source": "typed_contract",
+    "schema_quality": "typed",
+    "argument_reads_diagnostic_only": [],
+    "effect": "destructive",
+    "retry_safe": true,
+    "principal_requirement": "original_principal",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "denial_reason": null,
+    "result_policy": "retained typed adapter",
+    "return_branches": [
+      {
+        "return": "await self._wait_v2_command('wait_source_commit', args)",
+        "protocol": "delegated_producer"
+      }
+    ],
+    "tests": [
+      "tests/test_wait_commands.py",
+      "tests/test_wait_surfaces.py",
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete"
+    ],
+    "helper_producers": {
+      "_wait_v2_command": "sha256:03fd5f8eef8abced5000704b522faf62458654a25f2cf10fae3aa8fd8310e58d"
+    }
   },
   "workflow_pipeline_view": {
     "mode": "json_object",
@@ -23946,396 +24512,6 @@
     "review_notes": "Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. ",
     "helper_producers": {
       "_retire_stale_slot_claim": "sha256:65d7cb7ec0b73a401e82ee63a1997ecd47eae53deb431ac13c3ef47b70ced4be"
-    }
-  },
-  "scheduler_wait_sync": {
-    "mode": "typed",
-    "producer": "src/commands/wait_v2_commands.py:WaitV2CommandsMixin._cmd_scheduler_wait_sync",
-    "source_digest": "sha256:a626d8ab2f1329c24b8fd16b623dd506b0190dc2867cac944c84e5c60f905199",
-    "input_schema_source": "typed_contract",
-    "schema_quality": "typed",
-    "argument_reads_diagnostic_only": [],
-    "effect": "destructive",
-    "retry_safe": true,
-    "principal_requirement": "original_principal",
-    "resource_gates": [
-      "resource_audit_required"
-    ],
-    "denial_reason": null,
-    "result_policy": "retained typed adapter",
-    "return_branches": [
-      {
-        "return": "await self._wait_v2_command('scheduler_wait_sync', args)",
-        "protocol": "delegated_producer"
-      }
-    ],
-    "tests": [
-      "tests/test_wait_commands.py",
-      "tests/test_wait_surfaces.py",
-      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete"
-    ],
-    "helper_producers": {
-      "_wait_v2_command": "sha256:03fd5f8eef8abced5000704b522faf62458654a25f2cf10fae3aa8fd8310e58d"
-    }
-  },
-  "wait_ack": {
-    "mode": "typed",
-    "producer": "src/commands/wait_v2_commands.py:WaitV2CommandsMixin._cmd_wait_ack",
-    "source_digest": "sha256:76a63119cbcc38e02ab5f761939370ae05023e8ece26c86e1357d9ebbce32979",
-    "input_schema_source": "typed_contract",
-    "schema_quality": "typed",
-    "argument_reads_diagnostic_only": [],
-    "effect": "destructive",
-    "retry_safe": true,
-    "principal_requirement": "original_principal",
-    "resource_gates": [
-      "resource_audit_required"
-    ],
-    "denial_reason": null,
-    "result_policy": "retained typed adapter",
-    "return_branches": [
-      {
-        "return": "await self._wait_v2_command('wait_ack', args)",
-        "protocol": "delegated_producer"
-      }
-    ],
-    "tests": [
-      "tests/test_wait_commands.py",
-      "tests/test_wait_surfaces.py",
-      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete"
-    ],
-    "helper_producers": {
-      "_wait_v2_command": "sha256:03fd5f8eef8abced5000704b522faf62458654a25f2cf10fae3aa8fd8310e58d"
-    }
-  },
-  "wait_checkpoint": {
-    "mode": "typed",
-    "producer": "src/commands/wait_v2_commands.py:WaitV2CommandsMixin._cmd_wait_checkpoint",
-    "source_digest": "sha256:c2c8f7faae2bc51d11320ae759542280d7f0beab335f2a311de999ed0aaaf065",
-    "input_schema_source": "typed_contract",
-    "schema_quality": "typed",
-    "argument_reads_diagnostic_only": [],
-    "effect": "destructive",
-    "retry_safe": true,
-    "principal_requirement": "original_principal",
-    "resource_gates": [
-      "resource_audit_required"
-    ],
-    "denial_reason": null,
-    "result_policy": "retained typed adapter",
-    "return_branches": [
-      {
-        "return": "await self._wait_v2_command('wait_checkpoint', args)",
-        "protocol": "delegated_producer"
-      }
-    ],
-    "tests": [
-      "tests/test_wait_commands.py",
-      "tests/test_wait_surfaces.py",
-      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete"
-    ],
-    "helper_producers": {
-      "_wait_v2_command": "sha256:03fd5f8eef8abced5000704b522faf62458654a25f2cf10fae3aa8fd8310e58d"
-    }
-  },
-  "wait_deadline_fire": {
-    "mode": "typed",
-    "producer": "src/commands/wait_v2_commands.py:WaitV2CommandsMixin._cmd_wait_deadline_fire",
-    "source_digest": "sha256:c4aba90c3685a08bcbaae3f2aef7ff4d242b27d23ab7dd2ca6c1d8dd382d095f",
-    "input_schema_source": "typed_contract",
-    "schema_quality": "typed",
-    "argument_reads_diagnostic_only": [],
-    "effect": "destructive",
-    "retry_safe": true,
-    "principal_requirement": "original_principal",
-    "resource_gates": [
-      "resource_audit_required"
-    ],
-    "denial_reason": null,
-    "result_policy": "retained typed adapter",
-    "return_branches": [
-      {
-        "return": "await self._wait_v2_command('wait_deadline_fire', args)",
-        "protocol": "delegated_producer"
-      }
-    ],
-    "tests": [
-      "tests/test_wait_commands.py",
-      "tests/test_wait_surfaces.py",
-      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete"
-    ],
-    "helper_producers": {
-      "_wait_v2_command": "sha256:03fd5f8eef8abced5000704b522faf62458654a25f2cf10fae3aa8fd8310e58d"
-    }
-  },
-  "wait_decide": {
-    "mode": "typed",
-    "producer": "src/commands/wait_v2_commands.py:WaitV2CommandsMixin._cmd_wait_decide",
-    "source_digest": "sha256:3d5ff907983296a28e35e0ff7ac244c6228c68c28b3519173467447933def5d5",
-    "input_schema_source": "typed_contract",
-    "schema_quality": "typed",
-    "argument_reads_diagnostic_only": [],
-    "effect": "destructive",
-    "retry_safe": true,
-    "principal_requirement": "original_principal",
-    "resource_gates": [
-      "resource_audit_required"
-    ],
-    "denial_reason": null,
-    "result_policy": "retained typed adapter",
-    "return_branches": [
-      {
-        "return": "await self._wait_v2_command('wait_decide', args)",
-        "protocol": "delegated_producer"
-      }
-    ],
-    "tests": [
-      "tests/test_wait_commands.py",
-      "tests/test_wait_surfaces.py",
-      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete"
-    ],
-    "helper_producers": {
-      "_wait_v2_command": "sha256:03fd5f8eef8abced5000704b522faf62458654a25f2cf10fae3aa8fd8310e58d"
-    }
-  },
-  "wait_evict": {
-    "mode": "typed",
-    "producer": "src/commands/wait_v2_commands.py:WaitV2CommandsMixin._cmd_wait_evict",
-    "source_digest": "sha256:f365bcb20a8626b009d751a2d745632a24002a3f741ce475fc37046cde7fc822",
-    "input_schema_source": "typed_contract",
-    "schema_quality": "typed",
-    "argument_reads_diagnostic_only": [],
-    "effect": "destructive",
-    "retry_safe": true,
-    "principal_requirement": "original_principal",
-    "resource_gates": [
-      "resource_audit_required"
-    ],
-    "denial_reason": null,
-    "result_policy": "retained typed adapter",
-    "return_branches": [
-      {
-        "return": "await self._wait_v2_command('wait_evict', args)",
-        "protocol": "delegated_producer"
-      }
-    ],
-    "tests": [
-      "tests/test_wait_commands.py",
-      "tests/test_wait_surfaces.py",
-      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete"
-    ],
-    "helper_producers": {
-      "_wait_v2_command": "sha256:03fd5f8eef8abced5000704b522faf62458654a25f2cf10fae3aa8fd8310e58d"
-    }
-  },
-  "wait_explain": {
-    "mode": "typed",
-    "producer": "src/commands/wait_v2_commands.py:WaitV2CommandsMixin._cmd_wait_explain",
-    "source_digest": "sha256:d1fbf07a0171121177ab6eb1a0c4849d1396cbbeab1daec755a3956ac03fd75c",
-    "input_schema_source": "typed_contract",
-    "schema_quality": "typed",
-    "argument_reads_diagnostic_only": [],
-    "effect": "read",
-    "retry_safe": true,
-    "principal_requirement": "original_principal",
-    "resource_gates": [
-      "resource_audit_required"
-    ],
-    "denial_reason": null,
-    "result_policy": "retained typed adapter",
-    "return_branches": [
-      {
-        "return": "await self._wait_v2_command('wait_explain', args)",
-        "protocol": "delegated_producer"
-      }
-    ],
-    "tests": [
-      "tests/test_wait_commands.py",
-      "tests/test_wait_surfaces.py",
-      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete"
-    ],
-    "helper_producers": {
-      "_wait_v2_command": "sha256:03fd5f8eef8abced5000704b522faf62458654a25f2cf10fae3aa8fd8310e58d"
-    }
-  },
-  "wait_graph": {
-    "mode": "typed",
-    "producer": "src/commands/wait_v2_commands.py:WaitV2CommandsMixin._cmd_wait_graph",
-    "source_digest": "sha256:8646007167ef165f6f4f77d11759cd33ff3bb6ab832857b29c138daa85b85c93",
-    "input_schema_source": "typed_contract",
-    "schema_quality": "typed",
-    "argument_reads_diagnostic_only": [],
-    "effect": "read",
-    "retry_safe": true,
-    "principal_requirement": "original_principal",
-    "resource_gates": [
-      "resource_audit_required"
-    ],
-    "denial_reason": null,
-    "result_policy": "retained typed adapter",
-    "return_branches": [
-      {
-        "return": "await self._wait_v2_command('wait_graph', args)",
-        "protocol": "delegated_producer"
-      }
-    ],
-    "tests": [
-      "tests/test_wait_commands.py",
-      "tests/test_wait_surfaces.py",
-      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete"
-    ],
-    "helper_producers": {
-      "_wait_v2_command": "sha256:03fd5f8eef8abced5000704b522faf62458654a25f2cf10fae3aa8fd8310e58d"
-    }
-  },
-  "wait_legacy_bridge": {
-    "mode": "typed",
-    "producer": "src/commands/wait_v2_commands.py:WaitV2CommandsMixin._cmd_wait_legacy_bridge",
-    "source_digest": "sha256:d46cbdaaaa6b185c87d716e2fc175aa6028faacc619e1a3a34e0528e11a0f862",
-    "input_schema_source": "typed_contract",
-    "schema_quality": "typed",
-    "argument_reads_diagnostic_only": [],
-    "effect": "destructive",
-    "retry_safe": true,
-    "principal_requirement": "original_principal",
-    "resource_gates": [
-      "resource_audit_required"
-    ],
-    "denial_reason": null,
-    "result_policy": "retained typed adapter",
-    "return_branches": [
-      {
-        "return": "await self._wait_v2_command('wait_legacy_bridge', args)",
-        "protocol": "delegated_producer"
-      }
-    ],
-    "tests": [
-      "tests/test_wait_commands.py",
-      "tests/test_wait_surfaces.py",
-      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete"
-    ],
-    "helper_producers": {
-      "_wait_v2_command": "sha256:03fd5f8eef8abced5000704b522faf62458654a25f2cf10fae3aa8fd8310e58d"
-    }
-  },
-  "wait_lift": {
-    "mode": "typed",
-    "producer": "src/commands/wait_v2_commands.py:WaitV2CommandsMixin._cmd_wait_lift",
-    "source_digest": "sha256:62b51ed97aa759e4105aebdb46df1103bfc51fbac2a9519031fdc60bd53e3f9c",
-    "input_schema_source": "typed_contract",
-    "schema_quality": "typed",
-    "argument_reads_diagnostic_only": [],
-    "effect": "destructive",
-    "retry_safe": true,
-    "principal_requirement": "original_principal",
-    "resource_gates": [
-      "resource_audit_required"
-    ],
-    "denial_reason": null,
-    "result_policy": "retained typed adapter",
-    "return_branches": [
-      {
-        "return": "await self._wait_v2_command('wait_lift', args)",
-        "protocol": "delegated_producer"
-      }
-    ],
-    "tests": [
-      "tests/test_wait_commands.py",
-      "tests/test_wait_surfaces.py",
-      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete"
-    ],
-    "helper_producers": {
-      "_wait_v2_command": "sha256:03fd5f8eef8abced5000704b522faf62458654a25f2cf10fae3aa8fd8310e58d"
-    }
-  },
-  "wait_resume_dispatch": {
-    "mode": "typed",
-    "producer": "src/commands/wait_v2_commands.py:WaitV2CommandsMixin._cmd_wait_resume_dispatch",
-    "source_digest": "sha256:027113c0274f6eda3bec5c57ee86e72e6f721078dfcb3a20572a2bc42285cc14",
-    "input_schema_source": "typed_contract",
-    "schema_quality": "typed",
-    "argument_reads_diagnostic_only": [],
-    "effect": "destructive",
-    "retry_safe": true,
-    "principal_requirement": "original_principal",
-    "resource_gates": [
-      "resource_audit_required"
-    ],
-    "denial_reason": null,
-    "result_policy": "retained typed adapter",
-    "return_branches": [
-      {
-        "return": "await self._wait_v2_command('wait_resume_dispatch', args)",
-        "protocol": "delegated_producer"
-      }
-    ],
-    "tests": [
-      "tests/test_wait_commands.py",
-      "tests/test_wait_surfaces.py",
-      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete"
-    ],
-    "helper_producers": {
-      "_wait_v2_command": "sha256:03fd5f8eef8abced5000704b522faf62458654a25f2cf10fae3aa8fd8310e58d"
-    }
-  },
-  "wait_sleep_decide": {
-    "mode": "typed",
-    "producer": "src/commands/wait_v2_commands.py:WaitV2CommandsMixin._cmd_wait_sleep_decide",
-    "source_digest": "sha256:11e3f179cf1b9bbdd7ede080cb9bcfdf68e33a8bd47116bce38bd6edb662edf3",
-    "input_schema_source": "typed_contract",
-    "schema_quality": "typed",
-    "argument_reads_diagnostic_only": [],
-    "effect": "destructive",
-    "retry_safe": true,
-    "principal_requirement": "original_principal",
-    "resource_gates": [
-      "resource_audit_required"
-    ],
-    "denial_reason": null,
-    "result_policy": "retained typed adapter",
-    "return_branches": [
-      {
-        "return": "await self._wait_v2_command('wait_sleep_decide', args)",
-        "protocol": "delegated_producer"
-      }
-    ],
-    "tests": [
-      "tests/test_wait_commands.py",
-      "tests/test_wait_surfaces.py",
-      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete"
-    ],
-    "helper_producers": {
-      "_wait_v2_command": "sha256:03fd5f8eef8abced5000704b522faf62458654a25f2cf10fae3aa8fd8310e58d"
-    }
-  },
-  "wait_source_commit": {
-    "mode": "typed",
-    "producer": "src/commands/wait_v2_commands.py:WaitV2CommandsMixin._cmd_wait_source_commit",
-    "source_digest": "sha256:8129e03d78c7053e751464ff526a24bbb761c8d08c0a70b1109760778dcdf7e4",
-    "input_schema_source": "typed_contract",
-    "schema_quality": "typed",
-    "argument_reads_diagnostic_only": [],
-    "effect": "destructive",
-    "retry_safe": true,
-    "principal_requirement": "original_principal",
-    "resource_gates": [
-      "resource_audit_required"
-    ],
-    "denial_reason": null,
-    "result_policy": "retained typed adapter",
-    "return_branches": [
-      {
-        "return": "await self._wait_v2_command('wait_source_commit', args)",
-        "protocol": "delegated_producer"
-      }
-    ],
-    "tests": [
-      "tests/test_wait_commands.py",
-      "tests/test_wait_surfaces.py",
-      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete"
-    ],
-    "helper_producers": {
-      "_wait_v2_command": "sha256:03fd5f8eef8abced5000704b522faf62458654a25f2cf10fae3aa8fd8310e58d"
     }
   },
   "integration_batch_fix": {

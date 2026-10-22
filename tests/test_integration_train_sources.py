@@ -5160,6 +5160,94 @@ async def collect_epic(case):
     return delivered.target_sha
 
 
+@pytest.mark.parametrize("restart", [False, True, "archived-children"],
+                         ids=["last-child-promotion", "idle-restart", "archived-children"])
+async def test_collected_epic_automatically_refreshes_before_aggregate_checks(
+    collected_epic, restart,
+):
+    case = collected_epic
+    testing = await case.train.visit(case.target)
+    assert testing.state == "testing"
+    if restart:
+        case.github.runs[testing.candidate_sha] = "success"
+        assert (await case.train.visit(case.target)).state == "delivered"
+
+    # The default branch gains configuration after this child candidate was
+    # built. The epic has no aggregate completion or PR to trigger PR-conflict
+    # recovery. Its old tree must not prevent starting a refresh.
+    default = commit(case.origin.clone, {"new-trust.txt": "current config\n"}, base=case.base)
+    git(case.origin.clone, "push", "origin", f"{default}:main")
+    from src.integration.ci import SubjectTrustError
+
+    attestation = case.train.lane_for.orchestrator.integration_attestation_service
+    load_trust = attestation._load_trust
+    missing_trust = []
+
+    async def old_tree_without_trust(state, *, boundary):
+        if (state["operation_id"] == "epic-readiness-epic"
+                and state["candidate_sha"] == testing.candidate_sha):
+            missing_trust.append(state["candidate_sha"])
+            raise SubjectTrustError("missing", "old epic has no trust manifest")
+        return await load_trust(state, boundary=boundary)
+
+    attestation._load_trust = old_tree_without_trust
+    if restart == "archived-children":
+        from sqlalchemy import delete
+
+        from src.database.tables import archived_tasks
+
+        async with case.db.immediate() as conn:
+            for tid in ("child-a", "child-b"):
+                row = (await conn.execute(select(tasks).where(tasks.c.id == tid))).mappings().one()
+                values = {key: value for key, value in row.items() if key in archived_tasks.c}
+                await conn.execute(insert(archived_tasks).values(**values, archived_at=time.time()))
+                await conn.execute(delete(tasks).where(tasks.c.id == tid))
+    if restart:
+        previous = case.train
+        case.train = IntegrationTrain(targets=DatabaseTargets(case.db),
+            batches=previous.batches, lane_for=previous.lane_for,
+            repair=OrdinaryRepairService(case.db))
+        first = await case.train.visit(case.target)
+        assert first.state == "blocked"
+    else:
+        case.github.runs[testing.candidate_sha] = "success"
+        first = await case.train.visit(case.target)
+        assert first.state == "delivered"
+    assert "epic_refresh_pending" in {b["code"] for b in first.detail["blockers"]}
+    assert missing_trust == [testing.candidate_sha]
+    assert await case.db.get_task_completion("epic") is None
+    refresh = await DatabaseBatches(case.db).current(case.target)
+    assert refresh.epic_refresh
+    assert [m.source_sha for m in await BatchStore(case.db).members(refresh.id)] == [default]
+    assert (await case.db.get_task("epic")).pr_url is None
+    old = git(case.origin.url, "rev-parse", "aq/epic")
+
+    pending = await case.train.visit(case.target)
+    assert pending.state == "testing" and pending.batch_id == refresh.id
+    assert git(case.origin.url, "rev-parse", "aq/epic") == old
+    assert await case.db.get_task_completion("epic") is None
+    case.github.runs[pending.candidate_sha] = "success"
+    await case.db.add_task_label("epic", "hold:operator")
+    held = await case.train.visit(case.target)
+    assert held.state == "held" and held.batch_id == refresh.id
+    assert git(case.origin.url, "rev-parse", "aq/epic") == old
+    await case.db.remove_task_label("epic", "hold:operator")
+    published = await case.train.visit(case.target)
+    assert published.state == "delivered"
+    head = git(case.origin.url, "rev-parse", "aq/epic")
+    for source in (default, *case.children):
+        git(case.origin.url, "merge-base", "--is-ancestor", source, head)
+    # Fresh checks alone do not certify the epic: the new tree needs review.
+    assert await case.db.get_task_completion("epic") is None
+    await review_epic(case)
+    assert (await case.train.visit(case.target)).state == "idle"
+    completion = await case.db.get_task_completion("epic")
+    assert completion.commits == [head]
+    assert (await case.db.get_task("epic")).pr_url
+    assert (await case.train.visit(case.target)).batch_id is None
+    assert (await case.db.get_task_completion("epic")).id == completion.id
+
+
 @pytest.mark.parametrize("collected_epic", ["controlled_clock"], indirect=True)
 async def test_obsolete_archive_settles_work_but_requires_fresh_collected_completion(
     collected_epic, monkeypatch

@@ -261,7 +261,7 @@ async def test_cache_measurement_migration_is_idempotent_on_disposable_database(
     from alembic.operations import Operations
     from sqlalchemy import inspect
 
-    migration = importlib.import_module("migrations.versions.a00000000114_build_cache_measurements")
+    migration = importlib.import_module("migrations.versions.a00000000115_build_cache_measurements")
 
     def exercise(conn):
         with Operations.context(MigrationContext.configure(conn)):

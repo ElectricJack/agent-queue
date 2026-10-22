@@ -54,6 +54,17 @@ BATCH_FIX_CHANGES = ROOT / "tests/fixtures/contracts/batch-fix-contract-changes.
 RELOCATION_CLOSE_CHANGES = ROOT / "tests/fixtures/contracts/relocation-author-close-contract-changes.json"
 
 
+MERGE_CHANGES = ROOT / "tests/fixtures/contracts/train-default-merge-contract-changes.json"
+
+
+def _merge_changes():
+    return json.loads(MERGE_CHANGES.read_text())
+
+
+def _before_merge_catalogue():
+    return _revert_catalogue(json.loads(render_command_catalogue()), _merge_changes())
+
+
 def _hibernation_changes():
     return json.loads(HIBERNATION_CHANGES.read_text())
 
@@ -65,7 +76,8 @@ def _dispatch_changes():
 def _revert_catalogue(catalogue, changes):
     for section, evidence in changes["catalogue_sections"].items():
         current = catalogue[section]
-        entries = {row["name"]: row for row in current} if evidence["list"] else current
+        entries = {row[0] if evidence.get("pairs") else row["name"]: row
+                   for row in current} if evidence["list"] else current
         for name, change in evidence["entries"].items():
             assert entries.get(name) == change["current"], (section, name)
             if change["previous"] is None:
@@ -95,7 +107,7 @@ def _before_batch_fix_catalogue():
 
 def _before_relocation_close_catalogue():
     return _revert_catalogue(
-        json.loads(render_command_catalogue()), json.loads(RELOCATION_CLOSE_CHANGES.read_text()),
+        _before_merge_catalogue(), json.loads(RELOCATION_CLOSE_CHANGES.read_text()),
     )
 
 
@@ -220,7 +232,7 @@ def test_legacy_execution_documents_and_fingerprints():
         if name in changes:
             assert expected["previous_fingerprint"] == old["fingerprint"]
             assert expected["fingerprint"] != old["fingerprint"]
-        for recording in (_hibernation_changes(), _dispatch_changes()):
+        for recording in (_hibernation_changes(), _dispatch_changes(), _merge_changes()):
             later = recording["contracts"].get(name)
             if later:
                 assert later["previous_fingerprint"] == expected["fingerprint"]
@@ -261,7 +273,7 @@ def test_transport_views_and_cli_serialization_preserve_golden_evidence():
             approved = dev["transport_definitions"][name]
             assert approved["previous_sha256"] == digest
             digest = approved["sha256"]
-        for recording in (_hibernation_changes(), _dispatch_changes()):
+        for recording in (_hibernation_changes(), _dispatch_changes(), _merge_changes()):
             if name in recording["transport_definitions"]:
                 approved = recording["transport_definitions"][name]
                 assert approved["previous_sha256"] == digest
@@ -284,7 +296,11 @@ def test_transport_views_and_cli_serialization_preserve_golden_evidence():
     assert batch_fix["previous_cli_catalogue_sha256"] == dispatch["cli_catalogue_sha256"]
     relocation_close = json.loads(RELOCATION_CLOSE_CHANGES.read_text())
     assert relocation_close["previous_cli_catalogue_sha256"] == batch_fix["cli_catalogue_sha256"]
-    assert actual == relocation_close["cli_catalogue_sha256"]
+    merge = _merge_changes()
+    assert merge["previous_cli_catalogue_sha256"] == relocation_close["cli_catalogue_sha256"]
+    assert actual == merge["cli_catalogue_sha256"]
+    previous = json.dumps(_before_merge_catalogue(), indent=2) + "\n"
+    assert hashlib.sha256(previous.encode()).hexdigest() == relocation_close["cli_catalogue_sha256"]
     previous = json.dumps(_before_relocation_close_catalogue(), indent=2) + "\n"
     assert hashlib.sha256(previous.encode()).hexdigest() == batch_fix["cli_catalogue_sha256"]
     previous = json.dumps(_before_batch_fix_catalogue(), indent=2) + "\n"
@@ -754,3 +770,47 @@ def test_missing_dynamic_path_fails_before_generated_invocation(json_args):
         value = resolve_value(BindingRef(binding="result", path="missing"),
                               ResolutionScope(bindings={"result": {"known": 1}}))
         json_args.model_validate({"count": value, "choice": "yes"})
+
+
+def test_merge_preserves_the_pinned_default_catalogue_and_publication_grants():
+    evidence = _merge_changes()
+    assert evidence["candidate_base"] == "f19a52b33682dec96755e9f4dc03d6955d2d2c10"
+    assert evidence["default_base"] == "2f7cf17737abee5a417cb82c0637101b397dbe86"
+    catalogue = _revert_catalogue(json.loads(render_command_catalogue()), {
+        "catalogue_sections": evidence["default_catalogue_sections"],
+    })
+    assert hashlib.sha256((json.dumps(catalogue, indent=2) + "\n").encode()).hexdigest() == (
+        evidence["default_cli_catalogue_sha256"])
+    hibernation = json.loads((HIBERNATION_CHANGES.parent /
+                              "default-hibernation-contract-changes.json").read_text())
+    assert evidence["default_cli_catalogue_sha256"] == hibernation["cli_catalogue_sha256"]
+    delta = hibernation["catalogue_delta"]
+    catalogue["explicit"] = [delta["previous_explicit"].get(row["name"], row)
+                             for row in catalogue["explicit"]
+                             if row["name"] not in delta["added_explicit"]]
+    for section, key in (("fallback", "added_fallback"),
+                         ("tool_categories", "added_tool_categories")):
+        for name in delta[key]:
+            catalogue[section].pop(name)
+    batch = json.loads((HIBERNATION_CHANGES.parent / "batch-repair-contract-changes.json").read_text())
+    assert hashlib.sha256((json.dumps(catalogue, indent=2) + "\n").encode()).hexdigest() == (
+        batch["cli_catalogue_sha256"])
+    task_set = next(row for row in catalogue["explicit"] if row["name"] == "task_set")
+    assert task_set["input_schema"]["properties"].pop("repair_batch") == (
+        batch["added_property"]["repair_batch"])
+    publication = json.loads((HIBERNATION_CHANGES.parent /
+                              "publication-delegation-contract-changes.json").read_text())
+    assert hashlib.sha256((json.dumps(catalogue, indent=2) + "\n").encode()).hexdigest() == (
+        publication["cli_catalogue_sha256"])
+    for name, change in publication["added_commands"].items():
+        assert catalogue["fallback"].pop(name) == change["transport_definition"]
+        assert CONTRACTS.require(name).contract.fingerprint() == change["contract_fingerprint"]
+    for plugin, definitions in catalogue["internal"]:
+        if plugin == "git":
+            for definition in definitions:
+                if definition["name"] in {"git_push", "push_branch"}:
+                    assert definition["input_schema"]["properties"].pop(
+                        "publication_delegation_id") == publication["added_property"][
+                            "publication_delegation_id"]
+    assert hashlib.sha256((json.dumps(catalogue, indent=2) + "\n").encode()).hexdigest() == (
+        publication["previous_cli_catalogue_sha256"])

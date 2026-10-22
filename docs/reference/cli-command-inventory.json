@@ -4262,6 +4262,7 @@
           "--project-id",
           "--branch",
           "--expected-remote-oid",
+          "--publication-delegation-id",
           "--workspace",
           "--json",
           "--brief",
@@ -4298,6 +4299,7 @@
           "--project-id",
           "--branch-name",
           "--expected-remote-oid",
+          "--publication-delegation-id",
           "--workspace",
           "--json",
           "--brief",
@@ -5091,6 +5093,47 @@
       }
     },
     {
+      "path": "aq integration delegate-publication",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": null,
+      "callback": "src.cli.integration.integration_delegate_publication",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--id",
+          "--project-id",
+          "--repository-id",
+          "--task-id",
+          "--session-id",
+          "--claim-epoch",
+          "--target-branch",
+          "--expected-target-oid",
+          "--expected-owner-fence",
+          "--reason"
+        ],
+        "optional": [
+          "--ttl-seconds",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
       "path": "aq integration eject",
       "registration": "handwritten",
       "owner_kind": "core",
@@ -5842,6 +5885,39 @@
           "--head",
           "--reason",
           "--apply",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq integration revoke-publication",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": null,
+      "callback": "src.cli.integration.integration_revoke_publication",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--id",
+          "--project-id",
+          "--reason"
+        ],
+        "optional": [
           "--json",
           "--brief",
           "--save-output",
@@ -21157,6 +21233,7 @@
         ],
         "optional": [
           "--branch",
+          "--repair-batch",
           "--pr-url",
           "--work-dir",
           "--note",

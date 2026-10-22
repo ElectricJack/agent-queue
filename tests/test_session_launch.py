@@ -199,6 +199,37 @@ async def test_cancelled_launch_cleans_up_registration(db):
     assert (await db.get_session(record.id)).state == "stopped"
 
 
+async def test_codex_project_trust_is_recorded_before_provider_start(db, tmp_path):
+    # nimble-harbor-12: the trust row must exist before Codex paints its TUI.
+    repo = tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True)
+    config = tmp_path / "codex-home" / "config.toml"
+    record, spec = registration(lifecycle="pool")
+    spec = replace(
+        spec, work_dir=str(repo), codex_project_trust=True,
+        env={**spec.env, "CODEX_HOME": str(config.parent)},
+    )
+    provider = FakeProvider()
+    original = provider.start
+    seen: list[str] = []
+
+    async def start(spec):
+        seen.append(config.read_text() if config.exists() else "")
+        return await original(spec)
+
+    provider.start = start
+    await launch_session(db, provider, spec, record)
+    assert seen == [f'[projects."{repo.resolve()}"]\ntrust_level = "trusted"\n']
+
+
+async def test_launch_without_codex_project_trust_leaves_config_alone(db, tmp_path):
+    config = tmp_path / "codex-home" / "config.toml"
+    record, spec = registration(lifecycle="pool")
+    spec = replace(spec, env={**spec.env, "CODEX_HOME": str(config.parent)})
+    await launch_session(db, FakeProvider(), spec, record)
+    assert not config.exists()
+
+
 async def test_running_acknowledgement_preserves_first_claim(db):
     await db.create_agent(Agent(id="a", name="Agent", profile_id="worker"))
     await db.create_task(Task(id="t", project_id="p", title="Work", description="",
@@ -301,11 +332,10 @@ _START_SITES = {
     ("src/dashboard_server/proxy.py", "exchange.start"): 1,
     ("src/dashboard_server/proxy.py", "self.start"): 1,
     ("src/discord/adapter.py", "self._bot.start"): 1,
-    # The batch fixer's runtime is DaemonFixerRuntime, which launches through
-    # launch_session (src/integration/fixer_runtime.py).
+    # The batch fixer's runtime launches through launch_session.
     ("src/integration/fixers.py", "self.runtime.start"): 1,
-    # Freezes an epic refresh batch; the train visits it without launching an agent.
-    ("src/integration/train_sources.py", "EpicRefresh(self.db, clock=self.clock).start"): 1,
+    # Root PR conflicts and collected-epic readiness freeze refresh batches.
+    ("src/integration/train_sources.py", "EpicRefresh(self.db, clock=self.clock).start"): 2,
     # Changelog section boundaries use re.Match offsets, never agent launches.
     ("src/integration/promotion_notes.py", "following.start"): 1,
     ("src/integration/promotion_notes.py", "match.start"): 3,
@@ -381,7 +411,7 @@ _PROCESS_SITES = {
     ("src/jobs/runner.py", "supervise", "create_subprocess_exec"): 1,
     # Reviewed script programs acquire BoxLock capacity before spawning an ordinary
     # process; they do not create an AQ agent/session. Acceptance tests cover admission.
-    ("src/jobs/script_sandbox.py", "launch", "create_subprocess_exec"): 1,
+    ("src/jobs/script_runner.py", "launch", "create_subprocess_exec"): 1,
     ("src/jobs/service.py", "JobService.launch", "create_subprocess_exec"): 1,
     ("src/jobs/windows_owner.py", "run", "spawn"): 1,
     ("src/llm/cli.py", "ask_cli", "create_subprocess_exec"): 1,

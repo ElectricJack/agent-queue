@@ -88,9 +88,14 @@ class WaitV2CommandsMixin:
         if (not mutating or principal is None
                 or principal.kind != PrincipalKind.SESSION):
             return None
+        engine = getattr(self.db, "_engine", None)
+        if engine is None:
+            # A stub-wired handler has no store and so no registered waits;
+            # principal resolution treats the same wiring as database-unavailable.
+            return None
         from src.waits.fencing import mutation_fence
 
-        async with self.db._engine.connect() as conn:
+        async with engine.connect() as conn:
             return await mutation_fence(conn, name, principal)
 
     async def wait_reroute_target(self, project_id, target):
@@ -121,6 +126,12 @@ class WaitV2CommandsMixin:
     async def wait_service_drain(self, listener, watermark):
         with principal_context(ExecutionPrincipal.service("waits-listener")):
             return await self.wait_listener_drain(listener, watermark)
+
+    async def wait_service_resume_stalls(self, lifecycle):
+        """Internal maintenance boundary; never exposes service authority to agents."""
+        with principal_context(ExecutionPrincipal.service("waits-driver")):
+            self._wait_listener_authorize(lifecycle.service.listener)
+            return await lifecycle.report_resume_stalls()
 
     def _wait_listener_authorize(self, listener, *, release=False):
         principal = current_principal()

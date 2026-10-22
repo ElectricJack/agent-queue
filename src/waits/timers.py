@@ -46,7 +46,7 @@ class WaitTimerDriver:
         fired = 0
         while self.heap and self.heap[0][0] <= self.clock():
             _, _, row = self.heap[0]
-            async with asyncio.timeout(self.service.listener.renewal_seconds):
+            async with asyncio.timeout(self.service.listener.lease_seconds):
                 result = await self.service.command("wait_deadline_fire", {
                     "wait_id": row["wait_id"], "deadline_type": row["deadline_type"],
                     "generation": row["generation"],
@@ -85,12 +85,14 @@ class WaitTimerDriver:
         db = self.service.orch.db
         now = args.get("now", self.clock())
         async with db._engine.begin() as conn:
+            # Match source dispatch: graph before lease, so a busy graph never
+            # fences out lease renewal and timer/source writers cannot deadlock.
+            await conn.execute(select(func.pg_advisory_xact_lock(REGISTRATION_LOCK)))
             try:
                 cursor = await self.service.listener.locked_lease(conn)
             except LeaseLost:
                 return {"success": False, "error_code": "wait.unavailable",
                         "error": "timer driver no longer owns the source lease"}
-            await conn.execute(select(func.pg_advisory_xact_lock(REGISTRATION_LOCK)))
             # Task before wait before deadline, like registration and dispatch.
             subject = (await conn.execute(select(wait_records).where(
                 wait_records.c.id == args["wait_id"],

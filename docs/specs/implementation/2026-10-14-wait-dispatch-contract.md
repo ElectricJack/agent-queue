@@ -1,5 +1,33 @@
 # Wait outcome integration contract
 
+## Resume recovery correction — 2026-10-21
+
+Continuation maintenance runs independently of the source listener and main
+orchestration cycle. Each queued/reserved/launching continuation has at most one
+local dispatch attempt in flight; a slow or refused attempt must not prevent
+other continuations from requesting admission. Failed commands are logged and
+retried through the existing admission, generation and task-control fences.
+Service shutdown cancels and joins outstanding attempts, retaining durable
+reservation and launch state for restart recovery.
+
+The listener renewal cadence is not a query timeout. Source batches and deadline
+commands may use the full lease budget; cursor locking, expiration checks and
+transaction rollback still fence expired leaders. Queries exceeding that budget
+remain failures rather than authorizing stale writes.
+
+`wait_policy.resume_stall_seconds` defaults to 300 seconds and supports project
+overrides. A resolved, uncleared wait whose task remains RESUME_PENDING past that
+age creates one durable project-supervisor notice per continuation generation.
+The notice survives daemon restarts and does not reset the wait's age, cancel its
+outcome, force admission or acknowledge delivery. Ordinary retries continue;
+paused and acknowledged tasks do not generate notices.
+
+An IN_PROGRESS owner or producer is not itself unavailable. Task sources retain
+the published claim-generation fence; a changed generation or missing source can
+still resolve an active owner's wait as source_unavailable. Dispatcher outcomes
+record the unavailable observation's reason and revision for diagnosis, without
+turning that outcome into producer success.
+
 This dormant dispatcher slice consumes graph owner commit
 `debbec299fc82a41c342315f816634cbe0be9871` and checkpoint owner commit
 `7e1402dabd831d6096378ccf61ba7df233fb2350` by ancestry-preserving merges.

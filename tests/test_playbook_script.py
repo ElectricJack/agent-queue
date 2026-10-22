@@ -16,9 +16,9 @@ from src.playbooks.run_state import RunLifecycle
 from tests.playbook_v2_engine_helpers import minimal_artifact, artifact_ref_for
 from tests.test_command_executor import context
 from tests.test_playbook_graph_projection import _project
-from tests.test_playbook_script_sandbox import pin, program
+from tests.test_playbook_script_runner import pin, program
 from tests.test_v2_engine import build
-from tests.test_playbook_script_sandbox import process_host as process_host_fixture, local_request
+from tests.test_playbook_script_runner import process_host as process_host_fixture, local_request
 
 process_host = process_host_fixture
 

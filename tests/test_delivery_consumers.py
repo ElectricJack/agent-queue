@@ -2038,3 +2038,95 @@ async def test_cleanup_guard_rechecks_current_target_without_receipts(world, tmp
     assert "unknown or pending" in await service._delivery_hold(row, batch)
     db.set_prerequisite_observer(None)
     assert "requires current Git" in await service._delivery_hold(row, batch)
+
+@pytest.mark.parametrize("stacked", [False, True])
+@pytest.mark.parametrize("cross_epic", [False, True])
+@pytest.mark.parametrize("proof", ["current", "missing", "reopened", "held"])
+async def test_resume_uses_git_prerequisites_without_legacy_receipts(
+    world, tmp_path, proof, cross_epic, stacked,
+):
+    from types import SimpleNamespace
+
+    from sqlalchemy import select
+
+    from src.config import AppConfig
+    from src.database.tables import continuations, task_branch_origins, wait_records
+    from src.integration.git_truth import GitTruth
+    from src.models import AgentProfile, Workspace
+    from src.wait_runtime.resume import ResumeTransaction
+    from src.wait_runtime.scheduler import SchedulerWaitService
+
+    db, origin, _, _ = world
+    transport = GitManager()
+    observer = DeliveryObserver(db, git=transport, data_dir=tmp_path / "resume-proof",
+                                truth=GitTruth(transport))
+    db._prerequisite_observer = observer
+    await db.create_profile(AgentProfile(id="worker", name="Worker", lifecycle="pool"))
+    await db.create_workspace(Workspace(id="free", project_id="p", kind_id="project-repo",
+                                        source_type=RepoSourceType.CLONE,
+                                        workspace_path=str(tmp_path / "free")))
+    await db.create_task(Task(id="dependent", project_id="p", repo_id="r", title="dependent",
+                              description="", branch_name="aq/dependent",
+                              profile_id="worker", route_source="override"))
+    await db.add_dependency("dependent", "epic", "parent-child")
+    await db.add_dependency("dependent", "done")
+    if cross_epic:
+        await db.create_task(Task(id="upstream-epic", project_id="p", title="Upstream",
+                                  description=""))
+        async with db._engine.begin() as conn:
+            await db.set_parent("done", "upstream-epic", conn=conn)
+    await db.update_project(
+        "p", hierarchical_integration_mode="hierarchy",
+        hierarchical_integration_policy={
+            "prerequisite_branches": "stacked" if stacked else "wait-for-parent",
+        },
+    )
+    git(origin.clone, "push", "origin", "main:aq/epic")
+    head = git(origin.clone, "rev-parse", "main")
+    now = time.time()
+    async with db._engine.begin() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == "epic").values(
+            branch_name="aq/epic", repo_id="r"))
+        await conn.execute(update(tasks).where(tasks.c.id == "dependent").values(
+            status="RESUME_PENDING", held_batch_id="held" if proof == "held" else None))
+        await conn.execute(insert(task_branch_origins).values(
+            id="dependent-origin", task_id="dependent", repository_id="r",
+            branch_name="aq/dependent", parent_task_id="epic", parent_repository_id="r",
+            parent_ref="aq/epic", base_sha=head, creation_generation=0,
+            reserved=True, materialized=True, created_at=now,
+        ))
+        await conn.execute(insert(wait_records).values(
+            id="finished-wait", project_id="p", owner_kind="task", owner_id="dependent",
+            origin="agent", condition_kind="message", condition={}, source_key="message:reply",
+            source_generation=0, source_watermark_seq=0, verification_state="verified",
+            evidence_ref="message:reply", verified_at=now, created_at=now,
+            request_hash="test", outcome="satisfied", sleep_decision="hibernate",
+        ))
+        await conn.execute(insert(continuations).values(
+            id="resume", task_id="dependent", wait_id="finished-wait",
+            suspension_generation=1, facts={"workspace_released_at": now},
+            branch="aq/dependent", saved_head=head, stopped_at=now,
+            prior_status="IN_PROGRESS", held_cursor_seq=0, resume_state="queued", created_at=now,
+        ))
+    if proof == "missing":
+        # The source exists, but is absent from the parent delivery target.
+        base = git(origin.clone, "rev-list", "--max-parents=0", "main")
+        git(origin.clone, "push", "--force", "origin", f"{base}:aq/epic")
+    elif proof == "reopened":
+        async with db._engine.begin() as conn:
+            await conn.execute(update(tasks).where(tasks.c.id == "done").values(
+                status="IN_PROGRESS", claim_epoch=tasks.c.claim_epoch + 1))
+            await db.recompute_blocked({"done", "dependent"}, conn=conn)
+    config = AppConfig()
+    orch = SimpleNamespace(db=db, config=config, _worktrees_enabled=lambda: False,
+                           _pool_quarantine_state=lambda *a: (None, None))
+    service = SimpleNamespace(orch=orch, scheduler=SchedulerWaitService(orch))
+    action = await ResumeTransaction(service).reserve("resume", 1)
+    async with db._engine.connect() as conn:
+        observed = await service.scheduler.reader.observe_task(
+            conn, "dependent", continuation_id="resume")
+    assert (action is not None) == (proof == "current" or proof == "missing" and stacked), observed
+    async with db._engine.connect() as conn:
+        state = await conn.scalar(select(continuations.c.resume_state).where(
+            continuations.c.id == "resume"))
+    assert state == ("reserved" if action is not None else "queued")

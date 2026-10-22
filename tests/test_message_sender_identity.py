@@ -57,6 +57,8 @@ async def api(env, monkeypatch):
     config.wait_policy.v2_enabled = False
     config.wait_policy.scheduler_waits_enabled = False
     config.security.capability_enforcement = "enforce"
+    # Exercise legacy compatibility during a flag-only rollback.
+    config.wait_policy.v2_enabled = False
     handler = CommandHandler(SimpleNamespace(
         db=env.db, bus=SimpleNamespace(emit=AsyncMock()), plugin_registry=None,
     ), config)

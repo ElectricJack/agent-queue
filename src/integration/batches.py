@@ -715,9 +715,12 @@ class BatchStore:
             ).values(**values))
             if intent == "aborted":
                 from src.integration.branch_retirement import request_batch_retirement_on
+                from src.integration.promotion_steps import fail_stranded_promotion_tasks_on
 
                 await request_batch_retirement_on(conn, row, reason="aborted batch candidate",
                                                  now=self.clock())
+                await fail_stranded_promotion_tasks_on(  # a promotion task can no longer settle
+                    self.db, conn, now=self.clock(), batch_id=batch_id)
             if operator_id is not None:
                 import json
 

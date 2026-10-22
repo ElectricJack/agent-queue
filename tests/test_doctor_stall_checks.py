@@ -487,6 +487,7 @@ async def test_sweep_is_registered_and_reports_all_active_projects(context, monk
     monkeypatch.setattr(module, "_unadmitted_parent_findings", lambda *args: branches())
     monkeypatch.setattr(module, "_stranded_child_findings", lambda *args: branches())
     monkeypatch.setattr(module, "_reviewed_file_guard_findings", lambda *args: branches())
+    monkeypatch.setattr(module, "_stranded_promotion_findings", lambda *args: branches())
     monkeypatch.setattr(module, "_validation_findings", validation)
     assert module.stall_checks()[0].fix is None
     result = await module._check_sweep(context)
@@ -517,7 +518,8 @@ async def test_sweep_reports_missing_delivery_engine_without_waiting_for_tasks(c
         "_provider_findings", "_unmaterialized_pr_findings", "_completed_undelivered_findings",
         "_unadmitted_parent_findings", "_stranded_child_findings", "_reviewed_file_guard_findings",
         "_orphaned_pr_findings", "_validation_findings", "_subject_unknown_findings",
-        "_object_bootstrap_findings", "_worker_relaunch_findings", "_delivery_stuck_findings",
+        "_object_bootstrap_findings", "_worker_relaunch_findings",
+        "_delivery_stuck_findings", "_stranded_promotion_findings",
     ):
         monkeypatch.setattr(module, name, AsyncMock(return_value=[]))
     monkeypatch.setattr(module, "_log_findings", lambda *args: [])

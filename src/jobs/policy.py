@@ -93,6 +93,25 @@ def validate_args(
         raise JobError("jobs.preset_denied")
     if len(args) > 256 or sum(len(a) for a in args) > 32768:
         raise JobError("jobs.preset_denied")
+    # Zero lowers resource use. Normalize it before composing argv so serial
+    # requests also work without xdist (whose -n option is then unavailable).
+    serial = False
+    normalized = []
+    submitted = iter(args)
+    for arg in submitted:
+        if arg in {"-n", "--numprocesses"}:
+            workers = next(submitted, None)
+        elif arg.startswith("-n"):
+            workers = arg[2:]
+        elif arg.startswith("--numprocesses="):
+            workers = arg.split("=", 1)[1]
+        else:
+            normalized.append(arg)
+            continue
+        if not preset.pytest or workers != "0":
+            raise JobError("jobs.preset_denied")
+        serial = True
+    args = normalized
     # Pytest plugins/config and ruff config can load arbitrary code. This is
     # resource separation, not a sandbox; still refuse resource-cap overrides
     # and explicit paths outside the pinned workspace.
@@ -110,7 +129,7 @@ def validate_args(
         arg == "-pno:xdist" or (arg == "-p" and next_arg == "no:xdist")
         for arg, next_arg in zip(args, [*args[1:], ""])
     ):
-        args = [*args, "-n", str(worker_cap)]
+        args = [*args, "-n", "0" if serial else str(worker_cap)]
     return [*preset.argv, *args]
 
 

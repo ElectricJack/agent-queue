@@ -889,6 +889,7 @@
         "tests/test_migration_pool_claim_refusals.py",
         "tests/test_migration_postgres_upgrade_head.py",
         "tests/test_migration_project_router_binding.py",
+        "tests/test_migration_publication_delegations.py",
         "tests/test_migration_repair_stages.py",
         "tests/test_migration_retired_intelligence_classes.py",
         "tests/test_migration_review_playbook_pin.py",
@@ -1015,7 +1016,7 @@
         "tests/test_playbook_run_repository.py",
         "tests/test_playbook_script.py",
         "tests/test_playbook_script_recovery.py",
-        "tests/test_playbook_script_sandbox.py",
+        "tests/test_playbook_script_runner.py",
         "tests/test_playbook_services.py",
         "tests/test_playbook_state.py",
         "tests/test_playbook_state_notify.py",
@@ -1183,6 +1184,7 @@
       "description": "Agent sessions: spec building (names, argv, env, prompt delivery), executable checks, the session provider contract, the session reconciler and exit classifier, session queries and commands, and the completion protocol.",
       "modules": [
         "tests/test_cli_session_history.py",
+        "tests/test_codex_trust.py",
         "tests/test_env_scrub.py",
         "tests/test_fake_session_script.py",
         "tests/test_handoffs.py",
@@ -4393,6 +4395,20 @@
       ],
       "summary": "Codex tiers launch the requested current model families at the class effort."
     },
+    "tests/test_codex_trust.py": {
+      "areas": [
+        "session-runtime"
+      ],
+      "default_arm": true,
+      "digest": "sha256:d0a18bb4bc3eacaaa0aa9ea174f4b592ef9fbddde0c90a22c86d19fc9d509f4a",
+      "imports": [
+        "src.sessions.codex_trust"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Pre-trusting a Codex session's project in ``config.toml`` (nimble-harbor-12)."
+    },
     "tests/test_collaboration.py": {
       "areas": [
         "collaboration"
@@ -5615,7 +5631,7 @@
         "development-delivery"
       ],
       "default_arm": true,
-      "digest": "sha256:34b4d21d0eeda6979aaa8dd1046adfeb716901f5c80574697aace4d018fb8245",
+      "digest": "sha256:5bf35451628307af9d2f2677dd9b82025299639d4d74059b53d4f6a650c70182",
       "imports": [
         "src.commands.handler",
         "src.commands.principal",
@@ -5645,7 +5661,9 @@
         "src.integration.status",
         "src.models",
         "src.orchestrator",
-        "src.profiles.capabilities"
+        "src.profiles.capabilities",
+        "src.wait_runtime.resume",
+        "src.wait_runtime.scheduler"
       ],
       "markers": [
         "parametrize"
@@ -8460,13 +8478,16 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:e3c0e33602a228d00afb805356041a434d4e1f9285e96b6239793fec54bc2e41",
+      "digest": "sha256:09a42b7ab6dafcfdb5d415063c914e614bc3aa15ae9a7e1f26cffc5d2a3d5b28",
       "imports": [
         "src.commands",
         "src.config",
         "src.database.tables",
+        "src.event_bus",
+        "src.git.identity",
         "src.git.manager",
         "src.integration.attestation",
+        "src.integration.batch_repair_publication",
         "src.integration.batches",
         "src.integration.ci",
         "src.integration.ci_producers",
@@ -12361,6 +12382,18 @@
       ],
       "summary": "a00000000043: every project bound to a router, ``default_profile_id`` dropped."
     },
+    "tests/test_migration_publication_delegations.py": {
+      "areas": [
+        "migrations"
+      ],
+      "default_arm": false,
+      "digest": "sha256:aa6430a2a5b6e614695aaae6f2a233421000b70fbed625a75c0f5b31f71f4c93",
+      "imports": [],
+      "markers": [
+        "migration"
+      ],
+      "summary": "The delegation migration adds the owner-lease binding on old and current schemas."
+    },
     "tests/test_migration_repair_stages.py": {
       "areas": [
         "migrations"
@@ -13501,7 +13534,7 @@
         "playbook-engine"
       ],
       "default_arm": true,
-      "digest": "sha256:6c3a4379222ca8fb76cd2b5767d38431cfd659ab437cce603417115b3767b893",
+      "digest": "sha256:0d98634d5b38e1acd3bcebfae16921f81a88d51e9454cb7aa55c2d17e3b4c806",
       "imports": [
         "src.commands.playbook_script_commands",
         "src.commands.principal",
@@ -13511,7 +13544,7 @@
         "src.jobs.artifacts",
         "src.jobs.playbook",
         "src.jobs.policy",
-        "src.jobs.script_sandbox",
+        "src.jobs.script_runner",
         "src.jobs.service",
         "src.playbooks.definition",
         "src.playbooks.invocation",
@@ -13524,18 +13557,18 @@
       ],
       "summary": "Real playbook owners, protected detached capture and no-replay recovery."
     },
-    "tests/test_playbook_script_sandbox.py": {
+    "tests/test_playbook_script_runner.py": {
       "areas": [
         "playbook-engine"
       ],
       "default_arm": true,
-      "digest": "sha256:dfed70bd24fe445c6846a2d5f0c47550d64006a1a0a304db786743767142b5b7",
+      "digest": "sha256:a9a7d98db8185d9c66de8fbb48d425208deb288671ea433b04e43211b5450324",
       "imports": [
         "src.config",
         "src.doctor",
         "src.git.manager",
         "src.jobs",
-        "src.jobs.script_sandbox",
+        "src.jobs.script_runner",
         "src.playbooks.proposal",
         "src.playbooks.script_inputs",
         "src.playbooks.script_policy",
@@ -15002,11 +15035,14 @@
         "integration-promotion"
       ],
       "default_arm": true,
-      "digest": "sha256:ced0f441eb045cafeb71551f3c3715c8375d352fc54303e943c60dfd0bf042bc",
+      "digest": "sha256:2c4863611309b1238749fee922d9d6f80f384fcd8ac150fb0faeb6d87a1e29bf",
       "imports": [
         "src.commands.integration_commands",
         "src.commands.principal",
+        "src.config",
+        "src.database.queries.task_queries",
         "src.database.tables",
+        "src.doctor.models",
         "src.git.github_contracts",
         "src.git.manager",
         "src.integration.attestation",
@@ -17119,7 +17155,7 @@
         "session-runtime"
       ],
       "default_arm": true,
-      "digest": "sha256:b00f9790f3fa53db7cf7f6e86e5c4102a87e18af318b005303515cb1e22d32a2",
+      "digest": "sha256:117baae2c5c0fee006a5c4bea87406bbbda0d3e63800dfe9009658b04c0e2591",
       "imports": [
         "src.cli",
         "src.cli.agent_surface",
@@ -17131,6 +17167,7 @@
         "src.sessions.env",
         "src.sessions.harness_parser",
         "src.sessions.harness_registry",
+        "src.sessions.provider",
         "src.sessions.spec",
         "src.vault"
       ],
@@ -17620,7 +17657,7 @@
         "supervisor"
       ],
       "default_arm": true,
-      "digest": "sha256:e88d920187d3b1265d3740cc6434ea8f1e44679e4d9877fb66c84b86fdcfca1e",
+      "digest": "sha256:f095e5edb7a5018c4996b55041794afb099e461fa992bf6ced9bb6ddd0a147a4",
       "imports": [
         "src.api.auth",
         "src.asks.models",
@@ -17638,6 +17675,7 @@
         "src.models",
         "src.orchestrator",
         "src.orchestrator.task_checkpoint",
+        "src.sessions.obsolete",
         "src.sessions.provider",
         "src.sessions.tmux"
       ],
@@ -19501,7 +19539,7 @@
         "agent-waits"
       ],
       "default_arm": true,
-      "digest": "sha256:d53b1ea6efe2086f7014498dc25883eee1698cae2b5bf18bf7e34e83307c3a0b",
+      "digest": "sha256:3d57522102b36c18ac459a32a1fbef31f38cace26de6e1174c2de701e07f198a",
       "imports": [
         "src.commands",
         "src.commands.principal",
@@ -19516,6 +19554,7 @@
         "src.scheduler",
         "src.wait_runtime.service",
         "src.waits.conditions",
+        "src.waits.graph",
         "src.waits.listener",
         "src.waits.registry",
         "src.waits.resource_sources",
@@ -19593,11 +19632,12 @@
         "agent-waits"
       ],
       "default_arm": true,
-      "digest": "sha256:81806e0f15ffb2605b846f5d4b94da015185e1fae4334b9751d00f3f4a899eba",
+      "digest": "sha256:0fea28fb7664535c1a9edb1a60959a3a21125adc8043ab730ab3ecb236274337",
       "imports": [
         "src.cli.waits",
         "src.commands",
         "src.commands.principal",
+        "src.commands.task_commands",
         "src.config",
         "src.database",
         "src.database.queries.continuation_queries",
@@ -19965,16 +20005,22 @@
         "github"
       ],
       "default_arm": true,
-      "digest": "sha256:e261159034933b8f9bf8cc18e9ef9695a9bb1c3e941a8541d23a16f7643893f5",
+      "digest": "sha256:f41a3e18ab7e505a5da8839552f23e6a6d70f2964d488287574319b25c87be5e",
       "imports": [
         "src.api.auth",
         "src.api.scope",
         "src.cli.app",
+        "src.commands.contracts.integration",
         "src.config",
+        "src.database",
         "src.database.tables",
         "src.git.github_contracts",
         "src.git.identity",
         "src.git.manager",
+        "src.integration.batches",
+        "src.integration.lock",
+        "src.integration.models",
+        "src.integration.publication_delegations",
         "src.models",
         "src.plugins.internal.git",
         "src.profiles.capabilities",

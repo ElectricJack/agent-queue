@@ -8911,7 +8911,8 @@ async def test_ordinary_repair_worker_git_push_rejects_expired_or_wrong_ref(ordi
                                  apush_validated_delivery=AsyncMock(return_value=STARTING_SHA))
     plugin._ctx = SimpleNamespace(_bus=None)
     publication = SimpleNamespace(task_id=task_id, branch=env.ref.removeprefix("refs/heads/"),
-                                  default_branch="main", repository_url="/authorized")
+                                  default_branch="main", repository_url="/authorized",
+                                  batch_repair=None)
     plugin._worker_publication = AsyncMock(return_value=publication)
     plugin._publish_policy = AsyncMock(return_value=SimpleNamespace(notes=[]))
     plugin._source_ci_inherited_oids = AsyncMock(return_value=[])

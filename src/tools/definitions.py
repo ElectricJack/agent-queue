@@ -5571,6 +5571,10 @@ _ALL_TOOL_DEFINITIONS = [
                     "type": "string",
                     "description": "Branch name for this task's work (optional).",
                 },
+                "repair_batch": {
+                    "type": "string",
+                    "description": "Supervisor/operator only: assign push authority for this open batch's candidate branch, preserving the task's canonical branch.",
+                },
                 "pr_url": {"type": "string", "description": "Pull-request URL (optional)."},
                 "work_dir": {
                     "type": "string",

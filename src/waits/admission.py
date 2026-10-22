@@ -87,9 +87,28 @@ class AdmissionReader:
         self.orchestrator = orchestrator
         self.clock = clock
 
+    async def delivery_admission(self, task_id, *, cached_only=False, hierarchy_modes=None):
+        from src.git.manager import GitManager
+        from src.integration.admission import observe_admission
+        from src.integration.development import DevelopmentPrimitives
+
+        o = self.orchestrator
+        reader = getattr(o, "_delivery_admission", None)
+        if reader is not None:
+            return await reader([task_id], cached_only=cached_only, hierarchy_modes=hierarchy_modes)
+        service = DevelopmentPrimitives(
+            o.db, data_dir=o.config.data_dir, git=getattr(o, "git", None) or GitManager(),
+        )
+        return await observe_admission(
+            o.db, [task_id], service, cached_only=cached_only,
+            default_mode=o.config.integration.default_mode, hierarchy_modes=hierarchy_modes,
+        )
+
     async def observe_task(self, conn, task_id, *, continuation_id=None, migration_audit=False):
         from src.database.queries.claim_queries import (
-            _pool_profiles_predicate, claim_frontier_predicates, route_claimable,
+            _pool_profiles_predicate,
+            claim_frontier_predicates,
+            route_claimable,
         )
         from src.database.queries.hierarchy_queries import ProjectIntegrationMode
         from src.routing.readiness import orchestrator_router_ready
@@ -126,10 +145,17 @@ class AdmissionReader:
         # The same SQL predicates the ordinary claim path uses. Git delivery is
         # separately re-observed below; an old cached verdict never clears a hold.
         project_model = await o.db.get_project(task["project_id"])
-        admission = await o._delivery_admission([task_id])
-        mode = admission.hierarchy_modes.get(task["project_id"]) or ProjectIntegrationMode.of(
-            project_model,
-        )
+        mode = ProjectIntegrationMode.of(project_model)
+        if mode.hierarchical:
+            from src.integration.delivery_observer import hierarchy_frontier_modes
+
+            # Git refresh belongs outside graph/owner locks; revalidate cached
+            # identities on this transaction, never use legacy receipts in Git-first.
+            mode = (await hierarchy_frontier_modes(
+                o.db, task_id=task_id, cached_only=True, conn=conn,
+            )).get(task['project_id'], mode)
+        admission = await self.delivery_admission(task_id, cached_only=True,
+                                                  hierarchy_modes={task["project_id"]: mode})
         predicates = claim_frontier_predicates(hierarchy_mode=mode)
         predicates["route"] = route_claimable(ready)
         if profile:

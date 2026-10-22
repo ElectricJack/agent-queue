@@ -229,6 +229,7 @@ areas:
     match:
       - tests/test_session_spec.py
       - tests/test_session_launch.py
+      - tests/test_codex_trust.py
       - tests/test_handoffs.py
       - tests/test_session_executable.py
       - tests/test_session_provider_conformance.py
@@ -356,7 +357,7 @@ areas:
       - tests/test_playbook_wait_repository.py
       - tests/test_playbook_receipts.py
       - tests/test_playbook_private_values.py
-      - tests/test_playbook_script_sandbox.py
+      - tests/test_playbook_script_runner.py
       - tests/test_playbook_script_recovery.py
       - tests/test_playbook_script.py
       - tests/test_playbook_state.py

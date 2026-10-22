@@ -43,6 +43,28 @@ async def waiting(env, **kwargs):
     return receipt
 
 
+@pytest.mark.parametrize('source_epoch,outcome', [(0, 'pending'), (1, 'source_unavailable')])
+async def test_live_owner_does_not_make_in_progress_source_unavailable(env, source_epoch, outcome):
+    await register(env)
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == 'source').values(
+            status='IN_PROGRESS', claim_epoch=source_epoch,
+        ))
+    # An older committed hint must re-observe the current source generation.
+    await env.db.wait_source_commit(source_key='task:source', generation=0, revision='hint',
+                                   outcome_ref='untrusted', payload={})
+    service = runtime(env, dispatcher=dispatcher(env))
+    assert await service.tick()
+    wait = (await records(env))[0]
+    assert (await env.db.get_task('owner')).status is TaskStatus.IN_PROGRESS
+    assert wait['outcome'] == outcome
+    if source_epoch:
+        assert wait['decision_inputs']['source_unavailable']['reason'] == 'source_changed'
+        assert wait['cleared_at'] is None
+    else:
+        assert 'source_unavailable' not in wait['decision_inputs']
+
+
 async def test_source_commit_one_wake_held_mail_and_atomic_ack(env, monkeypatch):
     prior = await mail(env.db, "owner")
     async with env.db._engine.begin() as conn:
@@ -314,3 +336,27 @@ async def test_parked_continuation_queues_once_without_message(env, proven_stop)
     assert len(await records(env, wait_measurements)) == 1
     assert await service.tick()
     assert (await records(env, continuations))[0]["version"] == 2
+
+
+async def test_scheduler_hibernate_wait_does_not_require_an_agent_continuation(env):
+    await env.db.create_task(Task(id="tail", project_id="p", title="Tail", description=""))
+    scheduler = await register(
+        env, {"kind": "task", "task_id": "tail"},
+        scope=Scope("p", "scheduler", "source", principal="service"),
+        decide_sleep=lambda *args: SleepDecision("hibernate", "scheduler"),
+    )
+    agent = await waiting(env)
+    await env.db.transition_task("tail", TaskStatus.COMPLETED)
+    await env.db.transition_task("source", TaskStatus.COMPLETED)
+    service = runtime(env, dispatcher=dispatcher(env))
+    assert await service.tick()
+    waits = {row["id"]: row for row in await records(env)}
+    assert waits[scheduler["wait_id"]]["outcome"] == "satisfied"
+    assert waits[scheduler["wait_id"]]["cleared_at"] is not None
+    assert waits[agent["wait_id"]]["outcome"] == "satisfied"
+    assert not await records(env, continuations)
+    envelopes = [row for row in await records(env, messages) if row["body_kind"] == "wait_outcome"]
+    assert len(envelopes) == 1 and envelopes[0]["to_id"] == "s"
+    assert await service.tick()
+    assert len([row for row in await records(env, messages)
+                if row["body_kind"] == "wait_outcome"]) == 1
