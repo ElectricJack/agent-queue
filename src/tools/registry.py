@@ -95,6 +95,10 @@ CATEGORIES: dict[str, CategoryMeta] = {
         name="ci",
         description="Required CI evidence and completed task audits",
     ),
+    "integration": CategoryMeta(
+        name="integration",
+        description="Author-assisted close continuations and bound batch repair",
+    ),
     "project": CategoryMeta(
         name="project",
         description=(

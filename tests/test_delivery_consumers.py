@@ -1538,9 +1538,14 @@ async def settle() -> None:
 @pytest.fixture
 def shared_store(tmp_path, monkeypatch):
     from src.integration import delivery_observer as module
+    from src.projects import storage_binding
 
     fetches = ControlledFetches()
     monkeypatch.setattr(module, "delivery_snapshot", fetches)
+    # These concurrency tests isolate store acquisition and use no database.
+    monkeypatch.setattr(storage_binding, "repository_path", AsyncMock(
+        side_effect=lambda db, repository_id, fallback: fallback,
+    ))
 
     def make(git=None, data_dir=None):
         observer = DeliveryObserver(None, git=git or object(),

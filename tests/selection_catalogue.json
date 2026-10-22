@@ -5637,7 +5637,7 @@
         "development-delivery"
       ],
       "default_arm": true,
-      "digest": "sha256:5bf35451628307af9d2f2677dd9b82025299639d4d74059b53d4f6a650c70182",
+      "digest": "sha256:912e9c33f8f0e70e7695c68cdbe7f2366ea1e5eb85a5a8a201864cde88f911c2",
       "imports": [
         "src.commands.handler",
         "src.commands.principal",
@@ -5668,6 +5668,8 @@
         "src.models",
         "src.orchestrator",
         "src.profiles.capabilities",
+        "src.projects",
+        "src.projects.storage_binding",
         "src.wait_runtime.resume",
         "src.wait_runtime.scheduler"
       ],

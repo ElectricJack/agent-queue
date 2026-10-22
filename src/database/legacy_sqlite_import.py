@@ -190,6 +190,8 @@ _EXCLUDED_TABLES: frozenset[str] = frozenset(
         # Reconciler subjects and their journal shipped in revision 57.
         "integration_subjects",
         "integration_subject_journal",
+        # Author-assisted close attempts shipped in PostgreSQL revision 117.
+        "integration_close_attempts",
         # Shared operator decisions shipped in PostgreSQL revision 77.
         "operator_decisions",
         # Session-owned recurring prompts shipped in PostgreSQL revision 86;

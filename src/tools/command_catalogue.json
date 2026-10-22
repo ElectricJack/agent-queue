@@ -20516,6 +20516,7 @@
     "cron": "Session-owned recurring prompts: register, inspect and cancel wake-ups.",
     "git": "Branch, commit, push, PR, merge, and remote URL operations for project repositories",
     "ci": "Required CI evidence and completed task audits",
+    "integration": "Author-assisted close continuations and bound batch repair",
     "project": "Project CRUD, workspace management, project metadata (repo URL, GitHub URL, workspace path)",
     "agent": "Agent management, agent profiles, profile import/export",
     "supervisor": "Supervisor session lifecycle \u2014 fresh or resumed restarts through AQ",

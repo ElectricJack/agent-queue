@@ -2286,10 +2286,9 @@ async def test_an_ambiguous_close_drain_ack_stops_the_writer_and_its_owner_is_re
     transition and the branch handoff, completion record and claim release
     that follow it.  The attached owner kept the claim; the drained worker sat
     idle; owner recovery answered ``writer_live`` until a supervisor killed it.
-    With delivery still running there is no receipt yet (bold-impact-53 waited
-    for one); the identity the accepting transition records proves the close.
-    bold-impact-53 itself predates that marker, and its bare close metadata
-    proves nothing (``TestSettledClaimDrain``).
+    The identity the accepting transition records proves the close, whether
+    delivery finished or is still running. Historical delivery receipts and
+    bare close metadata cannot replace that identity (``TestSettledClaimDrain``).
     """
     from src.database.queries.claim_queries import ACCEPTED_CLOSE_KEY
     from src.database.tables import task_delivery_receipts, task_session_attempts
@@ -2334,9 +2333,8 @@ async def test_an_ambiguous_close_drain_ack_stops_the_writer_and_its_owner_is_re
     # 1. The close writes its outcome metadata, its terminal transition commits
     #    -- the same write ``complete_session_task`` makes -- and the daemon
     #    restarts before the handoff, the completion record and the claim
-    #    release.  Delivery then lands the work with a code receipt, or is
-    #    still running and only the accepted-close identity the transition
-    #    records in its transaction (smart-cascade) speaks for the close.
+    #    release. A historical receipt cannot settle the writer; only the
+    #    accepted-close identity recorded by the transition speaks for it.
     await env.db.set_task_meta("leaf", "outcome", "pass")
     await env.db.set_task_meta("leaf", "close_session_id", "writer")
     await env.db.set_task_meta("leaf", "summary", "Pushed the fix.")
@@ -2351,10 +2349,10 @@ async def test_an_ambiguous_close_drain_ack_stops_the_writer_and_its_owner_is_re
                 repository_id="r", target_branch="main", disposition="code",
                 created_at=time.time(),
             ))
-    else:
-        await env.db.set_task_meta("leaf", ACCEPTED_CLOSE_KEY, {
-            "completion_id": "close-leaf", "session_id": "writer", "claim_epoch": 1,
-        })
+    assert await env.db.get_settled_pool_claim("writer") is None
+    await env.db.set_task_meta("leaf", ACCEPTED_CLOSE_KEY, {
+        "completion_id": "close-leaf", "session_id": "writer", "claim_epoch": 1,
+    })
     assert await env.db.get_task_completion("leaf") is None
     assert (await env.db.get_session("writer")).task_id == "leaf"
     assert (await env.row("owner"))["handoff_state"] == "attached"
@@ -2392,10 +2390,7 @@ async def test_an_ambiguous_close_drain_ack_stops_the_writer_and_its_owner_is_re
     assert (task.status, task.assigned_agent_id, task.claim_epoch) == (
         TaskStatus.COMPLETED, None, 1
     )
-    proof = (
-        "code delivery receipt receipt" if delivered
-        else "accepted close close-leaf by session writer (claim epoch 1)"
-    )
+    proof = "accepted close close-leaf by session writer (claim epoch 1)"
     bodies = [c["body"] for c in (await env.db.list_task_comments("leaf"))["comments"]]
     assert any(f"is COMPLETED with {proof}" in body for body in bodies)
 
