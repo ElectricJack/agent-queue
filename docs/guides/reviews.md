@@ -89,18 +89,37 @@ That task submits the implementation document to Jack's review queue, with
 `spec_kind: implementation`; approval starts ingestion again. Design approval
 creates no implementation work.
 
-An implementation spec creates phase/deliverable epics with self-contained
-children, maximizing safe parallelism by file/module ownership. Dependencies
-connect children only; structural parent-child edges connect children to epics.
-Spec ingestion validates and commits the whole graph atomically without a
-human proposal gate. Ordinary task-batch proposals retain their approval gate.
-Ingest authority only creates work; existing-task updates go to the supervisor
-as an ordinary, human-approved change set.
+An implementation spec creates delivery epics with self-contained leaves,
+maximizing safe parallelism by file/module ownership. Each leaf names its
+source section, primary outcome, acceptance and constraints. Execution
+dependencies connect leaves only; structural parent-child edges place leaves
+in epics. Deploys, cutovers, post-landing observation and soak periods are
+separate operational roots (`placement: operational_root`) that wait on their
+`delivery_targets` through `delivery-of` edges, never children of a delivery
+epic.
+
+Spec ingestion creates the whole graph atomically but **held**: every task is
+visible and none can be claimed or add pool demand. Automatic structural checks
+run first; a hard finding creates nothing. One `fidelity-reviewer` task then
+compares the held batch with the approved document, may restructure unclaimed
+members (`aq batch update`), and records a receipt (`aq batch review-record`).
+A passing receipt is released atomically by the default pipeline; a scope
+question raises one ask and never releases. There is no human proposal gate
+on this path, and the machine check never approves or substitutes for Jack's
+document review: source approval is what authorizes ingestion. Inspect a batch
+with `aq batch show --project <id> <batch_id>` or `aq task explain` on a
+member. Ordinary task-batch proposals retain their approval gate. Ingest
+authority only creates work; existing-task updates go to the supervisor as an
+ordinary, human-approved change set. The full contract is
+[spec-ingestion](../specs/implementation/spec-ingestion.md).
 
 Start from the [spec template](../templates/spec.md). On an existing install,
-the operator must reconcile the shipped spec-ingest Role and commit grant;
-profile seeding does not overwrite local copies. Preserve the installed
-harness when updating it.
+the operator reconciles the shipped profiles, which seeding never overwrites:
+`aq agent profile-reseed --profile-id spec-ingest --grants-only` (preserving
+the installed harness) and `aq agent profile-reseed --profile-id
+fidelity-reviewer`. Held batches also need schema revision `a00000000100` and
+the rebuilt `default-pipeline` bundle activated (`aq playbook activate
+default-pipeline`); both are operator steps.
 
 ## Spec supersession checklist
 
