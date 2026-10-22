@@ -15,7 +15,7 @@
       "src/database/queries/integration_*.py",
       "src/waits/adapters/close_merge.py",
       "src/waits/adapters/close_scope.py",
-      "migrations/versions/a00000000115_integration_close_attempts.py"
+      "migrations/versions/a00000000117_integration_close_attempts.py"
     ],
     "policy": [
       "src/playbooks/integration_policy.py"
