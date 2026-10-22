@@ -714,6 +714,15 @@ source-CI observation path so the two agree.
 
 ## Delivery evidence
 
+The delivery watchdog keeps one wait projection per repository, task completion
+generation and target. Repeated and overlapping scans reuse that row, including
+its original completion age and takeover history. A previously settled wait keeps
+its outcome when the same generation is observed again. Each task observation
+and each settlement has its own transaction: a failed task rolls back, is logged
+with its project and task id, and appears in the scan's `errors` list. Other tasks
+continue and the project cursor advances; the failed task is retried on a later
+pass.
+
 The train automatically re-runs a required Actions job once if its check stays
 `in_progress` for five minutes after its workflow or all job steps completed.
 The check remains pending until fresh authenticated evidence concludes it.

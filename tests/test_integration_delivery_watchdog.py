@@ -1,5 +1,6 @@
 """Threshold and producer progress evidence for the delivery watchdog."""
 
+import asyncio
 from dataclasses import replace
 from types import SimpleNamespace
 
@@ -312,6 +313,131 @@ async def test_threshold_comes_from_measured_ci_and_slow_takes_no_action(watch, 
         "slow", "batch_queued")
     assert _takeovers(await watch.rows(tasks)) == []
     assert await watch.rows(escalations) == []
+
+
+async def test_consecutive_slow_scans_reuse_one_projection(watch):
+    await watch.complete("p", "t1", age=3600, rule="awaiting_delivery")
+    first = await watch.scan()
+    original = await watch.blocker("t1")
+    second = await watch.scan()
+    current = await watch.blocker("t1")
+    for report in (first, second):
+        assert report["errors"] == []
+        (delivery,) = report["deliveries"]
+        assert (delivery["state"], delivery["reason"]) == ("slow", "candidate_ci_pending")
+    assert current["id"] == original["id"]
+    assert current["created_at"] == original["created_at"]
+    assert current["decision_inputs"]["first_completed_at"] == (
+        original["decision_inputs"]["first_completed_at"])
+    assert current["decision_inputs"]["age_seconds"] == (
+        original["decision_inputs"]["age_seconds"] + 60)
+    assert _takeovers(await watch.rows(tasks)) == []
+
+
+async def test_slow_scan_reuses_settled_projection_across_restart(watch, clock):
+    await watch.complete("p", "t1", age=3600, rule="awaiting_delivery")
+    await watch.scan()
+    original = await watch.blocker("t1")
+    async with watch.state.db.immediate() as conn:
+        await conn.execute(update(wait_records).where(wait_records.c.id == original["id"]).values(
+            outcome="satisfied", resolved_at=clock[0], cleared_at=clock[0]))
+    await watch.restart()
+    for _ in range(2):
+        report = await watch.scan()
+        assert report["errors"] == []
+        assert report["deliveries"][0]["state"] == "slow"
+    current = await watch.blocker("t1")
+    assert current["id"] == original["id"]
+    assert current["created_at"] == original["created_at"]
+    assert current["outcome"] == "satisfied"
+    assert current["resolved_at"] == current["cleared_at"] == original["verified_at"]
+    assert current["decision_inputs"]["first_completed_at"] == (
+        original["decision_inputs"]["first_completed_at"])
+
+
+async def test_overlapping_scans_reuse_projection_from_stale_pending_snapshots(watch, monkeypatch):
+    await watch.complete("p", "t1", age=3600, rule="awaiting_delivery")
+    from src.integration import delivery_watchdog
+
+    original = delivery_watchdog._pending_rows_on
+    both_read = asyncio.Event()
+    reads = 0
+
+    async def snapshot(*args):
+        nonlocal reads
+        rows = await original(*args)
+        reads += 1
+        if reads == 2:
+            both_read.set()
+        await asyncio.wait_for(both_read.wait(), timeout=10)
+        return rows
+
+    monkeypatch.setattr(delivery_watchdog, "_pending_rows_on", snapshot)
+    reports = await asyncio.gather(watch.scan(advance=0), watch.scan(advance=0))
+    for report in reports:
+        assert report["errors"] == []
+        assert report["deliveries"][0]["state"] == "slow"
+    assert (await watch.blocker("t1"))["outcome"] == "pending"
+
+
+async def test_failed_entry_rolls_back_and_other_tasks_and_projects_continue(
+    watch, monkeypatch, caplog,
+):
+    from src.integration import delivery_watchdog
+
+    await watch.complete("p", "t-bad", age=4000, rule="awaiting_delivery")
+    await watch.complete("p", "t-good", age=3600, rule="awaiting_delivery")
+    await watch.project("q")
+    await watch.complete("q", "t-next", age=3600, rule="awaiting_delivery")
+    await watch.scan()
+    original = await watch.blocker("t-bad")
+    held = delivery_watchdog._held_on
+
+    async def fail_on_bad_entry(conn, project_id, task_id, status):
+        if task_id == "t-bad":
+            # A real SQL error aborts this entry's transaction after its row is locked.
+            await conn.execute(insert(projects).values(id="p", name="duplicate"))
+        return await held(conn, project_id, task_id, status)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(delivery_watchdog, "_held_on", fail_on_bad_entry)
+        report = await watch.scan()
+    assert report["errors"] == [{"project_id": "p", "task_id": "t-bad",
+                                  "error": "IntegrityError"}]
+    assert [d["task_id"] for d in report["deliveries"]] == ["t-good", "t-next"]
+    assert await watch.blocker("t-bad") == original
+    assert (await watch.blocker("t-good"))["verified_at"] > original["verified_at"]
+    assert '"q"' == (await watch.rows(system_config, system_config.c.key == CURSOR_KEY))[0]["value"]
+    assert "delivery watchdog entry failed for p/t-bad" in caplog.text
+    retry = await watch.scan()
+    assert retry["errors"] == []
+    assert [d["task_id"] for d in retry["deliveries"]] == ["t-bad", "t-good", "t-next"]
+
+
+async def test_failed_settlement_does_not_rollback_other_settlements(watch, monkeypatch, caplog):
+    from src.integration import delivery_watchdog
+
+    for task_id in ("t-bad", "t-good"):
+        await watch.complete("p", task_id, age=3600, rule="awaiting_delivery")
+    await watch.scan()
+    watch.inventory.entries["p"].clear()
+    settle = delivery_watchdog._settle_on
+
+    async def fail_on_bad_settlement(db, conn, row, **kwargs):
+        await settle(db, conn, row, **kwargs)
+        if row["owner_id"] == "t-bad":
+            await conn.execute(insert(projects).values(id="p", name="duplicate"))
+
+    with monkeypatch.context() as patch:
+        patch.setattr(delivery_watchdog, "_settle_on", fail_on_bad_settlement)
+        report = await watch.scan()
+    assert report["errors"] == [{"project_id": "p", "task_id": "t-bad",
+                                  "error": "IntegrityError"}]
+    assert (await watch.blocker("t-bad"))["outcome"] == "pending"
+    assert (await watch.blocker("t-good"))["outcome"] == "satisfied"
+    assert "delivery watchdog settlement failed for p/t-bad" in caplog.text
+    assert (await watch.scan())["errors"] == []
+    assert (await watch.blocker("t-bad"))["outcome"] == "satisfied"
 
 
 async def test_stuck_generation_gets_one_takeover_and_one_incident_across_restart(watch, clock):
