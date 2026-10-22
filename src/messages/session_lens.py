@@ -30,6 +30,7 @@ import os
 import time
 import uuid
 from dataclasses import dataclass
+from copy import copy
 from pathlib import Path
 from typing import Literal, Protocol, runtime_checkable
 
@@ -314,6 +315,8 @@ class SessionLens:
         raise_start_error: bool = False,
         wake: str | None = None,
         resume_key: str | None = None,
+        recovery_harness: str | None = None,
+        recovery_health: dict | None = None,
     ) -> bool:
         # Only supervisor-named sessions are wake-on-demand. Task sessions
         # are launched by the task lifecycle; spawning one from the message
@@ -341,6 +344,18 @@ class SessionLens:
                 )
 
         row, handle = await self._resolve(kind=kind, target_id=target_id, project_id=project_id)
+        recovery_row = row or await self._db.get_session_by_name(
+            _resolve_runtime_session_name(kind, target_id),
+        )
+        if (wake is None and recovery_row is not None
+                and (recovery_row.supervisor_health or {}).get("attempts")):
+            saved = recovery_row.supervisor_health
+            if recovery_row.state not in {"starting", "running"}:
+                if time.time() < saved.get("next_retry_at", 0):
+                    return False
+                recovery_health = saved
+                recovery_harness = saved.get("recovery_harness")
+                wake = "fresh"
         if row is not None and handle is not None:
             provider = self._providers.create(row.provider)
             try:
@@ -397,6 +412,13 @@ class SessionLens:
             if not agent.enabled:
                 return False
             profile = apply_agent_overrides(profile, agent)
+
+        if recovery_harness or recovery_health:
+            profile = copy(profile)
+            if recovery_harness:
+                profile.harness = recovery_harness
+            if recovery_health and recovery_health.get("recovery_class"):
+                profile.default_class = recovery_health["recovery_class"]
 
         harness_name = getattr(profile, "harness", None) or "claude"
         # For the global supervisor there is no per-project harness
@@ -599,6 +621,7 @@ class SessionLens:
                     session_key=resume_key or (session_id if harness.session_id_flag else None),
                     state="running",
                     desired_state="running",
+                    supervisor_health=recovery_health,
                     hooks_provisioned=spec.hooks_provisioned,
                 ), bus=self._bus,
             )
@@ -639,6 +662,8 @@ class SessionLens:
     async def restart_supervisor(
         self, *, target_id: str, project_id: str | None,
         resume: bool = False, expected_session_id: str | None = None,
+        recovery_harness: str | None = None, recovery_health: dict | None = None,
+        restart_reason: str = "operator_restart",
     ) -> SessionRecord:
         """Retire one fenced instance and relaunch through the named spec builder.
 
@@ -672,7 +697,8 @@ class SessionLens:
                     raise SupervisorRestartError("Supervisor is disabled; enable it before restarting")
                 profile = apply_agent_overrides(profile, agent)
             harness = self._harnesses.get(
-                getattr(profile, "harness", None) or "claude", project_id=row.project_id
+                recovery_harness or getattr(profile, "harness", None) or "claude",
+                project_id=row.project_id,
             )
             if harness is None:
                 raise SupervisorRestartError("Supervisor harness is not registered")
@@ -696,10 +722,18 @@ class SessionLens:
                 if not await provider.confirm_stopped(handle):
                     raise SupervisorRestartError("Could not confirm the supervisor stopped")
             except SupervisorRestartError:
+                if recovery_health is not None:
+                    await self._db.update_session_instance(
+                        row.id, row.instance_token, desired_state="running",
+                    )
                 raise
             except Exception as exc:
+                if recovery_health is not None:
+                    await self._db.update_session_instance(
+                        row.id, row.instance_token, desired_state="running",
+                    )
                 raise SupervisorRestartError("Could not stop the supervisor; check session logs") from exc
-            fields = dict(desired_state="stopped", ended_at=time.time(), end_reason="operator_restart")
+            fields = dict(desired_state="stopped", ended_at=time.time(), end_reason=restart_reason)
             # Keep quarantine evidence on a terminal row; it cannot transition
             # back to stopped, and the successor has its own fresh row.
             if row.state != "quarantined":
@@ -712,15 +746,70 @@ class SessionLens:
                     kind="session", target_id=target_id, project_id=row.project_id,
                     raise_start_error=True,
                     wake="resume" if resume else "fresh", resume_key=resume_key,
+                    recovery_harness=recovery_harness, recovery_health=recovery_health,
                 )
             except SessionExecutableNotFound as exc:
+                if recovery_health is not None:
+                    await self._db.update_session_instance(
+                        row.id, row.instance_token, desired_state="running", last_activity=time.time(),
+                    )
                 raise SupervisorRestartError(str(exc)) from exc
             if not started:
+                if recovery_health is not None:
+                    await self._db.update_session_instance(
+                        row.id, row.instance_token, desired_state="running", last_activity=time.time(),
+                    )
                 raise SupervisorRestartError("Supervisor stopped but relaunch failed; check session logs")
             successor = await self._db.get_session_by_name(name)
             if successor is None or successor.id == row.id:
                 raise SupervisorRestartError("Supervisor relaunch did not publish a new session")
             return successor
+
+    async def supervisor_recovery_route(self, row) -> str | None:
+        """Choose another installed harness within the same intelligence class.
+
+        Explicit individual model pins remain authoritative. Class mappings
+        authorize models; unavailable providers and missing executables cannot
+        receive recovery traffic. No profile or operator settings are edited.
+        """
+        import shutil
+
+        profile = await self._profiles_loader("supervisor")
+        if profile is None:
+            return None
+        if row.project_id is None:
+            from src.agents.configuration import apply_agent_overrides, ensure_supervisor_agent
+
+            profile = apply_agent_overrides(profile, await ensure_supervisor_agent(self._db))
+        if getattr(profile, "_agent_model_override", None):
+            return None
+        class_id = row.intelligence_class or getattr(profile, "default_class", None)
+        if not class_id:
+            return None
+        policy = self._config.provider_failover
+        if not policy.enforcing or policy.classes.get(class_id, policy.default_policy) != "same_class":
+            return None
+        profile = copy(profile)
+        profile.default_class = class_id
+        tried = set((row.supervisor_health or {}).get("tried_harnesses", [])) | {row.harness}
+        from src.providers.availability import provider_key
+
+        order = policy.order or ["claude", "codex"]
+        candidates = self._harnesses.list_for_scope(row.project_id)
+        candidates.sort(key=lambda h: (
+            order.index(provider_key(h)) if provider_key(h) in order else len(order), h.id,
+        ))
+        for candidate in candidates:
+            candidate = self._harnesses.get(candidate.id, project_id=row.project_id)
+            if candidate is None or candidate.id in tried:
+                continue
+            if self._availability is not None and self._availability.suppresses(provider_key(candidate)):
+                continue
+            if not await asyncio.to_thread(shutil.which, candidate.command):
+                continue
+            if self._spec_builder._resolve_model(profile, candidate, class_id):
+                return candidate.id
+        return None
 
     async def nudge(
         self,

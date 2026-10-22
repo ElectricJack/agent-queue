@@ -81,7 +81,7 @@ ownership:                      # path globs -> areas whose modules join M
   # The remaining v2 ownership paths land with the leaves that create them.
   - { paths: ["src/waits/**", "src/database/queries/wait_source_queries.py", "src/doctor/wait_checks.py"], areas: ["agent-waits"] }
   - { paths: ["src/database/queries/wait_metrics.py", "src/metrics/waits.py"], areas: ["agent-waits", "metrics"] }
-  - { paths: ["migrations/versions/a00000000102_workspace_kind_limits.py", "migrations/versions/a00000000109_wait_records.py"], areas: ["agent-waits"] }
+  - { paths: ["migrations/versions/a00000000102_workspace_kind_limits.py", "migrations/versions/a00000000110_wait_records.py"], areas: ["agent-waits"] }
   - { paths: ["src/agent_cron.py", "src/database/queries/agent_cron_queries.py", "src/commands/cron_commands.py", "src/commands/contracts/cron.py", "src/cli/cron.py", "src/api/models/cron.py"], areas: ["agent-cron"] }
   - { paths: ["src/jobs/**", "src/commands/job_commands.py", "src/database/queries/job_queries.py", "src/commands/contracts/job.py", "src/api/models/job.py", "src/cli/jobs.py"], areas: ["managed-jobs"] }
   - { paths: ["src/jobs/pytest_output.py"], areas: ["development-delivery"] }

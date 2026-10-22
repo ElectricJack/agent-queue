@@ -201,6 +201,11 @@ class DeliveryRequest:
     retained_source_oid: str | None = None
     disposition: DeliveryDisposition | None = None
 
+    #: A completed container that recorded no source of its own: each child's
+    #: current request and recorded origin base, so Git can prove it from its
+    #: children. Loaded only on request (``containers=True``); () otherwise.
+    container_children: tuple[tuple[DeliveryRequest, str | None], ...] = ()
+
     @property
     def lifecycle_disposition(self) -> DeliveryDisposition | None:
         """Current audit-bound obligation retirement, never a source/ancestry proof."""
@@ -485,15 +490,24 @@ async def _run(git, store, *args):
 
 
 async def load_delivery_requests(db, task_ids, *, repository_id, target_ref, conn=None,
-                                 reduced=False):
+                                 reduced=False, containers=False, _ancestors=frozenset()):
     """Batch read current completions and live/archive identities without locks.
 
     Absent tasks are omitted so consumers explicitly withhold them. PostgreSQL
     DISTINCT ON gives a deterministic latest generation even at equal times.
     A guarded consumer passes its own *conn* to recheck, under its locks, that
     the identities it evaluated before the transaction are still current.
+    A reduced read with *containers* also attaches the children of completed
+    containers without a recorded source (:attr:`DeliveryRequest.container_children`).
     """
     from contextlib import nullcontext
+
+    if containers and conn is None:
+        async with db._engine.connect() as reader:
+            return await load_delivery_requests(
+                db, task_ids, repository_id=repository_id, target_ref=target_ref,
+                conn=reader, reduced=reduced, containers=True,
+            )
 
     from sqlalchemy import and_, select
 
@@ -684,7 +698,55 @@ async def load_delivery_requests(db, task_ids, *, repository_id, target_ref, con
                 has_recorded_source=(row["id"] in recorded_ids or bool(current_id)),
                 **settlements.get(row["id"], {}),
             )
+    if containers and reduced:
+        requests = await _with_container_children(
+            db, requests, conn, repository_id=repository_id, target_ref=target_ref,
+            ancestors=_ancestors,
+        )
     return requests
+
+
+async def _with_container_children(db, requests, conn, *, repository_id, target_ref, ancestors):
+    """Attach each sourceless completed container's children, recursively.
+
+    A container closes with no artifact of its own, so its children carry the
+    code. A container keeps no children unless every child loaded, so Git
+    truth withholds it rather than judging a partial family.
+    """
+    from sqlalchemy import select
+
+    from src.database.tables import archived_tasks, task_branch_origins, tasks
+
+    containers = {
+        task_id for task_id, request in requests.items()
+        if request.task_status == "COMPLETED" and not request.has_recorded_source
+    } - ancestors
+    if not containers:
+        return requests
+    children: dict[str, set[str]] = {}
+    for table in (tasks, archived_tasks):
+        for child_id, parent_id in (await conn.execute(select(
+            table.c.id, table.c.parent_task_id,
+        ).where(table.c.parent_task_id.in_(containers)))).all():
+            children.setdefault(parent_id, set()).add(child_id)
+    if not children:
+        return requests
+    child_ids = set().union(*children.values())
+    loaded = await load_delivery_requests(
+        db, child_ids, repository_id=repository_id, target_ref=target_ref, conn=conn,
+        reduced=True, containers=True, _ancestors=ancestors | containers,
+    )
+    bases = dict((await conn.execute(select(
+        task_branch_origins.c.task_id, task_branch_origins.c.base_sha,
+    ).where(task_branch_origins.c.task_id.in_(child_ids),
+            task_branch_origins.c.repository_id == repository_id,
+            task_branch_origins.c.retired_at.is_(None)))).all())
+    return {
+        task_id: replace(request, container_children=tuple(
+            (loaded[child_id], bases.get(child_id)) for child_id in sorted(children[task_id])
+        )) if children.get(task_id, set()) and children[task_id] <= loaded.keys() else request
+        for task_id, request in requests.items()
+    }
 
 
 async def _parent_adoptions_on(conn, task_ids, repository_id):

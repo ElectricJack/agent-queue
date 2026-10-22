@@ -74,6 +74,36 @@ class IntegrationCommandsMixin:
             return await service.command(current_principal(), action=args.get("action", "status"))
         except (GitError, ValueError, BranchBusy, StaleFence, PublishWithdrawn) as exc:
             return _failure("refused", str(exc))
+    async def _cmd_integration_delegate_publication(self, args: dict) -> dict:
+        from src.commands.contracts.integration import IntegrationDelegatePublicationArgs
+        from src.integration.publication_delegations import DELEGATION_ERRORS, PublicationDelegations
+
+        request = IntegrationDelegatePublicationArgs.model_validate(args)
+        if self.config.integration.git_first != "active":
+            return _failure("refused", "publication delegation requires Git-first active mode")
+        try:
+            row = await PublicationDelegations(self.db).issue(request)
+        except DELEGATION_ERRORS as exc:
+            return _failure("refused", str(exc))
+        return self._publication_delegation_result("issued", row)
+
+    async def _cmd_integration_revoke_publication(self, args: dict) -> dict:
+        from src.commands.contracts.integration import IntegrationRevokePublicationArgs
+        from src.integration.publication_delegations import DELEGATION_ERRORS, PublicationDelegations
+
+        request = IntegrationRevokePublicationArgs.model_validate(args)
+        try:
+            row = await PublicationDelegations(self.db).revoke(request)
+        except DELEGATION_ERRORS as exc:
+            return _failure("refused", str(exc))
+        return self._publication_delegation_result("revoked", row)
+
+    @staticmethod
+    def _publication_delegation_result(outcome, row):
+        return {"success": True, "outcome": outcome, "delegation_id": row["id"], **{
+            key: row.get(key) for key in ("project_id", "target_branch", "owner_fence",
+                                        "expires_at", "revoked_at", "published_oid")
+        }}
 
     async def retained_repository_recovery(self, state, *, load=False):
         """Daemon port for its managed cache, never a caller-supplied repair command."""
@@ -1992,7 +2022,10 @@ class IntegrationCommandsMixin:
         from pydantic import ValidationError
 
         from src.commands.contracts.integration import IntegrationReserveOwnerArgs
-        from src.integration.canonical_reservation import reserve_canonical_task_branch
+        from src.integration.canonical_reservation import (
+            reserve_canonical_task_branch, reserve_ordinary_repair_branch,
+        )
+        from src.integration.repair import OrdinaryRepairService
 
         try:
             request = IntegrationReserveOwnerArgs.model_validate(args)
@@ -2004,7 +2037,14 @@ class IntegrationCommandsMixin:
         _principal, refusal = await integration_operator(self.db, task.project_id)
         if refusal is not None:
             return _failure("unauthorized", refusal)
-        if task.created_by_kind == "integration_repair":
+        repair = OrdinaryRepairService(self.db)
+        original = await repair.input(task.id)
+        if original is not None:
+            result = await reserve_ordinary_repair_branch(
+                self.db, task, repair, original,
+                getattr(getattr(self, "orchestrator", None), "integration_train", None),
+            )
+        elif await self.db.get_active_integration_repair_for_task(task.id) is not None:
             result = await self._integration_repair_service().reserve_delegate(task.id)
         else:
             result = await reserve_canonical_task_branch(self.db, task.id)

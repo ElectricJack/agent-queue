@@ -597,9 +597,9 @@ async def test_append_race_with_task_removal_is_lossless_or_clean(env, monkeypat
         if not entered.is_set():
             return
         if operation == "archive":
-            match = (
-                statement.startswith("SELECT tasks.id") and "FOR UPDATE" in statement
-            )
+            # Archive locks its whole component (``lock_component_tasks``)
+            # before it reads the task's status under the same row lock.
+            match = statement.startswith("SELECT tasks.id") and "FOR UPDATE" in statement
         elif env.db._engine.dialect.name == "postgresql":
             # Pending-pause deletion safety locks the task before FK cleanup.
             match = statement.startswith("SELECT tasks.id") and "FOR UPDATE" in statement
@@ -616,6 +616,7 @@ async def test_append_race_with_task_removal_is_lossless_or_clean(env, monkeypat
             removal_started.set()
 
     event.listen(env.db._engine.sync_engine, "before_cursor_execute", before_execute)
+    append = remove = None
     try:
         append = asyncio.create_task(
             run(env, "task_comment", {"task_id": "peer", "body": "Concurrent history"})
@@ -633,6 +634,10 @@ async def test_append_race_with_task_removal_is_lossless_or_clean(env, monkeypat
         assert page["comments"] == ([result["comment"]] if operation == "archive" else [])
     finally:
         release.set()
+        # A failed assertion must not leave the removal running into the next
+        # test's database lease.
+        await asyncio.gather(*(t for t in (append, remove) if t is not None),
+                             return_exceptions=True)
         event.remove(env.db._engine.sync_engine, "before_cursor_execute", before_execute)
 
 

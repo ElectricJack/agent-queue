@@ -94,6 +94,14 @@ During cutover, check the atomic submit-with-wait readiness item in the
 
 ## Operator observations
 
+Continuation recovery runs independently of source draining and the main
+orchestration cycle. A slow resume attempt does not block other continuations.
+If a resolved wait remains `RESUME_PENDING` for five minutes, the project
+supervisor receives one durable stall notice per continuation generation.
+Set `wait_policy.resume_stall_seconds` globally or in a project override to
+change this threshold. The notice preserves the outcome and saved checkout;
+ordinary admission retries continue until an explicit hold or acknowledgement.
+
 `aq doctor --check waits.schema` reports revisions, effective flags and row counts;
 `aq doctor --check waits.orphans` reports orphan ownership. Repair is conservative:
 live ownership and missing checkpoint/head evidence remain held. Fixes retain

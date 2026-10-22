@@ -15914,8 +15914,8 @@
         "tags": [
           "supervisor"
         ],
-        "summary": "Restart a named supervisor through AQ with current profile permissions, model and effort. Starts a fresh conversation by default; --resume resumes its prior conversation. Requires global admin.",
-        "description": "Restart a named supervisor through AQ with current profile permissions, model and effort. Starts a fresh conversation by default; --resume resumes its prior conversation. Requires global admin.",
+        "summary": "Restart a named supervisor through AQ with current profile permissions, model and effort. Starts a fresh conversation by default; --resume resumes its prior conversation. Requires a local operator or live supervisor within the target project scope.",
+        "description": "Restart a named supervisor through AQ with current profile permissions, model and effort. Starts a fresh conversation by default; --resume resumes its prior conversation. Requires a local operator or live supervisor within the target project scope.",
         "operationId": "supervisor_restart",
         "requestBody": {
           "content": {
@@ -43869,6 +43869,18 @@
             "title": "Expected Remote Oid",
             "description": "Exact remote branch OID expected before the push (40 hex digits); the push may then rewrite the branch, and is refused if the remote holds anything else. All zeros means the branch must still be absent."
           },
+          "publication_delegation_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Publication Delegation Id",
+            "description": "Single-use integration-owner grant for this target branch"
+          },
           "workspace": {
             "anyOf": [
               {
@@ -67670,6 +67682,18 @@
             "title": "Expected Remote Oid",
             "description": "Exact remote branch OID expected before the push (40 hex digits); the push may then rewrite the branch, and is refused if the remote holds anything else. All zeros means the branch must still be absent."
           },
+          "publication_delegation_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Publication Delegation Id",
+            "description": "Single-use integration-owner grant for this target branch"
+          },
           "workspace": {
             "anyOf": [
               {
@@ -75240,6 +75264,18 @@
             ],
             "title": "Failed Preparation"
           },
+          "supervisor_health": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Supervisor Health"
+          },
           "quarantined_at": {
             "anyOf": [
               {
@@ -80710,6 +80746,17 @@
           "status": {
             "type": "string",
             "title": "Status"
+          },
+          "decided_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decided At"
           }
         },
         "type": "object",
@@ -81373,6 +81420,18 @@
             ],
             "title": "Branch",
             "description": "Branch name for this task's work (optional)."
+          },
+          "repair_batch": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Repair Batch",
+            "description": "Supervisor/operator only: assign push authority for this open batch's candidate branch, preserving the task's canonical branch."
           },
           "pr_url": {
             "anyOf": [

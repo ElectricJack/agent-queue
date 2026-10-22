@@ -479,6 +479,7 @@ def test_the_unpinnable_session_set_is_derived_and_holds_the_filed_commands():
     # session command cannot appear without this test noticing.
     assert _dispatchable_session_commands() == [
         "session_drain_ack", "session_kill", "session_logs", "session_peek",
+        "supervisor_restart",
     ]
 
 
@@ -522,7 +523,10 @@ async def test_a_project_supervisor_cannot_reach_another_projects_session(
     ``session_drain_ack`` asks for its teardown and ``session_logs`` reads its
     transcript; all four resolve their argument the same way, so each is
     dispatched here the way the file under test resolves it, against a session
-    belonging to the *other* project.  The refusal has to arrive before
+    belonging to the *other* project.  ``supervisor_restart`` reads
+    ``session_id`` only as the expected identity of the supervisor it restarts;
+    its fence is the supervisor ``name`` (``supervisor-global`` by default),
+    which a project-A token is refused before the session is consulted.  The refusal has to arrive before
     anything is read, written or signalled — hence the unchanged row.
 
     Handlers are called directly with ``_current_scope`` set rather than

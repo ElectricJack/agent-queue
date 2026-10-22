@@ -342,6 +342,11 @@ branch and contained in its epic. Missing epic containment withholds the child e
 when no batch is open. Scheduler, pool demand, explain and claim share these rules.
 Explain reports `frontier_epic_refresh_pending` for the epic gate and names any
 blocking refresh batch id; default-branch proof retains its separate exclusion.
+For stale children, `aq doctor --check stall.sweep` reports `epic_refresh_needed`
+and the operator stall script prints `EPIC-REFRESH-NEEDED`, with the epic's refresh
+command and any blocking batch ids. A conflicting apply files an ordinary train
+repair on the epic branch. Repeating apply reuses that batch and repair; the child
+continues waiting for the refresh's checks, attestation and publication.
 Repairs for failed or missing CI start from the tested refresh candidate; conflict
 repairs start from the partial candidate containing the successful merges.
 Refresh failures are compared with the default SHA frozen into the batch. A
@@ -414,6 +419,13 @@ subprocess work from resource contention without a separate profile. The reporte
 Selection now routes before root proof and reuses its member window within a
 single visit. Root proof still removes delivered work before the member limit;
 historical delivery and out-of-window dependency checks remain active.
+
+Time spent evaluating a root refused for red PR checks or exhausted automatic
+recovery does not spend the candidate-selection quantum. Later independent roots
+can reach admission during the same visit; green and other candidate work still
+spends the quantum. The outer visit deadline remains in effect. Red roots keep
+their named blockers, and their dependents still require delivery or an admitted
+paired repair before they can enter a batch.
 
 Two bounded, isolated benchmarks make the measurements reproducible:
 

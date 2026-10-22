@@ -1611,6 +1611,7 @@ sessions = Table(
     Column("failed_preparation", JSONB, nullable=True),
     # Session-wide refusal streak/cooldown, independent of a failed task's backoff.
     Column("claim_refusal", JSONB, nullable=True),
+    Column("supervisor_health", JSONB, nullable=True),
     Column("session_key", Text, nullable=True),  # harness resume key
     Column("work_dir", Text, nullable=False),
     Column("epoch", Text, nullable=False),  # AQ_DAEMON_EPOCH at launch
@@ -3500,6 +3501,9 @@ integration_branch_owners = Table(
     Column("workspace_id", Text, nullable=True),
     Column("confirmed_workspace_id", Text, nullable=True),
     Column("expires_at", Float, nullable=True),
+    # Publication delegation binding and audit for the holder
+    # ``publication-delegation:<id>``; cleared by the next acquisition.
+    Column("delegation", JSONB(none_as_null=True), nullable=True),
     Column("created_at", Float, nullable=False),
     Column("updated_at", Float, nullable=False),
     UniqueConstraint("repository_id", "ref", name="uq_integration_branch_owners_ref"),

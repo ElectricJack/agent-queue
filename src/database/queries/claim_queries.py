@@ -30,6 +30,7 @@ from sqlalchemy import (
     literal,
     or_,
     select,
+    true,
     update,
 )
 from sqlalchemy.dialects.postgresql import JSONB
@@ -689,6 +690,24 @@ FRONTIER_PREDICATE_DETAILS = {
 }
 
 
+async def retire_owner_attachments(conn, task_id, sessions, workspaces, error, now, *,
+                                   exclusive=False):
+    """Retire *sessions*' branch attachments (every live one if *exclusive*) or raise *error*."""
+    owners = (await conn.execute(select(integration_branch_owners).where(
+        integration_branch_owners.c.owner_id == task_id,
+        integration_branch_owners.c.handoff_state.not_in(("released", "reserved")),
+        *(() if exclusive else (integration_branch_owners.c.session_id.in_(sessions),)),
+    ).with_for_update())).mappings().all()
+    for owner in owners:
+        if (owner["handoff_state"] != "attached" or owner["session_id"] not in sessions
+                or owner["workspace_id"] not in workspaces):
+            raise error
+        await conn.execute(update(integration_branch_owners).where(
+            integration_branch_owners.c.id == owner["id"],
+        ).values(handoff_state="reserved", session_id=None, workspace_id=None,
+                 confirmed_workspace_id=owner["workspace_id"], updated_at=now))
+
+
 class ClaimQueryMixin:
     """Expects ``self._engine`` plus Task/Session/Workspace/Hierarchy mixins.
 
@@ -1044,6 +1063,9 @@ class ClaimQueryMixin:
         The second scan must include unpinned work even when all pinned rows
         are locked; a restricting InitPlan would incorrectly report no work.
         Targeted claims skip the affinity probe because only one row can match.
+        *reservation_first* puts the oldest compatible admission reservation
+        ahead of the repair and affinity probes in that same round trip and
+        returns ``{"task_id", "reservation_id"}`` (``None`` id for ordinary work).
 
         Routing requires the task's own profile and an accepted route source
         (router/override/role, plus legacy before router readiness); no project
@@ -1088,32 +1110,39 @@ class ClaimQueryMixin:
                 stmt = stmt.where(tasks.c.id == task_id)
             return stmt.with_for_update(of=tasks, skip_locked=True)
 
-        if reservation_only:
+        if reservation_only or reservation_first:
             from src.waits.reservations import reserved_statement
 
             statement = reserved_statement(candidate(pinned=False), project_id, profile_id)
-            row = (await conn.execute(statement)).mappings().first()
-            return dict(row) if row else None
+            if reservation_only:
+                row = (await conn.execute(statement)).mappings().first()
+                return dict(row) if row else None
 
+        preferred = None
         if task_id is None:
             # COALESCE probes repairs then affinity lazily in one round trip.
-            preferred = [candidate(pinned=False, repair_only=True), candidate(pinned=True)]
-            if reservation_first:
-                from src.waits.reservations import reserved_statement
-
-                # Keep reservation preference in the same lazy probe. An empty
-                # reservation queue must not add a round trip to every claim.
-                preferred = [stmt.with_only_columns(func.jsonb_build_object(
-                    "task_id", tasks.c.id, "reservation_id", None,
-                )) for stmt in preferred]
-                reserved = reserved_statement(candidate(pinned=False), project_id, profile_id)
-                preferred.insert(0, reserved.with_only_columns(func.jsonb_build_object(
-                    "task_id", tasks.c.id, "reservation_id",
-                    reserved.selected_columns.reservation_id,
-                )))
-            row = (await conn.execute(select(func.coalesce(
-                *(stmt.scalar_subquery() for stmt in preferred),
-            )))).fetchone()
+            preferred = func.coalesce(
+                candidate(pinned=False, repair_only=True).scalar_subquery(),
+                candidate(pinned=True).scalar_subquery(),
+            )
+        if reservation_first:
+            # The idle poll pays this on every claim, so the reservation rides
+            # the same statement: the outer join keeps one row when nothing is
+            # reserved, and CASE leaves the fallback InitPlans (and their row
+            # locks) unevaluated when a reservation was taken.
+            reserved = statement.subquery("reserved")
+            probe = select(literal(1).label("one")).subquery("probe")
+            row = (await conn.execute(select(
+                reserved.c.task_id, reserved.c.reservation_id,
+                case((reserved.c.task_id.is_(None), preferred)) if preferred is not None
+                else literal(None),
+            ).select_from(probe.outerjoin(reserved, true())))).fetchone()
+            if row[0] is not None:
+                return {"task_id": row[0], "reservation_id": row[1]}
+            if row[2] is not None:
+                return {"task_id": row[2], "reservation_id": None}
+        elif preferred is not None:
+            row = (await conn.execute(select(preferred))).fetchone()
             if row and row[0] is not None:
                 return row[0]
         row = (await conn.execute(candidate(pinned=False))).fetchone()
@@ -1122,7 +1151,11 @@ class ClaimQueryMixin:
         return row[0] if row else None
 
     async def select_reserved_for_profile(self, conn, **kwargs):
-        """Oldest compatible reservation, under the ordinary frontier predicates."""
+        """Oldest compatible reservation, under the ordinary frontier predicates.
+
+        Claims use ``reservation_first`` instead, which falls back to the
+        ordinary frontier without a separate reservation round trip.
+        """
         return await self.select_ready_for_profile(conn, reservation_only=True, **kwargs)
 
     async def take_task(self, conn, task_id: str, *, agent_id: str, now: float) -> Task | None:
@@ -1209,7 +1242,7 @@ class ClaimQueryMixin:
         only after fresh process death and guarded publication proofs. Recheck
         every persisted identity here. Pause wins; no route or profile changes.
         """
-        from src.database.tables import continuations, integration_branch_owners, wait_records
+        from src.database.tables import continuations, wait_records
         from src.waits.conditions import WaitError
         from src.waits.sources import execute_task_status_mutation
 
@@ -1238,21 +1271,11 @@ class ClaimQueryMixin:
             raise WaitError("continuation.stale_generation", "park ownership changed")
         paused = task["status"] == "PAUSED"
         resolved = wait["outcome"] != "pending"
-        owners = (await conn.execute(select(integration_branch_owners).where(
-            integration_branch_owners.c.owner_id == task_id,
-            integration_branch_owners.c.session_id == session_id,
-            integration_branch_owners.c.handoff_state != "released",
-        ).with_for_update())).mappings().all()
-        for owner in owners:
-            if (owner["handoff_state"] != "attached" or not detached_workspace_id
-                    or owner["workspace_id"] != detached_workspace_id):
-                raise WaitError("continuation.stop_uncertain", "branch detach proof changed")
-            # Retain the domain owner's fence and branch reservation. Only its
-            # stopped process attachment is retired; no transfer is authorized.
-            await conn.execute(update(integration_branch_owners).where(
-                integration_branch_owners.c.id == owner["id"],
-            ).values(handoff_state="reserved", session_id=None, workspace_id=None,
-                     confirmed_workspace_id=detached_workspace_id, updated_at=now))
+        # Only the stopped process attachment is retired; no transfer is authorized.
+        await retire_owner_attachments(
+            conn, task_id, {session_id}, {detached_workspace_id} - {None},
+            WaitError("continuation.stop_uncertain", "branch detach proof changed"), now,
+        )
         await execute_task_status_mutation(conn, update(tasks).where(
             tasks.c.id == task_id, tasks.c.claim_epoch == claim_epoch,
         ).values(status="PAUSED" if paused else "RESUME_PENDING" if resolved else "HIBERNATED",

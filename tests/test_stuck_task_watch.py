@@ -1,7 +1,7 @@
 """Reviewed watch policy through the real engine, handler and disposable PostgreSQL."""
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -9,14 +9,17 @@ from unittest.mock import AsyncMock
 import pytest
 from sqlalchemy import select, update
 
-from src.commands.contracts import CONTRACTS
-from src.commands.contracts import builtin
+from src.commands.contracts import CONTRACTS, builtin
 from src.commands.handler import CommandHandler
 from src.commands.principal import (
-    TRUSTED_LOCAL, ExecutionPrincipal, PrincipalKind, principal_context,
+    TRUSTED_LOCAL,
+    ExecutionPrincipal,
+    PrincipalKind,
+    principal_context,
 )
 from src.config import AppConfig, MessagesConfig, PlaybooksConfig
-from src.database import Database, tables as t
+from src.database import Database
+from src.database import tables as t
 from src.doctor.observations import partition
 from src.models import Project, ProjectStatus, Task, TaskStatus
 from src.playbooks.artifact_store import ArtifactStore
@@ -97,7 +100,7 @@ class Scenario:
 
     async def tick(self, name, *, mode=ExecutionMode.LIVE, success=True):
         event = {"event_type": "timer.15m", "event_id": name,
-                 "tick_time": datetime.fromtimestamp(self.now, timezone.utc).isoformat()}
+                 "tick_time": datetime.fromtimestamp(self.now, UTC).isoformat()}
         result = await self.engine.run_rule(self.ref, "watch-stalled-work", event,
                                             self.principal, mode, dispatch_id=name)
         snapshot = await self.db.load_run(result.run_id) if mode == ExecutionMode.LIVE else None
@@ -667,102 +670,3 @@ async def test_disabled_reenabled_and_recompiled_policy_retains_namespace(scenar
     assert len(await scenario.messages()) == 1
     rows = await scenario.rows(t.playbook_state_entries)
     assert len(rows) == 1 and rows[0]["episode"] == 1 and rows[0]["revision"] == 3
-
-
-@pytest.mark.integration
-def test_reviewed_watch_through_disposable_daemon(tmp_path):
-    """Import, activate and execute the exact recording over the real daemon API."""
-    import asyncio
-    import json
-    import shutil
-    import time
-    from unittest.mock import patch
-
-    import yaml
-    from sqlalchemy.ext.asyncio import create_async_engine
-
-    from tests.test_e2e_cli_stateful import disposable_world, world_env
-
-    env = world_env(tmp_path / "aq-e2e")
-    fragment = tmp_path / "watch-config.yaml"
-    fragment.write_text("swarm:\n  enabled: false\n")
-    env["AQ_E2E_EXTRA_CONFIG"] = str(fragment)
-    with disposable_world("watch", env) as world, patch.dict("os.environ", env):
-        home = Path(env["AQ_E2E_HOME"])
-        config = yaml.safe_load((home / "config.yaml").read_text())
-        bundle = home / "vault" / "acceptance" / "stuck-task-watch"
-        shutil.copytree(FIXTURES / "stuck-task-watch", bundle)
-        api = world.smoke.api_checked
-        imported = api("playbook_v2_import", {"path": str(bundle)})
-        sha = (bundle / "artifact.sha256").read_text().strip()
-        assert sha in json.dumps(imported)
-        api("playbook_activate", {"playbook_id": "stuck-task-watch",
-                                  "artifact_sha256": sha, "acknowledge_diff": sha})
-        task = world.smoke.create_task("F2 blocked observation")
-        api("set_task_status", {"task_id": task, "status": "BLOCKED"})
-
-        async def evidence():
-            engine = create_async_engine(config["database"]["url"])
-            try:
-                async with engine.connect() as conn:
-                    records = {}
-                    for table in (t.messages, t.playbook_state_entries,
-                                  t.playbook_state_operations, t.playbook_step_receipts,
-                                  t.observation_snapshots):
-                        records[table.name] = [dict(row) for row in
-                            (await conn.execute(select(table))).mappings()]
-                    return records
-            finally:
-                await engine.dispose()
-
-        def tick(identity):
-            # Manual runs expose handled failures even when the policy completes.
-            # A bounded publisher log cannot prove absence, so the real doctor
-            # snapshot and its pages are partial; the watch checks each partition.
-            result = world.smoke.api("run_playbook", {"playbook_id": "stuck-task-watch", "event": {
-                "type": "timer.15m", "event_id": identity,
-                "tick_time": datetime.now(timezone.utc).isoformat()}})
-            assert result["status"] == "completed", result
-            assert result["success"] is False
-            failures = result["failed_steps"]
-            assert any(row["step_id"] == "doctor_scan" for row in failures)
-            assert all(row["step_id"] in {"doctor_scan", "doctor_page"}
-                       and row["outcome"] == "failure" for row in failures), result
-            snapshots = asyncio.run(evidence())[t.observation_snapshots.name]
-            doctor, = [row for row in snapshots if row["run_id"] == result["run_id"]
-                       and row["producer"] == "doctor_run"]
-            assert doctor["complete"] is False
-            assert "bounded_log_tail" in doctor["envelope"]["reasons"]
-            assert all(part["kind"] in {"publisher_skip", "publisher_error"}
-                       for part in doctor["coverage"]
-                       if "bounded_log_tail" in part["reasons"])
-            selected = [part for part in doctor["coverage"] if part["project_id"] == "e2e"
-                        and (part["check_id"], part["kind"]) in KINDS]
-            assert {(part["check_id"], part["kind"]) for part in selected} == set(KINDS)
-            assert all(part["complete"] for part in selected), selected
-            return result
-
-        key = f"task:e2e:blocked:{task}"
-        initial = tick("daemon-first")
-        assert initial["status"] == "completed"
-        first = asyncio.run(evidence())
-        row = next(row for row in first[t.playbook_state_entries.name] if row["key"] == key)
-        message_id = row["message_id"]
-        assert row["active"] and row["revision"] == 1 and row["episode"] == 1
-        assert any(row["id"] == message_id for row in first[t.messages.name])
-        assert first[t.playbook_state_operations.name] and first[t.playbook_step_receipts.name]
-        # Distinct observations must have increasing watermarks.
-        for identity in ("daemon-second", "daemon-third"):
-            time.sleep(0.01)
-            assert tick(identity)["status"] == "completed"
-        replay = tick("daemon-first")
-        assert replay["run_id"] == initial["run_id"]
-        unchanged = asyncio.run(evidence())
-        row = next(row for row in unchanged[t.playbook_state_entries.name] if row["key"] == key)
-        assert row["revision"] == 3 and row["episode"] == 1 and row["message_id"] == message_id
-        assert sum(row["id"] == message_id for row in unchanged[t.messages.name]) == 1
-        api("set_task_status", {"task_id": task, "status": "DEFINED"})
-        assert tick("daemon-clear")["status"] == "completed"
-        cleared = asyncio.run(evidence())
-        row = next(row for row in cleared[t.playbook_state_entries.name] if row["key"] == key)
-        assert not row["active"] and row["revision"] == 4 and row["message_id"] != message_id

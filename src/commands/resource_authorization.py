@@ -23,13 +23,13 @@ plugin_disable plugin_enable plugin_info plugin_install plugin_list plugin_promp
 plugin_reload plugin_remove plugin_reset_prompts plugin_update policy_apply policy_diff
 policy_export doctor doctor_run observation_snapshot_cleanup db_preflight_hierarchy digest_facts digest_post digest_preview
 digest_status discord_purge_channel read_logs scan_stub_staleness vault_rebuild_index
-list_projects list_active_tasks_all_projects orchestrator_control pool_status pool_scale pool_rename
+list_projects list_active_tasks_all_projects orchestrator_control pool_scale pool_rename
 pool_set_enabled pool_set_lifecycle provider_allocation_apply provider_history
 provider_recheck provider_set_state provider_status provider_held_tasks
 reconcile_agent_cron reconcile_agent_waits reconcile_collaborations cron_delivery_begin
 cron_delivery_finish integration_train_tick integration_reconcile_git_truth job_reconcile
 job_submit_integration
-observe_integration_source_ci queue_sync_workspaces session_cleanup supervisor_restart
+observe_integration_source_ci queue_sync_workspaces session_cleanup
 start_agent_terminal session_input session_token
 playbook_activation_health playbook_health list_playbooks list_playbook_runs
 list_event_triggers playbook_pending_events playbook_pending_event_action
@@ -72,7 +72,7 @@ get_recent_events get_task_dependencies get_task_result get_task_tree get_token_
 get_workflow github_issue_close_rejected graph_layout_rebuild graph_reflow_status graph_tidy
 inspect_playbook_run list_archived list_mcp_servers list_workflows list_workspaces
 message_inbox message_list message_reply message_status pause_project pause_task phase_create
-phase_list playbook_activate playbook_run_overlay pr_merge project_doctor project_ready
+phase_list playbook_activate playbook_run_overlay pool_status pr_merge project_doctor project_ready
 provide_input provider_reroute_undo question_answer question_escalate question_list release_project_constraint
 release_workspace remove_dependency remove_task remove_workspace reopen_with_feedback
 reparent_task restart_task resume_playbook resume_project resume_task review_attachment_add
@@ -93,6 +93,7 @@ task_comments task_deps task_progress task_recent_activity task_recover task_rou
 # Do not reinterpret value IDs as unrelated table IDs. Their independent handler
 # gates are required, and plain project_id mismatches are still checked here.
 HANDLER_RESOURCE_GATES = frozenset("""
+supervisor_restart
 message_send message_inbox message_list message_reply message_status message_wait
 review_attachment_add review_attachment_list review_comment review_decide review_delegate
 review_dispatch review_import_edits review_list review_reopen review_show review_submit
@@ -105,6 +106,7 @@ review_feedback_complete
 # commands use live claims, tagged recipients, project selections or operator
 # grants that cannot be replaced by a generic argument-to-row ownership test.
 SESSION_HANDLER_RESOURCE_GATES = frozenset("""
+supervisor_restart
 task_show task_route task_handoff create_task provider_allocation_apply
 provider_allocation_preview object_loop_inputs test_selection_show test_selection_list
 supervisor_inbox_status supervisor_inbox_history escalation_create escalation_get
@@ -261,6 +263,14 @@ async def authorize_resources(
     project = principal.project_id
     if project is not None and args.get("project_id") not in (None, project):
         return deny()
+    if project is not None and command == "pool_status":
+        # Only supervisors may inspect their project's share of a global pool.
+        # Pin the view here too: direct dispatch must not rely on HTTP injection.
+        # The handler filters project/session details and retains fleet counters.
+        if principal.kind is not PrincipalKind.SESSION or not principal.elevated:
+            return deny()
+        args["project_id"] = project
+        return None
     if project is not None and command in SYSTEM_COMMANDS:
         return deny()
     if project is None:

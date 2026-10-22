@@ -189,6 +189,44 @@ async def test_session_domain_gates_do_not_admit_other_system_resources(generate
     assert result["error_code"] == "resource_scope_denied"
 
 
+@pytest.mark.parametrize("generated", [False, True])
+@pytest.mark.parametrize("project_filter", [None, "p", "other"])
+async def test_pool_status_project_supervisor_view_is_pinned(generated, project_filter):
+    caller = replace(principal(), kind=PrincipalKind.SESSION, session_id="sup", elevated=True)
+    args = {} if project_filter is None else {"project_id": project_filter}
+    result = await authorize_resources("pool_status", args, caller, db=object(), generated=generated)
+    if project_filter == "other":
+        assert result["error_code"] == "resource_scope_denied"
+    else:
+        assert result is None
+        assert args == {"project_id": "p"}
+
+
+@pytest.mark.parametrize("generated", [False, True])
+@pytest.mark.parametrize("kind", [PrincipalKind.SESSION, PrincipalKind.PLAYBOOK])
+async def test_pool_status_project_view_requires_a_supervisor(generated, kind):
+    caller = replace(principal(), kind=kind, session_id="worker")
+    result = await authorize_resources("pool_status", {}, caller, db=object(), generated=generated)
+    assert result["error_code"] == "resource_scope_denied"
+
+
+@pytest.mark.parametrize("generated", [False, True])
+async def test_pool_status_global_supervisor_keeps_unfiltered_view(generated):
+    caller = replace(principal(None), kind=PrincipalKind.SESSION, session_id="sup", elevated=True)
+    args = {}
+    assert await authorize_resources("pool_status", args, caller, db=object(), generated=generated) is None
+    assert args == {}
+
+
+@pytest.mark.parametrize("command", [
+    "pool_scale", "pool_rename", "pool_set_enabled", "pool_set_lifecycle",
+])
+async def test_pool_status_read_does_not_grant_project_supervisors_pool_mutations(command):
+    caller = replace(principal(), kind=PrincipalKind.SESSION, session_id="sup", elevated=True)
+    result = await authorize_resources(command, {"project_id": "p"}, caller, db=object())
+    assert result["error_code"] == "resource_scope_denied"
+
+
 async def test_scoped_reads_inherit_project_and_global_reads_require_system():
     args = {}
     assert await authorize_resources("get_token_usage", args, principal(), db=object(), generated=True) is None

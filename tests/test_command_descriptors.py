@@ -44,6 +44,25 @@ INGEST_CHANGES = ROOT / "tests/fixtures/contracts/ingestion-replay-contract-chan
 HIBERNATION_CHANGES = ROOT / "tests/fixtures/contracts/hibernation-contract-changes.json"
 DISPATCH_CHANGES = ROOT / "tests/fixtures/contracts/dispatch-wait-contract-changes.json"
 BATCH_FIX_CHANGES = ROOT / "tests/fixtures/contracts/batch-fix-contract-changes.json"
+MERGE_CHANGES = ROOT / "tests/fixtures/contracts/epic-main-refresh-contract-changes.json"
+
+
+def _merge_changes():
+    return json.loads(MERGE_CHANGES.read_text())
+
+
+def _before_merge_catalogue():
+    return _revert_catalogue(json.loads(render_command_catalogue()), _merge_changes())
+
+
+def test_merged_catalogue_preserves_both_frozen_inputs():
+    evidence = _merge_changes()
+    for key, expected in (("catalogue_sections", "previous_cli_catalogue_sha256"),
+                          ("source_catalogue_sections", "source_cli_catalogue_sha256")):
+        previous = _revert_catalogue(json.loads(render_command_catalogue()),
+                                    {"catalogue_sections": evidence[key]})
+        assert hashlib.sha256((json.dumps(previous, indent=2) + "\n").encode()).hexdigest() == (
+            evidence[expected])
 
 
 def _hibernation_changes():
@@ -57,7 +76,8 @@ def _dispatch_changes():
 def _revert_catalogue(catalogue, changes):
     for section, evidence in changes["catalogue_sections"].items():
         current = catalogue[section]
-        entries = {row["name"]: row for row in current} if evidence["list"] else current
+        entries = (dict(current) if section == "internal" else
+                   {row["name"]: row for row in current} if evidence["list"] else current)
         for name, change in evidence["entries"].items():
             assert entries.get(name) == change["current"], (section, name)
             if change["previous"] is None:
@@ -66,7 +86,8 @@ def _revert_catalogue(catalogue, changes):
                 entries[name] = change["previous"]
         previous = {name: entries[name] for name in evidence["previous_order"]}
         assert previous.keys() == entries.keys()
-        catalogue[section] = list(previous.values()) if evidence["list"] else previous
+        catalogue[section] = (list(map(list, previous.items())) if section == "internal" else
+                              list(previous.values()) if evidence["list"] else previous)
     return catalogue
 
 
@@ -76,7 +97,7 @@ def _before_dispatch_catalogue():
 
 def _before_batch_fix_catalogue():
     evidence = json.loads(BATCH_FIX_CHANGES.read_text())
-    catalogue = json.loads(render_command_catalogue())
+    catalogue = _before_merge_catalogue()
     name = "integration_batch_fix"
     definition = next(row for row in catalogue["explicit"] if row["name"] == name)
     assert definition == evidence["transport_definition"]
@@ -206,7 +227,7 @@ def test_legacy_execution_documents_and_fingerprints():
         if name in changes:
             assert expected["previous_fingerprint"] == old["fingerprint"]
             assert expected["fingerprint"] != old["fingerprint"]
-        for recording in (_hibernation_changes(), _dispatch_changes()):
+        for recording in (_hibernation_changes(), _dispatch_changes(), _merge_changes()):
             later = recording["contracts"].get(name)
             if later:
                 assert later["previous_fingerprint"] == expected["fingerprint"]
@@ -247,7 +268,7 @@ def test_transport_views_and_cli_serialization_preserve_golden_evidence():
             approved = dev["transport_definitions"][name]
             assert approved["previous_sha256"] == digest
             digest = approved["sha256"]
-        for recording in (_hibernation_changes(), _dispatch_changes()):
+        for recording in (_hibernation_changes(), _dispatch_changes(), _merge_changes()):
             if name in recording["transport_definitions"]:
                 approved = recording["transport_definitions"][name]
                 assert approved["previous_sha256"] == digest
@@ -268,7 +289,9 @@ def test_transport_views_and_cli_serialization_preserve_golden_evidence():
     assert dispatch["previous_cli_catalogue_sha256"] == hibernation["cli_catalogue_sha256"]
     batch_fix = json.loads(BATCH_FIX_CHANGES.read_text())
     assert batch_fix["previous_cli_catalogue_sha256"] == dispatch["cli_catalogue_sha256"]
-    assert actual == batch_fix["cli_catalogue_sha256"]
+    merge = _merge_changes()
+    assert merge["previous_cli_catalogue_sha256"] == batch_fix["cli_catalogue_sha256"]
+    assert actual == merge["cli_catalogue_sha256"]
     previous = json.dumps(_before_batch_fix_catalogue(), indent=2) + "\n"
     assert hashlib.sha256(previous.encode()).hexdigest() == dispatch["cli_catalogue_sha256"]
     previous = json.dumps(_before_dispatch_catalogue(), indent=2) + "\n"

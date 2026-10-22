@@ -6570,6 +6570,69 @@ async def test_slow_frontier_view_fails_closed_within_its_bound(
         assert mode.parent_contained_task_ids == frozenset()
 
 
+def test_claim_request_limit_answers_inside_the_cli_read_timeout():
+    from src.cli.client import _COMMAND_TIMEOUTS
+    from src.commands import claim_commands
+
+    assert claim_commands._CLAIM_REQUEST_LIMIT_SECONDS < _COMMAND_TIMEOUTS["task_claim"]
+
+
+@pytest.mark.parametrize("bound", ["observation", "request"])
+async def test_claim_with_a_hanging_git_view_answers_and_takes_no_slot(
+    handler, db, tmp_path, monkeypatch, development_admission, bound,
+):
+    """A Git observation that never answers ends the claim with a definite no-work
+    answer inside its bound, and the session takes no slot and no task."""
+    import asyncio
+
+    import src.integration.delivery_observer as module
+    from src.commands import claim_commands
+
+    await db.update_project(PROJECT_ID, hierarchical_integration_mode="train",
+                            repo_url=str(development_admission.remote))
+
+    class Hanging:
+        truth = object()
+        READ_MAX_AGE = 30.0
+
+        async def prerequisite_view(self, *args, **kwargs):
+            await asyncio.sleep(3600)
+
+    db.set_prerequisite_observer(Hanging())
+    if bound == "observation":
+        monkeypatch.setattr(module, "FRONTIER_MODE_TIMEOUT_SECONDS", 0.05)
+    else:
+        monkeypatch.setattr(claim_commands, "_CLAIM_REQUEST_LIMIT_SECONDS", 0.05)
+    sid, work_dir = await pool_session(db, tmp_path)
+    result = await asyncio.wait_for(
+        scoped(handler, sid)._cmd_task_claim({"next": True}), 5,
+    )
+    assert result["result"] == "no_ready_work"
+    assert result["reason"] == {
+        "observation": "delivery_observation_timeout", "request": "claim_deadline_exceeded",
+    }[bound]
+    task = await db.get_task("dependent")
+    assert task.status == TaskStatus.READY and not task.claim_epoch
+    session = await db.get_session(sid)
+    assert session.task_id is None and session.claim_phase is None
+    assert not (work_dir / ".aq" / "claim.json").exists()
+
+
+async def test_claim_past_its_request_limit_takes_no_task(handler, db, tmp_path, monkeypatch):
+    """A request whose caller has given up never takes the slot, even with work ready."""
+    from src.commands import claim_commands
+
+    await mktask(db, "t1", profile_id="worker")
+    monkeypatch.setattr(claim_commands, "_CLAIM_REQUEST_LIMIT_SECONDS", 0.0)
+    sid, work_dir = await pool_session(db, tmp_path)
+    result = await scoped(handler, sid)._cmd_task_claim({"next": True})
+    assert (result["result"], result["reason"]) == ("no_ready_work", "claim_deadline_exceeded")
+    task = await db.get_task("t1")
+    assert task.status == TaskStatus.READY and not task.claim_epoch
+    assert (await db.get_session(sid)).task_id is None
+    assert not (work_dir / ".aq" / "claim.json").exists()
+
+
 @pytest.mark.parametrize("misleading_history", [False, True])
 async def test_development_readiness_pool_and_claim_follow_git(
     handler, db, tmp_path, development_admission, misleading_history

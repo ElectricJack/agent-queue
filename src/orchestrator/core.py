@@ -631,6 +631,7 @@ class Orchestrator(
         self.integration_service = None
         # IntegrationTrain | None — the delivery engine when git_first is active.
         self.integration_train = None
+        self._batch_push_unsub = None
         #: When this process began; refreshed by ``initialize()`` for playbook recovery.
         self._process_started_at = time.time()
         self._owner_recovery_next_due: float = 0.0
@@ -2401,6 +2402,16 @@ class Orchestrator(
         # git_first: active hands every target to the train; the subject
         # runtimes are never built beside it.
         self.integration_train = train_for(self)
+        if self._batch_push_unsub is not None:
+            self._batch_push_unsub()
+            self._batch_push_unsub = None
+        if self.integration_train is not None:
+            from src.integration.batch_repair_publication import wake_pushed_batch
+
+            async def on_batch_push(event):
+                await wake_pushed_batch(self.db, self.integration_train, event)
+
+            self._batch_push_unsub = self.bus.subscribe("git.push", on_batch_push)
         train_active = self.integration_train is not None
         from src.integration.task_removal import settle_orphaned_parent_operations
 
@@ -3311,6 +3322,9 @@ class Orchestrator(
         if self._development_completion_unsub is not None:
             self._development_completion_unsub()
             self._development_completion_unsub = None
+        if self._batch_push_unsub is not None:
+            self._batch_push_unsub()
+            self._batch_push_unsub = None
         if self.vault_watcher:
             try:
                 await self.vault_watcher.stop()

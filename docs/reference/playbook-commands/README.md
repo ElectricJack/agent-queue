@@ -92,6 +92,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`integration_cutover`](integration_cutover.md) | Integration Cutover | Authenticated hierarchical integration operational control. |
 | [`integration_cutover_containment`](integration_cutover_containment.md) | Prepare strict-containment history | Local operator previews and applies exact historical lifecycle exclusions. |
 | [`integration_cutover_plan`](integration_cutover_plan.md) | Integration Cutover Plan | Authenticated hierarchical integration operational control. |
+| [`integration_delegate_publication`](integration_delegate_publication.md) | Integration Delegate Publication | Authenticated hierarchical integration operational control. |
 | [`integration_delivery_readiness`](integration_delivery_readiness.md) | Integration Delivery Readiness | Read whether every child of one parent has delivered, changing nothing. |
 | [`integration_eject`](integration_eject.md) | Integration Eject | Authenticated hierarchical integration operational control. |
 | [`integration_engine_transfer`](integration_engine_transfer.md) | Integration Engine Transfer | Authenticated hierarchical integration operational control. |
@@ -132,6 +133,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`integration_retire_legacy_park`](integration_retire_legacy_park.md) | Retire a historical parked operation | Local operator abandons every explicitly selected source under an exact journal fence. |
 | [`integration_retire_origin`](integration_retire_origin.md) | Integration Retire Origin | Authenticated hierarchical integration operational control. |
 | [`integration_reverify_epic`](integration_reverify_epic.md) | Integration Reverify Epic | Authenticated hierarchical integration operational control. |
+| [`integration_revoke_publication`](integration_revoke_publication.md) | Integration Revoke Publication | Authenticated hierarchical integration operational control. |
 | [`integration_seal_now`](integration_seal_now.md) | Integration Seal Now | Authenticated hierarchical integration operational control. |
 | [`integration_settle_batch`](integration_settle_batch.md) | Integration Settle Batch | Authenticated hierarchical integration operational control. |
 | [`integration_status`](integration_status.md) | Integration Status | Authenticated hierarchical integration operational control. |

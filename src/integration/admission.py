@@ -729,7 +729,7 @@ class AdmissionView:
 
 async def observe_admission(
     db, candidate_ids, service, *, cached_only=False, default_mode="pull_request",
-    hierarchy_modes=None, router_ready_projects=None,
+    hierarchy_modes=None, router_ready_projects=None, hierarchy_conn=None,
 ):
     """Build once, then project IDs, reasons or counts from the same decision."""
     from src.integration.delivery_observer import hierarchy_frontier_modes
@@ -746,7 +746,7 @@ async def observe_admission(
     modes = hierarchy_modes if hierarchy_modes is not None else await hierarchy_frontier_modes(
         db, project_ids=pids, cached_only=cached_only,
         views=batch.hierarchy_views, stack_views=batch.stack_views,
-        display_unavailable=unavailable,
+        display_unavailable=unavailable, conn=hierarchy_conn,
         **({"max_age": 0} if not cached_only else {}),
     ) if pids else {}
     batch.hierarchy_modes = dict(modes)
@@ -760,7 +760,7 @@ async def observe_admission(
         if reasons:
             batch.allowed.discard(tid)
             batch.reasons.setdefault(tid, []).extend(reasons)
-    if not await batch.matches():
+    if not await batch.matches(conn=hierarchy_conn):
         batch.changed = True
         batch.allowed.clear()
     return AdmissionView(

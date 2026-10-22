@@ -463,23 +463,25 @@ class WorktreeSlotManager:
         return [by_index[i] for i in sorted(by_index)]
 
     async def _provision_slot_dir(
-        self, base_ws: Workspace, kind: WorkspaceKind, target: Path
+        self, base_ws: Workspace, kind: WorkspaceKind, target: Path, *, prune: bool = True,
     ) -> str:
         """Put a detached worktree at *target* and run the kind's setup.
 
         exclude-block → prune → fetch → ``worktree add --detach`` →
         ``worktree_setup``.  Shared by :meth:`create_slot` and
         :meth:`reprovision_slot`; returns the setup hash for the sentinel.
+        ``prune=False`` leaves every ``.git/worktrees`` registration alone.
         """
         base_path = base_ws.workspace_path
         default_branch = await self._default_branch(base_path, project_id=base_ws.project_id)
 
         async with self._git_mutex(base_path):
             await self.ensure_git_exclude(base_path)
-            try:
-                await self.git.aworktree_prune(base_path)
-            except GitError as e:
-                logger.debug("worktree prune failed in %s: %s", base_path, e)
+            if prune:
+                try:
+                    await self.git.aworktree_prune(base_path)
+                except GitError as e:
+                    logger.debug("worktree prune failed in %s: %s", base_path, e)
 
             start_ref = await self._fetch_and_resolve_start_ref(
                 base_path, default_branch, required=True, project_id=base_ws.project_id
@@ -500,19 +502,28 @@ class WorktreeSlotManager:
         await self._run_setup(target, kind.worktree_setup)
         return setup_hash
 
-    async def reprovision_slot(self, slot_ws: Workspace, kind: WorkspaceKind) -> None:
+    async def reprovision_slot(
+        self, slot_ws: Workspace, kind: WorkspaceKind, *, prune: bool = True,
+    ) -> None:
         """Re-create a slot's missing worktree in place, keeping its row id.
 
         The slot reconciler's repair for a disabled slot whose directory is
         gone (``src.orchestrator.slot_restore``).  The row, its index and its
         id survive, so nothing that references the workspace goes stale; the
         caller re-enables the row once this returns.
+
+        A continuation's fresh checkout (``src.wait_runtime.resume``) passes
+        ``prune=False``: it adopts a checkout it has just added, and other
+        slots' registrations whose directories are missing may still have
+        retained owners, so they are evidence to keep rather than prune.
+        Without a prune, a missing *target* that is still registered cannot
+        be re-added; only adopt an existing checkout that way.
         """
         base_ws = await self._base_of(slot_ws)
         if base_ws is None:
             raise OSError(f"slot {slot_ws.id} has no base workspace")
         target = Path(slot_ws.workspace_path)
-        setup_hash = await self._provision_slot_dir(base_ws, kind, target)
+        setup_hash = await self._provision_slot_dir(base_ws, kind, target, prune=prune)
         slot_index = slot_ws.slot_index or 0
         self.write_sentinel(
             target,
@@ -1171,9 +1182,7 @@ class WorktreeSlotManager:
             if target_branch is not None:
                 await self._detach_stale_branch_holders(slot_dir, branch, incoming_task_id=task.id)
             if preserve_branch:
-                await self.git.aprepare_child_branch(
-                    str(slot_dir), branch, base_branch, lock_held=True,
-                )
+                await self._prepare_slot_branch(slot_dir, branch, base_branch)
             elif target_branch is not None:
                 await self.git._arun_unlocked(
                     ["switch", "-C", branch, start_ref], cwd=str(slot_dir)
@@ -1323,6 +1332,14 @@ class WorktreeSlotManager:
             default = await self._default_branch(base_path, project_id=project_id)
             await self.git._arun_unlocked(
                 ["switch", "--detach", f"origin/{default}"], cwd=str(slot_dir)
+            )
+            # Build output the task branch ignored may be unignored at the
+            # default tip.  Left behind, it dirties the detached slot, so the
+            # sentinel is never released and the next preparation refuses it
+            # once the default moves on (aq-design-tour prime-nexus-13).
+            # Still no ``-x``: caches the default ignores survive.
+            await self.git._arun_unlocked(
+                ["clean", "-fd", "-e", WORKTREE_SENTINEL_NAME], cwd=str(slot_dir)
             )
             logger.info("Detached clean pushed branch %s from slot %s", branch, slot_dir)
         except GitError as exc:
@@ -1661,7 +1678,30 @@ class WorktreeSlotManager:
         start_sha = await self.git.arev_parse(str(slot_dir), start_ref)
         if start_sha is None:
             raise GitError("task branch start commit is unavailable")
-        await self.git.aprepare_child_branch(str(slot_dir), branch, start_sha, lock_held=True)
+        await self._prepare_slot_branch(slot_dir, branch, start_sha)
+
+    async def _prepare_slot_branch(self, slot_dir: Path, branch: str, parent_sha: str) -> None:
+        """Switch a slot to *branch*, drop files its HEAD no longer ignores, then merge.
+
+        The reset's ``clean -fd`` keeps whatever the slot's previous HEAD
+        ignored, so warm caches survive (design §3.4: never ``-x``).  A branch
+        whose base predates that ``.gitignore`` sees them as untracked: the
+        parent merge refuses to overwrite them, or the agent commits them.  The
+        same clean on the switched HEAD removes exactly those files.  The
+        caller holds the repository lock.  Not for the checkpoint path, whose
+        restored untracked files are the task's own work.
+        """
+        run, cwd = self.git._arun_unlocked, str(slot_dir)
+        local, remote = f"refs/heads/{branch}", f"refs/remotes/origin/{branch}"
+        refs = (await run(
+            ["for-each-ref", "--format=%(refname)", "--", local, remote], cwd=cwd,
+        )).splitlines()
+        if local in refs:
+            await run(["switch", branch], cwd=cwd)
+        else:
+            await run(["switch", "-c", branch, remote if remote in refs else parent_sha], cwd=cwd)
+        await run(["clean", "-fd", "-e", WORKTREE_SENTINEL_NAME], cwd=cwd)
+        await self.git.aprepare_child_branch(cwd, branch, parent_sha, lock_held=True)
 
     async def _detach_stale_branch_holders(
         self, slot_dir: Path, branch: str, *, incoming_task_id: str | None = None,

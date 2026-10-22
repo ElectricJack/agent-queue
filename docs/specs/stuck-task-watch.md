@@ -56,4 +56,8 @@ is needed.
 Ship the source, deterministic reviewed artifact, manifest and fixture together.
 Neither watch is a first-install default or a daemon readiness requirement.
 Operators explicitly import and activate the intended reviewed bundle; a restart
-never replaces operator policy. See the [rollout guide](../guides/playbook-building-blocks.md).
+never replaces operator policy. Activation needs `playbooks.v2_api`,
+`playbooks.v2_activation_writes` and a ready private-value key (`/ready`
+`checks.playbook_private_value_key`). Rollback disables the activation and keeps
+state; the building-block migrations cannot be binary-downgraded. See
+[Activating the stuck-task watch](../guides/playbook-building-blocks.md#activating-the-stuck-task-watch).

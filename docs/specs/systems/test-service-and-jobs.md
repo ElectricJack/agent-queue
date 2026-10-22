@@ -238,8 +238,12 @@ the daemon's.
 
 1. Maps the request to a preset and validates its arguments
    ([policy.py](../../../src/jobs/policy.py)). It refuses `--aq-*` flags,
-   `-n`, absolute paths and `..`. For pytest it appends the worker cap and the
-   default deselect, exactly as `aq test` would.
+   nonzero or malformed worker-count overrides, absolute paths and `..`.
+   The `test` preset accepts `-n 0`, `-n0`, `--numprocesses 0` and
+   `--numprocesses=0` for serial execution under the same slot admission.
+   Otherwise pytest uses the configured worker cap. Worker-count options are
+   omitted when xdist is missing or explicitly disabled; the default marker
+   deselect still applies.
 2. Checks quotas under a host-wide advisory lock: 100 queued jobs on the host,
    10 per owner, and the 2 GiB output budget.
 3. Checks the owner. A task-owned job needs the task `IN_PROGRESS` at the
