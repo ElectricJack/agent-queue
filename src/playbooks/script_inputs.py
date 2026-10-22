@@ -104,8 +104,10 @@ class PinnedScript(FrozenModel):
     program_sha256: Digest
     source_revision: str
     inputs: tuple[InputPin, ...] = ()
-    runtime_sha256: Digest
-    executable_sha256: Digest
+    # Opt-in digest pinning: present only when a runtime manifest was configured
+    # at proposal time; absent means the executable resolves on the host.
+    runtime_sha256: Digest | None = None
+    executable_sha256: Digest | None = None
 
     @model_validator(mode="after")
     def _integrity(self):
@@ -119,6 +121,8 @@ class PinnedScript(FrozenModel):
             raise ValueError("script input manifest does not match declared sources")
         if len(self.source_revision) > 128 or not self.source_revision:
             raise ValueError("source revision required")
+        if (self.runtime_sha256 is None) != (self.executable_sha256 is None):
+            raise ValueError("runtime and executable digests are pinned together")
         return self
 
 
@@ -184,21 +188,25 @@ class InputStore:
 
 async def pin_script_inputs(
     program: ScriptProgram, *, store: InputStore, source_root: Path,
-    source_revision: str, runtime: RuntimeManifest, max_bytes: int = 64 * MIB,
+    source_revision: str, runtime: RuntimeManifest | None = None, max_bytes: int = 64 * MIB,
 ) -> PinnedScript:
     """Server-side proposal seam; repository revision must already be authorized.
 
     ``source_root`` is the approved repository or the caller's scoped vault
     directory, never an authored host path. Runtime identity comes from the
-    operator's manifest, not compiler-provided digests.
+    operator's manifest, not compiler-provided digests; with no manifest the
+    pin carries no runtime digests and launch resolves a host executable.
     """
     import asyncio
 
-    if runtime.runtime != program.runtime:
-        raise ScriptError("script_runtime_unavailable")
-    executable = next((item for item in runtime.files if item.path == program.executable), None)
-    if executable is None or not executable.executable:
-        raise ScriptError("script_executable_unavailable")
+    executable = None
+    if runtime is not None:
+        if runtime.runtime != program.runtime:
+            raise ScriptError("script_runtime_unavailable")
+        executable = next((item for item in runtime.files
+                           if item.path == program.executable), None)
+        if executable is None or not executable.executable:
+            raise ScriptError("script_executable_unavailable")
     if program.source_kind == "repository" and not re.fullmatch(r"[0-9a-f]{40}", source_revision):
         raise ScriptError("script_revision_not_pinned")
     names = sorted(set(program.supporting_files) | ({program.script} if program.script else set()))
@@ -229,7 +237,8 @@ async def pin_script_inputs(
     return PinnedScript(
         program=program, program_sha256=digest(canonical(program.model_dump(mode="json"))),
         source_revision=source_revision, inputs=tuple(pins),
-        runtime_sha256=runtime.sha256, executable_sha256=executable.sha256,
+        runtime_sha256=runtime.sha256 if runtime is not None else None,
+        executable_sha256=executable.sha256 if executable is not None else None,
     )
 
 
