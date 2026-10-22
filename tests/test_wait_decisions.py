@@ -8,8 +8,9 @@ import pytest
 from sqlalchemy import insert, update
 
 from src.database.tables import (
-    continuations, escalation_deliveries, escalations, events, messages, sessions,
-    task_comments, task_context, tasks, wait_escalations, wait_records,
+    admission_reservations, continuations, escalation_deliveries, escalations, events,
+    messages, sessions, task_comments, task_context, tasks, wait_deadlines, wait_edges,
+    wait_escalations, wait_records,
 )
 from src.database.queries.continuation_queries import wait_outcome_envelope
 from src.event_schemas import validate_event
@@ -82,6 +83,46 @@ async def test_expiry_one_supervisor_incident_no_worker_or_human_delivery(env):
     assert len(await records(env, wait_escalations)) == 1
     assert not await records(env, escalation_deliveries)
     assert (await env.db.get_task("owner")).status is TaskStatus.WAITING
+
+
+@pytest.mark.parametrize("status", ["COMPLETED", "FAILED", "BLOCKED"])
+async def test_terminal_owner_source_event_retires_execution_and_incident_once(env, status):
+    receipt, service, now, _ = await escalated(env, hibernate=True)
+    before = (await records(env))[0]
+    async with env.db._engine.begin() as conn:
+        await conn.execute(insert(admission_reservations).values(
+            id="reservation", project_id="p", continuation_id="continuation",
+            scope={}, effective_priority=50, provenance="resume", deadline_at=now[0] + 60,
+            state="pending", created_at=NOW,
+        ))
+    await env.db.update_task("owner", status=TaskStatus(status))
+    assert await service.listener.tick()
+    wait = (await records(env))[0]
+    assert wait["id"] == receipt["wait_id"]
+    assert wait["outcome"] == "cancelled" and wait["cleared_at"] == now[0]
+    assert not wait["blocking"]
+    assert wait["created_at"] == before["created_at"]
+    assert wait["decision_inputs"]["registration_receipt"] == receipt
+    assert all(r["fired_at"] is not None or r["cancelled_at"] is not None
+               for r in await records(env, wait_deadlines))
+    assert all(not r["active"] for r in await records(env, wait_edges))
+    assert (await records(env, continuations))[0]["resume_state"] == "cancelled"
+    assert (await records(env, admission_reservations))[0]["state"] == "cancelled"
+    assert (await records(env, escalations))[0]["state"] == "cancelled"
+    assert not any(r["body_kind"] in {"wait_outcome", "wait_decision"}
+                   for r in await records(env, messages))
+    assert await service.listener.tick()
+    assert len([r for r in await records(env, events) if r["event_type"] == "wait.cancelled"]) == 1
+
+
+async def test_delayed_terminal_event_preserves_reopened_owner_and_wait(env):
+    await waiting(env)
+    await env.db.update_task("owner", status=TaskStatus.FAILED)
+    await env.db.update_task("owner", status=TaskStatus.IN_PROGRESS)
+    service = service_for(env, [NOW + 5])
+    assert await service.listener.tick()
+    assert (await records(env))[0]["outcome"] == "pending"
+    assert all(r["cancelled_at"] is None for r in await records(env, wait_deadlines))
 
 
 async def test_extend_preserves_age_receipt_ceiling_and_allows_next_incident(env):

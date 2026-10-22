@@ -235,7 +235,7 @@ def wait_list(ctx, project_id, limit, offset, schema_version):
 @click.pass_context
 @_handle_errors
 def wait_cancel(ctx, wait_id, claim_epoch, schema_version):
-    """Cancel a wait held by the current claim, preserving the result."""
+    """Cancel a held wait, or let a supervisor retire an orphaned task wait."""
     params = {"wait_id": wait_id}
     if schema_version:
         params["schema_version"] = int(schema_version)

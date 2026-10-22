@@ -110,6 +110,13 @@ class WaitSourceListener:
             return None
 
     async def _dispatch(self, conn, event):
+        if event["source_key"].startswith("task:"):
+            from src.waits.recovery import TERMINAL_TASK_STATUSES, retire_terminal_task_waits
+
+            if event["payload"].get("status") in TERMINAL_TASK_STATUSES:
+                await retire_terminal_task_waits(
+                    conn, event["source_key"].removeprefix("task:"), now=self.clock(),
+                )
         dispatcher = self.service.dispatcher
         lifecycle = getattr(self.service, "lifecycle", None)
         if lifecycle is not None:

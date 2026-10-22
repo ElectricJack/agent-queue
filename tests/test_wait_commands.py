@@ -36,8 +36,8 @@ from src.commands.principal import (
 from src.config import AppConfig
 from src.database.queries.wait_queries import register_wait
 from src.database.tables import (
-    continuations, doc_reviews, events, messages, sessions, tasks, wait_deadlines,
-    wait_records, wait_source_events,
+    admission_reservations, continuations, doc_reviews, events, messages, sessions,
+    tasks, wait_deadlines, wait_edges, wait_records, wait_source_events,
 )
 from src.database.queries.continuation_queries import wait_outcome_envelope
 from src.models import SessionRecord
@@ -972,6 +972,68 @@ async def test_holder_cancels_in_place_wait_and_acknowledges_back_to_work(env):
     ack = await execute(handler, "wait_ack", {"wait_id": receipt["wait_id"], "claim_epoch": 1})
     assert ack["success"] and ack["outcome"] == "cancelled", ack
     assert (await env.db.get_task("owner")).status.value == "IN_PROGRESS"
+
+
+@pytest.mark.parametrize("lost_owner", ["terminal", "session", "claim"])
+@pytest.mark.parametrize("caller", ["supervisor", "local"])
+async def test_supervisor_can_retire_unescalated_orphan_without_changing_task(
+    env, lost_owner, caller,
+):
+    receipt = await register(env)
+    service, handler = await wait_service(env)
+    source_lock = AsyncMock(side_effect=AssertionError("orphan cancellation needs no source"))
+    service.dispatcher.lock_source = source_lock
+    await env.db.create_session(SessionRecord(
+        id="sup", project_id="p", profile_id="supervisor", harness="codex", provider="fake",
+        name="n-supervisor--p", lifecycle="named", state="running", desired_state="running",
+        instance_token="sup-token", epoch="boot", work_dir="/tmp/sup", started_at=NOW,
+    ))
+    principal = replace(WORKER, session_id="sup", session_instance_token="sup-token",
+                        task_id=None, profile_id="supervisor", elevated=True)
+    async with env.db._engine.begin() as conn:
+        await conn.execute(insert(continuations).values(
+            id="old-intent", task_id="owner", wait_id=receipt["wait_id"], suspension_generation=1,
+            summary="Preserved checkpoint", facts={}, branch="aq/owner", saved_head="a" * 40,
+            prior_status="IN_PROGRESS", held_cursor_seq=0, resume_state="held", created_at=NOW,
+        ))
+        for rid, subject in (("old-reservation", {"continuation_id": "old-intent"}),
+                             ("replacement-reservation", {"task_id": "owner"})):
+            await conn.execute(insert(admission_reservations).values(
+                id=rid, project_id="p", scope={}, effective_priority=50, provenance="resume",
+                deadline_at=NOW + 60, state="pending", created_at=NOW, **subject,
+            ))
+        if lost_owner == "terminal":
+            await conn.execute(update(tasks).where(tasks.c.id == "owner").values(
+                status="COMPLETED", assigned_agent_id=None,
+            ))
+        elif lost_owner == "session":
+            await conn.execute(update(sessions).where(sessions.c.id == "s").values(state="stopped"))
+        else:
+            await conn.execute(update(tasks).where(tasks.c.id == "owner").values(claim_epoch=2))
+    before = await env.db.get_task("owner")
+    # Neither a stale worker nor a supervisor of another project may do this.
+    assert not (await execute(handler, "wait_cancel", {"wait_id": receipt["wait_id"]}))["success"]
+    denied = await execute(handler, "wait_cancel", {"wait_id": receipt["wait_id"]},
+                           replace(principal, project_id="q"))
+    assert not denied["success"]
+    result = await execute(handler, "wait_cancel", {"wait_id": receipt["wait_id"]},
+                           principal if caller == "supervisor" else TRUSTED_LOCAL)
+    assert result["success"], result
+    wait = result["wait"]
+    assert wait["outcome"] == "cancelled" and wait["cleared_at"] == NOW
+    assert not wait["blocking"] and wait["decision_inputs"]["registration_receipt"] == receipt
+    assert await env.db.get_task("owner") == before
+    async with env.db._engine.connect() as conn:
+        assert not (await conn.execute(select(messages))).all()
+        assert not (await conn.execute(select(wait_edges).where(wait_edges.c.active.is_(True)))).all()
+        assert all(r.cancelled_at == NOW for r in (await conn.execute(select(wait_deadlines))).all())
+        intent = (await conn.execute(select(continuations))).mappings().one()
+        assert intent["resume_state"] == "cancelled" and intent["summary"] == "Preserved checkpoint"
+        reservations = {r.id: r.state for r in (await conn.execute(select(admission_reservations)))}
+        assert reservations == {"old-reservation": "cancelled", "replacement-reservation": "pending"}
+    replay = await execute(handler, "wait_cancel", {"wait_id": receipt["wait_id"]}, principal)
+    assert replay["success"] and replay["warnings"] == ["wait already resolved: cancelled"]
+    source_lock.assert_not_awaited()
 
 
 @pytest.mark.parametrize("consume", [False, True], ids=["ack", "show-consume"])
