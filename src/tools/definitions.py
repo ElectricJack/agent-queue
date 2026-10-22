@@ -52,6 +52,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "release_project_constraint": "project",
     "edit_project": "project",
     "bind_project_repository": "project",
+    "project_relocate": "project",
     "set_default_branch": "project",
     "get_project": "project",
     "delete_project": "project",
@@ -851,6 +852,25 @@ _ALL_TOOL_DEFINITIONS = [
         "name": "list_projects",
         "description": "List all projects in the system.",
         "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "project_relocate",
+        "description": (
+            "Preview or apply an atomic project storage relocation. Requires paused admission, "
+            "disabled/drained train, stopped writers and current required CI. Reverse relocation "
+            "uses a fresh destination containing current work. Local operator only."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string"},
+                "destination": {"type": "string"},
+                "owner_inventory": {"type": "object"},
+                "expected_digest": {"type": "string"},
+                "apply": {"type": "boolean", "default": False},
+            },
+            "required": ["project_id", "destination", "owner_inventory"],
+        },
     },
     {
         "name": "repair_repository_checkout",

@@ -1363,6 +1363,9 @@ from .project_policy import ProjectPolicy
 from .project_ready_request import ProjectReadyRequest
 from .project_ready_response import ProjectReadyResponse
 from .project_ready_response_422 import ProjectReadyResponse422
+from .project_relocate_request import ProjectRelocateRequest
+from .project_relocate_request_owner_inventory import ProjectRelocateRequestOwnerInventory
+from .project_relocate_response_422 import ProjectRelocateResponse422
 from .project_root_info import ProjectRootInfo
 from .project_settings import ProjectSettings
 from .project_settings_integration_preferences import ProjectSettingsIntegrationPreferences
@@ -3552,6 +3555,9 @@ __all__ = (
     "ProjectReadyRequest",
     "ProjectReadyResponse",
     "ProjectReadyResponse422",
+    "ProjectRelocateRequest",
+    "ProjectRelocateRequestOwnerInventory",
+    "ProjectRelocateResponse422",
     "ProjectRootInfo",
     "ProjectSettings",
     "ProjectSettingsIntegrationPreferences",

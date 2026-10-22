@@ -11136,6 +11136,46 @@
       }
     },
     {
+      "path": "aq project relocate",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "project_relocate",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--project-id",
+          "--destination",
+          "--owner-inventory"
+        ],
+        "optional": [
+          "--expected-digest",
+          "--apply",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [
+          "--owner-inventory"
+        ],
+        "nullable": []
+      }
+    },
+    {
       "path": "aq project remove-workspace",
       "registration": "generated",
       "owner_kind": "core",

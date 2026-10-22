@@ -499,7 +499,7 @@ class IntegrationCleanupService:
             return "conflict", "remote ref moved after delivery"
         try:
             await self.git.adelete_repository_ref(
-                str(self.retained_store(row["repository_id"])),
+                str(await self.resolved_store(row["repository_id"])),
                 repository=binding,
                 branch=short,
                 expected_old_oid=row["expected_sha"],
@@ -523,7 +523,7 @@ class IntegrationCleanupService:
             return "conflict", "protected branch cleanup is forbidden"
         if self.git is None:
             return "retryable", "local cleanup transport is unavailable"
-        store = str(self.retained_store(row["repository_id"]))
+        store = str(await self.resolved_store(row["repository_id"]))
         async with self.db._engine.connect() as conn:
             intent = (
                 (
@@ -1273,9 +1273,13 @@ class IntegrationCleanupService:
                     raise GitError(result.stderr or "branch preservation failed")
                 return result.stdout.strip()
 
+            from src.projects.storage_binding import repository_path
+
+            backup = await repository_path(self.db, batch["repository_id"],
+                                           self.data_dir / "branch-backups")
             bundle = await preserve_branch_tips(
                 run_git, store, {short: current}, target_sha=snapshot.target_oid,
-                backup_dir=self.data_dir / "branch-backups", repository_id=batch["repository_id"],
+                backup_dir=backup, repository_id=batch["repository_id"],
                 now=self.clock(),
             )
             return "conflict", f"ref is not reachable from target; retained and bundled at {bundle}"
@@ -1839,6 +1843,11 @@ class IntegrationCleanupService:
             "terminal_at",
         }
         return all(row.get(key) == value for key, value in expected.items() if key not in mutable)
+
+    async def resolved_store(self, repository_id: str) -> Path:
+        from src.projects.storage_binding import repository_path
+
+        return await repository_path(self.db, repository_id, self.retained_store(repository_id))
 
     def retained_store(self, repository_id: str) -> Path:
         digest = hashlib.sha256(repository_id.encode()).hexdigest()

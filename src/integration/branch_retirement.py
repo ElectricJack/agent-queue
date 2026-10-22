@@ -210,6 +210,11 @@ class BranchRetirementService(BranchDiscardService):
         super().__init__(db, **kwargs)
         self.candidate_store = candidate_store
 
+    async def resolved_backup(self, repository_id):
+        from src.projects.storage_binding import repository_path
+
+        return await repository_path(self.db, repository_id, self.backup_dir)
+
     async def reconcile_project(self, project_id, *, now=None, limit=100):
         """Recover missed terminal decisions, then drain this project's intents.
 
@@ -471,7 +476,7 @@ class BranchRetirementService(BranchDiscardService):
         repository = await self.db.get_repo(row["repository_id"])
         if repository is None:
             raise GitError("retirement repository is unavailable")
-        store = self.retained_store(repository.id)
+        store = await self.resolved_store(repository.id)
         local_url = _local_repository_url(repository.url, repository.checkout_base_path)
         if local_url is not None:
             binding = None
@@ -542,7 +547,7 @@ class BranchRetirementService(BranchDiscardService):
                         else:
                             bundle = await _bundle(
                                 self._run_git, Path(path), {row["branch"]: head_local},
-                                main_head=None, backup_dir=self.backup_dir,
+                                main_head=None, backup_dir=await self.resolved_backup(repository.id),
                                 repository_id=repository.id, now=self.clock(),
                             )
                     evidence[key] = {"sha": head_local, "state": "observed" if head_local else
@@ -621,12 +626,14 @@ class BranchRetirementService(BranchDiscardService):
             candidates += list((await conn.execute(select(projects.c.workspace_path).where(
                 projects.c.id == row["project_id"],
             ))).scalars())
-        candidates += [repository.checkout_base_path, str(self.retained_store(repository.id))]
+        candidates += [repository.checkout_base_path, str(await self.resolved_store(repository.id))]
         if self.candidate_store is not None:
             candidate_store = self.candidate_store(repository)
             if inspect.isawaitable(candidate_store):
                 candidate_store = await candidate_store
-            candidates.append(candidate_store)
+            from src.projects.storage_binding import repository_path
+
+            candidates.append(await repository_path(self.db, repository.id, candidate_store))
         paths = set()
         for candidate in candidates:
             if not candidate or not Path(candidate).exists():
@@ -634,7 +641,7 @@ class BranchRetirementService(BranchDiscardService):
             common = await self.git.aworktree_base_path(candidate)
             if not common:
                 continue
-            if Path(common) != self.retained_store(repository.id):
+            if Path(common) != await self.resolved_store(repository.id):
                 url = await self.git.aget_remote_url(common)
                 if not url:
                     continue

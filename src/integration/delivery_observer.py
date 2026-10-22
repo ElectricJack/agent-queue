@@ -689,7 +689,10 @@ class DeliveryObserver:
     async def _store(self, target: DeliveryTarget) -> Path:
         from src.integration.repository_recovery import harden_retained_repository
 
-        path = self.store_path(target.repository_id)
+        from src.projects.storage_binding import repository_path
+
+        path = await repository_path(self.db, target.repository_id,
+                                     self.store_path(target.repository_id))
         path.parent.mkdir(parents=True, exist_ok=True)
         if not (path / ".git").exists():
             await self.git.acreate_checkout(target.repository_url, str(path), no_checkout=True)
@@ -704,7 +707,10 @@ class DeliveryObserver:
         *max_age* lets a read-only caller reuse a successful snapshot of the
         same target fetched that recently; it still pins one exact target OID.
         """
-        path = self.store_path(target.repository_id)
+        from src.projects.storage_binding import repository_path
+
+        path = await repository_path(self.db, target.repository_id,
+                                     self.store_path(target.repository_id))
         recent = self._recent.get(target)
         if (max_age > 0 and recent is not None and time.monotonic() - recent[0] <= max_age
             and (recent[1].error is None or cached_only)

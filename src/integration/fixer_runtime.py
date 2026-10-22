@@ -208,8 +208,11 @@ class DaemonFixerRuntime:
 
             store = await primary_store(self.db, self.git, state["project_id"],
                                         state["repository_id"], repo.store, state["starting_sha"])
-            pool = WarmWorkspacePool(self.git, store,
-                                     Path(orch.config.data_dir) / "batch-fixers")
+            from src.projects.storage_binding import bound_path, read_binding
+
+            root = bound_path(await read_binding(self.db, state["project_id"]),
+                              Path(orch.config.data_dir) / "batch-fixers")
+            pool = WarmWorkspacePool(self.git, store, root)
             path = await pool.acquire(
                 {"session_id": state["session_id"], "instance_token": state["instance_token"]},
                 state["starting_sha"], released=self._checkout_released, branch=branch,
