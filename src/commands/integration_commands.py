@@ -63,6 +63,37 @@ def _with_reason(success: bool, payload: dict[str, Any]) -> dict[str, Any]:
 
 
 class IntegrationCommandsMixin:
+    async def _cmd_integration_continue_close(self, args: dict) -> dict:
+        """Resume only this author's saved close through all ordinary close guards."""
+        from src.integration.close_merge import CloseStore
+
+        op = await CloseStore(self.db).get(args["operation_id"])
+        principal = current_principal()
+        if (not op or principal.session_id != op["session_id"]
+                or principal.project_id != op["project_id"]):
+            return _failure("refused", "operation is not owned by this author session")
+        response = await self._cmd_task_close({
+            **op["close_args"], "task_id": op["task_id"], "session_id": op["session_id"],
+            "claim_epoch": op["claim_epoch"], "claim_next": False,
+        })
+        return {"success": response.get("success", False),
+                "outcome": "completed" if response.get("success") else "pending",
+                "operation_id": op["id"], "close": response}
+
+    async def _cmd_integration_batch_fix(self, args: dict) -> dict:
+        """Only the bound task-free fixer may inspect or publish its batch."""
+        from src.integration.fixers import BatchFixerService
+        from src.integration.lock import PublishWithdrawn
+
+        train = getattr(self.orchestrator, "integration_train", None)
+        train = getattr(train, "train", train)
+        service = getattr(train, "repair", None)
+        if not isinstance(service, BatchFixerService):
+            return _failure("unavailable", "the in-place batch fixer is not active")
+        try:
+            return await service.command(current_principal(), action=args.get("action", "status"))
+        except (GitError, ValueError, BranchBusy, StaleFence, PublishWithdrawn) as exc:
+            return _failure("refused", str(exc))
     async def _cmd_integration_delegate_publication(self, args: dict) -> dict:
         from src.commands.contracts.integration import IntegrationDelegatePublicationArgs
         from src.integration.publication_delegations import DELEGATION_ERRORS, PublicationDelegations
@@ -243,6 +274,69 @@ class IntegrationCommandsMixin:
     async def _cmd_integration_cutover_plan(self, args: dict) -> dict:
         return await self._integration_cutover(args, read_only=True)
 
+    async def _cmd_integration_cutover_containment(self, args: dict) -> dict:
+        from dataclasses import asdict
+        from pathlib import Path
+
+        from sqlalchemy.exc import DBAPIError
+
+        from src.commands.contracts.integration import IntegrationContainmentCutoverArgs
+        from src.git.github_contracts import GitHubAccessError
+        from src.integration.containment_cutover import ContainmentCutover
+        from src.integration.containment_git import ContainmentGit
+        from src.integration.cutover import CutoverGit
+        from src.integration.protection import LocalRulesetReader
+        from src.install.deploy import DeployRefused, read_record
+
+        principal = current_principal()
+        if principal is None or principal.kind is not PrincipalKind.LOCAL:
+            return _failure("refused", "containment cutover requires the local operator")
+        request = IntegrationContainmentCutoverArgs.model_validate(args)
+
+        async def protection(facts):
+            resolver = getattr(self.orchestrator, "github_repository_binding_resolver", None)
+            factory = getattr(self.orchestrator, "github_client_factory", None)
+            if resolver is None or factory is None:
+                return None
+            repository = await self.db.get_repo(facts["repository"]["id"])
+            binding = resolver(repository)
+            if inspect.isawaitable(binding):
+                binding = await binding
+            if binding is None:
+                return None
+            client = factory(binding)
+            if inspect.isawaitable(client):
+                client = await client
+            reader = LocalRulesetReader(self._promotion_user_client(binding))
+            branches = {repository.default_branch.removeprefix("refs/heads/")}
+            branches.update(row["parent_ref"].removeprefix("refs/heads/")
+                            for row in facts["inventory"]["origins"] if row["parent_ref"])
+            return await CutoverGit(self.db, client, ruleset_admin_reader=reader).remote_state(
+                branches,
+            )
+
+        def runtime_bindings():
+            config = self.orchestrator.config
+            fields = ("default_mode", "merge_ci_policy", "merge_required_checks",
+                      "merge_require_up_to_date", "git_first", "reconciler_active",
+                      "reconciler_shadow", "owner_recovery_sweep")
+            return {"integration": {n: getattr(config.integration, n) for n in fields},
+                    "deploy": asdict(config.deploy),
+                    "deployment": read_record(Path(config.data_dir))}
+
+        try:
+            result = await ContainmentCutover(
+                self.db, ContainmentGit(protection=protection), runtime_bindings=runtime_bindings,
+            ).run(request.project_id, choices=request.choices, plan=request.plan,
+                  expected_digest=request.expected_digest, dry_run=request.dry_run,
+                  operator_id="local")
+        except (ValueError, GitError, GitHubAccessError, OSError, DBAPIError,
+                DeployRefused, TimeoutError) as exc:
+            # Database driver text can contain parameters; expose only the fixed refusal.
+            error = str(exc) if isinstance(exc, ValueError) else "cutover_fence_unavailable"
+            return _failure("refused", error)
+        return {"success": result["outcome"] in {"preview", "prepared"}, **result}
+
     async def _cmd_integration_cutover(self, args: dict) -> dict:
         return await self._integration_cutover(args, read_only=False)
 
@@ -385,6 +479,11 @@ class IntegrationCommandsMixin:
                                          "batch_id", with_train=True,
                                          extra_errors=(BranchBusy, TimeoutError))
 
+    async def _cmd_integration_rerequest_check(self, args: dict) -> dict:
+        return await self._train_control(args, "rerequest_check", "IntegrationRerequestCheckArgs",
+                                         "batch_id", with_train=True,
+                                         extra_errors=(BranchBusy, TimeoutError))
+
     async def _integration_batch_intent(self, args, intent):
         return await self._train_control(args, "set_batch_intent", "IntegrationAbortBatchArgs",
                                          "batch_id", intent=intent)
@@ -524,6 +623,17 @@ class IntegrationCommandsMixin:
             return _failure("blocked", str(exc))
         return _with_reason(result["outcome"] == "reverifying", result)
 
+    async def _cmd_integration_reconcile_git_truth(self, args: dict) -> dict:
+        """Daemon-only repair of Git-derived integration projections."""
+        principal = current_principal()
+        if principal is None or principal.kind is not PrincipalKind.SERVICE:
+            return _failure("unauthorized", "only the daemon may reconcile Git truth")
+        reconciler = getattr(self.orchestrator, "git_truth_reconciler", None)
+        if reconciler is None:
+            return _failure("unavailable", "the Git truth reconciler is not attached")
+        now = args.get("now")
+        return {"success": True, **await reconciler.tick(time.time() if now is None else now)}
+
     async def _cmd_integration_train_tick(self, args: dict) -> dict:
         """Start one level-triggered visit per idle target (git_first: active).
 
@@ -547,6 +657,17 @@ class IntegrationCommandsMixin:
             from src.integration.stall_alerts import alert_stalled_batches
 
             await alert_stalled_batches(self, now=now)
+            observer = getattr(self.orchestrator, "delivery_observer", None)
+            if observer is not None:
+                import logging
+
+                from src.integration.delivery_watchdog import scan_stuck_deliveries
+
+                # The watchdog only observes and hands over; it never holds the train.
+                try:
+                    await scan_stuck_deliveries(self.db, observer=observer, now=now)
+                except Exception:
+                    logging.getLogger(__name__).exception("delivery watchdog scan failed")
             self._train_stall_checked_at = now
         result = await train.tick(visit_now)
         return {"success": True, **result}
@@ -742,9 +863,12 @@ class IntegrationCommandsMixin:
         from src.integration.source_ci import repair_description
 
         source = observation.source
-        delivery = await self.db.observe_removal_delivery(
-            [observation.task_id], for_mutation=True,
-        )
+        try:
+            delivery = await self.db.observe_removal_delivery(
+                [observation.task_id], for_mutation=True,
+            )
+        except (GitError, OSError):
+            return _failure("delivery_unknown", "Git delivery evidence is unavailable")
         transition = None
         async with self.db.immediate() as conn:
             await self.db.lock_hierarchy_project(conn, source["project_id"])

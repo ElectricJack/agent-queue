@@ -20,6 +20,16 @@ def _client(result):
     return client
 
 
+def test_continue_close_forwards_only_operation_identity():
+    from src.cli.app import cli
+
+    client = _client({"success": True, "outcome": "completed", "operation_id": "op"})
+    with patch("src.cli.integration._get_client", return_value=client):
+        result = CliRunner().invoke(cli, ["integration", "continue-close", "--operation-id", "op"])
+    assert result.exit_code == 0, result.output
+    assert client.execute.call_args.args == ("integration_continue_close", {"operation_id": "op"})
+
+
 @pytest.mark.parametrize("apply", [False, True])
 def test_redrive_child_explicit_source_adoption(apply):
     from src.cli.app import cli

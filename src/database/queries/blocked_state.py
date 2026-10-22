@@ -29,8 +29,6 @@ from src.database.queries.ingest_hold import not_ingest_held
 from src.database.tables import (
     events,
     gates,
-    projects,
-    repos,
     task_completion_records,
     task_delivery_receipts,
     task_dependencies,
@@ -116,61 +114,13 @@ def _default_branch_name(column):
 
 
 def delivery_landed(depends_on):
-    """``EXISTS``: the correlated *depends_on* task's work reached its default branch.
+    """Structural readiness only; AdmissionView proves delivery in current Git.
 
-    The receipt is the durable record of a landing that the delivery observer
-    confirms in git (src/integration/delivery_truth.py); git evidence itself is
-    never persisted, so the projection reads the receipt.  A landed receipt is
-    a *root* receipt (``target_task_id`` NULL) into the default branch of the
-    project's integration repository, with a delivering disposition.
-
-    A code leaf nested in an epic is only ever delivered to its parent's
-    branch; it lands when an ancestor does.  So the receipt may name the task
-    or any ancestor, provided it was recorded no earlier than the task's latest
-    completion: an epic that landed before a later generation of the leaf
-    closed did not carry that generation.
+    SQL cannot observe a target. Completion releases the structural projection
+    so the request-scoped view can evaluate the edge. Receipts are history and
+    cannot satisfy delivery, including after a target rewind.
     """
-    seed = tasks.alias()
-    step = tasks.alias()
-    lineage = (
-        select(seed.c.id.label("id"), seed.c.parent_task_id.label("parent_task_id"))
-        .where(seed.c.id == depends_on.c.id)
-        .correlate(depends_on)
-        .cte(recursive=True, nesting=True)
-    )
-    lineage = lineage.union(
-        select(step.c.id, step.c.parent_task_id).where(step.c.id == lineage.c.parent_task_id)
-    )
-    receipt = task_delivery_receipts.alias()
-    project = projects.alias()
-    repository = repos.alias()
-    completion = task_completion_records.alias()
-    latest_completion = (
-        select(func.max(completion.c.completed_at))
-        .where(completion.c.task_id == depends_on.c.id)
-        .correlate(depends_on)
-        .scalar_subquery()
-    )
-    return (
-        select(literal(1))
-        .select_from(
-            receipt.join(project, project.c.integration_repository_id == receipt.c.repository_id)
-            .join(repository, repository.c.id == project.c.integration_repository_id)
-        )
-        .where(
-            and_(
-                project.c.id == depends_on.c.project_id,
-                receipt.c.source_task_id.in_(select(lineage.c.id)),
-                receipt.c.target_task_id.is_(None),
-                receipt.c.disposition.in_(LANDED_RECEIPT_DISPOSITIONS),
-                _default_branch_name(receipt.c.target_branch)
-                == _default_branch_name(repository.c.default_branch),
-                receipt.c.created_at >= func.coalesce(latest_completion, 0.0),
-            )
-        )
-        .correlate(depends_on)
-        .exists()
-    )
+    return depends_on.c.status == TaskStatus.COMPLETED.value
 
 
 def unmet_dependency_predicate(dependency, depends_on, *, dep_types=None):
@@ -255,8 +205,8 @@ def unmet_dependency_predicate(dependency, depends_on, *, dep_types=None):
         )
 
     if DepType.DELIVERY_OF.value in effective:
-        # Independent of task completion: unknown (no receipt) and failed
-        # delivery both stay unmet until a landing is recorded.
+        # The graph projection requires completion. AdmissionView separately
+        # requires current Git evidence before dispatch, demand or claims.
         clauses.append(
             and_(
                 dependency.c.dep_type == DepType.DELIVERY_OF.value,
@@ -393,8 +343,7 @@ def blocked_predicate():
     One clause per blocking rule, in the order of design §3.1.
     Development delivery of ``blocks`` edges is observed asynchronously by
     integration.admission outside SQL transactions; a ``delivery-of`` edge
-    reads only the durable landing receipt (:func:`delivery_landed`), and the
-    delivery observer recomputes its dependents when a landing is observed.
+    requires source completion here and current Git proof in AdmissionView.
     """
     return or_(
         _blocks_unsat(),

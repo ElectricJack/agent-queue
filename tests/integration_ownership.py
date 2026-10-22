@@ -23,6 +23,40 @@ LANDING_REVISION = "8e73e088fa5050621a165b9d13f90ef88334572d"
 BASELINE_ENGINE_LINES = 82_627
 BASELINE_OWNED_LINES = 140_499
 REPLACEMENT_ALLOWANCE = 15_000
+# Exact standing batch exception, not a new replacement allowance. Remove its
+# manifest opt-in when azure-ridge-72 restores the original transition cap.
+TRANSITION_BATCH_EXCEPTION = {'batch_id': 'train-745592300af5cef0338dec80ebabb465',
+ 'decision_message_id': 'msg-7ed85e78d1af4f3e85b485a57967e794',
+ 'decision_message_ids': ['msg-7ed85e78d1af4f3e85b485a57967e794',
+                          'msg-381054d695e64055979a687c4d811e7e'],
+ 'decision_record': 'record:2720bdbe-7521-427e-8e72-1f40a3ff9818',
+ 'measured_source_revision': '83ef85ec7226f2c0c7c8ef64504919086bc394ba',
+ 'original_owned_total_cap': 155499,
+ 'measured_owned_total': 160874,
+ 'delta': 5375,
+ 'predecessors': [{'batch_id': 'train-77f0d8e451f6aed08d608e443031047a',
+                   'decision_message_id': 'msg-edb5f857de344716a38857406fa69958',
+                   'decision_record': 'record:2720bdbe-7521-427e-8e72-1f40a3ff9818',
+                   'measured_source_revision': 'd00e25221856145f24777f8b016a008b4e954bca',
+                   'original_owned_total_cap': 155499,
+                   'measured_owned_total': 156792,
+                   'delta': 1293,
+                   'restore_task': 'azure-ridge-72',
+                   'expires_at': 's4_modules'},
+                  {'batch_id': 'train-48d0a1c1f1f8292b2977546011609db6',
+                   'measured_source_revision': 'cbfd455b0e9f053854a2c1becfa1efaeef231582',
+                   'authorized_delta': 2166,
+                   'measured_owned_total': 158958}],
+ 'batch_measured_delta': 1916,
+ 'restore_task': 'azure-ridge-72',
+ 'expires_at': 's4_modules',
+ 'category_approval_message_id': 'msg-90f9f1b1e0cd4e8e8d28071cffc927a6',
+ 'storage_categories': ['integration_close_attempts'],
+ 'category_restore_task': 'stark-willow-95.17',
+ 'verification_task': 'stark-willow-95.18',
+ 'measured_engine_lines': 85331,
+ 'measured_table_count': 45,
+ 'delivery_method': 'operator direct integration; user request 2026-10-22'}
 FINAL_ENGINE_CAP = 11_999
 FINAL_TOTAL_CAP = 19_999
 FINAL_TABLE_CAP = 10
@@ -49,10 +83,10 @@ STORAGE_METHOD = re.compile(
     r"(?:task_meta|metadata|op_event|operation_event|journal)|^log_event$"
 )
 STORAGE_TABLES = {"task_metadata", "op_events", "operation_events", "events",
-                  "integration_subject_journal"}
+                  "integration_subject_journal", "system_config"}
 SQL_STORAGE_WRITE = re.compile(
     r"\b(?:insert\s+into|update|delete\s+from)\s+[\"\w.]*"
-    r"(?:task_metadata|op_events|operation_events|events|integration_subject_journal)\b",
+    r"(?:task_metadata|op_events|operation_events|events|integration_subject_journal|system_config)\b",
     re.IGNORECASE,
 )
 WRITE_CALLS = {"insert", "update", "delete"}
@@ -432,13 +466,27 @@ def inventory(root: Path, manifest: dict) -> dict:
             "unknown_sinks": unknown_sinks, "legacy_sinks": legacy_sinks}
 
 
+def transition_owned_cap(manifest: dict) -> int:
+    """Accept only the recorded batch decision; never derive a cap from counts."""
+    original = BASELINE_OWNED_LINES + REPLACEMENT_ALLOWANCE
+    exception = manifest.get("transition_exception")
+    if exception is None:
+        return original
+    if exception != TRANSITION_BATCH_EXCEPTION:
+        raise ValueError("unapproved integration transition exception")
+    return original + TRANSITION_BATCH_EXCEPTION["delta"]
+
+
 def budget_errors(report: dict, manifest: dict) -> list[str]:
     phase = manifest["phase"]
     if phase not in {"transition", "s4_modules", "final"}:
         return [f"unknown budget phase: {phase}"]
     if phase == "transition":
         engine_cap = BASELINE_ENGINE_LINES + REPLACEMENT_ALLOWANCE
-        total_cap = BASELINE_OWNED_LINES + REPLACEMENT_ALLOWANCE
+        try:
+            total_cap = transition_owned_cap(manifest)
+        except ValueError as exc:
+            return [str(exc)]
         table_cap = 45  # replacement reshapes the existing five, adds no table
     else:
         engine_cap, total_cap, table_cap = FINAL_ENGINE_CAP, FINAL_TOTAL_CAP, FINAL_TABLE_CAP

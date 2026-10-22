@@ -80,6 +80,30 @@ class MissingRegenerator(RegenerationFailure):
         )
 
 
+async def generated_paths(git: GitManager, store: Path, tree: str, paths=None) -> set[str]:
+    """Read generated-path policy from the candidate, including new attributes."""
+    if paths is None:
+        listed = await git.arun_git_result(
+            ["ls-tree", "-r", "--name-only", "-z", tree], cwd=str(store),
+        )
+        if listed.returncode:
+            raise GitError(listed.stderr or "could not list candidate artifacts")
+        paths = set(listed.stdout.split("\0")) - {""}
+    if not paths:
+        return set()
+    attributes = await git.arun_git_result(
+        ["check-attr", f"--source={tree}", "-z", "--stdin", "merge"],
+        cwd=str(store), stdin="\0".join(sorted(paths)) + "\0",
+    )
+    if attributes.returncode:
+        raise GitError(attributes.stderr or "generated attribute probe failed")
+    fields = attributes.stdout.split("\0")
+    return {
+        fields[i] for i in range(0, len(fields) - 2, 3)
+        if fields[i + 2] == GENERATED_MERGE_DRIVER
+    }
+
+
 async def merge_generated_tree(
     git: GitManager,
     store: Path,
@@ -91,21 +115,21 @@ async def merge_generated_tree(
     regenerations: list[dict] | None = None,
     defer_regeneration: bool = False,
 ) -> str:
-    """Merge exact inputs and rebuild overlapping generated artifacts.
+    """Merge exact sources and rebuild changed generated artifacts.
 
     ``merge_args`` names a ``merge-tree --write-tree`` operation, optionally
     with an explicit base, ending with the two commits. Never infer a different
-    base by redoing the merge in a checkout. Restore generated conflicts from
-    the current side, then regenerate against all merged sources. Clean text
-    merges also need rebuilding when both sides changed a generated artifact.
+    base by redoing the merge in a checkout. Discard generated changes from
+    the merge, then regenerate against all merged sources. Even single-sided
+    changes must be rebuilt: their outputs may depend on another member's input.
 
     ``command`` must name a command line: an empty one is a configuration gap
     (:class:`MissingRegenerator`), never a silent regeneration. ``regenerate``
     is the caller's policy; with it off, an overlapping generated artifact is
     an ordinary conflict.
 
-    ``defer_regeneration`` restores generated conflicts without invoking the
-    command and records overlaps in ``regenerations``. Batch construction runs
+    ``defer_regeneration`` restores generated paths without invoking the
+    command and records them in ``regenerations``. Batch construction runs
     that command once on the final combined tree.
     """
     merged = await git.arun_git_result(merge_args, cwd=str(store))
@@ -132,27 +156,18 @@ async def merge_generated_tree(
     changed = []
     for side in (current, other):
         result = await git.arun_git_result(
-            ["diff", "--name-only", "-z", base, side], cwd=str(store)
+            ["diff", "--no-renames", "--name-only", "-z", base, side], cwd=str(store)
         )
         if result.returncode:
             raise GitError(result.stderr or "could not inspect merge inputs")
         changed.append(set(result.stdout.split("\0")) - {""})
-    overlaps = sorted((changed[0] & changed[1]) | conflicts)
-    if not overlaps:
+    candidates = ((changed[0] | changed[1]) if regenerate else (changed[0] & changed[1]))
+    candidates |= conflicts
+    if not candidates:
         if merged.returncode:
             raise GeneratedMergeConflict(merged)
         return tree
-    attributes = await git.arun_git_result(
-        ["check-attr", f"--source={tree}", "-z", "--stdin", "merge"],
-        cwd=str(store), stdin="\0".join(overlaps) + "\0",
-    )
-    if attributes.returncode:
-        raise GitError(attributes.stderr or "generated attribute probe failed")
-    fields = attributes.stdout.split("\0")
-    generated = {
-        fields[i] for i in range(0, len(fields) - 2, 3)
-        if fields[i + 2] == GENERATED_MERGE_DRIVER
-    }
+    generated = await generated_paths(git, store, tree, candidates)
     if merged.returncode and (not conflicts or conflicts - generated):
         raise GeneratedMergeConflict(merged)
     if not generated:
@@ -166,9 +181,9 @@ async def merge_generated_tree(
     if not shlex.split(command or ""):
         raise MissingRegenerator(f"no regenerate command is configured ({command!r})")
     try:
-        rebuilt = tree if defer_regeneration and not conflicts else await regenerated_tree(
+        rebuilt = await regenerated_tree(
             git, store, tree, command=command, timeout_seconds=timeout_seconds,
-            restore_from=current, restore_paths=tuple(sorted(conflicts)),
+            restore_from=current, restore_paths=tuple(sorted(generated)),
             restore_only=defer_regeneration,
         )
     except MissingRegenerator:
@@ -281,14 +296,22 @@ async def _run(
     await git.aworktree_add(str(store), str(worktree), ref=placeholder)
 
     if restore_paths:
-        restored = await git.arun_git_result(
-            ["restore", f"--source={restore_from}", "--staged", "--worktree", "--",
-             *(f":(literal){path}" for path in restore_paths)],
-            cwd=str(worktree),
+        # A generated file may be new on the other side or deleted on ours.
+        # Remove merged versions first, then restore only paths our tree has.
+        await _checked(
+            git, ["rm", "-f", "--ignore-unmatch", "--",
+                  *(f":(literal){path}" for path in restore_paths)], worktree,
         )
-        if restored.returncode:
-            raise RegenerationFailure(
-                restored.stderr or "could not restore generated conflicts", retryable=True
+        listed = await _checked(
+            git, ["ls-tree", "-r", "--name-only", "-z", restore_from, "--",
+                  *(f":(literal){path}" for path in restore_paths)], worktree,
+        )
+        existing = sorted(set(listed.stdout.split("\0")) - {""})
+        if existing:
+            await _checked(
+                git,
+                ["restore", f"--source={restore_from}", "--staged", "--worktree", "--",
+                 *(f":(literal){path}" for path in existing)], worktree,
             )
 
     if restore_only:

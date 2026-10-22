@@ -596,8 +596,9 @@ else in this section is active:
 1. **Launch suppression.** Nothing starts against an unavailable provider:
    `idle_workers` (`src/scheduler.py`) drops workers whose profile resolves to
    it, `AgentReconciler` grows none for it, `_measure_pools` sizes its pools to
-   zero, the pre-launch check in `src/orchestrator/execution.py` refuses, and a
-   claim from one of its sessions answers `drain_requested`.
+   zero, the pre-launch check in `src/orchestrator/execution.py` refuses,
+   `SessionLens` refuses cold supervisor starts (including message-triggered
+   starts), and a claim from one of its sessions answers `drain_requested`.
 2. **The derived hold.** A queued task whose effective profile is on an
    unavailable provider is *held*. It keeps its status — `READY` stays `READY` —
    and `aq task explain`, `task show` and the API report a computed

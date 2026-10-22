@@ -1769,6 +1769,30 @@ _INTEGRATION_SCHEMAS: dict[str, EventSchema] = {
 # New sealed events identify both the lifecycle batch and its distinct repair
 # operation. Keep batch_id optional at validation so durable pre-Task-8b events
 # remain readable during replay/upgrades.
+_INTEGRATION_SCHEMAS["integration.readiness_changed"] = {
+    "required": ["project_id", "repository_id", "reason"],
+    "optional": ["head_sha"],
+    "types": {"project_id": str},
+    "fields": {"project_id": {"type": "string", "description": "project"}},
+}
+# A verified ref write is an observation wakeup, independent of the legacy
+# promotion/receipt lifecycle and its frozen operation routes.
+_PUBLICATION_FIELDS = {
+    "project_id": (str, "string", "project"),
+    "batch_id": (str, "string", "integration batch"),
+    "revision": (int, "integer", "candidate revision"),
+    "repository_id": (str, "string", "published repository"),
+    "target_ref": (str, "string", "published ref"),
+    "head_sha": (str, "string", "verified published head"),
+    "candidate_sha": (str, "string", "tested candidate head"),
+    "publication_verified": (bool, "boolean", "ref write verified"),
+}
+_INTEGRATION_SCHEMAS["integration.publication_verified"] = {
+    "required": list(_PUBLICATION_FIELDS), "optional": [],
+    "types": {name: spec[0] for name, spec in _PUBLICATION_FIELDS.items()},
+    "fields": {name: {"type": spec[1], "description": spec[2]}
+               for name, spec in _PUBLICATION_FIELDS.items()},
+}
 _INTEGRATION_SCHEMAS["integration.sealed"] = {
     "required": ["project_id", "operation_id"],
     "optional": ["batch_id"],
@@ -1804,6 +1828,11 @@ _FENCE_EVENT_FIELD: EventFieldSpec = {
 _INTEGRATION_PAYLOAD_FIELDS: dict[
     str, dict[str, tuple[type | tuple[type, ...], EventFieldSpec]]
 ] = {
+    "integration.readiness_changed": {
+        "repository_id": (str, {"type": "string", "description": "repository"}),
+        "head_sha": (str, {"type": "string", "description": "observed exact head"}),
+        "reason": (str, {"type": "string", "description": "readiness invalidation"}),
+    },
     "task.child_added": {
         "parent_id": (str, {"type": "string", "description": "immediate parent task"}),
         "children": (
