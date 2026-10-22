@@ -1610,3 +1610,23 @@ async def test_current_source_rejection_survives_checkpoint_drift(stack, locator
             created_at=2,
         ))
     assert await stack.service.current("child", source_sha=stack.child, snapshot=observed)
+
+
+async def test_inherited_repository_rejection_uses_project_when_checkpoint_is_missing(stack):
+    from src.database.tables import integration_review_evidence
+    from src.integration.stacked_branches import _unauthorized_sources
+
+    async with stack.db.immediate() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == "first").values(repo_id=None))
+        await conn.execute(delete(task_integration_checkpoints).where(
+            task_integration_checkpoints.c.task_id == "first",
+        ))
+        await conn.execute(insert(integration_review_evidence).values(
+            id="inherited-source-rejection", source_task_id="first", repository_id="r",
+            source_base=stack.base, reviewed_head_sha=stack.first,
+            reviewed_tree_sha=git(stack.origin.clone, "rev-parse", stack.first + "^{tree}"),
+            generation=0, verdict="rejected", review_kind="root",
+            reviewer_identity="human:test", evidence={"decision_path": "tree_review"},
+            created_at=1,
+        ))
+        assert await _unauthorized_sources(conn, {"first"}) == {"first"}
