@@ -467,5 +467,5 @@ def test_table_exception_is_exact_and_expires(manifest, report):
     for phase in ("s4_modules", "final"):
         copy = deepcopy(manifest)
         copy["phase"] = phase
-        small = {**report, "groups": {"engine": 0}, "total": 0}
+        small = {**report, "groups": {"engine": 0}, "total": 0, "legacy_sinks": []}
         assert ownership.budget_errors(small, copy) == [f"tables: 46 exceeds 10 in {phase}"]

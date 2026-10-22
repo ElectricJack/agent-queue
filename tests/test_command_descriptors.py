@@ -15,13 +15,20 @@ from src.commands.command_inventory import command_snapshot
 from src.commands.contracts import CONTRACTS
 from src.commands.contracts.builtin import set_handler_provider
 from src.commands.contracts.generated import (
-    GeneratedInvocationDisabled, JsonObjectResult, argument_model, generated_registration,
+    GeneratedInvocationDisabled,
+    JsonObjectResult,
+    argument_model,
+    generated_registration,
 )
 from src.commands.contracts.models import canonical_execution_document
 from src.commands.contracts.registry import ContractRegistry
 from src.commands.descriptors import (
-    PLAYBOOK_DENIALS, HandlerCommand, PluginCommand, argument_usage,
-    build_descriptor_snapshot, discover_handler_inventory,
+    PLAYBOOK_DENIALS,
+    HandlerCommand,
+    PluginCommand,
+    argument_usage,
+    build_descriptor_snapshot,
+    discover_handler_inventory,
 )
 from src.commands.handler import CommandHandler
 from src.config import AppConfig
@@ -44,6 +51,7 @@ INGEST_CHANGES = ROOT / "tests/fixtures/contracts/ingestion-replay-contract-chan
 HIBERNATION_CHANGES = ROOT / "tests/fixtures/contracts/hibernation-contract-changes.json"
 DISPATCH_CHANGES = ROOT / "tests/fixtures/contracts/dispatch-wait-contract-changes.json"
 BATCH_FIX_CHANGES = ROOT / "tests/fixtures/contracts/batch-fix-contract-changes.json"
+RELOCATION_CLOSE_CHANGES = ROOT / "tests/fixtures/contracts/relocation-author-close-contract-changes.json"
 
 
 def _hibernation_changes():
@@ -76,13 +84,19 @@ def _before_dispatch_catalogue():
 
 def _before_batch_fix_catalogue():
     evidence = json.loads(BATCH_FIX_CHANGES.read_text())
-    catalogue = json.loads(render_command_catalogue())
+    catalogue = _before_relocation_close_catalogue()
     name = "integration_batch_fix"
     definition = next(row for row in catalogue["explicit"] if row["name"] == name)
     assert definition == evidence["transport_definition"]
     catalogue["explicit"].remove(definition)
     assert catalogue["tool_categories"].pop(name) == evidence["tool_category"]
     return catalogue
+
+
+def _before_relocation_close_catalogue():
+    return _revert_catalogue(
+        json.loads(render_command_catalogue()), json.loads(RELOCATION_CLOSE_CHANGES.read_text()),
+    )
 
 
 def _before_hibernation_catalogue():
@@ -268,7 +282,11 @@ def test_transport_views_and_cli_serialization_preserve_golden_evidence():
     assert dispatch["previous_cli_catalogue_sha256"] == hibernation["cli_catalogue_sha256"]
     batch_fix = json.loads(BATCH_FIX_CHANGES.read_text())
     assert batch_fix["previous_cli_catalogue_sha256"] == dispatch["cli_catalogue_sha256"]
-    assert actual == batch_fix["cli_catalogue_sha256"]
+    relocation_close = json.loads(RELOCATION_CLOSE_CHANGES.read_text())
+    assert relocation_close["previous_cli_catalogue_sha256"] == batch_fix["cli_catalogue_sha256"]
+    assert actual == relocation_close["cli_catalogue_sha256"]
+    previous = json.dumps(_before_relocation_close_catalogue(), indent=2) + "\n"
+    assert hashlib.sha256(previous.encode()).hexdigest() == batch_fix["cli_catalogue_sha256"]
     previous = json.dumps(_before_batch_fix_catalogue(), indent=2) + "\n"
     assert hashlib.sha256(previous.encode()).hexdigest() == dispatch["cli_catalogue_sha256"]
     previous = json.dumps(_before_dispatch_catalogue(), indent=2) + "\n"
@@ -288,6 +306,27 @@ def test_batch_fixer_catalogue_only_adds_scoped_publication_command():
     name = "integration_batch_fix"
     assert CONTRACTS.require(name).contract.fingerprint() == evidence["contract_fingerprint"]
     previous = json.dumps(_before_batch_fix_catalogue(), indent=2) + "\n"
+    assert hashlib.sha256(previous.encode()).hexdigest() == evidence[
+        "previous_cli_catalogue_sha256"
+    ]
+
+
+def test_relocation_and_author_close_only_add_the_frozen_commands():
+    evidence = json.loads(RELOCATION_CLOSE_CHANGES.read_text())
+    assert evidence["source_base"] == "cbfd455b0e9f053854a2c1becfa1efaeef231582"
+    assert evidence["frozen_sources"] == [
+        "bbcbd5a61d9c59e0a507f2e30160624e44196fca",
+        "2f66afabac4add24a1e4eaa7927ae0798ec344bf",
+    ]
+    names = {"project_relocate", "integration_continue_close"}
+    assert set(evidence["catalogue_sections"]) == {"explicit", "tool_categories"}
+    for section in evidence["catalogue_sections"].values():
+        assert set(section["entries"]) == names
+        assert all(entry["previous"] is None for entry in section["entries"].values())
+    assert set(evidence["contract_fingerprints"]) == names
+    for name, expected in evidence["contract_fingerprints"].items():
+        assert CONTRACTS.require(name).contract.fingerprint() == expected
+    previous = json.dumps(_before_relocation_close_catalogue(), indent=2) + "\n"
     assert hashlib.sha256(previous.encode()).hexdigest() == evidence[
         "previous_cli_catalogue_sha256"
     ]
@@ -703,7 +742,10 @@ def test_generic_argument_lookup_and_executor_never_invent_a_root_argument():
 
 def test_missing_dynamic_path_fails_before_generated_invocation(json_args):
     from src.playbooks.expressions import (
-        BindingRef, ResolutionScope, ValueResolutionError, resolve_value,
+        BindingRef,
+        ResolutionScope,
+        ValueResolutionError,
+        resolve_value,
     )
 
     # The expression layer's missing marker cannot be coerced into JSON or
