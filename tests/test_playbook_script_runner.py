@@ -18,8 +18,8 @@ from pydantic import ValidationError
 from src.config import ScriptsConfig
 from src.doctor import default_registry
 from src.git.manager import GitError, GitManager
-from src.jobs.script_sandbox import (
-    BINDING_BYTES, SandboxRequest, SandboxResult, _process_argv, launch,
+from src.jobs.script_runner import (
+    BINDING_BYTES, ScriptRequest, ScriptResult, _process_argv, launch,
 )
 
 from src.playbooks.proposal import pin_source_scripts
@@ -51,7 +51,7 @@ def pin(p=None):
 
 
 def request(pinned=None, **kwargs):
-    return SandboxRequest(execution_id=uuid.uuid4().hex, run_id="test-run",
+    return ScriptRequest(execution_id=uuid.uuid4().hex, run_id="test-run",
                           pinned=pinned or pin(), **kwargs)
 
 
@@ -101,19 +101,20 @@ def test_environment_never_inherits_or_allows_credentials(name, monkeypatch):
     assert "must-not-leak" not in str(script_environment((), (), {}, home="/scratch"))
 
 
-def test_environment_is_explicit_intersection_and_sandbox_home():
+def test_environment_is_explicit_intersection_and_scratch_home():
     assert script_environment(("LABEL",), ("LABEL",), {"LABEL": "a;b$(id)"}, home="/scratch") == {
         "PATH": "/usr/bin:/bin", "LANG": "C", "LC_ALL": "C", "HOME": "/scratch",
         "LABEL": "a;b$(id)",
     }
     with pytest.raises(ScriptError):
         script_environment(("LABEL",), (), {"LABEL": "value"}, home="/scratch")
+    assert script_environment((), (), {}, home="/s", path="/opt/bin:/bin")["PATH"] == "/opt/bin:/bin"
 
 
 def test_shell_data_is_a_separate_argv_element(tmp_path):
     text = '$(touch /scratch/injected); `id`; "quoted"'
     req = request(arguments=(text,))
-    argv = _process_argv(ScriptsConfig(runtime_root="/runtime"), req, tmp_path)
+    argv = _process_argv(Path("/runtime/usr/bin/sh"), req, tmp_path)
     assert argv == ["/runtime/usr/bin/sh", "-c", req.pinned.program.shell, "aq-script", text]
 
 
@@ -238,11 +239,34 @@ def test_quota_reservations_are_atomic_idempotent_and_not_evicted(tmp_path):
 
 @pytest.mark.parametrize("values", [{"env_allowlist": ["AQ_API_TOKEN"]},
                                     {"wall_seconds": 901}, {"queue_seconds": False},
-                                    {"runtime_root": "relative"}, {"enabled": 1}])
+                                    {"runtime_root": "relative"}, {"enabled": 1},
+                                    {"search_path": ["bin"]}, {"search_path": "/bin"},
+                                    {"search_path": ["/a:/b"]}])
 def test_script_config_validates_policy(values):
     assert ScriptsConfig(**values).validate()
     assert ScriptsConfig().enabled
     assert not ScriptsConfig().validate()
+
+
+def test_script_roots_default_under_data_dir_and_manifest_stays_opt_in(tmp_path):
+    resolved = ScriptsConfig().resolved(str(tmp_path))
+    assert (resolved.runtime_root, resolved.input_root, resolved.state_root) == (
+        str(tmp_path / "scripts/runtime"), str(tmp_path / "scripts/inputs"),
+        str(tmp_path / "scripts/state"))
+    assert resolved.runtime_manifest == "" and not resolved.validate()
+    explicit = ScriptsConfig(input_root="/srv/in", runtime_manifest="/srv/m.json")
+    kept = explicit.resolved(str(tmp_path))
+    assert kept.input_root == "/srv/in" and kept.runtime_manifest == "/srv/m.json"
+    assert ScriptsConfig().input_root == ""  # resolution never mutates the stored config
+
+
+def test_pinned_runtime_digests_are_optional_but_paired():
+    p = program()
+    body = {"program": p, "program_sha256": digest(canonical(p.model_dump(mode="json"))),
+            "source_revision": "0" * 40}
+    assert PinnedScript(**body).runtime_sha256 is None
+    with pytest.raises(ValidationError):
+        PinnedScript(**body, runtime_sha256=manifest().sha256)
 
 
 def test_no_isolation_fields_or_doctor_gate():
@@ -256,7 +280,7 @@ def test_no_isolation_fields_or_doctor_gate():
 
 
 def test_payloads_never_appear_in_result_repr():
-    result = SandboxResult("test", "succeeded", stdout=b"secret", stderr=b"another-secret",
+    result = ScriptResult("test", "succeeded", stdout=b"secret", stderr=b"another-secret",
                            stdout_json={"value": "third-secret"})
     assert "secret" not in repr(result)
 
@@ -332,7 +356,7 @@ print(json.dumps({"uid": os.getuid(), "stdin": sys.stdin.read(), "env": dict(os.
     assert body["env"]["LABEL"] == "a;b$(id)"
     assert body["cwd"] == body["env"]["HOME"]
     assert "AQ_API_TOKEN" not in body["env"]
-    assert not any(path.endswith("test_playbook_script_sandbox.py") for path in body["fds"])
+    assert not any(path.endswith("test_playbook_script_runner.py") for path in body["fds"])
     assert not Path(body["cwd"]).exists()
     binding = result.binding_value()
     assert binding["stdout_json"] == body and not binding["inline_omitted"]
@@ -485,7 +509,7 @@ def test_child_cleanup_check_rejects_live_processes(monkeypatch, state):
 
 @pytest.mark.parametrize("state", [None, "R", "S", "Z", "X"])
 def test_group_cleanup_observes_only_live_owned_members(tmp_path, monkeypatch, state):
-    from src.jobs import script_sandbox
+    from src.jobs import script_runner
 
     unrelated = tmp_path / "234"
     unrelated.mkdir()
@@ -494,13 +518,13 @@ def test_group_cleanup_observes_only_live_owned_members(tmp_path, monkeypatch, s
     owned.mkdir()
     if state is not None:
         (owned / "stat").write_text(f"123 (script (child)) {state} 1 123")
-    monkeypatch.setattr(script_sandbox, "Path", lambda value: tmp_path)
-    assert script_sandbox._process_group_running(123) is (state in {"R", "S"})
+    monkeypatch.setattr(script_runner, "Path", lambda value: tmp_path)
+    assert script_runner._process_group_running(123) is (state in {"R", "S"})
 
 
 @pytest.mark.parametrize("stuck", [False, True])
 async def test_cleanup_observes_child_exit_after_kill(monkeypatch, stuck):
-    from src.jobs import script_sandbox
+    from src.jobs import script_runner
 
     signals = []
     observations = []
@@ -513,24 +537,24 @@ async def test_cleanup_observes_child_exit_after_kill(monkeypatch, stuck):
 
     def running(pgid):
         assert pgid == 123
-        assert signals[-1] == script_sandbox.signal.SIGKILL
+        assert signals[-1] == script_runner.signal.SIGKILL
         observations.append(pgid)
         return stuck or len(observations) == 1
 
-    monkeypatch.setattr(script_sandbox, "GRACE_SECONDS", 0.025)
-    monkeypatch.setattr(script_sandbox, "time", SimpleNamespace(monotonic=lambda: now))
-    monkeypatch.setattr(script_sandbox, "asyncio", SimpleNamespace(
+    monkeypatch.setattr(script_runner, "GRACE_SECONDS", 0.025)
+    monkeypatch.setattr(script_runner, "time", SimpleNamespace(monotonic=lambda: now))
+    monkeypatch.setattr(script_runner, "asyncio", SimpleNamespace(
         to_thread=asyncio.to_thread, wait_for=asyncio.wait_for, sleep=pause,
     ))
-    monkeypatch.setattr(script_sandbox.os, "killpg", lambda pid, sig: signals.append(sig))
-    monkeypatch.setattr(script_sandbox, "_process_group_running", running)
+    monkeypatch.setattr(script_runner.os, "killpg", lambda pid, sig: signals.append(sig))
+    monkeypatch.setattr(script_runner, "_process_group_running", running)
 
     async def reaped():
         return 0
 
     process = SimpleNamespace(pid=123, wait=reaped,
                               _transport=SimpleNamespace(close=lambda: closed.append(True)))
-    assert await script_sandbox._stop_process(process) is not stuck
+    assert await script_runner._stop_process(process) is not stuck
     assert len(observations) >= 2
     assert bool(closed) is stuck
 
@@ -608,13 +632,13 @@ async def test_run_lock_serializes_same_run(process_host, tmp_path):
 
 
 async def test_cleanup_uncertainty_is_not_success(process_host, monkeypatch):
-    from src.jobs import script_sandbox
+    from src.jobs import script_runner
 
-    original = script_sandbox._stop_process
+    original = script_runner._stop_process
     async def uncertain(process):
         await original(process)
         return False
-    monkeypatch.setattr(script_sandbox, "_stop_process", uncertain)
+    monkeypatch.setattr(script_runner, "_stop_process", uncertain)
     result = await local_run(process_host, "print('{}')", output="json", json_required=True)
     assert result.outcome == "runtime_error" and result.reason == "script_cleanup_uncertain"
     assert not result.cleanup_complete and not result.capture_complete
@@ -640,3 +664,94 @@ async def test_quota_and_input_limit_refuse_launch(process_host):
     settings.output_storage_bytes = 1
     result = await run_request(process_host, req)
     assert result.reason == "script_storage_quota" and result.started_at is None
+
+
+@pytest.fixture
+def plain_host(tmp_path):
+    # Defaults only: no manifest, roots derived from the data directory.
+    python = Path(sys.executable)
+    settings = dataclasses.replace(ScriptsConfig(), search_path=[
+        str(python.parent), "/usr/bin", "/bin"]).resolved(str(tmp_path / "data"))
+    return settings, tmp_path / "box-lock", python
+
+
+async def host_request(host, *, runtime=None, **forms):
+    settings, _, _ = host
+    p = ScriptProgram(runtime="host", source_kind="vault", **forms)
+    source = Path(settings.input_root).parent / ("source-" + uuid.uuid4().hex)
+    source.mkdir(parents=True)
+    (source / "run.py").write_text("print('from host')")
+    pinned = await pin_script_inputs(p, source_root=source, source_revision="local-test",
+                                     runtime=runtime, store=InputStore(Path(settings.input_root)))
+    return request(pinned=pinned)
+
+
+async def run_host(host, req):
+    settings, lock_dir, _ = host
+    return await launch(settings, req, jobs_enabled=True, cancelled=asyncio.Event(),
+                        lock_dir=lock_dir, capacity=1)
+
+
+async def test_host_executables_run_without_manifest_by_default(plain_host):
+    settings, _, python = plain_host
+    req = await host_request(plain_host, script="run.py", interpreter=python.name)
+    assert req.pinned.runtime_sha256 is None and req.pinned.executable_sha256 is None
+    result = await run_host(plain_host, req)
+    assert result.outcome == "succeeded" and result.stdout == b"from host\n"
+    result = await run_host(plain_host, await host_request(
+        plain_host, shell='printf "%s" "$PATH"', interpreter="sh"))
+    assert result.outcome == "succeeded"
+    assert result.stdout.decode() == ":".join(settings.search_path)
+    assert Path(settings.state_root).is_dir() and Path(settings.input_root).is_dir()
+
+
+async def test_runtime_root_is_searched_before_search_path(plain_host):
+    settings, _, _ = plain_host
+    tool = Path(settings.runtime_root) / "tools" / "hello"
+    tool.parent.mkdir(parents=True)
+    tool.write_text("#!/bin/sh\nprintf 'runtime root'\n")
+    tool.chmod(0o755)
+    result = await run_host(plain_host, await host_request(
+        plain_host, argv=("tools/hello",)))
+    assert result.outcome == "succeeded" and result.stdout == b"runtime root"
+
+
+async def test_missing_host_executable_refuses_before_spawn(plain_host, monkeypatch):
+    req = await host_request(plain_host, argv=("no-such-aq-tool",))
+    monkeypatch.setattr(asyncio, "create_subprocess_exec",
+                        lambda *a, **k: pytest.fail("missing executable must not spawn"))
+    result = await run_host(plain_host, req)
+    assert result.outcome == "admission_denied" and result.started_at is None
+    assert result.reason == "script_executable_unavailable"
+
+
+async def test_digest_pins_never_degrade_to_host_lookup(plain_host, process_host, monkeypatch):
+    monkeypatch.setattr(asyncio, "create_subprocess_exec",
+                        lambda *a, **k: pytest.fail("mismatched pin mode must not spawn"))
+    # Pinned against a manifest, launched where none is configured.
+    pinned = await local_request(process_host, "print('pinned')")
+    result = await run_host(plain_host, pinned)
+    assert result.outcome == "admission_denied"
+    assert result.reason == "script_runtime_manifest_required"
+    # Pinned on the host, launched where the operator now requires a manifest.
+    unpinned = await host_request(plain_host, script="run.py",
+                                  interpreter=str(Path(sys.executable).resolve()).lstrip("/"))
+    result = await run_request(process_host, unpinned)
+    assert result.outcome == "admission_denied" and "digest_mismatch" in result.reason
+
+
+async def test_source_pins_without_runtimes_are_host_mode(tmp_path):
+    source = tmp_path / "vault"
+    source.mkdir()
+    (source / "run.py").write_text("print(1)")
+    body = {"runtime": "host", "script": "run.py", "interpreter": "python3",
+            "source_kind": "vault"}
+    pinned = await pin_source_scripts(
+        SimpleNamespace(frontmatter={"scripts": {"one": body}}), source_root=source,
+        source_revision="vault-rev", store=InputStore(tmp_path / "store"), max_bytes=MIB)
+    assert pinned["one"].runtime_sha256 is None
+    with pytest.raises(ScriptError, match="script_runtime_unavailable"):
+        await pin_source_scripts(
+            SimpleNamespace(frontmatter={"scripts": {"one": body}}), source_root=source,
+            source_revision="vault-rev", store=InputStore(tmp_path / "store"), runtimes={},
+            max_bytes=MIB)

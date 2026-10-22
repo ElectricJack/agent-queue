@@ -813,7 +813,8 @@ async def test_matrix_hibernate_resume_fresh_folder_prime_ack_and_single_writer(
     monkeypatch.setattr(env.db, "update_workspace", AsyncMock())
     slots = SimpleNamespace(reprovision_slot=AsyncMock())
     orch = SimpleNamespace(db=env.db, git=git, _prepare_workspace_locked=AsyncMock(return_value=str(old)),
-                           _git_mutex=lambda _: asyncio.Lock(), _worktree_slots=lambda: slots)
+                           _git_mutex=lambda _: asyncio.Lock(), _worktree_slots=lambda: slots,
+                           _worktree_base_paths={})
     resume = ResumeTransaction(SimpleNamespace(orch=orch), clock=lambda: NOW + 30)
     action = AssignAction("a", "owner", "p", "c", 1)
     fresh = await resume.fresh_workspace(action, await env.db.get_task("owner"), None,

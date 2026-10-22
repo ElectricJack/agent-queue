@@ -248,8 +248,10 @@ daemon de-duplicates it and does not double-count against the thread's budget.
 The `--client-key` is the only send-side flag collaboration-specific; everything
 else is the ordinary message send you already know.
 
-To wait on a reply from a peer, use the ordinary durable message wait with the
-thread id as the referral:
+When prime reports waits enabled for the project, wait on a peer reply using the
+ordinary durable message wait with the thread id as the referral. If waits are
+disabled or registration returns `wait.disabled`, preserve the claim and end the
+turn awaiting inbox delivery; do not retry registration or poll:
 
 ```bash
 aq wait register --kind message --ref <thread-id> --after-seq <cursor> \

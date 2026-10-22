@@ -283,6 +283,56 @@ async def test_explain_calls_are_bounded_and_cached(context):
     assert context.handler.calls.count("work-0") == 1
 
 
+@pytest.mark.parametrize("status", [TaskStatus.READY, TaskStatus.DEFINED])
+@pytest.mark.parametrize("identity", ["blocking_ids", "parent", "direct_ref", "unknown"])
+async def test_epic_refresh_stall_names_epic_and_command(context, status, identity):
+    child = task("child", status=status)
+    refresh = reason("frontier_epic_refresh_pending", "Epic must contain prerequisite", "child")
+    if identity == "blocking_ids":
+        refresh["blocking_task_ids"] = ["epic"]
+    elif identity == "parent":
+        child.parent_task_id = "epic"
+    elif identity == "direct_ref":
+        refresh["ref"] = "epic"
+    refresh["batch_ids"] = ["train-epic-refresh-one"]
+    # Refresh is actionable even behind a dependency and later explanation rows.
+    context.handler = Handler({"child": [
+        reason("awaiting_pool_session"),
+        reason("blocked_dependency", "dep 'other' status=IN_PROGRESS", "other"),
+        refresh,
+    ]})
+    probe = await module._probe(
+        context, {"one"}, ("epic_refresh_needed",),
+        lambda ctx: module._work_findings(ctx, [child], NOW, module._Explains(ctx)),
+    )
+    [finding] = probe.findings
+    assert all(part["complete"] for part in probe.coverage)
+    observations = module._stall_observations(module.CheckResult(
+        module.CHECK_ID, Severity.WARN, "refresh needed", observation_data=probe.findings,
+    ))
+    assert len(observations) == 1
+    assert finding["kind"] == "epic_refresh_needed"
+    assert finding["task_id"] == "child"
+    assert finding["batch_ids"] == ["train-epic-refresh-one"]
+    if identity == "unknown":
+        assert finding["epic_ids"] == finding["commands"] == []
+        assert "epic identity unavailable" in finding["detail"]
+    else:
+        assert finding["epic_ids"] == ["epic"]
+        assert finding["commands"] == ["aq integration refresh-epic --task epic --apply"]
+        assert finding["commands"][0] in finding["detail"]
+    assert "--task child" not in finding["detail"]
+    assert context.handler.calls == ["child"]
+
+
+async def test_fresh_epic_refresh_wait_is_not_a_stall(context):
+    context.handler = Handler({"child": [reason("frontier_epic_refresh_pending", ref="epic")]})
+    assert await module._work_findings(
+        context, [task("child", age=60)], NOW, module._Explains(context),
+    ) == []
+    assert context.handler.calls == []
+
+
 @pytest.mark.parametrize("age", [1800, 1801, 10 * 3600])
 @pytest.mark.parametrize("blocked", [False, True])
 async def test_train_repair_capacity_wait_has_its_own_alarm(context, monkeypatch, age, blocked):
@@ -318,6 +368,21 @@ async def test_train_repair_noncapacity_pool_wait_is_not_capacity_alarm(context,
         context, [task("repair")], NOW, module._Explains(context),
     )
     assert [f["kind"] for f in findings] == ["unclaimed_work"]
+
+
+async def test_ready_train_repair_missing_reservation_has_distinct_frontier_alarm(context, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    monkeypatch.setattr(module, "_waiting_train_repairs", AsyncMock(return_value={
+        "repair": {"batch_id": "train", "operation_id": None},
+    }))
+    context.handler = Handler({"repair": [reason("frontier_origin_not_materialized")]})
+    findings = await module._work_findings(
+        context, [task("repair", age=25*60)], NOW, module._Explains(context),
+    )
+    assert [f["kind"] for f in findings] == ["train_repair_off_frontier"]
+    assert findings[0]["batch_id"] == "train"
+    assert "reserve-owner --task-id repair" in findings[0]["detail"]
 
 
 @pytest.mark.parametrize("unowned", [0, 2])

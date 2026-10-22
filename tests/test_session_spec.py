@@ -793,16 +793,16 @@ class TestPromptDelivery:
         assert "task-1" in spec.prompt
 
     @pytest.mark.parametrize(
-        ("profile_id", "project_id"),
+        ("profile_id", "project_id", "supervisor_inbox"),
         [
-            ("supervisor", "proj-1"),
-            ("supervisor", None),
-            ("supervisor-global", None),
-            ("n-supervisor--proj-1", "proj-1"),
+            ("supervisor", "matter-engine-cpp", "session:supervisor-matter-engine-cpp"),
+            ("supervisor", None, "session:supervisor-agent-queue"),
+            ("supervisor-global", None, "session:supervisor-agent-queue"),
+            ("n-supervisor--proj-1", "proj-1", "session:supervisor-proj-1"),
         ],
     )
     def test_supervisor_named_bootstrap_establishes_patrol(
-        self, builder, profile_id, project_id
+        self, builder, profile_id, project_id, supervisor_inbox
     ):
         spec = builder.build_named_spec(
             profile=_Profile(id=profile_id),
@@ -825,7 +825,9 @@ class TestPromptDelivery:
         assert "python3 ~/.agent-queue/operator-checks/stall-sweep.py" in prompt
         assert "aq --json message inbox --inject" in prompt
         assert "aq --json message inbox --to profile:supervisor" in prompt
-        assert "aq --json message inbox --to session:supervisor-agent-queue" in prompt
+        assert f"aq --json message inbox --to {supervisor_inbox}`" in prompt
+        if project_id is not None:
+            assert "session:supervisor-agent-queue" not in prompt
         assert "FIX what it finds" in prompt
         assert "no scheduler" in prompt and "start of every turn" in prompt
         assert "re-establish it after any restart" in prompt
@@ -1152,10 +1154,22 @@ class TestWorkerToolEnv:
         assert "three identical preparation refusals" in prompt
         assert "respect `retry_after`" in prompt
         assert "report the blocker ONCE" in prompt
-        assert "ONE durable message wait" in prompt
+        assert "Wait registration is disabled" in prompt
+        assert "ONE durable message wait" not in prompt
         assert "drain-ack" in prompt
         assert "Do not poll claims" in prompt
         assert "daemon_unreachable / exit code 3, keep retrying" in prompt
+
+    @pytest.mark.parametrize("global_enabled, override", [(True, None), (False, True)])
+    def test_pool_prompt_uses_effective_wait_policy(self, builder, global_enabled, override):
+        from src.config_wait_policy import WaitPolicyConfig, WaitProjectOverrides
+
+        builder.config.wait_policy = WaitPolicyConfig(v2_enabled=global_enabled)
+        if override is not None:
+            builder.config.wait_policy.projects["proj-1"] = WaitProjectOverrides(v2_enabled=override)
+        prompt = self._pool(builder).prompt
+        assert "ONE durable message wait" in prompt
+        assert "Wait registration is disabled" not in prompt
 
     def test_a_named_session_does_not(self, builder):
         spec = builder.build_named_spec(

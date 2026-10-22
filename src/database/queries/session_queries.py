@@ -146,6 +146,7 @@ def _row_to_session(row) -> SessionRecord:
         claim_failure_at=row.get("claim_failure_at"),
         failed_preparation=row.get("failed_preparation"),
         claim_refusal=row.get("claim_refusal"),
+        supervisor_health=row.get("supervisor_health"),
         hooks_provisioned=bool(row.get("hooks_provisioned")),
         git_identity_digest=row.get("git_identity_digest"),
     )
@@ -236,6 +237,7 @@ class SessionQueryMixin:
                 claim_failure_at=session.claim_failure_at,
                 failed_preparation=session.failed_preparation,
                 claim_refusal=session.claim_refusal,
+                supervisor_health=session.supervisor_health,
                 hooks_provisioned=session.hooks_provisioned,
                 git_identity_digest=session.git_identity_digest,
             )

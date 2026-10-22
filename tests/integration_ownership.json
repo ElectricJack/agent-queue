@@ -9630,9 +9630,9 @@
     "src/jobs/playbook.py::run": "Executes a pinned playbook script and encrypts its process result; independent of source CI jobs.",
     "src/jobs/playbook.py::settle_unlaunched": "Records an unlaunched script cancellation/expiry as protected output; no integration lifecycle.",
     "src/jobs/playbook.py::submit": "Admits playbook-owned scripts only, with encrypted inputs and immutable input pins; no integration submission.",
-    "src/jobs/script_sandbox.py::BINDING_BYTES": "Generic script binding size constant; same-shaped numeric AST is not relocated integration logic.",
-    "src/jobs/script_sandbox.py::REQUEST_BYTES": "Generic script input size constant; same-shaped numeric AST is not relocated integration logic.",
-    "src/jobs/script_sandbox.py::launch": "Ordinary script process backend with shared box admission and bounded streams; no integration policy/ref state.",
+    "src/jobs/script_runner.py::BINDING_BYTES": "Generic script binding size constant; same-shaped numeric AST is not relocated integration logic.",
+    "src/jobs/script_runner.py::REQUEST_BYTES": "Generic script input size constant; same-shaped numeric AST is not relocated integration logic.",
+    "src/jobs/script_runner.py::launch": "Ordinary script process backend with shared box admission and bounded streams; no integration policy/ref state.",
     "src/playbooks/private_values.py::REFERENCE_KEY": "Generic protected-value reference key; same-shaped constant AST is not relocated integration logic.",
     "src/playbooks/receipts.py::attempt_key": "Generic playbook step attempt hash; not an integration mutation key or replay ledger.",
     "src/playbooks/script_inputs.py::canonical": "Generic canonical JSON for script input pins; not integration ref serialization.",
@@ -17885,7 +17885,10 @@
     "src/asks/batch_scope.py::scope_ask": "Generic specification-ingestion scope-question lookup, not an integration gate or publication authority.",
     "src/api/scope.py::held_task_for_session": "Generic live worker/task/claim-epoch resolution shared by all task lifecycle commands. It grants no integration branch or publication authority; worker git confinement, release authorization and integration-specific callers remain independently charged.",
     "src/database/queries/proposal_queries.py::detect_cycles": "Generic task dependency cycle detection shared by ordinary task proposals and held ingestion validation. It neither reads integration state nor grants branch, code publication or ref replay authority; integration callers remain independently charged.",
-    "src/task_graph/batch_digest.py::normalize_description": "Pure whitespace normalization for specification-to-task fidelity attestation; no integration subject, branch or publication state."
+    "src/task_graph/batch_digest.py::normalize_description": "Pure whitespace normalization for specification-to-task fidelity attestation; no integration subject, branch or publication state.",
+    "src/wait_runtime/restart.py::restart_lock": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/wait_runtime/restart.py::readmit": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/wait_runtime/restart.py::release_continuations": "Generic dependency; integration-specific definitions in this file are charged independently."
   },
   "exclusion_policy": {
     "tests": "Fixtures and tests do not ship as production mechanisms.",

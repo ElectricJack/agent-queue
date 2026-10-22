@@ -258,6 +258,11 @@ branch and contained in its epic. Missing epic containment withholds the child e
 when no batch is open. Scheduler, pool demand, explain and claim share these rules.
 Explain reports `frontier_epic_refresh_pending` for the epic gate and names any
 blocking refresh batch id; default-branch proof retains its separate exclusion.
+For stale children, `aq doctor --check stall.sweep` reports `epic_refresh_needed`
+and the operator stall script prints `EPIC-REFRESH-NEEDED`, with the epic's refresh
+command and any blocking batch ids. A conflicting apply files an ordinary train
+repair on the epic branch. Repeating apply reuses that batch and repair; the child
+continues waiting for the refresh's checks, attestation and publication.
 Repairs for failed or missing CI start from the tested refresh candidate; conflict
 repairs start from the partial candidate containing the successful merges.
 Refresh failures are compared with the default SHA frozen into the batch. A
@@ -331,6 +336,13 @@ Selection now routes before root proof and reuses its member window within a
 single visit. Root proof still removes delivered work before the member limit;
 historical delivery and out-of-window dependency checks remain active.
 
+Time spent evaluating a root refused for red PR checks or exhausted automatic
+recovery does not spend the candidate-selection quantum. Later independent roots
+can reach admission during the same visit; green and other candidate work still
+spends the quantum. The outer visit deadline remains in effect. Red roots keep
+their named blockers, and their dependents still require delivery or an admitted
+paired repair before they can enter a batch.
+
 Two bounded, isolated benchmarks make the measurements reproducible:
 
 ```bash
@@ -355,7 +367,7 @@ used 961 Git commands in 2.864 seconds; the warm pass used zero commands with
 - `aq integration pause-batch BATCH_ID --apply` pauses publication for an unpromoted Git-first batch.
 - `aq integration resume-batch BATCH_ID --apply` resumes a paused Git-first batch.
 - `aq integration abort-batch BATCH_ID --apply --reason REASON` aborts an unpromoted Git-first batch.
-- `aq integration settle-batch BATCH_ID` previews settlement when every frozen source is already on its target. An epic refresh settles once its epic has the frozen default head as an ancestor, including a merge its repair published to the epic; until then `abort-batch` withdraws it. Apply with `--apply --target-sha TARGET_SHA --reason REASON`. It records delivery without advancing the target; normal guarded branch cleanup still runs, and active human holds and incomplete or unavailable source proof refuse settlement. See the [required-job and settlement specification](../specs/design/required-job-train-settlement.md).
+- `aq integration settle-batch BATCH_ID` previews settlement when every frozen source is already on its target. A legacy epic-sync instead requires every frozen source on the designated default branch; preview reports that default `target_ref` and its SHA, and replay can resume cleanup of an already promoted sync. An epic refresh settles once its epic has the frozen default head as an ancestor, including a merge its repair published to the epic; until then `abort-batch` withdraws it. Apply with `--apply --target-sha TARGET_SHA --reason REASON`. It records delivery without advancing the target; normal guarded branch cleanup still runs, and active human holds and incomplete or unavailable source proof refuse settlement. See the [required-job and settlement specification](../specs/design/required-job-train-settlement.md).
 - `aq integration refresh-epic --task EPIC_ID --apply` starts or advances the attested refresh; pending checks or repairs continue through the train.
 - `aq integration reverify-epic EPIC_ID` previews aggregate verification for a completed epic. Apply with `--apply --head HEAD_SHA --reason REASON` to request one bounded train visit, including when the old owner is released. The result names the actual visit state and blockers; `visited` does not mean checks or review passed. Read the [control specification](../specs/design/epic-aggregate-reverification.md) for the operator handoff.
 - `aq integration record-root-noop ROOT_TASK_ID` previews a no-artifact completion for an unheld no-code root; apply requires `--apply --head HEAD_SHA --reason REASON`.

@@ -39,7 +39,7 @@ class Reason(TypedDict):
     ``code`` is a stable machine-readable identifier — one of
     ``blocked_dependency``, ``blocked_gate``, ``no_idle_agent``,
     ``no_compatible_agent``, ``awaiting_intelligence_route``,
-    ``workspace_locked``, ``budget_exhausted``, ``provider_hold``,
+    ``workspace_locked``, ``project_agent_cap``, ``budget_exhausted``, ``provider_hold``,
     ``held``, ``project_paused``, ``awaiting_pool_session``, ``pool_disabled``, and
     ``supervisor_profile``. The last three are
     the pull path's answer and *replaces* the capacity codes rather than
@@ -137,6 +137,19 @@ def build_capacity_reasons(
             )
         )
         return reasons
+
+    active = state.project_active_agent_counts.get(task.project_id, 0)
+    cap = 1 if pc and pc.exclusive else project.max_concurrent_agents
+    if active >= cap:
+        reasons.append(Reason(
+            code="project_agent_cap",
+            detail=(
+                f"project '{task.project_id}' agent cap reached: {active}/{cap} live sessions "
+                f"(max_concurrent_agents={project.max_concurrent_agents}"
+                + (", exclusive=True" if pc and pc.exclusive else "") + ")"
+            ),
+            ref=task.project_id,
+        ))
 
     avail = workspace_counts.get(task.project_id, 0)
     if avail == 0:
