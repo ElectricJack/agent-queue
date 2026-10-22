@@ -397,9 +397,12 @@ class DatabaseTargets:
         self.flow_problems = flow_problems
         self.retired_targets: set[tuple[str, str, str]] = set()
 
-    async def targets(self, now: float) -> list[TrainTarget]:
+    async def targets(self, now: float, *, project_id: str | None = None) -> list[TrainTarget]:
+        # A scoped read (one control's own project) probes only that project's
+        # origin and leaves the fleet-wide retirement set to the tick.
         found: dict[tuple[str, str, str], TrainTarget] = {}
-        self.retired_targets.clear()
+        retired = self.retired_targets if project_id is None else set()
+        retired.clear()
         async with self.db._engine.connect() as conn:
             rows = (await conn.execute(
                 select(projects.c.id, projects.c.hierarchical_integration_mode,
@@ -408,17 +411,19 @@ class DatabaseTargets:
                 .select_from(projects.join(
                     repos, repos.c.id == projects.c.integration_repository_id))
                 .where(projects.c.hierarchical_integration_mode.in_(TRAIN_MODES),
-                       projects.c.status == "ACTIVE")
+                       projects.c.status == "ACTIVE",
+                       *([projects.c.id == project_id] if project_id else []))
                 .order_by(projects.c.id)
             )).mappings().all()
         # Root probes run concurrently and outside a held database connection.
         # A stalled probe leaves work owed; visits perform their own root proof.
-        for targets in await asyncio.gather(*(self._project_targets(row) for row in rows)):
+        for targets in await asyncio.gather(*(
+                self._project_targets(row, retired) for row in rows)):
             for target in targets:
                 found.setdefault(target.key, target)
         return [found[key] for key in sorted(found)]
 
-    async def _project_targets(self, row):
+    async def _project_targets(self, row, retired_sink):
         project_id, repository_id = row["id"], row["repository_id"]
         default = _branch(row["default_branch"])
         kind = "development" if row["hierarchical_integration_mode"] == "development" else "root"
@@ -514,7 +519,7 @@ class DatabaseTargets:
         # A frozen batch still needs its recovery diagnostics, even if its
         # container has since completed or its remote target disappeared.
         retired -= {default, *promotions, *(batch["target_ref"] for batch in batches)}
-        self.retired_targets.update((project_id, repository_id, ref) for ref in retired)
+        retired_sink.update((project_id, repository_id, ref) for ref in retired)
         refs = {default, *(batch["target_ref"] for batch in batches)}
         refs.update(target.target_ref for task_id, target in routed.items()
                     if task_id not in delivered and
