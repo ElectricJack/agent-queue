@@ -31,6 +31,7 @@ from src.git.manager import is_valid_git_oid
 
 DESIGN_INTEGRATION_COMMANDS = frozenset(
     {
+        "integration_continue_close",
         "integration_file_children",
         "integration_checkpoint_parent",
         "integration_delivery_readiness",
@@ -2040,6 +2041,23 @@ def _register_contract(
     registry.register(CommandRegistration(contract.name, contract, adapter, preview_adapter))
 
 
+class IntegrationContinueCloseArgs(CommandArgs):
+    operation_id: str = Field(min_length=1)
+    project_id: str | None = None
+    task_id: str | None = None
+    session_id: str | None = None
+
+
+class IntegrationContinueCloseValue(CommandValue):
+    operation_id: str | None = None
+    close: dict[str, Any] | None = None
+
+
+async def _continue_close(args, ctx):
+    return await _hierarchy_adapter("integration_continue_close", args, ctx,
+        IntegrationContinueCloseValue, {"completed", "pending", "refused"})
+
+
 def register_integration_contracts(registry: ContractRegistry) -> None:
     """Register contracts whose real handlers have landed.
 
@@ -2047,6 +2065,13 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
     declaration together.  Unavailable security-sensitive mutations remain
     outside the allowlist.
     """
+    registry.register(CommandRegistration(
+        "integration_continue_close",
+        _operational_contract("integration_continue_close", IntegrationContinueCloseArgs,
+            ("completed", "pending", "refused"), successes=frozenset({"completed"}),
+            side_effect=SideEffectClass.COMPOSITE, result_model=IntegrationContinueCloseValue),
+        _continue_close,
+    ))
     for name in ("integration_cutover_plan", "integration_cutover"):
         if registry.get(name) is not None:
             continue

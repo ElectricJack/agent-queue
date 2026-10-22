@@ -146,6 +146,7 @@ AGENT_COMMAND_SET: frozenset[str] = frozenset(
         "task_route",
         "integration_status",
         "integration_batch_fix",
+        "integration_continue_close",
         "promote_schema",
         "promote_validate",
         "promote_rulesets",
