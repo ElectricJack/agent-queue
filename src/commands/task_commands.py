@@ -5824,7 +5824,7 @@ class TaskCommandsMixin:
                                f"is gone")
             elif needs_attention in {
                 "integration_prepare_failed", "integration_prepare_failed_attached",
-                "repair_target_unpublished",
+                "repair_target_unpublished", "child_preparation_conflict",
             }:
                 prepared = await self.db.get_task_meta(str(task_id), "prepare_failure")
                 if isinstance(prepared, dict) and prepared.get("reason"):

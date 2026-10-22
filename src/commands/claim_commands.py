@@ -2287,6 +2287,34 @@ class ClaimCommandsMixin:
                 )
                 self._resolve_claim_waiters(session.id, epoch, "prepare_failed")
                 return self._simple(ClaimResult.PREPARE_FAILED, failure.reason, row, cap)
+            if isinstance(exc, ChildPreparationConflict):
+                # The merge was cleanly aborted. Without a managed train
+                # origin there is no train repair to reserve; retrying the
+                # same inputs would only quarantine an otherwise healthy slot.
+                await self.db.set_task_meta(task.id, "child_preparation_conflict", {
+                    "child_head": exc.child_head, "parent_head": exc.parent_head,
+                    "merge_head": exc.merge_head, "files": list(exc.files),
+                    "reason": failure.reason,
+                })
+                await self.db.release_claim(
+                    session.id,
+                    expected_task_id=task.id, expected_claim_epoch=epoch,
+                    expected_instance_token=session.instance_token,
+                    task_status=TaskStatus.BLOCKED, context="merge_conflict",
+                    now=time.time(), result="prepare_failed",
+                    needs_attention="child_preparation_conflict",
+                )
+                await self._record_prepare_failure(
+                    task, failure, session=session, slot=slot, epoch=epoch,
+                    disposition="blocked",
+                )
+                await self.orchestrator.bus.emit("pool.prepare_failed", {
+                    "project_id": session.project_id, "profile_id": session.profile_id,
+                    "session_id": session.id, "task_id": task.id,
+                    **failure.event_fields(),
+                })
+                self._resolve_claim_waiters(session.id, epoch, "prepare_failed")
+                return self._simple(ClaimResult.PREPARE_FAILED, failure.reason, row, cap)
             if isinstance(exc, ForeignSlotClaim):
                 return await self._foreign_slot_claim_prepare_failed(
                     task, exc=exc, failure=failure, session=session, slot=slot,

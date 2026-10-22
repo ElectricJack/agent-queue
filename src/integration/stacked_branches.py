@@ -524,20 +524,19 @@ async def observe_stacks(observer, project_id, *, task_id=None, max_age=0, snaps
     """Observe prerequisites; preparation and refresh need Git even for an empty set."""
     async with observer.db._engine.connect() as conn:
         rows = await _inputs(conn, project_id, task_id)
-        repository = (
+        parents = dict(
             (
                 await conn.execute(
-                    select(repos)
-                    .join(
-                        projects,
-                        projects.c.integration_repository_id == repos.c.id,
+                    select(tasks.c.id, tasks.c.branch_name).where(
+                        tasks.c.id.in_({row["parent_task_id"] for row in rows})
                     )
-                    .where(projects.c.id == project_id)
                 )
-            )
-            .mappings()
-            .one_or_none()
+            ).all()
         )
+        repository_query = select(repos).join(
+            projects, projects.c.integration_repository_id == repos.c.id,
+        ).where(projects.c.id == project_id)
+        repository = (await conn.execute(repository_query)).mappings().one_or_none()
     view = StackView(observer.db, project_id, rows,
                      ref_cache=observer._stack_ref_cache, fresh_max_age=min(max_age, 2),
                      cached_only=cached_only)
@@ -672,6 +671,12 @@ class StackedBranches:
 
     async def reserve_child_conflict(self, task_id, conflict, workspace):
         """Retain a checkout's exact inputs after abort, then reserve one repair."""
+        async with self.db._engine.connect() as conn:
+            origin = await self._origin(task_id, conn)
+        if origin is None:
+            # Ordinary pull-request/manual children have no managed train
+            # origin. Leave their conflict to the caller's preparation outcome.
+            return
         task = await self.db.get_task(task_id)
         view = await observe_stacks(
             self.observer, task.project_id, task_id=task_id, require_snapshot=True,
@@ -680,7 +685,8 @@ class StackedBranches:
         async with self.db._engine.connect() as conn:
             proofs = await view.verified_on(conn, ids)
             origin = await self._origin(task_id, conn)
-        if set(proofs) != ids or not view.snapshot or not await view.fresh():
+        if (origin is None or set(proofs) != ids or not view.snapshot
+                or not await view.fresh()):
             raise StackPreparationChanged("child preparation proof changed before repair reservation")
         child_ref = task.branch_name.removeprefix("refs/heads/")
         published = view.snapshot.source_heads.get("refs/remotes/origin/" + child_ref)
@@ -732,18 +738,9 @@ class StackedBranches:
             raise StackPreparationChanged("prerequisite stack changed during preparation")
         async with self.db._engine.connect() as conn:
             proofs = await view.verified_on(conn, ids)
-            origin = (
-                (
-                    await conn.execute(
-                        select(task_branch_origins).where(
-                            task_branch_origins.c.task_id == task_id,
-                            task_branch_origins.c.retired_at.is_(None),
-                        )
-                    )
-                )
-                .mappings()
-                .one()
-            )
+            origin = await self._origin(task_id, conn)
+            if origin is None:
+                raise StackPreparationChanged("child origin changed during preparation")
             parent = await conn.scalar(
                 select(tasks.c.branch_name).where(
                     tasks.c.id == task.parent_task_id,
@@ -812,6 +809,13 @@ class StackedBranches:
                 raise StackPreparationChanged("prerequisite stack changed before reserving repair")
             raise StackPrerequisitesConflict(recorded)
 
+        async def reserve_merge_conflict(exc, **detail):
+            files = set(exc.files)
+            files.update(line.split("\t", 1)[1]
+                         for line in getattr(exc, "stdout", "").splitlines()[1:]
+                         if "\t" in line and line.split("\t", 1)[0].endswith((" 1", " 2", " 3")))
+            await reserve_conflict({"files": sorted(files), "reason": str(exc), **detail})
+
         if pending:
             repair = await self.db.get_task(pending["repair_task_id"])
             completion = await self.db.get_task_completion(repair.id) if repair else None
@@ -867,13 +871,7 @@ class StackedBranches:
                     regenerations=regenerations,
                 )
             except (GeneratedMergeConflict, GeneratedRegenerationFailure) as exc:
-                files = set(exc.files)
-                files.update({
-                    line.split("\t", 1)[1]
-                    for line in getattr(exc, "stdout", "").splitlines()[1:]
-                    if "\t" in line and line.split("\t", 1)[0].endswith((" 1", " 2", " 3"))
-                })
-                await reserve_conflict({"files": sorted(files), "reason": str(exc)})
+                await reserve_merge_conflict(exc)
         if not all([await self.observer.git.ais_ancestor(
                 view.snapshot.store, head, base, strict=True) for head in heads]):
             raise StackPreparationChanged("prepared base does not contain every prerequisite")
@@ -887,16 +885,10 @@ class StackedBranches:
                     stamp=origin["created_at"], regenerations=regenerations,
                 )
             except (GeneratedMergeConflict, GeneratedRegenerationFailure) as exc:
-                files = set(exc.files)
-                files.update({line.split("\t", 1)[1]
-                              for line in getattr(exc, "stdout", "").splitlines()[1:]
-                              if "\t" in line and
-                              line.split("\t", 1)[0].endswith((" 1", " 2", " 3"))})
-                await reserve_conflict({
-                    "files": sorted(files), "reason": str(exc), "boundary": "child_parent",
-                    "child_head": dependent_head, "overlay_head": overlay,
-                    "stack_store": str(view.snapshot.store),
-                })
+                await reserve_merge_conflict(
+                    exc, boundary="child_parent", child_head=dependent_head,
+                    overlay_head=overlay, stack_store=str(view.snapshot.store),
+                )
         if not await view.fresh():
             raise StackPreparationChanged("prerequisite stack changed before recording its base")
         regenerations = [{**entry, "prerequisites": proofs} for entry in regenerations]
@@ -960,18 +952,11 @@ class StackedBranches:
         } if pending else None)
 
     async def _origin(self, task_id, conn):
-        return (
-            (
-                await conn.execute(
-                    select(task_branch_origins).where(
-                        task_branch_origins.c.task_id == task_id,
-                        task_branch_origins.c.retired_at.is_(None),
-                    )
-                )
-            )
-            .mappings()
-            .one_or_none()
+        query = select(task_branch_origins).where(
+            task_branch_origins.c.task_id == task_id,
+            task_branch_origins.c.retired_at.is_(None),
         )
+        return (await conn.execute(query)).mappings().one_or_none()
 
     async def completed_source_matches(self, task_id, source_sha, snapshot, *, conn=None):
         """A current immutable completion ref can replace missing projection rows."""
