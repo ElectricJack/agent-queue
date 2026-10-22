@@ -170,9 +170,6 @@ class IntegrationCleanupService:
         await self.reconcile_aggregate(batch_id, observed_at)
         return results
 
-    async def handle_item(self, row: dict[str, Any], now: float) -> CleanupExecutionResult:
-        return await self.execute(row["batch_id"], row["kind"], row["identity"], now=now)
-
     @root_engine_guard(
         "batch", outcome="wait", result_model=CleanupExecutionResult, aborted_pr_cleanup=True,
         promoted_train_cleanup=True,

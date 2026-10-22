@@ -1010,6 +1010,56 @@ async def test_failed_cycle_logs_at_most_one_error_per_reconciler(orch, monkeypa
     assert caplog.text.count("Session reconciliation error") == 1
 
 
+async def test_hung_session_stage_is_cancelled_and_later_stages_run(orch, monkeypatch, caplog):
+    """A wedged cascade stage costs one bounded slot, never the cycle (smart-lantern-91)."""
+    from src.orchestrator import core
+
+    monkeypatch.setattr(core, "SESSION_STAGE_TIMEOUT", 0.05)
+    orch.config.sessions.enabled = True
+    hung = asyncio.Event()
+
+    async def hang():
+        hung.set()
+        await asyncio.sleep(60)
+
+    monkeypatch.setattr(orch.transcript_watcher, "tick", hang)
+    monkeypatch.setattr(orch.agent_questions, "tick", AsyncMock())
+    reconciler = AsyncMock()
+    monkeypatch.setattr(orch.session_reconciler, "tick", reconciler)
+
+    await asyncio.wait_for(orch._reconcile_sessions(), 5)
+
+    assert hung.is_set()
+    reconciler.assert_awaited_once_with()
+    assert "Session cascade stage 'transcript watcher' exceeded" in caplog.text
+
+
+async def test_slow_continuation_pass_neither_blocks_the_pool_nor_duplicates(orch, monkeypatch):
+    """Pool measurement starts after a bounded head start; a running pass is reused."""
+    from src.orchestrator import pools
+
+    monkeypatch.setattr(pools, "RESUME_HEAD_START", 0.05)
+    release = asyncio.Event()
+    resume = AsyncMock(side_effect=release.wait)
+    service = MagicMock(enabled=True)
+    service.lifecycle.resume_pending = resume
+    monkeypatch.setattr(orch, "wait_service", service, raising=False)
+    measured = AsyncMock(side_effect=RuntimeError("measured"))
+    monkeypatch.setattr(orch, "_measure_pools", measured)
+
+    for _ in range(2):
+        with pytest.raises(RuntimeError, match="measured"):
+            await asyncio.wait_for(orch._reconcile_pools_inner(), 5)
+
+    assert measured.await_count == 2
+    assert resume.await_count == 1
+    release.set()
+    await orch._resume_pending_task
+    with pytest.raises(RuntimeError, match="measured"):
+        await orch._reconcile_pools_inner()
+    assert resume.await_count == 2
+
+
 @pytest.mark.parametrize("enabled", [True, False])
 @pytest.mark.parametrize("child_completed", [True, False])
 async def test_session_cycle_playbook_sweeps_use_the_installed_handler(
