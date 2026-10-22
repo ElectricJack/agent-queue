@@ -16776,6 +16776,7 @@
     "src/commands/contracts/wait.py::register_wait_contracts": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/commands/conversation_commands.py::ConversationCommandsMixin": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/commands/dashboard_state_commands.py::DashboardStateCommandsMixin": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/commands/detached.py::detached_operations": "Generic bounded-response registry for any long-running command; the integration control that uses it is charged independently.",
     "src/commands/digest_commands.py::DigestCommandsMixin": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/commands/discord_commands.py::DiscordCommandsMixin": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/commands/escalation_commands.py::EscalationCommandsMixin": "Generic dependency; integration-specific definitions in this file are charged independently.",

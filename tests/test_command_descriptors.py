@@ -53,6 +53,7 @@ SUPERVISOR_HEALTH_CHANGES = (
     ROOT / "tests/fixtures/contracts/supervisor-health-contract-changes.json"
 )
 TARGET_REPAIR_CHANGES = ROOT / "tests/fixtures/contracts/target-repair-contract-changes.json"
+RESERVE_OWNER_CHANGES = ROOT / "tests/fixtures/contracts/reserve-owner-contract-changes.json"
 
 
 @pytest.fixture(autouse=True)
@@ -130,6 +131,13 @@ def _dev_changes():
     assert changes["source_base"] == "b17f5d8adb9bc2c15ddeaef8260812f281ee055b"
     assert set(changes["contracts"]) == {"integration_redrive_child"}
     assert set(changes["transport_definitions"]) == {"integration_redrive_child"}
+    return changes
+
+
+def _reserve_owner_changes():
+    changes = json.loads(RESERVE_OWNER_CHANGES.read_text())
+    assert changes["source_base"] == "908112dce62681fb4761e80a218382c75fc939cf"
+    assert set(changes["contracts"]) == {"integration_reserve_owner"}
     return changes
 
 
@@ -277,7 +285,8 @@ def _snapshot(*, handlers=(), explicit=(), fallback=None, typed=None, plugins=()
 def test_legacy_execution_documents_and_fingerprints():
     fixture = json.loads(GOLDEN.read_text())
     changes = {**_observation_changes()["contracts"], **_script_changes()["contracts"],
-               **_main_changes()["contracts"], **_dev_changes()["contracts"]}
+               **_main_changes()["contracts"], **_dev_changes()["contracts"],
+               **_reserve_owner_changes()["contracts"]}
     hibernation = _hibernation_changes()["contracts"]
     for name, old in fixture["legacy_contracts"].items():
         expected = changes.get(name, old)
