@@ -901,6 +901,32 @@ the table and restores per-row charging; ledger rows survive.
 The legacy SQLite importer excludes this table because it was introduced after
 SQLite removal.
 
+Revision `a00000000121` adds `idx_transcript_usage_calls_updated`
+(`updated_at`, `usage_key`) for bounded retention scans. Calls from sessions
+stopped for more than 30 days, with counters untouched for more than 30 days,
+may be archived and replaced atomically by permanent replay fences.
+
+### Table: `transcript_usage_fences`
+
+Permanent exact membership batches for archived transcript call identities
+(Alembic `a00000000121`). Ingestion ignores fenced keys, including replay under
+another session or with higher counters. Live calls retain per-call maxima.
+Fences have no session or ledger foreign keys and never expire with those rows.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `id` | TEXT | PRIMARY KEY | UUID identifying the compaction batch |
+| `usage_keys` | JSONB | NOT NULL | Object mapping each sealed usage key to `true` |
+| `archived_at` | REAL | NOT NULL | Compaction timestamp |
+| `archive_path` | TEXT | NOT NULL | Durable gzip JSONL archive containing the original counters |
+
+`idx_transcript_usage_fences_keys` is a GIN containment index using
+`jsonb_path_ops`. Archive publication and fsync precede the short transaction
+that revalidates eligibility and atomically inserts the fence and deletes the
+counter rows. Downgrade refuses to drop populated fences. The legacy SQLite
+importer excludes this table because it was introduced after SQLite removal.
+See [session runtime](design/session-runtime.md) for retention and replay semantics.
+
 ### Table: `benchmark_stage_spans`
 
 Idempotent monotonic stage measurements recorded through `benchmark_stage_record`.
