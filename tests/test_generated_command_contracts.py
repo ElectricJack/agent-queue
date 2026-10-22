@@ -91,9 +91,13 @@ def audit_refresh(tmp_path, monkeypatch):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     rows = json.loads(AUDIT.read_text())
-    selected = {name: rows[name] for name in ("explain_task", "get_schema")}
+    selected = {name: rows[name] for name in (
+        "explain_task", "get_schema", "task_claim", "task_close",
+    )}
     for row in selected.values():
         row["source_digest"] = "sha256:stale"
+        for helper in row.get("helper_producers", {}):
+            row["helper_producers"][helper] = "sha256:stale-helper"
     audit = tmp_path / "audit.json"
     audit.write_text(json.dumps(selected, indent=2) + "\n")
     monkeypatch.setattr(module, "AUDIT", audit)
@@ -131,6 +135,45 @@ def test_audit_refresh_refuses_missing_or_unknown_selection(audit_refresh, args)
     original = audit.read_bytes()
     with pytest.raises(SystemExit) as exc:
         run(*args)
+    assert exc.value.code == 2
+    assert audit.read_bytes() == original
+
+
+@pytest.mark.parametrize("command", ["task_claim", "task_close"])
+def test_audit_helper_refresh_preserves_all_other_evidence(audit_refresh, command):
+    audit, run = audit_refresh
+    helper = "_prepare_and_activate_locked"
+    args = ("--command", command, "--helper", helper)
+    original = audit.read_bytes()
+    before = json.loads(original)
+    assert run(*args) == 1
+    assert audit.read_bytes() == original
+    assert run(*args, "--write") == 0
+    after = json.loads(audit.read_text())
+    digest = after[command]["helper_producers"][helper]
+    assert digest != "sha256:stale-helper"
+    before[command]["helper_producers"][helper] = digest
+    assert after == before
+    refreshed = audit.read_bytes()
+    assert run(*args, "--check") == 0
+    assert run(*args, "--write") == 0
+    assert audit.read_bytes() == refreshed
+
+
+@pytest.mark.parametrize("selection", [
+    ["--command", "task_claim", "--helper", ""],
+    ["--command", "task_claim", "--helper", "_unknown"],
+    ["--command", "get_schema", "--helper", "_prepare_and_activate_locked"],
+    ["--command", "task_claim", "--command", "task_close",
+     "--helper", "_prepare_and_activate_locked"],
+    ["--command", "task_claim", "--helper", "_prepare_and_activate_locked",
+     "--helper", "_prepare_and_activate_locked"],
+])
+def test_audit_helper_refresh_refuses_unknown_or_ambiguous_selection(audit_refresh, selection):
+    audit, run = audit_refresh
+    original = audit.read_bytes()
+    with pytest.raises(SystemExit) as exc:
+        run(*selection, "--write")
     assert exc.value.code == 2
     assert audit.read_bytes() == original
 

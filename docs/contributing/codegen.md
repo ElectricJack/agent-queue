@@ -364,8 +364,12 @@ source digest with `python scripts/refresh-command-audit-digest.py --command exp
 (repeat `--command` for each reviewed handler). The default mode, also available
 as `--check`, reports digest drift without writing. This command updates only
 the selected handler digests; return
-branches, helper producer digests and other audit evidence stay authored. It is
-deliberately separate from bulk generated-artifact regeneration.
+branches and other audit evidence stay authored. A reviewed helper requires
+`--helper <existing-helper-name>` with exactly one `--command`; this updates only
+that command's existing helper pin, preserving the handler and other helper
+digests. Repeat the command explicitly if multiple audit rows pin that helper.
+Unknown selections are refused. This workflow is separate from bulk
+generated-artifact regeneration.
 
 Generated results must be JSON objects with an actual boolean `success` at
 every producer exit, including early refusals and delegated helpers. Only the

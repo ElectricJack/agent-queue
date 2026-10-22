@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Refresh selected producer digests after reviewing their command audit evidence.
 
-Return branches, contracts, helper producers and review notes remain authored
-evidence. Review those fields before refreshing a changed handler's digest.
+Return branches, contracts and review notes remain authored evidence. Review
+those fields before refreshing a handler or explicitly selected helper digest.
 """
 
 from __future__ import annotations
@@ -28,20 +28,34 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--command", action="append", required=True, choices=sorted(rows),
                         help="Reviewed handler to refresh; repeat for multiple handlers.")
+    parser.add_argument("--helper", action="append",
+                        help="Refresh only this existing helper under one --command.")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--check", action="store_true", help="Report drift without writing (default).")
     mode.add_argument("--write", action="store_true", help="Write the selected reviewed digests.")
     args = parser.parse_args()
+    if args.helper is not None:
+        if len(args.command) != 1 or len(args.helper) != 1:
+            parser.error("--helper requires exactly one helper and one --command")
+        name = args.command[0]
+        helper = args.helper[0]
+        helpers = rows[name].get("helper_producers", {})
+        if helper not in helpers:
+            parser.error(f"{name} has no audited helper {helper!r}")
+        targets = [(f"{name}.{helper}", helper, helpers, helper)]
+    else:
+        targets = [(name, "_cmd_" + name, rows[name], "source_digest")
+                   for name in dict.fromkeys(args.command)]
     changed = []
-    for name in dict.fromkeys(args.command):
-        source = inspect.getsource(getattr(CommandHandler, "_cmd_" + name))
+    for name, producer, evidence, key in targets:
+        source = inspect.getsource(getattr(CommandHandler, producer))
         tree = ast.parse(textwrap.dedent(source))
         digest = "sha256:" + hashlib.sha256(
             ast.dump(tree, include_attributes=False).encode()
         ).hexdigest()
-        if rows[name]["source_digest"] != digest:
+        if evidence[key] != digest:
             changed.append(name)
-            rows[name]["source_digest"] = digest
+            evidence[key] = digest
     if changed:
         if not args.write:
             print("Command audit digest drift: " + ", ".join(changed))
