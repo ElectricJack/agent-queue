@@ -62,6 +62,14 @@ foreground after a successful acquisition. A `gc.log` left by an older detached
 auto-gc is no longer read as a fetch failure, and the next successful foreground
 gc removes it.
 
+Routine incremental fetches check incoming objects with `fetch.fsckObjects`
+and preserve a clean full-check baseline for up to one hour while existing
+objects remain unchanged. Abandoned `tmp_pack_*` and `tmp_obj_*` files do not
+invalidate it. Object inventory scans run off the event loop. During a slow full
+check, admission waits at most five seconds across its snapshot requests and
+leaves Git-dependent work gated; independent candidates remain available. The
+shared recovery continues without being cancelled by that admission timeout.
+
 Historical evidence for `crisp-crest-36` recorded 51 empty loose objects; the
 operator reported that setting those objects aside and refetching produced clean
 fsck. The evidence is in the operator vault under

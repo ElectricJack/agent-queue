@@ -319,25 +319,26 @@ async def fetch_retained_origin(git, store, *, repository_url, project_id=None,
                     state = None
         if state is None:
             fetch_error = None
+            # Check the baseline before fetch adds verified objects. Comparing
+            # only afterwards makes every incremental pack require a full fsck.
+            reusable = await git.aretained_store_verified(str(directory))
             try:
                 if pending.exists():
                     raise GitError("retained repository recovery pending")
                 await fetch()
             except (GitError, GitHubAccessError) as exc:
                 fetch_error = exc
-            reusable = getattr(git, "retained_store_verified", None)
-            if (not pending.exists() and reusable is not None
-                    and reusable(str(directory))):
-                if fetch_error:
-                    raise fetch_error
+            if (not pending.exists() and reusable and fetch_error is None
+                    and await git.aextend_retained_store_verified(str(directory))):
                 return
-            fingerprint = _object_store_fingerprint(str(directory))
+            if (not pending.exists() and fetch_error is not None
+                    and await git.aretained_store_verified(str(directory))):
+                raise fetch_error
+            fingerprint = await asyncio.to_thread(_object_store_fingerprint, str(directory))
             started = time.monotonic()
             before = await fsck()
             if _clean(before) and not pending.exists():
-                record = getattr(git, "record_retained_store_verified", None)
-                if record is not None:
-                    record(str(directory), fingerprint, started)
+                await git.arecord_retained_store_verified(str(directory), fingerprint, started)
                 if fetch_error:
                     raise fetch_error
                 return
@@ -396,10 +397,13 @@ async def fetch_retained_origin(git, store, *, repository_url, project_id=None,
         if not _clean(after):
             raise GitError("retained full fsck failed after refetch")
         await _publish_local_heads(git, store, repository_url)
+        fingerprint = await asyncio.to_thread(_object_store_fingerprint, str(directory))
+        started = time.monotonic()
         after = await fsck()
         state["checks"][-1]["after"] = _diagnostics(after)
         if not _clean(after):
             raise GitError("retained full fsck failed after publication")
+        await git.arecord_retained_store_verified(str(directory), fingerprint, started)
         state["status"] = "recovered"
         await save()
         if state["status"] != "recovered":

@@ -584,6 +584,10 @@ def _object_store_fingerprint(git_dir: str) -> tuple | None:
             return None
         for directory, _subdirs, files in os.walk(root):
             for name in files:
+                # Interrupted fetches leave these outside Git's object inventory.
+                # They are not evidence that a verified object changed.
+                if name.startswith(("tmp_pack_", "tmp_obj_")):
+                    continue
                 path = os.path.join(directory, name)
                 stat = os.stat(path)
                 entries.append((os.path.relpath(path, root), stat.st_size, stat.st_ino))
@@ -2056,6 +2060,7 @@ class GitManager:
         if refetch:
             fetch_args.insert(1, "--refetch")
             fetch_args.append("+refs/tags/*:refs/tags/*")
+        fetch_args[:0] = ["-c", "fetch.fsckObjects=true"]
         if self._uses_existing_ssh(repository_url):
             from src.projects.github import GitHubError, parse_github_repository
 
@@ -2164,6 +2169,7 @@ class GitManager:
                     # credentialed process from running for-each-ref against
                     # the checkout (and so reading its worker-writable config).
                     ["-c", "core.alternateRefsCommand=true", "-c", "maintenance.auto=false",
+                     "-c", "fetch.fsckObjects=true",
                      f"--git-dir={imported}", "fetch", "--no-tags", "--force", source_url,
                      "+refs/heads/*:refs/heads/*", "+refs/tags/*:refs/tags/*",
                      "+refs/aq/provenance/*:refs/aq/provenance/*"],
@@ -2182,6 +2188,7 @@ class GitManager:
             )
             await self._run_isolated_import_git(
                 ["-c", "protocol.allow=never", "-c", "protocol.file.allow=always",
+                 "-c", "fetch.fsckObjects=true",
                  f"--git-dir={destination_git_dir}", "fetch", "--no-tags", "--force", "--prune",
                  *(["--refetch"] if refetch else []),
                  str(imported), "+refs/heads/*:refs/remotes/origin/*",
@@ -2193,6 +2200,7 @@ class GitManager:
             if not refetch:
                 await self._run_isolated_import_git(
                     ["-c", "protocol.allow=never", "-c", "protocol.file.allow=always",
+                     "-c", "fetch.fsckObjects=true",
                      f"--git-dir={destination_git_dir}", "fetch", "--no-tags", "--force",
                      str(imported), "+refs/tags/*:refs/tags/*"],
                     home=home,
@@ -2347,19 +2355,19 @@ class GitManager:
 
         Connectivity-only fsck does not read blob bodies. Full fsck also checks
         local/unpublished and unreachable objects; neither exit zero nor a valid
-        remote tip is sufficient proof. Do not cache this result across writes.
+        remote tip is sufficient proof. Unverified writes invalidate this result.
         The caller must separately fence repository identity and all writers
         before using any inspection as a recovery precondition.
 
         A clean result is reused only while the object store holds the same
         files (path, size, inode) and for at most
-        ``_RETAINED_VERIFY_TTL_SECONDS``: any object write invalidates it. A
+        ``_RETAINED_VERIFY_TTL_SECONDS``: unverified object writes invalidate it. A
         full check holds the repository lock for many seconds on a large store,
         so repeating it on every no-op fetch starves the integration train.
         """
-        if self.retained_store_verified(git_dir):
+        if await self.aretained_store_verified(git_dir):
             return
-        fingerprint = _object_store_fingerprint(git_dir)
+        fingerprint = await asyncio.to_thread(_object_store_fingerprint, git_dir)
         started = time.monotonic()
         for attempt in range(2):
             try:
@@ -2376,8 +2384,41 @@ class GitManager:
                 # Re-run the full gate once after a transient pack/ref change;
                 # the original acquisition deadline still bounds both checks.
                 await asyncio.sleep(0)
-                fingerprint = _object_store_fingerprint(git_dir)
-        self.record_retained_store_verified(git_dir, fingerprint, started)
+                fingerprint = await asyncio.to_thread(_object_store_fingerprint, git_dir)
+        await self.arecord_retained_store_verified(git_dir, fingerprint, started)
+
+    async def aretained_store_verified(self, git_dir: str) -> bool:
+        """Inspect object files off-loop, including linked worktree common stores."""
+        return await asyncio.to_thread(self.retained_store_verified, git_dir)
+
+    async def arecord_retained_store_verified(
+        self, git_dir: str, fingerprint: tuple | None, started: float,
+    ) -> None:
+        await asyncio.to_thread(self.record_retained_store_verified, git_dir, fingerprint, started)
+
+    async def aextend_retained_store_verified(self, git_dir: str) -> bool:
+        """Extend a clean baseline across a checked fetch under writer exclusion.
+
+        Only additions are permitted; an existing object replaced, truncated or
+        removed still requires full verification. Incoming objects must have
+        passed fetch.fsckObjects. Keep the original age so incremental traffic
+        cannot indefinitely postpone the next full check.
+        """
+        key = os.path.realpath(git_dir)
+        verified = self.__dict__.setdefault("_retained_verified", {})
+        cached = verified.get(key)
+        if cached is None:
+            return False
+        previous, started = cached
+        if previous is None or time.monotonic() - started >= _RETAINED_VERIFY_TTL_SECONDS:
+            verified.pop(key, None)
+            return False
+        current = await asyncio.to_thread(_object_store_fingerprint, git_dir)
+        if (current is None or not set(previous).issubset(current)
+                or verified.get(key) != cached):
+            return False
+        verified[key] = (current, started)
+        return True
 
     def retained_store_verified(self, git_dir: str) -> bool:
         """Whether a clean full fsck of *git_dir*'s unchanged object store is reusable."""
