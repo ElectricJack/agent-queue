@@ -293,6 +293,21 @@ async def _epic_branches_on(conn, ids):
     ))).all())
 
 
+async def _completed_epic_ids_on(conn, target):
+    """Identify containers, not the repair/role tasks sharing their target ref."""
+    from src.routing.sources import ROLE
+
+    ids = (await conn.execute(select(tasks.c.id).where(
+        tasks.c.project_id == target.project_id,
+        or_(tasks.c.repo_id == target.repository_id, tasks.c.repo_id.is_(None)),
+        tasks.c.branch_name.in_((target.target_ref,
+                                target.target_ref.removeprefix("refs/heads/"))),
+        tasks.c.status == "COMPLETED",
+        tasks.c.route_source != ROLE,
+    ).order_by(tasks.c.id))).scalars().all()
+    return list(await _epic_branches_on(conn, ids))
+
+
 async def project_snapshot(db, target: TrainTarget) -> GitTruthSnapshot | None:
     """Observe the project root through the daemon's isolated delivery store."""
     from src.integration.delivery_observer import prerequisite_observer
@@ -1979,11 +1994,7 @@ class DatabaseBatches:
     async def closed_epic_graph(self, target):
         """Current closed-container identity, including archived/retired children."""
         async with self.db._engine.connect() as conn:
-            ids = (await conn.execute(select(tasks.c.id).where(
-                tasks.c.project_id == target.project_id, tasks.c.status == "COMPLETED",
-                tasks.c.branch_name.in_((target.target_ref,
-                                        target.target_ref.removeprefix("refs/heads/"))),
-            ))).scalars().all()
+            ids = await _completed_epic_ids_on(conn, target)
             if len(ids) != 1:
                 return None
             graph = await EpicGraphReader(policy_on=epic_policy_on,
@@ -2210,17 +2221,16 @@ class EpicCompletions:
         if target.kind != "epic":
             return ()
         async with self.db._engine.connect() as conn:
-            ids = (await conn.execute(select(tasks.c.id).where(
-                tasks.c.project_id == target.project_id,
-                tasks.c.branch_name.in_((target.target_ref, target.target_ref.removeprefix(
-                    "refs/heads/"))),
-                tasks.c.status == "COMPLETED",
-            ))).scalars().all()
+            ids = await _completed_epic_ids_on(conn, target)
             if len(ids) != 1:
+                logger.info("Skipping epic completion for %s: expected one completed container, "
+                            "found %s (%s)", target.key, len(ids), ids)
                 return ()
             graph = await self.evaluator.graph_reader.read_on(conn, ids[0])
         node = graph.node(graph.epic_id)
         if not node.container or (graph.project_id, graph.repository_id) != target.key[:2]:
+            logger.warning("Skipping epic completion for %s: task %s has mismatched container "
+                           "or repository identity", target.key, graph.epic_id)
             return ()
         # Collection readiness gates work still owed; it cannot undo delivery.
         # Retired epic refs are expected after landing, so use the designated
