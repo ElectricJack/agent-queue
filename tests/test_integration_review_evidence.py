@@ -233,6 +233,11 @@ async def test_leaf_close_records_checkpoint_and_suppresses_legacy_final_review(
 
     case = review_case
     db = case["db"]
+    # This test covers source completion and review routing through the
+    # publisher handoff. Author-owned candidate publication has separate tests.
+    await db.update_project(
+        "p", hierarchical_integration_policy={"close_merge": {"author_assist": False}}
+    )
     await db.create_profile(
         AgentProfile(id="worker", name="Worker", harness="claude", needs_workspace=True)
     )
@@ -311,10 +316,13 @@ async def test_leaf_close_records_checkpoint_and_suppresses_legacy_final_review(
             "summary": "leaf complete",
         },
     )
-    assert leaf_close["success"] is True
+    assert leaf_close["success"] is True, leaf_close
     assert (await db.get_task("leaf")).status is TaskStatus.COMPLETED
     checkpoint = await db.get_integration_checkpoint("leaf")
     assert checkpoint["checkpoint_sha"] == case["head"]
+    assert _git(["ls-remote", "origin", "refs/heads/aq/parent"], case["work"]).split()[0] == (
+        case["base"]
+    )
 
     # The managed task-completed event keeps the ordinary per-task review
     # route while suppressing only the legacy per-branch final-review route.

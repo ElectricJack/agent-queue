@@ -16,6 +16,7 @@ import asyncio
 import json
 import subprocess
 import time
+from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
@@ -1542,6 +1543,12 @@ def shared_store(tmp_path, monkeypatch):
 
     fetches = ControlledFetches()
     monkeypatch.setattr(module, "delivery_snapshot", fetches)
+    # These controlled stores have no database or relocation binding. Resolve
+    # the configured path directly while preserving the real flight/lock logic.
+    monkeypatch.setattr(
+        "src.projects.storage_binding.repository_path",
+        AsyncMock(side_effect=lambda db, repository_id, path: Path(path)),
+    )
 
     def make(git=None, data_dir=None):
         observer = DeliveryObserver(None, git=git or object(),
