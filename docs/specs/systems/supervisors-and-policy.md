@@ -312,6 +312,10 @@ that failed, or a stuck repair. The code is in
      `operator_or_global_supervisor` gate.
 
    Tasks owned by an integration operation are refused.
+   `aq task restart` also preserves decided holds unless an operator or live global
+   supervisor supplies `--override-hold --reason`; accepted overrides record that
+   actor and reason, preserving the original hold in decision history. `aq task explain`
+   shows the hold owner and reason even after the incident has a decision.
 4. Some holds have a deadline: `slot_reset_failed`, train repair and live batch
    repair stages (`_recovery_hold_deadline`). When one expires,
    `_escalate_expired_recovery_hold` sends one notice to both the project and

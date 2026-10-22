@@ -20843,6 +20843,8 @@
         ],
         "optional": [
           "--yes",
+          "--override-hold",
+          "--reason",
           "--json",
           "--brief",
           "--save-output",

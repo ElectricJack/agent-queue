@@ -359,6 +359,12 @@ built-in handlers. Adding a handler or changing its return branches requires
 reviewing and updating that evidence. Static argument reads are diagnostic;
 they never silently expand the public schema.
 
+The restart hold correction records `restart_task`'s optional `override_hold` and
+`reason` arguments in `restart-hold-contract-changes.json`. Removing exactly that
+transport delta restores the supervisor-health catalogue bytes. The producer audit
+pins the explicit refusal and delegated restart paths; recovery tests cover exact
+hold fencing, release authority and recorded provenance.
+
 Generated results must be JSON objects with an actual boolean `success` at
 every producer exit, including early refusals and delegated helpers. Only the
 executor's `_consume` boundary interprets this protocol: true means success,

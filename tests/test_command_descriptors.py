@@ -52,6 +52,7 @@ HIBERNATION_CHANGES = ROOT / "tests/fixtures/contracts/hibernation-contract-chan
 SUPERVISOR_HEALTH_CHANGES = (
     ROOT / "tests/fixtures/contracts/supervisor-health-contract-changes.json"
 )
+RESTART_HOLD_CHANGES = ROOT / "tests/fixtures/contracts/restart-hold-contract-changes.json"
 
 
 @pytest.fixture(autouse=True)
@@ -154,6 +155,15 @@ def _supervisor_health_changes():
 
 def _revert_supervisor_health_catalogue(catalogue):
     """Restore only the reviewed description text to recover the hibernation bytes."""
+    hold_changes = json.loads(RESTART_HOLD_CHANGES.read_text())
+    assert set(hold_changes["transport_definitions"]) == {"restart_task"}
+    approved = hold_changes["transport_definitions"]["restart_task"]
+    [definition] = [item for item in catalogue["explicit"] if item["name"] == "restart_task"]
+    assert definition == approved["definition"]
+    definition.clear()
+    definition.update(approved["previous_definition"])
+    previous = json.dumps(catalogue, indent=2) + "\n"
+    assert hashlib.sha256(previous.encode()).hexdigest() == hold_changes["previous_cli_catalogue_sha256"]
     changes = _supervisor_health_changes()
     for name, approved in changes["transport_definitions"].items():
         [definition] = [item for item in catalogue["explicit"] if item["name"] == name]
@@ -291,6 +301,7 @@ def test_transport_views_and_cli_serialization_preserve_golden_evidence():
     publication = _publication_changes()
     batch_repair = _batch_repair_changes()
     supervisor_health = _supervisor_health_changes()
+    restart_hold = json.loads(RESTART_HOLD_CHANGES.read_text())
     contracts = {**changes["contracts"], **scripts["contracts"]}
     snapshot = command_snapshot()
     for name, digest in fixture["transport_definitions"].items():
@@ -323,6 +334,10 @@ def test_transport_views_and_cli_serialization_preserve_golden_evidence():
             approved = supervisor_health["transport_definitions"][name]
             assert approved["previous_sha256"] == digest
             digest = approved["sha256"]
+        if name in restart_hold["transport_definitions"]:
+            approved = restart_hold["transport_definitions"][name]
+            assert approved["previous_sha256"] == digest
+            digest = approved["sha256"]
         assert _digest(snapshot.commands[name].tool_definition()) == digest, name
     actual = hashlib.sha256(render_command_catalogue().encode()).hexdigest()
     assert changes["previous_cli_catalogue_sha256"] == fixture["cli_catalogue_sha256"]
@@ -335,7 +350,8 @@ def test_transport_views_and_cli_serialization_preserve_golden_evidence():
     assert batch_repair["previous_cli_catalogue_sha256"] == publication["cli_catalogue_sha256"]
     assert hibernation["previous_cli_catalogue_sha256"] == batch_repair["cli_catalogue_sha256"]
     assert supervisor_health["previous_cli_catalogue_sha256"] == hibernation["cli_catalogue_sha256"]
-    assert actual == supervisor_health["cli_catalogue_sha256"]
+    assert restart_hold["previous_cli_catalogue_sha256"] == supervisor_health["cli_catalogue_sha256"]
+    assert actual == restart_hold["cli_catalogue_sha256"]
     definitions = {d["name"]: d for d in effective_tool_definitions()}
     for name, definition in _discover_all_commands().items():
         assert definition == snapshot.commands[name].tool_definition()

@@ -4773,6 +4773,35 @@ class TaskCommandsMixin:
         return result
 
     async def _cmd_restart_task(self, args: dict) -> dict:
+        from src.database.queries.task_recovery_queries import RecoveryHoldError
+
+        override = args.get('override_hold', False)
+        reason = args.get('reason')
+        if not isinstance(override, bool):
+            return {'success': False, 'error': 'override_hold must be a boolean'}
+        if override and (not isinstance(reason, str) or not 1 <= len(reason.strip()) <= 4000):
+            return {'success': False, 'error': 'override_hold requires a reason of 1 to 4000 characters'}
+        hold_override = None
+        if override:
+            from src.commands.supervisor_authority import operator_or_global_supervisor
+
+            actor, refusal = await operator_or_global_supervisor(self.db)
+            if refusal:
+                return {'success': False, 'error': refusal}
+            incident = await self.db.get_task_meta(args['task_id'], 'supervisor_recovery_incident')
+            if isinstance(incident, dict) and incident.get('decision') == 'hold':
+                hold_override = {
+                    'incident_id': incident['id'], 'expected_hold_at': incident.get('decided_at'),
+                    'reason': reason.strip(), 'actor': actor,
+                    'author_kind': 'user' if actor == 'human:local-operator' else 'supervisor',
+                }
+        try:
+            return await TaskCommandsMixin._restart_task(self, args, hold_override)
+        except RecoveryHoldError as exc:
+            return {'success': False, 'error_code': 'task_recovery.held',
+                    'error': str(exc), 'recovery_hold': exc.incident}
+
+    async def _restart_task(self, args: dict, hold_override) -> dict:
         from src.wait_runtime.restart import readmit, release_continuations, restart_lock
         from src.waits.conditions import WaitError
 
@@ -4783,6 +4812,9 @@ class TaskCommandsMixin:
                 return {"success": False, "error": f"Task '{args['task_id']}' not found"}
             if task.status == TaskStatus.IN_PROGRESS:
                 return {"success": False, "error": "Task is currently in progress. Stop it first."}
+            # Refuse before continuation cleanup or branch reservation has effects.
+            async with self.db.immediate() as conn:
+                await self.db._guard_restart_recovery_hold_on(conn, task.id, hold_override)
             try:
                 released = await release_continuations(self, task)
             except WaitError as exc:
@@ -4798,7 +4830,7 @@ class TaskCommandsMixin:
                 # its operation's branch, so it restarts through that handoff
                 # rather than through a bare status flip.
                 if task.created_by_kind == "integration_repair":
-                    return await self._restart_repair_delegate(task)
+                    return await self._restart_repair_delegate(task, hold_override=hold_override)
                 if task.status is TaskStatus.BLOCKED and await self.db.get_integration_checkpoint(
                     task.id
                 ):
@@ -4815,7 +4847,7 @@ class TaskCommandsMixin:
                             "apply only after its provider-backed proof succeeds, then retry restart."
                         )}
             old_status = task.status.value
-            if not await readmit(self, task, released):
+            if not await readmit(self, task, released, hold_override=hold_override):
                 return {"success": False, "error": "Task changed during cold restart; retry."}
             return {
                 "success": True,
@@ -4824,7 +4856,7 @@ class TaskCommandsMixin:
                 "previous_status": old_status,
             }
 
-    async def _restart_repair_delegate(self, task) -> dict:
+    async def _restart_repair_delegate(self, task, *, hold_override=None) -> dict:
         """Restart an integration repair delegate through its own reservation.
 
         The pool claim frontier admits a repair delegate only on the exact
@@ -4852,6 +4884,7 @@ class TaskCommandsMixin:
             retry_count=0,
             assigned_agent_id=None,
             _defer_recovery_supersession=True,
+            _recovery_hold_override=hold_override,
         )
         reservation = await self._integration_repair_service().reserve_delegate(task.id)
         if reservation["outcome"] in {"acquired", "already_reserved"}:
@@ -4865,6 +4898,7 @@ class TaskCommandsMixin:
                     TaskStatus.READY,
                     meta={},
                     context="restart_task",
+                    _recovery_hold_override=hold_override,
                     from_statuses=(TaskStatus.READY,),
                     extra_where=(
                         tasks.c.assigned_agent_id.is_(None)
@@ -5783,6 +5817,16 @@ class TaskCommandsMixin:
         recovery = await self.db.get_task_meta(str(task_id), "supervisor_recovery_incident")
         if isinstance(recovery, dict) and recovery.get("id") and not recovery.get("decision"):
             reasons.append(_recovery_incident_reason(recovery))
+        recovery_held = isinstance(recovery, dict) and recovery.get("decision") == "hold"
+        if recovery_held:
+            reasons.append(Reason(
+                code="recovery_hold",
+                detail=(f"held by {recovery.get('decided_by', 'unknown')} at "
+                        f"{recovery.get('decided_at')}: {recovery.get('decision_reason')}; "
+                        "restart requires --override-hold --reason and "
+                        "operator/global-supervisor authority"),
+                ref=str(recovery["id"]),
+            ))
         needs_attention = await self.db.get_task_meta(str(task_id), "needs_attention")
         if needs_attention and not retirement:
             detail = str(needs_attention)
@@ -5822,7 +5866,9 @@ class TaskCommandsMixin:
         if blocked_terminal and not retirement:
             reasons.append(Reason(
                 code="blocked_terminal",
-                detail=f"{blocked_terminal}; not auto-recovered, restart or reopen to retry",
+                detail=(f"{blocked_terminal}; not auto-recovered; recovery hold must be "
+                        "explicitly released before restart" if recovery_held else
+                        f"{blocked_terminal}; not auto-recovered, restart or reopen to retry"),
                 ref=str(task_id),
             ))
         # BLOCKED with no attention, terminal mark, open incident or graph
@@ -5834,7 +5880,7 @@ class TaskCommandsMixin:
             "decision"
         )
         if (task.status is TaskStatus.BLOCKED and not retirement and not needs_attention
-                and not blocked_terminal and not open_incident
+                and not blocked_terminal and not open_incident and not recovery_held
                 and not await self.db.tasks_with_graph_blockers([str(task_id)])):
             failure = await self.db.get_task_meta(str(task_id), "slot_reset_failure")
             if isinstance(failure, dict):

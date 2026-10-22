@@ -17353,7 +17353,7 @@
         "supervisor"
       ],
       "default_arm": true,
-      "digest": "sha256:f095e5edb7a5018c4996b55041794afb099e461fa992bf6ced9bb6ddd0a147a4",
+      "digest": "sha256:d0cef4c27d2e39e1dc79445a1aa5e81ec2e6332c289e92207cd005da35ff4555",
       "imports": [
         "src.api.auth",
         "src.asks.models",
@@ -17373,7 +17373,8 @@
         "src.orchestrator.task_checkpoint",
         "src.sessions.obsolete",
         "src.sessions.provider",
-        "src.sessions.tmux"
+        "src.sessions.tmux",
+        "src.wait_runtime.restart"
       ],
       "markers": [
         "asyncio",

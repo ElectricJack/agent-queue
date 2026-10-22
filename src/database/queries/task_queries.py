@@ -1764,6 +1764,7 @@ class TaskQueryMixin:
         integration_delivery=None,
         allow_missing_provenance_reopen: bool = False,
         _defer_recovery_supersession: bool = False,
+        _recovery_hold_override: dict | None = None,
         pr_merge_gate: str | None = None,
         **kwargs,
     ) -> TransitionResult:
@@ -1824,6 +1825,8 @@ class TaskQueryMixin:
         explicit_restart = new_status == TaskStatus.READY and context in {
             "restart_task", "reopen_with_feedback",
         }
+        if new_status == TaskStatus.READY and context == "restart_task":
+            await self._guard_restart_recovery_hold_on(conn, task_id, _recovery_hold_override)
 
         if assume_pre_state is not None:
             current_status, pre_blocked = assume_pre_state
@@ -2306,7 +2309,7 @@ class TaskQueryMixin:
             explicit_restart or context in {"manual_resume", "slot_reset_retry"}
         ) and not _defer_recovery_supersession:
             released_hold = await self._supersede_restarted_task_recovery_on(
-                conn, task_id, context=context,
+                conn, task_id, context=context, hold_override=_recovery_hold_override,
             )
             if (
                 released_hold and not _defer_projection

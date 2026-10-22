@@ -5003,7 +5003,7 @@
   "explain_task": {
     "mode": "json_object",
     "producer": "src/commands/task_commands.py:TaskCommandsMixin._cmd_explain_task",
-    "source_digest": "sha256:d3d2a73da5759b7e981ed7c63feca6fc81cf0807a53a55f46aa225e62e3b726b",
+    "source_digest": "sha256:7ee3e496c529bd3a69c99e3796a728da6711e5baef9cf30547b692803a3671d2",
     "input_schema_source": "fallback",
     "schema_quality": "declared",
     "argument_reads_diagnostic_only": [
@@ -5050,12 +5050,13 @@
       "tests/test_delivery_consumers.py",
       "tests/test_explain.py",
       "tests/test_doctor_observations.py",
-      "tests/test_integration_train_sources.py::test_aborted_batch_names_each_withheld_source_instead_of_idling"
+      "tests/test_integration_train_sources.py::test_aborted_batch_names_each_withheld_source_instead_of_idling",
+      "tests/test_supervisor_recovery.py"
     ],
     "helper_producers": {
       "_assert_task_in_scope": "sha256:a66da16b3047ca2247a1e612e6aede543b65effd65666764c031e5465d7d23d7"
     },
-    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled.  Dev ff25a7d71 only appends the available next action to integration blocker detail; return branches and task resource gates are unchanged."
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled.  Dev ff25a7d71 only appends the available next action to integration blocker detail; return branches and task resource gates are unchanged. Restart hold correction: explain includes decided hold owner/reason; restart requires a reasoned authorized exact-hold override. Releasing actor and reason are audited; return protocol and project resource gates remain unchanged."
   },
   "export_portable_config": {
     "mode": "json_object",
@@ -17995,10 +17996,12 @@
   "restart_task": {
     "mode": "json_object",
     "producer": "src/commands/task_commands.py:TaskCommandsMixin._cmd_restart_task",
-    "source_digest": "sha256:3678105a10f52f8c900f299ca1764708fdcca9002bedf82ed298ff90e2f3bd22",
+    "source_digest": "sha256:97965dbd79eee4047f249ae56e5737f2282dfcdad0ba645f9c977e493e54d2db",
     "input_schema_source": "explicit_tool",
     "schema_quality": "declared",
     "argument_reads_diagnostic_only": [
+      "override_hold",
+      "reason",
       "task_id"
     ],
     "effect": "destructive",
@@ -18012,32 +18015,24 @@
     "result_policy": "strict boolean success at producer; no inferred outcome",
     "return_branches": [
       {
-        "return": "{'success': False, 'error': f\"Task '{args['task_id']}' not found\"}",
+        "return": "{'success': False, 'error': 'override_hold must be a boolean'}",
         "protocol": "explicit_boolean: False"
       },
       {
-        "return": "{'success': False, 'error': 'Task is currently in progress. Stop it first.'}",
+        "return": "{'success': False, 'error': 'override_hold requires a reason of 1 to 4000 characters'}",
         "protocol": "explicit_boolean: False"
       },
       {
-        "return": "{'success': False, 'error': str(exc), 'error_code': exc.code}",
-        "protocol": "explicit_boolean: False"
-      },
-      {
-        "return": "await self._restart_repair_delegate(task)",
+        "return": "await TaskCommandsMixin._restart_task(self, args, hold_override)",
         "protocol": "delegated_producer"
       },
       {
-        "return": "{'success': False, 'error': f'Cannot restart integration task: {reservation['reason']}. For a stopped writer, preview aq integration release-owner --task-id {task.id} --dry-run; apply only after its provider-backed proof succeeds, then retry restart.'}",
+        "return": "{'success': False, 'error': refusal}",
         "protocol": "explicit_boolean: False"
       },
       {
-        "return": "{'success': False, 'error': 'Task changed during cold restart; retry.'}",
+        "return": "{'success': False, 'error_code': 'task_recovery.held', 'error': str(exc), 'recovery_hold': exc.incident}",
         "protocol": "explicit_boolean: False"
-      },
-      {
-        "return": "{'success': True, 'restarted': args['task_id'], 'title': task.title, 'previous_status': old_status}",
-        "protocol": "explicit_boolean: True"
       }
     ],
     "tests": [
@@ -18049,12 +18044,14 @@
       "tests/test_integration_repair.py",
       "tests/test_integration_repair_rollover.py",
       "tests/test_routing_router.py",
-      "tests/test_wait_hibernation.py"
+      "tests/test_wait_hibernation.py",
+      "tests/test_supervisor_recovery.py"
     ],
     "helper_producers": {
-      "_restart_repair_delegate": "sha256:f0c30ea3c6ca7bed8d1af73e47146c5c9ba72c5e7f1f991c79453cfd996589d0"
+      "_restart_task": "sha256:c2bc920f3f3c5d2bff9fa5d95056631700ec14b57ca825f11698cb4ea43fc0d2",
+      "_restart_repair_delegate": "sha256:60abe97071aeefb1f90efabadf2641f635fa9cc4da4855d3d08507d3519465d4"
     },
-    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. "
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled.  Restart hold correction: explain includes decided hold owner/reason; restart requires a reasoned authorized exact-hold override. Releasing actor and reason are audited; return protocol and project resource gates remain unchanged."
   },
   "resume_playbook": {
     "mode": "json_object",
