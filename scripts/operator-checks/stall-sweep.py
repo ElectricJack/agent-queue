@@ -397,6 +397,27 @@ for pid, t in candidates:
                     f"route_source=unrouted; {route_rows[0]['detail']} "
                     "-> inspect the router's activation, routing events and runs"
                 )
+            refresh = [r for r in rows if r["code"] == "frontier_epic_refresh_pending"]
+            if refresh:
+                epics = sorted({
+                    epic for r in refresh
+                    for epic in (r.get("blocking_task_ids") or
+                                 [t.get("parent_task_id") or r.get("ref")])
+                    if epic and epic != tid
+                })
+                batches = sorted({batch for r in refresh
+                                  for batch in (r.get("batch_ids") or [r.get("batch_id")])
+                                  if batch})
+                commands = [f"aq integration refresh-epic --task {shlex.quote(epic)} --apply"
+                            for epic in epics]
+                action = "; ".join(commands) or "epic identity unavailable; inspect the child's parent"
+                findings.append(
+                    f"EPIC-REFRESH-NEEDED {pid} {tid} [{status} {age(t['updated_at'])}] "
+                    + "; ".join(r["detail"] for r in refresh)
+                    + (f"; blocking batches: {', '.join(batches)}" if batches else "")
+                    + f" -> {action} (existing holds and checks still apply)"
+                )
+                continue
             repair_alarm = next(
                 (r for r in rows if r["code"] == "train_repair_capacity_wait"), None
             )
