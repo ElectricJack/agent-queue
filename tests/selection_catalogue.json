@@ -3910,9 +3910,12 @@
         "integration-controls"
       ],
       "default_arm": true,
-      "digest": "sha256:07f702de441923dda7184c40caffbad74e2203b3f5c7f16cfd61bee7a937a3c8",
+      "digest": "sha256:604b6fad59c3ff36e48b1f14a8cc5f8f18b10f4a16d62f60ec30d51b7cbf2d83",
       "imports": [
+        "src.api.scope",
         "src.cli.app",
+        "src.commands.contracts.integration",
+        "src.commands.integration_commands",
         "src.profiles.parser"
       ],
       "markers": [
@@ -10205,9 +10208,10 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:18ca53f0c95a42f2745ffd0c0d0184504645ed92f6d3cc556e2d12525546bb45",
+      "digest": "sha256:293706a09a80101ed817c14ec756684713b59a8fcbeedcc41d2adca66f87af9e",
       "imports": [
         "src.commands",
+        "src.commands.contracts.integration",
         "src.commands.integration_commands",
         "src.commands.principal",
         "src.commands.surface_commands",
@@ -10227,6 +10231,7 @@
         "src.integration.batches",
         "src.integration.candidate_baseline",
         "src.integration.checks",
+        "src.integration.child_delivery",
         "src.integration.ci",
         "src.integration.cleanup",
         "src.integration.delivery_observer",
@@ -10238,6 +10243,8 @@
         "src.integration.hierarchy",
         "src.integration.lock",
         "src.integration.models",
+        "src.integration.obsolete_child_disposal",
+        "src.integration.obsolete_children",
         "src.integration.ownership",
         "src.integration.provenance",
         "src.integration.publishable_artifact",

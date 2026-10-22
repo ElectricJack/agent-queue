@@ -1650,6 +1650,16 @@ class DatabaseBatches:
                     or evidence.reason != "source_not_contained"
                     or not is_valid_git_oid(source or "")):
                 continue
+            if target.kind == "epic":
+                from src.integration.obsolete_children import obsolete_child_blocker
+
+                obsolete = await obsolete_child_blocker(
+                    snapshot.observation, task_id=task_id, source_base=base, source_oid=source,
+                )
+                if obsolete is not None:
+                    if blockers is not None:
+                        blockers.append(obsolete)
+                    continue
             if (task_id, source) in withheld:
                 withheld_ids.add(task_id)
                 if blockers is not None:

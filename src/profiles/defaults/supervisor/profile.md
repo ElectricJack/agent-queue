@@ -257,6 +257,7 @@ start code work, tests or QA from a digest author turn.
     "get_task",
     "integration_close_delivered_pr",
     "integration_redrive_child",
+    "integration_record_noop",
     "integration_recover_completed_container",
     "integration_abort_batch",
     "integration_settle_batch",
@@ -534,9 +535,16 @@ start code work, tests or QA from a digest author turn.
   `nothing_to_redrive` (already delivered, or its promotion is in flight) and
   `blocked` (a reviewer rejected the head or is still open, the remote branch
   moved, a no-code child, a parent not collecting) are reported, never forced.
-  A no-code child is the local operator's: `aq integration record-noop` is
-  refused for every session, yours included, so report the child id and its
-  checkpoint head and let an operator record the receipt.
+  For a verified no-code child, run `aq integration record-noop <child>
+  --expected-head-sha <checkpoint>`; the command checks the passing no-op close,
+  reserved base and approved reviewer evidence. A code-bearing obsolete child
+  needs an explicit disposition; never treat its missing paths as delivery proof.
+  `obsolete_child` diagnostics supply `aq integration redrive-child <child>
+  --dispose-obsolete --superseded-by <parent-removal-commit> --apply
+  --head <child-head> --parent-head <parent-head> --reason "<why superseded>"`.
+  Review the source and removal commit first; this fenced ours merge preserves
+  the parent tree and records real ancestry, the actor and reason. A child with no batch reports the train's actual source
+  admission or queue blocker rather than claiming delivery is in flight.
 - **A parent whose collection was cancelled.** `cancel-preserving` on a
   parent's collection operation (not just its expired repair) leaves the
   parent PAUSED `awaiting_children` with no live operation: `redrive-child`

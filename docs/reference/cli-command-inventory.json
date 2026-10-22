@@ -5436,6 +5436,9 @@
         ],
         "optional": [
           "--adopt-source",
+          "--dispose-obsolete",
+          "--superseded-by",
+          "--parent-head",
           "--apply",
           "--head",
           "--reason",
