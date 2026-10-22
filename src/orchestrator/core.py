@@ -4822,16 +4822,11 @@ class Orchestrator(
         for p in projects:
             project_usage[p.id] = await self.db.get_project_token_usage(p.id, since=window_start)
 
-        # Active (BUSY) agent count per project — used to enforce each
-        # project's max_concurrent_agents limit.  We look up the project
-        # from the agent's current task rather than storing it on the agent
-        # directly, because agent-project affinity is transient.
-        active_counts: dict[str, int] = {}
-        for a in agents:
-            if a.state == AgentState.BUSY and a.current_task_id:
-                task = await self.db.get_task(a.current_task_id)
-                if task:
-                    active_counts[task.project_id] = active_counts.get(task.project_id, 0) + 1
+        # Session ownership, including idle pools and unconfirmed stops, is
+        # capacity. Historical agent task pointers are not execution proof.
+        from src.orchestrator.agent_reconciler import project_live_session_counts
+
+        active_counts = project_live_session_counts(live_sessions)
 
         total_used = sum(project_usage.values())
 

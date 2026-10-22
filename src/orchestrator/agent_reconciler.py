@@ -9,9 +9,19 @@ from dataclasses import dataclass, field
 
 from src.agents.routing import resolve_agent_profile, resolve_task_profile, task_agent_mismatch
 from src.database import Database
+from src.models import SessionRecord
 from src.routing.sources import ROLE
 
 logger = logging.getLogger(__name__)
+
+
+def project_live_session_counts(sessions: list[SessionRecord]) -> dict[str, int]:
+    """Count execution capacity independently of transient agent task pointers."""
+    counts: dict[str, int] = {}
+    for session in sessions:
+        if session.project_id and session.state in {"starting", "running", "draining"}:
+            counts[session.project_id] = counts.get(session.project_id, 0) + 1
+    return counts
 
 
 async def reset_stale_busy_agent(
@@ -30,8 +40,8 @@ async def reset_stale_busy_agent(
 
     ``reset_state=False`` clears the pointer alone and leaves the agent's
     state exactly as it was. Only a BUSY agent is *supposed* to become IDLE:
-    production sets ERROR and RETIRED without clearing ``current_task_id``
-    (``src/orchestrator/pools.py``), and RETIRED is what gates workspace
+    older production versions set ERROR and RETIRED without clearing
+    ``current_task_id``, and RETIRED is what gates workspace
     reclaim, so a caller that sweeps agents in any state (the
     ``agents.dangling_current_task`` doctor fix) must not write IDLE over
     them. The reconciler's own rescue rule only ever sees BUSY agents and
@@ -101,8 +111,8 @@ class AgentReconciler:
         suppressed_agents = suppressed_agent_ids or frozenset()
         projects = await self._db.list_projects()
         agents = await self._db.list_agents()
-        # Only the agents' current tasks are looked up (stale-BUSY check and
-        # per-project busy count); the scheduler passes ``ready_tasks``.
+        # Only the agents' current tasks are looked up for the stale-BUSY
+        # check; the scheduler passes ``ready_tasks``.
         # Reading the whole table here was one of the scheduler cycle's two
         # longest event-loop stalls on a 10k-task install (wise-ember.16).
         tasks = await self._db.list_tasks(
@@ -116,6 +126,7 @@ class AgentReconciler:
         )
         catalog_ids = {profile.id for profile in shipped_profile_catalog()}
         live = await self._db.list_sessions(live_only=True)
+        live_counts = project_live_session_counts(live)
         live_agents = {row.agent_id for row in live if row.agent_id}
         live_agents.update(launching_agent_ids or ())
         # Legacy task sessions may not have been linked before adoption.
@@ -190,12 +201,7 @@ class AgentReconciler:
             }
             if not needed:
                 continue
-            busy = sum(
-                1
-                for agent in agents
-                if agent.current_task_id in by_task
-                and by_task[agent.current_task_id].project_id == project.id
-            )
+            busy = live_counts.get(project.id, 0)
             remaining = max(0, project.max_concurrent_agents - busy)
             for profile_id, task_class in sorted(needed):
                 requested = needed[(profile_id, task_class)]
@@ -226,6 +232,14 @@ class AgentReconciler:
                 if profile_id == "supervisor" or profile.runtime == "supervisor":
                     continue
                 if remaining <= 0:
+                    if busy >= project.max_concurrent_agents:
+                        reason = (
+                            f"project agent cap reached: {busy}/{project.max_concurrent_agents} "
+                            f"live sessions (max_concurrent_agents={project.max_concurrent_agents})"
+                        )
+                    else:
+                        reason = "waiting for newly created agent supply"
+                    report.skipped.append((project.id, reason))
                     break
                 if self._runtime_requires_workspace(profile):
                     count = await self._db.count_available_workspaces(

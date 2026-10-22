@@ -102,6 +102,10 @@ class AgentQueryMixin:
             if isinstance(value, AgentState):
                 value = value.value
             values[key] = value
+        if values.get("state") == AgentState.RETIRED.value:
+            # Ownership/recovery evidence remains on tasks, sessions and
+            # workspaces; this transient pointer must not outlive retirement.
+            values["current_task_id"] = None
         async with self._engine.begin() as conn:
             await conn.execute(
                 update(agents)
@@ -160,7 +164,7 @@ class AgentQueryMixin:
                     ~live_session,
                     ~held_workspace,
                 )
-                .values(enabled=False, deleted_at=time.time())
+                .values(enabled=False, deleted_at=time.time(), current_task_id=None)
             )
             return result.rowcount == 1
 
