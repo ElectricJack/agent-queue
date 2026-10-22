@@ -13014,7 +13014,7 @@
         "orchestrator"
       ],
       "default_arm": true,
-      "digest": "sha256:fd20d2d460e5456b4d1a942ee6d5751a4f866bb17dc8b443b716e6a3d70f4c6f",
+      "digest": "sha256:76ed5cd80c491220759122d65de452fdee5dbc61c082f93400046a861c47529c",
       "imports": [
         "src.commands.contracts",
         "src.commands.contracts.builtin",
@@ -13031,6 +13031,8 @@
         "src.intelligence_classes",
         "src.models",
         "src.orchestrator",
+        "src.orchestrator.core",
+        "src.orchestrator.pools",
         "src.playbooks.artifact_store",
         "src.playbooks.definition",
         "src.playbooks.required",
@@ -19722,7 +19724,7 @@
         "agent-waits"
       ],
       "default_arm": true,
-      "digest": "sha256:7f06eb91c0c1a7a479c12587c9caf57a5167e5a7130760332a24675e794089fc",
+      "digest": "sha256:e20affeaf0628d0a7f09ac0219ce5b35cb8e6657afd7af4512d9c288c8dfb233",
       "imports": [
         "src.api.models.metrics",
         "src.config",
@@ -19739,6 +19741,7 @@
         "src.prime",
         "src.scheduler",
         "src.sessions.reconciler",
+        "src.wait_runtime",
         "src.wait_runtime.eviction",
         "src.wait_runtime.hibernate",
         "src.wait_runtime.legacy_human",
