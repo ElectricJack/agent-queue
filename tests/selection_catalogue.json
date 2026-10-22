@@ -1010,6 +1010,7 @@
         "tests/test_playbook_state_notify.py",
         "tests/test_playbook_wait_repository.py",
         "tests/test_stuck_task_watch.py",
+        "tests/test_stuck_task_watch_daemon.py",
         "tests/test_v2_dry_run.py",
         "tests/test_v2_engine.py",
         "tests/test_v2_engine_repository.py",
@@ -11998,13 +11999,16 @@
         "migrations"
       ],
       "default_arm": false,
-      "digest": "sha256:2c97101e27a4724fcd3a15d807eea3f5850a4c85f347bf7ba766c8df0bfb7b68",
+      "digest": "sha256:ce62c99bbdece089a526e9d4157792a6ae947f4111043f9dfa358733f802f69a",
       "imports": [
         "src.database",
+        "src.database.additive_migrations",
+        "src.database.migration_guard",
         "src.database.tables",
         "src.models"
       ],
       "markers": [
+        "integration",
         "migration"
       ],
       "summary": "Additive encrypted-value and iteration-path migrations on disposable PostgreSQL."
@@ -17147,7 +17151,7 @@
         "playbook-engine"
       ],
       "default_arm": true,
-      "digest": "sha256:f1b387f9123625f3c5563cc3c6da0debc594c6428ebfcf47ac4a97964c873725",
+      "digest": "sha256:74d9533b4682242c01ca8602705abcd01ca1176134438f31a9abdb4182eba3cd",
       "imports": [
         "src.commands.contracts",
         "src.commands.contracts.builtin",
@@ -17179,10 +17183,26 @@
         "src.profiles.capabilities"
       ],
       "markers": [
-        "integration",
         "parametrize"
       ],
       "summary": "Reviewed watch policy through the real engine, handler and disposable PostgreSQL."
+    },
+    "tests/test_stuck_task_watch_daemon.py": {
+      "areas": [
+        "playbook-engine"
+      ],
+      "default_arm": true,
+      "digest": "sha256:1d64b19548230311ee4c38cea2940ecd774bd9f842e1db6d7da3855c9de4645b",
+      "imports": [
+        "src.database",
+        "src.database.tables",
+        "src.playbooks.private_values"
+      ],
+      "markers": [
+        "integration",
+        "timeout"
+      ],
+      "summary": "Reviewed stuck-task watch acceptance over an isolated daemon and PostgreSQL, no LLM."
     },
     "tests/test_subagent_events.py": {
       "areas": [
