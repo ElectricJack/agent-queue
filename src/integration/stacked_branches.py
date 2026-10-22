@@ -371,7 +371,8 @@ def _binding(proof):
     # The immutable completion binds its final OID. A checkpoint is only a
     # locator and cannot replace that OID or make its absence a new gate.
     return None if proof is None else {
-        key: value for key, value in proof.items() if key != "checkpoint_sha"
+        key: value for key, value in proof.items()
+        if key not in {"checkpoint_sha", "generation", "version"}
     }
 
 
@@ -972,11 +973,35 @@ class StackedBranches:
             .one_or_none()
         )
 
-    async def current(self, task_id, *, source_sha=None, conn=None):
+    async def completed_source_matches(self, task_id, source_sha, snapshot, *, conn=None):
+        """A current immutable completion ref can replace missing projection rows."""
+        from src.integration.delivery_truth import load_delivery_requests
+        from src.integration.provenance import CompletionIdentity, GitProvenance
+
+        if snapshot is None or snapshot.observation.error:
+            return False
+        observed = snapshot.observation
+        request = (await load_delivery_requests(
+            self.db, (task_id,), repository_id=observed.repository_id,
+            target_ref=observed.target_ref, conn=conn, reduced=True,
+        )).get(task_id)
+        if (request is None or request.task_status != "COMPLETED"
+                or request.completion_outcome != "pass" or not request.completion_id
+                or request.lifecycle_disposition):
+            return False
+        record = await GitProvenance(
+            observed.git, observed.store, repository_url=observed.repository_url,
+        ).read_completion(CompletionIdentity(
+            request.project_id, request.repository_id, task_id, request.completion_id,
+        ), refs=observed.source_heads)
+        return bool(record and record["source_oid"] == source_sha
+                    and await observed.is_fresh())
+
+    async def current(self, task_id, *, source_sha=None, snapshot=None, conn=None):
         """DB identity guard used again at batch publication, without Git under locks."""
         if conn is None:
             async with self.db._engine.connect() as owned:
-                return await self.current(task_id, source_sha=source_sha, conn=owned)
+                return await self.current(task_id, source_sha=source_sha, snapshot=snapshot, conn=owned)
         origin = await self._origin(task_id, conn)
         stack = origin and origin["stack_snapshot"]
         if not stack:
@@ -998,6 +1023,13 @@ class StackedBranches:
                 task_integration_checkpoints.c.task_id == task_id,
             )
         )
+        source_current = (source_sha is None or checkpoint == source_sha
+                          and stack.get("refreshed_head", source_sha) == source_sha)
+        if not source_current and snapshot is not None:
+            source_current = (
+                await self.completed_source_matches(task_id, source_sha, snapshot, conn=conn)
+                and await self.source_contains_stack(task_id, source_sha, snapshot)
+            )
         return (
             _bindings(proofs) == _bindings(stack["prerequisites"])
             and not stack.get("hold")
@@ -1005,11 +1037,7 @@ class StackedBranches:
                 proof["status"] == "COMPLETED" and not proof["abandoned"] and proof["authorized"]
                 for proof in proofs.values()
             )
-            and (
-                source_sha is None
-                or checkpoint == source_sha
-                and stack.get("refreshed_head", source_sha) == source_sha
-            )
+            and source_current
         )
 
     async def source_contains_stack(self, task_id, source, snapshot):

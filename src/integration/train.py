@@ -1086,6 +1086,12 @@ class IntegrationTrain:
         missing_push = [check for check in getattr(result, "checks", ())
                         if check.classification == "ci_not_triggered"]
         if missing_push:
+            if lane.train_policy is not None:
+                # A newly required check may not have started yet. Unknown CI
+                # takes the policy's bounded observation path, not a code fixer.
+                return replace(self._visit(target, "testing", batch, observation, result), detail={
+                    "reason": "train_policy_wait", "retry_at": self.clock() +
+                    lane.train_policy.wait_seconds})
             diagnostic = missing_push[0]
             observation = replace(observation, detail={
                 **(observation.detail or {}), "ci_not_triggered": {

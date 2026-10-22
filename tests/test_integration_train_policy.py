@@ -78,6 +78,34 @@ async def test_policy_edit_waits_for_existing_publish_fence(world, tmp_path):
     assert not (await load_train_policy(world.db, "p")).enabled
 
 
+async def test_disabled_train_releases_unused_reservations_only(world, tmp_path):
+    from sqlalchemy import insert, select
+
+    from src.database.tables import integration_branch_owners
+    from src.integration.canonical_reservation import reserve_canonical_task_branch
+    from src.integration.train_policy import worker_integration_enabled
+
+    for name in ("idle", "attached", "preparing"):
+        await completed(world, name)
+    async with world.db.immediate() as conn:
+        for name in ("idle", "attached", "preparing"):
+            await conn.execute(insert(integration_branch_owners).values(
+                id=name, repository_id="r", ref="aq/" + name, owner_id=name,
+                owner_role="worker", fence_token=1,
+                handoff_state="attached" if name == "attached" else "reserved",
+                session_id="live" if name == "attached" else None,
+                workspace_id="slot" if name == "preparing" else None,
+                created_at=1.0, updated_at=1.0))
+    await activate(world, tmp_path, enabled=False)
+    assert not await worker_integration_enabled(world.db, await world.db.get_project("p"))
+    assert (await reserve_canonical_task_branch(world.db, "idle"))["reason"] == (
+        "train playbook is disabled")
+    async with world.db._engine.connect() as conn:
+        states = dict((await conn.execute(select(
+            integration_branch_owners.c.id, integration_branch_owners.c.handoff_state))).all())
+    assert states == {"idle": "released", "attached": "attached", "preparing": "reserved"}
+
+
 async def test_custom_bound_policy_corruption_is_unknown_not_legacy(world, tmp_path):
     await activate(world, tmp_path)
     project = await world.db.get_project("p")
@@ -153,19 +181,30 @@ def test_unknown_policy_fact_has_finite_safe_default():
 async def test_pending_candidate_uses_edited_checks_and_lands_same_sha(world, tmp_path):
     await completed(world, "ready")
     runtime, github, _ = await hosted_train(world)
-    await activate(world, tmp_path, required_checks={"version": "v1", "names": ["unit"]})
+    await activate(world, tmp_path, required_checks={"version": "v1", "names": ["unit"], "producer_id": "15368"})
     pending = await runtime.visit(MAIN)
     assert pending.state == "testing"
     store = BatchStore(world.db)
     members = await store.members(pending.batch_id)
     github.runs[pending.candidate_sha] = "success"
     await activate(world, tmp_path, required_checks={
-        "version": "v2", "names": ["unit", "windows"]})
+        "version": "v2", "names": ["unit", "windows"], "producer_id": "15368"})
     waiting = await runtime.visit(MAIN)
     assert waiting.state == "testing" and waiting.batch_id == pending.batch_id
-    await activate(world, tmp_path, required_checks={"version": "v3", "names": ["unit"]})
+    await activate(world, tmp_path, required_checks={"version": "v3", "names": ["unit"], "producer_id": "15368"})
     landed = await runtime.visit(MAIN)
     assert landed.state == "delivered"
     assert landed.batch_id == pending.batch_id and landed.candidate_sha == pending.candidate_sha
     assert await store.members(pending.batch_id) == members
     assert git(world.origin.url, "rev-parse", "main") == pending.candidate_sha
+
+
+async def test_idle_policy_wait_does_not_freeze_then_edit_dispatches(world, tmp_path):
+    await completed(world, "ready")
+    runtime, _, _ = await hosted_train(world)
+    await activate(world, tmp_path, idle="wait", wait_seconds=20)
+    paused = await runtime.visit(MAIN)
+    assert paused.batch_id is None and paused.detail["reason"] == "train_policy_wait"
+    assert paused.detail["retry_at"] > paused.observed_at
+    await activate(world, tmp_path)
+    assert (await runtime.visit(MAIN)).state == "testing"

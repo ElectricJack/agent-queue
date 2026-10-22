@@ -78,6 +78,36 @@ async def load_train_policy(db, project_id: str) -> TrainPolicyView:
         return await train_policy_on(conn, project_id)
 
 
+async def worker_integration_enabled(db, project) -> bool:
+    """Only explicit off removes new worker integration reservations.
+
+    Unknown policy never authorizes ignoring an existing integration writer.
+    Actual claim/workspace and stopped-writer guards remain in their owners.
+    """
+    return (getattr(project, "hierarchical_integration_mode", "disabled") in {"hierarchy", "train"}
+            and (await load_train_policy(db, project.id)).reason != "train_playbook_disabled")
+
+
+async def release_idle_reservations_on(conn, project_id: str, now: float) -> None:
+    """Release only unused legacy reservations; never revoke a live writer."""
+    from sqlalchemy import exists, update
+
+    from src.database import tables as t
+    from src.database.queries.integration_state_queries import session_attached_clause
+
+    owners = t.integration_branch_owners
+    idle_tasks = select(t.tasks.c.id).where(
+        t.tasks.c.project_id == project_id,
+        ~exists().where(t.sessions.c.task_id == t.tasks.c.id, session_attached_clause()),
+        ~exists().where(t.workspaces.c.locked_by_task_id == t.tasks.c.id),
+    )
+    await conn.execute(update(owners).where(
+        owners.c.owner_id.in_(idle_tasks), owners.c.owner_role == "worker",
+        owners.c.handoff_state == "reserved", owners.c.session_id.is_(None),
+        owners.c.workspace_id.is_(None), owners.c.holder.is_(None),
+    ).values(handoff_state="released", fence_token=owners.c.fence_token + 1, updated_at=now))
+
+
 def current_checks(policy: dict, view: TrainPolicyView) -> dict:
     """Replace check policy only; frozen source identity and intent are untouched."""
     if view.policy is None or view.policy.required_checks is None:

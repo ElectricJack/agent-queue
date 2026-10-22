@@ -320,6 +320,15 @@ class PlaybookArtifactQueryMixin:
                         },
                     )
                 )
+                if scope == "project" and not enabled:
+                    from src.integration.train_policy import (
+                        release_idle_reservations_on,
+                        train_policy_on,
+                    )
+
+                    if (await train_policy_on(conn, scope_identifier)).reason == (
+                            "train_playbook_disabled"):
+                        await release_idle_reservations_on(conn, scope_identifier, now)
                 return
             # Generic fallback for any other dialect: update first, insert
             # only when the row is genuinely absent.

@@ -1750,10 +1750,9 @@ class ClaimCommandsMixin:
                     self._development_integration(),
                     default_mode=self.config.integration.default_mode,
                 )
-            hierarchy_enabled = getattr(project, "hierarchical_integration_mode", "disabled") in {
-                "hierarchy",
-                "train",
-            }
+            from src.integration.train_policy import worker_integration_enabled
+
+            hierarchy_enabled = await worker_integration_enabled(self.db, project)
 
             async def check_checkout(*, conn=None):
                 nonlocal stage

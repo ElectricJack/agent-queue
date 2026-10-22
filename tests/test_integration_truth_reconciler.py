@@ -389,7 +389,7 @@ async def test_origin_materialization_is_derived_from_git_without_changing_filin
 
 @pytest.mark.parametrize("obstacle", [
     None, "manual_hold", "writer", "unlanded", "moved", "epic", "untouched_candidate",
-    "deleted_candidate", "deleted_epic",
+    "deleted_candidate", "deleted_epic", "live_session", "locked_workspace",
 ])
 async def test_delivered_batch_retires_only_idle_proven_repairs(
     db, tmp_path, repository, obstacle,
@@ -442,6 +442,22 @@ async def test_delivered_batch_retires_only_idle_proven_repairs(
         ))
         if obstacle == "manual_hold":
             await conn.execute(insert(t.task_labels).values(task_id=task_id, label="hold:human"))
+        if obstacle == "live_session":
+            # Keep the task READY and unassigned: only the actual writer row
+            # protects this stale task projection from retirement.
+            await conn.execute(insert(t.sessions).values(
+                id="repair-writer", task_id=task_id, project_id="p", profile_id="worker",
+                harness="codex", provider="fake", name="repair-writer", lifecycle="task",
+                state="running", desired_state="running", work_dir=str(repo.path),
+                epoch="test", instance_token="writer-instance", started_at=1.0,
+            ))
+        if obstacle == "locked_workspace":
+            # No session or assigned agent exists; the retained checkout alone
+            # must remain untouched until its normal recovery releases it.
+            await conn.execute(insert(t.workspaces).values(
+                id="repair-checkout", project_id="p", workspace_path=str(repo.path),
+                locked_by_task_id=task_id, locked_at=1.0, created_at=1.0,
+            ))
         await conn.execute(insert(t.integration_batches).values(
             id="delivered-batch", project_id="p", repository_id="r",
             target_ref="refs/heads/epic" if obstacle in {"epic", "deleted_epic"}
@@ -475,4 +491,23 @@ async def test_delivered_batch_retires_only_idle_proven_repairs(
             ))
             assert "already delivered" in marker
             assert await conn.scalar(select(func.count()).select_from(t.task_completion_records)) == 0
+        elif obstacle == "live_session":
+            assert await conn.scalar(select(t.sessions.c.state).where(
+                t.sessions.c.id == "repair-writer",
+            )) == "running"
+        elif obstacle == "locked_workspace":
+            assert await conn.scalar(select(t.workspaces.c.locked_by_task_id).where(
+                t.workspaces.c.id == "repair-checkout",
+            )) == task_id
     assert await service._repairs(101.0) == 0
+    if obstacle in {"live_session", "locked_workspace"}:
+        async with db.immediate() as conn:
+            if obstacle == "live_session":
+                await conn.execute(update(t.sessions).where(
+                    t.sessions.c.id == "repair-writer",
+                ).values(state="stopped", desired_state="stopped"))
+            else:
+                await conn.execute(update(t.workspaces).where(
+                    t.workspaces.c.id == "repair-checkout",
+                ).values(locked_by_task_id=None, locked_at=None))
+        assert await service._repairs(102.0) == 1

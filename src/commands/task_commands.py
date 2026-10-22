@@ -4809,8 +4809,9 @@ class TaskCommandsMixin:
             except WaitError as exc:
                 return {"success": False, "error": str(exc), "error_code": exc.code}
             project = await self.db.get_project(task.project_id)
-            managed = project is not None and (
-                project.hierarchical_integration_mode in {"hierarchy", "train"})
+            from src.integration.train_policy import worker_integration_enabled
+
+            managed = await worker_integration_enabled(self.db, project)
             if managed and task.status in _RESTART_RESERVATION_STATUSES:
                 # Repair delegates restart through their operation's reserved branch fence.
                 if task.created_by_kind == "integration_repair":

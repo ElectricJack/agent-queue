@@ -1966,6 +1966,10 @@ class DatabaseBatches:
             from src.integration.promotion_routing import cutover_origin_clause
 
             cutover = None if mode is None else mode.default_branch_cutover
+            recorded_origins = set((await conn.scalars(select(task_branch_origins.c.task_id).where(
+                task_branch_origins.c.task_id.in_(ids),
+                task_branch_origins.c.retired_at.is_(None),
+            ))).all())
             live = set((await conn.execute(
                 select(task_branch_origins.c.task_id)
                 .select_from(task_branch_origins.join(
@@ -1996,8 +2000,15 @@ class DatabaseBatches:
         from src.integration.stacked_branches import StackedBranches
 
         stacks = StackedBranches(self.db)
+        snapshot = self._refresh_snapshots.get(
+            (batch.project_id, batch.repository_id, batch.target_ref))
         for member in members:
-            if not await stacks.current(member.task_id, source_sha=member.source_sha):
+            if (member.task_id not in recorded_origins
+                    and await stacks.completed_source_matches(
+                        member.task_id, member.source_sha, snapshot)):
+                live.add(member.task_id)
+            if not await stacks.current(member.task_id, source_sha=member.source_sha,
+                                        snapshot=snapshot):
                 return False
         source_types = {}
         async with self.db._engine.connect() as conn:
