@@ -32,6 +32,7 @@ class WaitService:
         self.registry = getattr(orch, "wait_registry", None) or build_registry(
             clock=clock, resource_reader=getattr(orch, "wait_resource_reader", None)
             or self.scheduler.reader,
+            ci_reader=getattr(orch, "wait_ci_reader", None),
         )
         self.listener = WaitSourceListener(self, clock=clock, owner=owner, connect=connect)
         self.timers = WaitTimerDriver(self, clock=clock)
@@ -85,6 +86,10 @@ class WaitService:
             # AdmissionReader observes current typed constraints under the
             # dispatcher's graph/owner lock. Events never supply its verdict.
             return
+        if condition.kind in {"ci_check", "ci_run"}:
+            callback = getattr(self.orch, "wait_ci_lock_source", None)
+            if callback is not None:
+                return await callback(conn, condition)
         await lock_database_source(conn, condition)
 
     async def graph(self, args, *, principal, scope, handler):
