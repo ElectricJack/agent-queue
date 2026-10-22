@@ -5359,8 +5359,30 @@ async def collect_epic(case):
     return delivered.target_sha
 
 
-@pytest.mark.parametrize("restart", [False, True, "archived-children"],
-                         ids=["last-child-promotion", "idle-restart", "archived-children"])
+async def completed_epic_branch_helpers(case):
+    """Repairs and control-plane work keep the epic ref, not an epic identity."""
+    from src.models import AgentProfile
+
+    for tid, branch in (("repair-first", "aq/epic"), ("repair-second", "refs/heads/aq/epic")):
+        await case.db.create_task(Task(
+            id=tid, project_id="p", repo_id="r", title=tid, description="",
+            branch_name=branch, status=TaskStatus.IN_PROGRESS,
+            created_by_kind="system", created_by_id="old-batch", dedup_key=f"repair:{tid}:1",
+        ))
+        await close(case.db, tid, [case.base])
+    await case.db.create_profile(AgentProfile(id="reviewer", name="Reviewer"))
+    await case.db.create_task(Task(
+        id="role-task", project_id="p", repo_id="r", title="Review", description="",
+        branch_name="aq/epic", status=TaskStatus.COMPLETED,
+        profile_id="reviewer", route_source="role",
+    ))
+    # Even a role task that acquired a container flag cannot be the epic.
+    await case.db.set_task_meta("role-task", "container", True)
+
+
+@pytest.mark.parametrize("restart", [False, True, "archived-children", "shared-branch-repairs"],
+                         ids=["last-child-promotion", "idle-restart", "archived-children",
+                              "shared-branch-repairs"])
 async def test_collected_epic_automatically_refreshes_before_aggregate_checks(
     collected_epic, restart,
 ):
@@ -5370,6 +5392,8 @@ async def test_collected_epic_automatically_refreshes_before_aggregate_checks(
     if restart:
         case.github.runs[testing.candidate_sha] = "success"
         assert (await case.train.visit(case.target)).state == "delivered"
+    if restart == "shared-branch-repairs":
+        await completed_epic_branch_helpers(case)
 
     # The default branch gains configuration after this child candidate was
     # built. The epic has no aggregate completion or PR to trigger PR-conflict
@@ -5570,13 +5594,18 @@ async def test_root_pr_recovery_notifies_supervisor_for_completed_container(coll
     assert "unit: failure" in notices[0]["body"]
 
 
-async def test_collected_two_child_epic_gets_completion_and_lands_via_root(collected_epic):
+@pytest.mark.parametrize("shared_branch_tasks", [False, True])
+async def test_collected_two_child_epic_gets_completion_and_lands_via_root(
+    collected_epic, shared_branch_tasks,
+):
     case = collected_epic
     # A completed container's uncollected branch tip never enters a root batch.
     before = await case.train.visit(MAIN)
     assert before.state == "blocked" and before.batch_id is None
     assert await case.db.get_task_completion("epic") is None
     head = await collect_epic(case)
+    if shared_branch_tasks:
+        await completed_epic_branch_helpers(case)
     waiting = await case.train.visit(case.target)
     assert waiting.state == "blocked"
     assert "review_missing" in {b["code"] for b in waiting.detail["blockers"]}
@@ -5601,6 +5630,33 @@ async def test_collected_two_child_epic_gets_completion_and_lands_via_root(colle
     for source in [head, *case.children]:
         git(case.origin.url, "merge-base", "--is-ancestor", source, tip)
     assert (await case.train.visit(MAIN)).state == "idle"
+    if shared_branch_tasks:
+        for tid in ("repair-first", "repair-second"):
+            assert len(await case.db.get_task_completions(tid)) == 1
+            assert (await case.db.get_task_completion(tid)).commits == [case.base]
+        assert await case.db.get_task_completion("role-task") is None
+
+
+@pytest.mark.parametrize("identity", ["missing", "ambiguous"])
+async def test_epic_completion_logs_missing_or_ambiguous_container(collected_epic, caplog, identity):
+    case = collected_epic
+    target = case.target
+    if identity == "missing":
+        target = replace(target, target_ref="refs/heads/aq/missing")
+    else:
+        await case.db.create_task(Task(
+            id="other-epic", project_id="p", repo_id="r", title="Ambiguous epic", description="",
+            branch_name="refs/heads/aq/epic", status=TaskStatus.COMPLETED,
+        ))
+        await case.db.set_task_meta("other-epic", "container", True)
+    lane = await case.train.lane_for(target)
+    with caplog.at_level("INFO", logger="src.integration.train_sources"):
+        assert await lane.complete_epic(await snapshot(case.world, case.target)) == ()
+    count = 0 if identity == "missing" else 2
+    assert f"expected one completed container, found {count}" in caplog.text
+    assert target.target_ref in caplog.text
+    assert await case.db.get_task_completion("epic") is None
+    assert await DatabaseBatches(case.db).closed_epic_graph(target) is None
 
 
 async def test_completed_epic_verifies_despite_selection_window_blocker(collected_epic):
