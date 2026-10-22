@@ -18,7 +18,7 @@ from pathlib import Path
 from src.jobs.artifacts import atomic_json, job_directory, read_json
 from src.jobs.identity import processes, require_readable_identity, verified
 from src.jobs.policy import JobError, TERMINAL
-from src.jobs.script_sandbox import BINDING_BYTES, REQUEST_BYTES, SandboxRequest
+from src.jobs.script_runner import BINDING_BYTES, REQUEST_BYTES, ScriptRequest
 from src.playbooks.private_values import PrivateOwner, PrivateValueService
 from src.playbooks.script_inputs import canonical, digest
 
@@ -32,7 +32,7 @@ class ScriptSubmission:
     artifact_digest: str
     scope_kind: str
     scope_owner: str
-    request: SandboxRequest = field(repr=False)
+    request: ScriptRequest = field(repr=False)
 
     @property
     def owner(self):
@@ -60,7 +60,8 @@ def public_job(job):
 async def submit(service, script):
     if not isinstance(script, ScriptSubmission) or script.request.run_id != script.run_id:
         raise JobError("jobs.script_identity_invalid")
-    cfg, settings = service.settings, service.config.resources.scripts
+    cfg = service.settings
+    settings = service.config.resources.scripts.resolved(service.config.data_dir)
     if not cfg.enabled or not settings.enabled:
         raise JobError("jobs.disabled")
     private = private_service(service)
@@ -129,22 +130,22 @@ def decode_rows(rows):
 async def run(directory, job, intent):
     """Called under runner.py's instance lock, before generic box admission."""
     from src.config import ScriptsConfig
-    from src.jobs.script_sandbox import launch
+    from src.jobs.script_runner import launch
 
     # Pipe payload is bounded, never inherited by the script or written to disk.
     payload = await asyncio.to_thread(sys.stdin.buffer.read, 2 * 1024**2)
     data = json.loads(payload)
     private = PrivateValueService(object(), active_key_id=data["key_id"],
                                   keys={data["key_id"]: base64.b64decode(data["key"])})
-    request = SandboxRequest.model_validate(data["request"])
+    request = ScriptRequest.model_validate(data["request"])
     if (request.run_id != job["playbook_run_id"]
             or request.execution_id != job["contract"]["execution_id"]):
         raise ValueError("script_runner_identity_invalid")
     settings = ScriptsConfig(**job["contract"]["script_settings"])
     if job["queue_deadline"] <= time.time():
-        from src.jobs.script_sandbox import SandboxResult
+        from src.jobs.script_runner import ScriptResult
 
-        expired = SandboxResult(request.execution_id, "admission_timed_out", reason="queue",
+        expired = ScriptResult(request.execution_id, "admission_timed_out", reason="queue",
                                 cleanup_complete=True, ended_at=time.time())
     else:
         expired = None
@@ -191,9 +192,9 @@ def protect_result(private, job, result):
 
 
 async def settle_unlaunched(service, job, outcome):
-    from src.jobs.script_sandbox import SandboxResult
+    from src.jobs.script_runner import ScriptResult
 
-    result, rows = protect_result(private_service(service), job, SandboxResult(
+    result, rows = protect_result(private_service(service), job, ScriptResult(
         job["contract"]["execution_id"], outcome, reason="queue", cleanup_complete=True,
         ended_at=time.time()))
     return await service.db.transition_job(

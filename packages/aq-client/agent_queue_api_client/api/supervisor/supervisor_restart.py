@@ -66,10 +66,12 @@ def sync_detailed(
     body: SupervisorRestartRequest,
 ) -> Response[SupervisorRestartResponse | SupervisorRestartResponse422]:
     """Restart a named supervisor through AQ with current profile permissions, model and effort. Starts a
-    fresh conversation by default; --resume resumes its prior conversation. Requires global admin.
+    fresh conversation by default; --resume resumes its prior conversation. Requires a local operator or
+    live supervisor within the target project scope.
 
      Restart a named supervisor through AQ with current profile permissions, model and effort. Starts a
-    fresh conversation by default; --resume resumes its prior conversation. Requires global admin.
+    fresh conversation by default; --resume resumes its prior conversation. Requires a local operator or
+    live supervisor within the target project scope.
 
     Args:
         body (SupervisorRestartRequest):
@@ -99,10 +101,12 @@ def sync(
     body: SupervisorRestartRequest,
 ) -> SupervisorRestartResponse | SupervisorRestartResponse422 | None:
     """Restart a named supervisor through AQ with current profile permissions, model and effort. Starts a
-    fresh conversation by default; --resume resumes its prior conversation. Requires global admin.
+    fresh conversation by default; --resume resumes its prior conversation. Requires a local operator or
+    live supervisor within the target project scope.
 
      Restart a named supervisor through AQ with current profile permissions, model and effort. Starts a
-    fresh conversation by default; --resume resumes its prior conversation. Requires global admin.
+    fresh conversation by default; --resume resumes its prior conversation. Requires a local operator or
+    live supervisor within the target project scope.
 
     Args:
         body (SupervisorRestartRequest):
@@ -127,10 +131,12 @@ async def asyncio_detailed(
     body: SupervisorRestartRequest,
 ) -> Response[SupervisorRestartResponse | SupervisorRestartResponse422]:
     """Restart a named supervisor through AQ with current profile permissions, model and effort. Starts a
-    fresh conversation by default; --resume resumes its prior conversation. Requires global admin.
+    fresh conversation by default; --resume resumes its prior conversation. Requires a local operator or
+    live supervisor within the target project scope.
 
      Restart a named supervisor through AQ with current profile permissions, model and effort. Starts a
-    fresh conversation by default; --resume resumes its prior conversation. Requires global admin.
+    fresh conversation by default; --resume resumes its prior conversation. Requires a local operator or
+    live supervisor within the target project scope.
 
     Args:
         body (SupervisorRestartRequest):
@@ -158,10 +164,12 @@ async def asyncio(
     body: SupervisorRestartRequest,
 ) -> SupervisorRestartResponse | SupervisorRestartResponse422 | None:
     """Restart a named supervisor through AQ with current profile permissions, model and effort. Starts a
-    fresh conversation by default; --resume resumes its prior conversation. Requires global admin.
+    fresh conversation by default; --resume resumes its prior conversation. Requires a local operator or
+    live supervisor within the target project scope.
 
      Restart a named supervisor through AQ with current profile permissions, model and effort. Starts a
-    fresh conversation by default; --resume resumes its prior conversation. Requires global admin.
+    fresh conversation by default; --resume resumes its prior conversation. Requires a local operator or
+    live supervisor within the target project scope.
 
     Args:
         body (SupervisorRestartRequest):

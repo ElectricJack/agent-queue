@@ -1,59 +1,10 @@
-"""Reopen a parent collection that ``cancel-preserving`` stopped mid-episode.
+"""Recover a cancelled collection in its original episode, retaining receipts.
 
-Historical cancellation ended a repair operation. When the
-operation is a parent's *collection* operation -- the one
-``ParentEpisodeRecords.reserve_episode_on`` created for the parent's current
-episode -- nothing collects that parent any more.  Its checkpoint still says
-``awaiting_children`` in the original episode, its completed children's
-receipts are bound to ``(operation, episode)``, the collector's reservation is
-released, and every path that could continue refuses (2026-10-02,
-calm-grove-25 and azure-vault-92):
-
-* the collector and ``aq integration redrive-child`` need an ``active`` or
-  ``escalated`` operation for the episode;
-* ``ParentEpisodeRecords.reserve_episode_on`` returns the episode's existing
-  (cancelled) operation, and one operation per episode is a unique index;
-* a later child's conflict cannot open a repair, because
-  ``RepairService.start`` continues only a live stage whose delegate is still
-  inside its deadline.
-
-A replacement episode cannot inherit the receipts either: accepting a receipt
-into a new episode requires a verified previous aggregate.  So
-:class:`CancelledCollectionRecovery` reactivates the operation in place, in its
-original episode, which leaves every receipt valid as recorded.
-
-It is dry-run first and refuses anything it cannot prove quiet: an unresolved
-promotion, resolution, ref mutation or attestation (an ambiguous Git push is
-never replayed), a branch owner that is not a released or detached
-reservation, a stage delegate that is unsettled, attached or locks a
-workspace, a verifier, an operator hold, more than one conflict, a conflict
-for a child that has moved on, and a parent branch whose remote tip is not the
-recorded head.  Applying needs the remote head the dry run reported and a
-reason, and within one transaction under the project lock:
-
-* reclaims the collector reservation for the same operation at the next fence
-  token, so nothing still carrying an old token (a queued delivery) can write;
-* returns the operation to ``active`` (stage 0) or ``escalated``;
-* when exactly one current conflict exists, opens a fresh repair stage bound to
-  it, with no writer, a new deadline and its own attempt budget.  Ordinary
-  dispatch then files a *new* delegate ``repair-<operation>-<stage>``: archived
-  delegates are never restored and their cancelled stages stay cancelled;
-* returns a parent the exhausted repair terminally BLOCKED to PAUSED, exactly as
-  the shared parent transition requires.
-
-With no conflict waiting, the operation resumes with its cancelled stage still
-active; ``RepairService.start`` gives the next conflict a fresh stage past it.
-The durable Subject retries a reopened stage whose dispatch failed, whatever
-the frozen policy's ``on_exhausted``.
-
-Gates, manual holds and the root's human review are never touched; open human
-gates on the parent are reported.  Every apply writes an
-``integration.collection_reopened`` event.
-
-An escalated, terminal no-progress incident can use the same control for a
-later conflict that no old stage owns. This additional path requires the
-exact detached collector fence, preserves every old stage, and rechecks Git
-under the apply lock. It never retries an exhausted conflict with a new budget.
+Preview is required. Refuse live writers, ambiguous pushes, holds, unsettled
+intents/delegates, moved children and changed remote heads. Apply under the
+project lock with the previewed head and reason, acquiring a new collector fence.
+Keep cancelled stages and human gates; a new current conflict gets a new stage,
+never a retry of an exhausted conflict. Audit every apply.
 """
 
 from __future__ import annotations

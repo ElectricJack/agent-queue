@@ -335,7 +335,13 @@ async def test_reset_falls_back_to_truncate_when_the_row_reset_is_unavailable(
         await db_fixtures.reset_all("postgresql://u:p@h/leased")
     await db_fixtures.reset_all("postgresql://u:p@h/leased")
 
-    assert executed == [db_fixtures._TRUNCATE_ALL, db_fixtures._TRUNCATE_ALL]
+    # End busy sessions before truncating, including after the fallback is cached.
+    assert executed == [
+        db_fixtures._END_BUSY_SESSIONS,
+        db_fixtures._TRUNCATE_ALL,
+        db_fixtures._END_BUSY_SESSIONS,
+        db_fixtures._TRUNCATE_ALL,
+    ]
 
 
 async def test_pool_dispose_drops_its_clones_together(monkeypatch):

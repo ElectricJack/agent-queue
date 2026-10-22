@@ -123,6 +123,9 @@ class FakeDB:
     async def get_task(self, task_id):
         return FakeTask(id=task_id)
 
+    async def get_integration_checkpoint(self, task_id):
+        return None
+
     async def set_task_meta(self, task_id, key, value) -> None:
         self.meta[(task_id, key)] = value
 
@@ -235,6 +238,17 @@ def kind() -> WorkspaceKind:
 
 
 # ──────────────────────────── §2.4 exclude block ─────────────────────────
+
+
+async def test_resume_reprovision_keeps_checkout_and_skips_prune(base_ws, kind, mgr):
+    slot = await mgr.create_slot(base_ws, kind, 0)
+    branch = 'aq/resume-test'
+    await mgr.git._arun(['switch', '-c', branch], cwd=slot.workspace_path)
+    mgr.git.aworktree_prune = AsyncMock(side_effect=AssertionError('must not prune'))
+    await mgr.reprovision_slot(slot, kind, prune=False)
+    assert await mgr.git._arun(['branch', '--show-current'], cwd=slot.workspace_path) == branch
+    assert mgr.read_sentinel(Path(slot.workspace_path)).workspace_id == slot.id
+    mgr.git.aworktree_prune.assert_not_awaited()
 
 
 class TestGitExclude:
@@ -492,6 +506,64 @@ class TestCreateSlot:
         )
         slot = asyncio.run(m.create_slot(base_ws, bad, 0))
         assert Path(slot.workspace_path).is_dir()
+
+
+class TestReprovisionSlotPrune:
+    """``reprovision_slot``'s prune contract: pruning stays the default."""
+
+    @staticmethod
+    def _registered(base_repo: Path) -> set[Path]:
+        entries = asyncio.run(GitManager().aworktree_list(str(base_repo)))
+        return {Path(e["path"]).resolve() for e in entries}
+
+    def test_ordinary_reprovision_still_prunes_stale_registrations(
+        self, mgr, base_ws, kind, base_repo
+    ):
+        slot = asyncio.run(mgr.create_slot(base_ws, kind, 0))
+        peer = asyncio.run(mgr.create_slot(base_ws, kind, 1))
+        shutil.rmtree(slot.workspace_path)
+        shutil.rmtree(peer.workspace_path)
+        assert Path(peer.workspace_path).resolve() in self._registered(base_repo)
+
+        asyncio.run(mgr.reprovision_slot(slot, kind))
+
+        registered = self._registered(base_repo)
+        assert Path(slot.workspace_path).resolve() in registered
+        assert Path(peer.workspace_path).resolve() not in registered
+        assert mgr.read_sentinel(slot.workspace_path).workspace_id == slot.id
+
+    @pytest.mark.parametrize("prune", [False, True])
+    def test_no_prune_reprovision_adopts_checkout_and_keeps_preserved_registrations(
+        self, mgr, base_ws, kind, base_repo, monkeypatch, prune
+    ):
+        peer = asyncio.run(mgr.create_slot(base_ws, kind, 1))
+        shutil.rmtree(peer.workspace_path)
+        target = base_repo / ".aq" / "worktrees" / "resume-c-1"
+        _git(["worktree", "add", "-b", "aq/owner", str(target)], cwd=base_repo)
+        (target / "saved.txt").write_text("saved\n")
+        _git(["add", "saved.txt"], cwd=target)
+        _git(["commit", "-m", "saved work"], cwd=target)
+        head = _git(["rev-parse", "HEAD"], cwd=target)
+        slot = Workspace(id="ws-slot", project_id="p1", workspace_path=str(target),
+                         source_type=RepoSourceType.WORKTREE, slot_index=0,
+                         base_workspace_id=base_ws.id, kind_id=kind.id)
+        pruned = AsyncMock(wraps=mgr.git.aworktree_prune)
+        monkeypatch.setattr(mgr.git, "aworktree_prune", pruned)
+
+        if prune:
+            asyncio.run(mgr.reprovision_slot(slot, kind))
+        else:
+            asyncio.run(mgr.reprovision_slot(slot, kind, prune=False))
+
+        assert pruned.await_count == int(prune)
+        registered = self._registered(base_repo)
+        assert target.resolve() in registered
+        assert (Path(peer.workspace_path).resolve() in registered) is not prune
+        assert _git(["rev-parse", "HEAD"], cwd=target) == head
+        assert _git(["branch", "--show-current"], cwd=target) == "aq/owner"
+        assert _git(["status", "--porcelain"], cwd=target) == ""
+        sentinel = mgr.read_sentinel(target)
+        assert (sentinel.workspace_id, sentinel.base_workspace_id) == ("ws-slot", base_ws.id)
 
 
 class TestAbandonedMergeRecovery:
@@ -2299,6 +2371,92 @@ class TestRestoreSlotAfterTask:
         assert _git(["status", "--porcelain"], cwd=path) == ""
         if dirty:
             assert "unfinished" in db.contexts[-1]["content"]
+
+
+class TestRestartedTaskBranch:
+    """sharp-quest-65: a restart left the slot detached at the task's checkpoint.
+
+    ``aq task restart`` of azure-impact-46.2 kept its sentinel naming the
+    task and ``aq/azure-impact-46.2`` while HEAD sat detached at the recorded
+    checkpoint and neither the local nor the remote branch existed.  Every
+    preparation then refused: "branch disagrees with its source sentinel".
+    """
+
+    async def _restarted_slot(self, mgr, base_ws, kind):
+        """A slot detached at unpublished task work whose branch ref is gone."""
+        slot = await mgr.create_slot(base_ws, kind, 0)
+        await mgr.reset_slot_for_task(slot, FakeTask(id="tsk-1"))
+        path = Path(slot.workspace_path)
+        (path / "work.py").write_text("print(1)\n")
+        _git(["add", "work.py"], cwd=path)
+        _git(["commit", "-m", "task progress"], cwd=path)
+        head = _git(["rev-parse", "HEAD"], cwd=path)
+        _git(["switch", "--detach"], cwd=path)
+        _git(["branch", "-D", "aq/tsk-1"], cwd=path)
+        assert mgr.read_sentinel(path).branch == "aq/tsk-1"
+        return slot, path, head
+
+    @staticmethod
+    def _checkpoint(db, monkeypatch, branch, sha):
+        monkeypatch.setattr(db, "get_integration_checkpoint", AsyncMock(
+            return_value={"branch": branch, "checkpoint_sha": sha, "state": "working"},
+        ), raising=False)
+
+    async def test_the_branch_is_recreated_at_the_recorded_checkpoint(
+        self, mgr, base_ws, kind, db, monkeypatch
+    ):
+        from src.git.manager import SlotSourceDisagreement
+
+        slot, path, head = await self._restarted_slot(mgr, base_ws, kind)
+        with pytest.raises(SlotSourceDisagreement, match="disagrees with its source sentinel"):
+            await mgr.ensure_slot_checkout(slot, FakeTask(id="tsk-1"))
+        self._checkpoint(db, monkeypatch, "aq/tsk-1", head)
+
+        assert await mgr.reset_slot_for_task(slot, FakeTask(id="tsk-1")) == "aq/tsk-1"
+
+        assert _git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=path) == "aq/tsk-1"
+        _git(["merge-base", "--is-ancestor", head, "HEAD"], cwd=path)
+        assert (path / "work.py").read_text() == "print(1)\n"
+        sentinel = mgr.read_sentinel(path)
+        assert (sentinel.task_id, sentinel.branch) == ("tsk-1", "aq/tsk-1")
+
+    async def test_a_pause_checkpoint_head_also_proves_the_branch(self, mgr, base_ws, kind, db):
+        from src.orchestrator.task_checkpoint import CHECKPOINT_META
+
+        slot, path, head = await self._restarted_slot(mgr, base_ws, kind)
+        db.meta[("tsk-1", CHECKPOINT_META)] = {"head": head, "branch": "aq/tsk-1"}
+
+        await mgr.ensure_slot_checkout(slot, FakeTask(id="tsk-1"))
+
+        assert _git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=path) == "aq/tsk-1"
+        assert _git(["rev-parse", "HEAD"], cwd=path) == head
+
+    @pytest.mark.parametrize(
+        "refusal", ["unrecorded", "moved", "other_branch", "foreign_task", "retained", "diverged"],
+    )
+    async def test_an_unproved_checkpoint_still_refuses(
+        self, mgr, base_ws, kind, db, monkeypatch, refusal
+    ):
+        from src.git.manager import SlotSourceDisagreement
+
+        slot, path, head = await self._restarted_slot(mgr, base_ws, kind)
+        claimant = FakeTask(id="tsk-other" if refusal == "foreign_task" else "tsk-1")
+        if refusal != "unrecorded":
+            self._checkpoint(
+                db, monkeypatch, "aq/tsk-x" if refusal == "other_branch" else "aq/tsk-1",
+                _git(["rev-parse", "HEAD~1"], cwd=path) if refusal == "moved" else head,
+            )
+        if refusal == "retained":
+            monkeypatch.setattr(mgr, "_slot_has_retained_binding", AsyncMock(return_value=True))
+        if refusal == "diverged":
+            _git(["push", "origin", "HEAD~1:refs/heads/aq/tsk-1"], cwd=path)
+            _git(["fetch", "origin"], cwd=path)
+
+        with pytest.raises(SlotSourceDisagreement, match="disagrees with its source sentinel"):
+            await mgr.ensure_slot_checkout(slot, claimant)
+        assert _git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=path) == "HEAD"
+        assert _git(["rev-parse", "HEAD"], cwd=path) == head
+        assert _git(["branch", "--list", "aq/tsk-1"], cwd=path) == ""
 
 
 class TestFinishedTaskSentinel:

@@ -9630,9 +9630,9 @@
     "src/jobs/playbook.py::run": "Executes a pinned playbook script and encrypts its process result; independent of source CI jobs.",
     "src/jobs/playbook.py::settle_unlaunched": "Records an unlaunched script cancellation/expiry as protected output; no integration lifecycle.",
     "src/jobs/playbook.py::submit": "Admits playbook-owned scripts only, with encrypted inputs and immutable input pins; no integration submission.",
-    "src/jobs/script_sandbox.py::BINDING_BYTES": "Generic script binding size constant; same-shaped numeric AST is not relocated integration logic.",
-    "src/jobs/script_sandbox.py::REQUEST_BYTES": "Generic script input size constant; same-shaped numeric AST is not relocated integration logic.",
-    "src/jobs/script_sandbox.py::launch": "Ordinary script process backend with shared box admission and bounded streams; no integration policy/ref state.",
+    "src/jobs/script_runner.py::BINDING_BYTES": "Generic script binding size constant; same-shaped numeric AST is not relocated integration logic.",
+    "src/jobs/script_runner.py::REQUEST_BYTES": "Generic script input size constant; same-shaped numeric AST is not relocated integration logic.",
+    "src/jobs/script_runner.py::launch": "Ordinary script process backend with shared box admission and bounded streams; no integration policy/ref state.",
     "src/playbooks/private_values.py::REFERENCE_KEY": "Generic protected-value reference key; same-shaped constant AST is not relocated integration logic.",
     "src/playbooks/receipts.py::attempt_key": "Generic playbook step attempt hash; not an integration mutation key or replay ledger.",
     "src/playbooks/script_inputs.py::canonical": "Generic canonical JSON for script input pins; not integration ref serialization.",
@@ -17870,7 +17870,10 @@
     "src/playbooks/features.py::execution_metadata_from_source": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/playbooks/features.py::infer_required_features": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/database/tables.py::job_input_pins": "Playbook-only immutable script input retention; no integration owner, workspace lease or ref replay storage.",
-    "src/database/queries/wait_metrics.py::wait_metrics_snapshot": "Read-only fleet wait metrics aggregate owned by metrics; wait_graph's cost projection imports it, but it writes nothing and holds no integration fence or source."
+    "src/database/queries/wait_metrics.py::wait_metrics_snapshot": "Read-only fleet wait metrics aggregate owned by metrics; wait_graph's cost projection imports it, but it writes nothing and holds no integration fence or source.",
+    "src/wait_runtime/restart.py::restart_lock": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/wait_runtime/restart.py::readmit": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/wait_runtime/restart.py::release_continuations": "Generic dependency; integration-specific definitions in this file are charged independently."
   },
   "exclusion_policy": {
     "tests": "Fixtures and tests do not ship as production mechanisms.",

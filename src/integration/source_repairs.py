@@ -1,66 +1,11 @@
-"""Whether one exact train source generation is already on its default target.
+"""Prove exact source-generation delivery before withholding source-CI repair.
 
-Source-CI repair exists to recover red CI on a source branch whose work has
-not reached the default branch.  When git already proves that generation's
-work on the project's designated default branch, repairing the branch
-repeats delivered work: on the box where this was found, a root whose source
-was already integrated and adopted under other commits spent a whole agent
-re-running the same shared fixes a second time.
-
-:func:`prove_source_delivered` is that one answer, and it deliberately asks
-the question the root scheduler already asks and trusts
-(the historical train frontier on
-top of :mod:`src.integration.delivery_truth`): the *exact* completion
-generation, the *exact* repository and the *exact* default target ref.  A
-merge, a squash and a cherry-pick are equally delivered, because the proof
-names the generation's retained source and asks git whether it is contained
-in the target, not whether the observed pull-request head happens to be an
-ancestor.
-
-Two rules make this safe to act on, and both are why nothing here is a cache:
-
-* **Every decision observes afresh.**  The default target can be retargeted,
-  the target can lose containment, and a delivery or an adoption can arrive
-  after an earlier negative answer, so a remembered answer answers a question
-  nobody asked.  Admission asks before it files, and
-  :func:`delivered_queued_repairs` asks again before a claim withholds a
-  queued delegate.
-* **A recorded proof is audit, not authority.**
-  :func:`record_delivery_evidence` writes what was observed onto the
-  observation so an operator and ``aq task explain`` can see it, and nothing
-  reads it back to decide eligibility.  The claim frontier has no delivery
-  predicate for exactly this reason.
-
-Everything that is not a proof answers *not delivered*, because the failure
-mode that matters is stranding real work:
-
-* an unavailable observer, a repository the project does not designate, or a
-  missing target -- no canonical evidence, so repair;
-* an unknown git error or a missing retained source -- unknown, so repair;
-* a new checkpoint generation or a reopened task -- the evidence was gathered
-  about an identity that no longer exists, so repair;
-* ``no_artifact`` and ``settled`` -- neither is delivery to the default
-  branch, so repair.
-
-Only ``contained`` or proven ``no_change`` on the exact target, revalidated
-against the exact source identity the observation names, may withhold work.
-
-An unclaimed READY delegate can be retired by the command handler after a
-fresh proof and a locked identity check. A claimed delegate keeps its writer;
-its completed repair remains deliverable even after the original lands.
-
-Discarding the source completion revokes the purpose of every bound delegate.
-Reopen retirement fences writers and retires completed repairs in that same
-transaction. Train admission and publication recheck the current source head,
-including the full lineage of repairs of repairs: that recheck is
-:func:`~src.integration.delivery_truth.superseded_source_repairs_on`, which
-lives beside the delivery requests it reads in
-:mod:`src.integration.delivery_truth` because the reduced train must not
-import this module. Admission asks the wider
-:func:`~src.integration.delivery_truth.undeliverable_repairs_on`, which also
-withholds a repair whose own task is terminal, and the train releases an open
-batch carrying one rather than let it hold a target against the very source it
-was filed for. Only the write side stays here.
+Observe the designated default target afresh at admission and claim time; audit
+records never grant authority. Unknown proof admits repair. Only contained or
+no-change evidence with a current source identity withholds it. Retire only
+unclaimed delegates; claimed writers and completed repairs retain their work.
+Discarded completions revoke delegates through transactional retirement and the
+train's fresh superseded/undeliverable lineage checks.
 """
 
 from __future__ import annotations

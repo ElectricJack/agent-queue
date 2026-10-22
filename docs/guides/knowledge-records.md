@@ -36,11 +36,22 @@ aq record search --project-id agent-queue --kind knowledge --query 'External too
 ```
 
 Read `data.capabilities.enabled`, `writes_enabled`, the feature flags and
-`granted_operations`: configuration and principal grants are independent.
+`granted_operations`: these are the profile's operations admitted by the current
+project activation and write flags. `profile_granted_operations` retains the raw
+profile grants; `unavailable_operations` maps filtered grants to their refusal
+codes. Record ownership, revision and claim checks still apply when using an
+operation. Configuration and principal grants are independent.
 Capabilities describe the current installation, not the shipped defaults or a
 historical observation. Discovery activates nothing. If storage or writes are
 disabled or refused, report the limitation; a save request does not authorize
 feature enablement or a silent fallback to a legacy note.
+
+Workers can read their project's vault plans and specs independently of knowledge
+activation, using `aq file read --path projects/<project>/plans/<file>` or
+`aq file read --path projects/<project>/specs/<file>`. Absolute vault paths are also accepted.
+This grants read access only: other projects, other vault directories and symlink
+escapes remain inaccessible. Canonical knowledge reads still require the project's
+explicit activation; the supervisor or operator owns that configuration.
 
 With core writes enabled for the scope and the required grants, create a
 reference. This is a template; substitute the actual researched body, URL,

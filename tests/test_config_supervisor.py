@@ -98,3 +98,22 @@ def test_check_deprecations_returns_empty(tmp_path):
     app = AppConfig(data_dir=str(tmp_path / "data"))
     warnings = app.check_deprecations()
     assert len(warnings) == 0
+
+
+def test_supervisor_health_thresholds_from_yaml(tmp_path):
+    import yaml
+
+    from src.config import load_config
+
+    settings = {"turn_timeout_seconds": 1200, "question_timeout_seconds": 300,
+                "retry_backoff_seconds": 90, "max_turn_retries": 3,
+                "max_session_age_seconds": 7200, "context_ceiling_tokens": 128000}
+    path = tmp_path / "config.yaml"
+    path.write_text(yaml.safe_dump({
+        "data_dir": str(tmp_path / "data"),
+        "database": {"url": "postgresql+asyncpg://localhost/aq_test"},
+        "discord": {"bot_token": "test-token-for-validation", "guild_id": "123456789"},
+        "supervisor": settings,
+    }))
+    cfg = load_config(str(path))
+    assert {key: getattr(cfg.supervisor, key) for key in settings} == settings
