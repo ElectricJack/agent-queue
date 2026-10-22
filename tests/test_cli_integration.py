@@ -651,3 +651,34 @@ def test_revoke_publication_uses_native_control():
     client.execute.assert_awaited_once_with("integration_revoke_publication", dict(
         id="grant", project_id="p", reason="cancel",
     ))
+
+
+@pytest.mark.parametrize("apply", [False, True])
+def test_repair_target_cli_preserves_exact_preview_heads(apply):
+    from src.cli.app import cli
+
+    client = _client({"outcome": "repairing" if apply else "preview"})
+    args = ["integration", "repair-target", "batch", "--candidate-sha", "a" * 40,
+            "--target-sha", "b" * 40, "--reason", "Repair sealed target"]
+    if apply:
+        args.append("--apply")
+    with patch("src.cli.integration._get_client", return_value=client):
+        result = CliRunner().invoke(cli, args)
+    assert result.exit_code == 0, result.output
+    client.execute.assert_awaited_once_with("integration_repair_target", {
+        "batch_id": "batch", "expected_candidate_sha": "a" * 40,
+        "expected_target_sha": "b" * 40, "reason": "Repair sealed target", "dry_run": not apply,
+    })
+
+
+@pytest.mark.parametrize("options", [[], ["--candidate-sha", "a" * 40],
+                                     ["--target-sha", "b" * 40, "--reason", "Repair"]])
+def test_repair_target_cli_apply_requires_both_heads_and_reason(options):
+    from src.cli.app import cli
+
+    client = _client({})
+    with patch("src.cli.integration._get_client", return_value=client):
+        result = CliRunner().invoke(cli, ["integration", "repair-target", "batch", "--apply",
+                                          *options])
+    assert result.exit_code == 2
+    client.execute.assert_not_awaited()

@@ -1242,12 +1242,17 @@ async def test_missing_provenance_reopen_requires_operator_control(
         if caller in {"operator", "supervisor"}:
             assert (await reopen_command(db, "missing"))["status"] == "READY"
         else:
-            with pytest.raises(HierarchyError, match="delivery_unknown"):
-                await reopen_command(db, "missing")
+            refused = await reopen_command(db, "missing")
+            assert refused["success"] is False
+            assert refused["code"] == "hierarchy.delivery_unknown"
+            assert "delivery_unknown" in refused["error"]
     task = await db.get_task("missing")
     assert task.status is (TaskStatus.READY if caller in {"operator", "supervisor"}
                            else TaskStatus.COMPLETED)
     assert task.branch_name == before.branch_name
+    if caller not in {"operator", "supervisor"}:
+        assert task.description == before.description
+        assert task.retry_count == before.retry_count
     assert git(origin.url, "rev-parse", "aq/missing") == head
     assert (await db.get_task_completion("missing")).id == "close-missing"
 

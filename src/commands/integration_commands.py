@@ -346,6 +346,29 @@ class IntegrationCommandsMixin:
     async def _cmd_integration_resume_batch(self, args: dict) -> dict:
         return await self._integration_batch_intent(args, "open")
 
+    async def _cmd_integration_repair_target(self, args: dict) -> dict:
+        from src.commands.contracts.integration import IntegrationRepairTargetArgs
+        from src.integration.batches import BatchStore
+        from src.integration.train_controls import TrainControls
+
+        request = IntegrationRepairTargetArgs.model_validate(args)
+        batch = await BatchStore(self.db).get(request.batch_id)
+        operator, refusal = await integration_operator(self.db, batch.project_id if batch else None)
+        if refusal:
+            return _failure("unauthorized", refusal)
+        try:
+            result = await TrainControls(self.db, train=getattr(
+                self.orchestrator, "integration_train", None,
+            )).repair_target(
+                request.batch_id, dry_run=request.dry_run,
+                expected_candidate_sha=request.expected_candidate_sha,
+                expected_target_sha=request.expected_target_sha,
+                operator_id=operator, reason=request.reason,
+            )
+        except (ValueError, GitError, OSError, BranchBusy, TimeoutError) as exc:
+            return _failure("refused", str(exc))
+        return {"success": True, **result}
+
     async def _integration_batch_intent(self, args, intent):
         from src.commands.contracts.integration import IntegrationAbortBatchArgs
         from src.integration.batches import BatchStore

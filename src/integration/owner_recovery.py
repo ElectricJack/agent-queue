@@ -1,56 +1,11 @@
-"""Release an integration branch owner whose writer is gone, preserving its work first.
+"""Preserve work before releasing an integration owner whose writer is gone.
 
-An ``integration_branch_owners`` row in ``attached`` or ``handoff_pending``
-fences its branch for one writer.  Several paths end a writer without
-releasing that row (spec §1, G1–G7): delegate retirement and
-``cancel_preserving`` keep it by design, a failed transfer leaves it
-``handoff_pending``, archive/delete forget it, and slot reuse destroys the
-proof every exit-time confirmer needs.  The row then pins the branch, the
-writer's claim and its workspace lock forever.
-
-:class:`OwnerRecovery` decides from facts that stay checkable after the fact,
-never from the task row or its status:
-
-1. **The writer is gone.**  The row's session is stopped in ``state`` and
-   ``desired_state`` and the session provider confirms it by a fresh probe
-   (a row naming no session has no writer), and no live session names the
-   owning task.  Otherwise ``writer_live``.
-2. **The branch is safe.**  After ``git fetch origin`` in the repository's
-   base checkout, every worktree holding the branch (or the row's own
-   checkout, detached) is inspected.  One a live session works in refuses
-   with ``checkout_in_use``; a running pool session with no task and no claim
-   in flight is idle there, not working. On a ``worker`` row only work proved against the
-   recorded task origin, claim time and matching slot sentinel is eligible for
-   preservation; integration rows rely on their fenced writer binding. A missing
-   local task ref never borrows a detached slot's HEAD. Uncommitted work is
-   snapshotted through a temporary index -- the working tree and the live index are never touched
-   -- and anything origin does not already carry (a dirty tree, a HEAD or a
-   local branch ahead of or diverged from origin and not on the default
-   branch) is pushed, never forced, to the task branch itself. Only a
-   divergent tip uses a temporary ``aq/recovery/<owner-row-id>/<sha>`` ref,
-   consumed and deleted when the retry merges it into the task branch. The
-   branch is then detached in place, without reset or clean.  A fetch or
-   push failure refuses with ``origin_unreachable``.
-3. **Release in one transaction.**  A compare-and-swap on
-   ``(id, fence_token, handoff_state)`` (``stale_fence`` when it misses)
-   releases the row with a fresh fence, unlocks the row's workspace
-   (disabling it when dirty or retaining an unproven detached checkout, so
-   allocation cannot recycle it) and releases
-   the gone writer's claim, then writes the audit row and
-   ``integration.owner_recovered``.
-
-Every non-dry run writes one ``integration_owner_recoveries`` row.  Refusals
-emit ``integration.owner_recovery_refused``; a refusal repeating the latest
-recorded reason within :data:`REFUSAL_THROTTLE_SECONDS` is not recorded again,
-and the task hears about each refusal reason once.  A dry run pushes,
-detaches and records nothing and lists what it would do in
-``evidence["planned"]``.  ``no_push`` releases without publishing: nothing is
-proved, snapshotted or pushed, every unpublished source stays where it is
-(listed in ``evidence["unpublished"]``) and the row's checkout is retained.
-
-There is no force: a row the check refuses stays refused, with its reason.
-
-See docs/superpowers/specs/2026-09-21-integration-owner-recovery-design.md §3.
+Require stopped session rows plus fresh provider proof and no live task writer.
+Inspect all bound checkouts; preserve dirty work through a temporary index and
+publish without force. Detached worker work needs origin/claim/sentinel proof.
+Only a matching owner fence may release its claim and workspace; retain unsafe
+checkouts. Preview mutates nothing; no-push retains unpublished work. Audit
+applies and throttled refusals. See the 2026-09-21 owner-recovery design spec.
 """
 
 from __future__ import annotations

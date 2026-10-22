@@ -88,6 +88,7 @@ def test_every_worker_template_can_publish_and_shares_the_worker_grants(profile_
     assert parsed.frontmatter.template is True
     policy = CapabilityPolicy.from_namespaces(**parsed.capabilities)
     assert policy.allows_plugin_tool("git_push")
+    assert policy.allows_plugin_tool("read_file")
     assert policy.allows_plugin_tool("git_create_pr")
     assert parsed.capabilities == _parsed("worker-codex").capabilities
 
