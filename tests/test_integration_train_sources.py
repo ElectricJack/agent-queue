@@ -6766,6 +6766,14 @@ async def test_spent_default_sync_returns_to_bounded_human_blocker(collected_epi
         assert visit.detail["sync_default_branch"]["outcome"] == "sync_exhausted"
     assert visit.detail["re_request"]["blocker"] == BASELINE_BLOCKER
     assert (await BatchStore(case.db).get(testing.batch_id)).repair_attempt_count == 1
+    from src.integration.repair import ordinary_repair_id
+    from src.integration.stacked_branches import EpicRefresh
+
+    # train-56f15: the spent sync escalates, and refresh-epic refuses to queue behind it.
+    incident = await case.db.get_escalation("escalation-" + ordinary_repair_id(testing.batch_id, 1))
+    assert incident["summary"] == f"Default-branch sync exhausted for batch {testing.batch_id}"
+    with pytest.raises(ValueError, match=f"batch {testing.batch_id} cannot progress"):
+        await EpicRefresh(case.db, case.train).refresh("epic", dry_run=False)
 
 
 @pytest.mark.parametrize("archived", [False, True])
