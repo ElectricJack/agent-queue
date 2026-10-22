@@ -881,13 +881,3 @@ def _pending_owner(row: dict, reason: str, detail: str) -> dict:
         "reason": reason,
         "detail": detail,
     }
-
-
-def _pending_batch(batch: dict, reason: str, detail: str) -> dict:
-    return {
-        "kind": "development_batch",
-        "batch_id": batch["id"],
-        "state": batch["state"],
-        "reason": reason,
-        "detail": detail,
-    }

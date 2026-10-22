@@ -23,8 +23,9 @@ LANDING_REVISION = "8e73e088fa5050621a165b9d13f90ef88334572d"
 BASELINE_ENGINE_LINES = 82_627
 BASELINE_OWNED_LINES = 140_499
 REPLACEMENT_ALLOWANCE = 15_000
-# Exact standing batch exception, not a new replacement allowance. Remove its
-# manifest opt-in when azure-ridge-72 restores the original transition cap.
+# Historical record of the retired one-time batch exception. azure-ridge-72
+# removed the manifest opt-in and restored the original transition cap; the
+# record stays so the decision remains auditable, never as a reusable allowance.
 TRANSITION_BATCH_EXCEPTION = {'batch_id': 'train-745592300af5cef0338dec80ebabb465',
  'decision_message_id': 'msg-7ed85e78d1af4f3e85b485a57967e794',
  'decision_message_ids': ['msg-7ed85e78d1af4f3e85b485a57967e794',
@@ -467,14 +468,10 @@ def inventory(root: Path, manifest: dict) -> dict:
 
 
 def transition_owned_cap(manifest: dict) -> int:
-    """Accept only the recorded batch decision; never derive a cap from counts."""
-    original = BASELINE_OWNED_LINES + REPLACEMENT_ALLOWANCE
-    exception = manifest.get("transition_exception")
-    if exception is None:
-        return original
-    if exception != TRANSITION_BATCH_EXCEPTION:
+    """The original cap; the batch exception is retired and never derived from counts."""
+    if manifest.get("transition_exception") is not None:
         raise ValueError("unapproved integration transition exception")
-    return original + TRANSITION_BATCH_EXCEPTION["delta"]
+    return BASELINE_OWNED_LINES + REPLACEMENT_ALLOWANCE
 
 
 def budget_errors(report: dict, manifest: dict) -> list[str]:

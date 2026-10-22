@@ -15,7 +15,6 @@ from src.database.tables import task_dependencies, tasks
 from src.integration.development import (
     DevelopmentBusy, DevelopmentPrimitives, DevelopmentPolicy,
 )
-from src.integration.models import INTEGRATION_REPAIR_PRIORITY
 from src.models import (
     Project, RepoConfig, RepoSourceType, Task, TaskCompletion, TaskStatus,
 )
@@ -359,85 +358,6 @@ async def test_project_move_keeps_an_explicit_repository_and_same_project_edits(
     assert (await db.get_task("moved")).repo_id is None, "the caller chose the repository"
 
 
-
-
-async def test_repair_generation_budget_stops_recursive_dispatch(setup):
-    db, service, _source, _remote, _repo = setup
-    await feature(setup, "original")
-    previous = "original"
-    for generation in range(1, 4):
-        previous = await service.ensure_repair(
-            "p",
-            "r",
-            [{"task_id": previous, "source_sha": "a" * 40}],
-            "b" * 40,
-            reason="validation failed",
-        )
-        assert (
-            f"Development repair generation: {generation}"
-            in (await db.get_task(previous)).description
-        )
-    assert (
-        await service.ensure_repair(
-            "p",
-            "r",
-            [{"task_id": previous, "source_sha": "a" * 40}],
-            "b" * 40,
-            reason="validation failed",
-        )
-        is None
-    )
-
-
-async def test_shared_repair_is_required_by_every_parked_source(setup):
-    """A shared repair keeps provenance separate from its delivery holds."""
-    db, service, _source, _remote, _repo = setup
-    one = await feature(setup, "one")
-    two = await feature(setup, "two")
-
-    identity = await service.ensure_repair(
-        "p",
-        "r",
-        [
-            {"task_id": "one", "source_sha": one},
-            {"task_id": "two", "source_sha": two},
-        ],
-        "b" * 40,
-        reason="shared conflict",
-    )
-
-    repair = await db.get_task(identity)
-    assert repair.parent_task_id is None
-    assert set(await db.get_typed_dependencies(identity)) == {
-        ("one", "discovered-from"),
-        ("two", "discovered-from"),
-    }
-    for source_id in ("one", "two"):
-        assert (identity, "blocks") in await db.get_typed_dependencies(source_id)
-        assert await _admission_blocked(setup, source_id)
-
-
-async def test_single_source_repair_is_a_child_without_a_reverse_cycle(setup):
-    db, service, _source, _remote, _repo = setup
-    source_sha = await feature(setup, "source")
-
-    identity = await service.ensure_repair(
-        "p", "r", [{"task_id": "source", "source_sha": source_sha}], "b" * 40,
-        reason="single conflict",
-    )
-
-    repair = await db.get_task(identity)
-    assert repair.parent_task_id == "source"
-    assert ("source", "parent-child") in await db.get_typed_dependencies(identity)
-    assert (identity, "blocks") not in await db.get_typed_dependencies("source")
-    # The routing policy names the origin (``origins.development_repair``),
-    # not the title; the repair is filed unrouted (mandatory-routing §5.3).
-    assert repair.created_by_kind == "development_repair"
-    assert (repair.profile_id, repair.route_source) == (None, "unrouted")
-    # The repair gates the development train, so it is filed ahead of ordinary work.
-    assert repair.priority == INTEGRATION_REPAIR_PRIORITY
-
-
 UNREPAIRED = "integration.development_conflicts_unrepaired"
 
 
@@ -500,62 +420,6 @@ async def _merge_repair(setup, identity, sources, resolution):
     return head
 
 
-def test_repair_chain_states_follow_the_journal():
-    from src.integration.development import repair_chain
-
-    identity = DevelopmentPrimitives._repair_identity
-    source = [{"task_id": "s", "source_sha": "a" * 40}]
-    first = identity(source)
-    carried = [{"task_id": first, "source_sha": "b" * 40}]
-    second = identity(carried)
-
-    def row(state, manifest, target="refs/heads/main", created=1.0):
-        return {"id": state + str(created), "repository_id": "r", "target_ref": target,
-                "state": state, "manifest": manifest, "created_at": created}
-
-    def chain(history, statuses, verified=()):
-        return repair_chain(source, history, statuses, repository_id="r",
-                            target_ref="refs/heads/main", verified=verified)
-
-    parked = [row("parked", source)]
-    assert chain(parked, {})["state"] == "missing"
-    assert chain(parked, {first: "READY"})["open_repair"] == first
-    assert chain(parked, {first: "COMPLETED"})["state"] == "awaiting_publication"
-    assert chain(parked + [row("finished", carried, created=2.0)],
-                 {first: "COMPLETED"})["state"] == "awaiting_publication"
-    assert chain(parked, {first: "COMPLETED"}, verified={first})["state"] == "delivered"
-    # A parent assembly ref is not the target.
-    assembly = row("delivered", carried, target="refs/heads/aq/development/parent/x", created=2.0)
-    assert chain(parked + [assembly], {first: "COMPLETED"})["state"] == "awaiting_publication"
-    reparked = parked + [row("parked", carried, created=2.0)]
-    result = chain(reparked, {first: "COMPLETED", second: "IN_PROGRESS"})
-    assert (result["open_repair"], [link["task_id"] for link in result["chain"]]) == (
-        second, [first, second]
-    )
-    assert chain(reparked, {first: "COMPLETED", second: "BLOCKED"})["state"] == "finished"
-    assert chain(reparked, {first: "COMPLETED"})["state"] == "missing"
-
-
-def test_carried_sources_follow_the_repair_chain():
-    from src.integration.development import _carried_sources
-
-    a, b, c = ("a" * 40, "b" * 40, "c" * 40)
-    contracts = {
-        "gen3": [{"task_id": "gen2", "source_sha": b}],
-        "gen2": [{"task_id": "gen1", "source_sha": a}],
-        "gen1": [{"task_id": "source", "source_sha": c, "parent_task_id": "epic"}],
-    }
-    assert _carried_sources("gen3", contracts) == {"gen2": b, "gen1": a, "source": c}
-    assert _carried_sources("gen2", contracts) == {"gen1": a, "source": c}
-    assert _carried_sources("unknown", contracts) == {}
-    # A task reached with two revisions is unproven, and a looping journal ends.
-    contracts["gen3"].append({"task_id": "gen1", "source_sha": c})
-    contracts["gen1"].append({"task_id": "gen3", "source_sha": c})
-    assert _carried_sources("gen3", contracts) == {
-        "gen2": b, "gen1": None, "source": c, "gen3": c,
-    }
-
-
 def test_development_prime_omits_strict_review_protocol():
     from src.prime.sections import build_completion_protocol_section
 
@@ -584,81 +448,6 @@ async def _park(service, identity, manifest, *, reason="selected validation fail
             "updated_at": now,
         }
     )
-
-
-async def _repair_chain(db, service, depth):
-    """Return the id of a generation-*depth* repair, as the incident's chain grew."""
-    previous = "original"
-    for _ in range(depth):
-        previous = await service.ensure_repair(
-            "p", "r", [{"task_id": previous, "source_sha": "a" * 40}], "b" * 40,
-            reason="validation failed",
-        )
-    assert f"Development repair generation: {depth}" in (await db.get_task(previous)).description
-    return previous
-
-
-async def test_archived_terminal_source_is_satisfied_without_a_schema_impossible_edge(setup, caplog):
-    """An archived terminal source still yields a repair, minus its FK-bound edges.
-
-    ``task_dependencies.depends_on_task_id`` references ``tasks.id``, so no
-    provenance edge to an archived source can exist.  The publisher records
-    that as a structured log line and carries on; it never raises.
-    """
-    import logging
-
-    db, service, _source, _remote, _repo = setup
-    await feature(setup, "original")
-    await db.update_task("original", status=TaskStatus.COMPLETED.value)
-    # This models legacy data written before D2 made undelivered development
-    # work unarchivable through the public archive command.
-    async with db.immediate() as conn:
-        task = await db._get_task_conn("original", conn=conn)
-        await db._archive_one(task, conn=conn)
-    assert await db.get_task("original") is None
-
-    with caplog.at_level(logging.INFO, logger="src.integration.development"):
-        identity = await service.ensure_repair(
-            "p", "r", [{"task_id": "original", "source_sha": "a" * 40}], "b" * 40,
-            reason="validation failed",
-        )
-
-    repair = await db.get_task(identity)
-    assert repair is not None and repair.project_id == "p"
-    assert repair.parent_task_id is None
-    assert await db.get_typed_dependencies(identity) == []
-    assert any(
-        "original" in record.getMessage() and "archived" in record.getMessage()
-        for record in caplog.records
-    )
-
-
-async def test_archived_repair_is_not_resurrected_as_a_fresh_ready_task(setup):
-    """An archived repair has been filed; re-filing it loses its completion.
-
-    ``development-repair-dfda02e25d80e0d1ab2d`` was found in ``tasks`` as READY
-    and in ``archived_tasks`` as COMPLETED at the same time — one row per tick
-    that read the live table alone.
-    """
-    db, service, _source, _remote, _repo = setup
-    await feature(setup, "original")
-    manifest = [{"task_id": "original", "source_sha": "a" * 40}]
-    identity = await service.ensure_repair(
-        "p", "r", manifest, "b" * 40, reason="validation failed"
-    )
-    await db.update_task(identity, status=TaskStatus.COMPLETED.value)
-    # Existing archives must never be recreated as READY, even though the
-    # current D2 archive guard would retain this undelivered repair.
-    async with db.immediate() as conn:
-        task = await db._get_task_conn(identity, conn=conn)
-        await db._archive_one(task, conn=conn)
-    assert await db.get_task(identity) is None
-
-    assert (
-        await service.ensure_repair("p", "r", manifest, "b" * 40, reason="validation failed")
-        == identity
-    )
-    assert await db.get_task(identity) is None, "the archived repair stays archived"
 
 
 # -- branches a delivery made obsolete (quick-ridge) -----------------------

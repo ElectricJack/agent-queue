@@ -167,7 +167,8 @@ Receipts are read-only historical audit (spec §3.3); nothing active writes one 
 delivery authority. The S1 writers are retired: the promotion finalizer
 `finalize_integration_promotion` and its `DatabaseBackend` stub,
 `RecordsPrimitives.record_receipt[_on]` with its `RECORD_RECEIPT` binding (the
-primitive is unbound and invokes as `primitive_unavailable`), the
+primitive is unbound and invokes as `primitive_unavailable`; `RecordsPrimitives`
+itself was later removed as test-only), the
 `ChildDelivery._reissue_receipt` path (a receipt predating the current completion
 now blocks until Git-first delivery proves containment), and the
 settled-claim receipt fallback in `claim_queries`.

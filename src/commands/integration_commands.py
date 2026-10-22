@@ -1422,19 +1422,6 @@ class IntegrationCommandsMixin:
         )
         return await integration_operator(self.db, project_id)
 
-    async def _integration_operator_for_batch(
-        self, batch_id: str
-    ) -> tuple[str | None, str | None]:
-        principal = current_principal() or TRUSTED_LOCAL
-        if principal.kind is not PrincipalKind.LOCAL and not (
-            principal.kind is PrincipalKind.SESSION and principal.elevated
-        ):
-            return None, "a local operator or live supervisor session is required"
-        batch = await self.db.get_integration_batch(batch_id)
-        return await integration_operator(
-            self.db, str(batch["project_id"]) if batch is not None else None
-        )
-
     async def _cmd_integration_status(self, args: dict) -> dict:
         project_id = str(args.get("project_id") or "")
         if not project_id:
@@ -1807,23 +1794,6 @@ class IntegrationCommandsMixin:
         if refusal:
             return _failure("unauthorized", refusal)
         return _failure("unknown_batch", "batch is missing or belongs to the retired engine")
-
-
-    async def _reconcile_integration_completion(self, project_id: str) -> None:
-        from src.integration.completion_recovery import (
-            reconcile_closed_integration_owners, recover_completed_pr_links,
-        )
-
-        await reconcile_closed_integration_owners(self.orchestrator, project_id)
-        recovered = await recover_completed_pr_links(
-            self.db, self._integration_repository_git(), project_id
-        )
-        if recovered:
-            await self.db.log_event(
-                "integration.pr_links_recovered", project_id=project_id,
-                payload=json.dumps({"task_ids": recovered}),
-            )
-
 
     async def _cmd_integration_reevaluate_repair(self, args: dict) -> dict:
         from src.commands.contracts.integration import IntegrationReevaluateRepairArgs

@@ -603,8 +603,11 @@ All of these were verified in the code on 2026-10-20 unless marked otherwise.
    - `shadow.py` is imported only by tests.
    - `GENERATED_MERGE_CONFIG` has no caller.
    - `reconciler_shadow` and `publisher_stall_after` have no effect.
-   - `core.py:_dispatch_integration_repair_stage` is dead.
-   - `WriterPrimitives` is used only by tests. The unused `ParentPrimitiveAdapters`
+   - `core.py:_dispatch_integration_repair_stage`, the uncalled
+     `_reconcile_integration_completion` flush and its `recover_completed_pr_links`
+     sweep were removed (azure-ridge-72).
+   - `WriterPrimitives`, `RecordsPrimitives` and the gate wait/eject ports were
+     test-only and were removed (azure-ridge-72); `OperationSafety` remains. The unused `ParentPrimitiveAdapters`
      implementation was removed during the hibernation epic delivery recovery;
      its policy fact models and historical refusal markers remain available.
    - `orchestrator.promotion_service`, `root_promotion_service`,

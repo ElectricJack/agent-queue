@@ -2081,11 +2081,15 @@ async def test_approval_of_moved_head_is_not_reused(case):
                 last_completed_verification_id="verification-e1-next",
             )
         )
-    async with case["db"].immediate() as conn:
-        candidates = await case["db"].eligible_root_page_on(
-            conn, project_id="p", repository_id="repo", after=None, limit=10
-        )
-        assert await case["db"].latest_exact_reviews_on(conn, candidates) == {}
+    from src.integration.reviews import ReviewRequirements, ReviewSubject, TreeReviews
+
+    requirements = ReviewRequirements(required=True, reviewers=frozenset({"github:jkern"}))
+    reviews = TreeReviews(case["db"])
+    moved_tree = _git("rev-parse", f"{case['second']}^{{tree}}", cwd=case["work"])
+    assert (await reviews.verdict(
+        ReviewSubject("p", "repo", "e1", case["tree"]), requirements)).state == "approved"
+    assert (await reviews.verdict(
+        ReviewSubject("p", "repo", "e1", moved_tree), requirements)).state == "missing"
     second = await case["producer"].snapshot_from_pull_request(
         "e1", verdict="approved", reviewer_login="jkern", reviewed_sha=case["second"]
     )

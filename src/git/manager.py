@@ -30,8 +30,8 @@ Design strengths (see specs/git/git.md §10 for the full list):
 
 Resolved gaps:
   - **G1 (resolved):** ``merge_branch`` now fetches and hard-resets
-    ``origin/<default_branch>`` before merging, and ``_merge_and_push``
-    resets local main on push failure to avoid diverged state.
+    ``origin/<default_branch>`` before merging, and the retired orchestrator
+    merge-and-push reset local main on push failure to avoid diverged state.
   - **G2 (resolved):** ``recover_workspace`` resets the local default branch
     to ``origin/<default_branch>`` after any failed merge-and-push, ensuring
     the workspace is clean for the next task.
@@ -1055,7 +1055,7 @@ class GitManager:
 
         This is safer than ``git pull`` because pull can fail when the local
         branch has diverged (e.g. from un-pushed merge commits left by
-        ``_merge_and_push``). A hard reset unconditionally moves the branch
+        a failed merge-and-push). A hard reset unconditionally moves the branch
         pointer to match the remote.
 
         Must be called while the default branch is checked out (for normal
@@ -1098,7 +1098,7 @@ class GitManager:
         - **Normal repo:** checkout default branch, hard-reset to
           ``origin/<default_branch>``, then create the task branch. The hard
           reset ensures we always match remote even if a previous
-          ``_merge_and_push`` left local main diverged.
+          failed merge-and-push left local main diverged.
         - **Worktree:** Can't checkout the default branch (it's already checked
           out in the main working tree), so we create the task branch directly
           from ``origin/<default_branch>`` in a single step.
@@ -1129,7 +1129,7 @@ class GitManager:
             # Normal checkout flow: hard-reset default branch to match remote,
             # then create task branch. Hard reset is used instead of pull
             # because pull can fail when local main has diverged (e.g. from
-            # un-pushed merge commits left by _merge_and_push).
+            # un-pushed merge commits left by a failed merge-and-push).
             try:
                 self._run(["checkout", default_branch], cwd=checkout_path)
             except GitError:
@@ -4406,47 +4406,6 @@ class GitManager:
             project_id=project_id,
         )
         return tip
-
-    async def apush_expected_delivery(
-        self,
-        checkout_path: str,
-        base_oid: str,
-        tip_oid: str,
-        branch: str,
-        expected_old_oid: str,
-        *,
-        lock_held: bool = False,
-        remote: str = "origin",
-    ) -> str:
-        """Push one validated candidate with an exact remote old-tip lease.
-
-        Callers have already selected the target transition.  This helper
-        checks the candidate's local ancestry and daemon-owned-path policy,
-        then uses only immutable object IDs in its refspec.  The explicit
-        lease is deliberately independent of ``origin/<branch>``: a stale
-        tracking ref is not authority to overwrite a concurrent remote move.
-        """
-        branch = _validate_ref(branch)
-        for name, oid in (
-            ("delivery base", base_oid),
-            ("delivery tip", tip_oid),
-            ("expected target", expected_old_oid),
-        ):
-            if not isinstance(oid, str) or not _OID_RE.fullmatch(oid.lower()):
-                raise GitError(f"invalid {name} OID")
-
-        for oid in (base_oid, tip_oid):
-            await self._arun(["cat-file", "-e", f"{oid}^{{commit}}"], cwd=checkout_path)
-        if not await self._apush_is_ancestor(checkout_path, base_oid, tip_oid):
-            raise GitError("delivery tip is not a descendant of its expected base")
-        paths = await self.areserved_paths_in_diff(checkout_path, base_oid, tip_oid)
-        if paths:
-            raise GitError("reserved delivery paths: " + ", ".join(paths))
-        await self._apush_oid(
-            checkout_path, tip_oid, branch, expected_old_oid=expected_old_oid,
-            remote=remote, lock_held=lock_held,
-        )
-        return tip_oid
 
     async def apush_oid_with_app_auth(
         self,

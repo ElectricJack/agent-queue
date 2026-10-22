@@ -1629,15 +1629,6 @@ class Orchestrator(
         with principal_context(ExecutionPrincipal.service("integration-parent-source")):
             return await self._command_handler.reverify_integration_parent_source(observation)
 
-    async def _dispatch_integration_repair_stage(self, row):
-        """Dispatch one stage the integration service selected; it owns pacing."""
-        from src.commands.principal import ExecutionPrincipal, principal_context
-        if self._command_handler is None:
-            return {"success": False, "outcome": "not_ready"}
-        with principal_context(ExecutionPrincipal.service("integration-repair-continuation")):
-            return await self._command_handler._cmd_integration_repair_dispatch({
-                "operation_id": row["operation_id"], "stage": int(row["ordinal"])})
-
     async def _drain_branch_materializations(self, now: float) -> None:
         """Materialize reserved task refs through the fenced hierarchy service."""
         if self.branch_materialization_service is not None:

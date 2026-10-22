@@ -1,1 +1,0 @@
-Preserve their intended changes and resolve against current origin/{{target_branch}}. 

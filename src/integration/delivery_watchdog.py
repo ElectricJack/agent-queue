@@ -86,60 +86,6 @@ async def measured_threshold_on(
     )
 
 
-@dataclass(frozen=True)
-class DeliveryProgress:
-    state: str
-    reason: str
-    age_seconds: float
-    wait_id: str | None
-
-
-def classify_delivery_progress(
-    *, completed_at: float, now: float, threshold: DeliveryThreshold,
-    wait: Mapping[str, Any] | None, escalation: Mapping[str, Any] | None = None,
-    decision_budget_seconds: float,
-) -> DeliveryProgress:
-    """Classify an exactly bound producer wait without treating age as failure.
-
-    The reader must first bind the wait to this repository, completion generation
-    and target. In particular a live wait for another batch is not evidence.
-    Completion age is immutable; neither wait creation nor a retry resets it.
-    The shared wait subsystem owns deadline firing and supervisor decisions.
-    """
-    if not math.isfinite(decision_budget_seconds) or decision_budget_seconds <= 0:
-        raise ValueError("a positive supervisor decision budget is required")
-    age = max(0, now - completed_at)
-    wait_id = wait["id"] if wait else None
-
-    def result(state, reason):
-        return DeliveryProgress(state, reason, age, wait_id)
-
-    if wait is None:
-        return result("stuck", "publisher_unavailable")
-    inputs = wait.get("decision_inputs") or {}
-    if inputs.get("delivery_watchdog_projection"):
-        return result("stuck", inputs.get("delivery_reason", "publisher_unavailable"))
-    if wait.get("origin") != "integration":
-        return result("stuck", "publisher_unavailable")
-    if wait.get("outcome") == "source_unavailable":
-        return result("stuck", "target_unavailable")
-    if wait.get("outcome") != "pending":
-        return result("stuck", "policy_reobserve_due")
-    if wait.get("verification_state") != "verified":
-        return result("unknown", "delivery_observation_unavailable")
-    if escalation and escalation.get("decided_at") is None:
-        if now >= escalation["raised_at"] + decision_budget_seconds:
-            return result("stuck", "awaiting_supervisor_decision")
-        return result("progressing", "awaiting_supervisor_decision")
-    deadline = wait.get("escalate_at")
-    if deadline is None or deadline <= now:
-        # An expired deadline without its committed escalation is incomplete
-        # observation, not authority to wake or merge anything.
-        return result("unknown", "delivery_observation_unavailable")
-    return result("slow" if age >= threshold.stuck_after_seconds else "progressing",
-                  inputs.get("delivery_reason", "policy_reobserve_due"))
-
-
 # -- the scan ---------------------------------------------------------------
 #
 # Mechanism only: the scan classifies, projects one blocker row per stuck

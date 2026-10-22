@@ -121,7 +121,9 @@ def test_recorded_ownership_report_and_landing_delta(manifest):
     assert recorded["shared_definitions"] == manifest["shared"]
     assert recorded["transition"]["original_owned_total_cap"] == 155_499
     assert recorded["transition"]["owned_total_cap"] == ownership.transition_owned_cap(manifest)
-    assert recorded["transition"]["batch_exception"] == manifest["transition_exception"]
+    assert "transition_exception" not in manifest
+    assert recorded["transition"]["batch_exception"] is None
+    assert recorded["transition"]["retired_batch_exception"] == ownership.TRANSITION_BATCH_EXCEPTION
     assert recorded["transition"]["expires_at"] == "s4_modules"
     assert recorded["landing_delta"]["owned_lines"] == -2_431
     assert recorded["landing_delta"]["remaining_owned_allowance"] == 17_431
@@ -358,39 +360,34 @@ def test_transition_budget_cannot_reset_to_current_counts(manifest):
     assert ownership.budget_errors(result, copy) == errors
 
 
-def test_batch_exception_is_exact_and_has_no_remaining_headroom(report, manifest):
-    exception = manifest["transition_exception"]
-    assert exception == ownership.TRANSITION_BATCH_EXCEPTION
-    assert exception["original_owned_total_cap"] == 155_499
-    measured = exception["measured_owned_total"]
-    assert measured == report["total"]
-    assert exception["measured_engine_lines"] == report["groups"]["engine"]
-    assert exception["measured_table_count"] == len(report["tables"])
-    assert exception["storage_categories"] == ["integration_close_attempts"]
-    assert exception["delta"] == measured - 155_499
-    assert [p.get("delta", p.get("authorized_delta")) for p in exception["predecessors"]] == [
-        1_293, 2_166,
+def test_retired_batch_exception_restores_the_original_cap(report, manifest):
+    assert manifest["phase"] == "transition"
+    assert "transition_exception" not in manifest
+    assert ownership.transition_owned_cap(manifest) == 155_499
+    assert report["total"] <= 155_499
+    assert ownership.budget_errors(report, manifest) == []
+    assert ownership.budget_errors({**report, "total": 155_500}, manifest) == [
+        "owned total: 155,500 exceeds 155,499 in transition",
     ]
-    assert exception["batch_measured_delta"] == measured - 158_958
-    assert ownership.transition_owned_cap(manifest) == measured
-    too_large = {**report, "total": measured + 1}
-    assert ownership.budget_errors(too_large, manifest) == [
-        f"owned total: {measured + 1:,} exceeds {measured:,} in transition",
-    ]
-    # Changing the historical snapshot still cannot enlarge the exception.
+    # Changing the historical snapshot cannot enlarge the restored cap.
     copy = deepcopy(manifest)
     copy["baseline"]["total"] += 99_999
-    assert ownership.budget_errors(too_large, copy) == ownership.budget_errors(too_large, manifest)
-    copy.pop("transition_exception")
     assert ownership.transition_owned_cap(copy) == 155_499
-    assert ownership.budget_errors({**report, "total": measured}, copy) == [
-        f"owned total: {measured:,} exceeds 155,499 in transition",
-    ]
-    # The exception is an upper bound: later genuine reductions still pass.
-    assert ownership.budget_errors({**report, "total": measured - 1}, manifest) == []
+    # The retired decision stays on record, exactly as approved.
+    exception = ownership.TRANSITION_BATCH_EXCEPTION
+    assert exception["original_owned_total_cap"] == 155_499
+    assert exception["delta"] == exception["measured_owned_total"] - 155_499 == 5_375
+    assert exception["restore_task"] == "azure-ridge-72"
+    recorded = json.loads((ROOT / "tests/integration_ownership_report.json").read_text())
+    retirement = recorded["transition"]["batch_exception_retirement"]
+    assert retirement["measured_owned_total_before"] == exception["measured_owned_total"]
+    assert retirement["measured_owned_total_after"] <= 155_499
+    assert retirement["reclaimed_owned_lines"] == (
+        retirement["measured_owned_total_before"] - retirement["measured_owned_total_after"])
 
 
 @pytest.mark.parametrize("field,value", [
+    (None, None),
     ("batch_id", "another-batch"),
     ("decision_message_id", "another-decision"),
     ("measured_source_revision", "another-source"),
@@ -398,9 +395,11 @@ def test_batch_exception_is_exact_and_has_no_remaining_headroom(report, manifest
     ("measured_owned_total", 156_793),
     ("original_owned_total_cap", 155_500),
 ])
-def test_batch_exception_cannot_be_reused_or_enlarged(manifest, field, value):
+def test_batch_exception_cannot_be_reinstated_reused_or_enlarged(manifest, field, value):
     copy = deepcopy(manifest)
-    copy["transition_exception"][field] = value
+    copy["transition_exception"] = dict(ownership.TRANSITION_BATCH_EXCEPTION)
+    if field is not None:
+        copy["transition_exception"][field] = value
     assert ownership.budget_errors({}, copy) == ["unapproved integration transition exception"]
 
 
@@ -420,16 +419,15 @@ def test_cutover_evidence_uses_the_enforced_caps(manifest, report, monkeypatch, 
         ownership.transition_owned_cap(copy) if transition else 19_999)
     assert result["engine_cap_in_phase"] == (97_627 if transition else 11_999)
     assert result["table_cap_in_phase"] == (45 if transition else 10)
-    assert result["transition_exception"] == (copy["transition_exception"] if transition else None)
+    assert result["transition_exception"] is None
     ledger = json.loads((ROOT / "docs/gates/git-first-cutover/ledger.json").read_text())
     ledger["ownership"] = result
     rendered = script["render"](ledger)
     if transition:
-        assert f"{ownership.transition_owned_cap(copy):,} transition cap" in rendered
-        assert copy["transition_exception"]["decision_message_id"] in rendered
+        assert "155,499 transition cap" in rendered
     else:
         assert f"19,999 {phase} cap" in rendered
-        assert "one-time batch exception: none" in rendered
+    assert "one-time batch exception: none" in rendered
 
 
 @pytest.mark.parametrize("phase", ["s4_modules", "final"])

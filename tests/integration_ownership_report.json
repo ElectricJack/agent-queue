@@ -1043,12 +1043,13 @@
     "phase": "transition",
     "fixed_replacement_allowance": 15000,
     "engine_cap": 97627,
-    "owned_total_cap": 160874,
+    "owned_total_cap": 155499,
     "table_cap": 45,
     "expires_at": "s4_modules",
     "automatic_baseline_increase": false,
     "original_owned_total_cap": 155499,
-    "batch_exception": {
+    "batch_exception": null,
+    "retired_batch_exception": {
       "batch_id": "train-745592300af5cef0338dec80ebabb465",
       "decision_message_id": "msg-7ed85e78d1af4f3e85b485a57967e794",
       "decision_message_ids": [
@@ -1091,6 +1092,18 @@
       "measured_engine_lines": 85331,
       "measured_table_count": 45,
       "delivery_method": "operator direct integration; user request 2026-10-22"
+    },
+    "batch_exception_retirement": {
+      "restore_task": "azure-ridge-72",
+      "decision_record": "record:2720bdbe-7521-427e-8e72-1f40a3ff9818",
+      "base_revision": "feeb89e65",
+      "measured_owned_total_before": 160874,
+      "measured_owned_total_after": 155342,
+      "reclaimed_owned_lines": 5532,
+      "measured_engine_lines_after": 81861,
+      "measured_table_count_after": 45,
+      "restored_owned_total_cap": 155499,
+      "reason": "Retired duplicated, replaced and uncalled integration code with the tests that only exercised it; removed the manifest opt-in. Fixed baseline, replacement allowance, final caps, history and retries unchanged."
     }
   },
   "landing_delta": {

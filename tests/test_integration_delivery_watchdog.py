@@ -1,6 +1,5 @@
 """Threshold and producer progress evidence for the delivery watchdog."""
 
-from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
@@ -22,7 +21,6 @@ from src.integration import delivery_truth
 from src.integration.delivery_watchdog import (
     CURSOR_KEY,
     THRESHOLD_KEY,
-    classify_delivery_progress,
     derive_threshold,
     measured_threshold_on,
     scan_stuck_deliveries,
@@ -76,76 +74,6 @@ def test_threshold_daily_refresh_boundary_and_clock_reversal(clock):
     assert not threshold.refresh_due(clock[0] + 86399)
     assert threshold.refresh_due(clock[0] + 86400)
     assert threshold.refresh_due(clock[0] - 1)
-
-
-def progress(clock, wait, *, age=3600, escalation=None):
-    return classify_delivery_progress(
-        completed_at=clock[0] - age, now=clock[0],
-        threshold=derive_threshold([], now=clock[0]), wait=wait, escalation=escalation,
-        decision_budget_seconds=300,
-    )
-
-
-@pytest.fixture
-def producer(clock):
-    return {"id": "ci-wait", "origin": "integration", "outcome": "pending",
-            "verification_state": "verified", "escalate_at": clock[0] + 60,
-            "decision_inputs": {"delivery_reason": "candidate_ci_pending"}}
-
-
-def test_progressing_ci_is_slow_and_preserves_first_completion_age(clock, producer):
-    result = progress(clock, producer)
-    assert (result.state, result.reason, result.age_seconds, result.wait_id) == (
-        "slow", "candidate_ci_pending", 3600, "ci-wait",
-    )
-    assert progress(clock, producer, age=60).state == "progressing"
-
-
-def test_absent_or_unavailable_producer_is_stuck(clock, producer):
-    assert progress(clock, None).reason == "publisher_unavailable"
-    result = progress(clock, {**producer, "outcome": "source_unavailable"})
-    assert (result.state, result.reason) == ("stuck", "target_unavailable")
-
-
-def test_agent_wait_does_not_supply_delivery_ownership(clock, producer):
-    assert progress(clock, {**producer, "origin": "agent"}).state == "stuck"
-
-
-def test_watchdog_blocker_cannot_make_itself_progressing(clock, producer):
-    producer["decision_inputs"].update(delivery_watchdog_projection=True,
-                                      delivery_reason="manual_hold")
-    result = progress(clock, producer)
-    assert (result.state, result.reason) == ("stuck", "manual_hold")
-
-
-def test_supervisor_decision_budget_uses_committed_escalation(clock, producer):
-    producer["escalate_at"] = clock[0] - 300
-    escalation = {"raised_at": clock[0] - 299, "decided_at": None}
-    assert progress(clock, producer, escalation=escalation).state == "progressing"
-    escalation["raised_at"] -= 1
-    result = progress(clock, producer, escalation=escalation)
-    assert (result.state, result.reason) == ("stuck", "awaiting_supervisor_decision")
-
-
-def test_decided_escalation_uses_current_extended_deadline(clock, producer):
-    escalation = {"raised_at": clock[0] - 3600, "decided_at": clock[0] - 1}
-    assert progress(clock, producer, escalation=escalation).state == "slow"
-
-
-@pytest.mark.parametrize("change", [{"verification_state": "stale"},
-                                     {"escalate_at": None}, {"escalate_at": 0}])
-def test_incomplete_observation_is_never_recovery_authority(clock, producer, change):
-    result = progress(clock, {**producer, **change})
-    assert (result.state, result.reason) == ("unknown", "delivery_observation_unavailable")
-
-
-def test_slow_threshold_can_vary_without_changing_completion_age(clock, producer):
-    threshold = replace(derive_threshold([], now=clock[0]), stuck_after_seconds=4800)
-    result = classify_delivery_progress(completed_at=clock[0] - 3600, now=clock[0],
-                                       threshold=threshold, wait=producer,
-                                       decision_budget_seconds=300)
-    assert result.state == "progressing"
-    assert result.age_seconds == 3600
 
 
 async def test_measured_threshold_excludes_foreign_non_ci_agent_old_and_future_samples(clock):

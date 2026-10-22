@@ -56,12 +56,6 @@ def promotion_fingerprint(
     return hashlib.sha256(identity.encode()).hexdigest()[:32]
 
 
-def continuation_delay(generation: int) -> float:
-    """Seconds between continuation ``generation`` and the next one."""
-    exponent = min(max(int(generation) - 1, 0), 32)
-    return min(RETRY_BASE_SECONDS * (2**exponent), MAX_BACKOFF_SECONDS)
-
-
 def _dedup_prefix(batch_id: str, revision: int, fingerprint: str) -> str:
     return f"{CONTINUATION_PREFIX}:{batch_id}:{int(revision)}:{fingerprint}:"
 

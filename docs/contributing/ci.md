@@ -25,9 +25,9 @@ other run restores ([dependency cache](#dependency-cache)).
   `aq/integration/p-<32 hex>/r-<32 hex>`. The train promotes the exact SHA
   tested there.
 * **Parent snapshot ref** — an immutable
-  `aq/parent/<task>/<operation hash>/<generation>/<sha>` ref that parent CI
-  ([`src/integration/parent_ci.py`](../../src/integration/parent_ci.py))
-  publishes so the workflow tests one parent generation.
+  `aq/parent/<task>/<operation hash>/<generation>/<sha>` ref that tests one
+  parent generation. The parent-CI publisher that pushed these refs had no
+  production caller and is retired; the `aq/parent/**` trigger is kept.
 
 ## The workflows
 
@@ -555,7 +555,6 @@ their checkouts use the default token and push nothing.
 [`.github/workflows/main-attestation.yml`](../../.github/workflows/main-attestation.yml),
 [`.github/workflows/venv-cache.yml`](../../.github/workflows/venv-cache.yml),
 [`src/integration/hosted_attestation.py`](../../src/integration/hosted_attestation.py),
-[`src/integration/parent_ci.py`](../../src/integration/parent_ci.py),
 [`.github/agent-queue-integration.example.json`](../../.github/agent-queue-integration.example.json).
 
 ```bash

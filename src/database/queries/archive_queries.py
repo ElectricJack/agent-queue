@@ -34,8 +34,8 @@ TERMINAL_STATUSES = (
     TaskStatus.BLOCKED.value,
 )
 
-#: Metadata key holding a development repair's source manifest, written by
-#: :meth:`src.integration.development.DevelopmentPrimitives.ensure_repair`.
+#: Metadata key holding a development repair's source manifest. The retired
+#: development publisher wrote it; historical repair rows still carry it.
 DEVELOPMENT_REPAIR_SOURCES_KEY = "development_repair_sources"
 
 

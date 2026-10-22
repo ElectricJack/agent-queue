@@ -19494,50 +19494,6 @@
     "snapshots": "baseline and landing files/spans record immutable source revisions, not rolling measurements.",
     "storage": "A writer key includes path, enclosing definition and call AST; enclosing AST changes require another classification review. Ordinary audits are not ref-replay authority."
   },
-  "transition_exception": {
-    "batch_id": "train-745592300af5cef0338dec80ebabb465",
-    "decision_message_id": "msg-7ed85e78d1af4f3e85b485a57967e794",
-    "decision_message_ids": [
-      "msg-7ed85e78d1af4f3e85b485a57967e794",
-      "msg-381054d695e64055979a687c4d811e7e"
-    ],
-    "decision_record": "record:2720bdbe-7521-427e-8e72-1f40a3ff9818",
-    "measured_source_revision": "83ef85ec7226f2c0c7c8ef64504919086bc394ba",
-    "original_owned_total_cap": 155499,
-    "measured_owned_total": 160874,
-    "delta": 5375,
-    "predecessors": [
-      {
-        "batch_id": "train-77f0d8e451f6aed08d608e443031047a",
-        "decision_message_id": "msg-edb5f857de344716a38857406fa69958",
-        "decision_record": "record:2720bdbe-7521-427e-8e72-1f40a3ff9818",
-        "measured_source_revision": "d00e25221856145f24777f8b016a008b4e954bca",
-        "original_owned_total_cap": 155499,
-        "measured_owned_total": 156792,
-        "delta": 1293,
-        "restore_task": "azure-ridge-72",
-        "expires_at": "s4_modules"
-      },
-      {
-        "batch_id": "train-48d0a1c1f1f8292b2977546011609db6",
-        "measured_source_revision": "cbfd455b0e9f053854a2c1becfa1efaeef231582",
-        "authorized_delta": 2166,
-        "measured_owned_total": 158958
-      }
-    ],
-    "batch_measured_delta": 1916,
-    "restore_task": "azure-ridge-72",
-    "expires_at": "s4_modules",
-    "category_approval_message_id": "msg-90f9f1b1e0cd4e8e8d28071cffc927a6",
-    "storage_categories": [
-      "integration_close_attempts"
-    ],
-    "category_restore_task": "stark-willow-95.17",
-    "verification_task": "stark-willow-95.18",
-    "measured_engine_lines": 85331,
-    "measured_table_count": 45,
-    "delivery_method": "operator direct integration; user request 2026-10-22"
-  },
   "storage_dispositions": {
     "integration_close_attempts": {
       "task": "stark-willow-95.15",

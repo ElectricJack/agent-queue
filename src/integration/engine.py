@@ -178,13 +178,6 @@ def root_admission(predicate: AdmissionPredicate):
         _admission.reset(token)
 
 
-def current_admission() -> AdmissionPredicate | None:
-    scope = _scope.get()
-    if scope and scope[2] is SubjectEngine.RECONCILER and scope[3] is asyncio.current_task():
-        return _admission.get()
-    return None
-
-
 def lock_key(repository_id: str, *, publisher: bool = False) -> int:
     return int.from_bytes(
         hashlib.sha256(

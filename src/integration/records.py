@@ -1,29 +1,24 @@
-"""Audited subject attempts and decisions (primitives 15–16).
+"""Subject journal helpers, parent-episode records and policy activation.
 
 The foundation's append-only journal is the record. Primitive 14
 (``record_receipt``) stays in the closed vocabulary but has no adapter: no
 active path writes task delivery receipts, which are historical audit only.
-Proof readers are trusted, server-owned adapters to
-git/CI, never fields accepted from a playbook. They run in the caller's
-transaction and must establish publication and producer identity themselves.
-No reader means no proof and no counted attempt. These ports add no public
-command surface: CommandHandler remains the entry point.
+The journal helpers here back the human gates in ``gates.py``; the unbound
+attempt and decision ports were retired with the primitive port adapters.
+These helpers add no public command surface: CommandHandler remains the entry
+point.
 """
 
 from __future__ import annotations
 
-import hashlib
-import json
 import logging
 import re
 import time
 import uuid
-from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import and_, insert, or_, select, update
 
 from src.database.queries.hierarchy_queries import HierarchyError
@@ -73,13 +68,8 @@ from src.integration.owner_guards import (
 from src.integration.promotion_steps import FlowSchema, flow_targets, protected_changes
 from src.integration.row_query import select_row
 from src.integration.runtime_contracts import (
-    HeadIdentity,
     JournalMode,
     Primitive,
-    PrimitiveOutcome,
-    PrimitivePorts,
-    RecordAttemptArgs,
-    RecordDecisionArgs,
     Subject,
     SubjectPhase,
 )
@@ -88,32 +78,6 @@ from src.task_templates import render_task_template
 
 _OID = re.compile(r"^[0-9a-f]{40}$")
 logger = logging.getLogger(__name__)
-
-
-class AttemptObservation(BaseModel):
-    """A durable CI observation plus proof of who published the tested head."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
-    evidence_id: str = Field(min_length=1)
-    head: HeadIdentity
-    producer_id: str = Field(min_length=1)
-    trusted: bool
-    conclusion: str
-    classification: str
-    writer_task_id: str | None = None
-    published_at: float | None = None
-    observed_at: float
-    cancelled: bool = False
-    superseded: bool = False
-
-
-AttemptReader = Callable[[Any, Subject, RecordAttemptArgs], Awaitable[AttemptObservation | None]]
-
-
-def journal_key(prefix: str, value: Any) -> str:
-    """Stable domain identity, independent of visit ids and retry clocks."""
-    canonical = json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
-    return prefix + ":" + hashlib.sha256(canonical.encode()).hexdigest()
 
 
 async def journal_entry_on(conn, subject_id: str, key: str) -> dict | None:
@@ -220,170 +184,6 @@ async def human_hold_on(conn, subject: Subject, *, task_id: str | None = None) -
         if held:
             return "manual_pause"
     return None
-
-
-class RecordsPrimitives:
-    """Transactional ports. ``*_on`` compose with a caller-owned transaction.
-
-    Counting an attempt bumps the subject version; callers that schedule after
-    a port invocation must reload it (or compose using ``record_attempt_on``).
-    Decisions only advance the journal pointer.
-    """
-
-    def __init__(
-        self,
-        db,
-        *,
-        attempt_reader: AttemptReader | None = None,
-        clock=time.time,
-    ):
-        self.db = db
-        self.attempt_reader = attempt_reader
-        self.clock = clock
-
-    def bind(self, ports: PrimitivePorts) -> None:
-        ports.bind(Primitive.RECORD_ATTEMPT, self.record_attempt)
-        ports.bind(Primitive.RECORD_DECISION, self.record_decision)
-
-    async def record_attempt(self, subject: Subject, args: RecordAttemptArgs) -> PrimitiveOutcome:
-        async with self.db._engine.begin() as conn:
-            return await self.record_attempt_on(conn, subject, args)
-
-    async def record_attempt_on(self, conn, subject, args) -> PrimitiveOutcome:
-        primitive = Primitive.RECORD_ATTEMPT
-        current = await lock_current_on(self.db, conn, subject)
-        if (
-            current is None
-            or current.head != args.head
-            or (current.budget is None or current.budget.ordinal != args.ordinal)
-        ):
-            return PrimitiveOutcome(primitive=primitive, outcome="stale")
-        # Counting is per exact head in an ordinal, not per repeated check/run.
-        # A second CI run on the same head cannot consume another budget unit.
-        key = journal_key(
-            "attempt",
-            {
-                "repository_id": args.head.repository_id,
-                "ref": args.head.ref,
-                "head_sha": args.head.sha,
-                "ordinal": args.ordinal,
-            },
-        )
-        previous = await journal_entry_on(conn, current.id, key)
-        if previous:
-            return PrimitiveOutcome(
-                primitive=primitive,
-                outcome="counted",
-                detail={**previous["payload"], "replayed": True},
-            )
-        if self.attempt_reader is None:
-            return PrimitiveOutcome(
-                primitive=primitive, outcome="not_an_attempt", reason="evidence_unavailable"
-            )
-        evidence = await self.attempt_reader(conn, current, args)
-        if (
-            evidence is None
-            or evidence.evidence_id != args.evidence_id
-            or evidence.head != args.head
-        ):
-            return PrimitiveOutcome(primitive=primitive, outcome="stale")
-        now = self.clock()
-        valid = (
-            evidence.trusted
-            and evidence.conclusion == args.conclusion
-            and evidence.classification in {"conclusive", "full_suite_fallback"}
-            and not evidence.cancelled
-            and not evidence.superseded
-            and evidence.writer_task_id == current.writer.task_id
-            and evidence.writer_task_id is not None
-            and evidence.published_at is not None
-            and current.writer.last_push_at is not None
-            and current.budget.started_at <= evidence.published_at <= evidence.observed_at <= now
-            and evidence.published_at <= current.writer.last_push_at
-        )
-        if not valid:
-            return PrimitiveOutcome(
-                primitive=primitive,
-                outcome="not_an_attempt",
-                reason="not_trusted_conclusive_writer_publication",
-            )
-        attempts = current.budget.attempts + 1
-        payload = {
-            **evidence.model_dump(mode="json"),
-            "ordinal": args.ordinal,
-            "attempts": attempts,
-            "replayed": False,
-        }
-        await append_record_on(
-            self.db,
-            conn,
-            current,
-            key=key,
-            primitive=primitive,
-            entry_kind="attempt",
-            outcome="counted",
-            payload=payload,
-            now=now,
-        )
-        updated = await self.db.update_integration_subject_on(
-            conn,
-            subject_id=current.id,
-            expected_version=current.version,
-            values={"budget_attempts": attempts},
-            now=now,
-        )
-        if updated is None:
-            raise RuntimeError("locked subject changed while recording an attempt")
-        return PrimitiveOutcome(
-            primitive=primitive,
-            outcome="counted",
-            detail={**payload, "subject_version": updated["version"]},
-        )
-
-    async def record_decision(self, subject: Subject, args: RecordDecisionArgs) -> PrimitiveOutcome:
-        async with self.db._engine.begin() as conn:
-            return await self.record_decision_on(conn, subject, args)
-
-    async def record_decision_on(self, conn, subject, args) -> PrimitiveOutcome:
-        primitive = Primitive.RECORD_DECISION
-        # A decision is a visit at this observed version, not merely a rule
-        # name. Active/shadow are separate audited evaluations.
-        key = journal_key(
-            "decision",
-            {
-                "version": subject.version,
-                "policy": subject.policy.model_dump(mode="json"),
-                **args.model_dump(mode="json"),
-            },
-        )
-        current = await lock_current_on(self.db, conn, subject)
-        previous = await journal_entry_on(conn, subject.id, key)
-        if previous:
-            return PrimitiveOutcome(
-                primitive=primitive,
-                outcome="recorded",
-                detail={"journal_seq": previous["seq"], "replayed": True},
-            )
-        if current is None:
-            return PrimitiveOutcome.unknown(primitive, "stale_subject")
-        entry, created = await append_record_on(
-            self.db,
-            conn,
-            current,
-            key=key,
-            primitive=args.decided,
-            entry_kind="decision",
-            payload=args.model_dump(mode="json"),
-            rule=args.rule,
-            facts_digest=args.facts_digest,
-            mode=args.mode,
-            now=self.clock(),
-        )
-        return PrimitiveOutcome(
-            primitive=primitive,
-            outcome="recorded",
-            detail={"journal_seq": entry["seq"], "replayed": not created},
-        )
 
 
 class ParentEpisodeRecords(ParentReadiness, ParentVerification):

@@ -481,8 +481,8 @@ This system still owns three older template engines:
   It warns at twice a tier's budget and does lenient `{{var}}` substitution. Only
   `extract_section` is used in production, by
   [src/prime/sections.py](../../../src/prime/sections.py). The orchestrator's
-  `_build_task_context_with_prompt_builder` has had no caller since commit 533bda271
-  (2026-09-01).
+  `_build_task_context_with_prompt_builder` lost its last caller in commit 533bda271
+  (2026-09-01) and was removed with the retired integration adapters (azure-ridge-72).
 - **The prompt manager** ([src/prompt_manager.py](../../../src/prompt_manager.py))
   serves per-workspace templates from `<workspace>/prompts/`. It supports optional
   strict variables. Only the `list_prompts`, `read_prompt` and `render_prompt`
@@ -651,9 +651,10 @@ The code is right in each case.
   - `src/vault_glossary.py`: no importers, and `vault/glossary/` is never created;
   - `src/file_watcher.py`: never constructed;
   - in `src/facts_parser.py`, everything except `parse_facts_file`.
-- **Dead `PromptBuilder` path.** `PromptBuilder` and the orchestrator's
-  `_build_task_context_with_prompt_builder` (context.py about lines 179-410) are dead.
-  So are the `TaskContext` tier fields in `models.py` (about lines 1106-1113).
+- **Dead `PromptBuilder` path.** `PromptBuilder` is dead outside `extract_section`. The
+  orchestrator's `_build_task_context_with_prompt_builder` and `_get_execution_rules`
+  were removed (azure-ridge-72). The `TaskContext` tier fields in `models.py` (about lines
+  1106-1113) remain dead.
 - **Unused `src/prompts/` files:** `supervisor_system.md`, `execution_focus.md`,
   `plan_structure_guide.md`, `memory_consolidation.py` and `memory_revision.py`.
 - **Config leftovers:**

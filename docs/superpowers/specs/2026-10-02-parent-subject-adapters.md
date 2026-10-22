@@ -18,7 +18,13 @@ repository, branch, episode and operation identity. A repeated call returns the
 original subject and its policy, schedule and engine. It defaults to `legacy`;
 creation does not transfer authority, reopen work or dispatch a verifier.
 
-`ParentDatabaseObservationReader` extends the shared snapshot inside its
+> **Retired (2026-10-22, azure-ridge-72).** The parent runtime that consumed the
+> observer below was retired in e5f474144, leaving `ParentDatabaseObservationReader`
+> and `ParentIntegrationObserver` without a production caller; both were removed.
+> The bridge (`ensure_on`), `parent_subject_from_rows` and `ParentSubjectFacts`
+> remain. The rest of this section is the historical design.
+
+`ParentDatabaseObservationReader` extended the shared snapshot inside its
 read-only repeatable-read transaction. It reads receipts, dispositions,
 acceptances, verification identities and evidence, completion records,
 recovery audits, archived verifiers and gates. Eligibility is supplied by the
