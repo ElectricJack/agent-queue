@@ -7553,6 +7553,52 @@ async def pull_request_admission(handler, db, development_admission, monkeypatch
     return env
 
 
+@pytest.mark.parametrize("merged", [False, True])
+@pytest.mark.parametrize("status", [TaskStatus.READY, TaskStatus.IN_PROGRESS, TaskStatus.BLOCKED])
+async def test_pr_explain_reports_unobserved_containment_as_unknown(
+    handler, db, pull_request_admission, monkeypatch, merged, status
+):
+    from src.integration.admission import observe_admission
+
+    env = pull_request_admission
+    if merged:
+        env.git(env.source, "push", "origin", f"{env.head}:refs/heads/main")
+        env.pull.update(state="closed", merged=True, merge_commit_sha=env.head)
+    # Establish the real admission answer before reading the diagnostic. Even
+    # a prior successful observation cannot supply the current PR identity.
+    batch = await observe_admission(db, ["dependent"], env.service)
+    assert ("dependent" in batch.allowed) is merged
+    if not merged:
+        assert batch.reasons["dependent"][0]["code"] == "pull_request_dependency_delivery"
+    await db.transition_task("dependent", status, force=True)
+    if status is TaskStatus.BLOCKED:
+        await db.set_task_meta("dependent", "blocked_terminal", "session_close_hard_failure")
+    env.client.pull_request.reset_mock()
+    handler.orchestrator.git.bind_github_repository.reset_mock()
+    snapshot = AsyncMock(wraps=env.service.delivery_observer.snapshot)
+    monkeypatch.setattr(env.service.delivery_observer, "snapshot", snapshot)
+
+    explanation = await handler._cmd_explain_task({"task_id": "dependent"})
+
+    assert explanation["success"], explanation
+    assert "pull_request_dependency_delivery" not in {
+        reason["code"] for reason in explanation["reasons"]
+    }
+    [reason] = [reason for reason in explanation["reasons"]
+                if reason["code"] == "delivery_evidence_unavailable"]
+    assert reason["ref"] == "prerequisite"
+    assert "containment" in reason["detail"] and "unknown" in reason["detail"]
+    assert "cached-only" in reason["detail"]
+    if status is TaskStatus.BLOCKED:
+        assert any(reason["code"] == "blocked_terminal"
+                   and "session_close_hard_failure" in reason["detail"]
+                   for reason in explanation["reasons"])
+    env.client.pull_request.assert_not_awaited()
+    handler.orchestrator.git.bind_github_repository.assert_not_awaited()
+    snapshot.assert_not_awaited()
+    assert (await db.get_task("dependent")).status is status
+
+
 @pytest.mark.parametrize("mutation", ["edge", "create", "graph"])
 async def test_pr_late_dependency_mutations_do_not_admit_unmerged_source(
     handler, db, tmp_path, pull_request_admission, mutation
