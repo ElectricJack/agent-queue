@@ -438,12 +438,23 @@ async def observe_pr_admission(db, ids, service, *, default_mode, cached_only=Fa
                         )
             if not satisfied:
                 batch.allowed.discard(task_id)
+                if cached_only:
+                    code = "delivery_evidence_unavailable"
+                    detail = (
+                        f"PR prerequisite {source_id}: current PR identity and source containment "
+                        "are not verified in this cached-only read; claimability is unknown"
+                    )
+                else:
+                    code = "pull_request_dependency_delivery"
+                    detail = (
+                        f"PR prerequisite {source_id} lacks current source containment "
+                        "on the default branch or the dependent's exact workspace base"
+                    )
                 batch.reasons.setdefault(task_id, []).append(
                     {
-                        "code": "pull_request_dependency_delivery",
+                        "code": code,
                         "ref": source_id,
-                        "detail": f"PR prerequisite {source_id} lacks current source containment "
-                        "on the default branch or the dependent's exact workspace base",
+                        "detail": detail,
                     }
                 )
     if not cached_only and not await batch.is_fresh():
