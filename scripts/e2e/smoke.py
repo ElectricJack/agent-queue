@@ -3223,6 +3223,15 @@ def s21_held_ingestion(state: dict) -> str:
     route_task(leaf_id, POOL_PROFILE, POOL_CLASS)
     claim = worker.claim_next()
     check(claim.get("result") == "no_ready_work", f"S21 held leaf was claimable: {claim}")
+    # The project admits two live sessions: the idle pool worker and one role.
+    # Finish ingestion after its receipt replay, as the real ingester does,
+    # so the fidelity reviewer can take that role's execution slot.
+    closed_ingester = api("task_close", {
+        "task_id": dispatched["task_id"], "session_id": ingester["id"],
+        "outcome": "pass", "work_outcome": "no-op",
+        "summary": f"S21 materialized held batch {batch['batch_id']}; replay verified",
+    }, token=token)
+    check(closed_ingester.get("success"), f"S21 ingester close: {closed_ingester}")
     ensure_args = {"project_id": PROJECT, "batch_id": batch["batch_id"],
                    "structure_revision": batch["structure_revision"]}
     reviewer = api_checked("ensure_fidelity_review", ensure_args)
