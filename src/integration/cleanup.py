@@ -17,6 +17,7 @@ from pydantic import BaseModel, ConfigDict
 from sqlalchemy import or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
+from src.waits.sources import execute_batch_mutation
 from src.integration.engine import root_engine_guard
 
 from src.database.tables import (
@@ -49,6 +50,27 @@ from src.integration.delivery_branches import (
 
 
 logger = logging.getLogger(__name__)
+
+
+def _item_base(batch, publication, now):
+    """Fields every cleanup item of one batch revision shares."""
+    return {
+        "batch_id": batch["id"], "project_id": batch["project_id"],
+        "repository_id": batch["repository_id"],
+        "repository_numeric_id": publication["repository_numeric_id"],
+        "repository_full_name": publication["repository_full_name"],
+        "revision": int(batch["current_revision"]), "state": "pending", "attempts": 0,
+        "next_attempt_at": now, "created_at": now, "updated_at": now,
+    }
+
+
+def _cleanup_item(common, kind, identity, **details):
+    """Bind an item's cleanup key to the same kind and identity as its payload."""
+    return common | {
+        "kind": kind, "identity": identity,
+        "domain_key": f"cleanup:{common['batch_id']}:{kind}:{identity}",
+        **details,
+    }
 
 
 @dataclass
@@ -743,7 +765,7 @@ class IntegrationCleanupService:
                         integration_branch_owners.c.workspace_id.is_(None),
                     ).values(handoff_state="released", updated_at=now)
                 )
-        await conn.execute(
+        await execute_batch_mutation(conn,
             update(integration_batches)
             .where(
                 integration_batches.c.id == batch_id,
@@ -899,7 +921,7 @@ class IntegrationCleanupService:
             if any(
                 row["source_ref"] is None or row["source_ref_retention"] is None for row in members
             ):
-                await conn.execute(
+                await execute_batch_mutation(conn,
                     update(integration_batches)
                     .where(
                         integration_batches.c.id == batch_id,
@@ -1166,7 +1188,7 @@ class IntegrationCleanupService:
         default_ref = "refs/heads/" + repository.default_branch.removeprefix("refs/heads/")
         frozen_batch = Batch.from_row(batch)
         if (batch["target_ref"] != default_ref and batch["trigger"] != "promotion"
-                and not (frozen_batch.epic_sync or frozen_batch.epic_refresh)):
+                and not frozen_batch.epic_refresh):
             root = snapshot.for_target(default_ref)
             members = await BatchStore(self.db).members(batch["id"])
             if (members and not root.error and root.target_oid
@@ -1443,7 +1465,7 @@ class IntegrationCleanupService:
                 next_attempt_at=now, created_at=now, updated_at=now,
             ).on_conflict_do_nothing(index_elements=["batch_id", "kind", "identity"]))
         if not seen and batch["target_ref"] is None:
-            await conn.execute(update(integration_batches).where(
+            await execute_batch_mutation(conn, update(integration_batches).where(
                 integration_batches.c.id == batch["id"],
                 integration_batches.c.lifecycle == "aborted",
                 integration_batches.c.cleanup_state == "pending",
@@ -1455,8 +1477,11 @@ class IntegrationCleanupService:
     async def reconcile_aborted(self, now: float) -> None:
         """Recover old abort seals and retire terminal candidates and audit PRs."""
         from src.integration.batches import BatchStore
+        from src.integration.promotion_steps import fail_stranded_promotion_tasks_on
 
         await BatchStore(self.db, clock=lambda: now).reconcile_aborted()
+        async with self.db.immediate() as conn:  # tasks no terminal intent will settle
+            await fail_stranded_promotion_tasks_on(self.db, conn, now=now)
         async with self.db._engine.connect() as conn:
             batch_ids = list((await conn.execute(select(integration_batches.c.id).where(
                 integration_batches.c.lifecycle == "aborted",
@@ -1475,7 +1500,7 @@ class IntegrationCleanupService:
                 await self.advance(batch_id, now=now)
                 if batch["target_ref"] is not None and not result.item_count:
                     async with self.db.immediate() as conn:
-                        await conn.execute(update(integration_batches).where(
+                        await execute_batch_mutation(conn, update(integration_batches).where(
                             integration_batches.c.id == batch_id,
                             integration_batches.c.lifecycle == "aborted",
                             integration_batches.c.cleanup_state == "pending",
@@ -1650,19 +1675,7 @@ class IntegrationCleanupService:
             row, _ = descendants[receipt["source_task_id"]]
             if receipt["target_task_id"] == row["parent_task_id"]:
                 heads.setdefault(receipt["source_task_id"], receipt["reviewed_head_sha"])
-        common = {
-            "batch_id": batch["id"],
-            "project_id": batch["project_id"],
-            "repository_id": batch["repository_id"],
-            "repository_numeric_id": publication["repository_numeric_id"],
-            "repository_full_name": publication["repository_full_name"],
-            "revision": int(batch["current_revision"]),
-            "state": "pending",
-            "attempts": 0,
-            "next_attempt_at": now,
-            "created_at": now,
-            "updated_at": now,
-        }
+        common = _item_base(batch, publication, now)
         items = []
         repo = await self.db.get_repo(batch["repository_id"])
         protected = await repository_protected_branches(
@@ -1683,85 +1696,37 @@ class IntegrationCleanupService:
             if ref in existing_refs:
                 continue
             existing_refs.add(ref)
-            items.append(common | {
-                "kind": "remote_ref",
-                "identity": ref,
-                "domain_key": f"cleanup:{batch['id']}:remote_ref:{ref}",
-                "member_ordinal": ordinal,
-                "target_ref": ref,
-                "expected_sha": head,
-            })
+            items.append(_cleanup_item(common, "remote_ref", ref,
+                                       member_ordinal=ordinal, target_ref=ref, expected_sha=head))
         return items
 
     def _items(self, batch, publication, members, reservations, receipts, now):
-        common = {
-            "batch_id": batch["id"],
-            "project_id": batch["project_id"],
-            "repository_id": batch["repository_id"],
-            "repository_numeric_id": publication["repository_numeric_id"],
-            "repository_full_name": publication["repository_full_name"],
-            "revision": int(batch["current_revision"]),
-            "state": "pending",
-            "attempts": 0,
-            "next_attempt_at": now,
-            "created_at": now,
-            "updated_at": now,
-        }
+        common = _item_base(batch, publication, now)
         items = []
         for member, reservation in zip(members, reservations, strict=True):
             if member["pr_url"]:
                 number = self._pr_number(member["pr_url"], publication["repository_full_name"])
                 identity = f"{publication['repository_numeric_id']}#{number}"
-                items.append(
-                    common
-                    | {
-                        "kind": "source_pr",
-                        "identity": identity,
-                        "domain_key": f"cleanup:{batch['id']}:source_pr:{identity}",
-                        "member_ordinal": int(member["ordinal"]),
-                        "receipt_id": reservation["receipt_id"],
-                        "target_pr_number": number,
-                        "target_pr_url": member["pr_url"],
-                        "expected_sha": member["reviewed_head_sha"],
-                    }
-                )
+                items.append(_cleanup_item(common, "source_pr", identity,
+                    member_ordinal=int(member["ordinal"]), receipt_id=reservation["receipt_id"],
+                    target_pr_number=number, target_pr_url=member["pr_url"],
+                    expected_sha=member["reviewed_head_sha"],
+                ))
             if member["source_ref_retention"] == "delete":
                 source_ref = member["source_ref"]
-                items.append(
-                    common
-                    | {
-                        "kind": "remote_ref",
-                        "identity": source_ref,
-                        "domain_key": f"cleanup:{batch['id']}:remote_ref:{source_ref}",
-                        "member_ordinal": int(member["ordinal"]),
-                        "target_ref": source_ref,
-                        "expected_sha": member["reviewed_head_sha"],
-                    }
-                )
+                items.append(_cleanup_item(common, "remote_ref", source_ref,
+                    member_ordinal=int(member["ordinal"]), target_ref=source_ref,
+                    expected_sha=member["reviewed_head_sha"],
+                ))
         audit_identity = f"{publication['repository_numeric_id']}#{publication['pr_number']}"
-        items.append(
-            common
-            | {
-                "kind": "audit_pr",
-                "identity": audit_identity,
-                "domain_key": f"cleanup:{batch['id']}:audit_pr:{audit_identity}",
-                "target_pr_number": publication["pr_number"],
-                "target_pr_url": publication["pr_url"],
-                "expected_sha": publication["head_sha"],
-            }
-        )
+        items.append(_cleanup_item(common, "audit_pr", audit_identity,
+            target_pr_number=publication["pr_number"], target_pr_url=publication["pr_url"],
+            expected_sha=publication["head_sha"],
+        ))
         for kind in ("remote_ref", "local_ref"):
             identity = batch["integration_branch"]
-            items.append(
-                common
-                | {
-                    "kind": kind,
-                    "identity": identity,
-                    "domain_key": f"cleanup:{batch['id']}:{kind}:{identity}",
-                    "target_ref": identity,
-                    "expected_sha": publication["head_sha"],
-                }
-            )
+            items.append(_cleanup_item(common, kind, identity,
+                                       target_ref=identity, expected_sha=publication["head_sha"]))
         return items
 
     async def _worktree_items(self, conn, batch, publication, now):
@@ -1792,19 +1757,7 @@ class IntegrationCleanupService:
             .mappings()
             .all()
         )
-        common = {
-            "batch_id": batch["id"],
-            "project_id": batch["project_id"],
-            "repository_id": batch["repository_id"],
-            "repository_numeric_id": publication["repository_numeric_id"],
-            "repository_full_name": publication["repository_full_name"],
-            "revision": int(batch["current_revision"]),
-            "state": "pending",
-            "attempts": 0,
-            "next_attempt_at": now,
-            "created_at": now,
-            "updated_at": now,
-        }
+        common = _item_base(batch, publication, now)
         items = []
         cleanup = (batch["policy_snapshot"] or {}).get("cleanup", {})
         failed_retention = int(cleanup.get("failed_work_retention_seconds", 604800))
@@ -1816,22 +1769,15 @@ class IntegrationCleanupService:
                 or handoff.get("head_sha") is None
             ):
                 raise ValueError("retained worktree provenance is incomplete")
-            items.append(
-                common
-                | {
-                    "kind": "worktree",
-                    "identity": row["workspace_id"],
-                    "domain_key": f"cleanup:{batch['id']}:worktree:{row['workspace_id']}",
-                    "workspace_path": row["workspace_path"],
-                    "expected_sha": handoff["head_sha"],
-                    "next_attempt_at": (
-                        max(now, float(row["completed_at"]) + failed_retention)
-                        if row["stage_state"] in {"failed", "expired"}
-                        and row["completed_at"] is not None
-                        else now
-                    ),
-                }
-            )
+            items.append(_cleanup_item(common, "worktree", row["workspace_id"],
+                workspace_path=row["workspace_path"], expected_sha=handoff["head_sha"],
+                next_attempt_at=(
+                    max(now, float(row["completed_at"]) + failed_retention)
+                    if row["stage_state"] in {"failed", "expired"}
+                    and row["completed_at"] is not None
+                    else now
+                ),
+            ))
         return items
 
     @staticmethod

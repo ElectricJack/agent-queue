@@ -188,7 +188,11 @@ A repository with no PR host falls back to `direct`.
     ([required-job settlement](../design/required-job-train-settlement.md)).
 - **Pre-existing failure.** `candidate_baseline.py:CandidateBaselineService` compares
   the candidate's failures against the target's baseline. Only failures that the batch
-  introduced are repairable by the batch.
+  introduced are normally repairable by the batch. When an open batch seals its own
+  epic target's subtree, proven target failures are also repairable on the retained
+  candidate: the seal prevents ordinary hierarchy repair. Unknown baseline checks
+  never authorize this exception. Frozen members, repair budgets and publication
+  checks remain authoritative.
 - **Repair.** A bounded fix task filed against a red or conflicting candidate
   (section 3.3.3).
 - **Receipt.** An append-only `task_delivery_receipts` row with a disposition of `code`,
@@ -290,7 +294,15 @@ Each visit to a target (`_visit_target`, then `DatabaseBatches.open_batch`, then
 `_red` (`train.py`, about line 867) handles a red candidate:
 
 - **Every failure pre-dates the batch.** An epic target gets one sync with the default
-  branch. Other targets get a bounded recheck, which ends in the
+  branch. If that sync is unavailable or spent and this open batch seals the epic's
+  subtree, it files an ordinary candidate repair for the proven inherited failures.
+  Mixed candidate/target failures use the same scope exception. The operator or live
+  owning supervisor can preview `aq integration repair-target BATCH_ID` and apply with
+  the previewed `--candidate-sha`, `--target-sha` and a nonblank `--reason`. Apply
+  reobserves checks and both refs; it reuses outstanding repairs and retains the
+  existing attempt budget, intent, source and branch ownership fences. It never
+  reopens the epic, adds children or advances the target. Other targets get a bounded
+  recheck, which ends in the
   `candidate_pre_existing_failure` blocker. A failing check that cannot be identified
   yields `candidate_failing_checks_unknown`. A red promotion target is held.
 - **The batch introduced a failure, or the merge conflicted.** `_repair` calls
@@ -586,7 +598,9 @@ All of these were verified in the code on 2026-10-20 unless marked otherwise.
    - `GENERATED_MERGE_CONFIG` has no caller.
    - `reconciler_shadow` and `publisher_stall_after` have no effect.
    - `core.py:_dispatch_integration_repair_stage` is dead.
-   - `WriterPrimitives` and `ParentPrimitiveAdapters` are used only by tests.
+   - `WriterPrimitives` is used only by tests. The unused `ParentPrimitiveAdapters`
+     implementation was removed during the hibernation epic delivery recovery;
+     its policy fact models and historical refusal markers remain available.
    - `orchestrator.promotion_service`, `root_promotion_service`,
      `integration_release_service`, `parent_subject_runtime` and
      `development_subject_runtime` are always `None`, yet `IntegrationService` still
@@ -788,3 +802,279 @@ Historical records (the code wins where they disagree):
 - About 50 dated point-fix specs in `docs/superpowers/specs/` (2026-09-15 to 2026-10-13)
   record individual repair, recovery and subject-reconciler fixes. Most belong to the
   retired subject and publisher era.
+
+
+## Source and recovery contract details
+
+These implementation notes preserve the detailed contracts formerly embedded in
+the modules below. Each module keeps a short contract summary beside its code.
+
+### `src/integration/source_repairs.py`
+
+Whether one exact train source generation is already on its default target.
+
+Source-CI repair exists to recover red CI on a source branch whose work has
+not reached the default branch.  When git already proves that generation's
+work on the project's designated default branch, repairing the branch
+repeats delivered work: on the box where this was found, a root whose source
+was already integrated and adopted under other commits spent a whole agent
+re-running the same shared fixes a second time.
+
+:func:`prove_source_delivered` is that one answer, and it deliberately asks
+the question the root scheduler already asks and trusts
+(the historical train frontier on
+top of :mod:`src.integration.delivery_truth`): the *exact* completion
+generation, the *exact* repository and the *exact* default target ref.  A
+merge, a squash and a cherry-pick are equally delivered, because the proof
+names the generation's retained source and asks git whether it is contained
+in the target, not whether the observed pull-request head happens to be an
+ancestor.
+
+Two rules make this safe to act on, and both are why nothing here is a cache:
+
+* **Every decision observes afresh.**  The default target can be retargeted,
+  the target can lose containment, and a delivery or an adoption can arrive
+  after an earlier negative answer, so a remembered answer answers a question
+  nobody asked.  Admission asks before it files, and
+  :func:`delivered_queued_repairs` asks again before a claim withholds a
+  queued delegate.
+* **A recorded proof is audit, not authority.**
+  :func:`record_delivery_evidence` writes what was observed onto the
+  observation so an operator and ``aq task explain`` can see it, and nothing
+  reads it back to decide eligibility.  The claim frontier has no delivery
+  predicate for exactly this reason.
+
+Everything that is not a proof answers *not delivered*, because the failure
+mode that matters is stranding real work:
+
+* an unavailable observer, a repository the project does not designate, or a
+  missing target -- no canonical evidence, so repair;
+* an unknown git error or a missing retained source -- unknown, so repair;
+* a new checkpoint generation or a reopened task -- the evidence was gathered
+  about an identity that no longer exists, so repair;
+* ``no_artifact`` and ``settled`` -- neither is delivery to the default
+  branch, so repair.
+
+Only ``contained`` or proven ``no_change`` on the exact target, revalidated
+against the exact source identity the observation names, may withhold work.
+
+An unclaimed READY delegate can be retired by the command handler after a
+fresh proof and a locked identity check. A claimed delegate keeps its writer;
+its completed repair remains deliverable even after the original lands.
+
+Discarding the source completion revokes the purpose of every bound delegate.
+Reopen retirement fences writers and retires completed repairs in that same
+transaction. Train admission and publication recheck the current source head,
+including the full lineage of repairs of repairs: that recheck is
+:func:`~src.integration.delivery_truth.superseded_source_repairs_on`, which
+lives beside the delivery requests it reads in
+:mod:`src.integration.delivery_truth` because the reduced train must not
+import this module. Admission asks the wider
+:func:`~src.integration.delivery_truth.undeliverable_repairs_on`, which also
+withholds a repair whose own task is terminal, and the train releases an open
+batch carrying one rather than let it hold a target against the very source it
+was filed for. Only the write side stays here.
+
+### `src/integration/cancelled_collection_recovery.py`
+
+Reopen a parent collection that ``cancel-preserving`` stopped mid-episode.
+
+Historical cancellation ended a repair operation. When the
+operation is a parent's *collection* operation -- the one
+``ParentEpisodeRecords.reserve_episode_on`` created for the parent's current
+episode -- nothing collects that parent any more.  Its checkpoint still says
+``awaiting_children`` in the original episode, its completed children's
+receipts are bound to ``(operation, episode)``, the collector's reservation is
+released, and every path that could continue refuses (2026-10-02,
+calm-grove-25 and azure-vault-92):
+
+* the collector and ``aq integration redrive-child`` need an ``active`` or
+  ``escalated`` operation for the episode;
+* ``ParentEpisodeRecords.reserve_episode_on`` returns the episode's existing
+  (cancelled) operation, and one operation per episode is a unique index;
+* a later child's conflict cannot open a repair, because
+  ``RepairService.start`` continues only a live stage whose delegate is still
+  inside its deadline.
+
+A replacement episode cannot inherit the receipts either: accepting a receipt
+into a new episode requires a verified previous aggregate.  So
+:class:`CancelledCollectionRecovery` reactivates the operation in place, in its
+original episode, which leaves every receipt valid as recorded.
+
+It is dry-run first and refuses anything it cannot prove quiet: an unresolved
+promotion, resolution, ref mutation or attestation (an ambiguous Git push is
+never replayed), a branch owner that is not a released or detached
+reservation, a stage delegate that is unsettled, attached or locks a
+workspace, a verifier, an operator hold, more than one conflict, a conflict
+for a child that has moved on, and a parent branch whose remote tip is not the
+recorded head.  Applying needs the remote head the dry run reported and a
+reason, and within one transaction under the project lock:
+
+* reclaims the collector reservation for the same operation at the next fence
+  token, so nothing still carrying an old token (a queued delivery) can write;
+* returns the operation to ``active`` (stage 0) or ``escalated``;
+* when exactly one current conflict exists, opens a fresh repair stage bound to
+  it, with no writer, a new deadline and its own attempt budget.  Ordinary
+  dispatch then files a *new* delegate ``repair-<operation>-<stage>``: archived
+  delegates are never restored and their cancelled stages stay cancelled;
+* returns a parent the exhausted repair terminally BLOCKED to PAUSED, exactly as
+  the shared parent transition requires.
+
+With no conflict waiting, the operation resumes with its cancelled stage still
+active; ``RepairService.start`` gives the next conflict a fresh stage past it.
+The durable Subject retries a reopened stage whose dispatch failed, whatever
+the frozen policy's ``on_exhausted``.
+
+Gates, manual holds and the root's human review are never touched; open human
+gates on the parent are reported.  Every apply writes an
+``integration.collection_reopened`` event.
+
+An escalated, terminal no-progress incident can use the same control for a
+later conflict that no old stage owns. This additional path requires the
+exact detached collector fence, preserves every old stage, and rechecks Git
+under the apply lock. It never retries an exhausted conflict with a new budget.
+
+### `src/integration/owner_recovery.py`
+
+Release an integration branch owner whose writer is gone, preserving its work first.
+
+An ``integration_branch_owners`` row in ``attached`` or ``handoff_pending``
+fences its branch for one writer.  Several paths end a writer without
+releasing that row (spec §1, G1–G7): delegate retirement and
+``cancel_preserving`` keep it by design, a failed transfer leaves it
+``handoff_pending``, archive/delete forget it, and slot reuse destroys the
+proof every exit-time confirmer needs.  The row then pins the branch, the
+writer's claim and its workspace lock forever.
+
+:class:`OwnerRecovery` decides from facts that stay checkable after the fact,
+never from the task row or its status:
+
+1. **The writer is gone.**  The row's session is stopped in ``state`` and
+   ``desired_state`` and the session provider confirms it by a fresh probe
+   (a row naming no session has no writer), and no live session names the
+   owning task.  Otherwise ``writer_live``.
+2. **The branch is safe.**  After ``git fetch origin`` in the repository's
+   base checkout, every worktree holding the branch (or the row's own
+   checkout, detached) is inspected.  One a live session works in refuses
+   with ``checkout_in_use``; a running pool session with no task and no claim
+   in flight is idle there, not working. On a ``worker`` row only work proved against the
+   recorded task origin, claim time and matching slot sentinel is eligible for
+   preservation; integration rows rely on their fenced writer binding. A missing
+   local task ref never borrows a detached slot's HEAD. Uncommitted work is
+   snapshotted through a temporary index -- the working tree and the live index are never touched
+   -- and anything origin does not already carry (a dirty tree, a HEAD or a
+   local branch ahead of or diverged from origin and not on the default
+   branch) is pushed, never forced, to the task branch itself. Only a
+   divergent tip uses a temporary ``aq/recovery/<owner-row-id>/<sha>`` ref,
+   consumed and deleted when the retry merges it into the task branch. The
+   branch is then detached in place, without reset or clean.  A fetch or
+   push failure refuses with ``origin_unreachable``.
+3. **Release in one transaction.**  A compare-and-swap on
+   ``(id, fence_token, handoff_state)`` (``stale_fence`` when it misses)
+   releases the row with a fresh fence, unlocks the row's workspace
+   (disabling it when dirty or retaining an unproven detached checkout, so
+   allocation cannot recycle it) and releases
+   the gone writer's claim, then writes the audit row and
+   ``integration.owner_recovered``.
+
+Every non-dry run writes one ``integration_owner_recoveries`` row.  Refusals
+emit ``integration.owner_recovery_refused``; a refusal repeating the latest
+recorded reason within :data:`REFUSAL_THROTTLE_SECONDS` is not recorded again,
+and the task hears about each refusal reason once.  A dry run pushes,
+detaches and records nothing and lists what it would do in
+``evidence["planned"]``.  ``no_push`` releases without publishing: nothing is
+proved, snapshotted or pushed, every unpublished source stays where it is
+(listed in ``evidence["unpublished"]``) and the row's checkout is retained.
+
+There is no force: a row the check refuses stays refused, with its reason.
+
+See docs/superpowers/specs/2026-09-21-integration-owner-recovery-design.md §3.
+
+### `src/integration/stale_owners.py`
+
+Release the stale integration owners a project's drain is waiting on.
+
+``aq integration release-stale-owners`` (``integration_release_stale_owners``)
+is the bulk, project-scoped form of ``release-owner`` for the rows that
+command cannot take: ``reserved`` branch-owner rows, which name no writer,
+left behind when a train run's tasks finished, were archived or were deleted.
+Every ``integration_branch_owners`` row that is not ``released`` counts as
+active integration work; disabling delivery preserves these reservations.
+
+A row is released only when it is provably safe:
+
+* it is ``reserved`` and names no session or workspace.  An ``attached`` or
+  ``handoff_pending`` row is reported: it names a writer, and
+  ``release-owner`` owns it, with its stop proof and preservation;
+* its owner is finished -- a task that is COMPLETED or FAILED, archived or
+  deleted, or an integration operation that ended -- and nothing still acts
+  for it: no live session, workspace lock, in-flight candidate ref mutation
+  or running operation, and no hierarchy/train project owns the row
+  (:func:`src.integration.finished_owners._blocker`, the questions the
+  finished-owner maintenance source asks);
+* nothing still relies on its fence: no active integration batch lists the
+  branch and no unsettled promotion intent names it.  A promoted batch whose
+  cleanup is pending keeps its integration branch's owner, because cleanup of
+  that local ref checks the owner's fence -- run ``retry-cleanup`` first.  Its
+  members' rows are not kept: their work is on the default branch, and
+  cleanup refuses to delete a source ref whose owner is not released;
+* its work is on origin, proved after one ``git fetch --prune`` of the
+  repository: the branch tip is an ancestor of the default branch, or the
+  branch is gone and its owner is terminal (COMPLETED, archived, deleted, or
+  an ended operation -- a FAILED task may be retried, so a gone branch proves
+  nothing for it); and no worktree or local branch holds work origin lacks.
+
+Everything else is reported with its reason and left alone.  A release is the
+compare-and-swap ``release-owner`` makes: ``released`` with a fresh fence, one
+``integration_owner_recoveries`` audit row naming the principal, an
+``integration.owner_recovered`` event and a note on the owning task.  A dry
+run fetches but writes nothing.  A released row is never selected again, so
+the command is idempotent.
+
+It also drops the project's integration lease when the lease has expired and
+its batch is finished (``integration.stale_lease_released``): the drain counts
+a lease row however long ago it expired.
+
+### `src/integration/candidate_baseline.py`
+
+The target's own checks are the baseline a red candidate is judged against.
+
+A red candidate is not automatically the batch's fault.  A required check that
+also fails on the target commit the candidate was built on is a pre-existing
+failure. Normally only a failing check the target does not fail is repairable.
+An open batch sealing its own epic subtree is the exception: its retained
+candidate can repair proven inherited failures because the seal prevents ordinary
+target repair. The ordinary repair budget and publication gates still apply.
+
+The target's verdict for its exact sha comes from the same per-commit check cache
+as the candidate's, so the comparison is over rows written by one trusted producer
+under one required-check version.  A target with no final verdict for its sha
+cannot decide anything: the baseline is requested and observed once before it is
+classified, and checks it has still not decided are unproven rather than assumed
+to be the batch's.
+
+A required check marked MISSING on the target is not an observed failure. The
+target may never have run the required workflow, as with a hand-pushed main whose
+only push workflow is attestation. Such a target has no comparable baseline, so
+the candidate's failing checks remain repairable. Missing candidate checks still
+fail the required set, and publication still requires trusted exact-candidate
+success.
+
+An unproven failure is never repaired. An epic with only proven pre-existing
+failures may receive one ordinary default-branch sync repair when the current
+default head is train-produced or attested and its own trusted exact-head checks
+pass those failing names. Otherwise the candidate's failing check suites are
+re-requested under bounded exponential backoff, exactly as
+source-CI infrastructure handling is, and the bound names the
+``candidate_pre_existing_failure`` blocker for a human instead of filing repairs
+forever.  The counters are durable per exact candidate, so a repaired or moved
+candidate starts from zero, like its repair lineage.
+
+Comparison is a property of the checks provider and the exact target's evidence,
+not of the batch: hosted checks can compare targets that ran the required checks,
+while local validation jobs only ever exist for candidates. A lane whose provider
+cannot compare a target keeps filing repairs exactly as before.
+
+Epic refreshes use their frozen default-branch input as the baseline. The epic
+head can already contain regressions and cannot prove a failure pre-existed on
+the default branch.

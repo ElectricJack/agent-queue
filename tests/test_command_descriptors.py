@@ -15,13 +15,20 @@ from src.commands.command_inventory import command_snapshot
 from src.commands.contracts import CONTRACTS
 from src.commands.contracts.builtin import set_handler_provider
 from src.commands.contracts.generated import (
-    GeneratedInvocationDisabled, JsonObjectResult, argument_model, generated_registration,
+    GeneratedInvocationDisabled,
+    JsonObjectResult,
+    argument_model,
+    generated_registration,
 )
 from src.commands.contracts.models import canonical_execution_document
 from src.commands.contracts.registry import ContractRegistry
 from src.commands.descriptors import (
-    PLAYBOOK_DENIALS, HandlerCommand, PluginCommand, argument_usage,
-    build_descriptor_snapshot, discover_handler_inventory,
+    PLAYBOOK_DENIALS,
+    HandlerCommand,
+    PluginCommand,
+    argument_usage,
+    build_descriptor_snapshot,
+    discover_handler_inventory,
 )
 from src.commands.handler import CommandHandler
 from src.config import AppConfig
@@ -41,6 +48,11 @@ PUBLICATION_CHANGES = ROOT / "tests/fixtures/contracts/publication-delegation-co
 BATCH_REPAIR_CHANGES = ROOT / "tests/fixtures/contracts/batch-repair-contract-changes.json"
 WATCH_CHANGES = ROOT / "tests/fixtures/contracts/watch-contract-changes.json"
 INGEST_CHANGES = ROOT / "tests/fixtures/contracts/ingestion-replay-contract-changes.json"
+HIBERNATION_CHANGES = ROOT / "tests/fixtures/contracts/hibernation-contract-changes.json"
+SUPERVISOR_HEALTH_CHANGES = (
+    ROOT / "tests/fixtures/contracts/supervisor-health-contract-changes.json"
+)
+TARGET_REPAIR_CHANGES = ROOT / "tests/fixtures/contracts/target-repair-contract-changes.json"
 
 
 @pytest.fixture(autouse=True)
@@ -121,6 +133,58 @@ def _dev_changes():
     return changes
 
 
+def _hibernation_changes():
+    changes = json.loads(HIBERNATION_CHANGES.read_text())
+    assert changes["source_base"] == "4385c73158425a08114164893b623cf6b65718e8"
+    assert set(changes["contracts"]) == {
+        "job_cancel", "job_get", "job_submit", "message_wait",
+        "wait_cancel", "wait_get", "wait_list", "wait_register",
+    }
+    assert set(changes["transport_definitions"]) == {
+        "edit_task", "wait_cancel", "wait_get", "wait_list", "wait_register",
+    }
+    return changes
+
+
+def _supervisor_health_changes():
+    changes = json.loads(SUPERVISOR_HEALTH_CHANGES.read_text())
+    assert changes["source_base"] == "a73e55ae16605561e6ce371bab9685455cc1f34e"
+    assert set(changes["transport_definitions"]) == {"supervisor_restart"}
+    return changes
+
+
+def _revert_target_repair_catalogue(catalogue):
+    """Remove the new repair command and recover the preceding catalogue bytes."""
+    repair = _target_repair_changes()
+    for name, approved in repair["added_commands"].items():
+        assert catalogue["fallback"].pop(name) == approved["transport_definition"]
+        assert CONTRACTS.require(name).contract.fingerprint() == approved["contract_fingerprint"]
+    assert hashlib.sha256((json.dumps(catalogue, indent=2) + "\n").encode()).hexdigest() == (
+        repair["previous_cli_catalogue_sha256"]
+    )
+    return catalogue
+
+
+def _revert_supervisor_health_catalogue(catalogue):
+    """Restore only the reviewed description text to recover the hibernation bytes."""
+    catalogue = _revert_target_repair_catalogue(catalogue)
+    changes = _supervisor_health_changes()
+    for name, approved in changes["transport_definitions"].items():
+        [definition] = [item for item in catalogue["explicit"] if item["name"] == name]
+        assert definition["description"] == approved["description"]
+        definition["description"] = approved["previous_description"]
+    previous = json.dumps(catalogue, indent=2) + "\n"
+    assert hashlib.sha256(previous.encode()).hexdigest() == changes["previous_cli_catalogue_sha256"]
+    return catalogue
+
+
+def _target_repair_changes():
+    changes = json.loads(TARGET_REPAIR_CHANGES.read_text())
+    assert changes["source_commit"] == "8ec0c84e3afdd0b9bc79b9dbd7b59df197a47ff6"
+    assert set(changes["added_commands"]) == {"integration_repair_target"}
+    return changes
+
+
 def _publication_changes():
     changes = json.loads(PUBLICATION_CHANGES.read_text())
     assert changes["source_base"] == "f9a7591766d69481b309e8733be795e62ab0e59e"
@@ -129,6 +193,19 @@ def _publication_changes():
         "integration_delegate_publication", "integration_revoke_publication",
     }
     return changes
+
+
+def _revert_hibernation_catalogue(catalogue):
+    delta = _hibernation_changes()["catalogue_delta"]
+    previous = delta["previous_explicit"]
+    catalogue["explicit"] = [
+        previous.get(entry["name"], entry) for entry in catalogue["explicit"]
+        if entry["name"] not in delta["added_explicit"]
+    ]
+    for key in ("fallback", "tool_categories"):
+        for name in delta[f"added_{key}"]:
+            catalogue[key].pop(name)
+    return catalogue
 
 
 def _withheld_catalogue():
@@ -163,7 +240,9 @@ def _batch_repair_changes():
 def _publication_catalogue():
     """Remove only the optional batch assignment to recover prior catalogue bytes."""
     changes = _batch_repair_changes()
-    catalogue = json.loads(render_command_catalogue())
+    catalogue = _revert_hibernation_catalogue(
+        _revert_supervisor_health_catalogue(json.loads(render_command_catalogue()))
+    )
     [(prop, schema)] = changes["added_property"].items()
     [definition] = [item for item in catalogue["explicit"] if item["name"] == "task_set"]
     assert definition["input_schema"]["properties"].pop(prop) == schema
@@ -199,11 +278,16 @@ def test_legacy_execution_documents_and_fingerprints():
     fixture = json.loads(GOLDEN.read_text())
     changes = {**_observation_changes()["contracts"], **_script_changes()["contracts"],
                **_main_changes()["contracts"], **_dev_changes()["contracts"]}
+    hibernation = _hibernation_changes()["contracts"]
     for name, old in fixture["legacy_contracts"].items():
         expected = changes.get(name, old)
         if name in changes:
             assert expected["previous_fingerprint"] == old["fingerprint"]
             assert expected["fingerprint"] != old["fingerprint"]
+        if name in hibernation:
+            assert hibernation[name]["previous_fingerprint"] == expected["fingerprint"]
+            assert hibernation[name]["fingerprint"] != expected["fingerprint"]
+            expected = hibernation[name]
         contract = CONTRACTS.require(name).contract
         assert canonical_execution_document(contract.execution) == expected["execution"], name
         assert contract.fingerprint() == expected["fingerprint"], name
@@ -224,8 +308,10 @@ def test_transport_views_and_cli_serialization_preserve_golden_evidence():
     scripts = _script_changes()
     main = _main_changes()
     dev = _dev_changes()
+    hibernation = _hibernation_changes()
     publication = _publication_changes()
     batch_repair = _batch_repair_changes()
+    supervisor_health = _supervisor_health_changes()
     contracts = {**changes["contracts"], **scripts["contracts"]}
     snapshot = command_snapshot()
     for name, digest in fixture["transport_definitions"].items():
@@ -241,6 +327,10 @@ def test_transport_views_and_cli_serialization_preserve_golden_evidence():
             approved = dev["transport_definitions"][name]
             assert approved["previous_sha256"] == digest
             digest = approved["sha256"]
+        if name in hibernation["transport_definitions"]:
+            approved = hibernation["transport_definitions"][name]
+            assert approved["previous_sha256"] == digest
+            digest = approved["sha256"]
         if name in publication["transport_definitions"]:
             approved = publication["transport_definitions"][name]
             assert approved["previous_sha256"] == digest
@@ -248,6 +338,10 @@ def test_transport_views_and_cli_serialization_preserve_golden_evidence():
             assert CONTRACTS.require(name).contract.fingerprint() == approved["fingerprint"]
         if name in batch_repair["transport_definitions"]:
             approved = batch_repair["transport_definitions"][name]
+            assert approved["previous_sha256"] == digest
+            digest = approved["sha256"]
+        if name in supervisor_health["transport_definitions"]:
+            approved = supervisor_health["transport_definitions"][name]
             assert approved["previous_sha256"] == digest
             digest = approved["sha256"]
         assert _digest(snapshot.commands[name].tool_definition()) == digest, name
@@ -260,7 +354,11 @@ def test_transport_views_and_cli_serialization_preserve_golden_evidence():
     assert withheld["previous_cli_catalogue_sha256"] == dev["cli_catalogue_sha256"]
     assert publication["previous_cli_catalogue_sha256"] == withheld["cli_catalogue_sha256"]
     assert batch_repair["previous_cli_catalogue_sha256"] == publication["cli_catalogue_sha256"]
-    assert actual == batch_repair["cli_catalogue_sha256"]
+    assert hibernation["previous_cli_catalogue_sha256"] == batch_repair["cli_catalogue_sha256"]
+    assert supervisor_health["previous_cli_catalogue_sha256"] == hibernation["cli_catalogue_sha256"]
+    repair = _target_repair_changes()
+    assert repair["previous_cli_catalogue_sha256"] == supervisor_health["cli_catalogue_sha256"]
+    assert actual == repair["cli_catalogue_sha256"]
     definitions = {d["name"]: d for d in effective_tool_definitions()}
     for name, definition in _discover_all_commands().items():
         assert definition == snapshot.commands[name].tool_definition()
@@ -298,6 +396,10 @@ def test_batch_repair_catalogue_only_adds_optional_assignment():
     schema = command_snapshot().commands["task_set"].tool_definition()["input_schema"]
     assert schema["properties"]["repair_batch"]["type"] == "string"
     assert "repair_batch" not in schema.get("required", ())
+
+
+def test_target_repair_catalogue_only_adds_reviewed_command():
+    _revert_target_repair_catalogue(json.loads(render_command_catalogue()))
 
 
 def test_dev_redrive_contract_only_adds_explicit_source_adoption():
@@ -677,7 +779,10 @@ def test_generic_argument_lookup_and_executor_never_invent_a_root_argument():
 
 def test_missing_dynamic_path_fails_before_generated_invocation(json_args):
     from src.playbooks.expressions import (
-        BindingRef, ResolutionScope, ValueResolutionError, resolve_value,
+        BindingRef,
+        ResolutionScope,
+        ValueResolutionError,
+        resolve_value,
     )
 
     # The expression layer's missing marker cannot be coerced into JSON or

@@ -142,6 +142,7 @@ class TestRegistry:
         from src.doctor.stall_checks import stall_checks
         from src.doctor.task_checks import task_checks
         from src.doctor.workspace_checks import workspace_checks
+        from src.doctor.wait_checks import wait_checks
 
         reg = default_registry()
         expected = (
@@ -174,6 +175,7 @@ class TestRegistry:
             | {c.id for c in routing_checks()}
             | {c.id for c in service_checks()}
             | {c.id for c in record_checks()}
+            | {c.id for c in wait_checks()}
         )
         assert set(reg.ids()) == expected
 

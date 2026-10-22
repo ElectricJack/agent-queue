@@ -26,9 +26,9 @@ from src.claim_timing import (
 )
 from src.database.queries.hierarchy_queries import ProjectIntegrationMode
 from src.database.queries.ingest_hold import IngestHeld
-from src.git.manager import ForeignSlotClaim
+from src.git.manager import ForeignSlotClaim, SlotSourceDisagreement
 from src.git.process import PREPARE_CLEANUP_HOLD, ProcessCleanupError
-from src.models import ClaimResult, TaskStatus
+from src.models import SUSPENDED_TASK_STATUSES, ClaimResult, TaskStatus
 from src.pool_claims import pool_claim_cap
 from src.workspace_disable import CLAIM_FAILURES, disable_fields
 
@@ -43,6 +43,11 @@ _PREPARATION_RESPONSE_SECONDS = 0.5
 # Admission refusals whose Git inputs moved under the claim; a bounded re-read
 # recomputes selection from the new inputs and refuses again if they keep moving.
 _MOVED_ADMISSION = frozenset({"delivery_snapshot_changed", "stack_snapshot_changed"})
+# A request answers inside the CLI's 180s ``task_claim`` read timeout. Its Git
+# observations share what is left of ``wait`` plus this allowance, and once the
+# limit passes it takes no task: a claim made after the caller gave up is orphaned.
+_CLAIM_OBSERVATION_GRACE_SECONDS = 60.0
+_CLAIM_REQUEST_LIMIT_SECONDS = 150.0
 
 
 def _retryable_preparation_error(exc: Exception) -> bool:
@@ -351,6 +356,10 @@ class ClaimCommandsMixin:
         timing = current_claim_timing.get()
         if timing is not None and wait:
             timing.deadline = deadline
+        if timing is not None:
+            timing.limit = timing.started + min(
+                wait + _CLAIM_OBSERVATION_GRACE_SECONDS, _CLAIM_REQUEST_LIMIT_SECONDS,
+            )
 
         if session.lifecycle == "task":
             if not getattr(self.config.swarm, "enabled", True):
@@ -657,19 +666,54 @@ class ClaimCommandsMixin:
         )
 
         try:
-            proofs = await delivered_queued_repairs(
+            proofs = await asyncio.wait_for(delivered_queued_repairs(
                 self.db, getattr(self.db, "_delivery_observer", None),
                 project_id=project_id,
-            )
+            ), self._observation_budget())
             return await retire_delivered_queued_repairs(
                 self.db, proofs, project_id=project_id, retired_by="task_claim",
             )
+        except TimeoutError:
+            logger.warning(
+                "source CI delivery gate for project %s outlasted the claim's Git budget; "
+                "claiming unfiltered", project_id,
+            )
+            return {}
         except Exception:
             logger.warning(
                 "source CI delivery gate failed for project %s; claiming unfiltered",
                 project_id, exc_info=True,
             )
             return {}
+
+    def _observation_budget(self) -> float:
+        """Seconds one pre-transaction Git observation may still take.
+
+        The scheduler's per-project bound, cut to what is left of the request.
+        Observations are single-flight tasks of their own, so abandoning one
+        leaves the shared fetch running for the next reader.
+        """
+        from src.integration import delivery_observer
+
+        budget = delivery_observer.FRONTIER_MODE_TIMEOUT_SECONDS
+        timing = current_claim_timing.get()
+        if timing is not None and timing.limit is not None:
+            budget = min(budget, max(0.0, timing.limit - time.monotonic()))
+        return budget
+
+    def _claim_out_of_time(self) -> bool:
+        timing = current_claim_timing.get()
+        return timing is not None and timing.limit is not None and (
+            time.monotonic() >= timing.limit
+        )
+
+    def _observation_timeout(self, session, project_id: str, what: str, cap) -> dict:
+        """The definite answer for a claim whose Git observation outlasted its budget."""
+        reason = ("claim_deadline_exceeded" if self._claim_out_of_time()
+                  else "delivery_observation_timeout")
+        logger.warning("claim %s for %s: %s outlasted the claim's Git budget (%s)",
+                       session.id, project_id, what, reason)
+        return self._simple(ClaimResult.NO_READY_WORK, reason, None, cap)
 
     async def _attempt_claim_once(
         self, session, want_id, cap, project, *, routing=None, repaired=False
@@ -709,12 +753,15 @@ class ClaimCommandsMixin:
 
         if getattr(project, "_source_admission_required", True):
             ids = [want_id] if want_id else await structural_candidates(self.db, project.id)
-            admission = await observe_admission(
-                self.db,
-                ids,
-                self._development_integration(),
-                default_mode=self.config.integration.default_mode,
-            )
+            try:
+                admission = await asyncio.wait_for(observe_admission(
+                    self.db,
+                    ids,
+                    self._development_integration(),
+                    default_mode=self.config.integration.default_mode,
+                ), self._observation_budget())
+            except TimeoutError:
+                return self._observation_timeout(session, project.id, "delivery admission", cap)
         if getattr(project, "hierarchical_integration_mode", None) in {"hierarchy", "train"}:
             # A queued source-CI repair whose source generation is already on
             # the project's default target would repeat delivered work, so it
@@ -738,22 +785,61 @@ class ClaimCommandsMixin:
                     ClaimResult.NO_READY_WORK, "source_ci_repair_already_delivered", None, cap
                 )
         prerequisite_view = None
+        prerequisites_timed_out = False
         stack_view = None
         stack_unavailable = None
         from src.integration.delivery_observer import prerequisite_observer
 
         observer = prerequisite_observer(self.db)
         if hierarchy_mode and hierarchy_mode.hierarchical and observer is not None:
-            with claim_phase("delivery_admission"):
-                prerequisite_view = await observer.prerequisite_view(project.id, task_id=want_id)
-            if not await prerequisite_view.fresh():
-                return self._simple(ClaimResult.NO_READY_WORK, "delivery_snapshot_changed", None, cap)
-            hierarchy_mode = await prerequisite_view.mode(hierarchy_mode)
-        if hierarchy_mode and hierarchy_mode.hierarchical and hierarchy_mode.stacked and observer:
-            from src.integration.stacked_branches import observe_stacks
+            async def observe_prerequisites():
+                with claim_phase("delivery_admission"):
+                    view = await observer.prerequisite_view(project.id, task_id=want_id)
+                if not await view.fresh():
+                    return view, None
+                return view, await view.mode(hierarchy_mode)
 
-            stack_view = await observe_stacks(observer, project.id, task_id=want_id)
-            stack_state = await stack_view.currentness()
+            try:
+                prerequisite_view, observed_mode = await asyncio.wait_for(
+                    observe_prerequisites(), self._observation_budget(),
+                )
+            except TimeoutError:
+                if self._claim_out_of_time():
+                    return self._observation_timeout(
+                        session, project.id, "prerequisite delivery view", cap,
+                    )
+                # Fail closed as the scheduler's bounded frontier does: no
+                # delivered prerequisite is proven, so only roots stay claimable.
+                logger.warning("claim %s for %s: prerequisite delivery view outlasted the "
+                               "claim's Git budget; claiming without delivery proofs",
+                               session.id, project.id)
+                prerequisites_timed_out = True
+                hierarchy_mode = replace(hierarchy_mode,
+                                         delivered_prerequisite_ids=frozenset(),
+                                         stackable_prerequisite_ids=frozenset())
+            else:
+                if observed_mode is None:
+                    return self._simple(
+                        ClaimResult.NO_READY_WORK, "delivery_snapshot_changed", None, cap
+                    )
+                hierarchy_mode = observed_mode
+        if (hierarchy_mode and hierarchy_mode.hierarchical and hierarchy_mode.stacked and observer
+                and not prerequisites_timed_out):
+            from src.integration.stacked_branches import StackCurrentness, observe_stacks
+
+            async def observe_stack_view():
+                view = await observe_stacks(observer, project.id, task_id=want_id)
+                return view, await view.currentness()
+
+            try:
+                stack_view, stack_state = await asyncio.wait_for(
+                    observe_stack_view(), self._observation_budget(),
+                )
+            except TimeoutError:
+                if self._claim_out_of_time():
+                    return self._observation_timeout(session, project.id, "stack view", cap)
+                stack_view = None
+                stack_state = StackCurrentness("unavailable", "stack_observation_timeout")
             if not stack_state.current:
                 logger.info(
                     "claim %s for %s: stack evidence %s: %s", session.id, project.id,
@@ -768,9 +854,15 @@ class ClaimCommandsMixin:
                 # as the scheduler does, with no stack proofs, so stacked dependents
                 # stay withheld while roots and delivered-prerequisite work claim.
                 stack_unavailable = stack_state
-                stack_view = stack_view.without_proofs()
-            hierarchy_mode = replace(hierarchy_mode,
-                                     stackable_prerequisite_ids=frozenset(stack_view.proofs))
+                if stack_view is not None:
+                    stack_view = stack_view.without_proofs()
+            hierarchy_mode = replace(hierarchy_mode, stackable_prerequisite_ids=frozenset(
+                stack_view.proofs if stack_view is not None else ()
+            ))
+        if self._claim_out_of_time():
+            # The caller's read timeout has fired or is about to: a slot taken
+            # now would hold a task nobody receives.
+            return self._simple(ClaimResult.NO_READY_WORK, "claim_deadline_exceeded", None, cap)
         # What to do once the transaction has committed — set inside the
         # block, acted on outside it.
         active_claim: tuple | None = None  # (task, epoch, row) — already active
@@ -799,6 +891,12 @@ class ClaimCommandsMixin:
                         f"session holds task '{row.task_id}', which no longer exists",
                         row,
                         cap,
+                    )
+                if task.status in SUSPENDED_TASK_STATUSES:
+                    # The wait/continuation owns this binding. Claim-loop
+                    # recovery must neither release it nor re-serve the task.
+                    return self._simple(
+                        ClaimResult.NOT_ADMISSIBLE, "wait.task_suspended", row, cap
                     )
                 if (
                     task.status is not TaskStatus.IN_PROGRESS
@@ -831,6 +929,7 @@ class ClaimCommandsMixin:
                     # The previous request failed or the daemon restarted.
                     # Retry this exact held preparation under the task lock;
                     # never discard its attached fence to manufacture a new claim.
+                    await self._mark_prepare_failure_retried(conn, row.task_id)
                     new_claim = (row, held, None)
                 else:
                     out = self._simple(ClaimResult.CLAIM_IN_PROGRESS, kind, row, cap)
@@ -919,8 +1018,10 @@ class ClaimCommandsMixin:
                     hierarchy_mode = replace(hierarchy_mode, stackable_prerequisite_ids=frozenset(
                         await stack_view.verified_on(conn, proof_ids)
                     ))
-                tid = await self.db.select_ready_for_profile(
-                    conn,
+                from src.waits.reservations import claim_candidate, consume_reservation
+
+                tid, reservation_id = await claim_candidate(
+                    self, conn,
                     project_id=session.project_id,
                     profile_id=session.profile_id,
                     agent_id=row.agent_id,
@@ -961,6 +1062,7 @@ class ClaimCommandsMixin:
                         now=now,
                         agent_reserved=True,
                     )
+                    await consume_reservation(conn, reservation_id, session.id, now=now)
                     new_claim = (row, task, slot)
 
         if stale_binding is not None:
@@ -1039,6 +1141,10 @@ class ClaimCommandsMixin:
                 )
                 out["stack_evidence"] = stack_unavailable.evidence()
                 return out
+            if prerequisites_timed_out:
+                return self._simple(
+                    ClaimResult.CLAIM_CONFLICT, "delivery_observation_timeout", row, cap
+                )
             return self._simple(ClaimResult.CLAIM_CONFLICT, "", row, cap)
         if withheld_source_repairs:
             # Nothing else was claimable and at least one candidate was withheld
@@ -1052,6 +1158,12 @@ class ClaimCommandsMixin:
             out = self._simple(ClaimResult.NO_READY_WORK, "stack_snapshot_unavailable", row, cap)
             out["stack_evidence"] = stack_unavailable.evidence()
             return out
+        if prerequisites_timed_out:
+            # Dependents were withheld for want of a delivery answer in time, not
+            # because the frontier is empty.
+            return self._simple(
+                ClaimResult.NO_READY_WORK, "delivery_observation_timeout", row, cap
+            )
         return self._simple(ClaimResult.NO_READY_WORK, "", row, cap)
 
     async def _recover_stale_binding(
@@ -1510,6 +1622,28 @@ class ClaimCommandsMixin:
             fresh, cap,
         )
 
+    async def _quarantine_slot(self, session, slot, failure, cap) -> dict | None:
+        """Quarantine a slot whose checkout contradicts its sentinel.
+
+        Such a slot refuses every claim alike.  Retaining the session's agent
+        lock would keep it retrying there and block slot restore, so the
+        release gave the lock back and drained the session.  Only once that
+        release applied is the slot disabled for the restore cooldown: a
+        retained claim keeps its slot and gets the ordinary refusal.
+        """
+        drained = await self.db.get_session(session.id)
+        if drained is None or drained.desired_state != "stopped":
+            return None
+        await self.db.update_workspace(
+            slot.id, **disable_fields(CLAIM_FAILURES, failure.reason, now=time.time())
+        )
+        return self._simple(
+            ClaimResult.DRAIN_REQUESTED,
+            f"{failure.reason}; workspace {slot.id} released and quarantined. "
+            "Run `aq session drain-ack` and exit 0.",
+            drained, cap,
+        )
+
     async def _retire_stale_slot_claim(
         self, slot, path, *, claimant_task_id=None, claimant_session_id=None, actor="claim", conn=None,
     ) -> dict | None:
@@ -1542,6 +1676,27 @@ class ClaimCommandsMixin:
             "claimant_task_id": claimant_task_id,
         })
         return retired
+
+    async def _mark_prepare_failure_retried(self, conn, task_id) -> None:
+        """Stamp the last failure record before a same-epoch preparation retry.
+
+        Pause recovery accepts that record as proof the attempt it describes
+        unwound its git children; the retry is a new attempt it says nothing
+        about, and one that dies without its own record must stay unproved.
+        """
+        import json
+
+        from sqlalchemy import select, update
+
+        from src.database.tables import task_metadata
+
+        where = (task_metadata.c.task_id == task_id, task_metadata.c.key == PREPARE_FAILURE)
+        encoded = await conn.scalar(select(task_metadata.c.value).where(*where).with_for_update())
+        record = json.loads(encoded) if encoded is not None else None
+        if isinstance(record, dict) and "retried_at" not in record:
+            await conn.execute(update(task_metadata).where(*where).values(
+                value=json.dumps({**record, "retried_at": time.time()}),
+            ))
 
     async def _record_prepare_failure(
         self, task, failure, *, session, slot, epoch, disposition, attempt=None,
@@ -2193,16 +2348,15 @@ class ClaimCommandsMixin:
                 "session_id": session.id, "failed_at": time.time(),
                 "retry": "manual" if attempt >= 3 else "automatic",
             })
+            poisoned = isinstance(exc, SlotSourceDisagreement) and slot is not None
             await self.db.release_claim(
                 session.id,
                 expected_task_id=task.id, expected_claim_epoch=epoch,
                 expected_instance_token=session.instance_token,
                 task_status=TaskStatus.BLOCKED if attempt >= 3 else TaskStatus.READY,
-                context="slot_reset_failed",
-                now=time.time(),
-                result="prepare_failed",
-                needs_attention="slot_reset_failed",
-                prepare_backoff=True,
+                context="slot_reset_failed", now=time.time(), result="prepare_failed",
+                needs_attention="slot_reset_failed", prepare_backoff=True,
+                release_workspace_lock=poisoned, drain_after_release=poisoned,
             )
             await self._record_prepare_failure(
                 task, failure, session=session, slot=slot, epoch=epoch,
@@ -2211,14 +2365,14 @@ class ClaimCommandsMixin:
             await self.orchestrator.bus.emit(
                 "pool.prepare_failed",
                 {
-                    "project_id": session.project_id,
-                    "profile_id": session.profile_id,
-                    "session_id": session.id,
-                    "task_id": task.id,
+                    "project_id": session.project_id, "profile_id": session.profile_id,
+                    "session_id": session.id, "task_id": task.id,
                     **failure.event_fields(),
                 },
             )
             self._resolve_claim_waiters(session.id, epoch, "prepare_failed")
+            if poisoned and (out := await self._quarantine_slot(session, slot, failure, cap)):
+                return out
             return self._simple(ClaimResult.PREPARE_FAILED, failure.reason, row, cap)
         if not fresh:
             remove_claim_file_if_matches(row.work_dir, task.id, epoch, session_id=session.id)

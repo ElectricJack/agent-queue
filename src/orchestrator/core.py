@@ -576,6 +576,7 @@ class Orchestrator(
 
         self.session_lens = SessionLens(
             db=self.db,
+            availability=self.provider_availability,
             bus=self.bus,
             providers=self.session_providers,
             spec_builder=self.session_spec_builder,
@@ -1331,6 +1332,16 @@ class Orchestrator(
             if (identity.get("claim_phase") == "preparing"
                     and (identity["id"], identity["last_claim_epoch"], identity["instance_token"])
                     not in proved):
+                # No live request was cancelled above: the attempt ended before
+                # this pause (failed, cancelled by a restart, timed out). Its
+                # durable failure record proves it unwound its git children.
+                from src.database.queries.task_queries import settled_preparation_proved
+
+                if settled_preparation_proved(
+                    await self.db.settled_task_preparation(task_id), identity,
+                    identity["last_claim_epoch"],
+                ):
+                    continue
                 raise PauseFenceError(
                     "Task remains paused; interrupted preparation termination is unproved. "
                     "Source and claim are retained for guarded recovery; Resume is not cleanup."
@@ -4498,6 +4509,12 @@ class Orchestrator(
             except Exception:
                 logger.error("AgentWaitReconciler tick failed", exc_info=True)
             try:
+                wait_service = getattr(self, "wait_service", None)
+                if wait_service is not None:
+                    await wait_service.tick()
+            except Exception:
+                logger.error("WaitService recovery tick failed", exc_info=True)
+            try:
                 result = await self.agent_cron.tick()
                 if not result.get("success"):
                     logger.error("Agent cron tick refused: %s", result)
@@ -4630,6 +4647,14 @@ class Orchestrator(
                 previous_aspect,
                 current_aspect,
             )
+        from src.waits.resource_sources import resource_invalidation
+
+        await self.db.wait_source_commit(**resource_invalidation(
+            producer="config", identity="global",
+            revision=data.setdefault("source_revision", uuid.uuid4().hex),
+            outcome_ref="config:reload",
+            payload={"changed_sections": list(data.get("changed_sections", []))},
+        ))
         logger.info(
             "Config reloaded: updated sections: %s",
             ", ".join(data.get("changed_sections", [])),
@@ -4807,16 +4832,11 @@ class Orchestrator(
         for p in projects:
             project_usage[p.id] = await self.db.get_project_token_usage(p.id, since=window_start)
 
-        # Active (BUSY) agent count per project — used to enforce each
-        # project's max_concurrent_agents limit.  We look up the project
-        # from the agent's current task rather than storing it on the agent
-        # directly, because agent-project affinity is transient.
-        active_counts: dict[str, int] = {}
-        for a in agents:
-            if a.state == AgentState.BUSY and a.current_task_id:
-                task = await self.db.get_task(a.current_task_id)
-                if task:
-                    active_counts[task.project_id] = active_counts.get(task.project_id, 0) + 1
+        # Session ownership, including idle pools and unconfirmed stops, is
+        # capacity. Historical agent task pointers are not execution proof.
+        from src.orchestrator.agent_reconciler import project_live_session_counts
+
+        active_counts = project_live_session_counts(live_sessions)
 
         total_used = sum(project_usage.values())
 

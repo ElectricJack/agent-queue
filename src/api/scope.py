@@ -56,6 +56,9 @@ AGENT_COMMAND_SET: frozenset[str] = frozenset(
         "wait_get",
         "wait_list",
         "wait_cancel",
+        "wait_explain",
+        "wait_checkpoint",
+        "wait_ack",
         "cron_register",
         "cron_get",
         "cron_list",
@@ -78,6 +81,7 @@ AGENT_COMMAND_SET: frozenset[str] = frozenset(
         "message_status",
         "memory_save",
         "memory_search",
+        "read_file",
         # Knowledge records (K03). Project-pinned reads that the profile must
         # also grant a capability for; the record service is the independent
         # authorization gate. Retire/restore stay supervisor-only.
@@ -204,6 +208,7 @@ OPERATOR_INTEGRATION_CONTROLS = frozenset(
         "integration_release_withheld_source",
         "integration_pause_batch",
         "integration_resume_batch",
+        "integration_repair_target",
         "integration_seal_now",
         "integration_eject",
         "integration_refresh_epic",

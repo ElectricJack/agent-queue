@@ -188,7 +188,9 @@ def _carried_sources(repair_id, contracts):
 #: A repair in one of these is still being worked on (or will be).
 OPEN_REPAIR_STATUSES = frozenset({
     TaskStatus.DEFINED.value, TaskStatus.READY.value, TaskStatus.ASSIGNED.value,
-    TaskStatus.IN_PROGRESS.value, TaskStatus.WAITING_INPUT.value, TaskStatus.PAUSED.value,
+    TaskStatus.IN_PROGRESS.value, TaskStatus.WAITING_INPUT.value,
+    TaskStatus.WAITING.value, TaskStatus.HIBERNATED.value,
+    TaskStatus.RESUME_PENDING.value, TaskStatus.PAUSED.value,
 })
 #: Links followed through repairs of repairs.  The generation budget keeps a
 #: real chain at three; a longer one is a loop in the journal.

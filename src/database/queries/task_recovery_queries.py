@@ -10,6 +10,7 @@ import uuid
 
 from sqlalchemy import and_, delete, insert, or_, select, update
 
+from src.waits.sources import insert_message_with_source_event
 from src.database.queries.blocked_state import apply_label_filters, blocked_predicate
 from src.database.queries.task_queries import RECOVERY_FAILURE_AT_KEY, STALE_OPEN_ATTENTION
 from src.database.tables import (
@@ -1022,7 +1023,7 @@ class TaskRecoveryQueryMixin:
                 }
             body = _recovery_message_body(facts)
             now = time.time()
-            await conn.execute(
+            await insert_message_with_source_event(conn,
                 insert(messages).values(
                     id="msg-" + incident_id,
                     project_id=task["project_id"],
@@ -1214,9 +1215,9 @@ class TaskRecoveryQueryMixin:
             incident = meta.get(INCIDENT_KEY) or {}
             if (ask_decision_id and incident.get("id") == incident_id
                     and incident.get("ask_decision_id") == ask_decision_id):
-                return {"task_id": task_id, "incident_id": incident_id,
+                return {"task_id": task_id, "incident_id": incident_id, "replayed": True,
                         "decision": incident["decision"], "status": task["status"],
-                        "decision_id": ask_decision_id, "replayed": True}
+                        "decided_at": incident["decided_at"], "decision_id": ask_decision_id}
             if ask_decision_id:
                 from src.asks.models import digest
                 owner = await self._recovery_owner(conn, task)
@@ -1374,10 +1375,10 @@ class TaskRecoveryQueryMixin:
         elif decision == "release" and task["status"] == "READY":
             await self._notify_ready([(task_id, "recovery_hold_released")])
         return {
-            "task_id": task_id,
-            "incident_id": incident_id,
-            "decision": decision,
+            "task_id": task_id, "incident_id": incident_id, "decision": decision,
             "status": "READY" if decision == "retry" else task["status"],
+            # A later release must name this exact hold as expected_hold_at.
+            "decided_at": now,
         }
 
     async def _clear_stopped_recovery_assignment_on(

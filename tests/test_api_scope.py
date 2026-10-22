@@ -39,6 +39,9 @@ EXPECTED_AGENT_COMMANDS = {
     "wait_get",
     "wait_list",
     "wait_cancel",
+    "wait_explain",
+    "wait_checkpoint",
+    "wait_ack",
     # Recurring prompts derive their session owner and fence worker claims.
     "cron_register",
     "cron_get",
@@ -56,6 +59,7 @@ EXPECTED_AGENT_COMMANDS = {
     "message_status",
     "memory_save",
     "memory_search",
+    "read_file",
     # Knowledge records (K03): worker-safe reads and writes; retire/restore are
     # supervisor-only and remain out of the agent set.
     "knowledge_create",
@@ -181,7 +185,8 @@ class TestCheckCommandScope:
 
     def test_git_first_train_controls_are_operator_controls(self):
         assert {"integration_pause_batch", "integration_resume_batch", "integration_eject",
-                "integration_seal_now", "integration_record_root_noop"} <= OPERATOR_INTEGRATION_CONTROLS
+                "integration_seal_now", "integration_record_root_noop",
+                "integration_repair_target"} <= OPERATOR_INTEGRATION_CONTROLS
 
     def test_review_decision_commands_remain_outside_worker_scope(self):
         """Only a held dispatch task can comment; no worker may decide."""

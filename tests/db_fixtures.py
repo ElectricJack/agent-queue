@@ -225,6 +225,21 @@ BEGIN
 END $$;
 """
 
+#: A write the finished test cancelled can still be committing on the server:
+#: the client gave up, the backend did not.  Its row lands after the reset's
+#: DELETE took its snapshot, and survives it, while the sequence it drew from
+#: goes back to the start, so the next test collides with it on the primary key
+#: (``wait_source_events_pkey`` from a cancelled provider-availability probe).
+#: End every non-idle session on the database first and wait for each to go:
+#: an in-flight commit finishes or rolls back before the DELETE looks.  Idle
+#: connections hold no transaction and are left alone, as are autovacuum and
+#: other roles' backends, which this role may not signal.
+_END_BUSY_SESSIONS = """
+SELECT pg_terminate_backend(pid, 5000) FROM pg_stat_activity
+WHERE datname = current_database() AND pid <> pg_backend_pid() AND state <> 'idle'
+  AND backend_type = 'client backend' AND usename = current_user
+"""
+
 #: What ``RESTART IDENTITY`` did: every sequence a test drew from goes back to
 #: its start.  ``last_value`` is NULL until a sequence is first used.
 _RESTART_USED_SEQUENCES = """
@@ -314,6 +329,7 @@ async def reset_all(dsn: str) -> None:
 
     conn = await _connect_admin(dsn)
     try:
+        await conn.execute(_END_BUSY_SESSIONS)
         if _ROW_RESET is None:
             if await conn.fetchval(_HAS_CLEAR_STATS):
                 _ROW_RESET = True

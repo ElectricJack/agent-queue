@@ -219,6 +219,19 @@ The integration service observes the PR again before its fenced write. Sources:
 [src/integration/promotion_steps.py](../../src/integration/promotion_steps.py)
 (`StepPullRequestGate`, `PromotionPublisher`).
 
+One promotion task is open per project, repository and target ref. A chained
+flow legitimately holds one intent per step target. An intent that ends without
+delivery, through `promote cancel`, `aq integration abort` or a failed
+lifecycle, fails its task. A new request on that target fails, and reports in
+`superseded_task_ids`, any task an older aborted or failed intent left
+`IN_PROGRESS`, and integration cleanup repairs the rest. `aq doctor --check
+stall.sweep` reports any such task as `stranded_promotion_task` until then.
+Sources: `fail_stranded_promotion_tasks_on` in
+[src/integration/promotion_steps.py](../../src/integration/promotion_steps.py),
+[src/integration/batches.py](../../src/integration/batches.py) (`set_intent`),
+[src/integration/cleanup.py](../../src/integration/cleanup.py) (`reconcile_aborted`) and
+[src/doctor/stall_checks.py](../../src/doctor/stall_checks.py).
+
 The candidate is S itself. The target must be an ancestor of S; the lane creates
 no merge commit. After the checks and PR gate pass, it emits the step's
 attestation, fast-forwards the target with its expected old OID, and, when

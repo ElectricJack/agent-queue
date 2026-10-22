@@ -132,6 +132,14 @@ does not release integration ownership or resolve gates and dependencies.
 > and answered by exact `question_id` through `aq question`. For an explicit
 > one-way blocker notification, use `aq message send --to user:dashboard`.
 
+Worker file reads admit `read_file` through the shared command surface. In addition
+to registered repositories and workspaces belonging to the session's project,
+workers may read `vault/projects/<project_id>/plans/` and `specs/` through
+`aq file read`, using either an absolute path or a `projects/...` vault-relative
+path. Resolve traversal and symlinks against these document roots before reading;
+foreign projects, other vault areas and write access remain outside this grant.
+Project document reads do not depend on knowledge-record activation.
+
 ### 3.2 Human surface
 
 | Command | Args | Aud. | Output (`data`) |
@@ -594,6 +602,14 @@ path for network exposure is [trust-and-ops](trust-and-ops.md) scope, with a `re
 reserved here as the enforcement hook.
 
 ### 7.3 Elevated scopes, and the commands that carry no `project_id`
+
+Project supervisors with the `pool_status` capability may read pools serving their
+own project. An omitted `project_id` inherits their token's project; a foreign
+project is refused. The response filters project breakdowns, pool instances and
+sessions outside pools to that project, omitting pools with no standing there.
+Shared pool bounds and aggregate counters remain fleet-wide, as in the operator's
+filtered view. This read does not authorize pool mutations, ordinary workers or
+project-scoped playbooks. Global supervisors and local operators retain the full view.
 
 Two elevated scopes exist: `supervisor-global` (`project_id = None`, the global admin) and a
 per-project supervisor (`project_id = <its own>`). Both skip the agent-surface allowlist;

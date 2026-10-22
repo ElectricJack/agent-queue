@@ -64,5 +64,22 @@ nonblank reason. It is an operator/project-supervisor control and performs no
 target publication. Normal guarded post-delivery branch cleanup still runs.
 Recheck the target, frozen membership and whole-source proofs under
 the project hierarchy lock before normal batch settlement; refuse changed,
-partial, unknown, held, sync or promotion evidence. Record the operator
+partial, unknown, held or promotion evidence. Record the operator
 and reason in an event. Settlement remains idempotent and retains normal cleanup.
+
+The explicit settlement control also recovers a legacy epic-sync batch when
+every exact frozen source is proven on the designated repository's current
+default branch. Containment in the epic alone remains insufficient. Preview
+reports the default `target_ref` and observed SHA; apply requires that SHA
+and rechecks repository binding, frozen membership, intent, holds and Git
+freshness under the project and batch locks. Paused, aborted, partial and unknown
+inputs refuse settlement. Retain all membership, baseline, check, attempt and
+prior promotion history; record observed project delivery without publishing an
+epic or emitting its promotion-policy events. A promoted sync can replay the
+control to resume guarded cleanup, including after the epic ref disappeared.
+Cleanup independently proves all frozen inputs on the default branch before
+using it, retaining the usual owner, reachability and exact-tip guards.
+
+Train status reports `repair_open` only for the batch's current allocated
+ordinary repair. An unfinished older delegate remains historical evidence when
+a successor exists; its task status, holds and budgets are unchanged.

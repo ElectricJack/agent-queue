@@ -200,6 +200,7 @@ class SessionCommandsMixin:
             "claim_failure_reason": session.claim_failure_reason,
             "claim_failure_at": session.claim_failure_at,
             "failed_preparation": session.failed_preparation,
+            "supervisor_health": session.supervisor_health,
             "quarantined_at": session.quarantined_at,
             "sleep_reason": session.sleep_reason,
             "epoch": session.epoch,
@@ -212,8 +213,6 @@ class SessionCommandsMixin:
     async def _cmd_supervisor_restart(self, args: dict) -> dict:
         from src.messages.session_lens import SupervisorRestartError
 
-        if error := self._agent_settings_scope_error():
-            return {"success": False, "error": error}
         name = args.get("name", "supervisor-global")
         resume = args.get("resume", False)
         session_id = args.get("session_id")
@@ -223,10 +222,27 @@ class SessionCommandsMixin:
             return {"success": False, "error": "resume must be a boolean"}
         if session_id is not None and (not isinstance(session_id, str) or not session_id):
             return {"success": False, "error": "session_id must be a non-empty string"}
+        project_id = None if name == "supervisor-global" else name.removeprefix("supervisor-")
+        scope = self._current_scope or {}
+        if scope.get("kind") == "session" and (
+            not scope.get("elevated") or scope.get("project_id") not in (None, project_id)
+        ):
+            return {"success": False, "error": "out of scope: supervisor restart"}
+        from src.commands.supervisor_authority import operator_or_supervisor
+
+        _, error = await operator_or_supervisor(self.db, project_id, subject="supervisor restart")
+        if error:
+            return {"success": False, "error": f"out of scope: {error}"}
+        from src.commands.principal import PrincipalKind, current_principal, matches_session_instance
+
+        principal = current_principal()
+        if principal is not None and principal.kind is PrincipalKind.SESSION:
+            caller = await self.db.get_session(principal.session_id)
+            if caller is None or not matches_session_instance(principal, caller.instance_token):
+                return {"success": False, "error": "out of scope: stale supervisor identity"}
         lens = getattr(self.orchestrator, "session_lens", None)
         if lens is None:
             return {"success": False, "error": "Supervisor session service is unavailable"}
-        project_id = None if name == "supervisor-global" else name.removeprefix("supervisor-")
         try:
             session = await lens.restart_supervisor(
                 target_id=name, project_id=project_id, resume=resume,
@@ -1049,6 +1065,7 @@ class SessionCommandsMixin:
         in_flight = bool(task.assigned_agent_id) and task.status in (
             TaskStatus.ASSIGNED,
             TaskStatus.IN_PROGRESS,
+            TaskStatus.WAITING,
         )
         if not (live or locked or in_flight):
             return False
@@ -1138,6 +1155,13 @@ class SessionCommandsMixin:
         task = await self.db.get_task(str(task_id))
         if task is None:
             return {"success": False, "error": f"No task '{task_id}'"}
+        if task.status in (TaskStatus.WAITING, TaskStatus.HIBERNATED, TaskStatus.RESUME_PENDING):
+            return {
+                "success": False,
+                "code": "wait.ack_required",
+                "error": "A suspended task must acknowledge its wake before closing; "
+                "operators may use a one-shot close disposition.",
+            }
         # A crash may commit accepted repair bookkeeping before releasing its
         # original claim. The completion service revalidates its durable receipt
         # and exact held claim; this is not generic permission to re-close tasks.
@@ -1971,6 +1995,10 @@ class SessionCommandsMixin:
         if session is None:
             session = await self.db.get_session_for_task(str(task_id))
         if session is not None:
+            from src.waits.holding import active_wait_for
+
+            if await active_wait_for(self.db, session) is not None:
+                return {"success": True, "ignored": "wait_active"}
             await self.db.touch_session_activity(session.id, now)
         if task.assigned_agent_id:
             try:

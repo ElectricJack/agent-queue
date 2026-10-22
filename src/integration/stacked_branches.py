@@ -1400,6 +1400,14 @@ class EpicRefresh:
         batches = DatabaseBatches(self.db, clock=self.clock)
         current = await batches.current(target)
         if current is not None and not current.epic_refresh:
+            from src.database.queries.escalation_queries import OPEN_ESCALATION_STATES
+            from src.integration.repair import ordinary_repair_id
+            stuck = await self.db.get_escalation("escalation-" + ordinary_repair_id(current.id, 1))
+            if stuck and stuck["state"] in OPEN_ESCALATION_STATES:  # never queue behind it
+                raise ValueError(
+                    f"batch {current.id} cannot progress (escalation {stuck['id']}): run aq "
+                    f"integration abort-batch {current.id} --apply --reason REASON, then retry "
+                    f"aq integration refresh-epic --task {task_id} --apply")
             return {**result, "outcome": "pending", "dry_run": False, "batch_id": current.id}
         if current is None and not result["behind"]:
             return {**result, "outcome": "current", "dry_run": False}

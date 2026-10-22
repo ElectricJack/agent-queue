@@ -88,6 +88,7 @@ def test_every_worker_template_can_publish_and_shares_the_worker_grants(profile_
     assert parsed.frontmatter.template is True
     policy = CapabilityPolicy.from_namespaces(**parsed.capabilities)
     assert policy.allows_plugin_tool("git_push")
+    assert policy.allows_plugin_tool("read_file")
     assert policy.allows_plugin_tool("git_create_pr")
     assert parsed.capabilities == _parsed("worker-codex").capabilities
 
@@ -141,9 +142,12 @@ class TestShippedProfile:
         assert set(harness) <= HARNESS_TOOL_NAMES
 
     def test_every_aq_command_is_a_real_command(self, profile_id):
-        """No aspirational names: each one resolves to a dispatchable handler."""
+        """Every grant names a handler or an explicitly defined read scope."""
         parsed = _parsed(profile_id)
-        unknown = sorted(set(parsed.capabilities["aq_commands"]) - _builtin_command_names())
+        from src.profiles.capabilities import AQ_FEATURE_CAPABILITIES
+
+        unknown = sorted(set(parsed.capabilities["aq_commands"]) -
+                         (_builtin_command_names() | AQ_FEATURE_CAPABILITIES))
         assert unknown == []
 
     def test_policy_is_constructible_and_not_legacy(self, profile_id):
@@ -183,7 +187,9 @@ def test_supervisor_inbox_grants_exclude_internal_intake():
         "supervisor_inbox_status",
     } <= granted
     assert "supervisor_inbox_post" not in granted
-    assert granted <= _builtin_command_names()
+    from src.profiles.capabilities import AQ_FEATURE_CAPABILITIES
+
+    assert granted <= _builtin_command_names() | AQ_FEATURE_CAPABILITIES
 
 
 def test_supervisor_can_diagnose_and_repair_repository_checkouts():
