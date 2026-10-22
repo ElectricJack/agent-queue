@@ -1456,11 +1456,23 @@ class GitHubClient:
             if not isinstance(pr_head, dict) or pr_head.get("ref") != head:
                 continue
             matches.append(pull)
-        if not matches:
+        # An open request is the existing request.  Without one, merged or
+        # closed requests are history: a branch that already shipped earlier
+        # work may deliver more, so only a request for this exact delivery
+        # (same base and head commit) is reused or reopened.
+        current = [pull for pull in matches if pull.get("state") == "open"]
+        if not current:
+            current = [
+                pull for pull in matches
+                if pull["head"].get("sha") == head_oid
+                and isinstance(pull.get("base"), dict)
+                and pull["base"].get("ref") == base
+            ]
+        if not current:
             return None
-        if len(matches) != 1:
+        if len(current) != 1:
             raise GitHubAccessError("conflict_or_invalid", "PR head has multiple existing requests")
-        pull = matches[0]
+        pull = current[0]
         pr_head = pull["head"]
         pr_base = pull.get("base")
         head_repo = pr_head.get("repo")
