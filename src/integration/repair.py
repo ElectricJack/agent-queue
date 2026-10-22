@@ -1559,16 +1559,7 @@ class RepairService:
                 elif previous["result_action"] == "stage_opened":
                     value["stage"] = int(previous["ordinal"])
                 return value
-            stage = (
-                await conn.execute(
-                    select(integration_repair_stages)
-                    .where(
-                        integration_repair_stages.c.operation_id == operation_id,
-                        integration_repair_stages.c.ordinal == operation["active_stage"],
-                    )
-                    .with_for_update()
-                )
-            ).mappings().one_or_none()
+            stage = await self._locked_stage_on(conn, operation_id, operation["active_stage"])
             if (
                 operation["state"] == "human_required"
                 and stage is not None
@@ -2371,10 +2362,7 @@ class RepairService:
             operation = (await conn.execute(select(integration_repair_operations).where(
                 integration_repair_operations.c.id == operation_id
             ).with_for_update())).mappings().one()
-            stage = (await conn.execute(select(integration_repair_stages).where(
-                integration_repair_stages.c.operation_id == operation_id,
-                integration_repair_stages.c.ordinal == operation["active_stage"],
-            ).with_for_update())).mappings().one_or_none()
+            stage = await self._locked_stage_on(conn, operation_id, operation["active_stage"])
             if stage is None or (expected_subject is not None and stage["current_subject"] != expected_subject):
                 return {"outcome": "stale"}
             if (stage["dossier"] or {}).get("green_subject_verification") and stage["state"] in {
@@ -2680,10 +2668,7 @@ class RepairService:
                 operation = (await conn.execute(select(integration_repair_operations).where(
                     integration_repair_operations.c.id == operation_id,
                 ).with_for_update())).mappings().one()
-                current = (await conn.execute(select(integration_repair_stages).where(
-                    integration_repair_stages.c.operation_id == operation_id,
-                    integration_repair_stages.c.ordinal == operation["active_stage"],
-                ).with_for_update())).mappings().one_or_none()
+                current = await self._locked_stage_on(conn, operation_id, operation["active_stage"])
                 if current is not None and await self._settle_green_delegate_on(
                     conn, dict(operation), dict(current), now=self.clock()
                 ):
@@ -3318,16 +3303,7 @@ class RepairService:
                     .with_for_update()
                 )
             ).mappings().one_or_none()
-            row = (
-                await conn.execute(
-                    select(integration_repair_stages)
-                    .where(
-                        integration_repair_stages.c.operation_id == operation_id,
-                        integration_repair_stages.c.ordinal == stage,
-                    )
-                    .with_for_update()
-                )
-            ).mappings().one_or_none()
+            row = await self._locked_stage_on(conn, operation_id, stage)
             if operation is None or row is None:
                 return self._timeout_value("stale", "ignore", operation_id, stage)
             if row["state"] in {"failed", "expired"}:
@@ -3623,6 +3599,17 @@ class RepairService:
         return verdict("stopped", "writer_stopped")
 
     @staticmethod
+    async def _locked_stage_on(conn, operation_id: str, ordinal: int, *, required: bool = False):
+        """Lock one stage after the caller acquires its operation's lock."""
+        rows = (await conn.execute(
+            select(integration_repair_stages).where(
+                integration_repair_stages.c.operation_id == operation_id,
+                integration_repair_stages.c.ordinal == ordinal,
+            ).with_for_update()
+        )).mappings()
+        return rows.one() if required else rows.one_or_none()
+
+    @staticmethod
     async def _stage_rows_on(conn, operation_id: str) -> list[dict[str, Any]]:
         return [dict(row) for row in (await conn.execute(
             select(integration_repair_stages)
@@ -3683,14 +3670,7 @@ class RepairService:
             .where(integration_repair_operations.c.id == operation_id)
             .with_for_update()
         )).mappings().one_or_none()
-        row = (await conn.execute(
-            select(integration_repair_stages)
-            .where(
-                integration_repair_stages.c.operation_id == operation_id,
-                integration_repair_stages.c.ordinal == stage,
-            )
-            .with_for_update()
-        )).mappings().one_or_none()
+        row = await self._locked_stage_on(conn, operation_id, stage)
         if (
             operation is None
             or row is None
@@ -3923,20 +3903,7 @@ class RepairService:
                 .mappings()
                 .one_or_none()
             )
-            row = (
-                (
-                    await conn.execute(
-                        select(integration_repair_stages)
-                        .where(
-                            integration_repair_stages.c.operation_id == found["operation_id"],
-                            integration_repair_stages.c.ordinal == found["ordinal"],
-                        )
-                        .with_for_update()
-                    )
-                )
-                .mappings()
-                .one_or_none()
-            )
+            row = await self._locked_stage_on(conn, found["operation_id"], found["ordinal"])
             if (
                 operation is None
                 or row is None
@@ -4038,20 +4005,7 @@ class RepairService:
             or operation["state"] not in {"active", "escalated"}
         ):
             return {"deferred": False, "reason": "operation_not_current"}
-        row = (
-            (
-                await conn.execute(
-                    select(integration_repair_stages)
-                    .where(
-                        integration_repair_stages.c.operation_id == operation_id,
-                        integration_repair_stages.c.ordinal == operation["active_stage"],
-                    )
-                    .with_for_update()
-                )
-            )
-            .mappings()
-            .one_or_none()
-        )
+        row = await self._locked_stage_on(conn, operation_id, operation["active_stage"])
         if (
             row is None
             or row["state"] != "active"
@@ -4383,10 +4337,7 @@ class RepairService:
             ).with_for_update())).mappings().one_or_none()
             stage = None
             if operation is not None:
-                stage = (await conn.execute(select(integration_repair_stages).where(
-                    integration_repair_stages.c.operation_id == operation_id,
-                    integration_repair_stages.c.ordinal == operation["active_stage"],
-                ).with_for_update())).mappings().one_or_none()
+                stage = await self._locked_stage_on(conn, operation_id, operation["active_stage"])
             if (
                 operation is None
                 or candidate is None
@@ -4510,10 +4461,7 @@ class RepairService:
             integration_candidate_revisions.c.batch_id == batch["id"],
             integration_candidate_revisions.c.revision == batch["current_revision"],
         ).with_for_update())).mappings().one_or_none()
-        stage = (await conn.execute(select(integration_repair_stages).where(
-            integration_repair_stages.c.operation_id == operation["id"],
-            integration_repair_stages.c.ordinal == operation["active_stage"],
-        ).with_for_update())).mappings().one_or_none()
+        stage = await self._locked_stage_on(conn, operation["id"], operation["active_stage"])
         if revision is None or stage is None:
             return None
         subject = self._batch_subject(revision)
@@ -4670,19 +4618,8 @@ class RepairService:
         if operation["target_kind"] != "batch" or operation["state"] not in {"active", "escalated"}:
             raise ValueError("batch repair operation is not active")
         batch, revision = await self._current_batch_subject_rows_on(conn, operation)
-        stage = (
-            (
-                await conn.execute(
-                    select(integration_repair_stages)
-                    .where(
-                        integration_repair_stages.c.operation_id == operation_id,
-                        integration_repair_stages.c.ordinal == operation["active_stage"],
-                    )
-                    .with_for_update()
-                )
-            )
-            .mappings()
-            .one()
+        stage = await self._locked_stage_on(
+            conn, operation_id, operation["active_stage"], required=True
         )
         if stage["state"] not in {"active", "awaiting_completion"}:
             raise ValueError("batch repair stage is no longer active")
@@ -4852,16 +4789,7 @@ class RepairService:
         ):
             raise ValueError("batch repair operation is not active")
         batch, revision = await self._current_batch_subject_rows_on(conn, operation)
-        stage = (
-            await conn.execute(
-                select(integration_repair_stages)
-                .where(
-                    integration_repair_stages.c.operation_id == operation_id,
-                    integration_repair_stages.c.ordinal == operation["active_stage"],
-                )
-                .with_for_update()
-            )
-        ).mappings().one_or_none()
+        stage = await self._locked_stage_on(conn, operation_id, operation["active_stage"])
         if stage is None or stage["state"] not in {"active", "awaiting_completion"}:
             raise ValueError("batch repair stage is not current")
         subject = self._batch_subject(revision)
@@ -4921,16 +4849,7 @@ class RepairService:
         ):
             return {"outcome": "stale"}
         batch, revision = await self._current_batch_subject_rows_on(conn, operation)
-        stage = (
-            await conn.execute(
-                select(integration_repair_stages)
-                .where(
-                    integration_repair_stages.c.operation_id == operation_id,
-                    integration_repair_stages.c.ordinal == operation["active_stage"],
-                )
-                .with_for_update()
-            )
-        ).mappings().one_or_none()
+        stage = await self._locked_stage_on(conn, operation_id, operation["active_stage"])
         owner = (
             await conn.execute(
                 select(integration_branch_owners)
@@ -5148,16 +5067,7 @@ class RepairService:
         ).mappings().one_or_none()
         if checkpoint is None or checkpoint["episode_id"] != operation["episode_id"]:
             raise ValueError("parent repair checkpoint identity conflicts")
-        stage = (
-            await conn.execute(
-                select(integration_repair_stages)
-                .where(
-                    integration_repair_stages.c.operation_id == operation_id,
-                    integration_repair_stages.c.ordinal == operation["active_stage"],
-                )
-                .with_for_update()
-            )
-        ).mappings().one_or_none()
+        stage = await self._locked_stage_on(conn, operation_id, operation["active_stage"])
         if stage is None or stage["state"] not in {"active", "awaiting_completion"}:
             raise ValueError("parent repair stage is not current")
         subject = {
@@ -5392,16 +5302,7 @@ class RepairService:
                 .with_for_update()
             )
         ).mappings().one_or_none()
-        repair_stage = (
-            await conn.execute(
-                select(integration_repair_stages)
-                .where(
-                    integration_repair_stages.c.operation_id == operation_id,
-                    integration_repair_stages.c.ordinal == stage,
-                )
-                .with_for_update()
-            )
-        ).mappings().one_or_none()
+        repair_stage = await self._locked_stage_on(conn, operation_id, stage)
         if (
             operation is None
             or repair_stage is None
