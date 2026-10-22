@@ -743,8 +743,7 @@ class StackedBranches:
             raise StackPreparationChanged("prerequisite source has an explicit hold or rejection")
         currentness = await view.currentness()
         if currentness.state == "unavailable":
-            # Unknown delivery cannot veto a worker. Supply no automatic overlay;
-            # the agent can merge prerequisites using Git after normal preparation.
+            # Unknown delivery cannot veto a worker: no overlay; the agent merges via Git.
             return None
         if not currentness.current:
             raise StackPreparationChanged("prerequisite stack changed during preparation")

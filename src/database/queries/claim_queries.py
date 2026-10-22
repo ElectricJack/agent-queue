@@ -732,17 +732,18 @@ class ClaimQueryMixin:
     async def claim_frontier_exclusions_many(
         self, task_ids, *, router_ready=None, cached_only=False,
         hierarchy_modes=None, project_ids=None, single_task_id=None, router_ready_projects=None,
-        display_unavailable=None,
     ) -> dict[str, list[dict]]:
-        """Batch the same predicate evaluation used by explain; never fetch Git for display."""
+        """Batch the same predicate evaluation used by explain; never fetch Git for display.
+
+        Unloaded Git evidence is admissible, so it never appears as an exclusion;
+        only proven-missing or unprovable delivery is reported.
+        """
         if not task_ids:
             return {}
-        from src.integration.delivery_observer import hierarchy_frontier_modes, prerequisite_observer
+        from src.integration.delivery_observer import hierarchy_frontier_modes
 
-        unavailable = display_unavailable if display_unavailable is not None else {}
         modes = hierarchy_modes if hierarchy_modes is not None else await hierarchy_frontier_modes(
             self, project_ids=project_ids, task_id=single_task_id, cached_only=cached_only,
-            **({"display_unavailable": unavailable} if cached_only else {}),
         )
         predicates = claim_frontier_predicates(modes)
         if router_ready_projects is not None:
@@ -752,34 +753,11 @@ class ClaimQueryMixin:
             )
         elif router_ready is not None:
             predicates["route_not_claimable"] = route_claimable(router_ready)
-        display_predicates = {}
-        if unavailable:
-            from dataclasses import replace
-
-            # These counterfactual predicates classify diagnostic uncertainty
-            # only. The actual modes also admit unknown ancestry for preparation.
-            display_modes = {
-                pid: replace(
-                    mode,
-                    delivered_prerequisite_ids=(mode.delivered_prerequisite_ids or frozenset())
-                    | unavailable.get(pid, {}).get("siblings", frozenset()),
-                    default_prerequisite_ids=mode.default_prerequisite_ids
-                    | unavailable.get(pid, {}).get("default", frozenset()),
-                ) for pid, mode in modes.items()
-            }
-            display_predicates = {
-                name: predicate for name, predicate in claim_frontier_predicates(display_modes).items()
-                if name in {
-                    "sibling_prerequisite_not_delivered", "prerequisite_not_on_default_branch",
-                }
-            }
         async with self._engine.connect() as conn:
             rows = (await conn.execute(
                 select(
                     tasks.c.id, tasks.c.project_id, tasks.c.held_batch_id,
                     *(predicate.label(name) for name, predicate in predicates.items()),
-                    *(predicate.label("display_" + name)
-                      for name, predicate in display_predicates.items()),
                 )
                 .where(tasks.c.id.in_(task_ids), tasks.c.status == TaskStatus.READY.value)
              )).mappings().all()
@@ -813,23 +791,11 @@ class ClaimQueryMixin:
         result = {}
         for row in rows:
             task_id = row["id"]
-            mode = modes.get(row["project_id"])
-            unknown_delivery = (prerequisite_observer(self) is None
-                                or bool(mode and mode.observation_unavailable))
             exclusions = [
                 {
-                    "code": ("delivery_evidence_unavailable"
-                             if (name in display_predicates and row["display_" + name])
-                             or (unknown_delivery and name in {
-                                 "sibling_prerequisite_not_delivered", "prerequisite_not_on_default_branch",
-                             }) else f"frontier_{name}"),
+                    "code": f"frontier_{name}",
                     "detail": (
-                        "Delivery evidence has not loaded yet; claim frontier eligibility "
-                        f"for {name} is unknown (snapshot_unavailable)"
-                        if (name in display_predicates and row["display_" + name])
-                        or (unknown_delivery and name in {
-                            "sibling_prerequisite_not_delivered", "prerequisite_not_on_default_branch",
-                        }) else "Pool claim frontier excludes this READY task: "
+                        "Pool claim frontier excludes this READY task: "
                         + FRONTIER_PREDICATE_DETAILS[name].format(batch_id=row["held_batch_id"])
                     ),
                     "ref": task_id,
@@ -845,19 +811,21 @@ class ClaimQueryMixin:
                         exclusion["detail"] += "; blocking epic-refresh batch: " + ", ".join(batches)
             if not row["prerequisite_not_on_default_branch"]:
                 mode = modes.get(row["project_id"])
-                sources = cross_sources.get(task_id, [])
-                missing = set().union(*(entry["default"] for entry in unavailable.values()))
-                exclusions.extend({
-                    "code": ("delivery_evidence_unavailable" if unknown_delivery or tid in missing
-                             else "prerequisite_not_on_default_branch"),
-                    "ref": tid, "epic_id": parent,
-                    "detail": (f"Prerequisite {tid}: delivery evidence has not loaded yet; "
-                               "default-branch delivery is unknown (snapshot_unavailable)"
-                               if unknown_delivery or tid in missing
-                               else f"Prerequisite {tid} (epic {parent or tid}) "
-                               "is not proven on the default branch"),
-                    }
-                    for tid, parent in sources if mode is None or tid not in mode.default_prerequisite_ids)
+                # Unloaded default-branch evidence is admissible; only sources Git
+                # has answered negatively, or cannot prove, are named here.
+                admitted = frozenset() if mode is None else (
+                    mode.default_prerequisite_ids | mode.unknown_default_prerequisite_ids
+                )
+                for tid, parent in cross_sources.get(task_id, []):
+                    if tid in admitted:
+                        continue
+                    exclusions.append({
+                        "code": "prerequisite_not_on_default_branch",
+                        "ref": tid,
+                        "epic_id": parent,
+                        "detail": f"Prerequisite {tid} (epic {parent or tid}) "
+                                  "is not proven on the default branch",
+                    })
             if cached_only:
                 for exclusion in exclusions:
                     if exclusion["code"] in {

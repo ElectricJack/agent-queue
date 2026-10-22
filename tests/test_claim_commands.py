@@ -6092,7 +6092,8 @@ async def test_cross_epic_no_change_readiness_demand_explain_and_claim_agree(
         db=db, git=handler.orchestrator.git, bus=handler.orchestrator.bus,
         config=handler.config.worktrees, git_mutex=handler.orchestrator._git_mutex,
     ))
-    allowed = completion_kind in {"no_change", "contained_empty", "missing"}
+    # A completion without retained provenance is unprovable, not unloaded.
+    allowed = completion_kind in {"no_change", "contained_empty"}
     assert await db.is_hierarchy_task_runnable("dependent") is allowed
     assert ("dependent" in await db.hierarchy_runnable_task_ids(["dependent"])) is allowed
     assert await db.count_ready_by_profile(PROJECT_ID) == ({"worker": 1} if allowed else {})
@@ -6802,8 +6803,8 @@ async def test_development_preparation_invalidates_old_admission(
         side_effect=reset
     )
     result = await settled_claim(scoped(handler, sid), {"next": True})
-    if movement in {"completion", "config"}:
-        # The changed source/target invalidates attempt one. Its new unknown
+    if movement == "config":
+        # The changed target invalidates attempt one. Its new unloaded
         # observation may authorize a fresh preparation, never the old attempt.
         if result["result"] == "no_ready_work":
             assert resets == 1

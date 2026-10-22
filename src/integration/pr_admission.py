@@ -339,7 +339,6 @@ async def observe_pr_admission(db, ids, service, *, default_mode, cached_only=Fa
     batch.source_projects = fence["projects"]
     batch.source_repos = fence["repos"]
     proofs = {}
-    rejected = set()
     for source_id, (row, repo, url, completion) in sources.items():
         proof = None
         try:
@@ -349,11 +348,9 @@ async def observe_pr_admission(db, ids, service, *, default_mode, cached_only=Fa
             binding = await service.git.bind_github_repository(url)
             from src.git.github import GitHubAccess
 
-            try:
-                GitHubAccess.validate_pr_url(binding, row["pr_url"])
-            except ValueError:
-                rejected.add(source_id)
-                raise
+            proof = False  # False is a negative answer: a foreign PR withholds.
+            GitHubAccess.validate_pr_url(binding, row["pr_url"])
+            proof = None
             client = service.git._github_client(binding)
             pull = await client.pull_request(row["pr_url"])
             state, merged, head, branch, base, merge_oid, repository = _identity(pull)
@@ -369,7 +366,7 @@ async def observe_pr_admission(db, ids, service, *, default_mode, cached_only=Fa
                 and completion.commits
                 and completion.commits[-1] != head
             ):
-                rejected.add(source_id)
+                proof = False
                 raise ValueError("PR does not identify the current completed source")
             snapshot = await service.delivery_observer.snapshot(
                 DeliveryTarget(
@@ -389,7 +386,7 @@ async def observe_pr_admission(db, ids, service, *, default_mode, cached_only=Fa
             source_ref = "refs/remotes/origin/" + branch
             source_head = observation.source_heads.get(source_ref)
             if source_head != head and (source_head is not None or not merged):
-                rejected.add(source_id)
+                proof = False
                 raise ValueError("repository source branch no longer matches the PR head")
             if source_head is not None:
                 batch.snapshots.append(
@@ -413,7 +410,7 @@ async def observe_pr_admission(db, ids, service, *, default_mode, cached_only=Fa
     for task_id, deps in required.items():
         for source_id in sorted(deps):
             proof = proofs[source_id]
-            if proof is None and source_id not in rejected:
+            if proof is None:
                 continue
             satisfied = False
             if proof:

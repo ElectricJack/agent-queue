@@ -365,9 +365,13 @@ class ProjectIntegrationMode:
     integration_repository_id: str | None
     # Admission distinguishes unknown observations from proven missing ancestry.
     delivered_prerequisite_ids: frozenset[str] = frozenset()
+    #: No Git view loaded for the project: every delivery predicate admits.
     observation_unavailable: bool = False
+    #: Sources whose Git delivery is unloaded rather than unprovable. They never
+    #: withhold a dependent: it prepares from its origin and merges them itself.
     unknown_prerequisite_ids: frozenset[str] = frozenset()
     unknown_default_prerequisite_ids: frozenset[str] = frozenset()
+    #: Cross-epic dependents whose epic containment is unknown, never disproven.
     unknown_parent_task_ids: frozenset[str] = frozenset()
     cross_epic_prerequisites: str = "default_branch"
     default_prerequisite_ids: frozenset[str] = frozenset()
@@ -655,10 +659,12 @@ def _delivered_same_parent_prerequisites(mode: ProjectIntegrationMode | None = N
     prerequisite = tasks.alias("hierarchy_prerequisite_task")
     parent = tasks.alias("hierarchy_prerequisite_parent")
     origin = task_branch_origins.alias("hierarchy_prerequisite_origin")
-    delivered = (
-        true() if mode is None or mode.observation_unavailable else
-        prerequisite.c.id.in_(mode.delivered_prerequisite_ids | mode.unknown_prerequisite_ids)
-    )
+    if mode is None or mode.observation_unavailable:
+        delivered = true()  # Unobserved delivery never withholds preparation.
+    else:
+        delivered = prerequisite.c.id.in_(
+            mode.delivered_prerequisite_ids | mode.unknown_prerequisite_ids
+        )
     if mode is not None and mode.stacked:
         delivered = or_(delivered, prerequisite.c.id.in_(mode.stackable_prerequisite_ids))
     prerequisite_is_undelivered = exists(
@@ -781,14 +787,14 @@ def cross_parent_prerequisites_on_default(mode: ProjectIntegrationMode | None = 
     Epic containment and refresh batches have their own frontier predicate.
     With no observation, preparation proceeds without asserting delivery.
     """
+    if mode is None or mode.observation_unavailable:
+        return true()
     source, cross_edge = _cross_parent_prerequisites()
-    ids = (mode.default_prerequisite_ids | mode.unknown_default_prerequisite_ids
-           if mode else frozenset())
-    if mode is not None and mode.stacked:
+    # Unloaded default-branch evidence counts with proven delivery; neither withholds.
+    ids = mode.default_prerequisite_ids | mode.unknown_default_prerequisite_ids
+    if mode.stacked:
         ids |= mode.stackable_prerequisite_ids
     unproven = ~(source.c.id == any_(literal(list(ids), type_=ARRAY(Text)))) if ids else true()
-    if mode is None or mode.observation_unavailable:
-        unproven = false()
     return ~(_cross_parent_delivery_enabled(mode) & exists(cross_edge.where(unproven)))
 
 
@@ -823,6 +829,7 @@ def epic_refresh_ready(mode: ProjectIntegrationMode | None = None):
     ))
     ids = mode.parent_contained_task_ids | mode.unknown_parent_task_ids if mode else ()
     contained = tasks.c.id == any_(literal(sorted(ids), type_=ARRAY(Text))) if ids else false()
+    # Unobserved containment cannot veto; only a proven-stale epic waits for refresh.
     if mode is None or mode.observation_unavailable:
         contained = true()
     pending = exists(open_epic_refresh_batches()) | (has_epic & ~contained)
@@ -943,7 +950,6 @@ class HierarchyQueryMixin:
         dependency = task_dependencies.alias("delivery_head_dependency")
         prerequisite = tasks.alias("delivery_head_prerequisite")
         from src.integration.delivery_observer import prerequisite_observer
-        from src.integration.delivery_truth import DeliveryState
         from src.git.manager import GitError
 
         observer = prerequisite_observer(self)
@@ -954,6 +960,7 @@ class HierarchyQueryMixin:
             try:
                 view = await observer.prerequisite_view(task.project_id, task_id=task_id)
             except (TimeoutError, GitError, OSError):
+                # An unloaded view supplies no overlay; the agent merges with Git.
                 return None
             if not await view.fresh():
                 raise ValueError("hierarchy prerequisite target moved during preparation")
@@ -963,19 +970,16 @@ class HierarchyQueryMixin:
                 ))).mappings().one_or_none()
                 if current is None or current["parent_task_id"] != task.parent_task_id:
                     raise ValueError("hierarchy prerequisite parent changed during preparation")
-                sources = (await conn.execute(select(
-                    prerequisite.c.id, prerequisite.c.status,
-                ).select_from(
+                status = dict((await conn.execute(select(
+                    prerequisite.c.id, prerequisite.c.status).select_from(
                     dependency.join(prerequisite,
                                     prerequisite.c.id == dependency.c.depends_on_task_id),
                 ).where(
                     dependency.c.task_id == task_id,
                     dependency.c.dep_type == DepType.BLOCKS.value,
                     prerequisite.c.parent_task_id == current["parent_task_id"],
-                ))).all()
-                if any(source.status != "COMPLETED" for source in sources):
-                    raise ValueError("hierarchy prerequisite delivery is not current")
-                ids = {source.id for source in sources}
+                ))).all())
+                ids = set(status)
                 if not ids:
                     return None
                 verified = await view.verified_on(conn, ids)
@@ -993,16 +997,14 @@ class HierarchyQueryMixin:
                     or origin["parent_ref"].removeprefix("refs/heads/")
                     != parent_branch.removeprefix("refs/heads/")):
                     raise ValueError("hierarchy prerequisite origin changed during preparation")
-                unknown = False
-                for tid in ids:
+                # Unknown proof supplies no overlay; an open or negative source refuses.
+                unknown = {
+                    tid for tid in ids if status[tid] == "COMPLETED" and (
+                        verified[tid].unloaded if tid in verified else tid not in view.evidence)
+                }
+                for tid in ids - unknown:
                     proof = verified.get(tid)
                     target = view.targets.get(tid)
-                    if proof is None and tid not in view.evidence:
-                        unknown = True
-                        continue
-                    if proof is not None and proof.state is DeliveryState.UNKNOWN:
-                        unknown = True
-                        continue
                     if (proof is None or not proof.satisfied or target is None
                         or target.repository_id != current["repo_id"]
                         or target.target_ref != "refs/heads/" + parent_branch.removeprefix(

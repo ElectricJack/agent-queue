@@ -399,7 +399,6 @@ class PrerequisiteView:
 
     async def mode(self, mode, *, conn=None):
         from dataclasses import replace
-        from src.integration.delivery_truth import DeliveryState
 
         siblings, default = self.siblings.evidence, self.default.evidence
         if conn is not None:
@@ -420,18 +419,12 @@ class PrerequisiteView:
                 .where(tasks.c.id.in_(self.parent_refs)))).all())
         return replace(mode,
             observation_unavailable=False,
-            unknown_prerequisite_ids=frozenset(
-                tid for tid, proof in siblings.items() if proof.state is DeliveryState.UNKNOWN
-            ),
-            unknown_default_prerequisite_ids=frozenset(
-                tid for tid, proof in default.items() if proof.state is DeliveryState.UNKNOWN
-            ),
+            unknown_prerequisite_ids=frozenset(t for t, p in siblings.items() if p.unloaded),
+            unknown_default_prerequisite_ids=frozenset(t for t, p in default.items() if p.unloaded),
             unknown_parent_task_ids=frozenset(
                 dependent for dependent, sources in self.parent_containment.items()
-                if sources and all(contained is not False for contained in sources.values())
-                and (any(contained is None for contained in sources.values())
-                     or self.parent_refs.get(dependent) in stale_parents)
-            ),
+                if sources and False not in sources.values() and (
+                    None in sources.values() or self.parent_refs.get(dependent) in stale_parents)),
             # These sets release obligation gates; parent containment below still
             # requires actual proof and cannot borrow a retired obligation.
             delivered_prerequisite_ids=frozenset(tid for tid, p in siblings.items() if p.satisfied)
@@ -471,16 +464,14 @@ def prerequisite_observer(db):
 
 
 async def hierarchy_frontier_modes(
-    db, *, project_ids=None, task_id=None, cached_only=False, display_unavailable=None,
-    views=None, stack_views=None,
-    max_age=None, conn=None,
+    db, *, project_ids=None, task_id=None, cached_only=False,
+    views=None, stack_views=None, max_age=None, conn=None,
 ):
     """Share revalidated Git prerequisites across scheduler, pool and claim reads.
 
     Advisory reads reuse successful snapshots within READ_MAX_AGE and recheck target
-    freshness. Claims take fresh views under task locks. cached_only diagnostics
-    never fetch or check remote refs; display_unavailable records cache misses.
-    Missing observations allow preparation; proven missing ancestry withholds work.
+    freshness. Claims take fresh views under task locks. cached_only diagnostics never
+    fetch remote refs. Missing observations allow preparation; missing ancestry withholds.
     """
     from dataclasses import replace
 
@@ -514,16 +505,12 @@ async def hierarchy_frontier_modes(
         try:
             modes[project.id] = await asyncio.wait_for(_project_frontier_mode(
                 db, observer, project, mode, task_id=task_id, cached_only=cached_only,
-                display_unavailable=display_unavailable,
-                views=views, stack_views=stack_views,
-                max_age=max_age, conn=conn,
+                views=views, stack_views=stack_views, max_age=max_age, conn=conn,
             ), timeout)
         except TimeoutError:
             # An unloaded view cannot veto preparation or hold the scheduler.
-            if views is not None:
-                views.pop(project.id, None)
-            if stack_views is not None:
-                stack_views.pop(project.id, None)
+            (views or {}).pop(project.id, None)
+            (stack_views or {}).pop(project.id, None)
             logger.warning(
                 "hierarchy frontier for %s%s exceeded %.0fs; allowing Git preparation",
                 project.id, f" task {task_id}" if task_id else "", timeout,
@@ -543,9 +530,8 @@ FRONTIER_DISPLAY_TIMEOUT_SECONDS = 10.0
 
 
 async def _project_frontier_mode(
-    db, observer, project, mode, *, task_id, cached_only, display_unavailable=None,
-    views=None, stack_views=None,
-    max_age=None, conn=None,
+    db, observer, project, mode, *, task_id, cached_only,
+    views=None, stack_views=None, max_age=None, conn=None,
 ):
     from dataclasses import replace
 
@@ -554,25 +540,12 @@ async def _project_frontier_mode(
         max_age=observer.READ_MAX_AGE if max_age is None else max_age,
         **({"cached_only": True} if cached_only else {}),
     )
-    if cached_only:
-        if display_unavailable is not None:
-            unavailable = {
-                kind: frozenset(tid for tid, proof in delivery.evidence.items()
-                                if proof.reason == "snapshot_unavailable")
-                for kind, delivery in (("siblings", view.siblings), ("default", view.default))
-            }
-            if any(unavailable.values()):
-                display_unavailable[project.id] = unavailable
-    else:
-        fresh = await view.fresh()
-        if not fresh and not any(
-            snapshot._freshness.get(snapshot.target_ref) is False
-            for delivery in (view.siblings, view.default)
-            for snapshot in delivery.snapshots
-        ):
-            # An observer may fail before identifying the moving target.
-            # Without a target-specific result delivery remains unknown.
-            return replace(mode, observation_unavailable=True)
+    if not cached_only and not await view.fresh() and not any(
+        snapshot._freshness.get(snapshot.target_ref) is False
+        for delivery in (view.siblings, view.default) for snapshot in delivery.snapshots
+    ):
+        # Without a target-specific freshness result, delivery remains unknown.
+        return replace(mode, observation_unavailable=True)
     if views is not None:
         views[project.id] = view
     # fresh() marks each target independently. verified_on discards only the

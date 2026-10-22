@@ -30,7 +30,6 @@ from src.git.manager import GitError
 from src.integration.delivery_truth import (
     SETTLEMENT_KEY,
     DeliveryRequest,
-    DeliveryState,
     settlement_fields,
 )
 from src.integration.delivery_observer import DeliveryTarget
@@ -438,8 +437,7 @@ class AdmissionSnapshot:
             fresh = all([await view.fresh() for view in self.hierarchy_views.values()])
             if not fresh and (task_id is None or not await self.matches(task_id=task_id)):
                 return False
-            if any([(await view.currentness()).state == "changed"
-                    for view in self.stack_views.values()]):
+            if any([(await v.currentness()).state == "changed" for v in self.stack_views.values()]):
                 return False
         return all(
             [
@@ -510,11 +508,8 @@ class AdmissionSnapshot:
                     after & ids if ids is not None else after
                 ):
                     return False
-            if task_id and ((task_id in mode.parent_contained_task_ids)
-                            != (task_id in current_mode.parent_contained_task_ids)):
-                return False
-            if task_id and ((task_id in mode.unknown_parent_task_ids)
-                            != (task_id in current_mode.unknown_parent_task_ids)):
+            if task_id and any((task_id in getattr(mode, n)) != (task_id in getattr(current_mode, n))
+                               for n in ("parent_contained_task_ids", "unknown_parent_task_ids")):
                 return False
         for pid, view in self.stack_views.items():
             verified = frozenset(await view.verified_on(conn))
@@ -544,12 +539,8 @@ class AdmissionSnapshot:
         dependents = {task_id} if task_id else self.allowed
         required = set().union(*(self.delivery_required.get(tid, set()) for tid in dependents))
         verified = await self.delivery_view.verified_on(conn, required)
-        return all(
-            (tid not in self.delivery_view.evidence or tid in verified)
-            and (tid not in verified or verified[tid].satisfied
-                 or verified[tid].state is DeliveryState.UNKNOWN)
-            for tid in required
-        )
+        return all(verified[t].satisfied or verified[t].unloaded if t in verified
+                   else t not in self.delivery_view.evidence for t in required)
 
 
 async def _observe_sources(
@@ -580,14 +571,12 @@ async def _observe_sources(
         for r in requests.values()
         if r.task_status == "COMPLETED" and r.task_id not in obsolete
     }
+    observer = getattr(service, "delivery_observer", None)
     for project_id, repo_id, target in sorted(scopes):
         repo = repo_rows.get(repo_id)
-        if not repo or repo["project_id"] != project_id:
+        if not repo or repo["project_id"] != project_id or observer is None:
             continue  # No observation: workspace preparation resolves the source.
         try:
-            observer = getattr(service, "delivery_observer", None)
-            if observer is None:
-                continue
             snapshot = await observer.snapshot(
                 DeliveryTarget(project_id, repo_id, repo["url"], target),
                 **({"max_age": observer.READ_MAX_AGE, "cached_only": True}
@@ -610,19 +599,15 @@ async def _observe_sources(
             if dep_id in obsolete or request is None:
                 continue  # Non-development dependencies use the graph predicate.
             proof = evidence.get(dep_id)
-            if request.task_status == "COMPLETED" and (
-                proof is None or proof.state is DeliveryState.UNKNOWN
-            ):
+            if request.task_status == "COMPLETED" and (proof is None or proof.unloaded):
                 continue  # Unknown delivery is not a worker admission veto.
             if request.task_status != "COMPLETED" or not proof.satisfied:
                 detail = f"{proof.state} ({proof.reason})" if proof else "unknown"
-                reasons.append(
-                    {
-                        "code": "development_dependency_delivery",
-                        "ref": dep_id,
-                        "detail": f"Development prerequisite {dep_id}: {detail}",
-                    }
-                )
+                reasons.append({
+                    "code": "development_dependency_delivery",
+                    "ref": dep_id,
+                    "detail": f"Development prerequisite {dep_id}: {detail}",
+                })
         if reasons:
             batch.reasons[task_id] = reasons
         else:
@@ -684,21 +669,13 @@ async def _frontier_inputs(conn, ids):
     for edge in edges:
         if edge["dep_type"] in {"blocks", "delivery-of"}:
             required.setdefault(edge["task_id"], set()).add(edge["depends_on_task_id"])
-    # Unknown Git still fences the source generation, even without an observer
-    # supplying a DeliveryView. Exclude candidate lifecycle changes made by taking
-    # this very claim, as the PR guard does.
-    source_ids = set().union(*required.values())
+    # Fence source generations without a DeliveryView, minus this claim's own rows.
     sources = (await conn.execute(select(tasks).where(
-        tasks.c.id.in_(source_ids),
-        or_(tasks.c.id.not_in(ids), tasks.c.status == "COMPLETED"),
-    ))).all() if source_ids else []
-    fenced_ids = {row.id for row in sources}
-    completions = (await conn.execute(select(task_completion_records).where(
-        task_completion_records.c.task_id.in_(fenced_ids),
-    ))).all() if fenced_ids else []
-    markers = (await conn.execute(select(task_metadata).where(
-        task_metadata.c.task_id.in_(fenced_ids),
-    ))).all() if fenced_ids else []
+        tasks.c.id.in_(set().union(*required.values())),
+        or_(tasks.c.id.not_in(ids), tasks.c.status == "COMPLETED")))).all() if required else []
+    completions, markers = [(await conn.execute(select(table).where(
+        table.c.task_id.in_({row.id for row in sources})))).all() if sources else []
+        for table in (task_completion_records, task_metadata)]
     fingerprint = tuple(tuple(sorted(repr(tuple(row)) for row in group))
                         for group in (rows, policies, [tuple(e.items()) for e in edges],
                                       sources, completions, markers))
@@ -770,11 +747,10 @@ async def observe_admission(
     async with db._engine.connect() as conn:
         batch.policy_inputs, batch.hierarchy_required = await _frontier_inputs(conn, ids)
     pids = {p[0] for p in batch.inputs[5] if p[1] in {"hierarchy", "train"}}
-    unavailable = {}
     modes = hierarchy_modes if hierarchy_modes is not None else await hierarchy_frontier_modes(
         db, project_ids=pids, cached_only=cached_only,
         views=batch.hierarchy_views, stack_views=batch.stack_views,
-        display_unavailable=unavailable, conn=hierarchy_conn,
+        conn=hierarchy_conn,
         **({"max_age": 0} if not cached_only else {}),
     ) if pids else {}
     batch.hierarchy_modes = dict(modes)
@@ -782,7 +758,6 @@ async def observe_admission(
     exclusions = await db.claim_frontier_exclusions_many(
         ids, hierarchy_modes=modes, cached_only=cached_only,
         router_ready_projects=router_ready_projects,
-        display_unavailable=unavailable,
     )
     for tid, reasons in exclusions.items():
         if reasons:
@@ -825,7 +800,7 @@ async def _observe_delivery_edges(batch, *, cached_only):
     for tid, sources in batch.delivery_required.items():
         for source in sorted(sources):
             proof = verified.get(source)
-            if proof is None or proof.satisfied or proof.state is DeliveryState.UNKNOWN:
+            if proof is None or proof.satisfied or proof.unloaded:
                 continue
             batch.allowed.discard(tid)
             batch.reasons.setdefault(tid, []).append({
