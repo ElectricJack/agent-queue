@@ -359,7 +359,7 @@ def test_batch_exception_is_exact_and_has_no_remaining_headroom(report, manifest
     predecessors = exception["predecessors"]
     assert predecessors[0]["delta"] == 1_293
     assert predecessors[1]["authorized_delta"] == 2_166
-    assert predecessors[1]["batch_id"] == "batch48"
+    assert predecessors[1]["batch_id"] == "train-48d0a1c1f1f8292b2977546011609db6"
     assert predecessors[1]["measured_source_revision"] == (
         "cbfd455b0e9f053854a2c1becfa1efaeef231582"
     )

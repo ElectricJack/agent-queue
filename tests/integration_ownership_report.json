@@ -1057,7 +1057,7 @@
         "msg-dbb0120c6172499081721c033e894b39"
       ],
       "decision_record": "record:2720bdbe-7521-427e-8e72-1f40a3ff9818",
-      "decision_record_revision": "9aa415ea-fe89-4f8e-a636-a4328d676b66",
+      "decision_record_revision": "7a219c5d-10dd-4f2f-bfab-60ce7e82071a",
       "measured_source_revision": "aeb45642df379314adea0689bbf0c78125ce3f20",
       "original_owned_total_cap": 155499,
       "measured_owned_total": 160145,
@@ -1075,7 +1075,7 @@
           "expires_at": "s4_modules"
         },
         {
-          "batch_id": "batch48",
+          "batch_id": "train-48d0a1c1f1f8292b2977546011609db6",
           "measured_source_revision": "cbfd455b0e9f053854a2c1becfa1efaeef231582",
           "authorized_delta": 2166,
           "measured_owned_total": 158958,
@@ -1084,7 +1084,8 @@
       ],
       "batch_measured_delta": 1187,
       "restore_task": "azure-ridge-72",
-      "expires_at": "s4_modules"
+      "expires_at": "s4_modules",
+      "category_approval_message_id": "msg-90f9f1b1e0cd4e8e8d28071cffc927a6"
     },
     "table_exception": {
       "batch_id": "train-56f15aff49843c6989224397ef6d7044",
@@ -1099,7 +1100,13 @@
       ],
       "restore_task": "stark-willow-95.17",
       "verification_task": "stark-willow-95.18",
-      "expires_at": "s4_modules"
+      "expires_at": "s4_modules",
+      "category_approval_message_id": "msg-90f9f1b1e0cd4e8e8d28071cffc927a6",
+      "decision_record_revision": "7a219c5d-10dd-4f2f-bfab-60ce7e82071a",
+      "approved_storage_categories": [
+        "integration_close_attempts"
+      ],
+      "restoration_verified_by": "stark-willow-95.18"
     }
   },
   "landing_delta": {
@@ -13646,7 +13653,7 @@
   "storage_dispositions": {
     "integration_close_attempts": {
       "task": "stark-willow-95.15",
-      "authority": "Approved fast-smooth-integration section 5 and current task close contract, 2026-10-21",
+      "authority": "Explicit feature/category approval msg-90f9f1b1e0cd4e8e8d28071cffc927a6; canonical sequence6 revision7a219c5d-10dd-4f2f-bfab-60ce7e82071a",
       "purpose": "Version-fenced retained author candidate and wait evidence, never delivery truth. Charged as the sole approved temporary +1 transition table, with cap46 and zero table headroom.",
       "exception": {
         "batch_id": "train-56f15aff49843c6989224397ef6d7044",
@@ -13661,7 +13668,13 @@
         ],
         "restore_task": "stark-willow-95.17",
         "verification_task": "stark-willow-95.18",
-        "expires_at": "s4_modules"
+        "expires_at": "s4_modules",
+        "category_approval_message_id": "msg-90f9f1b1e0cd4e8e8d28071cffc927a6",
+        "decision_record_revision": "7a219c5d-10dd-4f2f-bfab-60ce7e82071a",
+        "approved_storage_categories": [
+          "integration_close_attempts"
+        ],
+        "restoration_verified_by": "stark-willow-95.18"
       }
     }
   },
@@ -13925,7 +13938,7 @@
         "msg-dbb0120c6172499081721c033e894b39"
       ],
       "decision_record": "record:2720bdbe-7521-427e-8e72-1f40a3ff9818",
-      "decision_record_revision": "9aa415ea-fe89-4f8e-a636-a4328d676b66",
+      "decision_record_revision": "7a219c5d-10dd-4f2f-bfab-60ce7e82071a",
       "measured_source_revision": "aeb45642df379314adea0689bbf0c78125ce3f20",
       "original_owned_total_cap": 155499,
       "measured_owned_total": 160145,
@@ -13943,7 +13956,7 @@
           "expires_at": "s4_modules"
         },
         {
-          "batch_id": "batch48",
+          "batch_id": "train-48d0a1c1f1f8292b2977546011609db6",
           "measured_source_revision": "cbfd455b0e9f053854a2c1becfa1efaeef231582",
           "authorized_delta": 2166,
           "measured_owned_total": 158958,
@@ -13952,7 +13965,8 @@
       ],
       "batch_measured_delta": 1187,
       "restore_task": "azure-ridge-72",
-      "expires_at": "s4_modules"
+      "expires_at": "s4_modules",
+      "category_approval_message_id": "msg-90f9f1b1e0cd4e8e8d28071cffc927a6"
     },
     "table_exception": {
       "batch_id": "train-56f15aff49843c6989224397ef6d7044",
@@ -13967,7 +13981,13 @@
       ],
       "restore_task": "stark-willow-95.17",
       "verification_task": "stark-willow-95.18",
-      "expires_at": "s4_modules"
+      "expires_at": "s4_modules",
+      "category_approval_message_id": "msg-90f9f1b1e0cd4e8e8d28071cffc927a6",
+      "decision_record_revision": "7a219c5d-10dd-4f2f-bfab-60ce7e82071a",
+      "approved_storage_categories": [
+        "integration_close_attempts"
+      ],
+      "restoration_verified_by": "stark-willow-95.18"
     },
     "consolidation": "Reuse AuthorCloseMerge.defer for the existing deferred visit path (-2 owned lines); flatten the combined CI authorization guard (-1 owned line). All features and guard checks retained.",
     "ownership_review": "Complete candidate definitions charged by explicit fingerprints with spans and reasons in candidate_definition_reviews; existing exclusions unchanged. Storage writer contexts re-reviewed in canonical storage_sinks.",

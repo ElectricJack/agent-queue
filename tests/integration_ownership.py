@@ -30,7 +30,7 @@ TRANSITION_BATCH_EXCEPTION = {'batch_id': 'train-56f15aff49843c6989224397ef6d704
                           'msg-381054d695e64055979a687c4d811e7e',
                           'msg-dbb0120c6172499081721c033e894b39'],
  'decision_record': 'record:2720bdbe-7521-427e-8e72-1f40a3ff9818',
- 'decision_record_revision': '9aa415ea-fe89-4f8e-a636-a4328d676b66',
+ 'decision_record_revision': '7a219c5d-10dd-4f2f-bfab-60ce7e82071a',
  'measured_source_revision': 'aeb45642df379314adea0689bbf0c78125ce3f20',
  'original_owned_total_cap': 155499,
  'measured_owned_total': 160145,
@@ -44,7 +44,7 @@ TRANSITION_BATCH_EXCEPTION = {'batch_id': 'train-56f15aff49843c6989224397ef6d704
                    'delta': 1293,
                    'restore_task': 'azure-ridge-72',
                    'expires_at': 's4_modules'},
-                  {'batch_id': 'batch48',
+                  {'batch_id': 'train-48d0a1c1f1f8292b2977546011609db6',
                    'measured_source_revision': 'cbfd455b0e9f053854a2c1becfa1efaeef231582',
                    'authorized_delta': 2166,
                    'measured_owned_total': 158958,
@@ -52,22 +52,25 @@ TRANSITION_BATCH_EXCEPTION = {'batch_id': 'train-56f15aff49843c6989224397ef6d704
                                  'final delta1293.'}],
  'batch_measured_delta': 1187,
  'restore_task': 'azure-ridge-72',
- 'expires_at': 's4_modules'}
+ 'expires_at': 's4_modules',
+ 'category_approval_message_id': 'msg-90f9f1b1e0cd4e8e8d28071cffc927a6'}
 # Exact approved temporary storage for the frozen author-close source. This
 # expires with the line exception; it cannot authorize another storage category.
-TRANSITION_TABLE_EXCEPTION = {
-    "batch_id": "train-56f15aff49843c6989224397ef6d7044",
-    "decision_message_id": "msg-dbb0120c6172499081721c033e894b39",
-    "decision_record": "record:2720bdbe-7521-427e-8e72-1f40a3ff9818",
-    "source_revision": "2f66afabac4add24a1e4eaa7927ae0798ec344bf",
-    "original_table_cap": 45,
-    "delta": 1,
-    "table_cap": 46,
-    "tables": ["integration_close_attempts"],
-    "restore_task": "stark-willow-95.17",
-    "verification_task": "stark-willow-95.18",
-    "expires_at": "s4_modules",
-}
+TRANSITION_TABLE_EXCEPTION = {'batch_id': 'train-56f15aff49843c6989224397ef6d7044',
+ 'decision_message_id': 'msg-dbb0120c6172499081721c033e894b39',
+ 'decision_record': 'record:2720bdbe-7521-427e-8e72-1f40a3ff9818',
+ 'source_revision': '2f66afabac4add24a1e4eaa7927ae0798ec344bf',
+ 'original_table_cap': 45,
+ 'delta': 1,
+ 'table_cap': 46,
+ 'tables': ['integration_close_attempts'],
+ 'restore_task': 'stark-willow-95.17',
+ 'verification_task': 'stark-willow-95.18',
+ 'expires_at': 's4_modules',
+ 'category_approval_message_id': 'msg-90f9f1b1e0cd4e8e8d28071cffc927a6',
+ 'decision_record_revision': '7a219c5d-10dd-4f2f-bfab-60ce7e82071a',
+ 'approved_storage_categories': ['integration_close_attempts'],
+ 'restoration_verified_by': 'stark-willow-95.18'}
 FINAL_ENGINE_CAP = 11_999
 FINAL_TOTAL_CAP = 19_999
 FINAL_TABLE_CAP = 10
