@@ -250,6 +250,25 @@ def integration_abort_batch(ctx, batch_id, reason, apply):
     })
 
 
+@integration.command("repair-target")
+@click.argument("batch_id")
+@click.option("--candidate-sha", "expected_candidate_sha", help="Exact candidate SHA from preview.")
+@click.option("--target-sha", "expected_target_sha", help="Exact target SHA from preview.")
+@click.option("--reason", default="", help="Required explanation when filing target repair.")
+@click.option("--apply", is_flag=True, help="File or reuse the ordinary repair; default is preview.")
+@click.pass_context
+@_handle_errors
+def integration_repair_target(ctx, batch_id, expected_candidate_sha, expected_target_sha,
+                              reason, apply):
+    """Repair proven failures inherited from BATCH_ID's sealed epic target."""
+    if apply and (not expected_candidate_sha or not expected_target_sha or not reason.strip()):
+        raise click.UsageError("--apply requires --candidate-sha, --target-sha and --reason")
+    _execute(ctx, "integration_repair_target", {
+        "batch_id": batch_id, "expected_candidate_sha": expected_candidate_sha,
+        "expected_target_sha": expected_target_sha, "reason": reason, "dry_run": not apply,
+    })
+
+
 @integration.command("settle-batch")
 @click.argument("batch_id")
 @click.option("--target-sha", "expected_target_sha", help="Exact target SHA returned by preview.")

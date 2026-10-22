@@ -990,26 +990,36 @@ async def test_conflicting_batch_publishes_before_real_repair_claim(
 
 
 async def settled_claim(handler, args):
-    """Await this generation's preparation, then consume its normal claim response.
+    """Await the invoked preparation and return its settled outcome.
 
     Real Git tests assert final ownership or recovery. A no-wait HTTP response
     may arrive before checkout finishes; it must not end the test's fixture.
     Tests that control a preparation barrier must call _cmd_task_claim directly
-    so they can inspect progress before releasing that barrier. A follow-up
-    that retries a moved target starts a new generation, which is settled too.
+    so they can inspect progress before releasing that barrier. Do not issue a
+    follow-up claim: it can discard a moved-target rejection and start another
+    generation instead of observing the one the test invoked.
     """
     result = await handler._cmd_task_claim(args)
-    for _ in range(3):
-        if result.get("result") != "claim_in_progress":
-            return result
-        scope = handler._current_scope or {}
-        key = (scope.get("session_id") or args.get("session_id"),
-               result["task_id"], result["claim_epoch"])
-        preparation = handler.orchestrator.claim_preparations.get(key)
-        if preparation is not None:
-            await asyncio.wait_for(asyncio.shield(preparation), timeout=10)
-        result = await handler._cmd_task_claim(args)
-    return result
+    if result.get("result") != "claim_in_progress":
+        return result
+    scope = handler._current_scope or {}
+    key = (scope.get("session_id") or args.get("session_id"),
+           result["task_id"], result["claim_epoch"])
+    preparation = handler.orchestrator.claim_preparations.get(key)
+    if preparation is not None:
+        result = await asyncio.wait_for(asyncio.shield(preparation), timeout=10)
+    else:
+        # Completion can remove the live job while the progress response is
+        # returning. Only the matching generation's cached outcome may settle it.
+        completed = handler.orchestrator.claim_preparation_results.get(key[0])
+        assert completed is not None, f"preparation outcome missing for {key}"
+        assert (completed.task_id, completed.claim_epoch) == key[1:]
+        result = completed.outcome
+    completed = handler.orchestrator.claim_preparation_results.get(key[0])
+    if completed is not None and completed.outcome is result:
+        handler.orchestrator.claim_preparation_results.pop(key[0])
+    # Strip the private refusal marker just as the command does.
+    return {key: value for key, value in result.items() if key != "_refusal_recorded"}
 
 
 @pytest.mark.parametrize("claim_marker", ["missing", "superseded_own"])
@@ -1613,12 +1623,9 @@ class TestClaim:
             return await prepare(*args, **kwargs)
 
         monkeypatch.setattr(handler, "_prepare_and_activate_locked", raced)
-        # The race under test is this one reserved generation. If a slow
-        # runner outlived the response window, settled_claim's follow-up
-        # would retry the held preparation as the successor launch (slot
-        # None, predecessor receipt) and record that retry's own refusal.
-        monkeypatch.setattr("src.commands.claim_commands._PREPARATION_RESPONSE_SECONDS", 60)
-        result = await scoped(handler, sid)._cmd_task_claim({"next": True})
+        # Observe this reserved generation even if it outlives the response
+        # window; a follow-up claim would retry as the successor launch.
+        result = await settled_claim(scoped(handler, sid), {"next": True})
         assert result["result"] == "prepare_failed"
         assert len(races) == 1 and races[0] is not None
         assert (await db.get_session(sid)).claim_phase != "active"
@@ -6813,7 +6820,16 @@ async def test_development_moving_target_retries_and_claims_new_snapshot(
         side_effect=reset
     )
     args = {"next": True} if wait is None else {"next": True, "wait": wait}
-    result = await settled_claim(scoped(handler, sid), args)
+    worker = scoped(handler, sid)
+    result = await worker._cmd_task_claim(args)
+    if result["result"] == "claim_in_progress":
+        # This test deliberately exercises a worker's follow-up request,
+        # including consumption of the completed moved-target response.
+        preparation = handler.orchestrator.claim_preparations[
+            (sid, result["task_id"], result["claim_epoch"])
+        ]
+        await asyncio.wait_for(asyncio.shield(preparation), timeout=10)
+        result = await settled_claim(worker, args)
     assert result["result"] == "claimed", result
     assert resets == 2
     assert (await db.get_session(sid)).claims == 1
@@ -7553,6 +7569,52 @@ async def pull_request_admission(handler, db, development_admission, monkeypatch
     return env
 
 
+@pytest.mark.parametrize("merged", [False, True])
+@pytest.mark.parametrize("status", [TaskStatus.READY, TaskStatus.IN_PROGRESS, TaskStatus.BLOCKED])
+async def test_pr_explain_reports_unobserved_containment_as_unknown(
+    handler, db, pull_request_admission, monkeypatch, merged, status
+):
+    from src.integration.admission import observe_admission
+
+    env = pull_request_admission
+    if merged:
+        env.git(env.source, "push", "origin", f"{env.head}:refs/heads/main")
+        env.pull.update(state="closed", merged=True, merge_commit_sha=env.head)
+    # Establish the real admission answer before reading the diagnostic. Even
+    # a prior successful observation cannot supply the current PR identity.
+    batch = await observe_admission(db, ["dependent"], env.service)
+    assert ("dependent" in batch.allowed) is merged
+    if not merged:
+        assert batch.reasons["dependent"][0]["code"] == "pull_request_dependency_delivery"
+    await db.transition_task("dependent", status, force=True)
+    if status is TaskStatus.BLOCKED:
+        await db.set_task_meta("dependent", "blocked_terminal", "session_close_hard_failure")
+    env.client.pull_request.reset_mock()
+    handler.orchestrator.git.bind_github_repository.reset_mock()
+    snapshot = AsyncMock(wraps=env.service.delivery_observer.snapshot)
+    monkeypatch.setattr(env.service.delivery_observer, "snapshot", snapshot)
+
+    explanation = await handler._cmd_explain_task({"task_id": "dependent"})
+
+    assert explanation["success"], explanation
+    assert "pull_request_dependency_delivery" not in {
+        reason["code"] for reason in explanation["reasons"]
+    }
+    [reason] = [reason for reason in explanation["reasons"]
+                if reason["code"] == "delivery_evidence_unavailable"]
+    assert reason["ref"] == "prerequisite"
+    assert "containment" in reason["detail"] and "unknown" in reason["detail"]
+    assert "cached-only" in reason["detail"]
+    if status is TaskStatus.BLOCKED:
+        assert any(reason["code"] == "blocked_terminal"
+                   and "session_close_hard_failure" in reason["detail"]
+                   for reason in explanation["reasons"])
+    env.client.pull_request.assert_not_awaited()
+    handler.orchestrator.git.bind_github_repository.assert_not_awaited()
+    snapshot.assert_not_awaited()
+    assert (await db.get_task("dependent")).status is status
+
+
 @pytest.mark.parametrize("mutation", ["edge", "create", "graph"])
 async def test_pr_late_dependency_mutations_do_not_admit_unmerged_source(
     handler, db, tmp_path, pull_request_admission, mutation
@@ -7761,8 +7823,9 @@ async def test_pr_replacement_delivery_retires_only_generated_gate_links(
 
 
 @pytest.mark.parametrize("movement", ["remote", "pr", "checkout"])
+@pytest.mark.parametrize("response", ["normal", "deferred", "completed_before_response"])
 async def test_pr_preparation_rechecks_remote_identity_and_actual_checkout(
-    handler, db, tmp_path, pull_request_admission, movement
+    handler, db, tmp_path, pull_request_admission, monkeypatch, movement, response
 ):
     from src.orchestrator.worktree_manager import WorktreeSlotManager
 
@@ -7790,12 +7853,43 @@ async def test_pr_preparation_rechecks_remote_identity_and_actual_checkout(
             env.git(work_dir, "reset", "--hard", env.base)
         return branch
 
-    manager.reset_slot_for_task = move_after_observation
+    manager.reset_slot_for_task = AsyncMock(side_effect=move_after_observation)
     handler.orchestrator._worktree_slots = MagicMock(return_value=manager)
+    if response != "normal":
+        # Exercise the same rejection after the no-wait response has returned,
+        # without relying on the runner being slower than the response window.
+        monkeypatch.setattr("src.commands.claim_commands._PREPARATION_RESPONSE_SECONDS", 0)
+    if response == "completed_before_response":
+        claim = handler._cmd_task_claim
+
+        async def complete_before_response(args):
+            progress = await claim(args)
+            assert progress["result"] == "claim_in_progress", progress
+            preparation = handler.orchestrator.claim_preparations[
+                (sid, progress["task_id"], progress["claim_epoch"])
+            ]
+            await asyncio.wait_for(asyncio.shield(preparation), timeout=10)
+            assert not handler.orchestrator.claim_preparations
+            return progress
+
+        monkeypatch.setattr(handler, "_cmd_task_claim", complete_before_response)
     result = await settled_claim(scoped(handler, sid), {"next": True})
-    assert result["result"] != "claimed", result
-    assert (await db.get_task("dependent")).status is not TaskStatus.IN_PROGRESS
+    assert result["result"] == "no_ready_work", result
+    dependent = await db.get_task("dependent")
+    assert dependent.status is not TaskStatus.IN_PROGRESS
+    assert dependent.status is TaskStatus.READY
+    assert dependent.assigned_agent_id is None
+    session = await db.get_session(sid)
+    assert session.task_id is None and session.claim_phase is None
+    assert session.last_claim_epoch == dependent.claim_epoch and session.claims == 0
+    assert (await db.get_workspace(f"ws-{session.agent_id}")).locked_by_task_id is None
     assert not (work_dir / ".aq/claim.json").exists()
+    assert not handler.orchestrator.claim_preparations
+    assert sid not in handler.orchestrator.claim_preparation_results
+    if response != "normal":
+        assert result["reason"] == "delivery_snapshot_changed", result
+        assert dependent.claim_epoch == 1
+        manager.reset_slot_for_task.assert_awaited_once()
 
 
 async def test_pr_explicit_attachment_takes_ownership_of_generated_link(

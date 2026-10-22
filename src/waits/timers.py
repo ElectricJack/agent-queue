@@ -4,19 +4,33 @@ from __future__ import annotations
 
 import asyncio
 import heapq
+import json
+import logging
 import time
 
-from sqlalchemy import func, or_, select, update
+from sqlalchemy import func, insert, or_, select, update
 
 from src.database.queries.wait_queries import REGISTRATION_LOCK
 from src.database.tables import (
     admission_reservations,
     continuations,
-    tasks,
+    events,
+    messages,
     wait_deadlines,
     wait_records,
 )
 from src.waits.listener import LeaseLost, ListenerUnavailable
+from src.waits.sources import insert_message_with_source_event
+
+logger = logging.getLogger(__name__)
+
+# These identify an invalid/stale owner or request, rather than missing runtime
+# infrastructure. Unknown errors and lease/service failures remain retryable.
+PERMANENT_REFUSALS = frozenset({
+    "wait.out_of_scope", "wait.invalid", "wait.condition_required",
+    "wait.not_escalated", "wait.source_unresolved", "continuation.stale_generation",
+    "stale_claim",
+})
 
 
 class WaitTimerDriver:
@@ -52,10 +66,52 @@ class WaitTimerDriver:
                     "generation": row["generation"],
                 })
             if not result.get("success") and result.get("error_code") != "wait.deadline_stale":
-                raise ListenerUnavailable(f"wait deadline fire refused: {result}")
+                if result.get("error_code") not in PERMANENT_REFUSALS:
+                    raise ListenerUnavailable(f"wait deadline fire refused: {result}")
+                await self.service.quarantine_deadline(row, result)
             heapq.heappop(self.heap)
             fired += bool(result.get("success"))
         return fired
+
+    async def quarantine(self, deadline, refusal):
+        """Retire one poisoned deadline, retaining its refusal and notifying once.
+
+        The service command boundary authenticates this internal mutation. The
+        lease and row CAS make restart/replay harmless; the wait stays inspectable
+        and can be cancelled by its project supervisor without inventing a wake.
+        """
+        now = self.clock()
+        async with self.service.orch.db._engine.begin() as conn:
+            await conn.execute(select(func.pg_advisory_xact_lock(REGISTRATION_LOCK)))
+            await self.service.listener.locked_lease(conn)
+            row = (await conn.execute(update(wait_deadlines).where(
+                wait_deadlines.c.id == deadline["id"],
+                wait_deadlines.c.fired_at.is_(None), wait_deadlines.c.cancelled_at.is_(None),
+            ).values(cancelled_at=now).returning(wait_deadlines.c.id))).scalar_one_or_none()
+            if row is None:
+                return
+            wait = (await conn.execute(select(wait_records).where(
+                wait_records.c.id == deadline["wait_id"],
+            ))).mappings().one()
+            payload = {"wait_id": wait["id"], "deadline_id": row,
+                       "project_id": wait["project_id"],
+                       "deadline_type": deadline["deadline_type"],
+                       "generation": deadline["generation"], "refusal": refusal}
+            await conn.execute(insert(events).values(
+                event_type="wait.deadline_quarantined", project_id=wait["project_id"],
+                task_id=wait["owner_id"] if wait["owner_kind"] == "task" else None,
+                timestamp=now, payload=json.dumps(payload),
+            ))
+            await insert_message_with_source_event(conn, insert(messages).values(
+                id=f"wait-deadline:{row}:quarantined", project_id=wait["project_id"],
+                from_kind="system", from_id="waits-driver", to_kind="session",
+                to_id=f"supervisor-{wait['project_id']}", body_kind="wait_deadline_quarantined",
+                body=json.dumps({**payload, "next_step":
+                    "Inspect the refusal; use aq wait cancel to retire an orphaned task wait."}),
+                created_at=now,
+            ))
+            await self.service.listener.locked_lease(conn)
+        logger.warning("wait.deadline_quarantined: %s", payload)
 
     async def run(self):
         changed = self.service.listener.deadlines_changed
@@ -98,9 +154,12 @@ class WaitTimerDriver:
                 wait_records.c.id == args["wait_id"],
             ))).mappings().first()
             if subject and subject["owner_kind"] in {"task", "scheduler"}:
-                await conn.execute(select(tasks.c.id).where(
-                    tasks.c.id == subject["owner_id"],
-                ).with_for_update())
+                from src.waits.recovery import retire_terminal_task_waits
+
+                if await retire_terminal_task_waits(conn, subject["owner_id"], now=now):
+                    await self.service.listener.locked_lease(conn)
+                    return {"success": False, "error_code": "wait.deadline_stale",
+                            "error": "terminal task waits retired"}
             wait = (await conn.execute(select(wait_records).where(
                 wait_records.c.id == args["wait_id"],
             ).with_for_update())).mappings().first()

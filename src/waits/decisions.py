@@ -273,9 +273,10 @@ class WaitDecisions:
                 tasks.c.id == candidate["owner_id"],
             ).with_for_update())).mappings().first() if candidate["owner_kind"] == "task" else None
             dispatcher = self.service.dispatcher
-            if dispatcher is None or dispatcher.lock_source is None:
+            if dispatcher is None:
                 raise WaitError("wait.unavailable", "transactional dispatch owner is unavailable")
-            await dispatcher.lock_source(conn, cond)
+            # Cancellation asserts no source outcome. The graph lock serializes
+            # it with dispatch, so an orphan needs no functioning source reader.
             wait = dict((await conn.execute(select(wait_records).where(
                 wait_records.c.id == candidate["id"],
             ).with_for_update())).mappings().one())
@@ -286,7 +287,32 @@ class WaitDecisions:
                         "warnings": [f"wait already resolved: {wait['outcome']}"]}
             if isinstance(scope, Scope) and wait["session_id"] != scope.session_id:
                 raise WaitError("continuation.stale_generation", "wait holder changed")
-            _, continuation = await fence_owner(conn, wait, task)
+            try:
+                _, continuation = await fence_owner(conn, wait, task)
+            except WaitError as exc:
+                # A supervisor can retire a stale task wait even before it has
+                # escalated. Never impersonate its lost holder, send a wake or
+                # modify the task/new claim while cleaning up the old wait.
+                privileged = principal.kind == "local" or (
+                    principal.kind == "session" and isinstance(scope, dict)
+                    and principal.elevated
+                )
+                if exc.code not in {"wait.out_of_scope", "stale_claim"} or not privileged or not (
+                    wait["owner_kind"] == "task"
+                ):
+                    raise
+                from src.database.queries.continuation_queries import retire_task_waits
+
+                await retire_task_waits(
+                    conn, wait["owner_id"], wait_id=wait["id"],
+                    reason="supervisor_orphan_cancel", now=self.clock(),
+                )
+                await self.audit(conn, wait, "wait.orphan_cancelled", self.clock(),
+                                 supervisor_session_id=principal.session_id)
+                row = dict((await conn.execute(select(wait_records).where(
+                    wait_records.c.id == wait["id"],
+                ))).mappings().one())
+                return {"success": True, "wait_id": row["id"], "wait": row}
             if continuation is None and wait["sleep_decision"] == "hibernate":
                 wait = await self.withdraw_intent(conn, wait)
             result = await dispatcher.finish(

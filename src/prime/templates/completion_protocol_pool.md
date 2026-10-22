@@ -8,8 +8,7 @@ On prepare_failed/not_admissible, respect retry_after and the returned instructi
 On a repeated identical refusal (or refusal_count >= 2), report the blocker ONCE to
 the project supervisor. If idle with no held claim or preparation, run
 `aq session drain-ack` and exit. If preparation is retained, preserve it and end the
-turn awaiting the supervisor's inbox delivery. With an active claim, use ONE durable
-message wait for the reply using its thread/cursor. Do not poll claims or inboxes,
+turn awaiting the supervisor's inbox delivery. {message_wait_guidance} Do not poll claims or inboxes,
 reread unchanged context, or repeat the report. A drain_requested carrying blocker
 instructions also requires that report.
 On daemon_unreachable / exit 3, keep retrying; never start the daemon.

@@ -81,7 +81,9 @@ logger = logging.getLogger(__name__)
 #: ``build_capacity_reasons`` produces still applies to the pull path: a
 #: paused project or an exhausted budget fails ``_admission_reason`` on the
 #: claim, and no free workspace starves ``_launch_pool_session``.
-_PUSH_ONLY_REASON_CODES = frozenset({"no_idle_agent", "no_compatible_agent"})
+_PUSH_ONLY_REASON_CODES = frozenset({
+    "no_idle_agent", "no_compatible_agent", "project_agent_cap",
+})
 
 #: Two-key PostgreSQL advisory-lock namespace "AQPK" — the standing-parent
 #: resolver (graph-visibility A2).  Deliberately **not**
@@ -4772,10 +4774,27 @@ class TaskCommandsMixin:
             return {"success": False, "error": f"Task '{task_id}' not found in this project"}
         return result
 
+    async def _resume_manual_pause(self, task_id: str) -> dict | None:
+        """Clear a manual pause through Resume before Restart, or return its refusal.
+
+        A manual pause refuses every lifecycle write but its own resume: same
+        scope check, same stop proofs. The control lock is not reentrant, so
+        this runs before restart takes it.
+        """
+        paused = await self.db.get_task(task_id)
+        if (paused is None or paused.status != TaskStatus.PAUSED
+                or await self.db.get_task_meta(task_id, "manual_pause") is None):
+            return None
+        resumed = await self._cmd_resume_task({"task_id": task_id})
+        return None if resumed.get("success") else resumed
+
     async def _cmd_restart_task(self, args: dict) -> dict:
+        from src.integration.repair import OrdinaryRepairService
         from src.wait_runtime.restart import readmit, release_continuations, restart_lock
         from src.waits.conditions import WaitError
 
+        if (refused := await TaskCommandsMixin._resume_manual_pause(self, args["task_id"])) is not None:
+            return refused
         # Resume's task-control lock covers continuation cleanup and readmission.
         async with restart_lock(self, args["task_id"]):
             task = await self.db.get_task(args["task_id"])
@@ -4783,28 +4802,23 @@ class TaskCommandsMixin:
                 return {"success": False, "error": f"Task '{args['task_id']}' not found"}
             if task.status == TaskStatus.IN_PROGRESS:
                 return {"success": False, "error": "Task is currently in progress. Stop it first."}
+            if stale := await OrdinaryRepairService(self.db).stale(task):
+                return {"success": False, "error": stale, "error_code": "stale_repair"}
             try:
                 released = await release_continuations(self, task)
             except WaitError as exc:
                 return {"success": False, "error": str(exc), "error_code": exc.code}
             project = await self.db.get_project(task.project_id)
-            managed = (
-                project is not None
-                and project.hierarchical_integration_mode in {"hierarchy", "train"}
-            )
+            managed = project is not None and (
+                project.hierarchical_integration_mode in {"hierarchy", "train"})
             if managed and task.status in _RESTART_RESERVATION_STATUSES:
-                # A repair delegate owns no branch origin of its own: the claim
-                # frontier admits it only on the exact reserved ``repair`` fence of
-                # its operation's branch, so it restarts through that handoff
-                # rather than through a bare status flip.
+                # Repair delegates restart through their operation's reserved branch fence.
                 if task.created_by_kind == "integration_repair":
                     return await self._restart_repair_delegate(task)
                 if task.status is TaskStatus.BLOCKED and await self.db.get_integration_checkpoint(
                     task.id
                 ):
-                    from src.integration.canonical_reservation import (
-                        reserve_canonical_task_branch,
-                    )
+                    from src.integration.canonical_reservation import reserve_canonical_task_branch
 
                     reservation = await reserve_canonical_task_branch(self.db, task.id)
                     if reservation["outcome"] not in {"acquired", "already_reserved"}:
@@ -4964,7 +4978,6 @@ class TaskCommandsMixin:
             review_task = await self.db.get_task(review_task_id) if review_task_id else None
             session = await self.db.get_session(session_id) if session_id else None
             if review_task is not None and review_task.profile_id in REVIEW_PROFILE_IDS:
-                from src.database.queries.hierarchy_queries import HierarchyError
                 from src.integration.reviews import ReviewEvidenceProducer
 
                 try:
@@ -5006,24 +5019,27 @@ class TaskCommandsMixin:
             self.db, task.project_id, subject="task reopen"
         )
         transition_values["allow_missing_provenance_reopen"] = recovery_refusal is None
-        if review_evidence_snapshot is None:
-            await self.db.transition_task(task_id, TaskStatus.READY, **transition_values)
-        else:
-            from src.integration.reviews import ReviewEvidenceProducer
+        try:
+            if review_evidence_snapshot is None:
+                await self.db.transition_task(task_id, TaskStatus.READY, **transition_values)
+            else:
+                from src.integration.reviews import ReviewEvidenceProducer
 
-            async with self.db.immediate() as conn:
-                transition = await ReviewEvidenceProducer(
-                    self.db, None
-                ).reject_and_reopen_on(
-                    conn,
-                    task_id,
-                    review_evidence_snapshot["reviewer_task_id"],
-                    review_evidence_snapshot,
-                    **transition_values,
-                )
-            await self.db.log_blocked_flips(transition.flipped)
-            await self.db._notify_settled(transition.settled)
-            await self.db._notify_ready(transition.ready)
+                async with self.db.immediate() as conn:
+                    transition = await ReviewEvidenceProducer(
+                        self.db, None
+                    ).reject_and_reopen_on(
+                        conn,
+                        task_id,
+                        review_evidence_snapshot["reviewer_task_id"],
+                        review_evidence_snapshot,
+                        **transition_values,
+                    )
+                await self.db.log_blocked_flips(transition.flipped)
+                await self.db._notify_settled(transition.settled)
+                await self.db._notify_ready(transition.ready)
+        except HierarchyError as exc:
+            return self._hierarchy_failure(exc)
 
         # Store feedback as a structured task_context entry so agents and
         # tooling can access individual reopen comments programmatically.
