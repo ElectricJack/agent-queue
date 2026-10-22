@@ -451,6 +451,7 @@ At most `MAX_SUBTASKS_PER_TASK` (200) rows per task, and at most `MAX_SUBTASKS_P
 | `review_delegate_to` | TEXT | nullable, `ck_projects_review_delegate_to` | Who decides the project's new document reviews: `user` or `supervisor`; NULL means `user`. Sets a new review's `doc_reviews.decider` (`supervisor` → `user_or_supervisor`). Added by Alembic `a00000000014` |
 | `git_identity_name` | TEXT | nullable, `ck_projects_git_identity_pair` | This project's Git commit identity override, set together with `git_identity_email`; a NULL pair inherits the installation default `git_identity` ([git identity](git-identity.md)). Added by Alembic `a00000000053` |
 | `git_identity_email` | TEXT | nullable, `ck_projects_git_identity_pair` | The override's email; `(git_identity_name IS NULL) = (git_identity_email IS NULL)`. Added by Alembic `a00000000053` |
+| `storage_binding` | JSONB | nullable | Current verified project storage generation and path mappings, atomically published by operator relocation; NULL uses the original configured paths. Added by Alembic `a00000000117` |
 | `created_at` | REAL | NOT NULL | Unix timestamp, set on insert |
 
 No `updated_at` on projects. The `discord_control_channel_id` column exists for backward compatibility — `_row_to_project` falls back to it when `discord_channel_id` is NULL.
@@ -2395,6 +2396,38 @@ raising. `idx_integration_subjects_due` serves the due
 scan. Trigger `integration_subject_identity_pinned` refuses a change of id,
 project, repository, kind, key, task, pinned policy or a bound batch, a
 decreasing version or generation, and reopening a `done` subject.
+
+### Table: `integration_close_attempts`
+
+Saved author-close operations retain immutable source and target identity, claim authority, exact candidate evidence and bounded retry state. Continuation replays the ordinary close guards for the owning author session. The audit history remains visible after completion.
+
+| Column | Type | Constraints |
+|---|---|---|
+| `id` | TEXT | PRIMARY KEY |
+| `project_id` | TEXT | NOT NULL, REFERENCES projects(id) |
+| `task_id` | TEXT | NOT NULL |
+| `session_id` | TEXT | NOT NULL |
+| `claim_epoch` | INTEGER | NOT NULL |
+| `repository_id` | TEXT | NOT NULL |
+| `target_task_id` | TEXT | NOT NULL |
+| `target_ref` | TEXT | NOT NULL |
+| `source_oid` | TEXT | NOT NULL |
+| `base_oid` | TEXT | nullable |
+| `candidate_oid` | TEXT | nullable |
+| `candidate_path` | TEXT | nullable |
+| `candidate_ref` | TEXT | NOT NULL |
+| `state` | TEXT | NOT NULL; preparing, needs_author, checking, publish_uncertain, finished, deferred or cancelled |
+| `version` | INTEGER | NOT NULL DEFAULT 0, nonnegative |
+| `attempts` | INTEGER | NOT NULL DEFAULT 0, nonnegative |
+| `policy_digest` | TEXT | nullable |
+| `evidence` | JSONB | NOT NULL |
+| `close_args` | JSONB | NOT NULL |
+| `budget_wait_id` | TEXT | nullable |
+| `last_failure` | TEXT | nullable |
+| `created_at` | FLOAT | NOT NULL |
+| `updated_at` | FLOAT | NOT NULL |
+
+Unique generation: `uq_integration_close_generation` on task, session, claim epoch, source OID and target ref. Checks: `ck_integration_close_state`, `ck_integration_close_counters`. Added by Alembic `a00000000116`.
 
 ### Table: `integration_subject_journal`
 

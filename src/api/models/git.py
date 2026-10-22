@@ -272,7 +272,17 @@ class CiRepairAdoptResponse(BaseModel):
     error: str | None = None
 
 
+class IntegrationContinueCloseResponse(BaseModel):
+    success: bool = True
+    outcome: str
+    operation_id: str | None = None
+    close: dict[str, Any] | None = None
+    error_code: str | None = None
+    error: str | None = None
+
+
 RESPONSE_MODELS: dict[str, type[BaseModel]] = {
+    "integration_continue_close": IntegrationContinueCloseResponse,
     "ci_completed_status": CiCompletedStatusResponse,
     "ci_baseline_status": CiBaselineStatusResponse,
     "ci_repair_adopt": CiRepairAdoptResponse,

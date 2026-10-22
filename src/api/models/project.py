@@ -329,6 +329,20 @@ class RepairWorkspaceCheckoutResponse(BaseModel):
     event_id: int | None = None
 
 
+class ProjectRelocateResponse(BaseModel):
+    success: bool = True
+    preview: bool | None = None
+    digest: str | None = None
+    plan: dict[str, Any] | None = None
+    blockers: list[str] = []
+    already_applied: bool = False
+    binding: dict[str, Any] | None = None
+    recovery_manifest: str | None = None
+    rollback: str | None = None
+    error_code: str | None = None
+    error: str | None = None
+
+
 class SetActiveProjectResponse(BaseModel):
     active_project: str | None = None
     name: str | None = None
@@ -336,6 +350,7 @@ class SetActiveProjectResponse(BaseModel):
 
 
 RESPONSE_MODELS: dict[str, type[BaseModel]] = {
+    "project_relocate": ProjectRelocateResponse,
     "list_projects": ListProjectsResponse,
     "create_project": CreateProjectResponse,
     "project_doctor": ProjectDoctorResponse,
