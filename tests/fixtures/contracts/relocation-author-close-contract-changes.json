@@ -4,7 +4,7 @@
     "bbcbd5a61d9c59e0a507f2e30160624e44196fca",
     "2f66afabac4add24a1e4eaa7927ae0798ec344bf"
   ],
-  "reason": "Approved frozen storage-relocation and author-close sources add exactly their two command definitions and categories; historical catalogue evidence remains unchanged.",
+  "reason": "Approved frozen storage-relocation and author-close sources add exactly their two command definitions and categories; historical catalogue evidence remains unchanged. project_relocate's fingerprint records its system-scope authorization (operator-only).",
   "previous_cli_catalogue_sha256": "8f0a627b01e1091c48ef919f01c6ea2aaacfa71be5af4ed6093c23991f4f1c56",
   "cli_catalogue_sha256": "55a8cf2f92877f0aa95e405c6d68dcc754fa7ace9fcd336eb9962c3d43a320c3",
   "catalogue_sections": {
@@ -860,7 +860,7 @@
     }
   },
   "contract_fingerprints": {
-    "project_relocate": "sha256:1f577d061d7c23c3da141bc78bada0e2350819ad31d5e380a3eb77ddda6abccb",
+    "project_relocate": "sha256:c1827c96fd227c590b9bf116acd818ae6fe7af9687acba4f5b9c4819cd3af788",
     "integration_continue_close": "sha256:d2d69e205c6f4bbc6030320f3da87ad39c3de0723abac0270af31bfb8488ab98"
   }
 }
