@@ -24,6 +24,9 @@ from src.wait_runtime.scheduler import SchedulerWaitService
 logger = logging.getLogger(__name__)
 
 
+BRIDGE_TICK_BUDGET_SECONDS = 10.0
+
+
 class WaitService:
     def __init__(self, orch, *, clock=time.time, owner=None, connect=None):
         self.orch = orch
@@ -43,6 +46,7 @@ class WaitService:
 
         self.legacy_bridge = LegacyWaitBridge(self, clock=clock)
         self._bridge_lock = asyncio.Lock()
+        self._bridge_task = None
         self.registry.loop_handler = self.loop_escalation
         self._dispatcher = WakeDispatcher(
             self.registry, clock=clock,
@@ -188,7 +192,7 @@ class WaitService:
     async def tick(self):
         if await self.processing_enabled():
             if self.enabled:
-                await self.startup_bridge()
+                await self._bounded_bridge()
             await self.lifecycle.tick()
             return await self.listener.tick()
         return False
@@ -219,6 +223,22 @@ class WaitService:
             except Exception:
                 logger.exception("Wait continuation maintenance failed")
             await asyncio.sleep(self.listener.renewal_seconds)
+
+    async def _bounded_bridge(self):
+        """Wait briefly for the bridge; a slow pass finishes beside the scheduler."""
+        if self._bridge_task is not None and not self._bridge_task.done():
+            return
+        self._bridge_task = asyncio.create_task(self._run_bridge())
+        try:
+            await asyncio.wait_for(asyncio.shield(self._bridge_task), BRIDGE_TICK_BUDGET_SECONDS)
+        except TimeoutError:
+            logger.warning("Wait startup bridge still running; scheduler continues")
+
+    async def _run_bridge(self):
+        try:
+            await self.startup_bridge()
+        except Exception:
+            logger.exception("Wait startup bridge failed")
 
     async def startup_bridge(self):
         """Durable project receipts permit restart and newly enabled canary recovery."""

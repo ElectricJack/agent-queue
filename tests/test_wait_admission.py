@@ -493,3 +493,33 @@ async def test_startup_bridge_runs_once_and_restart_honours_durable_marker(env):
     service.command = AsyncMock(side_effect=command)
     await service.startup_bridge()
     service.command.assert_not_awaited()
+
+
+async def test_tick_runs_startup_bridge_beside_the_scheduler(env, monkeypatch):
+    import asyncio
+    from src.wait_runtime.service import WaitService
+
+    import src.wait_runtime.service as service_module
+
+    service = WaitService(env.o, clock=lambda: NOW)
+    started, release = asyncio.Event(), asyncio.Event()
+    calls = 0
+
+    async def slow_bridge():
+        nonlocal calls
+        calls += 1
+        started.set()
+        await release.wait()
+
+    monkeypatch.setattr(service_module, "BRIDGE_TICK_BUDGET_SECONDS", 0.05)
+    monkeypatch.setattr(WaitService, "enabled", property(lambda self: True))
+    service.processing_enabled = AsyncMock(return_value=True)
+    service.startup_bridge = slow_bridge
+    service.lifecycle.tick = AsyncMock()
+    service.listener.tick = AsyncMock(return_value=False)
+    await asyncio.wait_for(service.tick(), 1)
+    await asyncio.wait_for(started.wait(), 1)
+    await asyncio.wait_for(service.tick(), 1)
+    assert calls == 1
+    release.set()
+    await service._bridge_task
