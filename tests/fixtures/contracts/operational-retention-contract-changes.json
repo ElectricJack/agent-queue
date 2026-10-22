@@ -1,8 +1,8 @@
 {
   "source_base": "feeb89e65",
   "reason": "Add the bounded operational_retention archive command (calm-grove-13). Preserve all existing descriptor bytes.",
-  "previous_cli_catalogue_sha256": "ef12003251677f05da45c498ef2fb8edcb3fe627c817deec07eb57ccca8e9fb3",
-  "cli_catalogue_sha256": "d0a2e357fc4f9c0987f54409a09af8d9726f3f830abb5690265a2d5608ae099d",
+  "previous_cli_catalogue_sha256": "c98fef6af2ba4db8c1c07f5e5b35e69242da57d98a02c737b3bc11eebaf946cb",
+  "cli_catalogue_sha256": "290e2dbbcf78de54529980c650bba931be38d264d552e14ece9e1a3d87dca47f",
   "command": "operational_retention",
   "explicit_entry": {
     "name": "operational_retention",
@@ -25,5 +25,6 @@
     }
   },
   "tool_category": "system",
-  "contract_fingerprint": "sha256:6d29d06593291ff15a9321ad2cfaa411802373ba337fda20d698f1bc9dbc29f2"
+  "contract_fingerprint": "sha256:6d29d06593291ff15a9321ad2cfaa411802373ba337fda20d698f1bc9dbc29f2",
+  "merged_source": "f8af6255714732c751b89ad4bea8bb8f1ab8fa51"
 }

@@ -12,7 +12,6 @@ from sqlalchemy.exc import IntegrityError
 from src.database.tables import (
     integration_promotion_intents,
     integration_repair_operations,
-    integration_repair_stages,
     integration_review_evidence,
     projects,
     task_branch_origins,
@@ -346,122 +345,6 @@ class IntegrationDeliveryQueriesMixin:
         if result.rowcount != 1:
             raise ValueError("promotion conflict changed during resolution reservation")
         return intent | frozen | {"state": "resolution_reserved"}
-
-    async def recover_unwritten_conflict_resolution_on(
-        self, conn, intent_id: str, *, successor_id: str, successor_domain_key: str
-    ) -> dict:
-        """Supersede one never-written resolution and create its fresh successor.
-
-        The caller has already proved the live remote still equals the old
-        target while holding its current ownership fence.  This helper only
-        performs the durable, append-only-shaped transition under that lock.
-        """
-        intent = await self._locked_intent(conn, intent_id)
-        if intent["state"] == "superseded":
-            successor = (
-                await conn.execute(
-                    select(integration_promotion_intents).where(
-                        integration_promotion_intents.c.supersedes_intent_id == intent_id
-                    )
-                )
-            ).mappings().one_or_none()
-            if successor is None:
-                raise ValueError("superseded resolution has no recovery successor")
-            return dict(successor)
-        if intent["state"] != "resolution_reserved":
-            raise ValueError("only a reserved conflict resolution can be recovered")
-        if intent["resolution_push_started_at"] is not None:
-            raise ValueError("resolution push may have started; recovery is ambiguous")
-        if intent["resolution_push_evidence"] is not None:
-            raise ValueError("resolution push already has durable evidence")
-
-        successor_values = dict(intent)
-        successor_values.update(
-            id=successor_id,
-            domain_key=successor_domain_key,
-            state="conflict",
-            supersedes_intent_id=intent_id,
-            superseded_by_intent_id=None,
-            resolution_head_sha=None,
-            resolution_tree_sha=None,
-            resolution_operation_id=None,
-            resolution_stage_ordinal=None,
-            resolution_task_id=None,
-            resolution_session_id=None,
-            resolution_session_instance_token=None,
-            resolution_workspace_id=None,
-            resolution_fence_owner_id=None,
-            resolution_fence_token=None,
-            resolution_push_started_at=None,
-            updated_at=time.time(),
-        )
-        # SQLAlchemy JSON serializes an explicit ``None`` as JSON ``null``;
-        # the binding guard intentionally requires database NULL for absent
-        # resolution fields, so omit the two JSON columns entirely.
-        successor_values.pop("resolution_commit_shas", None)
-        successor_values.pop("resolution_push_evidence", None)
-        successor_values.pop("resolution_recovery_evidence", None)
-        await conn.execute(insert(integration_promotion_intents).values(**successor_values))
-        changed = await conn.execute(
-            update(integration_promotion_intents)
-            .where(integration_promotion_intents.c.id == intent_id)
-            .where(integration_promotion_intents.c.state == "resolution_reserved")
-            .where(integration_promotion_intents.c.resolution_push_started_at.is_(None))
-            .where(integration_promotion_intents.c.resolution_push_evidence.is_(None))
-            .values(
-                state="superseded",
-                superseded_by_intent_id=successor_id,
-                updated_at=time.time(),
-            )
-        )
-        if changed.rowcount != 1:  # pragma: no cover - locked row guards this
-            raise ValueError("resolution changed during recovery")
-        # Keep the stage's human-facing dossier in step with its authority.
-        # A trigger-only update strands a resumed delegate on the old intent.
-        stage = (
-            await conn.execute(
-                select(integration_repair_stages).where(
-                    integration_repair_stages.c.operation_id == intent["resolution_operation_id"],
-                    integration_repair_stages.c.ordinal == intent["resolution_stage_ordinal"],
-                ).with_for_update()
-            )
-        ).mappings().one_or_none()
-        if stage is None or stage["trigger_id"] != intent_id:
-            raise ValueError("resolution repair stage changed during recovery")
-        dossier = dict(stage["dossier"] or {})
-        conflict = dict(dossier.get("current_conflict") or {})
-        if conflict.get("intent_id") not in {None, intent_id}:
-            raise ValueError("resolution repair dossier names another conflict")
-        conflict["intent_id"] = successor_id
-        dossier["current_conflict"] = conflict
-        dossier["trigger_id"] = successor_id
-        dossier["superseded_conflict_intent_id"] = intent_id
-        changed = await conn.execute(
-            update(integration_repair_stages).where(
-                integration_repair_stages.c.operation_id == stage["operation_id"],
-                integration_repair_stages.c.ordinal == stage["ordinal"],
-                integration_repair_stages.c.trigger_id == intent_id,
-            ).values(trigger_id=successor_id, dossier=dossier)
-        )
-        if changed.rowcount != 1:
-            raise ValueError("resolution repair stage changed during recovery")
-        if stage["repair_task_id"]:
-            delegate = (
-                await conn.execute(select(tasks).where(
-                    tasks.c.id == stage["repair_task_id"]
-                ).with_for_update())
-            ).mappings().one_or_none()
-            if delegate is None or delegate["created_by_id"] != stage["operation_id"]:
-                raise ValueError("resolution repair delegate changed during recovery")
-            notice = (
-                f"Current conflict intent: {successor_id} (supersedes {intent_id}). "
-                "Use the current attached repair fence.\n\n"
-            )
-            await conn.execute(
-                update(tasks).where(tasks.c.id == delegate["id"])
-                .values(description=notice + delegate["description"])
-            )
-        return successor_values
 
     async def record_integration_resolution_push_on(
         self, conn, intent_id: str, evidence: dict[str, Any]

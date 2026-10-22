@@ -600,6 +600,7 @@
         "tests/test_integration_parent_completion.py",
         "tests/test_integration_parent_source.py",
         "tests/test_integration_pr_delivery.py",
+        "tests/test_integration_pr_repair_publication.py",
         "tests/test_integration_properties.py",
         "tests/test_integration_repair.py",
         "tests/test_integration_repair_lineage.py",
@@ -9600,6 +9601,29 @@
         "parametrize"
       ],
       "summary": "An open PR closes only once Git proves its work is on the default branch."
+    },
+    "tests/test_integration_pr_repair_publication.py": {
+      "areas": [
+        "integration-promotion"
+      ],
+      "default_arm": true,
+      "digest": "sha256:e09654b0ae7669563fe777e9e46ef6e867907a8102fcf00e49f024fd4f9ac706",
+      "imports": [
+        "src.commands.integration_commands",
+        "src.commands.principal",
+        "src.database.tables",
+        "src.git.manager",
+        "src.integration",
+        "src.integration.lock",
+        "src.integration.models",
+        "src.integration.pr_repair_publication",
+        "src.integration.repository_git",
+        "src.models"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "A separately filed repair's passing head fast-forwards its root PR's branch."
     },
     "tests/test_integration_properties.py": {
       "areas": [
