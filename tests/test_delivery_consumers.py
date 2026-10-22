@@ -1374,8 +1374,14 @@ async def test_git_first_child_redrive_reads_parent_without_receipts(active_git_
     assert (await db.get_task("epic")).status is not TaskStatus.PAUSED
     delivery = ChildDelivery(db, None, collect=AsyncMock(side_effect=AssertionError("legacy collect")))
     result = await delivery.run("done" if contained else "reopened", dry_run=False)
-    assert result["outcome"] == "nothing_to_redrive"
-    assert ("already delivered" if contained else "train owns delivery") in result["reason"]
+    if contained:
+        assert result["outcome"] == "nothing_to_redrive"
+        assert "already delivered" in result["reason"]
+    else:
+        # No batch carries the pending child, so the train's blocker is reported.
+        assert result["outcome"] == "blocked"
+        assert result["reason"].startswith("completed_undelivered: aq/reopened")
+        assert "train owns delivery" not in result["reason"]
     delivery.collect.assert_not_awaited()
     assert not hasattr(delivery, "_reissue_receipt")
 
