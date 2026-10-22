@@ -12,7 +12,7 @@ import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 
-from sqlalchemy import select
+from sqlalchemy import exists, func, select
 
 from src.database.tables import playbook_activations, playbook_artifacts, projects
 from src.playbooks.train_policy import TrainPolicy
@@ -23,6 +23,20 @@ class TrainPolicyView:
     enabled: bool = True
     policy: TrainPolicy | None = None
     reason: str | None = None
+
+
+def train_disabled_for_project(project_table=projects):
+    """Shared SQL admission overlay; only explicit activation off bypasses train work."""
+    selected = func.coalesce(
+        project_table.c.hierarchical_integration_policy["train"]["playbook_id"].as_string(),
+        "fast-smooth-train",
+    )
+    return exists().where(
+        playbook_activations.c.scope == "project",
+        playbook_activations.c.scope_identifier == project_table.c.id,
+        playbook_activations.c.playbook_id == selected,
+        playbook_activations.c.enabled.is_(False),
+    ).correlate(project_table)
 
 
 def artifact_policy(digest, path):
@@ -52,6 +66,8 @@ async def train_policy_on(conn, project_id: str) -> TrainPolicyView:
     ))).mappings().all()
     found = []
     for row in rows:
+        if not row["enabled"]:
+            return TrainPolicyView(False, reason="train_playbook_disabled")
         try:
             policy = await asyncio.to_thread(
                 artifact_policy, row["artifact_sha256"], row["path"],

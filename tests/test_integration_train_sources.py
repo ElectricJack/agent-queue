@@ -148,7 +148,7 @@ from src.integration.models import BranchKey, Fence, IntegrationTrainPolicy
 from src.integration.ownership import BranchBusy
 from src.integration.regeneration import DEFAULT_REGENERATE_COMMAND
 from src.integration.repair import OrdinaryRepairService, ordinary_repair_id
-from src.integration.reviews import ReviewRequirements, TreeReviews
+from src.integration.reviews import ReviewRequirements, ReviewSubject, TreeReviews
 from src.integration.selection_metrics import SelectionMetrics, selection_metrics_scope
 from src.integration.status import IntegrationStatusService
 from src.integration.train import CandidateChecks, IntegrationTrain, TrainLane, TrainTarget
@@ -5410,13 +5410,27 @@ async def collected_epic(world, request):
                            target=TrainTarget("p", "r", "refs/heads/aq/epic", "epic"))
 
 
-async def collect_epic(case):
+async def hold_epic_review(case, head):
+    """An actual review hold for scenarios needing an unfinished aggregate."""
+    async with case.db.immediate() as conn:
+        await TreeReviews(case.db).record_on(conn,
+            ReviewSubject("p", "r", "epic", git(case.origin.url, "rev-parse", f"{head}^{{tree}}")),
+            ReviewRequirements(True, frozenset({"github:jack"})), reviewer="github:jack",
+            verdict="rejected", decision_id="fixture-review-hold",
+            reviewed_head_sha=head, source_base=case.base, provenance={})
+
+
+async def collect_epic(case, *, hold_review=True):
     testing = await case.train.visit(case.target)
     assert testing.state == "testing", testing
+    if hold_review:
+        # Missing review paperwork alone no longer stops automatic completion.
+        await hold_epic_review(case, testing.candidate_sha)
     case.github.runs[testing.candidate_sha] = "success"
     delivered = await case.train.visit(case.target)
     assert delivered.state == "delivered", delivered
-    assert await case.db.get_task_completion("epic") is None
+    if hold_review:
+        assert await case.db.get_task_completion("epic") is None
     return delivered.target_sha
 
 
@@ -5450,6 +5464,7 @@ async def test_collected_epic_automatically_refreshes_before_aggregate_checks(
     case = collected_epic
     testing = await case.train.visit(case.target)
     assert testing.state == "testing"
+    await hold_epic_review(case, testing.candidate_sha)
     if restart:
         case.github.runs[testing.candidate_sha] = "success"
         assert (await case.train.visit(case.target)).state == "delivered"
@@ -5521,9 +5536,9 @@ async def test_collected_epic_automatically_refreshes_before_aggregate_checks(
     head = git(case.origin.url, "rev-parse", "aq/epic")
     for source in (default, *case.children):
         git(case.origin.url, "merge-base", "--is-ancestor", source, head)
-    # Fresh checks alone do not certify the epic: the new tree needs review.
-    assert await case.db.get_task_completion("epic") is None
-    await review_epic(case)
+    # The old tree's rejection remains historical. Fresh green readiness
+    # completes the new tree without requiring another review record.
+    assert (await case.db.get_task_completion("epic")).commits == [head]
     assert (await case.train.visit(case.target)).state == "idle"
     completion = await case.db.get_task_completion("epic")
     assert completion.commits == [head]
@@ -5667,10 +5682,9 @@ async def test_collected_two_child_epic_gets_completion_and_lands_via_root(
     head = await collect_epic(case)
     if shared_branch_tasks:
         await completed_epic_branch_helpers(case)
-    waiting = await case.train.visit(case.target)
-    assert waiting.state == "blocked"
-    assert "review_missing" in {b["code"] for b in waiting.detail["blockers"]}
     await review_epic(case)
+    waiting = await case.train.visit(case.target)
+    assert waiting.state == "idle"
     assert (await case.train.visit(case.target)).state == "idle"
     completion = await case.db.get_task_completion("epic")
     assert completion.outcome == "pass" and completion.commits == [head]
@@ -5779,9 +5793,10 @@ async def test_reverify_completed_epic_with_released_owner_preserves_gates(
         ))).mappings().one()) == owner
     apply = dict(dry_run=False, operator_id="supervisor", expected_head_sha=head,
                  reason="verify the collected aggregate")
+    await review_epic(case, verdict="rejected", decision="hold-aggregate")
     blocked = await controls.reverify_epic("epic", **apply)
     assert blocked["outcome"] == "visited" and blocked["state"] == "blocked"
-    assert "review_missing" in {b["code"] for b in blocked["blockers"]}
+    assert "review_rejected" in {b["code"] for b in blocked["blockers"]}
     assert blocked["completion_id"] is None
     if reservation != "released":
         async with case.db._engine.connect() as conn:
@@ -6275,16 +6290,14 @@ async def test_completed_root_gets_automatic_aggregate_visit_without_child_origi
     scheduled = await case.train.tick()
     await case.train.drain()
     assert "/".join(case.target.key) in scheduled["started"]
-    visit = next(row for row in case.train.status()
-                 if row["target_ref"] == case.target.target_ref)
+    assert any(row["target_ref"] == case.target.target_ref for row in case.train.status())
     completion = await case.db.get_task_completion("epic")
+    assert completion is not None and completion.outcome == "pass"
+    assert completion.commits == [head]
     if missing_origin:
-        assert completion is None
-        assert visit["state"] == "blocked"
-        assert "epic_origin_missing" in {b["code"] for b in visit["detail"]["blockers"]}
-    else:
-        assert completion is not None and completion.outcome == "pass"
-        assert completion.commits == [head]
+        # The historical origin still retains its true filing base for the next lane.
+        testing = await case.train.visit(MAIN)
+        assert testing.state == "testing", testing
     assert git(case.origin.url, "rev-parse", "main") == case.base
 
 
@@ -9609,3 +9622,112 @@ async def test_train_control_command_retains_refusal_boundaries(
             with pytest.raises(type(error), match=str(error)):
                 await command({scope: "missing"})
     service_call.assert_awaited_once()
+
+
+@pytest.mark.parametrize("origin_state", ["missing", "retired", "missing_provenance"])
+@pytest.mark.parametrize("constraint", ["none", "pending", "hold", "aborted", "writer", "generation"])
+async def test_frozen_green_candidate_uses_git_when_origin_projection_disappears(
+    world, origin_state, constraint,
+):
+    from sqlalchemy import delete
+
+    from src.operator_decisions import OperatorDecisions
+    from tests.pg_trigger_helpers import suspended_trigger
+
+    source = await completed(world, "source")
+    train, checks, _ = lane(world, LocalGit(Path(world.origin.url)))
+    testing = await train.visit(MAIN)
+    assert testing.state == "testing", testing
+    async with world.db._engine.begin() as conn:
+        query = delete(task_branch_origins) if origin_state != "retired" else (
+            update(task_branch_origins).values(retired_at=time.time()))
+        if origin_state != "retired":
+            # Deliberately model a lost legacy projection; restore the delete guard.
+            async with suspended_trigger(conn, table="task_branch_origins",
+                                         name="trg_task_branch_origins_materialized_delete"):
+                await conn.execute(query.where(task_branch_origins.c.task_id == "source"))
+        else:
+            await conn.execute(query.where(task_branch_origins.c.task_id == "source"))
+    if origin_state == "missing_provenance":
+        from src.integration.provenance import CompletionIdentity
+
+        completion = await world.db.get_task_completion("source")
+        identity = CompletionIdentity("p", "r", "source", completion.id)
+        git(world.origin.url, "update-ref", "-d", identity.ref)
+    if constraint != "pending":
+        checks.green.add(testing.candidate_sha)
+    if constraint == "hold":
+        await OperatorDecisions(world.db).record({
+            "object_kind": "batch", "object_id": testing.batch_id, "operator": "operator",
+            "decision": "Keep this candidate held", "effect": "hold", "source": "dashboard",
+            "source_ref": "message:hold", "idempotency_key": "green-hold", "releases": None,
+        }, recorded_by="human:local-operator")
+    elif constraint == "aborted":
+        await BatchStore(world.db).set_intent(testing.batch_id, "aborted", reason="operator abort")
+    elif constraint == "writer":
+        await BranchLock(world.db).acquire(
+            BranchKey(repository_id="r", branch="main"), "competing-writer")
+    elif constraint == "generation":
+        changed = world.origin.work("source", "new-generation")
+        await close(world.db, "source", [changed], close_id="new-generation", origin=world.origin)
+    result = await train.visit(MAIN)
+    if constraint == "none":
+        assert result.state == "delivered", result
+        assert git(world.origin.url, "rev-parse", "main") == testing.candidate_sha
+        git(world.origin.url, "merge-base", "--is-ancestor", source, testing.candidate_sha)
+    else:
+        assert result.state != "delivered", result
+        assert git(world.origin.url, "rev-parse", "main") == testing.target_sha
+
+
+@pytest.mark.parametrize("review", ["missing", "rejected", "rejected_optional"])
+async def test_automatic_epic_ignores_missing_review_record_but_respects_rejection(
+    collected_epic, review,
+):
+    case = collected_epic
+    head = await collect_epic(case, hold_review=review != "missing")
+    if review != "missing":
+        await review_epic(case, verdict="rejected", decision="explicit-rejection")
+    if review == "rejected_optional":
+        policy = (await case.db.get_project("p")).hierarchical_integration_policy
+        policy["root"]["admission"] = "authorized"
+        await case.db.update_project("p", hierarchical_integration_policy=policy)
+    result = await case.train.visit(case.target)
+    if review == "missing":
+        assert result.state == "idle", result
+        assert (await case.db.get_task_completion("epic")).commits == [head]
+    else:
+        assert result.state == "blocked", result
+        assert "review_rejected" in {item["code"] for item in result.detail["blockers"]}
+
+
+@pytest.mark.parametrize("changed_child", [False, True])
+async def test_frozen_epic_uses_fresh_readiness_when_origin_graph_projection_is_lost(
+    collected_epic, changed_child,
+):
+    from sqlalchemy import delete
+
+    from tests.pg_trigger_helpers import suspended_trigger
+
+    case = collected_epic
+    await collect_epic(case)
+    await review_epic(case)
+    assert (await case.train.visit(case.target)).state == "idle"
+    testing = await case.train.visit(MAIN)
+    assert testing.state == "testing", testing
+    async with case.db._engine.begin() as conn:
+        async with suspended_trigger(conn, table="task_branch_origins",
+                                     name="trg_task_branch_origins_materialized_delete"):
+            await conn.execute(delete(task_branch_origins).where(
+                task_branch_origins.c.task_id == "epic"))
+    if changed_child:
+        changed = case.origin.work("child-a", "new-child-generation")
+        await close(case.db, "child-a", [changed], close_id="new-child-generation", origin=case.origin)
+    case.github.runs[testing.candidate_sha] = "success"
+    result = await case.train.visit(MAIN)
+    if changed_child:
+        assert result.state != "delivered", result
+        assert git(case.origin.url, "rev-parse", "main") == testing.target_sha
+    else:
+        assert result.state == "delivered", result
+        assert git(case.origin.url, "rev-parse", "main") == testing.candidate_sha

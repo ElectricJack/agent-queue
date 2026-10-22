@@ -10158,10 +10158,11 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:bc9a72717bc615609526e2eeb575a3e3f92256a0a081e1771e5d0dc0797dc9f1",
+      "digest": "sha256:18f8cd11696006e2e9d36588e0f44f858995928cd4c725ac8a0e22d559f7aeb2",
       "imports": [
         "src.database.tables",
         "src.integration.batches",
+        "src.integration.canonical_reservation",
         "src.integration.lock",
         "src.integration.manual_control",
         "src.integration.train_policy",

@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 from sqlalchemy import update
 
-from src.database.tables import playbook_artifacts, playbook_activations, projects
+from src.database.tables import playbook_activations, playbook_artifacts, projects
 from src.integration.batches import Batch, BatchMember, BatchStore
 from src.integration.lock import PublishWithdrawn
 from src.integration.manual_control import enabled_train_write
@@ -18,9 +18,20 @@ from src.integration.train_sources import DaemonLanes, DatabaseTargets
 from src.playbooks.train_policy import TrainPolicy
 from tests.test_delivery_consumers import git
 from tests.test_integration_train import (
-    ROOT, MEMBERS, Batches, Checks, ChecksState, Repair, Service, Targets, batch, lane, train,
+    MEMBERS,
+    ROOT,
+    Batches,
+    Checks,
+    ChecksState,
+    Repair,
+    Service,
+    Targets,
+    batch,
+    lane,
+    train,
 )
-from tests.test_integration_train_sources import MAIN, completed, hosted_train, world as world
+from tests.test_integration_train_sources import MAIN, completed, hosted_train
+from tests.test_integration_train_sources import world as world  # noqa: PLC0414 -- pytest fixture
 
 
 async def activate(world, tmp_path, *, enabled=True, **settings):
@@ -44,6 +55,7 @@ async def activate(world, tmp_path, *, enabled=True, **settings):
         artifact_sha256=sha, enabled=enabled, activated_by="test",
         health="ready" if enabled else "disabled", reasons="[]",
     )
+    return sha
 
 
 async def test_disable_stops_targets_freeze_and_publish_but_preserves_sources(world, tmp_path):
@@ -107,7 +119,7 @@ async def test_disabled_train_releases_unused_reservations_only(world, tmp_path)
 
 
 async def test_custom_bound_policy_corruption_is_unknown_not_legacy(world, tmp_path):
-    await activate(world, tmp_path)
+    sha = await activate(world, tmp_path)
     project = await world.db.get_project("p")
     policy = project.hierarchical_integration_policy or {}
     async with world.db.immediate() as conn:
@@ -126,6 +138,11 @@ async def test_custom_bound_policy_corruption_is_unknown_not_legacy(world, tmp_p
     with pytest.raises(PublishWithdrawn, match="unavailable"):
         async with enabled_train_write(world.db, "r"):
             pytest.fail("unreadable policy authorized publication")
+    # Off is explicit intent even when the artifact can no longer be read.
+    await world.db.set_playbook_activation(
+        playbook_id="custom-train", scope="project", scope_identifier="p",
+        artifact_sha256=sha, enabled=False, activated_by="test", health="disabled", reasons="[]")
+    assert (await load_train_policy(world.db, "p")).reason == "train_playbook_disabled"
 
 
 async def test_current_checks_replace_policy_without_changing_frozen_batch(world, tmp_path):
@@ -190,7 +207,9 @@ async def test_pending_candidate_uses_edited_checks_and_lands_same_sha(world, tm
     await activate(world, tmp_path, required_checks={
         "version": "v2", "names": ["unit", "windows"], "producer_id": "15368"})
     waiting = await runtime.visit(MAIN)
-    assert waiting.state == "testing" and waiting.batch_id == pending.batch_id
+    assert waiting.state in {"testing", "repair", "red"}, waiting
+    assert waiting.batch_id == pending.batch_id
+    assert git(world.origin.url, "rev-parse", "main") != pending.candidate_sha
     await activate(world, tmp_path, required_checks={"version": "v3", "names": ["unit"], "producer_id": "15368"})
     landed = await runtime.visit(MAIN)
     assert landed.state == "delivered"

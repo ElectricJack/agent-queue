@@ -14,6 +14,7 @@ import logging
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from functools import cache
 
 from sqlalchemy import (
     Text,
@@ -394,7 +395,22 @@ class ProjectIntegrationMode:
         )
 
 
+@cache
+def _train_disabled_for_task():
+    # Reuse the SQL expression/binds; its activation values are read per query.
+    from src.integration.train_policy import train_disabled_for_project
+
+    return exists(select(literal(1)).where(
+        projects.c.id == tasks.c.project_id, train_disabled_for_project(),
+    ))
+
+
 def materialized_origin_when_hierarchical(mode: ProjectIntegrationMode | None = None):
+    """An explicitly paused train creates no new origin admission requirement."""
+    return _train_disabled_for_task() | _materialized_origin_when_hierarchical(mode)
+
+
+def _materialized_origin_when_hierarchical(mode: ProjectIntegrationMode | None = None):
     """Require an exact origin or an active delegate reservation in enabled projects.
 
     A repair delegate writes its operation's existing branch and a parent
@@ -599,6 +615,11 @@ def integration_rework_cutoff(task_id):
 def delivered_same_parent_prerequisites_when_hierarchical(
     mode: ProjectIntegrationMode | None = None,
 ):
+    """Paused trains use ordinary task dependencies without delivery paperwork."""
+    return _train_disabled_for_task() | _delivered_same_parent_prerequisites(mode)
+
+
+def _delivered_same_parent_prerequisites(mode: ProjectIntegrationMode | None = None):
     """Require a direct sibling prerequisite to reach the shared parent first.
 
     Graph blockedness intentionally releases a ``blocks`` dependent when its
@@ -718,6 +739,10 @@ def _cross_parent_prerequisites():
 
 
 def _cross_parent_delivery_enabled(mode):
+    return ~_train_disabled_for_task() & _configured_cross_parent_delivery(mode)
+
+
+def _configured_cross_parent_delivery(mode):
     if mode is None:
         return exists(select(literal_column("1")).where(
             projects.c.id == tasks.c.project_id,

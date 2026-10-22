@@ -281,6 +281,9 @@ class PlaybookArtifactQueryMixin:
                 if repository_id:
                     await conn.execute(text("SELECT pg_advisory_xact_lock(:key)"),
                                        {"key": lock_key(repository_id)})
+                # Worker reservations already hold hierarchy before touching
+                # owner rows. Match that guard after the publisher's repo fence.
+                await self.lock_hierarchy_project(conn, scope_identifier)
             if artifact_sha256 is not None:
                 found = await conn.execute(
                     select(playbook_artifacts.c.artifact_sha256).where(

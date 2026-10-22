@@ -179,7 +179,7 @@ def _branch(ref: str) -> str:
 
 
 async def _pending_tasks(conn, project_id: str, repository_id: str, *, limit: int | None) -> list[str]:
-    """Completed tasks with a live branch origin in the repository, newest first."""
+    """Completed tasks with a known filing base, preferring their live origin."""
     from src.integration.promotion_routing import cutover_origin_clause
 
     flow, cutover = (await conn.execute(select(projects.c.promotion_flow,
@@ -187,12 +187,18 @@ async def _pending_tasks(conn, project_id: str, repository_id: str, *, limit: in
     promotion_refs = {
         ref for name in flow_targets(flow) for ref in (name, _branch(name))
     }
+    retained = task_branch_origins.alias("pending_retained_origin")
+    latest_origin = select(retained.c.id).where(
+        retained.c.task_id == tasks.c.id,
+        retained.c.repository_id == repository_id,
+    ).order_by(retained.c.retired_at.is_(None).desc(),
+               retained.c.creation_generation.desc()).limit(1).correlate(tasks).scalar_subquery()
     rows = await conn.execute(
         select(tasks.c.id)
         .select_from(tasks.join(task_branch_origins, and_(
             task_branch_origins.c.task_id == tasks.c.id,
             task_branch_origins.c.repository_id == repository_id,
-            task_branch_origins.c.retired_at.is_(None),
+            task_branch_origins.c.id == latest_origin,
         )))
         .where(tasks.c.project_id == project_id, tasks.c.status == "COMPLETED",
                or_(tasks.c.task_type.is_(None), tasks.c.task_type != "promotion"),
@@ -1515,9 +1521,9 @@ class DatabaseBatches:
                 select(task_branch_origins.c.task_id, task_branch_origins.c.base_sha,
                        task_branch_origins.c.creation_generation)
                 .where(task_branch_origins.c.task_id.in_(ids),
-                       task_branch_origins.c.repository_id == target.repository_id,
-                       task_branch_origins.c.retired_at.is_(None))
-                .order_by(task_branch_origins.c.creation_generation)
+                       task_branch_origins.c.repository_id == target.repository_id)
+                .order_by(task_branch_origins.c.retired_at.is_(None),
+                          task_branch_origins.c.creation_generation)
             )).all():
                 bases[task_id] = base
             edges: dict[str, set[str]] = {}
@@ -2008,7 +2014,8 @@ class DatabaseBatches:
                         member.task_id, member.source_sha, snapshot)):
                 live.add(member.task_id)
             if not await stacks.current(member.task_id, source_sha=member.source_sha,
-                                        snapshot=snapshot):
+                                        snapshot=snapshot, included_sources={
+                                            item.task_id: item.source_sha for item in members}):
                 return False
         source_types = {}
         async with self.db._engine.connect() as conn:
@@ -2091,9 +2098,12 @@ class DatabaseBatches:
             notes = json.loads(record["notes"])
             if source is not None and json.loads(record["commits"]) != [source]:
                 return False
-            if notes["graph_sha256"] != epic_graph_digest(graph):
+            if snapshot is None and notes["graph_sha256"] != epic_graph_digest(graph):
                 return False
             if snapshot is not None:
+                # Saved graph hashes include disposable origin/review projections.
+                # Fresh exact-source readiness proves the actual graph below; a
+                # stale hash cannot override that proof or conceal a real hold.
                 # The completion row describes a decision; it cannot prove
                 # today's children are in today's epic branch.
                 async def cached_checks(repository_id, head, policy):
@@ -2112,7 +2122,7 @@ class DatabaseBatches:
 
                 readiness = await EpicReadinessEvaluator(self.db, EpicGraphReader(self.db,
                     policy_on=epic_policy_on, source_base_on=epic_source_base_on,
-                ), TreeReviews(self.db), checks=cached_checks).evaluate(graph, snapshot)
+                ), TreeReviews(self.db, allow_missing=True), checks=cached_checks).evaluate(graph, snapshot)
                 if not readiness.ready or readiness.head_sha != source:
                     return False
                 for subject_id, _, _ in epic_heads(readiness):
@@ -2132,7 +2142,7 @@ class DatabaseBatches:
                         integration_check_evidence.c.conclusion == "success"))).scalars())
                     if not set(policy.check_names) <= green:
                         return False
-                review = await TreeReviews(self.db).verdict_on(conn, ReviewSubject(
+                review = await TreeReviews(self.db, allow_missing=True).verdict_on(conn, ReviewSubject(
                     graph.project_id, graph.repository_id, subject_id, tree), policy.reviews)
                 if not review.satisfied:
                     return False
@@ -2231,16 +2241,15 @@ async def epic_policy_on(conn, row, project) -> EpicPolicy:
     boundary = "parent" if row["parent_task_id"] else "root"
     reviewed = (policy.get(boundary) or {}).get("admission") == "reviewed"
     reviewers = set()
-    if reviewed:
-        for identity, evidence in (await conn.execute(select(
-            integration_review_evidence.c.reviewer_identity,
-            integration_review_evidence.c.evidence,
-        ).where(integration_review_evidence.c.source_task_id == row["id"],
-                integration_review_evidence.c.repository_id == project["integration_repository_id"]
-        ))).all():
-            if evidence.get("decision_path") in {"github_pull_request", "review_task_close",
-                                                  "reopen_with_feedback", "tree_review"}:
-                reviewers.add(identity)
+    for identity, evidence in (await conn.execute(select(
+        integration_review_evidence.c.reviewer_identity,
+        integration_review_evidence.c.evidence,
+    ).where(integration_review_evidence.c.source_task_id == row["id"],
+            integration_review_evidence.c.repository_id == project["integration_repository_id"]
+    ))).all():
+        if evidence.get("decision_path") in {"github_pull_request", "review_task_close",
+                                              "reopen_with_feedback", "tree_review"}:
+            reviewers.add(identity)
     trust = str(required.get("producer_id") or "")
     ci = integration_ci_policy(policy)
     if ci is not None and ci.source_for("epic") != "hosted":
@@ -2269,8 +2278,8 @@ async def epic_policy_on(conn, row, project) -> EpicPolicy:
 async def epic_source_base_on(conn, row):
     return await conn.scalar(select(task_branch_origins.c.base_sha).where(
         task_branch_origins.c.task_id == row["id"],
-        task_branch_origins.c.retired_at.is_(None),
-    ).order_by(task_branch_origins.c.creation_generation.desc()).limit(1))
+    ).order_by(task_branch_origins.c.retired_at.is_(None).desc(),
+               task_branch_origins.c.creation_generation.desc()).limit(1))
 
 
 def epic_graph_digest(graph) -> str:
@@ -2362,18 +2371,9 @@ class EpicCompletions:
             if not await self.evaluator.current_on(conn, readiness, snapshot):
                 return ({"code": "epic_changed", "task_id": node.task_id, "ref": node.task_id,
                          "detail": "epic readiness changed before completion was recorded"},)
-            # The source origin is also what admits this completion to its next
-            # lane. Never synthesize one from a branch that happens to exist.
-            origin = await conn.scalar(select(task_branch_origins.c.id).where(
-                task_branch_origins.c.task_id == node.task_id,
-                task_branch_origins.c.repository_id == graph.repository_id,
-                task_branch_origins.c.branch_name.in_((node.branch_ref,
-                    node.branch_ref.removeprefix("refs/heads/"))),
-                task_branch_origins.c.retired_at.is_(None),
-            ))
-            if not origin:
-                return ({"code": "epic_origin_missing", "task_id": node.task_id,
-                         "ref": node.task_id, "detail": "epic has no live branch origin"},)
+            # The fetched aggregate and retained completion ref already bind
+            # this task/repository/head. A missing live origin is disposable
+            # bookkeeping; selection still requires a real retained filing base.
             latest = await conn.scalar(select(task_completion_records.c.completed_at).where(
                 task_completion_records.c.task_id == node.task_id,
             ).order_by(task_completion_records.c.completed_at.desc()).limit(1))
@@ -3019,7 +3019,7 @@ class DaemonLanes:
 
         evaluator = EpicReadinessEvaluator(self.db, EpicGraphReader(self.db,
             policy_on=epic_policy_on, source_base_on=epic_source_base_on,
-        ), TreeReviews(self.db), checks=head_checks)
+        ), TreeReviews(self.db, allow_missing=True), checks=head_checks)
         from src.integration.root_pull_requests import EpicPullRequestService
 
         completions = EpicCompletions(self.db, evaluator, refresh=refresh, clock=self.clock,
