@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import importlib.util
 import inspect
 import json
 import textwrap
@@ -80,6 +81,58 @@ def test_builtin_audit_is_complete():
             tree = ast.parse(textwrap.dedent(inspect.getsource(getattr(CommandHandler, helper))))
             digest = "sha256:" + hashlib.sha256(ast.dump(tree, include_attributes=False).encode()).hexdigest()
             assert digest == expected, (name, helper)
+
+
+@pytest.fixture
+def audit_refresh(tmp_path, monkeypatch):
+    spec = importlib.util.spec_from_file_location(
+        "audit_refresh", ROOT / "scripts/refresh-command-audit-digest.py",
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    rows = json.loads(AUDIT.read_text())
+    selected = {name: rows[name] for name in ("explain_task", "get_schema")}
+    for row in selected.values():
+        row["source_digest"] = "sha256:stale"
+    audit = tmp_path / "audit.json"
+    audit.write_text(json.dumps(selected, indent=2) + "\n")
+    monkeypatch.setattr(module, "AUDIT", audit)
+
+    def run(*args):
+        monkeypatch.setattr("sys.argv", [str(module.__file__), *args])
+        return module.main()
+
+    return audit, run
+
+
+def test_audit_refresh_requires_explicit_write_and_preserves_review_evidence(audit_refresh):
+    audit, run = audit_refresh
+    original = audit.read_bytes()
+    before = json.loads(original)
+    assert run("--command", "explain_task") == 1
+    assert audit.read_bytes() == original
+    assert run("--command", "explain_task", "--check") == 1
+    assert audit.read_bytes() == original
+
+    assert run("--command", "explain_task", "--write") == 0
+    after = json.loads(audit.read_text())
+    assert after["explain_task"]["source_digest"] != "sha256:stale"
+    before["explain_task"]["source_digest"] = after["explain_task"]["source_digest"]
+    assert after == before  # All other fields and the unrelated stale row stay untouched.
+    refreshed = audit.read_bytes()
+    assert run("--command", "explain_task", "--check") == 0
+    assert run("--command", "explain_task", "--write") == 0
+    assert audit.read_bytes() == refreshed
+
+
+@pytest.mark.parametrize("args", [[], ["--command", "unknown", "--write"]])
+def test_audit_refresh_refuses_missing_or_unknown_selection(audit_refresh, args):
+    audit, run = audit_refresh
+    original = audit.read_bytes()
+    with pytest.raises(SystemExit) as exc:
+        run(*args)
+    assert exc.value.code == 2
+    assert audit.read_bytes() == original
 
 
 @pytest.mark.parametrize(("command", "requirements"), [

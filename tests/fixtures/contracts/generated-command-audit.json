@@ -5003,7 +5003,7 @@
   "explain_task": {
     "mode": "json_object",
     "producer": "src/commands/task_commands.py:TaskCommandsMixin._cmd_explain_task",
-    "source_digest": "sha256:d3d2a73da5759b7e981ed7c63feca6fc81cf0807a53a55f46aa225e62e3b726b",
+    "source_digest": "sha256:3b2e12cf6da06b490e6c6e999413c1e37fe1d9f025f42f839c2d01b8685f5dd1",
     "input_schema_source": "fallback",
     "schema_quality": "declared",
     "argument_reads_diagnostic_only": [
