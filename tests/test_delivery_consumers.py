@@ -2031,9 +2031,12 @@ async def test_cleanup_guard_rechecks_current_target_without_receipts(world, tmp
     assert "unknown or pending" in await service._delivery_hold(row, batch)
     db.set_prerequisite_observer(None)
     assert "requires current Git" in await service._delivery_hold(row, batch)
+@pytest.mark.parametrize("prerequisite_policy", [None, "wait-for-parent"])
 @pytest.mark.parametrize("cross_epic", [False, True])
 @pytest.mark.parametrize("proof", ["current", "missing", "reopened", "held"])
-async def test_resume_uses_git_prerequisites_without_legacy_receipts(world, tmp_path, proof, cross_epic):
+async def test_resume_uses_git_prerequisites_without_legacy_receipts(
+    world, tmp_path, proof, cross_epic, prerequisite_policy,
+):
     from types import SimpleNamespace
 
     from sqlalchemy import select
@@ -2064,7 +2067,11 @@ async def test_resume_uses_git_prerequisites_without_legacy_receipts(world, tmp_
                                   description=""))
         async with db._engine.begin() as conn:
             await db.set_parent("done", "upstream-epic", conn=conn)
-    await db.update_project("p", hierarchical_integration_mode="hierarchy")
+    await db.update_project(
+        "p", hierarchical_integration_mode="hierarchy",
+        hierarchical_integration_policy={"prerequisite_branches": prerequisite_policy}
+        if prerequisite_policy else {},
+    )
     git(origin.clone, "push", "origin", "main:aq/epic")
     head = git(origin.clone, "rev-parse", "main")
     now = time.time()
@@ -2109,8 +2116,11 @@ async def test_resume_uses_git_prerequisites_without_legacy_receipts(world, tmp_
     async with db._engine.connect() as conn:
         observed = await service.scheduler.reader.observe_task(
             conn, "dependent", continuation_id="resume")
-    assert (action is not None) == (proof == "current"), observed
+    # The saved continuation already contains the completed source. Stacking
+    # permits that source before parent delivery; the authored opt-out does not.
+    admitted = proof == "current" or (proof == "missing" and prerequisite_policy is None)
+    assert (action is not None) == admitted, observed
     async with db._engine.connect() as conn:
         state = await conn.scalar(select(continuations.c.resume_state).where(
             continuations.c.id == "resume"))
-    assert state == ("reserved" if proof == "current" else "queued")
+    assert state == ("reserved" if admitted else "queued")

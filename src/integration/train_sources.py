@@ -1898,7 +1898,7 @@ class DatabaseBatches:
                     projects.c.id == batch.project_id))
                 # Repair filings may share the epic ref. Recheck holds against
                 # the frozen epic identity rather than rediscovering it by ref.
-                graph = await EpicGraphReader(policy_on=epic_policy_on,
+                graph = await EpicGraphReader(self.db, policy_on=epic_policy_on,
                     source_base_on=epic_source_base_on).read_on(conn, row["id"]) if row else None
             if not (row and active == "ACTIVE" and row["project_id"] == batch.project_id
                     and row["repo_id"] == batch.repository_id
