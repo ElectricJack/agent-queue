@@ -17989,7 +17989,7 @@
   "restart_task": {
     "mode": "json_object",
     "producer": "src/commands/task_commands.py:TaskCommandsMixin._cmd_restart_task",
-    "source_digest": "sha256:ddcf2c275b6df177e6958bcde55493611e906347ed1aa2c8bedf1af060956847",
+    "source_digest": "sha256:3678105a10f52f8c900f299ca1764708fdcca9002bedf82ed298ff90e2f3bd22",
     "input_schema_source": "explicit_tool",
     "schema_quality": "declared",
     "argument_reads_diagnostic_only": [
@@ -18014,11 +18014,19 @@
         "protocol": "explicit_boolean: False"
       },
       {
+        "return": "{'success': False, 'error': str(exc), 'error_code': exc.code}",
+        "protocol": "explicit_boolean: False"
+      },
+      {
         "return": "await self._restart_repair_delegate(task)",
         "protocol": "delegated_producer"
       },
       {
         "return": "{'success': False, 'error': f'Cannot restart integration task: {reservation['reason']}. For a stopped writer, preview aq integration release-owner --task-id {task.id} --dry-run; apply only after its provider-backed proof succeeds, then retry restart.'}",
+        "protocol": "explicit_boolean: False"
+      },
+      {
+        "return": "{'success': False, 'error': 'Task changed during cold restart; retry.'}",
         "protocol": "explicit_boolean: False"
       },
       {
@@ -18034,7 +18042,8 @@
       "tests/test_integration_owner_recovery.py",
       "tests/test_integration_repair.py",
       "tests/test_integration_repair_rollover.py",
-      "tests/test_routing_router.py"
+      "tests/test_routing_router.py",
+      "tests/test_wait_hibernation.py"
     ],
     "helper_producers": {
       "_restart_repair_delegate": "sha256:f0c30ea3c6ca7bed8d1af73e47146c5c9ba72c5e7f1f991c79453cfd996589d0"

@@ -19301,11 +19301,12 @@
         "agent-waits"
       ],
       "default_arm": true,
-      "digest": "sha256:d6d6392dcf29f94e6db3e643f5a7f1be49caea48232076dc6adbe335eeb0f318",
+      "digest": "sha256:db26cbd377d76af340fbf6c9281715ca459d69745230b6621819ffca35150c27",
       "imports": [
         "src.cli.waits",
         "src.commands",
         "src.commands.principal",
+        "src.commands.task_commands",
         "src.config",
         "src.database",
         "src.database.queries.continuation_queries",
