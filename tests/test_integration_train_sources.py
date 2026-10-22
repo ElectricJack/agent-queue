@@ -9396,3 +9396,31 @@ async def test_sealed_red_epic_target_repairs_retained_candidate_and_delivers(
     assert git(case.origin.url, "rev-parse", "aq/epic") == repaired
     for member in frozen_members:
         git(case.origin.url, "merge-base", "--is-ancestor", member.source_sha, repaired)
+
+
+@pytest.mark.parametrize("operation,scope,error,caught", [
+    ("record_root_noop", "task_id", OSError("disk unavailable"), False),
+    ("repair_target", "batch_id", OSError("disk unavailable"), True),
+    ("abort_batch", "batch_id", BranchBusy("owner changed"), False),
+    ("repair_target", "batch_id", BranchBusy("owner changed"), True),
+])
+async def test_train_control_command_retains_refusal_boundaries(
+    world, monkeypatch, operation, scope, error, caught,
+):
+    from src.commands.integration_commands import IntegrationCommandsMixin
+    from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_context
+    from src.profiles.capabilities import DENY_ALL
+
+    handler = IntegrationCommandsMixin()
+    handler.db = world.db
+    service_call = AsyncMock(side_effect=error)
+    monkeypatch.setattr(TrainControls, operation, service_call)
+    command = getattr(handler, "_cmd_integration_" + operation)
+    with principal_context(ExecutionPrincipal(kind=PrincipalKind.LOCAL, policy=DENY_ALL)):
+        if caught:
+            result = await command({scope: "missing"})
+            assert result == {"success": False, "outcome": "refused", "error": str(error)}
+        else:
+            with pytest.raises(type(error), match=str(error)):
+                await command({scope: "missing"})
+    service_call.assert_awaited_once()
