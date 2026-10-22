@@ -1,4 +1,4 @@
-"""Create the child branches a hierarchical project reserved but never cut.
+"""Reserve missing root origins and cut pending hierarchical task branches.
 
 ``HierarchyIntegration._reserve_origin`` records a branch reservation and
 enqueues ``integration.branch_materialization_pending``; something is then
@@ -86,6 +86,31 @@ class BranchMaterializationService:
         #: retries anyway.  Mirrors ``IntegrationService._tick_lock``.
         self._drain_lock = asyncio.Lock()
         self._after_origin = None
+        self._after_root = None
+
+    async def _reserve_missing_roots(self, service, *, limit: int) -> None:
+        """Backfill a bounded page, advancing past failures before retrying them."""
+        from src.integration.hierarchy import ready_root_origin_tasks
+
+        async with self.db._engine.connect() as conn:
+            statement = ready_root_origin_tasks().order_by(tasks.c.created_at, tasks.c.id)
+            if self._after_root is not None:
+                statement = statement.where(tuple_(tasks.c.created_at, tasks.c.id) > self._after_root)
+            rows = (await conn.execute(statement.limit(limit))).mappings().all()
+            if not rows and self._after_root is not None:
+                self._after_root = None
+                rows = (await conn.execute(ready_root_origin_tasks().order_by(
+                    tasks.c.created_at, tasks.c.id,
+                ).limit(limit))).mappings().all()
+        if rows:
+            self._after_root = (rows[-1]["created_at"], rows[-1]["id"])
+        for row in rows:
+            try:
+                async with self.db.immediate() as conn:
+                    await service.reserve_ready_root_origin_on(conn, row["id"])
+            except Exception:
+                logger.warning("Origin reservation for %s failed; will retry", row["id"],
+                               exc_info=True)
 
     async def pending_origins(self, *, limit: int = DEFAULT_LIMIT, after=None) -> list[dict]:
         """Live reservations with no branch, oldest first, in enabled projects."""
@@ -143,13 +168,15 @@ class BranchMaterializationService:
             return await self._drain(limit=limit)
 
     async def _drain(self, *, limit: int) -> list[dict]:
+        service = self.hierarchy_service_factory()
+        if service is not None:
+            await self._reserve_missing_roots(service, limit=limit)
         pending = await self.pending_origins(limit=limit, after=self._after_origin)
         if not pending and self._after_origin is not None:
             self._after_origin = None
             pending = await self.pending_origins(limit=limit, after=None)
         if pending:
             self._after_origin = (pending[-1]["created_at"], pending[-1]["id"])
-        service = self.hierarchy_service_factory()
         if service is None:
             logger.debug("branch materialization: no hierarchy service available")
             return []

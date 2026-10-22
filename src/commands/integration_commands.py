@@ -665,7 +665,10 @@ class IntegrationCommandsMixin:
 
                 # The watchdog only observes and hands over; it never holds the train.
                 try:
-                    await scan_stuck_deliveries(self.db, observer=observer, now=now)
+                    await scan_stuck_deliveries(
+                        self.db, observer=observer, now=now,
+                        hierarchy=self._hierarchy_integration_service(),
+                    )
                 except Exception:
                     logging.getLogger(__name__).exception("delivery watchdog scan failed")
             self._train_stall_checked_at = now
