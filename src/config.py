@@ -30,6 +30,12 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import yaml
 
+from src.config_wait_policy import (
+    WaitKindPolicy as WaitKindPolicy,
+    WaitPolicyConfig as WaitPolicyConfig,
+    WaitProjectOverrides as WaitProjectOverrides,
+    parse_wait_policy,
+)
 from src.docs_urls import DEFAULT_DOCS_BASE_URL
 from src.routing.sources import DEFAULT_ROUTER_PLAYBOOK_ID
 
@@ -776,7 +782,8 @@ class KnowledgeGenerationConfig(KnowledgeFeatureConfig):
 
 @dataclass
 class KnowledgeContextConfig(KnowledgeFeatureConfig):
-    input_max_tokens: int = 32768
+    # None derives the ceiling from the live model window; integers are operator caps.
+    input_max_tokens: int | None = None
     output_reserve_tokens: int = 4096
     wrapper_reserve_tokens: int = 256
     max_tokens: int = 4096
@@ -858,6 +865,8 @@ class KnowledgeConfig:
             "bundle_ttl_seconds",
         ):
             value = getattr(self.context, name, None)
+            if name == "input_max_tokens" and value is None:
+                continue
             if type(value) is not int or value < 0:
                 errors.append(ConfigError("knowledge", f"context.{name}", "must be nonnegative"))
         item_limit = getattr(self.context, "discovery_max_items", None)
@@ -1060,11 +1069,32 @@ class SupervisorConfig:
     #: The trailing underscore in the attribute name avoids the Python
     #: keyword ``global``. In YAML the section is written as ``global``.
     global_: GlobalSupervisorConfig = field(default_factory=GlobalSupervisorConfig)
+    turn_timeout_seconds: int = 900
+    question_timeout_seconds: int = 900
+    retry_backoff_seconds: int = 60
+    max_turn_retries: int = 2
+    max_session_age_seconds: int = 86400
+    context_ceiling_tokens: int = 160000
 
     def validate(self) -> list[ConfigError]:
         errors: list[ConfigError] = []
         errors.extend(self.global_.validate())
+        for key in ("turn_timeout_seconds", "question_timeout_seconds", "retry_backoff_seconds",
+                    "max_turn_retries", "max_session_age_seconds", "context_ceiling_tokens"):
+            value = getattr(self, key)
+            if type(value) is not int or value <= 0:
+                errors.append(ConfigError("supervisor", key, "must be a positive integer"))
         return errors
+
+    @classmethod
+    def from_mapping(cls, section: Mapping) -> SupervisorConfig:
+        """Build from the YAML ``supervisor`` section; ``global`` is the nested section."""
+        global_section = section.get("global", {}) or {}
+        kwargs = _dataclass_kwargs(cls, section)
+        kwargs["global_"] = GlobalSupervisorConfig(
+            idle_timeout_seconds=global_section.get("idle_timeout_seconds", 2700),
+        )
+        return cls(**kwargs)
 
 
 LLM_PROVIDER_IDS = frozenset({"anthropic", "google", "openai"})
@@ -1578,6 +1608,10 @@ class PlaybooksConfig:
     """
 
     enabled: bool = False
+    # Environment variable names only. Key bytes never enter serialized config,
+    # vault sources or script inputs. Retain old entries for encrypted readback.
+    private_value_active_key_id: str = ""
+    private_value_key_env: dict[str, str] = field(default_factory=dict)
     v2_max_artifact_bytes: int = 1_048_576
     v2_max_result_bytes: int = 262_144
     v2_max_snapshot_bytes: int = 4_194_304
@@ -2781,6 +2815,87 @@ class ResourceCgroupConfig:
 
 
 @dataclass
+class ScriptsConfig:
+    """Ordinary script processes, enabled by default; no isolation prerequisites.
+
+    Empty roots resolve under ``{data_dir}/scripts/`` (see :meth:`resolved`).
+    Without ``runtime_manifest`` a program's executable is an ordinary host
+    file found under ``runtime_root`` or ``search_path``; a manifest opts into
+    digest pinning of the declared runtime files instead.
+    """
+
+    enabled: bool = True
+    runtime_root: str = ""
+    runtime_manifest: str = ""
+    input_root: str = ""
+    state_root: str = ""
+    search_path: list[str] = field(
+        default_factory=lambda: ["/usr/local/bin", "/usr/bin", "/bin"]
+    )
+    env_allowlist: list[str] = field(default_factory=list)
+    queue_seconds: int = 300
+    wall_seconds: int = 60
+    stdout_bytes: int = 1024**2
+    stderr_bytes: int = 1024**2
+    input_bytes: int = 64 * 1024**2
+    input_storage_bytes: int = 2 * 1024**3
+    output_storage_bytes: int = 2 * 1024**3
+    per_run_storage_bytes: int = 64 * 1024**2
+    runtime_bytes: int = 1024**3
+
+    def validate(self) -> list[ConfigError]:
+        from src.playbooks.script_policy import ScriptLimits, environment_name
+
+        errors = []
+        def error(name, message):
+            errors.append(ConfigError("resources.scripts", name, message))
+
+        if not isinstance(self.enabled, bool):
+            error("enabled", "must be a boolean")
+        for name in ("runtime_root", "runtime_manifest", "input_root", "state_root"):
+            value = getattr(self, name)
+            if (not isinstance(value, str) or "\0" in value
+                    or (value and not value.startswith("/"))):
+                error(name, "must be an absolute path when supplied")
+        if (not isinstance(self.search_path, list)
+                or any(not isinstance(value, str) or "\0" in value or not value.startswith("/")
+                       or ":" in value for value in self.search_path)):
+            error("search_path", "must be a list of absolute directories")
+        if not isinstance(self.env_allowlist, list):
+            error("env_allowlist", "must be a list of permitted environment names")
+        else:
+            for name in self.env_allowlist:
+                try:
+                    environment_name(name)
+                except (ValueError, TypeError):
+                    error("env_allowlist", "contains a forbidden environment name")
+        try:
+            ScriptLimits(**{name: getattr(self, name) for name in ScriptLimits.model_fields})
+        except ValueError:
+            error("limits", "invalid script resource ceiling (wall maximum 900s)")
+        for name in ("queue_seconds", "input_bytes", "input_storage_bytes", "output_storage_bytes",
+                     "per_run_storage_bytes", "runtime_bytes"):
+            value = getattr(self, name)
+            if type(value) is not int or value <= 0:
+                error(name, "must be a positive integer")
+        return errors
+
+    def resolved(self, data_dir: str) -> ScriptsConfig:
+        """Copy with every empty root filled in under ``{data_dir}/scripts/``.
+
+        The manifest stays optional: an empty ``runtime_manifest`` selects host
+        executables rather than a default manifest path.
+        """
+        base = os.path.join(os.path.abspath(os.path.expanduser(data_dir)), "scripts")
+        return dataclasses.replace(
+            self,
+            runtime_root=self.runtime_root or os.path.join(base, "runtime"),
+            input_root=self.input_root or os.path.join(base, "inputs"),
+            state_root=self.state_root or os.path.join(base, "state"),
+        )
+
+
+@dataclass
 class JobsConfig:
     """Managed execution rollout; admission remains opt-in during phase 2."""
 
@@ -2791,6 +2906,8 @@ class JobsConfig:
     per_task_active: int = 2
     shared_queue_seconds: int = 1800
     exclusive_queue_seconds: int = 5400
+    #: Capacity left for focused work beside a managed full-suite test job.
+    full_suite_reserved_slots: int = 2
     run_seconds: int = 7200
     head_bytes: int = 1024 * 1024
     tail_bytes: int = 63 * 1024 * 1024
@@ -2827,6 +2944,7 @@ class JobsConfig:
             "per_task_active",
             "shared_queue_seconds",
             "exclusive_queue_seconds",
+            "full_suite_reserved_slots",
             "run_seconds",
             "head_bytes",
             "tail_bytes",
@@ -2960,6 +3078,7 @@ class ResourcesConfig:
     max_pytest_processes: int = 24
     cgroups: ResourceCgroupConfig = field(default_factory=ResourceCgroupConfig)
     jobs: JobsConfig = field(default_factory=JobsConfig)
+    scripts: ScriptsConfig = field(default_factory=ScriptsConfig)
 
     def core_count(self) -> int:
         """The core budget: configured ``cores``, else the machine's."""
@@ -3022,6 +3141,7 @@ class ResourcesConfig:
                     )
         errors.extend(self.cgroups.validate())
         errors.extend(self.jobs.validate())
+        errors.extend(self.scripts.validate())
         return errors
 
 
@@ -3930,6 +4050,7 @@ class AppConfig:
     streams: StreamsConfig = field(default_factory=StreamsConfig)
     security: SecurityConfig = field(default_factory=SecurityConfig)
     pricing: PricingConfig = field(default_factory=PricingConfig)
+    wait_policy: WaitPolicyConfig = field(default_factory=WaitPolicyConfig)
     messages: MessagesConfig = field(default_factory=MessagesConfig)
     events: EventsConfig = field(default_factory=EventsConfig)
     supervisor_agent: SupervisorAgentConfig = field(default_factory=SupervisorAgentConfig)
@@ -4156,6 +4277,7 @@ class AppConfig:
         errors.extend(self.security.validate())
         errors.extend(self.pricing.validate())
         errors.extend(self.messages.validate())
+        errors.extend(self.wait_policy.validate())
         errors.extend(self.supervisor_agent.validate())
         errors.extend(self.api_auth.validate())
         errors.extend(self.surface.validate())
@@ -4361,6 +4483,7 @@ HOT_RELOADABLE_SECTIONS = {
     # reads and ``records`` outbox/export), so an edit bites on the next
     # access without a restart.
     "knowledge",
+    "wait_policy",  # read per decision; flags are snapshotted once per registry cycle
 }
 """Config sections that can be safely updated at runtime without restart."""
 
@@ -4857,6 +4980,15 @@ def _present_kwargs(section: dict, spec: dict) -> dict:
     return {name: coerce(section[name]) for name, coerce in spec.items() if name in section}
 
 
+def _load_wait_policy(raw: object) -> WaitPolicyConfig:
+    """Parse and validate the policy before making it visible to runtime consumers."""
+    config = parse_wait_policy(raw)
+    errors = config.validate()
+    if errors:
+        raise ConfigValidationError([str(error) for error in errors])
+    return config
+
+
 def load_config(path: str, profile: str | None = None) -> AppConfig:
     """Load and validate application configuration from a YAML file.
 
@@ -4985,6 +5117,8 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
         pb = raw["playbooks"]
         config.playbooks = PlaybooksConfig(
             enabled=bool(pb.get("enabled", False)),
+            private_value_active_key_id=str(pb.get("private_value_active_key_id", "")),
+            private_value_key_env=dict(pb.get("private_value_key_env") or {}),
             cancellation_grace_seconds=int(pb.get("cancellation_grace_seconds", 30)),
             v2_dry_run_max_paths=int(pb.get("v2_dry_run_max_paths", 32)),
             v2_dry_run_max_step_visits=int(pb.get("v2_dry_run_max_step_visits", 1000)),
@@ -5172,13 +5306,7 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
         config.llm = _llm_config_from_mapping(legacy_raw, legacy=True)
 
     if "supervisor" in raw:
-        s = raw["supervisor"]
-        global_section = s.get("global", {}) or {}
-        config.supervisor = SupervisorConfig(
-            global_=GlobalSupervisorConfig(
-                idle_timeout_seconds=global_section.get("idle_timeout_seconds", 2700),
-            ),
-        )
+        config.supervisor = SupervisorConfig.from_mapping(raw["supervisor"])
 
     # hook_engine config section removed (playbooks spec §13 Phase 3).
     # Existing config files with hook_engine section are silently ignored.
@@ -5361,6 +5489,9 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
             )
         config.pricing = PricingConfig(models=entries)
 
+    if "wait_policy" in raw:
+        config.wait_policy = _load_wait_policy(raw["wait_policy"])
+
     if "messages" in raw and isinstance(raw["messages"], dict):
         ms_cfg = raw["messages"]
         config.messages = MessagesConfig(
@@ -5514,6 +5645,7 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
             test_interpreters=_test_interpreters(res.get("test_interpreters")),
             cgroups=cgroups,
             jobs=JobsConfig(**_dataclass_kwargs(JobsConfig, res.get("jobs"))),
+            scripts=ScriptsConfig(**_dataclass_kwargs(ScriptsConfig, res.get("scripts"))),
         )
 
     if "test_selection" in raw:

@@ -39,6 +39,7 @@ from src.models import (
 from src.providers import inflight
 from src.providers.availability import DEGRADED, DISABLED, EXHAUSTED
 from src.providers.intent import PREFERRED
+from src.scheduler import AssignAction
 from src.sessions.harness_parser import Harness
 from src.sessions.launch import launch_session
 from src.sessions.provider import SessionDiedDuringStartup, SessionSpec
@@ -360,6 +361,10 @@ async def orch(tmp_path):
     from tests.session_dispatch_helpers import create_session_project, make_session_orch
 
     orch = await make_session_orch(tmp_path)
+    # Outage notices may cold-start a global supervisor when delivery is due.
+    # Keep this fixture's session starts scoped to task failover, as in the
+    # provider-suppression suite.
+    orch.config.messages.enabled = False
     orch.session_spec_builder._intelligence_classes = dict(CLASSES)
     orch.harness_registry.upsert(_codex_harness())
     orch.provider_availability._probe_impl = _probe
@@ -499,14 +504,14 @@ async def test_observe_mode_keeps_todays_launch_failure_accounting(orch):
 
 
 async def test_a_launch_refused_on_an_unavailable_provider_returns_the_task_to_ready(orch):
-    from unittest.mock import AsyncMock, MagicMock
+    from unittest.mock import AsyncMock
 
     await _task(orch, "t0")
     await orch.provider_availability.set_state(
         "codex", DISABLED, by="human:test", reason="rotating", until=time.time() + 600
     )
     orch._emit_text_notify = AsyncMock()
-    action = MagicMock(task_id="t0", agent_id="a-x", project_id="p-1")
+    action = AssignAction(task_id="t0", agent_id="a-x", project_id="p-1")
     await orch._fail_session_launch(
         action,
         await orch.db.get_task("t0"),
@@ -555,6 +560,9 @@ async def _launch_on_codex(orch, task_id: str = "t0", *, git_root=None, harness=
             lifecycle="task", enabled=True,
         ))
     await _task(orch, task_id, profile=profile)
+    if git_root is not None:
+        # The mocked preparation must describe the real fixture checkout.
+        await orch.db.update_task(task_id, branch_name=f"aq/{task_id}")
     await _cycle(orch)
     session = await orch.db.get_session_for_task(task_id)
     assert session is not None and session.harness == harness
@@ -1134,9 +1142,10 @@ async def test_every_provider_down_holds_the_task_and_launches_nothing(orch, tmp
     }
     orch.git = mock_git
     starts = len(_fake(orch).starts)
+    orch._last_delivery_pass = 0
     for _ in range(3):
         await _cycle(orch)
-    assert len(_fake(orch).starts) == starts
+    assert len(_fake(orch).starts) == starts, [s.session_name for s in _fake(orch).starts]
     task = await orch.db.get_task("t0")
     assert task.status == TaskStatus.READY and task.profile_id == "standard-high-codex"
     hold = await orch.provider_availability.hold_for(task)
@@ -1162,10 +1171,8 @@ async def test_plan_files_left_uncommitted_do_not_hold_the_task(tmp_path):
 
 
 async def test_a_refusal_while_the_canary_is_in_flight_is_a_short_recovering_pause(orch):
-    from unittest.mock import MagicMock
-
     await _task(orch, "t0")
-    action = MagicMock(task_id="t0", agent_id="a-x", project_id="p-1")
+    action = AssignAction(task_id="t0", agent_id="a-x", project_id="p-1")
     await orch.db.transition_task("t0", TaskStatus.ASSIGNED, context="test")
     await orch._fail_session_launch(
         action,

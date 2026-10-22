@@ -430,3 +430,21 @@ describe("below 768 px", () => {
     } finally { mocks.tasks.splice(0, mocks.tasks.length, ...original); }
   });
 });
+
+it("counts delivery-held work separately and filters it by the visible wait", () => {
+  const original = mocks.tasks;
+  mocks.tasks = [Object.assign({ ...original[0]!, status: "READY" }, {
+    claim_readiness: { state: "waiting_on_delivery", claimable: false,
+      label: "Waiting on delivery", reason: "Land source.6 on dev; refresh aq/epic" },
+  })];
+  try {
+    mocks.filters.status = "WAITING_ON_DELIVERY";
+    render(<Tasks />);
+    expect(screen.getByRole("button", { name: "Ready: 0 tasks" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Waiting on delivery: 1 task" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getAllByText("Land source.6 on dev; refresh aq/epic").length).toBeGreaterThan(0);
+    expect(screen.queryByRole("combobox", { name: "Status for Fix checkout" })).toBeNull();
+  } finally {
+    mocks.tasks = original;
+  }
+});

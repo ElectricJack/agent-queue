@@ -572,6 +572,20 @@ def _render_status(
         session = f"[{_VERDICT_STYLE.get(verdict, 'dim')}]{verdict}[/]" if verdict else "?"
         table.add_row(str(row["slot"]), state, escape(str(who)), session, held_for)
     console.print(table)
+    managed = {}
+    for row in snapshot["slots"]:
+        holder = row.get("holder") or {}
+        if row["held"] and holder.get("job_id"):
+            managed.setdefault(holder["job_id"], []).append(row)
+    for job_id, rows in managed.items():
+        holder = rows[0]["holder"]
+        console.print(
+            f"Managed job {escape(str(job_id))}: "
+            f"project {escape(str(holder.get('project_id') or '?'))}, "
+            f"task {escape(str(holder.get('task_id') or '-'))}, "
+            f"{holder.get('box_mode', 'shared')}, "
+            f"slots {', '.join(str(row['slot']) for row in rows)}"
+        )
     if protocol is not None:
         box = protocol["box"]
         console.print(

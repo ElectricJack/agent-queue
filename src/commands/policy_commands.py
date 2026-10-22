@@ -35,11 +35,18 @@ class PolicyCommandsMixin:
         return None
 
     async def _policy_files(self, project_id: str) -> PolicyFiles:
+        from src.integration.promotion_steps import read_stored_promotion_flow
+        from src.policy_profiles.integration import settings
+
         project = await self.db.get_project(project_id)
         if project is None:
             raise ValueError(f"Project {project_id!r} not found")
         workspace = await self.db.get_project_workspace_path(project_id)
-        return PolicyFiles(Path(self.config.vault_root), project, workspace)
+        integration = settings(
+            project, await read_stored_promotion_flow(self.db, project_id),
+            self.config.integration.git_first,
+        )
+        return PolicyFiles(Path(self.config.vault_root), project, workspace, integration=integration)
 
     async def _backfill_playbook_sources(self) -> dict:
         from src.playbooks.artifact_store import ArtifactStore, index_playbook_sources
@@ -62,6 +69,13 @@ class PolicyCommandsMixin:
         from src.portable_setup import collect_classes, pool_settings, project_settings
 
         entries = []
+        if adapter.project.hierarchical_integration_mode == "development":
+            warnings.append({
+                "item_id": "integration_settings:project:integration",
+                "playbook_id": None,
+                "message": "Skipped integration settings: development policy pins local "
+                           "task and artifact identities; configure it on the target install",
+            })
         activations = await self.db.list_playbook_activations()
         # Enabled system routines form the project's default pipeline. Project
         # activations and the bound router are also dependencies by construction.
@@ -248,6 +262,8 @@ class PolicyCommandsMixin:
         entries.extend(entry for entry in local if entry.type not in {
             "pool", "intelligence_class", "project_settings"
         })
+        if adapter.integration is not None:
+            entries.append(item("integration", "project", adapter.integration))
         unique = {entry.id: entry for entry in entries}
         for entry in unique.values():
             if isinstance(entry.payload, PolicyAgentSettings) and entry.name in pool_rows:
@@ -310,7 +326,7 @@ class PolicyCommandsMixin:
             bundle = request.bundle or await asyncio.to_thread(read_bundle, source)
         await asyncio.to_thread(files, bundle)
         materialized = await asyncio.to_thread(
-            adapter.materialize, bundle, request.values, require_values=applying
+            adapter.materialize, bundle, request.values, require_values=False
         )
         # A copied dependency follows the placement chosen for that playbook.
         # Skipped dependencies retain their destination-local identifiers.
@@ -351,6 +367,11 @@ class PolicyCommandsMixin:
             request.no_overwrite,
             applying=applying,
         )
+        if applying:
+            await asyncio.to_thread(
+                adapter.materialize, bundle, request.values,
+                selected_ids={row.id for row in rows if row.selected},
+            )
         if operator_grant() is not None and any(
             row.selected and (row.scope != "project" or row.type == "agent_settings")
             for row in rows
@@ -362,13 +383,21 @@ class PolicyCommandsMixin:
         if refusal := self._policy_authority():
             return refusal
         try:
-            request, adapter, bundle, _items, rows, _planned = await self._policy_import_plan(args)
+            request, adapter, bundle, items, rows, _planned = await self._policy_import_plan(args)
+            from src.policy_profiles.service import PLACEHOLDER
+
+            included = {
+                row.id for row in rows if row.scope != "skip" and row.id not in request.skip
+                and (not request.only or row.id in request.only)
+            }
+            needed = {key for entry in bundle.items if entry.id in included
+                      for key in PLACEHOLDER.findall(entry.payload.model_dump_json())}
             return {
                 "success": True,
                 "name": bundle.name,
                 "project_id": request.project_id,
                 "items": [row.model_dump(mode="json") for row in rows],
-                "placeholders": [p.model_dump() for p in bundle.placeholders],
+                "placeholders": [p.model_dump() for p in bundle.placeholders if p.name in needed],
                 "values": {
                     key: request.values.get(key, adapter.defaults().get(key, ""))
                     for key in (p.name for p in bundle.placeholders)
@@ -386,6 +415,7 @@ class PolicyCommandsMixin:
         if lock is None:
             self._policy_apply_lock = lock = asyncio.Lock()
         async with lock:
+            configured = []
             try:
                 request, adapter, _bundle, items, rows, planned = await self._policy_import_plan(
                     args, applying=True
@@ -452,6 +482,43 @@ class PolicyCommandsMixin:
                                 raise ValueError(f"Pool requires intelligence class {class_id!r}")
 
                 await asyncio.to_thread(validate_profiles)
+                integration_rows = [row for row in rows if row.selected
+                                    and row.scope == "project"
+                                    and row.type == "integration_settings"]
+                if len(integration_rows) > 1:
+                    raise ValueError("Select only one integration settings item per project")
+                for row in integration_rows:
+                    if row.status == "identical":
+                        continue
+                    from src.policy_profiles.integration import updates
+
+                    entry = next(entry for entry in items if entry.id == row.id)
+                    changes = updates(
+                        entry.payload, adapter.project, self.config.integration.git_first
+                    )
+                    from src.integration.promotion_steps import read_stored_promotion_flow
+
+                    target_flow = await read_stored_promotion_flow(self.db, request.project_id)
+                    local_gates = {step["id"]: step.get("gate", {}) for step in target_flow or []}
+                    for step in changes["promotion_flow"] or []:
+                        logins = local_gates.get(step["id"], {}).get("operator_logins")
+                        if logins is not None:
+                            step.setdefault("gate", {})["operator_logins"] = logins
+                    result = await self.execute("edit_project", {
+                        "project_id": request.project_id,
+                        **changes,
+                        "expected_integration_generation":
+                            adapter.project.hierarchical_integration_generation,
+                        "reason": "Import policy profile integration settings",
+                    })
+                    if result.get("outcome") != "configured":
+                        return {
+                            "success": False,
+                            "error": result.get("error") or "Integration configuration refused",
+                            "integration": result,
+                            "applied": [],
+                        }
+                    configured.append(row.id)
                 await asyncio.to_thread(apply_files, planned)
                 if global_classes:
                     await self._reload_intelligence_classes()
@@ -466,6 +533,7 @@ class PolicyCommandsMixin:
                             + "; ".join(synced.errors),
                             "applied": list(planned),
                             "items": [row.model_dump(mode="json") for row in rows],
+                            "configured_integration": configured,
                         }
                 reviews = []
                 pending = []
@@ -525,6 +593,7 @@ class PolicyCommandsMixin:
                                 "reviews": reviews,
                                 "pending_configuration": pending,
                                 "items": [item.model_dump(mode="json") for item in rows],
+                                "configured_integration": configured,
                             }
                         reviews.append({"item_id": row.id, "review_id": result["review_id"]})
                         from src.policy_profiles.models import encoded
@@ -544,7 +613,9 @@ class PolicyCommandsMixin:
                     "reviews": reviews,
                     "pending_configuration": pending,
                     "activated": False,
+                    "configured_integration": configured,
                     "items": [row.model_dump(mode="json") for row in rows],
                 }
             except (ValueError, OSError, KeyError) as exc:
-                return {"success": False, "error": str(exc)}
+                return {"success": False, "error": str(exc),
+                        "configured_integration": configured}

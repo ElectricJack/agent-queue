@@ -48,6 +48,7 @@ def ask_audience_predicate(*, actor_id, project_ids=None, public=False, channel_
         audience["principals"] == [],
         audience["principals"].contains([actor_id]),
     )
+    allowed = and_(allowed, human_asks.c.context["legacy_discarded"].as_boolean().is_not(True))
     if public:
         allowed = and_(
             allowed,
@@ -643,6 +644,9 @@ class AskQueriesMixin:
             or operation["status"] != "pending"
             or (operation["retry_at"] is not None and operation["retry_at"] > now)
         ):
+            return None
+        ask = await self.get_ask(operation["ask_id"], conn=conn)
+        if not ask or ask["context"].get("legacy_discarded"):
             return None
         dependencies = set(operation["dependency_keys"])
         if dependencies:

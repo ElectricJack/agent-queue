@@ -14,11 +14,13 @@ lock; the batch gate reads only the cached verdict.
 
 A red candidate is refreshed before a repair is allocated: a green observation
 ends the repair with no attempt counted. A red candidate is then measured against
-the target commit it was built on, and only a failure the target does not also
-fail reaches the repair. An epic with only pre-existing failures can instead
+the target commit it was built on. An open batch sealing its own epic subtree
+can repair proven inherited failures on its candidate; otherwise only failures
+the target does not also fail reach repair. An epic with pre-existing failures can
 receive one default-branch sync repair when that exact branch has trusted green
-checks and train-produced or attested provenance. Otherwise the candidate's own
-suites are re-requested under bounded backoff, and the
+checks and train-produced or attested provenance. An ordinary root can admit
+green pending baseline fixes through an atomic replacement batch. Otherwise
+the candidate's own suites are re-requested under bounded backoff, and the
 bound ends at a named blocker instead of an endless repair chain. The allocator
 counts attempts when it files, never per visit. A merge conflict files one
 ordinary repair whose brief names the conflicting member and every member still to
@@ -206,6 +208,11 @@ class BatchSource(Protocol):
 
     async def settle(self, batch: Batch, observation: BatchObservation) -> None:
         """Record that the target contains the batch; idempotent."""
+
+    async def reassemble_preexisting(
+        self, target, snapshot, service, batch, frozen, *, names, source_checks,
+    ) -> dict | None:
+        """Replace a baseline-blocked batch only with admitted exact green fixes."""
 
 
 class RepairAllocator(Protocol):
@@ -413,6 +420,7 @@ class TrainLane:
     ] | None = None
     sync_closed_epic: Callable[[GitTruthSnapshot], Awaitable[BatchSelection | None]] | None = None
     observe_source: Callable[[GitTruthSnapshot], Awaitable[None]] | None = None
+    baseline_fix_checks: Callable[[BatchMember], Awaitable[ChecksResult | None]] | None = None
 
 
 @dataclass(frozen=True)
@@ -507,6 +515,11 @@ class IntegrationTrain:
         async with self._tick_lock:
             started, running, deferred = [], [], []
             targets = [target] if target is not None else await self.targets.targets(now)
+            if target is None:
+                for key in getattr(self.targets, "retired_targets", ()):
+                    lane = self._lanes.get(key)
+                    if lane is not None and (lane.task is None or lane.task.done()):
+                        del self._lanes[key]
             occupied: dict[str, int] = {}
             for key, lane in self._lanes.items():
                 if lane.task is not None and not lane.task.done():
@@ -751,8 +764,14 @@ class IntegrationTrain:
         else:
             visit = await self._visit_batch(target, lane, snapshot, opened.batch, opened.members)
         blockers = opened.blockers
-        if target.kind == "epic" and lane.complete_epic and visit.state in {"idle", "delivered"}:
+        window_deferred = (opened.batch is None and opened.blockers and all(
+            item["code"] == "selection_deferred" for item in opened.blockers))
+        if (target.kind == "epic" and lane.complete_epic
+                and (visit.state in {"idle", "delivered"} or window_deferred)):
             _progress("settle_epic")
+            # A bounded selection window is not an aggregate verdict. The
+            # full evaluator still examines every required child. Other
+            # admission refusals (such as repository recovery) retain authority.
             # Publication moved the ref; readiness must examine the collected
             # head, rather than the snapshot from before the child batch landed.
             if visit.state == "delivered":
@@ -858,13 +877,14 @@ class IntegrationTrain:
         members: tuple[BatchMember, ...], observation: BatchObservation, result: ChecksResult,
         head: HeadIdentity, checks: ExactChecks, snapshot: GitTruthSnapshot,
     ) -> TrainVisit:
-        """A red candidate is repaired only where the target is not already red.
+        """Classify red checks and admit bounded repairs on the retained candidate.
 
         A required check that also fails on the target commit this candidate was
         built on is a pre-existing failure, and one the target has not decided is
-        nobody's. Only an epic's proven pre-existing failures can authorize a
-        bounded merge of a verified default head; all other unrepairable reds
-        re-request the candidate's own suites under bounded backoff.
+        nobody's. A sealed epic can repair proven inherited failures when a
+        verified default sync cannot resolve them. An ordinary root
+        can admit a green pending baseline fix through a replacement batch.
+        Otherwise re-request the candidate's own suites under bounded backoff.
         """
         if not failing(result):
             # A workflow can fail while every required job succeeds. Preserve
@@ -875,15 +895,42 @@ class IntegrationTrain:
                 "reason": "red candidate has no identifiable failing required checks",
             }), result)
         _progress("compare_target_baseline")
+        baseline_sha, baseline_ref = observation.target_sha, None
+        if batch.epic_refresh:
+            # The epic can itself have introduced these failures. Only the
+            # frozen default input can establish that a refresh failure already
+            # exists on the default branch; never substitute its later head.
+            (default_member,) = members
+            baseline_sha = default_member.source_sha
+            repo = await lane.service.gitops.repository(batch)
+            baseline_ref = "refs/heads/" + repo.default_branch.removeprefix("refs/heads/")
         baseline = await self.baseline.verdict(
-            batch, candidate=result, target_sha=observation.target_sha, checks=checks,
+            batch, candidate=result, target_sha=baseline_sha, checks=checks,
+            target_ref=baseline_ref,
         )
+        sealed_target = (await self.baseline.sealed_target(batch)
+                         if target.kind == "epic" and not batch.epic_refresh
+                         and baseline.pre_existing else None)
         if baseline.repair:
             visit = await self._repair(
                 target, lane, batch, members, observation, result,
-                brief=red_brief(baseline, head.sha, candidate=result),
+                brief=red_brief(baseline, head.sha, candidate=result, sealed_target=sealed_target),
             )
-            return replace(visit, detail={**(visit.detail or {}), **baseline.detail()})
+            detail = {**(visit.detail or {}), **baseline.detail()}
+            if batch.epic_refresh and baseline.repairable:
+                detail.update(
+                    blocker="epic_refresh_checks_failed",
+                    reason="the refresh candidate fails required checks that pass on its "
+                           "frozen default-branch input",
+                    supervisor_action=(
+                        f"Inspect and repair refresh candidate {head.sha} for batch {batch.id}; "
+                        f"baseline {baseline_ref} at {baseline_sha} passes "
+                        f"{', '.join(baseline.repairable)}. Publication requires trusted checks "
+                        "and attestation on the exact candidate. To abandon the refresh, use "
+                        f"aq integration abort-batch {batch.id} --apply --reason REASON."
+                    ),
+                )
+            return replace(visit, detail=detail)
         sync = None
         if target.kind == "epic" and baseline.state == "pre_existing" and lane.sync_default_branch:
             _progress("verify_default_branch")
@@ -903,6 +950,29 @@ class IntegrationTrain:
                     return replace(visit, detail={
                         **(visit.detail or {}), **baseline.detail(), "sync_default_branch": sync,
                     })
+        if sealed_target and baseline.pre_existing:
+            visit = await self._repair(
+                target, lane, batch, members, observation, result,
+                brief=red_brief(baseline, head.sha, candidate=result, sealed_target=sealed_target),
+            )
+            return replace(visit, detail={
+                **(visit.detail or {}), **baseline.detail(),
+                **({"sync_default_branch": sync} if sync else {}), "target_repair": {
+                    "epic_task_id": sealed_target,
+                    "checks": list(baseline.pre_existing),
+                },
+            })
+        reassembly = None
+        if (target.kind in {"root", "development"} and baseline.state == "pre_existing"
+                and lane.baseline_fix_checks is not None):
+            _progress("admit_baseline_fix", candidate_sha=head.sha)
+            reassembly = await self.batches.reassemble_preexisting(
+                target, snapshot, lane.service, batch, members,
+                names=baseline.pre_existing, source_checks=lane.baseline_fix_checks,
+            )
+            if reassembly and reassembly.get("outcome") == "reassembled":
+                return replace(self._visit(target, "preexisting", batch, observation, result),
+                    detail={**baseline.detail(), "reassembly": reassembly})
         _progress("rerequest_preexisting", candidate_sha=head.sha)
         re_requested = await self.baseline.re_request(
             batch, candidate=result, baseline=baseline, checks=checks,
@@ -911,6 +981,7 @@ class IntegrationTrain:
         return replace(visit, detail={
             **(visit.detail or {}), **baseline.detail(), "re_request": re_requested,
             **({"sync_default_branch": sync} if sync else {}),
+            **({"reassembly": reassembly} if reassembly else {}),
         })
 
     async def _checks(self, checks: ExactChecks, head: HeadIdentity) -> ChecksResult:

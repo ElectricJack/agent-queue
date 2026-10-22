@@ -20,6 +20,7 @@ from src.models import Agent, AgentState, TaskStatus
 from src.playbooks.definition import granted_aq_commands, load_definition_json
 from src.playbooks.engine import PlaybookEngine
 from src.playbooks.executors.base import EngineServices
+from src.playbooks.private_values import PrivateValueService
 from src.profiles.capabilities import CapabilityPolicy
 from src.stall_watch import Snapshot, detect
 from tests.playbook_v2_engine_helpers import (
@@ -213,9 +214,9 @@ async def test_read_contract_roundtrip():
 
 
 @pytest.mark.parametrize("has_findings", [False, True])
-async def test_timer_dry_run_and_repeated_ticks(has_findings):
+async def test_legacy_timer_dry_run_and_repeated_ticks(has_findings):
     definition = load_definition_json(Path(
-        "src/prompts/reviewed_playbooks/stuck-task-watch/artifact.json",
+        "tests/fixtures/playbooks/v2/stuck-task-watch-legacy.artifact.json",
     ).read_text())
     assert definition.rules[0].trigger.event_type == "timer.10m"
     assert granted_aq_commands(definition) == {"get_stuck_tasks", "message_send"}
@@ -251,18 +252,23 @@ async def test_timer_dry_run_and_repeated_ticks(has_findings):
         assert message["body"] == "one line"
 
 
-async def test_live_timer_queues_each_tick_then_stops_when_resolved(handler, db, monkeypatch):
+async def test_legacy_live_timer_queues_each_tick_then_stops_when_resolved(handler, db, monkeypatch):
     import src.commands.system_commands as system_commands
 
     monkeypatch.setattr(system_commands, "time", SimpleNamespace(time=lambda: NOW))
     await seed_task(db)
     definition = load_definition_json(Path(
-        "src/prompts/reviewed_playbooks/stuck-task-watch/artifact.json",
+        "tests/fixtures/playbooks/v2/stuck-task-watch-legacy.artifact.json",
     ).read_text())
     store = InMemoryArtifactStore()
     store.put(definition)
+    # A3 requires configured protected storage before a step binds diagnostic
+    # data. Exercise the real command with a disposable encryption key.
+    private = PrivateValueService(db._engine, active_key_id="test", keys={"test": b"x" * 32})
+    db.set_playbook_private_values(private)
     engine = PlaybookEngine(
-        services=EngineServices(contracts=CONTRACTS, artifact_store=store, clock=lambda: NOW),
+        services=EngineServices(contracts=CONTRACTS, artifact_store=store, clock=lambda: NOW,
+                                private_values=private),
         runs=RecordingRunRepository(),
     )
     set_handler_provider(lambda: handler)
@@ -284,3 +290,16 @@ async def test_live_timer_queues_each_tick_then_stops_when_resolved(handler, db,
     assert all(m["to_id"] == "supervisor-global" and m["project_id"] is None for m in messages)
     assert messages[0]["body"] == messages[1]["body"]
     assert "ORPHANED" in messages[0]["body"]
+
+
+@pytest.mark.parametrize("code", ["frontier_sibling_prerequisite_not_delivered",
+                                  "frontier_prerequisite_not_on_default_branch",
+                                  "frontier_epic_refresh_pending"])
+def test_delivery_hold_is_waiting_on_delivery_even_with_route_pressure(code):
+    snap = snapshot(task(status="READY"), reasons={"task": [
+        {"code": code, "detail": "Land source.6 on dev; refresh aq/epic"},
+        {"code": "route_no_candidates", "detail": "No worker"},
+    ]})
+    [finding] = findings(snap)
+    assert finding["kind"] == "WAITING-ON-DELIVERY"
+    assert "source.6" in finding["reason"] and "dev" in finding["reason"]

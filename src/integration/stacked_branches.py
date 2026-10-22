@@ -241,7 +241,7 @@ class StackView:
         snapshot = self.snapshot
         target = snapshot.target_ref.removeprefix("refs/heads/")
         if snapshot.error or not snapshot.target_oid:
-            return unavailable(snapshot.error or "missing_target", target)
+            return unavailable(snapshot.error or "target_ref_missing", target)
         branches = {target}
         branches.update(proof["branch_name"].removeprefix("refs/heads/")
                         for proof in self.proofs.values())
@@ -1340,6 +1340,9 @@ class EpicRefresh:
         self.db, self.train, self.clock = db, train, clock
 
     async def identity(self, task_id, *, conn=None):
+        from src.database.queries.hierarchy_queries import container_flag_exists
+        from src.database.tables import archived_tasks
+
         child = tasks.alias("refresh_epic_child")
         query = select(tasks.c.id, tasks.c.project_id, tasks.c.branch_name,
                        tasks.c.repo_id, repos.c.default_branch).select_from(
@@ -1349,7 +1352,10 @@ class EpicRefresh:
                 projects.c.hierarchical_integration_mode.in_(("hierarchy", "train")),
                 projects.c.status == "ACTIVE",
                 tasks.c.branch_name.is_not(None),
-                select(child.c.id).where(child.c.parent_task_id == task_id).exists())
+                container_flag_exists() |
+                select(child.c.id).where(child.c.parent_task_id == task_id).exists() |
+                select(archived_tasks.c.id).where(
+                    archived_tasks.c.parent_task_id == task_id).exists())
         if conn is None:
             async with self.db._engine.connect() as owned:
                 return (await owned.execute(query)).mappings().one_or_none()
@@ -1394,6 +1400,14 @@ class EpicRefresh:
         batches = DatabaseBatches(self.db, clock=self.clock)
         current = await batches.current(target)
         if current is not None and not current.epic_refresh:
+            from src.database.queries.escalation_queries import OPEN_ESCALATION_STATES
+            from src.integration.repair import ordinary_repair_id
+            stuck = await self.db.get_escalation("escalation-" + ordinary_repair_id(current.id, 1))
+            if stuck and stuck["state"] in OPEN_ESCALATION_STATES:  # never queue behind it
+                raise ValueError(
+                    f"batch {current.id} cannot progress (escalation {stuck['id']}): run aq "
+                    f"integration abort-batch {current.id} --apply --reason REASON, then retry "
+                    f"aq integration refresh-epic --task {task_id} --apply")
             return {**result, "outcome": "pending", "dry_run": False, "batch_id": current.id}
         if current is None and not result["behind"]:
             return {**result, "outcome": "current", "dry_run": False}

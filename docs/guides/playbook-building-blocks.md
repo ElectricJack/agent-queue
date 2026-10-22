@@ -1,0 +1,231 @@
+# Authoring and rolling out reusable playbook steps
+
+The compiler reads reviewed Markdown and returns exactly `rules` and `steps`.
+The server supplies identity, version, source hash, dependency fingerprints,
+feature requirements and trusted execution pins. The existing `integration_policy`
+compatibility field must equal the source block; it cannot invent policy.
+
+## Discover before compiling
+
+`aq playbook commands` exposes input schemas, result modes, outcomes, effects,
+preview/retry policy and caller requirements. `doctor_catalog` describes check
+scope and completeness support. Coverage is independent from permission: generated
+contracts include review verbs, but no PLAYBOOK principal becomes a supervisor,
+human decider or claimed worker. `run_command`, `shutdown`, `restart_daemon` and
+`update_and_restart` are denied. Scope/capability refusals remain `unauthorized`;
+unknown events remain `unknown_event`.
+
+Generic results are the original dictionary, including strictly boolean `success`.
+Read actual keys, not a fabricated `payload` or `root`. Missing/string/integer
+success flags, non-JSON values and oversized results are `contract_violation`.
+Typed commands retain their declared outcomes, such as `read`.
+
+## Source declarations and semantic alignment
+
+Use backticks for command names, bindings and exact result paths. State executable
+policy clauses together: `assigned_threshold_seconds` = `1800`,
+`repeat_after_seconds` = `null`, or predicate `seconds_in_state` `gt` `1800`.
+For proposals using new collection/observation/state/script features or explicit
+`required_capabilities`, limits, recipient fields and comparison clauses without source evidence
+produce a blocking question. Review the complete graph too: these checks establish
+literal evidence, not a proof of natural-language equivalence or policy intent.
+Legacy sources retain their existing identifier checks and golden artifact identities;
+they are not automatically rewritten to adopt this stronger authoring contract.
+
+Frontmatter may declare:
+
+```yaml
+state_schema_version: 1
+required_capabilities: [playbook_state_list, playbook_state_notify, message_send]
+scripts:
+  report:
+    runtime: host
+    argv: [python3, {type: literal, value: '--version'}]
+    supporting_files: []
+    limits: {wall_seconds: 60, stdout_bytes: 1048576, stderr_bytes: 1048576}
+    output: text
+```
+
+`required_capabilities` is a unique list of command names for review, not a grant.
+The one exception is a declared dependency of a step's own command: a
+`playbook_state_notify` step's artifact grants `message_send` only when the pinned
+declaration names it (`DECLARED_COMMAND_DEPENDENCIES` in `src/playbooks/definition.py`).
+State versions are strict positive integers (default 1 for state users). Script
+manifests are strict `ScriptProgram` objects: exactly one script/argv/shell form,
+literal runtime/interpreter/source identity, declared supporting files, typed data
+arguments, working-directory identifier, environment allowlist, limits and output
+policy. Requested policy lives in each program; unsupported isolation fields fail
+validation. The compiled program must equal the source manifest and server-resolved
+pin. No source field may provide a principal, namespace owner, resolved digest or
+trusted execution context. Changed program or dependency bytes require new pins.
+
+## Collections and complete observations
+
+`filter` and `map` bind items lexically; an inner binding can shadow an outer item
+without changing it. `len` takes a list. `diff` preserves stable first-occurrence
+left identities absent from right; booleans and numbers are distinct identities.
+Missing paths/null operands fail unless explicitly coalesced. Evaluation is capped
+at depth 10, 100,000 visits, 10,000 collection items and 262,144 encoded bytes.
+Nested foreach depth is at most 4, each loop defaults to 500 iterations (maximum
+10,000), and a run permits 100,000 iteration entries across restarts.
+
+Snapshot mode freezes a scan once and returns finite `page_tokens`. Read every
+page without rerunning the producer. TTL is 30 minutes, pages contain at most 500
+rows and 192 KiB, and whole responses including manifests fit 262,144 bytes.
+Storage ceilings are 64 MiB/run, 256 MiB/scope and 2 GiB/host; exhaustion refuses
+new snapshots rather than evicting valid ones. Producer `complete` and successful
+page/loop traversal are separate gates. Expired/missing pages, failed loops and
+partial coverage cannot clear prior findings.
+
+`task_observations_v1` contains `claims.holder_consistency` and `stall.sweep`, both
+system-only. Project callers cannot scan globally then filter. Unknown/unported
+checks, unsupported scopes, timeouts and unavailable dependencies are explicit
+incomplete/failure outcomes. Unhealthy findings can still be successful observations.
+
+## State and script execution
+
+Save notification-state revisions before scans. Clear absent keys only with those
+saved revisions; a conflict requires fresh evidence, not rereading a revision for
+the old scan. Stable subject/source keys define episodes. Changed wording/age does
+not re-alert. Null reminder intervals disable repeats; recurrence after clear starts
+a new episode. State, tombstones and dedupe journals survive restart, recompile,
+disable/re-enable and removal. Operator reset and reviewed version migration are
+explicit and can re-alert; never purge history to make a retry succeed.
+See [state](playbook-state.md) for quotas and reset/replay-floor semantics.
+
+Scripts are ordinary host processes, with no cgroup/namespace/network isolation,
+launcher or prerequisite doctor gate. `resources.scripts.enabled` defaults true;
+job admission (`resources.jobs.enabled`) must also be enabled. Input, state and
+runtime roots default under `~/.agent-queue/scripts/`, and an executable is an
+ordinary host binary found under the runtime root or `resources.scripts.search_path`.
+A runtime manifest is an opt-in that pins runtime digests. Configure protected-value
+encryption keys with `playbooks.private_value_active_key_id` and
+`playbooks.private_value_key_env` as environment variable references; never put key
+bytes in source or artifacts. Input pins verify declared source bytes; runtime pins,
+when configured, verify declared runtime bytes, never undeclared host dependencies. Keep dynamic data in
+argv/stdin/explicit environment values, never substituted into program text.
+Timeout/output caps and complete-output JSON parsing remain enforced.
+
+Ambiguous launch/completion pauses for operator decision; it never authorizes an
+automatic second execution. Dry-run/shadow launches no process and performs no
+state/message/job writes. Public receipts show identities and protected handles.
+Authorized `job_logs` reads bounded stdout/stderr ranges after checking run access;
+knowing a handle grants nothing. Missing keys refuse protected binding/readback,
+never plaintext fallback. See [script configuration](playbook-script-runner.md).
+
+## Deliberate rollout and rollback
+
+The reviewed `stuck-task-watch` bundle uses notification namespace version 1,
+`timer.15m`, and `session:supervisor-global`. It reports aged ASSIGNED (>1,800s)
+and IN_PROGRESS (>7,200s) tasks, every BLOCKED task, and the five finding kinds
+from `task_observations_v1`. Complete source partitions can clear missing keys;
+failed or incomplete partitions retain their episodes. The base has no reminders.
+The separate `stuck-task-watch-reminder` bundle repeats after 86,400 seconds and
+owns a separate namespace. Choose the intended policy before importing it;
+activating both creates independent notification episodes.
+
+Both bundles live in `src/prompts/reviewed_playbooks/` with byte-identical test
+recordings in `tests/fixtures/playbooks/v2/`. Neither belongs to first-install
+defaults or startup requirements. Existing operator-installed sources and
+activations are retained; changing the shipped inventory does not migrate them.
+Ordinary recompilation, restart, and disable/re-enable preserve notification state.
+
+1. Validate this checkout's focused compiler, graph, activation and dashboard tests.
+   Keep stored legacy golden hashes; empty additive metadata must not change them.
+   Tests on this box suffice for scripts; there is no separate real-host gate.
+2. The operator installs protected storage/read keys and upgrades additive database
+   schema and all intended executors through normal deployment. Workers never
+   migrate the operator database or manage its daemon. Unsupported feature pins
+   make only affected activations unready.
+3. Enumerate artifacts affected by intentional command/schema/source changes.
+   Rebuild only those pins, inspect semantic diffs, update bundle manifest digests
+   and copy reviewed fixtures to `src/prompts/reviewed_playbooks/<id>/`. Regenerate
+   schemas and SDKs from source; never hand-edit clients or globally refresh an
+   installed playbook on startup. A recorded bundle is not acceptance evidence.
+4. Shipped profiles and skills are write-if-absent. Operator drift checks are
+   `aq doctor --check profiles.system_drift` and `aq doctor --check skills.installed_drift`.
+   Reconcile installed prose deliberately; `aq agent profile-reseed --profile-id
+   playbook-compiler --grants-only` merges the minimum catalogue grants while
+   preserving prose/operator edits. It does not update the compiler's guidance.
+5. Review exact source/artifact and explicitly import/activate. The optional watch
+   is not startup-required and is never installed by this authoring change.
+6. Before rollback disable affected new-feature activations and script admission;
+   settle or explicitly cancel running jobs, pausing unresolved runs. Restore
+   compatible reviewed artifacts deliberately. Keep additive tables/columns,
+   encrypted values, snapshots, state and journals. Never reset versions/drop state
+   to make old code load. Retain old read keys until referenced data is retired.
+
+### Activating the stuck-task watch
+
+Activation is an operator decision on the live daemon; no worker, test or deploy
+performs it. Before importing, the operator checks four things:
+
+* **Schema and code.** `aq db current` reports head and the daemon runs the code
+  that shipped these bundles.
+* **Playbook flags.** `playbooks.v2_api` and `playbooks.v2_activation_writes`
+  are on. Import and activation both refuse while writes are off.
+* **Private-value key.** The watch calls a generated command, so the
+  `generated_commands_v1` feature needs a ready private-value key:
+  * A base64-encoded 32-byte key lives in the protected daemon `.env` (mode 0600).
+  * `playbooks.private_value_key_env` maps a key id to that variable's name.
+  * `playbooks.private_value_active_key_id` selects the key id.
+  * The daemon has been restarted since the key was provisioned.
+
+  `aq install` provisions a key for unconfigured storage. Two checks report
+  readiness: `/ready` `checks.playbook_private_value_key` and
+  `aq doctor --check playbooks.private_value_key`. A missing key leaves the
+  activation unready; the daemon never falls back to plaintext.
+* **One policy.** Choose `stuck-task-watch` (no reminder) or
+  `stuck-task-watch-reminder` (repeats after 86,400 s). Import only the one you
+  intend to run.
+
+Next, the operator copies the chosen bundle from `src/prompts/reviewed_playbooks/<id>/`
+into the vault's `reviewed-playbooks/<id>/`, imports it, reviews it and activates
+the exact hash:
+
+```bash
+aq playbook import --path reviewed-playbooks/stuck-task-watch      # never activates
+aq playbook artifact-diff --playbook-id stuck-task-watch --target-sha256 sha256:<hash>
+aq playbook activate --playbook-id stuck-task-watch --artifact-sha256 sha256:<hash>
+aq playbook activation-health                                      # expect ready
+```
+
+Pause and resume with `aq playbook set-enabled --playbook-id stuck-task-watch
+--no-enabled` / `--enabled`. Pausing stops new runs but cancels none in flight,
+and notification state carries over to the next enabled tick.
+
+`tests/test_stuck_task_watch_daemon.py` is the acceptance evidence. It runs the
+reviewed bundles through the import and activation commands of a disposable
+daemon (`scripts/e2e-env.sh`). The run covers:
+
+* two active projects and one inactive project;
+* unchanged ticks and duplicate replay;
+* a dry run that writes nothing;
+* a daemon restart;
+* an inactive project reactivated;
+* clear and recurrence;
+* disable and re-enable;
+* the reminder at 86,400 s;
+* failed doctor partitions that retain their episodes.
+
+### Rollback across the building-block revisions
+
+The supported rollback is a feature rollback on the current code (step 6):
+
+1. Pause the watch with `set-enabled --no-enabled`.
+2. Disable script admission and settle jobs.
+3. Keep the schema, state, protected values and journals.
+
+Downgrading the binary below these revisions is refused. Revisions
+`a00000000104`, `a00000000105`, `a00000000106` and `a00000000108` drop or replace
+constraints and indexes and create tables. That is not additive, so
+`SchemaAheadPolicy` refuses to start older code against the upgraded schema (it
+raises `SchemaAheadCode`), and `scripts/rollback_drill.py` reports "rollback
+unsafe". `a00000000103` and `a00000000107` are additive.
+
+`tests/test_migration_playbook_building_blocks.py` (`-m migration`) runs the
+rehearsal. It rebuilds the schema as it stood before `a00000000103` around
+legacy rows, upgrades through head twice, checks that the rows and constraints
+survive, and pins the refusal. Never `alembic downgrade` or `stamp` to force old
+code to load. If old code is truly required, restore the pre-upgrade backup and
+accept that state recorded since then is lost.

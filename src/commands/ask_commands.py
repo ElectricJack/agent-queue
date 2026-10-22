@@ -24,6 +24,10 @@ class AskCommandsMixin(AskCommunicationCommandsMixin):
         ]))
 
     async def _apply_ask_decision(self, decision):
+        async with self.db._engine.connect() as conn:
+            ask = await self.db.get_ask(decision["ask_id"], conn=conn)
+        if ask and ask["context"].get("legacy_discarded"):
+            raise AskError("ask.discarded", "This decision belongs to discarded legacy work")
         if decision["packet"]["source"]["kind"] not in {"review", "standalone_spec"}:
             from src.asks.source_operations import apply
             try:

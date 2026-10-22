@@ -80,7 +80,10 @@ TRAIN_INTEGRATION_MODES = frozenset({"hierarchy", "train", "development"})
 
 #: Stage profiles never offered as an ordinary worker route.
 _CONTROL_PROFILES = frozenset(
-    {"supervisor", "triage", "reviewer", "final-reviewer", "playbook-compiler", "spec-ingest"}
+    {
+        "supervisor", "triage", "reviewer", "final-reviewer", "playbook-compiler",
+        "spec-ingest", "fidelity-reviewer",
+    }
 )
 
 

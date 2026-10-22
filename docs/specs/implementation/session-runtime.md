@@ -221,6 +221,13 @@ async def _tmux(self, *args: str, timeout: float = 30.0) -> str   # asyncio.crea
   continues. The final pass runs with `quiet_seconds = dialog_settle_seconds` so a trust
   screen painted *after* readiness is still answered, and if one fires there the prefix
   wait is re-entered on the remaining dialog budget.
+  For Codex the builder also appends a built-in `trust-folder` rule when the harness's own
+  rules miss the 0.162 "Trust this folder?" screen (`› 1. Trust and continue`): it sends
+  Enter when `SessionSpec.codex_project_trust` is set and otherwise fails startup rather than
+  idling. That flag is set for a Codex launch that qualifies for the isolated-worktree
+  argument; `_launch` then records the repository root (the main checkout, for a linked
+  worktree) as `trust_level = "trusted"` in `$CODEX_HOME/config.toml` before
+  `provider.start()` (`src/sessions/codex_trust.py`), never changing an existing entry.
 - `nudge()` — `asyncio.Lock` per session name; `_find_agent_pane()` via
   `list-panes -F '#{pane_id}\t#{pane_current_command}'` matched against `process_names`;
   cancel copy-mode (`#{pane_in_mode}` → `send-keys -X cancel`); `send-keys -l` ≤ 4096 B else

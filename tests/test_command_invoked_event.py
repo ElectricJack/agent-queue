@@ -149,3 +149,34 @@ def test_summarize_args_drops_scope():
     got = _summarize_args("x", {"_scope": {"session_id": "s1"}, "task_id": "t1"})
     assert "_scope" not in got
     assert "task_id=t1" in got
+
+
+async def test_command_timing_includes_slow_event_delivery(command_handler_factory, monkeypatch, caplog):
+    """A finished handler can still be waiting on command.invoked subscribers."""
+    import logging
+    from types import SimpleNamespace
+
+    from src.commands import handler as handler_module
+
+    ch = await command_handler_factory()
+    clock = [0.0]
+    monkeypatch.setattr(handler_module, "time", SimpleNamespace(monotonic=lambda: clock[0]))
+
+    async def dispatch(args):
+        clock[0] = 0.25
+        return {"success": True}
+
+    async def deliver(*args):
+        clock[0] = 2.0
+
+    monkeypatch.setattr(ch, "_cmd_list_projects", dispatch)
+    ch.orchestrator.bus.emit.side_effect = deliver
+    caplog.set_level(logging.WARNING, logger=handler_module.__name__)
+
+    await ch.execute("list_projects", {})
+
+    messages = [r.message for r in caplog.records if "command timing" in r.message]
+    assert len(messages) == 1
+    assert "duration_ms=2000.0" in messages[0]
+    assert "dispatch_ms=250.0" in messages[0]
+    assert "event_ms=1750.0" in messages[0]

@@ -544,6 +544,56 @@ class PlaybookV2CommandsMixin:
             "diagnostics": [_diagnostic_dict(diagnostic) for diagnostic in diagnostics],
         }
 
+    async def _v2_script_pins(self, source):
+        """Resolve source programs using server-configured storage and scoped roots."""
+        import asyncio
+        from src.playbooks.definition import scope_from_v1, source_digest
+        from src.git.manager import GitManager
+        from src.playbooks.proposal import pin_source_scripts
+        from src.playbooks.script_inputs import InputStore, RuntimeManifest, read_file
+        from src.playbooks.script_policy import ScriptError, ScriptLimits, ScriptProgram
+
+        programs = source.frontmatter.get("scripts", {})
+        if not programs:
+            return {}
+        settings = self.config.resources.scripts.resolved(self.config.data_dir)
+        runtimes = None
+        if settings.runtime_manifest:
+            manifest_path = Path(settings.runtime_manifest)
+            manifest = RuntimeManifest.model_validate_json(await asyncio.to_thread(
+                read_file, manifest_path.parent, manifest_path.name, settings.runtime_bytes))
+            runtimes = {manifest.runtime: manifest}
+        store = InputStore(Path(settings.input_root), quota_bytes=settings.input_storage_bytes)
+        scope = scope_from_v1(source.frontmatter["scope"])
+        vault = self._v2_vault_root()
+        root = (vault / "projects" / scope.project_id if scope.type == "project" else
+                vault / "agent-types" / scope.agent_type if scope.type == "agent_type" else
+                vault / "system")
+        result = {}
+        for step_id, body in programs.items():
+            program = ScriptProgram.model_validate(body)
+            program.limits.narrow(ScriptLimits(wall_seconds=settings.wall_seconds,
+                stdout_bytes=settings.stdout_bytes, stderr_bytes=settings.stderr_bytes))
+            source_root, revision = root, source_digest(source.raw)
+            if program.source_kind == "repository":
+                if scope.type != "project":
+                    raise ScriptError("script_repository_requires_project_scope")
+                repos = await self.db.list_repos(scope.project_id)
+                if len(repos) != 1:
+                    raise ScriptError("script_repository_ambiguous")
+                repo = repos[0]
+                source_root = Path(repo.source_path or repo.checkout_base_path)
+                revision = (await GitManager()._arun(
+                    ["rev-parse", "--verify", f"{repo.default_branch}^{{commit}}"],
+                    cwd=str(source_root))).strip()
+            from dataclasses import replace
+
+            one = replace(source, frontmatter={**source.frontmatter, "scripts": {step_id: body}})
+            result.update(await pin_source_scripts(one, source_root=source_root,
+                source_revision=revision, store=store, runtimes=runtimes,
+                max_bytes=settings.input_bytes))
+        return result
+
     async def _cmd_playbook_v2_propose(self, args: dict) -> dict:
         if not self._v2_compiler_enabled():
             return {"success": False, "error": V2_COMPILER_DISABLED_ERROR}
@@ -585,9 +635,11 @@ class PlaybookV2CommandsMixin:
         except (OSError, ValueError, DuplicateSemanticKey, json.JSONDecodeError) as exc:
             return _command_error(f"invalid semantic body: {exc}", field="semantic_body_path")
         contracts, profiles, events = await self._v2_lookups()
+        script_pins = await self._v2_script_pins(source)
         proposal = propose(
             source,
             body,
+            script_pins=script_pins,
             baseline=baseline,
             contracts=contracts,
             profiles=profiles,
@@ -1000,7 +1052,7 @@ class PlaybookV2CommandsMixin:
 
     def _v2_storage_unavailable(self) -> dict:
         """Compatibility response when the independently gated store is off."""
-        return {"error": V2_STORAGE_UNAVAILABLE_ERROR}
+        return {"success": False, "error": V2_STORAGE_UNAVAILABLE_ERROR}
 
     def _v2_storage_ready(self, *methods: str) -> bool:
         return all(
@@ -1124,12 +1176,31 @@ class PlaybookV2CommandsMixin:
     async def _cmd_playbook_commands(self, args: dict) -> dict:
         """List every registered playbook command and its typed input schema."""
         if not self._v2_api_enabled():
-            return {"error": V2_API_DISABLED_ERROR}
+            return {"success": False, "error": V2_API_DISABLED_ERROR}
         self._configure_command_docs_urls()
         from src.commands.contracts import CONTRACTS
 
+        offset, limit = args.get("offset", 0), args.get("limit", 50)
+        if (type(offset) is not int or offset < 0 or type(limit) is not int
+                or not 1 <= limit <= 100):
+            return {"success": False, "error": "offset must be >= 0; limit must be 1..100"}
         commands = list(CONTRACTS.catalog())
-        return {"success": True, "commands": commands, "count": len(commands)}
+        for field in ("name", "origin", "plugin", "schema_quality", "result_mode", "available", "denied"):
+            if field in args:
+                commands = [row for row in commands if row.get(field) == args[field]]
+        prefix = args.get("prefix")
+        if prefix is not None:
+            if not isinstance(prefix, str):
+                return {"success": False, "error": "prefix must be a string"}
+            commands = [row for row in commands if row["name"].startswith(prefix)]
+        total = len(commands)
+        page = commands[offset:offset + limit]
+        if args.get("include_schema", True) is False:
+            page = [{key: value for key, value in row.items() if key != "parameters_schema"}
+                    for row in page]
+        return {"success": True, "commands": page, "count": len(page), "total": total,
+                "offset": offset, "next_offset": offset + len(page)
+                if offset + len(page) < total else None}
 
     async def _cmd_playbook_v2_graph(self, args: dict) -> dict:
         """Return the event-grouped semantic graph of one playbook artifact.
@@ -1154,22 +1225,22 @@ class PlaybookV2CommandsMixin:
                 field present but empty so the response type never changes.
         """
         if not self._v2_api_enabled():
-            return {"error": V2_API_DISABLED_ERROR}
+            return {"success": False, "error": V2_API_DISABLED_ERROR}
         self._configure_command_docs_urls()
 
         playbook_id = _clean_str(args, "playbook_id")
         if not playbook_id:
-            return {"error": "playbook_id is required"}
+            return {"success": False, "error": "playbook_id is required"}
 
         artifact_sha256 = _clean_str(args, "artifact_sha256")
         if artifact_sha256:
             invalid = _validate_sha(artifact_sha256, "artifact_sha256")
             if invalid:
-                return {"error": invalid}
+                return {"success": False, "error": invalid}
 
         direction = (_clean_str(args, "direction") or "TD").upper()
         if direction not in ("TD", "LR"):
-            return {"error": f"Invalid direction '{direction}'. Valid: TD, LR"}
+            return {"success": False, "error": f"Invalid direction '{direction}'. Valid: TD, LR"}
 
         if not self._v2_storage_ready(
             "list_playbook_activations", "get_playbook_artifact", "get_playbook_artifact_row"
@@ -1181,10 +1252,10 @@ class PlaybookV2CommandsMixin:
             activation.active_artifact_sha256 if activation is not None else None
         )
         if not selected_sha:
-            return {"error": f"No active V2 artifact for playbook '{playbook_id}'"}
+            return {"success": False, "error": f"No active V2 artifact for playbook '{playbook_id}'"}
         ref, definition, error = await self._v2_load_artifact(selected_sha, playbook_id)
         if error:
-            return {"error": error}
+            return {"success": False, "error": error}
         from src.playbooks.graph_projection import project_graph
 
         response = project_graph(
@@ -1204,36 +1275,36 @@ class PlaybookV2CommandsMixin:
         if args.get("include_advanced", True) is False:
             for node in response["nodes"]:
                 node["advanced"]["typed_step"] = {}
-        return response
+        return {**response, "success": True}
 
     async def _cmd_playbook_graph_layout_save(self, args: dict) -> dict:
         """Persist user-arranged node coordinates for one immutable artifact."""
         if not self._v2_api_enabled():
-            return {"error": V2_API_DISABLED_ERROR}
+            return {"success": False, "error": V2_API_DISABLED_ERROR}
         playbook_id = _clean_str(args, "playbook_id")
         if not playbook_id:
-            return {"error": "playbook_id is required"}
+            return {"success": False, "error": "playbook_id is required"}
         artifact_sha256 = _clean_str(args, "artifact_sha256")
         invalid = _validate_sha(artifact_sha256, "artifact_sha256")
         if invalid:
-            return {"error": invalid}
+            return {"success": False, "error": invalid}
         if not self._v2_storage_ready("get_playbook_artifact"):
             return self._v2_storage_unavailable()
         _ref, definition, error = await self._v2_load_artifact(artifact_sha256, playbook_id)
         if error:
-            return {"error": error}
+            return {"success": False, "error": error}
         raw_positions = args.get("positions")
         if not isinstance(raw_positions, dict) or not raw_positions:
-            return {"error": "positions must be a non-empty object"}
+            return {"success": False, "error": "positions must be a non-empty object"}
         positions: dict[str, dict[str, int]] = {}
         for step_id, raw in raw_positions.items():
             if step_id not in definition.steps:
-                return {"error": f"Unknown step_id '{step_id}'"}
+                return {"success": False, "error": f"Unknown step_id '{step_id}'"}
             if not isinstance(raw, dict):
-                return {"error": f"Position for '{step_id}' must contain integer x and y"}
+                return {"success": False, "error": f"Position for '{step_id}' must contain integer x and y"}
             x, y = raw.get("x"), raw.get("y")
             if isinstance(x, bool) or isinstance(y, bool) or not isinstance(x, int) or not isinstance(y, int):
-                return {"error": f"Position for '{step_id}' must contain integer x and y"}
+                return {"success": False, "error": f"Position for '{step_id}' must contain integer x and y"}
             positions[step_id] = {"x": x, "y": y}
         store = self._v2_engine().services.artifact_store
         positions = {**store.load_layout(artifact_sha256), **positions}
@@ -1275,15 +1346,16 @@ class PlaybookV2CommandsMixin:
                 ``stale_contract``, ``unavailable``).
         """
         if not self._v2_api_enabled():
-            return {"error": V2_API_DISABLED_ERROR}
+            return {"success": False, "error": V2_API_DISABLED_ERROR}
 
         scope = _clean_str(args, "scope")
         if scope and scope not in _VALID_SCOPES:
-            return {"error": f"Invalid scope '{scope}'. Valid: {', '.join(sorted(_VALID_SCOPES))}"}
+            return {"success": False, "error": f"Invalid scope '{scope}'. Valid: {', '.join(sorted(_VALID_SCOPES))}"}
 
         health = _clean_str(args, "health")
         if health and health not in _VALID_HEALTH:
             return {
+                "success": False,
                 "error": f"Invalid health '{health}'. Valid: {', '.join(sorted(_VALID_HEALTH))}"
             }
 
@@ -1333,19 +1405,19 @@ class PlaybookV2CommandsMixin:
             limit: Max artifacts to return, newest version first. Default: 50.
         """
         if not self._v2_api_enabled():
-            return {"error": V2_API_DISABLED_ERROR}
+            return {"success": False, "error": V2_API_DISABLED_ERROR}
 
         playbook_id = _clean_str(args, "playbook_id")
         if not playbook_id:
-            return {"error": "playbook_id is required"}
+            return {"success": False, "error": "playbook_id is required"}
 
         raw_limit = args.get("limit", _ARTIFACT_LIST_DEFAULT_LIMIT)
         try:
             limit = int(raw_limit)
         except (TypeError, ValueError):
-            return {"error": "limit must be an integer"}
+            return {"success": False, "error": "limit must be an integer"}
         if limit < 1:
-            return {"error": "limit must be >= 1"}
+            return {"success": False, "error": "limit must be >= 1"}
 
         if not self._v2_artifact_storage_ready():
             return self._v2_storage_unavailable()
@@ -1399,24 +1471,24 @@ class PlaybookV2CommandsMixin:
                 absent entirely for a playbook's first artifact.
         """
         if not self._v2_api_enabled():
-            return {"error": V2_API_DISABLED_ERROR}
+            return {"success": False, "error": V2_API_DISABLED_ERROR}
 
         playbook_id = _clean_str(args, "playbook_id")
         if not playbook_id:
-            return {"error": "playbook_id is required"}
+            return {"success": False, "error": "playbook_id is required"}
 
         target_sha256 = _clean_str(args, "target_sha256")
         if not target_sha256:
-            return {"error": "target_sha256 is required"}
+            return {"success": False, "error": "target_sha256 is required"}
         invalid = _validate_sha(target_sha256, "target_sha256")
         if invalid:
-            return {"error": invalid}
+            return {"success": False, "error": invalid}
 
         base_sha256 = _clean_str(args, "base_sha256")
         if base_sha256:
             invalid = _validate_sha(base_sha256, "base_sha256")
             if invalid:
-                return {"error": invalid}
+                return {"success": False, "error": invalid}
 
         if not self._v2_storage_ready(
             "list_playbook_activations", "get_playbook_artifact", "get_playbook_artifact_row"
@@ -1429,12 +1501,12 @@ class PlaybookV2CommandsMixin:
         )
         target_ref, target, error = await self._v2_load_artifact(target_sha256, playbook_id)
         if error:
-            return {"error": error}
+            return {"success": False, "error": error}
         base_ref = base = None
         if base_sha256:
             base_ref, base, error = await self._v2_load_artifact(base_sha256, playbook_id)
             if error:
-                return {"error": error}
+                return {"success": False, "error": error}
         from src.playbooks.artifact_diff import diff_artifacts
 
         return diff_artifacts(
@@ -1459,11 +1531,12 @@ class PlaybookV2CommandsMixin:
             limit: Max events to return. Default: 100.
         """
         if not self._v2_api_enabled():
-            return {"error": V2_API_DISABLED_ERROR}
+            return {"success": False, "error": V2_API_DISABLED_ERROR}
 
         reason = _clean_str(args, "reason")
         if reason and reason not in _VALID_PENDING_REASONS:
             return {
+                "success": False,
                 "error": (
                     f"Invalid reason '{reason}'. "
                     f"Valid: {', '.join(sorted(_VALID_PENDING_REASONS))}"
@@ -1474,9 +1547,9 @@ class PlaybookV2CommandsMixin:
         try:
             limit = int(raw_limit)
         except (TypeError, ValueError):
-            return {"error": "limit must be an integer"}
+            return {"success": False, "error": "limit must be an integer"}
         if limit < 1:
-            return {"error": "limit must be >= 1"}
+            return {"success": False, "error": "limit must be >= 1"}
 
         if not self._v2_storage_ready("list_pending_events"):
             return self._v2_storage_unavailable()
@@ -1530,19 +1603,19 @@ class PlaybookV2CommandsMixin:
                 ``truncated`` reports when more exist.
         """
         if not self._v2_api_enabled():
-            return {"error": V2_API_DISABLED_ERROR}
+            return {"success": False, "error": V2_API_DISABLED_ERROR}
 
         run_id = _clean_str(args, "run_id")
         if not run_id:
-            return {"error": "run_id is required"}
+            return {"success": False, "error": "run_id is required"}
 
         raw_limit = args.get("receipt_limit", 500)
         try:
             receipt_limit = int(raw_limit)
         except (TypeError, ValueError):
-            return {"error": "receipt_limit must be an integer"}
+            return {"success": False, "error": "receipt_limit must be an integer"}
         if receipt_limit < 1:
-            return {"error": "receipt_limit must be >= 1"}
+            return {"success": False, "error": "receipt_limit must be >= 1"}
 
         if not self._v2_storage_ready(
             "load_run",
@@ -1554,10 +1627,10 @@ class PlaybookV2CommandsMixin:
             return self._v2_storage_unavailable()
         run = await self.db.load_run(run_id)
         if run is None:
-            return {"error": f"Playbook run '{run_id}' not found"}
+            return {"success": False, "error": f"Playbook run '{run_id}' not found"}
         ref, definition, error = await self._v2_load_artifact(run.artifact_sha256, run.playbook_id)
         if error:
-            return {"error": error}
+            return {"success": False, "error": error}
         visible_receipt_kinds = ("step", "interrupted", "operator_decision")
         receipt_total = await self.db.count_receipts(
             run_id, receipt_kinds=visible_receipt_kinds
@@ -1615,20 +1688,20 @@ class PlaybookV2CommandsMixin:
             enabled: Whether the activation is enabled. Default: ``True``.
         """
         if not self._v2_api_enabled():
-            return {"error": V2_API_DISABLED_ERROR}
+            return {"success": False, "error": V2_API_DISABLED_ERROR}
         if not self._v2_activation_writes_enabled():
-            return {"error": V2_WRITES_DISABLED_ERROR}
+            return {"success": False, "error": V2_WRITES_DISABLED_ERROR}
 
         playbook_id = _clean_str(args, "playbook_id")
         if not playbook_id:
-            return {"error": "playbook_id is required"}
+            return {"success": False, "error": "playbook_id is required"}
 
         artifact_sha256 = _clean_str(args, "artifact_sha256")
         if not artifact_sha256:
-            return {"error": "artifact_sha256 is required"}
+            return {"success": False, "error": "artifact_sha256 is required"}
         invalid = _validate_sha(artifact_sha256, "artifact_sha256")
         if invalid:
-            return {"error": invalid}
+            return {"success": False, "error": invalid}
 
         if not self._v2_storage_ready(
             "list_playbook_activations",
@@ -1639,12 +1712,12 @@ class PlaybookV2CommandsMixin:
             return self._v2_storage_unavailable()
         target_ref, target, error = await self._v2_load_artifact(artifact_sha256, playbook_id)
         if error:
-            return {"error": error}
+            return {"success": False, "error": error}
         scope, scope_identifier = self._v2_scope(target)
         if error := await self._operator_playbook_check(
             scope, scope_identifier, artifact_sha256, enabling=args.get("enabled", True),
         ):
-            return {"error": error}
+            return {"success": False, "error": error}
         from src.commands.principal import PrincipalKind, current_principal
 
         principal = current_principal()
@@ -1658,7 +1731,7 @@ class PlaybookV2CommandsMixin:
             and not global_operator
             and principal.project_id != scope_identifier
         ):
-            return {"error": "out of scope: project_id mismatch"}
+            return {"success": False, "error": "out of scope: project_id mismatch"}
         records, contracts, profiles = await self._v2_health_records()
         _contracts, _profiles, events = await self._v2_lookups()
         current = self._v2_activation_for(records, playbook_id)
@@ -1670,7 +1743,7 @@ class PlaybookV2CommandsMixin:
                 from src.playbooks.activation import ActivationHealth
 
                 if current is None or current.health is not ActivationHealth.INVALID:
-                    return {"error": error}
+                    return {"success": False, "error": error}
                 logger.warning(
                     "Replacing invalid active playbook %s artifact %s: %s",
                     playbook_id, current_sha, error,
@@ -1718,7 +1791,7 @@ class PlaybookV2CommandsMixin:
                 }
             )
             return {
-                "success": True,
+                "success": False,
                 "activation": activation,
                 "previous_artifact_sha256": current_sha,
                 "changed": False,
@@ -1735,7 +1808,7 @@ class PlaybookV2CommandsMixin:
         actor = principal.describe() if principal is not None else "local"
         enabled = args.get("enabled", True)
         if not isinstance(enabled, bool):
-            return {"error": "enabled must be a boolean"}
+            return {"success": False, "error": "enabled must be a boolean"}
         await self.db.set_playbook_activation(
             playbook_id=playbook_id,
             scope=scope,
@@ -1785,21 +1858,21 @@ class PlaybookV2CommandsMixin:
         )
 
         if not local_or_operator("playbook_delete"):
-            return {"error": "playbook deletion requires local operator authority"}
+            return {"success": False, "error": "playbook deletion requires local operator authority"}
         if not self._v2_activation_writes_enabled():
-            return {"error": V2_WRITES_DISABLED_ERROR}
+            return {"success": False, "error": V2_WRITES_DISABLED_ERROR}
         name = _clean_str(args, "playbook_id")
         sha = _clean_str(args, "artifact_sha256")
         scope = args.get("scope")
         identifier = args.get("scope_identifier")
         if error := await self._operator_playbook_check(scope, identifier, sha):
-            return {"error": error}
+            return {"success": False, "error": error}
         if (not name or not sha or _validate_sha(sha, "artifact_sha256")
                 or scope not in {"system", "project", "agent_type"}
                 or not isinstance(identifier, str)
                 or (scope == "system" and identifier != "")
                 or (scope != "system" and not identifier)):
-            return {"error": "exact playbook_id, scope, scope_identifier and artifact_sha256 required"}
+            return {"success": False, "error": "exact playbook_id, scope, scope_identifier and artifact_sha256 required"}
         async with self.db.immediate() as conn:
             row = (await conn.execute(select(playbook_activations).where(
                 playbook_activations.c.playbook_id == name,
@@ -1809,7 +1882,7 @@ class PlaybookV2CommandsMixin:
             if row is None:
                 return {"success": True, "deleted": False}
             if row["enabled"] or row["active_artifact_sha256"] != sha:
-                return {"error": "playbook is enabled or artifact changed; deletion refused"}
+                return {"success": False, "error": "playbook is enabled or artifact changed; deletion refused"}
             busy_queries = (
                 select(playbook_v2_runs.c.run_id).where(
                     playbook_v2_runs.c.artifact_sha256 == sha,
@@ -1830,7 +1903,7 @@ class PlaybookV2CommandsMixin:
             )
             for query in busy_queries:
                 if (await conn.execute(query.limit(1))).first() is not None:
-                    return {"error": "playbook still owns unfinished work; deletion refused"}
+                    return {"success": False, "error": "playbook still owns unfinished work; deletion refused"}
             policies = (await conn.execute(select(projects.c.hierarchical_integration_policy))).scalars()
             for policy in policies:
                 if not isinstance(policy, dict):
@@ -1838,7 +1911,7 @@ class PlaybookV2CommandsMixin:
                 for boundary in ("parent", "root"):
                     route = (policy.get(boundary) or {}).get("route") or {}
                     if (route.get("playbook_id"), route.get("scope"), route.get("scope_identifier")) == (name, scope, identifier):
-                        return {"error": "playbook is referenced by project integration policy"}
+                        return {"success": False, "error": "playbook is referenced by project integration policy"}
             result = await conn.execute(delete(playbook_activations).where(
                 playbook_activations.c.activation_id == row["activation_id"],
                 playbook_activations.c.enabled.is_(False),
@@ -1865,17 +1938,17 @@ class PlaybookV2CommandsMixin:
             enabled: Required — ``true`` to resume, ``false`` to pause.
         """
         if not self._v2_api_enabled():
-            return {"error": V2_API_DISABLED_ERROR}
+            return {"success": False, "error": V2_API_DISABLED_ERROR}
         if not self._v2_activation_writes_enabled():
-            return {"error": V2_WRITES_DISABLED_ERROR}
+            return {"success": False, "error": V2_WRITES_DISABLED_ERROR}
         playbook_id = _clean_str(args, "playbook_id")
         if not playbook_id:
-            return {"error": "playbook_id is required"}
+            return {"success": False, "error": "playbook_id is required"}
         if "enabled" not in args:
-            return {"error": "enabled is required"}
+            return {"success": False, "error": "enabled is required"}
         enabled = args["enabled"]
         if not isinstance(enabled, bool):
-            return {"error": "enabled must be a boolean"}
+            return {"success": False, "error": "enabled must be a boolean"}
         if not self._v2_storage_ready("list_playbook_activations", "set_playbook_activation"):
             return self._v2_storage_unavailable()
         rows = [
@@ -1884,15 +1957,16 @@ class PlaybookV2CommandsMixin:
             if dict(row).get("playbook_id") == playbook_id
         ]
         if not rows:
-            return {"error": f"Playbook '{playbook_id}' not found"}
+            return {"success": False, "error": f"Playbook '{playbook_id}' not found"}
         row = rows[0]
         artifact_sha256 = row.get("active_artifact_sha256") or None
         if error := await self._operator_playbook_check(
             row["scope"], row.get("scope_identifier"), artifact_sha256, enabling=enabled,
         ):
-            return {"error": error}
+            return {"success": False, "error": error}
         if enabled and not artifact_sha256:
             return {
+                "success": False,
                 "error": (
                     f"Playbook '{playbook_id}' has no active artifact to enable; "
                     "activate one with playbook_activate"
@@ -2044,9 +2118,13 @@ class PlaybookV2CommandsMixin:
         stable_dispatch_id = hashlib.sha256(
             f"v2-pending|{pending_event_id}".encode()
         ).hexdigest()[:12]
+        payload = self._v2_replayable_event(row["event"])
+        payload["_received_at"] = row["received_at"]
+        if row.get("event_id"):
+            payload.setdefault("event_id", row["event_id"])
         dispatch = asyncio.create_task(
             self._v2_engine().dispatch_event(
-                self._v2_replayable_event(row["event"]),
+                payload,
                 principal,
                 playbook_ids=[row["playbook_id"]],
                 dispatch_id=stable_dispatch_id,
@@ -2165,15 +2243,16 @@ class PlaybookV2CommandsMixin:
                 dropped, at least 12 characters.  Recorded on every row.
         """
         if not self._v2_api_enabled():
-            return {"error": V2_API_DISABLED_ERROR}
+            return {"success": False, "error": V2_API_DISABLED_ERROR}
         if not self._v2_activation_writes_enabled():
-            return {"error": V2_WRITES_DISABLED_ERROR}
+            return {"success": False, "error": V2_WRITES_DISABLED_ERROR}
 
         action = _clean_str(args, "action")
         if not action:
-            return {"error": "action is required"}
+            return {"success": False, "error": "action is required"}
         if action not in _VALID_PENDING_ACTIONS:
             return {
+                "success": False,
                 "error": (
                     f"Invalid action '{action}'. "
                     f"Valid: {', '.join(sorted(_VALID_PENDING_ACTIONS))}"
@@ -2184,16 +2263,16 @@ class PlaybookV2CommandsMixin:
         if isinstance(raw_ids, str):
             raw_ids = [raw_ids]
         if not isinstance(raw_ids, list):
-            return {"error": "pending_event_ids is required and must be a list"}
+            return {"success": False, "error": "pending_event_ids is required and must be a list"}
         pending_event_ids = [i.strip() for i in raw_ids if isinstance(i, str) and i.strip()]
         if not pending_event_ids:
-            return {"error": "pending_event_ids must be a non-empty list of event ids"}
+            return {"success": False, "error": "pending_event_ids must be a non-empty list of event ids"}
 
         # Shape first, policy second: a malformed request is reported as
         # malformed rather than as a missing justification.
         reason = (_clean_str(args, "reason") or "").strip()
         if action == "discard" and len(reason) < MIN_PENDING_EVENT_REASON_LENGTH:
-            return {"error": PENDING_EVENT_REASON_TOO_SHORT_ERROR}
+            return {"success": False, "error": PENDING_EVENT_REASON_TOO_SHORT_ERROR}
 
         storage_methods = ["get_pending_events"]
         if action == "discard":

@@ -248,6 +248,9 @@ def _register_all():
             {
                 "IN_PROGRESS": 0,
                 "WAITING_INPUT": 1,
+                "WAITING": 4,
+                "HIBERNATED": 5,
+                "RESUME_PENDING": 5,
                 "ASSIGNED": 2,
                 "READY": 3,
                 "VERIFYING": 6,

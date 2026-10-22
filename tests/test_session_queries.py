@@ -168,7 +168,7 @@ class TestClaimRefusal:
             "sess1", result="prepare_failed", reason="checkout", now=100,
         )
         async with db.immediate() as conn:
-            kind, row = await db.take_claim_slot(conn, "sess1", now=101, cap=None)
+            kind, row, _binding = await db.take_claim_slot(conn, "sess1", now=101, cap=None)
         assert kind == "claim_refusal"
         assert row.claim_phase == phase
         assert row.claim_refusal == saved.claim_refusal

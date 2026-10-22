@@ -65,11 +65,11 @@ def sync_detailed(
     client: AuthenticatedClient | Client,
     body: PlaybookCommandsRequest,
 ) -> Response[PlaybookCommandCatalogResponse | PlaybookCommandsResponse422]:
-    """List every registered Playbook V2 command with its title, summary, documentation URL, and typed
-    parameter JSON Schema.
+    """Inspect a bounded page of playbook command contracts, including denied and unavailable commands,
+    schemas, caller requirements and execution metadata.
 
-     List every registered Playbook V2 command with its title, summary, documentation URL, and typed
-    parameter JSON Schema.
+     Inspect a bounded page of playbook command contracts, including denied and unavailable commands,
+    schemas, caller requirements and execution metadata.
 
     Args:
         body (PlaybookCommandsRequest):
@@ -98,11 +98,11 @@ def sync(
     client: AuthenticatedClient | Client,
     body: PlaybookCommandsRequest,
 ) -> PlaybookCommandCatalogResponse | PlaybookCommandsResponse422 | None:
-    """List every registered Playbook V2 command with its title, summary, documentation URL, and typed
-    parameter JSON Schema.
+    """Inspect a bounded page of playbook command contracts, including denied and unavailable commands,
+    schemas, caller requirements and execution metadata.
 
-     List every registered Playbook V2 command with its title, summary, documentation URL, and typed
-    parameter JSON Schema.
+     Inspect a bounded page of playbook command contracts, including denied and unavailable commands,
+    schemas, caller requirements and execution metadata.
 
     Args:
         body (PlaybookCommandsRequest):
@@ -126,11 +126,11 @@ async def asyncio_detailed(
     client: AuthenticatedClient | Client,
     body: PlaybookCommandsRequest,
 ) -> Response[PlaybookCommandCatalogResponse | PlaybookCommandsResponse422]:
-    """List every registered Playbook V2 command with its title, summary, documentation URL, and typed
-    parameter JSON Schema.
+    """Inspect a bounded page of playbook command contracts, including denied and unavailable commands,
+    schemas, caller requirements and execution metadata.
 
-     List every registered Playbook V2 command with its title, summary, documentation URL, and typed
-    parameter JSON Schema.
+     Inspect a bounded page of playbook command contracts, including denied and unavailable commands,
+    schemas, caller requirements and execution metadata.
 
     Args:
         body (PlaybookCommandsRequest):
@@ -157,11 +157,11 @@ async def asyncio(
     client: AuthenticatedClient | Client,
     body: PlaybookCommandsRequest,
 ) -> PlaybookCommandCatalogResponse | PlaybookCommandsResponse422 | None:
-    """List every registered Playbook V2 command with its title, summary, documentation URL, and typed
-    parameter JSON Schema.
+    """Inspect a bounded page of playbook command contracts, including denied and unavailable commands,
+    schemas, caller requirements and execution metadata.
 
-     List every registered Playbook V2 command with its title, summary, documentation URL, and typed
-    parameter JSON Schema.
+     Inspect a bounded page of playbook command contracts, including denied and unavailable commands,
+    schemas, caller requirements and execution metadata.
 
     Args:
         body (PlaybookCommandsRequest):

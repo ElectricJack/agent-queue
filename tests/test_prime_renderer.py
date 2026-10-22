@@ -352,6 +352,8 @@ class TestTaskContextSection:
     ):
         from src.knowledge.budget import ContextBudget
 
+        # Exercise the supported legacy operator cap, independently of auto sizing.
+        config.knowledge.context.input_max_tokens = 32768
         description = "Required acceptance αβ.\n" * 3000 + "FINAL ACCEPTANCE"
         salvage = "diff --git a/work.py b/work.py\n" + "+retained αβ\n" * 10000 + "FINAL DIFF"
         await db.update_task(task.id, description=description, deliverables=json.dumps([
@@ -370,7 +372,7 @@ class TestTaskContextSection:
                    "{{messages}}\n{{workspaces}}\n{{tool_guidance}}\n{{completion_protocol}}")
         renderer = PrimeRenderer(db, config)
         before = await renderer.render_for_task(task.id, work_dir=str(tmp_path))
-        # Use the default configured limit and make only inline policy large
+        # Use the explicit configured limit and make only inline policy large
         # enough to reproduce aggregate overflow from independently bounded prose.
         role = "Must preserve this exact policy. " + "r" * max(
             0, 34000 - len(before.to_markdown().encode("utf-8")),
@@ -456,6 +458,7 @@ class TestTaskContextSection:
         from src.knowledge.budget import ContextBudget
         from src.records.models import RecordError
 
+        config.knowledge.context.input_max_tokens = 32768
         config.knowledge.enabled = config.knowledge.context.enabled = config.memory.enabled = True
         config.knowledge.enabled_projects = [task.project_id]
         role = "MANDATORY POLICY " * 3000
@@ -466,6 +469,27 @@ class TestTaskContextSection:
         assert "--field prime_context" in doc.to_markdown()
         with pytest.raises(RecordError, match="context.required_over_budget"):
             ContextBudget.from_config(config).enforce(doc.to_markdown())
+
+    async def test_preview_fitting_uses_the_observed_model_window(
+        self, db, config, task, monkeypatch,
+    ):
+        from unittest.mock import AsyncMock
+        from src.knowledge.budget import ContextBudget
+
+        await db.add_task_context(task.id, type="note", label="Context", content="c" * 6000)
+        renderer = PrimeRenderer(db, config)
+        before = await renderer.render_for_task(task.id)
+        window = ContextBudget.from_config(config).account(before.to_markdown())["total_tokens"] - 1000
+        monkeypatch.setattr("src.sessions.context.read_context", AsyncMock(return_value={
+            "model_context_window": window,
+        }))
+        config.knowledge.enabled = config.knowledge.context.enabled = config.memory.enabled = True
+        config.knowledge.enabled_projects = [task.project_id]
+        after = await renderer.render_for_task(task.id)
+        ContextBudget.from_config(config, model_context_window=window).enforce(after.to_markdown())
+        assert "--field prime_context" in after.to_markdown()
+        assert len(after.to_markdown()) < len(before.to_markdown())
+        assert "aq task close" in after.to_markdown()
 
     async def test_worker_previews_bound_description_and_context_but_keep_protocol(
         self, db, config, task
@@ -1287,6 +1311,7 @@ _CLI_TO_COMMAND: dict[str, str | None] = {
     "aq knowledge update": "knowledge_update",
     "aq record capabilities": "record_capabilities",
     "aq record search": "record_search",
+    "aq file read": "read_file",
     "aq memory save": "memory_save",
     "aq memory search": "memory_search",
     "aq project ready": "project_ready",
@@ -1294,6 +1319,9 @@ _CLI_TO_COMMAND: dict[str, str | None] = {
     "aq job submit": "job_submit",
     "aq wait register": "wait_register",
     "aq wait show": "wait_get",
+    "aq wait checkpoint": "wait_checkpoint",
+    "aq wait decide": "wait_decide",
+    "aq wait lift": "wait_lift",
 }
 
 
@@ -1532,3 +1560,35 @@ def test_primed_context_guidance_tracks_what_the_harness_reports(harness, readab
             harness, config=config, session=session,
             observation={"input_tokens": 130000}).body
         assert "Latest measured request input: 130000 tokens." in measured
+
+
+@pytest.mark.parametrize("global_enabled,override,expected", [
+    (False, None, False), (True, None, True), (True, False, False), (False, True, True),
+])
+async def test_prime_wait_guidance_matches_project_activation(
+    db, config, task, global_enabled, override, expected
+):
+    from src.config_wait_policy import WaitProjectOverrides
+
+    config.wait_policy.v2_enabled = global_enabled
+    if override is not None:
+        config.wait_policy.projects[task.project_id] = WaitProjectOverrides(v2_enabled=override)
+    doc = await PrimeRenderer(db, config).render_for_task(task.id)
+    sections = {section.key: section.body for section in doc.sections}
+    guidance = sections["tool_guidance"]
+    completion = sections["completion_protocol"]
+    assert ("aq wait register" in guidance) == expected
+    assert ("--aq-wait" in completion) == expected
+    if not expected:
+        assert "awaiting inbox delivery" in guidance
+        assert "registration is disabled" in completion
+    assert "aq file read --path projects/<project>/plans/<file>" in guidance
+
+
+async def test_pool_completion_does_not_prescribe_disabled_message_wait():
+    from src.prime.sections import build_completion_protocol_section
+
+    body = build_completion_protocol_section("held", lifecycle="pool", waits_enabled=False).body
+    assert "use ONE durable message wait" not in body
+    assert "preserve it and end the turn awaiting the supervisor's inbox delivery" in body
+    assert "--aq-wait" not in body

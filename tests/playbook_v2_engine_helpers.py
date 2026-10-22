@@ -189,12 +189,13 @@ class StubActivations:
         self.queued.append((playbook_id, dict(event)))
 
 
-def boundary_identity(receipt: StepReceipt) -> tuple[str, str, int, int, int, str]:
+def boundary_identity(receipt: StepReceipt) -> tuple[str, str, int, str, int, int, str]:
     """The columns of ``uq_playbook_step_receipts_boundary``."""
     return (
         receipt.run_id,
         receipt.step_id,
         receipt.iteration,
+        receipt.iteration_path,
         receipt.attempt,
         receipt.turn_index,
         receipt.receipt_kind,
@@ -324,10 +325,15 @@ class RecordingRunRepository:
         return updated
 
     async def list_receipts(
-        self, run_id: str, *, limit: int = 500, offset: int = 0
+        self, run_id: str, *, limit: int = 500, offset: int = 0,
+        step_id: str | None = None, iteration: int | None = None,
+        iteration_path: str | None = None,
     ) -> list[StepReceipt]:
         """The restart boundary reads durable attempt receipts by run."""
-        return [receipt for receipt in self.receipts if receipt.run_id == run_id][
+        return [receipt for receipt in self.receipts if receipt.run_id == run_id
+                and (step_id is None or receipt.step_id == step_id)
+                and (iteration is None or receipt.iteration == iteration)
+                and (iteration_path is None or receipt.iteration_path == iteration_path)][
             offset : offset + limit
         ]
 
@@ -419,14 +425,20 @@ class SQLiteRunRepository:
         return advanced
 
     async def list_receipts(
-        self, run_id: str, *, limit: int = 500, offset: int = 0
+        self, run_id: str, *, limit: int = 500, offset: int = 0,
+        step_id: str | None = None, iteration: int | None = None,
+        iteration_path: str | None = None,
     ) -> list[StepReceipt]:
         with self._connection() as connection:
             rows = connection.execute(
-                "SELECT receipt FROM test_v2_receipts WHERE run_id = ? ORDER BY rowid LIMIT ? OFFSET ?",
-                (run_id, limit, offset),
+                "SELECT receipt FROM test_v2_receipts WHERE run_id = ? ORDER BY rowid",
+                (run_id,),
             ).fetchall()
-        return [pickle.loads(payload) for (payload,) in rows]
+        receipts = [pickle.loads(payload) for (payload,) in rows]
+        return [r for r in receipts if (step_id is None or r.step_id == step_id)
+                and (iteration is None or r.iteration == iteration)
+                and (iteration_path is None or r.iteration_path == iteration_path)
+                ][offset:offset + limit]
 
     async def request_cancel(
         self, run_id: str, *, expected_version: int, reason: str, requested_by: str

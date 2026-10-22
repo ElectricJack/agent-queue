@@ -176,20 +176,16 @@ def evaluate(
         for name in required.names
     )
     conclusions = {check.conclusion for check in checks}
-    workflow_conclusions = {check.detail.get("workflow_conclusion", "success") for check in checks}
     if conclusions & {Conclusion.FAILURE, Conclusion.MISSING}:
         state = ChecksState.RED
     elif conclusions & {Conclusion.UNAVAILABLE, Conclusion.CANCELLED}:
         state = ChecksState.UNKNOWN
     elif Conclusion.PENDING in conclusions:
         state = ChecksState.PENDING
-    elif "failure" in workflow_conclusions:
-        # Keep workflow-level publication gating without inventing failed jobs.
-        # The train blocks repair allocation when no required check actually failed.
-        state = ChecksState.RED
-    elif workflow_conclusions != {"success"}:
-        state = ChecksState.UNKNOWN
     else:
+        # Every required job concluded success here, so a cancelled run can only
+        # reflect a job outside the required set (a waived platform). The verdict
+        # is final; waiting on it would hold the train forever.
         state = ChecksState.GREEN
     due = [check.due_at for check in checks if check.conclusion not in FINAL and check.due_at]
     return ChecksResult(
@@ -312,7 +308,7 @@ class HostedChecks:
         details = observed.details.get("receipt") or observed.details
         runs = {run["check_suite_id"]: run for run in details["workflow_runs"]}
         rows = []
-        for check in details["checks"]:
+        for check in observed.details.get("checks", details["checks"]):
             run = runs.get(check["check_suite_id"])
             conclusion = check["conclusion"]
             rows.append(
@@ -525,7 +521,25 @@ class ExactChecks:
         if rows:
             async with self.db._engine.begin() as conn:
                 for check in rows:
-                    await conn.execute(_upsert(check))
+                    changed = await conn.execute(_upsert(check))
+                    if changed.rowcount:
+                        from src.waits.sources import record_source_event
+
+                        await record_source_event(
+                            conn,
+                            source_key=f"ci_check:{check.repository_id}:{check.sha}:{check.name}",
+                            generation=0, revision=f"{check.producer_id}:"
+                            f"{check.required_check_version}:{check.run_id}:{check.attempt}:"
+                            f"{check.observed_at}:{check.conclusion.value}",
+                            outcome_ref=check.run_url or f"check:{check.sha}:{check.name}",
+                            occurred_at=check.observed_at,
+                            payload={"repository_id": check.repository_id, "sha": check.sha,
+                                     "check_name": check.name, "run_id": check.run_id,
+                                     "producer_id": check.producer_id,
+                                     "required_check_version": check.required_check_version,
+                                     "attempt": check.attempt,
+                                     "conclusion": check.conclusion.value},
+                        )
         return await self.read(head)
 
     async def refresh_if_due(self, head: HeadIdentity) -> ChecksResult:

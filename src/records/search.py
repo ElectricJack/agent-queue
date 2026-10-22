@@ -120,7 +120,7 @@ async def search_on(
             literal(archived).label("archived"),
         ).where(table.c.project_id == access.project_id)
         if not access.supervisor:
-            stmt = stmt.where(table.c.id == principal.task_id)
+            stmt = stmt.where(table.c.id == access.principal.task_id)
         if query:
             # User punctuation is literal, not an ILIKE pattern.
             stmt = stmt.where(

@@ -80,9 +80,9 @@ class TestScopeIsolation:
         await handler.execute("outer", {"_scope": _scope("s-outer")})
 
         assert seen["before"]["session_id"] == "s-outer"
-        # A re-entrant ``execute`` with no ``_scope`` of its own is an
-        # unauthenticated internal call and gets no identity — unchanged.
-        assert seen["inner"] is None
+        # Re-entry preserves the original caller; nested dispatch cannot
+        # acquire an unauthenticated internal identity.
+        assert seen["inner"]["session_id"] == "s-outer"
         # …but the outer command still has its own afterwards.  This is the
         # assertion that used to fail.
         assert seen["after"]["session_id"] == "s-outer"

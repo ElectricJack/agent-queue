@@ -14,12 +14,16 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/builtin.py`](../../../src/commands/contracts/builtin.py) |
-| Contract fingerprint | `sha256:a173738202a943b63548d3a808e03378341825a551fb5bb1774d1582ece7fa00` |
+| Contract fingerprint | `sha256:4c8954faa5a68c26288d33fefd84876649e5ec4df050614f8a60f6bfb544b46e` |
 
 ## Parameters
 
 | Parameter | Type | Required | Default | Description |
 |---|---|---|---|---|
+| `pagination` | `"snapshot" \| null` | no | `null` | — |
+| `snapshot_id` | `string \| null` | no | `null` | — |
+| `page_token` | `string \| null` | no | `null` | — |
+| `page_size` | `integer \| null` | no | `null` | — |
 | `assigned_threshold_seconds` | `integer` | no | `1800` | Assigned threshold |
 | `in_progress_threshold_seconds` | `integer` | no | `7200` | In-progress threshold |
 | `now` | `number \| null` | no | `null` | Reference time |
@@ -29,6 +33,27 @@
 
 | Field | Type | Description |
 |---|---|---|
+| `success` | `boolean` | — |
+| `complete` | `boolean \| null` | — |
+| `execution_status` | `string \| null` | — |
+| `error` | `string \| null` | — |
+| `error_code` | `string \| null` | — |
+| `reasons` | `string[]` | — |
+| `snapshot_id` | `string \| null` | — |
+| `producer` | `string \| null` | — |
+| `producer_version` | `integer \| null` | — |
+| `observed_at` | `number \| null` | — |
+| `materialized_at` | `number \| null` | — |
+| `expires_at` | `number \| null` | — |
+| `interval_started_at` | `number \| null` | — |
+| `interval_finished_at` | `number \| null` | — |
+| `coverage` | `object[]` | — |
+| `identity_manifest` | `object[]` | — |
+| `page_tokens` | `object[]` | — |
+| `artifacts` | `object[]` | — |
+| `page_count` | `integer` | — |
+| `page_kind` | `string \| null` | — |
+| `page_index` | `integer \| null` | — |
 | `stuck` | `object[]` | Stuck tasks |
 | `summary` | `string` | Supervisor summary |
 | `now_used` | `number \| null` | Reference time |
@@ -47,7 +72,7 @@ This command declares no effect clause, so the playbook graph falls back to its 
 
 | Effect | Subject | Condition |
 |---|---|---|
-| Read using assigned_threshold_seconds, in_progress_threshold_seconds, now, project_id | — | always |
+| Read using pagination, snapshot_id, page_token, page_size, assigned_threshold_seconds, in_progress_threshold_seconds, now, project_id | — | always |
 
 <!-- aq:generated:end -->
 
@@ -59,9 +84,13 @@ command. `summary` formats the same rows as one line per task.
 
 ## When a playbook uses it
 
-The system `stuck-task-watch` calls it every ten minutes, ends on an empty
-`stuck` list, and otherwise sends `summary` to `session:supervisor-global` via
-`message_send`. Repeated nonempty ticks intentionally repeat the notification.
+The optional reviewed `stuck-task-watch` calls it on `timer.15m` with snapshot
+pagination and a frozen observation time. It selects ASSIGNED rows older than
+1,800 seconds and IN_PROGRESS rows older than 7,200 seconds, including qualifying
+ORPHANED rows. It excludes READY rows. Per-key notifications use
+`playbook_state_notify` for `session:supervisor-global`; repeated observations
+are suppressed and complete absence clears the saved episode. See the
+[building-block rollout guide](../../guides/playbook-building-blocks.md).
 
 ## How it works internally
 

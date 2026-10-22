@@ -52,6 +52,9 @@ NOT_INGEST_HELD = {
     "src/database/queries/claim_queries.py::ClaimQueryMixin.lock_claim_for_activation": (
         "tests/test_claim_commands.py::test_activation_rechecks_ingestion_hold_without_admission"
     ),
+    "src/database/queries/claim_queries.py::ClaimQueryMixin._lock_activation_task": (
+        "tests/test_claim_commands.py::test_activation_rechecks_ingestion_hold_without_admission"
+    ),
     "src/database/queries/task_queries.py::TaskQueryMixin.list_active_tasks": "sql",
     "src/database/queries/task_queries.py::TaskQueryMixin._note_frontier_entry": "sql",
     "src/database/queries/task_queries.py::TaskQueryMixin.ingest_held_task_ids": (
@@ -70,8 +73,8 @@ NOT_INGEST_HELD = {
 FRONTIER_CALLERS = {
     "src/database/queries/claim_queries.py::claim_frontier_predicates": "builder",
     "src/database/queries/claim_queries.py::_frontier_where": "sql",
-    "src/database/queries/claim_queries.py::ClaimQueryMixin.claim_frontier_exclusions": (
-        "tests/test_claim_commands.py::test_held_member_not_claimable"
+    "src/database/queries/claim_queries.py::ClaimQueryMixin.claim_frontier_exclusions_many": (
+        "test_frontier_diagnostics_report_ingestion_hold"
     ),
     "src/database/queries/routing_queries.py::_eligible_backlog_predicate": "builder",
     "src/database/queries/task_reroute_queries.py::TaskRerouteQueryMixin.list_spill_candidates": (
@@ -79,6 +82,9 @@ FRONTIER_CALLERS = {
     ),
     "src/doctor/task_checks.py::_check_ready_frontier_exclusions": "frontier",
     "src/integration/epic_delivery.py::EpicDeliveryProjection._workers_on": "frontier",
+    "src/waits/admission.py::AdmissionReader.observe_task": (
+        "tests/test_wait_admission.py::test_admission_reader_preserves_ingestion_hold"
+    ),
 }
 HELD_ID_CALLERS = {
     "src/database/queries/task_queries.py::TaskQueryMixin._notify_ready": (
@@ -268,6 +274,24 @@ async def test_sql_row_executes_the_hold(db, symbol):
 # -- behavior --------------------------------------------------------------
 
 
+@pytest.mark.parametrize("batched", [False, True])
+async def test_frontier_diagnostics_report_ingestion_hold(db, batched):
+    await mktask(db, "held")
+    await mktask(db, "free")
+    await hold(db, "held")
+    options = {"cached_only": True, "hierarchy_modes": {}}
+    if batched:
+        reasons = await db.claim_frontier_exclusions_many(["held", "free"], **options)
+        assert reasons["free"] == []
+        held_reasons = reasons["held"]
+    else:
+        held_reasons = await db.claim_frontier_exclusions("held", **options)
+    [reason] = [r for r in held_reasons if r["code"] == "frontier_ingest_held"]
+    assert reason["ref"] == "held"
+    assert "batch-held" in reason["detail"]
+    assert await held_batch(db, "held") == "batch-held"
+
+
 async def test_ingest_held_task_ids_names_only_held_members(db):
     await mktask(db, "held")
     await mktask(db, "free")
@@ -354,3 +378,23 @@ async def test_launch_refuses_member_held_after_assignment(db, tmp_path, caplog)
     assert (agent.state, agent.current_task_id) == (AgentState.IDLE, None)
     assert await held_batch(db, "held") == "batch-held"
     assert "session launch refused -- ingest_held" in caplog.text
+
+
+async def test_wait_admission_retains_ingestion_hold(db):
+    from types import SimpleNamespace
+
+    from src.waits.admission import AdmissionReader
+
+    await mktask(db, "held-wait")
+    await hold(db, "held-wait")
+    orchestrator = SimpleNamespace(
+        db=db, config=AppConfig(), _worktrees_enabled=lambda: False,
+        _pool_quarantine_state=lambda *args: (None, None),
+    )
+    async with db._engine.connect() as conn:
+        observed = await AdmissionReader(orchestrator, clock=lambda: NOW).observe_task(
+            conn, "held-wait",
+        )
+    assert observed.constraints["policy_hold"]["blocked"]
+    assert "ingest_held" in observed.constraints["policy_hold"]["reasons"]
+    assert await held_batch(db, "held-wait") == "batch-held"

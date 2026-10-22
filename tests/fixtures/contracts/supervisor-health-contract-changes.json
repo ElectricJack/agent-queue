@@ -1,0 +1,17 @@
+{
+  "cli_catalogue_sha256": "27eea7007f305f62593d9c853a144d1cbd21a3894cccc032106de692d8566dc8",
+  "previous_cli_catalogue_sha256": "5343597e8f8e8d0da57fa0fb46f714e3cd3bb8ce428b5232904cea7ba9e6183b",
+  "review_notes": [
+    "supervisor_restart moves from system scope to a project-scoped fence: a local operator, or a live supervisor of the target project, may restart it. Only the transport description changes to say so; the input schema, category and every other catalogue entry are unchanged."
+  ],
+  "source_base": "a73e55ae16605561e6ce371bab9685455cc1f34e",
+  "source_commit": "62e26fa1a5de2e6fe74d65c7f90a24b03326fc98",
+  "transport_definitions": {
+    "supervisor_restart": {
+      "description": "Restart a named supervisor through AQ with current profile permissions, model and effort. Starts a fresh conversation by default; --resume resumes its prior conversation. Requires a local operator or live supervisor within the target project scope.",
+      "previous_description": "Restart a named supervisor through AQ with current profile permissions, model and effort. Starts a fresh conversation by default; --resume resumes its prior conversation. Requires global admin.",
+      "previous_sha256": "65109f739f0012e33def3a34194a6557e6dcbdb0a5f50cae7587bdb490cc96cb",
+      "sha256": "4beda7621b9a70b76a16b3eac3ae324ab770b8db5fea8c7afcf88319f9838e49"
+    }
+  }
+}

@@ -29,6 +29,7 @@ from src.commands.contracts.models import (
 )
 from src.commands.contracts.registry import CommandContext, CommandRegistration, ContractRegistry
 from src.commands.principal import principal_context
+from src.observations.models import SnapshotArgs, SnapshotValue
 
 
 SplitText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
@@ -174,6 +175,12 @@ class EnsureSpecIngestArgs(CommandArgs):
     packet_sha256: str
 
 
+class EnsureFidelityReviewArgs(CommandArgs):
+    project_id: str
+    batch_id: str
+    structure_revision: int
+
+
 class EnsureTaskValue(CommandValue):
     task_id: str
     created: bool
@@ -294,7 +301,7 @@ class GateResolveValue(CommandValue):
     unblocked_task_ids: list[str]
 
 
-class ListTasksArgs(CommandArgs):
+class ListTasksArgs(SnapshotArgs, CommandArgs):
     """The arguments ``_cmd_list_tasks`` actually reads.
 
     ``limit`` is deliberately absent.  No path in
@@ -308,9 +315,14 @@ class ListTasksArgs(CommandArgs):
     status: str | None = None
     display_mode: str | None = None
     show_dependencies: bool | None = None
+    include_completed: bool | None = None
+    completed_only: bool | None = None
+    show_all: bool | None = None
+    labels: list[str] | None = None
+    any_label: list[str] | None = None
 
 
-class ListTasksValue(CommandValue):
+class ListTasksValue(SnapshotValue, CommandValue):
     """What ``list_tasks`` returns — in both of the shapes it has.
 
     ``_cmd_list_tasks`` (``src/commands/task_commands.py``) answers with one
@@ -330,10 +342,8 @@ class ListTasksValue(CommandValue):
     failed its contract, in either display mode, while the compiler validated
     against the same fiction and reported nothing.
 
-    Only keys this contract's own arguments can produce are modelled.
-    ``label_filter_scope`` is left out deliberately: it appears only for a
-    ``labels`` / ``any_label`` filter, which ``ListTasksArgs`` does not
-    expose, so no playbook step can reach it.
+    Snapshot mode adds the shared immutable observation envelope. Label
+    filters preserve their root-only annotation in hierarchical modes.
     """
 
     display_mode: str = "flat"
@@ -344,6 +354,7 @@ class ListTasksValue(CommandValue):
     hidden_completed: int = 0
     filtered: bool = False
     dependency_display: str | None = None
+    label_filter_scope: str | None = None
 
     # Tree and compact mode only.
     trees: list[dict[str, Any]] = Field(default_factory=list)
@@ -351,12 +362,12 @@ class ListTasksValue(CommandValue):
     total_tasks: int = 0
 
 
-class ListProjectsArgs(CommandArgs):
+class ListProjectsArgs(SnapshotArgs, CommandArgs):
     pass
 
 
-class ListProjectsValue(CommandValue):
-    projects: list[dict[str, Any]]
+class ListProjectsValue(SnapshotValue, CommandValue):
+    projects: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class GetTaskArgs(CommandArgs):
@@ -459,6 +470,42 @@ class GetDownstreamTasksValue(CommandValue):
     tasks: list[dict[str, str]]
 
 
+class HeldBatchOperation(CommandArgs):
+    """Scoped operation. The command checks kind-specific fields and live membership."""
+
+    kind: Literal["rewrite", "split", "combine", "reparent", "rewire", "add_leaf",
+                  "move_to_root", "retire"]
+    task_id: str | None = None
+    task_ids: list[str] | None = None
+    changes: dict[str, Any] | None = None
+    task: dict[str, Any] | None = None
+    tasks: list[dict[str, Any]] | None = None
+    parent_id: str | None = None
+    delivery_targets: list[str] | None = None
+    edges: list[dict[str, Any]] | None = None
+    remove_edges: list[dict[str, Any]] | None = None
+    reason: str | None = None
+    replacement_task_id: str | None = None
+    satisfied_by: str | None = None
+    rewire: dict[str, list[dict[str, Any]]] | None = None
+
+
+class TaskBatchUpdateArgs(CommandArgs):
+    proposal_id: str
+    project_id: str | None = None
+    payload: dict[str, Any] | None = None
+    expected_revision: int | None = Field(default=None, ge=1, strict=True)
+    operations: list[HeldBatchOperation] | None = Field(default=None, min_length=1)
+
+    @model_validator(mode="after")
+    def update_shape(self):
+        if (self.payload is None) == (self.operations is None):
+            raise ValueError("Supply payload or operations")
+        if self.operations is not None and self.expected_revision is None:
+            raise ValueError("Held operations require expected_revision")
+        return self
+
+
 class TaskBatchCommitArgs(CommandArgs):
     proposal_id: str
     #: The human gate whose resolution approves this proposal.  Omitted, the
@@ -497,6 +544,29 @@ class TaskBatchValidateValue(CommandValue):
     hard: list[dict[str, Any]] = Field(default_factory=list)
     advisory: list[dict[str, Any]] = Field(default_factory=list)
     gaps: list[dict[str, Any]] = Field(default_factory=list)
+
+
+FidelityVerdict = Literal["faithful", "fixed", "scope_question"]
+
+
+class TaskBatchReviewRecordArgs(CommandArgs):
+    batch_id: str = Field(min_length=1)
+    expected_revision: int = Field(strict=True, ge=1)
+    expected_digest: str = Field(min_length=1)
+    section_verdicts: dict[str, FidelityVerdict]
+    reverse_coverage_verdict: FidelityVerdict
+    walkthrough_verdict: FidelityVerdict
+    structural_findings: list[dict[str, Any]]
+    project_id: str | None = None
+
+
+class TaskBatchReviewRecordValue(CommandValue):
+    batch_id: str
+    state: str
+    passing: bool
+    receipt: dict[str, Any]
+    replayed: bool
+    ask_id: str | None = None
 
 
 class TaskRoutePlanArgs(CommandArgs):
@@ -719,14 +789,14 @@ class TaskFailureTriageNotifyValue(TaskRecoveryNotifyValue):
     """The durable incident receipt returned to the triage playbook."""
 
 
-class GetStuckTasksArgs(CommandArgs):
+class GetStuckTasksArgs(SnapshotArgs, CommandArgs):
     assigned_threshold_seconds: int = Field(default=1800, ge=0)
     in_progress_threshold_seconds: int = Field(default=7200, ge=0)
     now: float | None = None
     project_id: str | None = None
 
 
-class GetStuckTasksValue(CommandValue):
+class GetStuckTasksValue(SnapshotValue, CommandValue):
     stuck: list[dict[str, Any]] = Field(default_factory=list)
     summary: str = ""
     now_used: float | None = None
@@ -870,6 +940,28 @@ def set_handler_provider(provider: Callable[[], Any] | None) -> None:
     """
     global _handler_provider
     _handler_provider = provider
+    from src.commands.contracts.registry import CONTRACTS
+
+    if provider is None:
+        CONTRACTS.configure_snapshot_provider(None)
+        return
+
+    offline = None
+
+    def snapshot_provider():
+        nonlocal offline
+        handler = provider()
+        if isinstance(getattr(type(handler), "command_descriptors", None), property):
+            return handler.command_descriptors
+        # Keep provider installation late-bound. Minimal adapter test doubles
+        # retain a cached offline inventory rather than manufacturing commands.
+        if offline is None:
+            from src.commands.command_inventory import offline_snapshot
+
+            offline = offline_snapshot(CONTRACTS.typed_contracts())
+        return offline
+
+    CONTRACTS.configure_snapshot_provider(snapshot_provider)
 
 
 def handler_provider_installed() -> bool:
@@ -935,7 +1027,7 @@ def _outcome_of(name: str, raw: dict[str, Any]) -> str:
     if name == "ci_repair_adopt":
         outcome = str(raw.get("outcome") or "")
         return outcome if outcome in {"adopted", "recorded", "unchanged"} else "rejected"
-    if name in {"ensure_task", "ensure_spec_ingest"}:
+    if name in {"ensure_task", "ensure_spec_ingest", "ensure_fidelity_review"}:
         return "created" if raw.get("created") else "reused"
     if name == "github_issue_triage":
         return "swept"
@@ -949,6 +1041,8 @@ def _outcome_of(name: str, raw: dict[str, Any]) -> str:
         if not raw.get("passed"):
             return "retryable" if raw.get("retryable") else "failed"
         return "passed"
+    if name == "task_batch_review_record":
+        return "recorded" if raw.get("passing") else "needs_scope"
     if name == "task_route_plan":
         outcome = str(raw.get("outcome") or "")
         return outcome if outcome in _ROUTE_PLAN_OUTCOMES else "rejected"
@@ -1024,6 +1118,9 @@ def _adapter(name: str, value_type: type[CommandValue]):
                 provider=str(raw.get("provider") or getattr(args, "provider", None) or "claude"),
                 detail=raw.get("error"),
             )
+        elif name in {"list_tasks", "list_projects", "get_stuck_tasks"} and "complete" in raw:
+            value = value_type(**{field: raw[field] for field in value_type.model_fields
+                                 if field in raw})
         elif outcome in {
             "rejected", "refused_routing_gate", "already_linked", "not_running", "not_approved",
         }:
@@ -1242,6 +1339,15 @@ PRESENTATIONS: dict[str, CommandPresentation] = {
         result_labels={"task_id": "Task", "created": "Was created"},
         subject_labels={"task": "an approved spec ingestion task"},
     ),
+    "ensure_fidelity_review": CommandPresentation(
+        title="Ensure fidelity review",
+        summary="Create or recover the one fidelity-reviewer role task for a held batch.",
+        arg_labels={"project_id": "Project", "batch_id": "Batch",
+                    "structure_revision": "Structure revision"},
+        outcome_labels={"created": "Created", "reused": "Reused", "rejected": "Rejected"},
+        result_labels={"task_id": "Task", "created": "Was created"},
+        subject_labels={"task": "a fidelity review task"},
+    ),
     "github_issue_triage": CommandPresentation(
         title="Triage GitHub issues",
         summary="File bounded investigations and label the corresponding issues.",
@@ -1390,6 +1496,21 @@ PRESENTATIONS: dict[str, CommandPresentation] = {
         },
         result_labels={"task_ids": "Created tasks"},
         subject_labels={"task_graph": "the proposed task graph"},
+    ),
+    "task_batch_review_record": CommandPresentation(
+        title="Record a batch fidelity review",
+        summary="Attest every mapped section and whole-batch intent on the exact held graph.",
+        arg_labels={
+            "batch_id": "Held batch", "expected_revision": "Expected structure revision",
+            "expected_digest": "Expected structure digest", "section_verdicts": "Section verdicts",
+            "reverse_coverage_verdict": "Reverse coverage", "walkthrough_verdict": "Walkthrough",
+            "structural_findings": "Findings and dispositions", "project_id": "Project",
+        },
+        outcome_labels={"recorded": "Recorded", "needs_scope": "Needs scope answer",
+                        "rejected": "Rejected"},
+        result_labels={"batch_id": "Batch", "state": "State", "passing": "Passing",
+                       "receipt": "Receipt", "replayed": "Replayed", "ask_id": "Scope ask"},
+        subject_labels={"task_graph": "the held task graph"},
     ),
     "task_batch_validate": CommandPresentation(
         title="Check a task batch",
@@ -1862,6 +1983,12 @@ def register_builtin_contracts(registry: ContractRegistry) -> None:
             IdempotencySpec(mode="keyed", key_field="decision_id"), True,
         ),
         (
+            "ensure_fidelity_review", EnsureFidelityReviewArgs, EnsureTaskValue,
+            _outcomes("created", "reused"), SideEffectClass.CREATE,
+            (CreateOrReuseClause(subject=EffectSubject.TASK, key_arg="batch_id"),),
+            IdempotencySpec(mode="keyed", key_field="batch_id"), True,
+        ),
+        (
             "github_issue_triage", GitHubIssueTriageArgs, GitHubIssueTriageValue,
             _outcomes("swept"), SideEffectClass.COMPOSITE,
             (CreateClause(subject=EffectSubject.TASK),),
@@ -1928,7 +2055,7 @@ def register_builtin_contracts(registry: ContractRegistry) -> None:
             "list_tasks",
             ListTasksArgs,
             ListTasksValue,
-            (OutcomeSpec(name="listed", classification=OutcomeClass.SUCCESS),),
+            _outcomes("listed"),
             SideEffectClass.READ,
             (ReadClause(subject=EffectSubject.TASK_LIST),),
             IdempotencySpec(mode="natural"),
@@ -1964,6 +2091,12 @@ def register_builtin_contracts(registry: ContractRegistry) -> None:
             (),
             IdempotencySpec(mode="natural"),
             True,
+        ),
+        (
+            "task_batch_review_record", TaskBatchReviewRecordArgs, TaskBatchReviewRecordValue,
+            _outcomes("recorded", "needs_scope"), SideEffectClass.COMPOSITE,
+            (UpdateClause(subject=EffectSubject.TASK_GRAPH),),
+            IdempotencySpec(mode="natural"), True,
         ),
         (
             "task_route_plan",
@@ -2176,6 +2309,10 @@ def register_builtin_contracts(registry: ContractRegistry) -> None:
     from src.commands.contracts.wait import register_wait_contracts
 
     register_wait_contracts(registry)
+
+    from src.commands.contracts.wait_v2 import register_wait_v2_contracts
+
+    register_wait_v2_contracts(registry)
     from src.commands.contracts.cron import register_cron_contracts
 
     register_cron_contracts(registry)

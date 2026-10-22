@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import Field
 
@@ -56,6 +56,7 @@ class JobResultArgs(JobGetArgs):
 
 
 class JobLogsArgs(JobGetArgs):
+    stream: Literal["stdout", "stderr"] = "stdout"
     after: int = Field(default=0, ge=0)
     limit: int = Field(default=65536, ge=1, le=1048576)
 
@@ -80,7 +81,11 @@ class JobRetainArgs(JobGetArgs):
 
 class JobValue(CommandValue):
     job: dict[str, Any]
-    wait: AgentWaitRecord | None = None
+    wait: AgentWaitRecord | dict[str, Any] | None = None
+    wait_id: str | None = None
+    decision: dict[str, Any] | None = None
+    continuation_id: str | None = None
+    generation: int | None = None
     next_step: str | None = None
 
 

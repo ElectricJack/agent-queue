@@ -24,6 +24,7 @@ from urllib.parse import urlparse
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import and_, insert, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+from src.integration.manual_control import fence_disable
 
 from src.task_templates import render_task_template
 from src.database.queries.hierarchy_queries import HierarchyError
@@ -1319,6 +1320,7 @@ class PolicyActivation:
         self.clock = clock
         self.hierarchy_service_factory = hierarchy_service_factory
 
+    @fence_disable
     async def configure(
         self,
         project_id: str,

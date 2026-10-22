@@ -325,7 +325,7 @@ async def test_message_pointer_arrives_while_scheduler_git_work_is_blocked(orch,
         assert stored.last_notified_at is not None
         nudge.assert_awaited_once_with(
             kind="session", target_id=msg.to_id, project_id=None,
-            text=f"Handle `aq message status {msg.id} --json`.",
+            text=f"Handle `aq message status {msg.id} --json` (running it marks the message read).",
         )
     finally:
         scheduler.cancel()
@@ -781,15 +781,11 @@ async def test_configured_orchestrator_installs_shared_repository_client(
         await orchestrator.shutdown()
 
 
-async def test_config_reload_does_not_swap_live_github_credential_provider(tmp_path):
+async def test_config_reload_does_not_swap_live_github_credential_provider(orch):
     from src.git.github_contracts import GitHubCredentialMode
 
-    config = AppConfig(
-        database=DatabaseConfig(url=lease_dsn("test.db")),
-        workspace_dir=str(tmp_path / "workspaces"),
-        data_dir=str(tmp_path / "data"),
-    )
-    orchestrator = Orchestrator(config, runtimes=MockAdapterFactory())
+    orchestrator = orch
+    config = orchestrator.config
     original_access = orchestrator.github_access
     changed = copy.deepcopy(config)
     changed.integration.github_app = GitHubAppConfig(

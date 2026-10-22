@@ -51,7 +51,7 @@ areas:
     description: "Task archiving: moving finished tasks and subtrees to the archive, archive sweeps, reads that span live and archived tasks, and refusals for undelivered work."
     match: [tests/test_archive.py, tests/test_hierarchy_archive_delete.py, tests/test_task_removal.py, tests/test_cli_task_remove.py]
   - id: task-dependencies
-    description: "Task dependencies: idempotent dependency edges, downstream and stuck-task queries, and batch propose/commit/discard of task graphs with cycle detection, and held ingestion batch rows, receipts and release."
+    description: "Task dependencies: idempotent dependency edges, downstream and stuck-task queries, and batch propose/commit/discard of task graphs with cycle detection, and held ingestion batch rows, receipts, fidelity reviewer dispatch and release."
     match:
       - tests/test_task_deps_command.py
       - tests/test_dependency_queries.py
@@ -60,6 +60,7 @@ areas:
       - tests/test_task_batch_commands.py
       - tests/test_cli_task_change_sets.py
       - tests/test_ingest_batch_queries.py
+      - tests/test_fidelity_review.py
   - id: work-graph
     description: "Work graph: typed edges and labels, the persisted is_blocked projection, gates, the promotion cascade, the ready frontier and explain, outcomes, hierarchical ids and event replay."
     match:
@@ -151,7 +152,7 @@ areas:
     match: [tests/test_collaboration*.py]
   - id: agent-waits
     description: "Durable typed agent waits: ownership and claim fencing, producer snapshots, deadlines, CAS results, outbox retries and wait commands."
-    match: [tests/test_agent_waits.py, tests/test_agent_wait_queries.py, tests/test_agent_wait_commands.py]
+    match: [tests/test_agent_waits.py, tests/test_agent_wait_queries.py, tests/test_agent_wait_commands.py, tests/test_waits.py, tests/test_wait_*.py]
   - id: agent-cron
     description: "Session-owned recurring prompts: recurrence, durable delivery, scope, lifecycle and CLI."
     match: [tests/test_agent_cron.py]
@@ -229,6 +230,7 @@ areas:
     match:
       - tests/test_session_spec.py
       - tests/test_session_launch.py
+      - tests/test_codex_trust.py
       - tests/test_handoffs.py
       - tests/test_session_executable.py
       - tests/test_session_provider_conformance.py
@@ -324,6 +326,8 @@ areas:
       - tests/test_playbook_v2_definition.py
       - tests/test_playbook_v2_integration_policy.py
       - tests/test_playbook_v2_expressions.py
+      - tests/test_playbook_collections.py
+      - tests/test_playbook_features.py
       - tests/test_playbook_v2_validation.py
       - tests/test_playbook_v2_resolution.py
       - tests/test_playbook_explanation.py
@@ -350,8 +354,17 @@ areas:
     match:
       - tests/test_v2_*.py
       - tests/test_playbook_run_*.py
+      - tests/test_playbook_nested_loops.py
       - tests/test_playbook_wait_repository.py
       - tests/test_playbook_receipts.py
+      - tests/test_playbook_private_values.py
+      - tests/test_playbook_script_runner.py
+      - tests/test_playbook_script_recovery.py
+      - tests/test_playbook_script.py
+      - tests/test_playbook_state.py
+      - tests/test_playbook_state_notify.py
+      - tests/test_stuck_task_watch.py
+      - tests/test_stuck_task_watch_daemon.py
       - tests/test_playbook_pending_events_*.py
       - tests/test_playbook_services.py
       - tests/test_agent_task_executor.py
@@ -489,6 +502,7 @@ areas:
   - id: integration-controls
     description: "Integration operator controls: rollout and operational controls, supervisor authority over them, the integration CLI, integration doctor alarms and the troubleshooting guide."
     match:
+      - tests/test_integration_manual_control.py
       - tests/test_integration_legacy_park_retirement.py
       - tests/test_integration_controls.py
       - tests/test_integration_operational_controls.py
@@ -611,6 +625,8 @@ areas:
     match:
       - tests/test_command_dispatch.py
       - tests/test_command_surface.py
+      - tests/test_command_descriptors.py
+      - tests/test_generated_command_contracts.py
       - tests/test_command_scope_*.py
       - tests/test_command_invoked_event.py
       - tests/test_surface_commands.py
@@ -827,6 +843,7 @@ areas:
     match:
       - tests/test_project_onboarding_*.py
       - tests/test_project_repository_binding.py
+      - tests/test_repository_checkout_repair.py
       - tests/test_project_supervisors.py
       - tests/test_onboarding_queries.py
       - tests/test_project_roots_config.py
@@ -855,6 +872,7 @@ areas:
     match:
       - tests/test_dashboard_state.py
       - tests/test_dashboard_browser_storage.py
+      - tests/test_dashboard_secure_context.py
       - tests/test_api_graph.py
       - tests/test_pane_registry_parity.py
   - id: graph-layout
@@ -871,6 +889,8 @@ areas:
       - tests/test_doctor.py
       - tests/test_doctor_cli_timeout.py
       - tests/test_doctor_stall_checks.py
+      - tests/test_doctor_observations.py
+      - tests/test_observation_snapshots.py
       - tests/test_doctor_skill_checks.py
       - tests/test_doctor_perf_checks.py
       - tests/test_doctor_discord_config.py

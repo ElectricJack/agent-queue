@@ -76,6 +76,9 @@ _IDLE_STATUSES = (
     "ASSIGNED",
     "IN_PROGRESS",
     "WAITING_INPUT",
+    "WAITING",
+    "HIBERNATED",
+    "RESUME_PENDING",
     "PAUSED",
     "BLOCKED",
 )
@@ -434,6 +437,8 @@ class DigestQueryMixin:
                 for row in project_rows.all():
                     names[row.id] = row.name or row.id
 
+        from src.task_graph.readiness import delivery_waits
+
         return DigestInputs(
             window=window,
             facts=tuple(sorted(facts, key=lambda f: (f.at, f.key))),
@@ -443,6 +448,7 @@ class DigestQueryMixin:
             reported_highlights=reported_highlights,
             idle_tasks=idle_tasks,
             project_names=names,
+            waiting_on_delivery=tuple(await delivery_waits(self, project_ids)),
         )
 
 
@@ -661,6 +667,9 @@ class DigestSupervisorQueriesMixin:
             ask_page = await self.list_asks_snapshot(
                 conn=conn, project_ids=wanted, public=True, channel_id=channel_id, limit=100,
             )
+            from src.database.queries.wait_queries import pending_human_waits
+
+            waiting_on_you = await pending_human_waits(conn, now=now, project_ids=wanted)
             working = int(
                 await conn.scalar(
                     select(func.count())
@@ -671,10 +680,16 @@ class DigestSupervisorQueriesMixin:
             )
             total = int(await conn.scalar(select(func.count()).select_from(sessions)) or 0)
 
+        from src.task_graph.readiness import delivery_waits
+
+        waiting = await delivery_waits(self, project_ids)
+        waiting_ids = {item["task_id"] for item in waiting}
         return {
+            "waiting_on_delivery": waiting,
             "landed": landed,
-            "stuck": stuck,
+            "stuck": [item for item in stuck if item["task_id"] not in waiting_ids],
             "asks": ask_page,
+            "waiting_on_you": waiting_on_you,
             "sessions_working": working,
             "sessions_total": total,
             "active_tasks": int(active_tasks),

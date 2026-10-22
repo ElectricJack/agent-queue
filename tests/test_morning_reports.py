@@ -29,6 +29,7 @@ from src.reports.hourly import MAX_BRIEF_BYTES
 from src.reports.morning import collect_morning_evidence, preview_until, report_window
 from src.reports.morning_due import EVENT_TYPE as MORNING_DUE
 from src.reports.morning_due import MorningDueEmitter, morning_due_event_id
+from tests._private_values_helper import private_value_service
 from tests.db_fixtures import lease_dsn
 
 FIXTURES = Path(__file__).parent / "fixtures/reports/morning"
@@ -1870,6 +1871,7 @@ async def morning_playbook(command_handler_factory, monkeypatch):
             artifact_store=InMemoryArtifactStore({artifact.id: artifact}),
             handler=handler,
             db=handler.db,
+            private_values=private_value_service(handler.db),
         ),
         runs=runs,
         waits=runs,
@@ -2200,3 +2202,20 @@ async def test_the_orchestrator_cycle_emits_morning_due_from_the_live_config(tmp
         assert [event["local_date"] for event in events] == ["2026-09-27"]
     finally:
         await orch.shutdown()
+
+
+async def test_morning_human_reminders_survive_empty_days_and_fit_the_brief():
+    data = snapshot()
+    data["waiting_on_you"] = [
+        dict(wait_id=f"w-{i}", task_id="human-owner", project_id="p", subject="task_comment",
+             title="Question", created_at=1000 + i, age_seconds=200000)
+        for i in range(12)
+    ]
+    for key in data["sources"]:
+        if key not in {"repos", "workspaces"}:
+            data["sources"][key] = []
+    result, _, _ = await build(data, observed={**frozen("git")[0], "commits": []})
+    reminder = result["brief"]["waiting_on_you"]
+    assert reminder["count"] == 12 and reminder["more"] == 2 and len(reminder["items"]) == 10
+    assert not result["would_suppress"]
+    assert len(json.dumps(result["brief"], ensure_ascii=False).encode()) <= MAX_BRIEF_BYTES

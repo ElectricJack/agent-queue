@@ -12,6 +12,9 @@ from __future__ import annotations
 
 import subprocess
 from pathlib import Path
+from unittest.mock import AsyncMock
+
+from sqlalchemy import update
 
 import pytest
 
@@ -29,6 +32,7 @@ from src.models import (
 )
 from src.orchestrator import Orchestrator
 from src.orchestrator.worktree_manager import EXCLUDE_BEGIN
+from src.orchestrator.workspace_binding_audit import reconcile_slot_bindings
 from src.runtimes.base import Runtime
 from tests.db_fixtures import lease_dsn
 
@@ -115,6 +119,378 @@ async def _make_slot(o, base_repo, task_id="tsk-1"):
     return await o.db.get_workspace_for_task(task_id), Path(slot_path)
 
 
+@pytest.mark.parametrize("case", [
+    "aligned", "foreign_claim", "missing_receipt", "preparing", "stopped",
+    "wrong_branch", "unknown_liveness", "malformed_claim", "changed_generation",
+    "deferred_owner", "stale_receipt", "current_owner_and_pin", "foreign_owner",
+    "finished_job_pin", "old_generation_pin", "unproved_pin_holder", "preparing_with_owner",
+])
+async def test_existing_binding_reconciliation_preserves_source_and_owner(
+    tmp_path, base_repo, monkeypatch, case,
+):
+    from src.claim_file import write_claim_file
+    from src.models import SessionRecord
+
+    o = await _orch(tmp_path)
+    try:
+        await _seed(o, base_repo)
+        ws, path = await _make_slot(o, base_repo)
+        branch = _git(["branch", "--show-current"], path)
+        await o.db.update_task("tsk-1", assigned_agent_id="tsk-1-a", claim_epoch=3,
+                               branch_name=branch)
+        await o.db.create_session(SessionRecord(
+            id="audit-holder", task_id="tsk-1", project_id="p1", agent_id="tsk-1-a",
+            profile_id="p", harness="codex", provider="fake", name="audit-holder",
+            lifecycle="pool", work_dir=str(path), epoch="e", instance_token="audit-token",
+            state="stopped" if case in ("stopped", "unproved_pin_holder") else "running",
+            desired_state="stopped" if case in ("stopped", "unproved_pin_holder")
+            else "running",
+            claim_phase="preparing" if case in ("preparing", "preparing_with_owner")
+            else "active",
+            last_claim_epoch=3, started_at=1,
+        ))
+        write_claim_file(str(path), {"task_id": "tsk-1", "claim_epoch": 3,
+                                    "session_id": "foreign" if case == "foreign_claim"
+                                    else "audit-holder"})
+        if case == "malformed_claim":
+            (path / ".aq" / "claim.json").write_text("{broken")
+        if case != "missing_receipt":
+            await o.db.set_task_meta("tsk-1", "claim_workspace", {
+                "workspace_id": ws.id, "generation": ws.generation + (case == "stale_receipt"),
+                "session_id": "audit-holder", "instance_token": "audit-token", "claim_epoch": 3,
+            })
+        if case == "deferred_owner":
+            from sqlalchemy import insert
+            from src.database.tables import integration_branch_owners
+            async with o.db.immediate() as conn:
+                await conn.execute(insert(integration_branch_owners).values(
+                    id="retained-owner", repository_id="p1", ref=branch,
+                    owner_id="tsk-1", owner_role="integration", fence_token=7,
+                    handoff_state="handoff_pending", session_id="audit-holder",
+                    workspace_id=ws.id, created_at=1, updated_at=1,
+                ))
+        if case in ("current_owner_and_pin", "foreign_owner", "preparing_with_owner",
+                    "unproved_pin_holder"):
+            from sqlalchemy import insert
+            from src.database.tables import integration_branch_owners
+            async with o.db.immediate() as conn:
+                await conn.execute(insert(integration_branch_owners).values(
+                    id="live-owner", repository_id="p1", ref=f"refs/heads/{branch}",
+                    owner_id="other-task" if case == "foreign_owner" else "tsk-1",
+                    owner_role="worker", fence_token=2, handoff_state="attached",
+                    session_id="audit-holder", workspace_id=ws.id, created_at=1, updated_at=1,
+                ))
+        if case in ("current_owner_and_pin", "finished_job_pin", "old_generation_pin",
+                    "unproved_pin_holder"):
+            from sqlalchemy import insert
+            from src.database.tables import job_workspace_pins, jobs
+            async with o.db.immediate() as conn:
+                await conn.execute(insert(jobs).values(
+                    id="pinned-job", project_id="p1", task_id="tsk-1", owner_kind="task",
+                    owner_id="tsk-1", submitter_session_id="audit-holder", claim_epoch=3,
+                    idempotency_key="k", request_hash="h", preset="test", preset_version=1,
+                    argv=[], contract={}, workspace_id=ws.id,
+                    workspace_generation=ws.generation, input_mode="live", job_class="shared",
+                    weight=1, priority_band=2,
+                    state="succeeded" if case == "finished_job_pin" else "running",
+                    submitted_at=1, queue_deadline=2, run_timeout=60, runner_nonce="n",
+                ))
+                await conn.execute(insert(job_workspace_pins).values(
+                    job_id="pinned-job", workspace_id=ws.id, created_at=1,
+                    generation=ws.generation - (case == "old_generation_pin"),
+                ))
+        if case == "wrong_branch":
+            _git(["switch", "--detach"], path)
+        (path / "README.md").write_text("retained staged checkpoint\n")
+        _git(["add", "README.md"], path)
+        (path / "untracked-checkpoint").write_bytes(b"retained progress")
+        before = (_git(["rev-parse", "HEAD"], path), _git(["status", "--porcelain"], path),
+                  (path / ".aq" / "claim.json").read_bytes(),
+                  (path / ".aq-worktree.json").read_bytes())
+        meta = await o.db.get_all_task_meta("tsk-1")
+        mgr = o._worktree_slots()
+        monkeypatch.setattr(mgr, "_slot_is_live", AsyncMock(
+            side_effect=PermissionError("process inventory unknown")
+            if case == "unknown_liveness" else None, return_value=True,
+        ))
+        if case == "changed_generation":
+            original = o.db.get_workspace
+            calls = 0
+
+            async def raced(workspace_id):
+                nonlocal calls
+                if workspace_id == ws.id:
+                    calls += 1
+                if workspace_id == ws.id and calls == 2:
+                    from src.database.tables import workspaces
+                    async with o.db.immediate() as conn:
+                        await conn.execute(update(workspaces).where(
+                            workspaces.c.id == workspace_id,
+                        ).values(generation=workspaces.c.generation + 1))
+                return await original(workspace_id)
+
+            monkeypatch.setattr(o.db, "get_workspace", raced)
+        findings = await reconcile_slot_bindings(o.db, mgr, "p1")
+        if case in ("aligned", "changed_generation", "current_owner_and_pin"):
+            assert findings == []
+        else:
+            assert len(findings) == 1
+            assert findings[0]["kind"] == (
+                "slot_binding_preparing" if case in ("preparing", "preparing_with_owner")
+                else "slot_binding_retained"
+            )
+            expected_detail = {
+                "foreign_claim": "foreign or unproved claim",
+                "missing_receipt": "acquisition receipt missing or stale",
+                "preparing": "preparation in progress",
+                "stopped": "foreign or unproved claim",
+                "wrong_branch": "checkout branch disagrees",
+                "unknown_liveness": "process inventory unverifiable",
+                "malformed_claim": "unreadable or malformed",
+                "deferred_owner": "integration owner or job pin retained",
+                "stale_receipt": "acquisition receipt missing or stale",
+                "foreign_owner": "owner live-owner belongs to another task or session",
+                "finished_job_pin": "job pinned-job is succeeded but its pin remains",
+                "old_generation_pin": "job pinned-job pins another workspace generation",
+                "unproved_pin_holder": "no unique current session proves the retained holder",
+                "preparing_with_owner": "preparation in progress",
+            }
+            assert expected_detail[case] in findings[0]["detail"]
+            if case in ("deferred_owner", "foreign_owner", "finished_job_pin",
+                        "old_generation_pin", "unproved_pin_holder"):
+                assert "use its exact recovery fence" in findings[0]["detail"]
+        if case in ("foreign_claim", "current_owner_and_pin", "finished_job_pin",
+                    "preparing_with_owner"):
+            from types import SimpleNamespace
+            from src.commands.worktree_commands import WorktreeCommandsMixin
+            handler = SimpleNamespace(db=o.db, config=o.config, orchestrator=o,
+                                      _active_project_id="p1", execute=AsyncMock(return_value={
+                                          "success": True,
+                                      }))
+            doctor = await WorktreeCommandsMixin._cmd_workspace_doctor(handler, {})
+            assert all(f in doctor["findings"] for f in findings)
+            o._command_handler = handler
+            for _ in range(2):
+                o._last_worktree_reaper = 0
+                await o._reap_worktree_slots()
+            sent = [c for c in handler.execute.await_args_list if c.args[0] == "message_send"]
+            # Only retained findings ask the supervisor for recovery, once per
+            # changed findings set; healthy or preparing bindings stay quiet.
+            if case in ("foreign_claim", "finished_job_pin"):
+                assert len(sent) == 1
+                assert findings[0]["detail"] in sent[0].args[1]["body"]
+            else:
+                assert sent == []
+        after = (_git(["rev-parse", "HEAD"], path), _git(["status", "--porcelain"], path),
+                 (path / ".aq" / "claim.json").read_bytes(),
+                 (path / ".aq-worktree.json").read_bytes())
+        assert before == after
+        fresh = await o.db.get_workspace(ws.id)
+        assert fresh.locked_by_task_id == "tsk-1"
+        assert fresh.locked_by_agent_id == "tsk-1-a"
+        assert fresh.generation == ws.generation + (case == "changed_generation")
+        assert await o.db.get_all_task_meta("tsk-1") == meta
+        assert (await o.db.get_task("tsk-1")).retry_count == 0
+        if case == "deferred_owner":
+            from sqlalchemy import select
+            async with o.db._engine.connect() as conn:
+                owner = (await conn.execute(select(integration_branch_owners).where(
+                    integration_branch_owners.c.id == "retained-owner",
+                ))).mappings().one()
+            assert owner["fence_token"] == 7
+            assert owner["handoff_state"] == "handoff_pending"
+        if case in ("current_owner_and_pin", "finished_job_pin", "old_generation_pin",
+                    "unproved_pin_holder", "foreign_owner", "preparing_with_owner"):
+            from sqlalchemy import select
+            from src.database.tables import integration_branch_owners, job_workspace_pins
+            async with o.db._engine.connect() as conn:
+                pins = (await conn.execute(select(job_workspace_pins.c.job_id))).scalars().all()
+                owners = (await conn.execute(select(
+                    integration_branch_owners.c.id, integration_branch_owners.c.handoff_state,
+                ))).all()
+            # The audit only reports: no pin, owner or lock is released.
+            assert pins == (["pinned-job"] if case in (
+                "current_owner_and_pin", "finished_job_pin", "old_generation_pin",
+                "unproved_pin_holder") else [])
+            assert owners == ([("live-owner", "attached")] if case in (
+                "current_owner_and_pin", "foreign_owner", "preparing_with_owner",
+                "unproved_pin_holder") else [])
+    finally:
+        await o.db.close()
+
+
+@pytest.mark.parametrize("case", [
+    "startup", "first_claim", "draining", "drain_requested", "changed_generation",
+    "second_session",
+    "session_holds_task", "foreign_agent", "stopped", "claim_file", "agent_task",
+    "held_sentinel", "on_branch", "unknown_liveness", "failed_preparation", "attached_owner",
+])
+async def test_taskless_pool_reservation_is_proved_without_a_task_binding(
+    tmp_path, base_repo, monkeypatch, case,
+):
+    """An agent-only pool lock is healthy only when one live taskless pool
+    session, a free detached source and no claim or task prove it."""
+    from dataclasses import replace
+
+    from sqlalchemy import insert, select
+
+    from src.database.tables import integration_branch_owners, workspaces
+    from src.models import SessionRecord
+
+    o = await _orch(tmp_path)
+    try:
+        await _seed(o, base_repo)
+        mgr = o._worktree_slots()
+        if case in ("draining", "drain_requested"):
+            # The slot a pool session just closed a task in: detached at a
+            # published commit with its sentinel returned to the free form.
+            ws, path = await _make_slot(o, base_repo)
+            agent_id = "tsk-1-a"
+            _git(["switch", "--detach", "origin/main"], path)
+            assert await mgr.release_task_sentinel(ws, "tsk-1")
+            async with o.db.immediate() as conn:
+                await conn.execute(update(workspaces).where(workspaces.c.id == ws.id)
+                                   .values(locked_by_task_id=None))
+            await o.db.update_agent(agent_id, current_task_id=None)
+        else:
+            agent_id = "pool-a"
+            await o.db.create_agent(Agent(id=agent_id, name=agent_id, profile_id="p"))
+            project = await o.db.get_project("p1")
+            growth = await o._ensure_worktree_slots(project, "project-repo")
+            ws = await o.db.acquire_one_unlocked(
+                project_id="p1", kind_id="project-repo", mode="exclusive",
+                locked_by_task_id=None, locked_by_agent_id=agent_id,
+                prefer_workspace_id=growth.created.get("project-repo"),
+                kind_mode=KIND_MODE_WORKTREE, worktree_slot_cap=2,
+            )
+            path = Path(ws.workspace_path)
+        ws = await o.db.get_workspace(ws.id)
+        assert ws.locked_by_task_id is None and ws.locked_by_agent_id == agent_id
+        if case in ("session_holds_task", "agent_task"):
+            await o.db.create_task(Task(id="tsk-2", project_id="p1", title="t", description=""))
+        draining = case in ("draining", "drain_requested")
+        live = "stopped" if case == "stopped" else (
+            "draining" if draining else "starting" if case == "startup" else "running")
+        await o.db.create_session(SessionRecord(
+            id="pool-holder", task_id="tsk-2" if case == "session_holds_task" else None,
+            project_id="p1", agent_id="other-a" if case == "foreign_agent" else agent_id,
+            profile_id="p", harness="claude", provider="fake", name="pool-holder",
+            lifecycle="pool", work_dir=str(path), epoch="e", instance_token="pool-token",
+            # Drain requested after its own close: teardown pending, still live.
+            state=live, desired_state="stopped" if case in ("stopped", "drain_requested")
+            else "running", claims=1 if draining else 0,
+            claim_phase="claiming" if case == "first_claim" else None,
+            last_claim_epoch=1 if draining else None, started_at=1,
+            failed_preparation={"reason": "refused"} if case == "failed_preparation" else None,
+        ))
+        if case == "second_session":
+            await o.db.create_session(SessionRecord(
+                id="pool-twin", project_id="p1", agent_id=agent_id, profile_id="p",
+                harness="claude", provider="fake", name="pool-twin", lifecycle="pool",
+                work_dir=str(path), epoch="e", instance_token="twin-token",
+                state="running", desired_state="running", started_at=1,
+            ))
+        if case == "agent_task":
+            await o.db.update_agent(agent_id, current_task_id="tsk-2")
+        if case == "claim_file":
+            from src.claim_file import write_claim_file
+            write_claim_file(str(path), {"task_id": "tsk-old", "claim_epoch": 1,
+                                        "session_id": "pool-holder"})
+        if case == "held_sentinel":
+            mgr.write_sentinel(path, replace(mgr.read_sentinel(path), task_id="tsk-old",
+                                             branch="aq/tsk-old"))
+        if case == "on_branch":
+            _git(["switch", "-c", "stray"], path)
+        if case == "attached_owner":
+            async with o.db.immediate() as conn:
+                await conn.execute(insert(integration_branch_owners).values(
+                    id="pool-owner", repository_id="p1", ref="refs/heads/aq/tsk-old",
+                    owner_id="tsk-old", owner_role="worker", fence_token=2,
+                    handoff_state="attached", session_id="pool-holder",
+                    workspace_id=ws.id, created_at=1, updated_at=1,
+                ))
+        monkeypatch.setattr(mgr, "_slot_is_live", AsyncMock(
+            side_effect=PermissionError("process inventory unknown")
+            if case == "unknown_liveness" else None, return_value=True,
+        ))
+        if case == "changed_generation":
+            original = o.db.get_workspace
+            calls = 0
+
+            async def raced(workspace_id):
+                nonlocal calls
+                if workspace_id == ws.id:
+                    calls += 1
+                if workspace_id == ws.id and calls == 2:
+                    async with o.db.immediate() as conn:
+                        await conn.execute(update(workspaces).where(
+                            workspaces.c.id == workspace_id,
+                        ).values(generation=workspaces.c.generation + 1))
+                return await original(workspace_id)
+
+            monkeypatch.setattr(o.db, "get_workspace", raced)
+        claim = path / ".aq" / "claim.json"
+        before = (_git(["rev-parse", "HEAD"], path), _git(["status", "--porcelain"], path),
+                  claim.read_bytes() if claim.exists() else None,
+                  (path / ".aq-worktree.json").read_bytes())
+
+        findings = await reconcile_slot_bindings(o.db, mgr, "p1")
+        expected_detail = {
+            "second_session": "no unique taskless pool session",
+            "session_holds_task": "no unique taskless pool session",
+            "foreign_agent": "no unique taskless pool session",
+            "stopped": "no unique taskless pool session",
+            "claim_file": "claim file retained without a task binding",
+            "agent_task": "registered task/agent binding disagrees",
+            "held_sentinel": "source sentinel disagrees",
+            "on_branch": "checkout branch disagrees",
+            "unknown_liveness": "process inventory unverifiable",
+            "failed_preparation": "retains a failed preparation",
+            "attached_owner": "a taskless pool reservation cannot hold the retained owner",
+        }.get(case)
+        if expected_detail is None:
+            assert findings == []
+        else:
+            assert len(findings) == 1
+            assert findings[0]["kind"] == "slot_binding_retained"
+            assert findings[0]["locked_by_task_id"] is None
+            assert expected_detail in findings[0]["detail"]
+
+        if case in ("startup", "draining", "drain_requested", "claim_file"):
+            from types import SimpleNamespace
+            handler = SimpleNamespace(execute=AsyncMock(return_value={"success": True}))
+            o._command_handler = handler
+            for _ in range(2):
+                o._last_worktree_reaper = 0
+                await o._reap_worktree_slots()
+            sent = [c for c in handler.execute.await_args_list if c.args[0] == "message_send"]
+            # A proved reservation sends no fenced-recovery notice; a genuine
+            # one is reported once per changed findings set.
+            if case == "claim_file":
+                assert len(sent) == 1
+                assert findings[0]["detail"] in sent[0].args[1]["body"]
+            else:
+                assert sent == []
+
+        after = (_git(["rev-parse", "HEAD"], path), _git(["status", "--porcelain"], path),
+                 claim.read_bytes() if claim.exists() else None,
+                 (path / ".aq-worktree.json").read_bytes())
+        assert before == after
+        fresh = await o.db.get_workspace(ws.id)
+        assert fresh.locked_by_task_id is None
+        assert fresh.locked_by_agent_id == agent_id
+        assert fresh.generation == ws.generation + (case == "changed_generation")
+        if case == "attached_owner":
+            async with o.db._engine.connect() as conn:
+                owner = (await conn.execute(select(
+                    integration_branch_owners.c.handoff_state,
+                    integration_branch_owners.c.fence_token,
+                ))).one()
+            assert tuple(owner) == ("attached", 2)
+    finally:
+        await o.db.close()
+
+
 # ── reap_slot ────────────────────────────────────────────────────────────
 
 
@@ -129,6 +505,7 @@ class TestReapSlot:
 
             # No task holding the slot — release it and mark it retired.
             await o.db.release_workspace(slot_ws.id)
+            await o.db.update_project("p1", max_concurrent_agents=0)
 
             # No live processes.
             async def fake_scan(marker_key):
@@ -167,6 +544,7 @@ class TestReapSlot:
             await _seed(o, base_repo)
             slot_ws, slot_dir = await _make_slot(o, base_repo)
             await o.db.release_workspace(slot_ws.id)
+            await o.db.update_project("p1", max_concurrent_agents=0)
 
             # Simulate a live process carrying the task's AQ_TASK_ID.
             from src.sessions.proctable import ProcEntry
@@ -195,6 +573,7 @@ class TestReapSlot:
             await _seed(o, base_repo)
             slot_ws, slot_dir = await _make_slot(o, base_repo)
             await o.db.release_workspace(slot_ws.id)
+            await o.db.update_project("p1", max_concurrent_agents=0)
 
             async def broken_scan(marker_key):
                 raise OSError("/proc unavailable")
@@ -207,6 +586,102 @@ class TestReapSlot:
             ok = await mgr.reap_slot(slot_ws, reason="retired-test")
             assert ok is False, "unknown liveness → never reap"
             assert slot_dir.is_dir()
+        finally:
+            await o.shutdown()
+
+    async def test_unreadable_process_inventory_is_not_an_empty_live_set(
+        self, tmp_path, base_repo, monkeypatch,
+    ):
+        o = await _orch(tmp_path)
+        try:
+            await _seed(o, base_repo)
+            slot_ws, slot_dir = await _make_slot(o, base_repo)
+            await o.db.release_workspace(slot_ws.id)
+            await o.db.update_project("p1", max_concurrent_agents=0)
+            slot_ws = await o.db.get_workspace(slot_ws.id)
+            iterdir = Path.iterdir
+
+            def unreadable(path):
+                if str(path) == "/proc":
+                    raise PermissionError("inventory is unknown")
+                return iterdir(path)
+
+            monkeypatch.setattr(Path, "iterdir", unreadable)
+            scanner = AsyncMock(return_value=[])
+            monkeypatch.setattr("src.sessions.proctable.scan_by_env_marker", scanner)
+            assert not await o._worktree_slots().reap_slot(slot_ws, reason="retired-test")
+            scanner.assert_not_awaited()
+            assert slot_dir.is_dir()
+            assert await o.db.get_workspace(slot_ws.id) is not None
+        finally:
+            await o.shutdown()
+
+    @pytest.mark.parametrize("protection", ["agent", "generation", "session", "claim", "dirty", "delete_refused", "db_delete", "git_remove", "proc_unknown"])
+    async def test_retirement_preserves_source_on_changed_or_unproved_identity(
+        self, tmp_path, base_repo, monkeypatch, protection,
+    ):
+        from src.claim_file import write_claim_file
+        from src.database.tables import workspaces
+        from src.models import SessionRecord
+
+        o = await _orch(tmp_path)
+        try:
+            await _seed(o, base_repo)
+            slot_ws, slot_dir = await _make_slot(o, base_repo)
+            await o.db.release_workspace(slot_ws.id)
+            await o.db.update_project("p1", max_concurrent_agents=0)
+            slot_ws = await o.db.get_workspace(slot_ws.id)
+            mgr = o._worktree_slots()
+            monkeypatch.setattr(mgr, "_slot_is_live", AsyncMock(return_value=False))
+            if protection == "agent":
+                await o.db.update_workspace(slot_ws.id, locked_by_agent_id="tsk-1-a")
+            elif protection == "generation":
+                async with o.db.immediate() as conn:
+                    await conn.execute(update(workspaces).where(workspaces.c.id == slot_ws.id).values(
+                        generation=workspaces.c.generation + 1,
+                    ))
+            elif protection == "session":
+                await o.db.create_session(SessionRecord(
+                    id="live", project_id="p1", profile_id="p", harness="codex", provider="fake",
+                    name="live", lifecycle="pool", work_dir=str(slot_dir), epoch="e",
+                    instance_token="token", state="running", started_at=1,
+                ))
+            elif protection == "claim":
+                write_claim_file(str(slot_dir), {"task_id": "tsk-1", "claim_epoch": 9})
+            elif protection == "dirty":
+                (slot_dir / "README.md").write_text("staged progress")
+                _git(["add", "README.md"], slot_dir)
+                (slot_dir / "untracked").write_bytes(b"untracked progress")
+            elif protection == "delete_refused":
+                monkeypatch.setattr(o.db, "delete_workspace", AsyncMock(return_value=False))
+            elif protection == "db_delete":
+                monkeypatch.setattr(o.db, "delete_workspace", AsyncMock(side_effect=RuntimeError("DB rejected deletion")))
+            elif protection == "git_remove":
+                monkeypatch.setattr(mgr.git, "aremove_worktree_exact", AsyncMock(side_effect=RuntimeError("registration locked")))
+            else:
+                monkeypatch.setattr(mgr, "_slot_is_live", AsyncMock(side_effect=OSError("process ownership unknown")))
+            head = _git(["rev-parse", "HEAD"], slot_dir)
+            index = _git(["write-tree"], slot_dir)
+            status = _git(["status", "--porcelain"], slot_dir)
+            registration = _git(["worktree", "list", "--porcelain"], base_repo)
+            events = []
+            emit = o.bus.emit
+
+            async def record(event, payload):
+                events.append(event)
+                return await emit(event, payload)
+
+            monkeypatch.setattr(o.bus, "emit", record)
+            assert not await mgr.reap_slot(slot_ws, reason="retired-test")
+            assert slot_dir.is_dir()
+            assert await o.db.get_workspace(slot_ws.id) is not None
+            assert _git(["rev-parse", "HEAD"], slot_dir) == head
+            assert _git(["write-tree"], slot_dir) == index
+            assert _git(["status", "--porcelain"], slot_dir) == status
+            assert _git(["worktree", "list", "--porcelain"], base_repo) == registration
+            assert "worktree.reaped" not in events
+            if protection == "dirty":
+                assert (slot_dir / "untracked").read_bytes() == b"untracked progress"
         finally:
             await o.shutdown()
 

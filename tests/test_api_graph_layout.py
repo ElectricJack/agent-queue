@@ -2444,3 +2444,28 @@ async def test_graph_delivery_reads_never_fetch_git(db, client_factory, tmp_path
         assert epic["delivery"]["state"] == "unknown"
         assert epic["delivery"]["evidence"] == "unavailable"
     observer._store.assert_not_awaited()
+
+
+@pytest.mark.parametrize("surface", ["tiles", "list", "node"])
+async def test_layout_preserves_cached_delivery_hold(db, client_factory, monkeypatch, surface):
+    await db.create_task(Task(id="leaf", project_id="p1", title="Consumer",
+                              description="", status=TaskStatus.READY))
+    await LayoutDriver(db).full_layout("p1", "all")
+
+    async def exclusions(ids, **kwargs):
+        assert kwargs["cached_only"]
+        return {tid: [{"code": "frontier_epic_refresh_pending", "ref": "epic",
+                       "detail": "Refresh aq/epic after source.6 lands on dev"}] for tid in ids}
+
+    monkeypatch.setattr(db, "claim_frontier_exclusions_many", exclusions)
+    async with client_factory() as ac:
+        if surface == "node":
+            response = await ac.get("/api/projects/p1/graph/node/leaf?variant=all")
+        else:
+            response = await ac.post(f"/api/projects/p1/graph/{surface}", json=ALL)
+    assert response.status_code == 200
+    body = response.json()
+    [node] = [body["node"]] if surface == "node" else body["nodes"]
+    assert node["status"] == "READY"
+    assert node["claim_readiness"]["claimable"] is False
+    assert "source.6" in node["claim_readiness"]["reason"]

@@ -1014,6 +1014,20 @@ def s3_worker_filed_work(state: dict) -> str:
 
 def s4_formulas(state: dict) -> str:
     """A formula resolves, cooks, renders back as-cooked, and settles."""
+    # S1 leaves two live idle pool sessions at the project's cap of two.
+    # Formula role tasks run in their own task sessions, so provision one
+    # additional seat while exercising their sequential execution. Idle
+    # pool sessions consume real capacity even without current task pins.
+    project = api_checked("get_project", {"project_id": PROJECT})
+    cap = project["max_concurrent_agents"]
+    api_checked("edit_project", {"project_id": PROJECT, "max_concurrent_agents": cap + 1})
+    try:
+        return _s4_formulas(state)
+    finally:
+        api_checked("edit_project", {"project_id": PROJECT, "max_concurrent_agents": cap})
+
+
+def _s4_formulas(state: dict) -> str:
     names = {f["name"] for f in aq("formula", "list", "--project-id", PROJECT)["formulas"]}
     check({"base-review", "review-and-fix"} <= names, f"formula fixtures missing: {names}")
 
@@ -2917,6 +2931,15 @@ def s18_supervisor_failure_triage(state: dict) -> str:
     task_id = create_task("S18 supervisor failure triage", profile=POOL_PROFILE)
     claim_fixture(worker, task_id, what=f"S18 worker to claim fixture {task_id}")
 
+    def triage_runs() -> list[dict]:
+        return collection_rows(
+            api_checked("list_playbook_runs", {
+                "playbook_id": "supervisor-failure-triage", "limit": 10,
+            }),
+            "runs",
+        )
+
+    previous_runs = {row["run_id"] for row in triage_runs()}
     failed = worker.aq(
         "task",
         "close",
@@ -2936,19 +2959,19 @@ def s18_supervisor_failure_triage(state: dict) -> str:
     worker.drain_ack()
 
     def triage_run() -> dict | None:
-        rows = collection_rows(
-            api_checked("list_playbook_runs", {
-                "playbook_id": "supervisor-failure-triage", "limit": 10,
-            }),
-            "runs",
-        )
+        # This isolated world emits one failure here. Event inputs are private;
+        # correlate by the new public run id, then verify the task-specific notice.
+        rows = [row for row in triage_runs() if row["run_id"] not in previous_runs]
+        check(len(rows) <= 1, f"S18 expected one new triage run: {rows}")
         for row in rows:
             detail = api_checked("inspect_playbook_run", {"run_id": row["run_id"]})["run"]
-            if detail.get("event", {}).get("task_id") == task_id:
+            # The run row appears as soon as dispatch starts it; judge it only
+            # once it has left ``running`` (its command steps take a moment).
+            if detail.get("lifecycle") not in ("running", "cancelling"):
                 return detail
         return None
 
-    run = wait_for(triage_run, what="the supervisor-failure-triage playbook run")
+    run = wait_for(triage_run, what="the supervisor-failure-triage playbook run to finish")
     check(run["lifecycle"] == "completed", f"S18 triage run: {run}")
     supervisor = supervisor_recipient()
 

@@ -6,6 +6,12 @@ These are pure data — no logic.
 
 from __future__ import annotations
 
+from src.models import TaskStatus
+# Pure-data schema modules: importing the command mixins here would pull the
+# doctor registry and the database into every CLI start.
+from src.commands.doctor_observation_schemas import CATALOG_SCHEMA, RUN_SCHEMA
+from src.commands.playbook_state_schemas import STATE_SCHEMAS
+
 # Which category each tool belongs to.
 # Tools not listed here are "core" (always loaded).
 _TOOL_CATEGORIES: dict[str, str] = {
@@ -37,6 +43,8 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "list_projects": "project",
     "create_project": "project",
     "project_doctor": "project",
+    "repair_repository_checkout": "project",
+    "repair_workspace_checkout": "project",
     "pause_project": "project",
     "resume_project": "project",
     "set_project_constraint": "project",
@@ -56,6 +64,9 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "queue_sync_workspaces": "project",
     "workspace_doctor": "project",
     "workspace_reap": "project",
+    "workspace_cutover": "project",
+    "workspace_retire_claim": "project",
+    "workspace_clear_sentinel": "project",
     # project onboarding from the dashboard (design 2026-09-03 §5)
     "list_project_roots": "project",
     "browse_project_root": "project",
@@ -158,6 +169,13 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "wait_get": "wait",
     "wait_list": "wait",
     "wait_cancel": "wait",
+    "wait_explain": "wait",
+    "wait_graph": "wait",
+    "wait_checkpoint": "wait",
+    "wait_ack": "wait",
+    "wait_decide": "wait",
+    "wait_lift": "wait",
+    "wait_legacy_bridge": "wait",
     "cron_register": "cron",
     "cron_get": "cron",
     "cron_list": "cron",
@@ -189,6 +207,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "stop_task": "task",
     "pause_task": "task",
     "resume_task": "task",
+    "discard_pause_checkpoint": "task",
     "restart_task": "task",
     "task_recover": "task",
     "reopen_with_feedback": "task",
@@ -444,6 +463,7 @@ _CLI_CATEGORY_OVERRIDES: dict[str, str] = {
         "ask_list", "ask_show", "ask_reply", "ask_prepare_decision", "ask_decide", "ask_history",
         "ask_apply_input", "ask_discussion_reply", "ask_update_context", "ask_reconcile",
         "ask_cutover", "ask_cutover_status", "ask_retry_operation", "ask_repair_delivery",
+        "ask_legacy_reset",
     )},
     "create_task": "task",
     "list_tasks": "task",
@@ -831,6 +851,48 @@ _ALL_TOOL_DEFINITIONS = [
         "name": "list_projects",
         "description": "List all projects in the system.",
         "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "repair_repository_checkout",
+        "description": (
+            "Preview or apply an audited replacement for a confirmed missing repository "
+            "checkout path. Preserves repository identity and verifies the replacement origin. "
+            "Requires local operator or global supervisor authority."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string"},
+                "repository_id": {"type": "string"},
+                "expected_path": {"type": "string"},
+                "replacement_path": {"type": "string"},
+                "reason": {"type": "string"},
+                "apply": {"type": "boolean", "default": False},
+            },
+            "required": ["project_id", "repository_id", "expected_path", "replacement_path",
+                         "reason"],
+        },
+    },
+    {
+        "name": "repair_workspace_checkout",
+        "description": (
+            "Preview or apply an audited base workspace path repair. Proves replacement "
+            "origin and shared Git object store with all existing slots; preserves slots and "
+            "claims. Apply requires expected_proof from preview. Local operator/global supervisor."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string"},
+                "workspace_id": {"type": "string"},
+                "expected_path": {"type": "string"},
+                "replacement_path": {"type": "string"},
+                "reason": {"type": "string"},
+                "expected_proof": {"type": "string"},
+                "apply": {"type": "boolean", "default": False},
+            },
+            "required": ["project_id", "workspace_id", "expected_path", "replacement_path", "reason"],
+        },
     },
     {
         "name": "project_doctor",
@@ -1913,6 +1975,7 @@ _ALL_TOOL_DEFINITIONS = [
                     "type": "string",
                     "description": "Workspace name (optional)",
                 },
+                "enabled": {"type": "boolean", "description": "Enable admission (default true). Register a cutover target with false."},
                 "kind_id": {
                     "type": "string",
                     "description": (
@@ -2193,6 +2256,70 @@ _ALL_TOOL_DEFINITIONS = [
         },
     },
     {
+        "name": "workspace_cutover",
+        "description": "Preview or apply a source-preserving base switch. Apply requires the exact preview proof. Disables the old base and slots without moving or deleting any source or releasing writers.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string", "description": "Project owning both bases."},
+                "source_id": {"type": "string", "description": "Current enabled base."},
+                "target_id": {"type": "string", "description": "New disabled, idle base of the same kind."},
+                "apply": {"type": "boolean", "description": "Apply the preview (default false)."},
+                "expected_proof": {"type": "string", "description": "Exact SHA256 proof returned by preview."},
+            },
+            "required": ["project_id", "source_id", "target_id"],
+        },
+    },
+    {
+        "name": "workspace_retire_claim",
+        "description": (
+            "Remove a worktree slot's leftover .aq/claim.json when its holder "
+            "provably let go: the slot is unlocked, the holder task is completed, "
+            "paused, released or superseded, and no live session works there. "
+            "Refuses a claim that may still be live. Use when claim preparation "
+            "reports 'retains a foreign claim'."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "workspace_id": {
+                    "type": "string",
+                    "description": "Slot workspace id whose claim file to retire.",
+                },
+            },
+            "required": ["workspace_id"],
+        },
+    },
+    {
+        "name": "workspace_clear_sentinel",
+        "description": (
+            "Return a worktree slot's .aq-worktree.json sentinel to the free form "
+            "when the task it still names is completed, failed, blocked or gone. "
+            "Refuses unless the slot holds no task lock, claim file, live claiming "
+            "session, integration owner or job pin, and its tree is clean with HEAD "
+            "published under a remote ref. Use when claim preparation reports "
+            "'branch disagrees with its source sentinel' after the named task ended."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "workspace_id": {
+                    "type": "string",
+                    "description": "Slot workspace id whose sentinel to clear.",
+                },
+                "if_task_terminal": {
+                    "type": "boolean",
+                    "description": (
+                        "Clear only when the named task is terminal (default true; "
+                        "the only supported mode)."
+                    ),
+                    "default": True,
+                },
+            },
+            "required": ["workspace_id"],
+        },
+    },
+    {
         "name": "workspace_reap",
         "description": (
             "Explicitly reap a retired worktree slot (removes its directory + row). "
@@ -2437,7 +2564,7 @@ _ALL_TOOL_DEFINITIONS = [
         "description": (
             "Restart a named supervisor through AQ with current profile permissions, model and effort. "
             "Starts a fresh conversation by default; --resume resumes its prior conversation. "
-            "Requires global admin."
+            "Requires a local operator or live supervisor within the target project scope."
         ),
         "input_schema": {
             "type": "object",
@@ -2529,8 +2656,10 @@ _ALL_TOOL_DEFINITIONS = [
                 },
                 "status": {
                     "type": "string",
-                    "enum": ["DEFINED", "READY", "IN_PROGRESS", "COMPLETED", "FAILED", "BLOCKED"],
-                    "description": "New status — admin override, bypasses state machine (optional)",
+                    "enum": [status.value for status in TaskStatus],
+                    "description": (
+                        "New lifecycle status (optional); suspended states require wait controls"
+                    ),
                 },
                 "max_retries": {"type": "integer", "description": "Max retry attempts (optional)"},
                 "verification_type": {
@@ -2612,8 +2741,33 @@ _ALL_TOOL_DEFINITIONS = [
         "description": "Resume a paused task, respecting its existing gates and approval state. Retries any unfinished session stop first.",
         "input_schema": {
             "type": "object",
-            "properties": {"task_id": {"type": "string", "description": "Task ID to resume"}},
+            "properties": {
+                "task_id": {"type": "string", "description": "Task ID to resume"},
+                "recover_stale_pause": {
+                    "type": "boolean",
+                    "description": (
+                        "Operator/supervisor recovery of a stale pause on an unchanged retained "
+                        "source; still requires writer stop proof and ordinary checkpoint cleanup."
+                    ),
+                },
+            },
             "required": ["task_id"],
+        },
+    },
+    {
+        "name": "discard_pause_checkpoint",
+        "description": (
+            "Discard a task's paused Git checkpoint so preparation stops restoring it, "
+            "e.g. one captured from another task's slot checkout. Its ref and commit stay "
+            "reachable and are recorded in a manual_pause_checkpoint_discarded audit entry."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "task_id": {"type": "string", "description": "Task whose checkpoint to discard"},
+                "reason": {"type": "string", "description": "Why the checkpoint is discarded (audited)"},
+            },
+            "required": ["task_id", "reason"],
         },
     },
     {
@@ -4384,10 +4538,21 @@ _ALL_TOOL_DEFINITIONS = [
     {
         "name": "playbook_commands",
         "description": (
-            "List every registered Playbook V2 command with its title, summary, "
-            "documentation URL, and typed parameter JSON Schema."
+            "Inspect a bounded page of playbook command contracts, including denied and "
+            "unavailable commands, schemas, caller requirements and execution metadata."
         ),
-        "input_schema": {"type": "object", "properties": {}},
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"}, "prefix": {"type": "string"},
+                "origin": {"type": "string"}, "plugin": {"type": "string"},
+                "schema_quality": {"type": "string"}, "result_mode": {"type": "string"},
+                "available": {"type": "boolean"}, "denied": {"type": "boolean"},
+                "include_schema": {"type": "boolean", "default": True},
+                "offset": {"type": "integer", "minimum": 0, "default": 0},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 50},
+            },
+        },
     },
     {
         "name": "playbook_v2_graph",
@@ -5395,6 +5560,10 @@ _ALL_TOOL_DEFINITIONS = [
                 "branch": {
                     "type": "string",
                     "description": "Branch name for this task's work (optional).",
+                },
+                "repair_batch": {
+                    "type": "string",
+                    "description": "Supervisor/operator only: assign push authority for this open batch's candidate branch, preserving the task's canonical branch.",
                 },
                 "pr_url": {"type": "string", "description": "Pull-request URL (optional)."},
                 "work_dir": {
@@ -6908,26 +7077,12 @@ _ALL_TOOL_DEFINITIONS = [
     {
         "name": "task_batch_update",
         "description": (
-            "Replace a pending change set, re-running final graph and state "
-            "checks as task_batch_propose. Only "
-            "proposals still in ``draft`` or ``ready`` can be updated — a "
-            "committed or discarded one is history."
+            "Update an ungated pending proposal with payload, or edit a held ingestion batch "
+            "with expected_revision and scoped operations. Only the live assigned fidelity "
+            "reviewer or project supervisor may edit held members. Atomic hard checks roll "
+            "back invalid edits; structural changes supersede old receipts. No edit releases work."
         ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "proposal_id": {"type": "string", "description": "Proposal to replace."},
-                "payload": {
-                    "type": "object",
-                    "description": (
-                        "The complete replacement change set (tasks, edits, edges, "
-                        "remove_edges, comments), in the same shape "
-                        "task_batch_propose takes."
-                    ),
-                },
-            },
-            "required": ["proposal_id", "payload"],
-        },
+        "input_schema": {},  # Replaced below by TaskBatchUpdateArgs' canonical schema.
     },
     {
         "name": "task_batch_commit",
@@ -9197,18 +9352,91 @@ _ALL_TOOL_DEFINITIONS.extend([
      "input_schema": _OperatorPreflightArgs.model_json_schema()},
 ])
 
+# Wait v2 uses one closed request schema across all public surfaces.
+from src.commands.contracts.wait import (  # noqa: E402
+    WaitRegisterArgs as _WaitRegisterArgs, WaitGetArgs as _WaitGetArgs,
+    WaitListArgs as _WaitListArgs, WaitCancelArgs as _WaitCancelArgs,
+)
+from src.commands.contracts.wait_v2 import (  # noqa: E402
+    PUBLIC_WAIT_V2_COMMANDS as _PUBLIC_WAIT_V2_COMMANDS, WAIT_V2_ARGS as _WAIT_V2_ARGS,
+)
 
+_WAIT_ARGS = {
+    "wait_register": _WaitRegisterArgs, "wait_get": _WaitGetArgs,
+    "wait_list": _WaitListArgs, "wait_cancel": _WaitCancelArgs,
+}
+for _definition in _ALL_TOOL_DEFINITIONS:
+    if _definition["name"] in _WAIT_ARGS:
+        _definition["input_schema"] = _WAIT_ARGS[_definition["name"]].model_json_schema()
+_WAIT_V2_DESCRIPTIONS = {
+    "wait_explain": "Explain a verified wait's condition, evidence and outcome.",
+    "wait_graph": "Inspect the dependency graph of verified waits.",
+    "wait_checkpoint": "Save a continuation checkpoint for the held claim's verified wait.",
+    "wait_ack": "Acknowledge a verified wait outcome for the held claim.",
+    "wait_decide": "Record a supervisor decision for a verified wait.",
+    "wait_lift": "Lift an escalated verified wait with an authorized decision.",
+}
+_ALL_TOOL_DEFINITIONS.extend([
+    {"name": name, "description": _WAIT_V2_DESCRIPTIONS[name],
+     "input_schema": _WAIT_V2_ARGS[name].model_json_schema()}
+    for name in sorted(_PUBLIC_WAIT_V2_COMMANDS)
+])
+
+
+# Shared observation schemas feed every descriptor projection; no playbook registration.
+
+_FALLBACK_INPUT_SCHEMAS.update({"doctor_catalog": CATALOG_SCHEMA, "doctor_run": RUN_SCHEMA,
+                               "observation_snapshot_cleanup": CATALOG_SCHEMA})
+
+# Preserve established transport arguments and expose only the shared paging
+# additions. Typed playbook arguments use the same schema source.
+from src.observations.models import SnapshotArgs as _SnapshotArgs  # noqa: E402
+
+for _definition in _ALL_TOOL_DEFINITIONS:
+    if _definition["name"] in {"list_projects", "list_tasks", "get_stuck_tasks"}:
+        _definition["input_schema"]["properties"].update(
+            _SnapshotArgs.model_json_schema()["properties"]
+        )
+
+_FALLBACK_INPUT_SCHEMAS.update(STATE_SCHEMAS)
+
+# Data-only inputs; run, owner, artifact and program come from the live invocation.
+_ALL_TOOL_DEFINITIONS.append({
+    "name": "playbook_script_run",
+    "description": "Submit or rejoin the current pinned ScriptStep as a durable job.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "arguments": {"type": "array", "items": {"type": "string"}, "maxItems": 256},
+            "environment": {"type": "object", "additionalProperties": {"type": "string"}},
+            "stdin_base64": {"type": "string", "maxLength": 87384},
+        },
+        "additionalProperties": False,
+    },
+})
+
+from src.commands.contracts.builtin import (  # noqa: E402
+    TaskBatchUpdateArgs as _TaskBatchUpdateArgs,
+    EnsureFidelityReviewArgs as _EnsureFidelityReviewArgs,
+)
 from src.commands.contracts.builtin import EnsureSpecIngestArgs as _EnsureSpecIngestArgs  # noqa: E402
+
+for _definition in _ALL_TOOL_DEFINITIONS:
+    if _definition["name"] == "task_batch_update":
+        _definition["input_schema"] = _TaskBatchUpdateArgs.model_json_schema()
 
 _TOOL_CATEGORIES.update({
     "ensure_spec_ingest": "task", "approved_spec_packet": "task",
     "spec_ingest_reconcile": "task", "spec_ingest_legacy_inventory": "task",
-    "batch_reconcile": "task",
+    "batch_reconcile": "task", "ensure_fidelity_review": "task",
 })
 _ALL_TOOL_DEFINITIONS.extend([
     {"name": "ensure_spec_ingest",
      "description": "Ensure one role task per applied approval decision, including archived receipts.",
      "input_schema": _EnsureSpecIngestArgs.model_json_schema()},
+    {"name": "ensure_fidelity_review",
+     "description": "Ensure one fidelity-reviewer role task per held batch; service/operator only.",
+     "input_schema": _EnsureFidelityReviewArgs.model_json_schema()},
     {"name": "approved_spec_packet",
      "description": "Read the immutable document and feedback of the live held ingestion role.",
      "input_schema": _EnsureSpecIngestArgs.model_json_schema()},

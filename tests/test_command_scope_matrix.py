@@ -52,8 +52,9 @@ from src.models import Project, SessionRecord, Task
 _ID_KEYS = ("task_id", "project_id", "session_id")
 
 #: In-set commands with no entry in the tool-definition registry.  Asserted as
-#: an exact equality so the exemption cannot quietly grow.
-_NO_DEFINITION = {"prime", "session_drain_ack"}
+#: an exact equality so the exemption cannot quietly grow.  ``read_file`` is
+#: registered by the aq-files plugin, not the built-in registry.
+_NO_DEFINITION = {"prime", "read_file", "session_drain_ack"}
 
 #: ``message_inbox`` addresses a mailbox by ``to_kind``/``to_id``, so it has
 #: no ID-triple property in its schema — the plan's floor listed it, but the
@@ -403,7 +404,7 @@ def _argument_properties() -> dict[str, set[str]]:
 def _unpinnable_target_commands() -> dict[str, frozenset[str]]:
     """The gap class: command -> the project-owned targets its schema names.
 
-    Every member is granted to the supervisor, has no contract registration,
+    Every member is granted to the supervisor, has no typed dispatch contract,
     and names at least one target reference — so a per-project supervisor token
     can point it at another project's row and nothing in the scope layer reads
     the ``project_id`` it injects.  Some of those targets
@@ -416,8 +417,10 @@ def _unpinnable_target_commands() -> dict[str, frozenset[str]]:
 
     properties = _argument_properties()
     found: dict[str, frozenset[str]] = {}
+    typed = CONTRACTS.typed_contracts()
     for command in sorted(_supervisor_granted_commands()):
-        if CONTRACTS.get(command) is not None:
+        # Generated catalogue entries do not change the legacy scope gate.
+        if command in typed:
             continue
         names = properties.get(command, set())
         targets = frozenset(
@@ -477,6 +480,7 @@ def test_the_unpinnable_session_set_is_derived_and_holds_the_filed_commands():
     # session command cannot appear without this test noticing.
     assert _dispatchable_session_commands() == [
         "session_drain_ack", "session_kill", "session_logs", "session_peek",
+        "supervisor_restart",
     ]
 
 
@@ -520,7 +524,10 @@ async def test_a_project_supervisor_cannot_reach_another_projects_session(
     ``session_drain_ack`` asks for its teardown and ``session_logs`` reads its
     transcript; all four resolve their argument the same way, so each is
     dispatched here the way the file under test resolves it, against a session
-    belonging to the *other* project.  The refusal has to arrive before
+    belonging to the *other* project.  ``supervisor_restart`` reads
+    ``session_id`` only as the expected identity of the supervisor it restarts;
+    its fence is the supervisor ``name`` (``supervisor-global`` by default),
+    which a project-A token is refused before the session is consulted.  The refusal has to arrive before
     anything is read, written or signalled — hence the unchanged row.
 
     Handlers are called directly with ``_current_scope`` set rather than
@@ -609,7 +616,10 @@ async def test_matching_scope_reads_succeed_and_foreign_reads_are_refused(matrix
     foreign = await matrix.execute(command, {"task_id": "t2", "_scope": _scope()})
     assert foreign["success"] is False
     assert foreign["result"] == "out_of_scope"
-    assert "outside this session's scope" in foreign["error"]
+    if command == "task_show":
+        assert "outside this session's scope" in foreign["error"]
+    else:
+        assert foreign["error_code"] == "resource_scope_denied"
 
 
 @pytest.mark.parametrize("command", _READS + ["message_inbox"])

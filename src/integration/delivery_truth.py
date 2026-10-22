@@ -57,6 +57,21 @@ PARENT_ADOPTION_EVENT = "integration.parent_adopted"
 SETTLEMENT_KEY = "development_delivery_settlement"
 
 
+def completion_after_rework(completed_at: float, rework_value: str | None) -> bool:
+    """A historical close cannot answer a generation reopened after it.
+
+    Container settlement changes work status without writing a fresh close.
+    Keep that history, but never select it as current delivery evidence.
+    """
+    if rework_value is None:
+        return True
+    try:
+        rework_at = json.loads(rework_value)
+    except (TypeError, ValueError):
+        return False
+    return type(rework_at) in (int, float) and completed_at >= rework_at
+
+
 class DeliveryState(StrEnum):
     CONTAINED = "contained"
     NO_CHANGE = "no_change"
@@ -138,6 +153,10 @@ class DeliveryRequest:
     settled_target_ref: str | None = None
     settled_completion_id: str | None = None
     settled_reason: str | None = None
+    #: A completed container that recorded no source of its own: each child's
+    #: current request and recorded origin base, so Git can prove it from its
+    #: children. Loaded only on request (``containers=True``); () otherwise.
+    container_children: tuple[tuple[DeliveryRequest, str | None], ...] = ()
 
     @property
     def settles(self):
@@ -205,6 +224,10 @@ class DeliverySnapshot:
     # Shared only by copies of the same fetched observation. Diagnostics must
     # respect a freshness failure already seen by a background consumer.
     _freshness: dict[str, bool] = field(default_factory=dict, repr=False, compare=False)
+    # A remote absence can be known even when acquisition failed. It is not a
+    # fetched inventory and must never answer another target's observation.
+    acquisition_error: str | None = None
+    absent_target_refs: frozenset[str] = frozenset()
 
     def for_request(self):
         """The same fetched observation without another request's cached answers."""
@@ -262,7 +285,7 @@ class DeliverySnapshot:
         ):
             return result(DeliveryState.UNKNOWN, "scope_mismatch")
         if self.error or not self.target_oid:
-            return result(DeliveryState.UNKNOWN, self.error or "missing_target")
+            return result(DeliveryState.UNKNOWN, self.error or "target_ref_missing")
         if (request.requires_parent_completion and request.parent_completion is None
             and request.parent_adoption is None):
             return result(DeliveryState.UNKNOWN, INVALID_PARENT_COMPLETION)
@@ -338,15 +361,24 @@ async def _run(git, store, *args):
 
 
 async def load_delivery_requests(db, task_ids, *, repository_id, target_ref, conn=None,
-                                 reduced=False):
+                                 reduced=False, containers=False, _ancestors=frozenset()):
     """Batch read current completions and live/archive identities without locks.
 
     Absent tasks are omitted so consumers explicitly withhold them. PostgreSQL
     DISTINCT ON gives a deterministic latest generation even at equal times.
     A guarded consumer passes its own *conn* to recheck, under its locks, that
     the identities it evaluated before the transaction are still current.
+    A reduced read with *containers* also attaches the children of completed
+    containers without a recorded source (:attr:`DeliveryRequest.container_children`).
     """
     from contextlib import nullcontext
+
+    if containers and conn is None:
+        async with db._engine.connect() as reader:
+            return await load_delivery_requests(
+                db, task_ids, repository_id=repository_id, target_ref=target_ref,
+                conn=reader, reduced=reduced, containers=True,
+            )
 
     from sqlalchemy import and_, select
 
@@ -393,7 +425,8 @@ async def load_delivery_requests(db, task_ids, *, repository_id, target_ref, con
             select(tasks.c.id).where(tasks.c.id.in_(task_ids), legacy_artifact(tasks))
         )).scalars())
         settlements, parent_ids, abandoned = {}, set(), set()
-        parent_completions, adopted_parents, parent_adoptions, rework = {}, {}, {}, {}
+        parent_completions, adopted_parents, parent_adoptions = {}, {}, {}
+        parent_history = set()
         if not reduced:
             settlements = {
                 task_id: settlement_fields(value)
@@ -412,18 +445,23 @@ async def load_delivery_requests(db, task_ids, *, repository_id, target_ref, con
             parent_history = parent_ids | abandoned
             adopted_parents = await _adopted_parents_on(reader, parent_history, repository_id)
             parent_adoptions = await _parent_adoptions_on(reader, parent_history, repository_id)
-            rework = dict((await reader.execute(select(
-                task_metadata.c.task_id, task_metadata.c.value,
-            ).where(task_metadata.c.task_id.in_(parent_history),
-                    task_metadata.c.key == INTEGRATION_REWORK_AT_KEY))).all()) if parent_history else {}
+        rework = dict((await reader.execute(select(
+            task_metadata.c.task_id, task_metadata.c.value,
+        ).where(task_metadata.c.task_id.in_(task_ids | parent_history),
+                task_metadata.c.key == INTEGRATION_REWORK_AT_KEY))).all())
     completion_by_id = {
         row["task_id"]: db._row_to_task_completion(row) for row in completions
     }
     requests = {}
     for rows, is_archived in ((live, False), (archived, True)):
         for row in rows:
+            completion = completion_by_id.get(row["id"])
+            if completion and not completion_after_rework(
+                completion.completed_at, rework.get(row["id"]),
+            ):
+                completion = None
             request = DeliveryRequest.from_task(
-                {**row, "archived": is_archived}, completion_by_id.get(row["id"]),
+                {**row, "archived": is_archived}, completion,
                 repository_id=repository_id, target_ref=target_ref,
             )
             current_id = json.loads(row["current_generation"]) if not is_archived and row[
@@ -508,7 +546,55 @@ async def load_delivery_requests(db, task_ids, *, repository_id, target_ref, con
                 has_recorded_source=(row["id"] in recorded_ids or bool(current_id)),
                 **settlements.get(row["id"], {}),
             )
+    if containers and reduced:
+        requests = await _with_container_children(
+            db, requests, conn, repository_id=repository_id, target_ref=target_ref,
+            ancestors=_ancestors,
+        )
     return requests
+
+
+async def _with_container_children(db, requests, conn, *, repository_id, target_ref, ancestors):
+    """Attach each sourceless completed container's children, recursively.
+
+    A container closes with no artifact of its own, so its children carry the
+    code. A container keeps no children unless every child loaded, so Git
+    truth withholds it rather than judging a partial family.
+    """
+    from sqlalchemy import select
+
+    from src.database.tables import archived_tasks, task_branch_origins, tasks
+
+    containers = {
+        task_id for task_id, request in requests.items()
+        if request.task_status == "COMPLETED" and not request.has_recorded_source
+    } - ancestors
+    if not containers:
+        return requests
+    children: dict[str, set[str]] = {}
+    for table in (tasks, archived_tasks):
+        for child_id, parent_id in (await conn.execute(select(
+            table.c.id, table.c.parent_task_id,
+        ).where(table.c.parent_task_id.in_(containers)))).all():
+            children.setdefault(parent_id, set()).add(child_id)
+    if not children:
+        return requests
+    child_ids = set().union(*children.values())
+    loaded = await load_delivery_requests(
+        db, child_ids, repository_id=repository_id, target_ref=target_ref, conn=conn,
+        reduced=True, containers=True, _ancestors=ancestors | containers,
+    )
+    bases = dict((await conn.execute(select(
+        task_branch_origins.c.task_id, task_branch_origins.c.base_sha,
+    ).where(task_branch_origins.c.task_id.in_(child_ids),
+            task_branch_origins.c.repository_id == repository_id,
+            task_branch_origins.c.retired_at.is_(None)))).all())
+    return {
+        task_id: replace(request, container_children=tuple(
+            (loaded[child_id], bases.get(child_id)) for child_id in sorted(children[task_id])
+        )) if children.get(task_id, set()) and children[task_id] <= loaded.keys() else request
+        for task_id, request in requests.items()
+    }
 
 
 async def _parent_adoptions_on(conn, task_ids, repository_id):
@@ -890,8 +976,31 @@ async def delivery_snapshot(git, store, *, project_id, repository_id, repository
         if not target_ref.startswith("refs/heads/"):
             raise GitError("invalid_target")
         await _run(git, store, "check-ref-format", target_ref)
-        await fetch_retained_origin(git, store, repository_url=repository_url,
-                                    project_id=project_id, repository_id=repository_id)
+        try:
+            await fetch_retained_origin(git, store, repository_url=repository_url,
+                                        project_id=project_id, repository_id=repository_id)
+        except GitError as exc:
+            # Ref retirement requires no readable objects. A clean, independent
+            # remote read can diagnose absence even when the retained cache
+            # cannot be acquired. Keep that failure for every other target.
+            if str(exc) != "retained Git object integrity is unavailable":
+                raise
+            try:
+                remote = await git.als_remote_ref(
+                    str(store), target_ref.removeprefix("refs/heads/"),
+                    repository_url=repository_url,
+                )
+            except (GitError, OSError):
+                raise exc
+            if remote.state is not RemoteRefState.ABSENT:
+                raise
+            acquisition_error = f"snapshot_git_error: {exc}"
+            absent_refs = frozenset((target_ref,))
+            return DeliverySnapshot(
+                git, str(store), project_id, repository_id, repository_url, target_ref,
+                None, MappingProxyType({}), "target_ref_missing",
+                acquisition_error=acquisition_error, absent_target_refs=absent_refs,
+            )
         refs = await _run(
             git, store, "for-each-ref", "--format=%(refname) %(objectname)",
             "refs/remotes/origin/", "refs/aq/provenance/",
@@ -899,7 +1008,7 @@ async def delivery_snapshot(git, store, *, project_id, repository_id, repository
         heads = dict(line.split(" ", 1) for line in refs.splitlines())
         target_oid = heads.get("refs/remotes/origin/" + target_ref.removeprefix("refs/heads/"))
         if not is_valid_git_oid(target_oid):
-            error = "missing_target"
+            error = "target_ref_missing"
     except (GitError, OSError) as exc:
         error = f"snapshot_git_error: {exc}"
     return DeliverySnapshot(

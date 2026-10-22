@@ -76,7 +76,12 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["src/object_loop/**", "src/commands/object_loop_commands.py", "src/commands/contracts/object_loop.py", "src/api/models/object_loop.py"], areas: ["object-loop"] }
   # Match the core now and the sibling command/CLI files as they land.
   - { paths: ["src/**/collaboration*.py", "src/commands/*wait_commands.py", "src/cli/*wait*.py"], areas: ["collaboration"] }
-  - { paths: ["src/agent_waits.py", "src/database/queries/agent_wait_queries.py", "src/commands/wait_commands.py", "src/commands/contracts/wait.py", "src/cli/waits.py"], areas: ["agent-waits"] }
+  - { paths: ["src/agent_waits.py", "src/database/queries/agent_wait_queries.py", "src/commands/wait_commands.py", "src/commands/contracts/wait.py", "src/cli/waits.py", "src/api/models/wait.py"], areas: ["agent-waits"] }
+  - { paths: ["src/waits/**", "src/wait_runtime/**", "src/database/queries/wait_queries.py", "src/database/queries/continuation_queries.py", "src/commands/wait_v2_commands.py", "src/commands/contracts/wait_v2.py"], areas: ["agent-waits"] }
+  # The remaining v2 ownership paths land with the leaves that create them.
+  - { paths: ["src/waits/**", "src/database/queries/wait_source_queries.py", "src/doctor/wait_checks.py"], areas: ["agent-waits"] }
+  - { paths: ["src/database/queries/wait_metrics.py", "src/metrics/waits.py"], areas: ["agent-waits", "metrics"] }
+  - { paths: ["migrations/versions/a00000000102_workspace_kind_limits.py", "migrations/versions/a00000000110_wait_records.py"], areas: ["agent-waits"] }
   - { paths: ["src/agent_cron.py", "src/database/queries/agent_cron_queries.py", "src/commands/cron_commands.py", "src/commands/contracts/cron.py", "src/cli/cron.py", "src/api/models/cron.py"], areas: ["agent-cron"] }
   - { paths: ["src/jobs/**", "src/commands/job_commands.py", "src/database/queries/job_queries.py", "src/commands/contracts/job.py", "src/api/models/job.py", "src/cli/jobs.py"], areas: ["managed-jobs"] }
   - { paths: ["src/jobs/pytest_output.py"], areas: ["development-delivery"] }
@@ -123,6 +128,7 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["scripts/token-efficiency-report.py"], areas: ["metrics"] }
   - { paths: ["scripts/seed_layout_perf.py"], areas: ["graph-layout"] }
   - { paths: ["scripts/dashboard-perf/*.py"], areas: ["metrics"] }
+  - { paths: ["dashboard/src/pages/metrics/__tests__/waitFaultAccounting.json"], areas: ["metrics"] }
   - { paths: ["scripts/pkg5_scenarios/**"], areas: ["playbook-engine"] }
   - { paths: ["scripts/generate-playbook-schema.py"], areas: ["playbook-definition"] }
   - { paths: ["scripts/rebuild-reviewed-playbook-artifacts.py"], areas: ["shipped-playbooks"] }
@@ -145,6 +151,7 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["tests/playbook_fixture_activation.py"], areas: ["shipped-playbooks"] }
   - { paths: ["tests/playbook_v2_engine_helpers.py"], areas: ["ci-sentinel", "epic-trains", "integration-promotion", "playbook-engine", "shipped-playbooks", "task-routing"] }
   - { paths: ["tests/playbook_v2_helpers.py"], areas: ["playbook-authoring", "playbook-definition", "playbook-engine"] }
+  - { paths: ["tests/_private_values_helper.py"], areas: ["playbook-engine", "shipped-playbooks"] }
   - { paths: ["tests/session_dispatch_helpers.py"], areas: ["integration-promotion", "memory-facts", "orchestrator", "profiles", "prompts", "provider-failover", "task-lifecycle"] }
   - { paths: ["tests/fixtures/app_mode/**"], areas: ["integration-controls"] }
   - { paths: ["tests/fixtures/integration/**"], areas: ["integration-promotion"] }
@@ -261,7 +268,7 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["src/commands/pool_admin.py"], areas: ["worker-pools", "profiles"] }
   - { paths: ["src/commands/phase_commands.py"], areas: ["task-hierarchy"] }
   - { paths: ["src/commands/task_split_commands.py"], areas: ["task-hierarchy", "task-dependencies"] }
-  - { paths: ["src/commands/playbook_commands.py", "src/commands/playbook_v2_commands.py"], areas: ["playbook-authoring", "playbook-engine"] }
+  - { paths: ["src/commands/playbook_commands.py", "src/commands/playbook_v2_commands.py", "src/commands/playbook_state_commands.py"], areas: ["playbook-authoring", "playbook-engine"] }
   - { paths: ["src/commands/plugin_commands.py"], areas: ["plugins"] }
   - { paths: ["src/commands/profile_commands.py"], areas: ["profiles", "intelligence-classes"] }
   - { paths: ["src/commands/project_commands.py", "src/commands/project_onboarding_commands.py"], areas: ["projects"] }
@@ -322,6 +329,7 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["src/discord/**"], areas: ["discord"] }
   - { paths: ["src/discord/escalation_*.py"], areas: ["escalations"] }
   - { paths: ["src/doctor/**"], areas: ["doctor"] }
+  - { paths: ["src/observations/**"], areas: ["doctor", "playbook-engine"] }
   - { paths: ["src/doctor/capability_checks.py"], areas: ["capabilities"] }
   - { paths: ["src/doctor/dashboard_*.py"], areas: ["dashboard-server", "dashboard-state"] }
   - { paths: ["src/doctor/db_checks.py"], areas: ["migrations"] }
@@ -389,6 +397,7 @@ ownership:                      # path globs -> areas whose modules join M
 
   - { paths: ["src/panes/**"], areas: ["panes-streams"] }
   - { paths: ["src/playbooks/**"], areas: ["playbook-engine"] }
+  - { paths: ["src/playbooks/features.py"], areas: ["playbook-definition", "playbook-authoring"] }
   - { paths: ["src/playbooks/definition.py", "src/playbooks/expressions.py", "src/playbooks/validation.py", "src/playbooks/explanation.py", "src/playbooks/graph_projection.py", "src/playbooks/artifact_*.py", "src/playbooks/semantic_diff.py", "src/playbooks/pipeline_lowering.py"], areas: ["playbook-definition"] }
   - { paths: ["src/playbooks/authoring.py", "src/playbooks/proposal.py", "src/playbooks/activation.py", "src/playbooks/required.py", "src/playbooks/profiles.py"], areas: ["playbook-authoring", "shipped-playbooks"] }
   - { paths: ["src/playbooks/routing.py"], areas: ["task-routing"] }

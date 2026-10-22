@@ -20,6 +20,15 @@ export default tseslint.config(
     rules: {
       ...reactHooks.configs.recommended.rules,
       "react-refresh/only-export-components": ["warn", { allowConstantExport: true }],
+      // crypto.randomUUID exists only in secure contexts (HTTPS or localhost).
+      "no-restricted-syntax": ["error", {
+        selector: "MemberExpression[property.name='randomUUID']",
+        message: "crypto.randomUUID is missing outside secure contexts; import randomUUID from src/randomUUID.ts.",
+      }],
     },
+  },
+  {
+    files: ["src/randomUUID.ts"],
+    rules: { "no-restricted-syntax": "off" },
   },
 );

@@ -82,6 +82,19 @@ class AskService:
         Conflicts return a quarantined publication so the repair record commits;
         callers must not turn that result into a transaction-rolling exception.
         """
+        from src.asks.reset_policy import reset_state
+
+        identity = snapshot.identity
+        previous = await self.db.get_ask_by_source(
+            identity.project_id, identity.kind, identity.key, conn=conn,
+        )
+        if previous and previous["context"].get("legacy_discarded"):
+            return Publication(previous, False)
+        reset = await reset_state(conn, identity.project_id)
+        if reset and identity.kind == "review" and identity.key not in reset["kept_reviews"]:
+            review = await self.db.get_review(identity.key, conn=conn)
+            if review and review["created_at"] <= reset["cutoff"]:
+                raise AskError("ask.discarded", "This legacy request was discarded by the project reset")
         invalid = validate_context(snapshot)
         if invalid and not legacy:
             raise AskError("ask.context_missing", "Missing or invalid ask context", fields=invalid)

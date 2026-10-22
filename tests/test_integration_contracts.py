@@ -11,7 +11,10 @@ from src.commands.contracts.builtin import register_builtin_contracts
 from src.commands.contracts.builtin import set_handler_provider
 from src.commands.contracts.integration import (
     IntegrationRecordRootNoopArgs,
+    IntegrationRepairTargetArgs,
     IntegrationReevaluateRepairArgs,
+    IntegrationReverifyEpicArgs,
+    IntegrationRestoreTaskOriginArgs,
     register_integration_contracts,
 )
 from src.commands.contracts.models import EffectSubject, OutcomeClass
@@ -46,6 +49,51 @@ DESIGN_EVENTS = {
 }
 
 
+@pytest.mark.parametrize("missing", ["expected_candidate_sha", "expected_target_sha", "reason"])
+def test_target_repair_contract_requires_exact_apply_evidence(missing):
+    args = dict(batch_id="batch", dry_run=False, expected_candidate_sha="a" * 40,
+                expected_target_sha="b" * 40, reason="repair sealed target")
+    args.pop(missing)
+    with pytest.raises(ValidationError):
+        IntegrationRepairTargetArgs(**args)
+    assert IntegrationRepairTargetArgs(batch_id="batch").dry_run is True
+
+
+@pytest.mark.parametrize("missing", [
+    "origin_id", "expected_remote_oid", "expected_fence_token", "reason",
+])
+def test_origin_restore_contract_requires_exact_apply_fences(missing):
+    args = dict(task_id="task", dry_run=False, origin_id="origin",
+                expected_remote_oid="a" * 40, expected_fence_token=3, reason="repair")
+    args.pop(missing)
+    with pytest.raises(ValidationError):
+        IntegrationRestoreTaskOriginArgs(**args)
+    assert IntegrationRestoreTaskOriginArgs(task_id="task").dry_run is True
+
+
+async def test_origin_restore_adapter_retains_the_reviewable_preview():
+    evidence = {"origin_id": "origin", "before_sha": "a" * 40, "after_sha": "b" * 40,
+                "fence_token": 3, "backup_ref": "aq/origin-restore/origin/old"}
+
+    class Handler:
+        async def execute(self, name, payload):
+            assert name == "integration_restore_task_origin"
+            assert payload["dry_run"] is True
+            return {"success": True, "outcome": "preview", "evidence": evidence}
+
+    registry = ContractRegistry()
+    register_integration_contracts(registry)
+    set_handler_provider(Handler)
+    try:
+        result = await registry.require("integration_restore_task_origin").invoke(
+            IntegrationRestoreTaskOriginArgs(task_id="task"), None,
+        )
+    finally:
+        set_handler_provider(None)
+    assert result.outcome == "preview"
+    assert result.value.evidence == evidence
+
+
 @pytest.mark.parametrize("payload", [
     {"dry_run": False},
     {"dry_run": False, "expected_head_sha": "a" * 40},
@@ -56,6 +104,19 @@ DESIGN_EVENTS = {
 def test_root_noop_contract_requires_exact_apply_evidence(payload):
     with pytest.raises(ValidationError):
         IntegrationRecordRootNoopArgs(task_id="root", **payload)
+
+
+@pytest.mark.parametrize("payload", [
+    {},
+    {"expected_head_sha": "a" * 40},
+    {"reason": "retry aggregate"},
+    {"expected_head_sha": "bad", "reason": "retry aggregate"},
+    {"expected_head_sha": "a" * 40, "reason": "  "},
+])
+def test_epic_reverification_contract_requires_exact_apply_evidence(payload):
+    with pytest.raises(ValidationError):
+        IntegrationReverifyEpicArgs(task_id="epic", dry_run=False, **payload)
+    assert IntegrationReverifyEpicArgs(task_id="epic").dry_run is True
 
 
 @pytest.mark.parametrize("missing", [
@@ -566,6 +627,14 @@ def test_every_hierarchy_adapter_call_site_passes_exactly_five_positional_argume
      {"outcome": "preview", "batch_id": "batch", "intent": "open", "dry_run": True}),
     ("integration_resume_batch", {"batch_id": "batch"},
      {"outcome": "preview", "batch_id": "batch", "intent": "paused", "dry_run": True}),
+    ("integration_repair_target", {"batch_id": "batch"},
+     {"outcome": "preview", "batch_id": "batch", "candidate_sha": "a" * 40,
+      "target_sha": "b" * 40, "evidence": {"baseline": {"pre_existing_checks": ["unit"]}}}),
+    ("integration_repair_target", {"batch_id": "batch", "dry_run": False,
+                                  "expected_candidate_sha": "a" * 40,
+                                  "expected_target_sha": "b" * 40, "reason": "repair sealed target"},
+     {"outcome": "repairing", "batch_id": "batch", "task_id": "repair",
+      "evidence": {"repair": {"outcome": "exists", "attempt": 1}}}),
     ("integration_eject", {"batch_id": "batch", "task_id": "c"},
      {"outcome": "preview", "replacement_batch_id": "new", "members": ["a", "b"]}),
     ("integration_seal_now", {"project_id": "p"},
@@ -636,5 +705,6 @@ def test_retired_publishers_are_absent_from_command_registry():
                  "integration_development_engine_transfer"):
         assert registry.get(name) is None
     for name in ("integration_seal_now", "integration_abort_batch", "integration_eject",
+                 "integration_settle_batch", "integration_release_withheld_source",
                  "integration_status", "integration_promotion_publish"):
         assert registry.get(name) is not None

@@ -349,6 +349,7 @@ async def mark_integration_pool_handoff_released(
     session_instance_token: str,
     conn=None,
     preparation_epoch: int | None = None,
+    require_preparation: bool = False,
 ) -> bool:
     """Record a **pool** writer's detach proof without unbinding its slot.
 
@@ -383,7 +384,16 @@ async def mark_integration_pool_handoff_released(
                 db, owner, workspace=workspace, task_id=task_id,
                 session_instance_token=session_instance_token, conn=owned_conn,
                 preparation_epoch=preparation_epoch,
+                require_preparation=require_preparation,
             )
+    if require_preparation and (
+        preparation_epoch is None or await db.lock_claim_workspace(
+            conn, owner.get("session_id"), task_id, epoch=preparation_epoch,
+            instance_token=session_instance_token, expected_workspace=workspace,
+            allow_retained_preparation=True,
+        ) is None
+    ):
+        return False
     # Match release_claim: session before owner/workspace.
     session_row = (await conn.execute(select(sessions).where(
         sessions.c.id == owner.get("session_id")
@@ -783,6 +793,16 @@ async def detach_slot_for_integration_handoff(
         allow_published_detached_head=allow_published_detached_head,
         require_detached=require_detached,
     )
+
+
+async def detach_task_slot(db, orch, task, workspace, branch: str, **options) -> bool:
+    """Detach *task*'s slot through its repository binding; False without proof."""
+    project = await db.get_project(task.project_id)
+    repository = await db.get_repo(task.repo_id or project.integration_repository_id)
+    return bool(repository and await detach_slot_for_integration_handoff(
+        db, orch.git, orch._git_mutex, workspace, expected_branch=branch,
+        repository_url=repository.url, default_branch=repository.default_branch, **options,
+    ))
 
 
 async def _probe_workspace_checkout(

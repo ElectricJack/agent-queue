@@ -2120,11 +2120,16 @@ async def _drained_parent_holder(db):
         epoch="epoch", instance_token="drained-instance", started_at=100.0,
         agent_id="drained-parent-agent",
     ))
+    await db.create_workspace(Workspace(
+        id="drained-parent-slot", project_id="p", workspace_path="/tmp/drained-parent",
+        source_type=RepoSourceType.LINK, locked_by_agent_id="drained-parent-agent",
+    ))
+    await db.update_task("parent", assigned_agent_id="drained-parent-agent")
     async with db.immediate() as conn:
         await db.record_holder(
             conn, session_id="stale-parent-holder", task_id="parent", claim_epoch=1,
             agent_id="drained-parent-agent", work_dir="/tmp/drained-parent", now=101.0,
-            agent_reserved=True,
+            agent_reserved=False,
         )
     assert await db.activate_claim("stale-parent-holder", "parent", epoch=1, now=102.0)
     assert (
@@ -2136,6 +2141,9 @@ async def _drained_parent_holder(db):
         "stale-parent-holder", state="stopped", desired_state="stopped",
         ended_at=120.0, end_reason="drained",
     )
+    # The recovery scenario begins after the stopped worker's unlocked
+    # workspace has retired, not before a registered claim ever existed.
+    await db.delete_workspace("drained-parent-slot")
 
 
 async def _stale_parent_noop(db, *, collector_fence=True):
@@ -2352,10 +2360,17 @@ async def test_transient_prepare_preserves_legacy_stage_attempts_and_fence(db, t
 
     _service, delegate = await _continuous_parent_stage(db)
     await _claimed_writer(db, delegate, epoch=1, live=True, sid="preparing-writer")
-    await db.update_session("preparing-writer", claim_phase="preparing", work_dir=str(tmp_path))
+    await db.create_agent(Agent(id="preparing-agent", name="Preparing", profile_id="repairer"))
+    await db.update_task(delegate, assigned_agent_id="preparing-agent")
+    await db.update_session("preparing-writer", agent_id="preparing-agent", work_dir=str(tmp_path))
     slot = Workspace(id="repair-slot", project_id="p", workspace_path=str(tmp_path),
-                     source_type=RepoSourceType.LINK, locked_by_task_id=delegate)
+                     source_type=RepoSourceType.LINK, locked_by_agent_id="preparing-agent")
     await db.create_workspace(slot)
+    async with db.immediate() as conn:
+        slot = await db.record_holder(
+            conn, session_id="preparing-writer", task_id=delegate, claim_epoch=1,
+            agent_id="preparing-agent", work_dir=str(tmp_path), now=101.0,
+        )
     target = BranchKey(repository_id="repo", branch="aq/parent")
     ownership = BranchOwnership(db)
     fence = ownership._fence(await ownership.get_owner(target))
@@ -5129,7 +5144,10 @@ async def test_debug_dossier_refreshes_exact_unpushed_commits_and_late_receipts(
         stop=AsyncMock(),
         confirm_stopped=AsyncMock(return_value=True),
     )
-    runtime = SimpleNamespace(
+    class Runtime(WorkspaceMixin, SimpleNamespace):
+        """Use the real cleanup proof before exercising retained writer handoff."""
+
+    runtime = Runtime(
         db=db,
         config=SimpleNamespace(),
         session_providers=SimpleNamespace(create=lambda *_args: provider),
@@ -5215,7 +5233,9 @@ async def test_debug_dossier_refreshes_exact_unpushed_commits_and_late_receipts(
     assert all(commit_sha in debug_task.description for commit_sha in exact_commits)
 
 
-async def _prepare_retained_debug_boundary(db, workspace_path: str, head_sha: str):
+async def _prepare_retained_debug_boundary(
+    db, workspace_path: str, head_sha: str, *, lifecycle: str = "task",
+):
     """Create an attached primary exactly at the debug handoff boundary."""
     from src.integration.repair import RepairService
 
@@ -5250,7 +5270,8 @@ async def _prepare_retained_debug_boundary(db, workspace_path: str, head_sha: st
             harness="fake",
             provider="fake",
             name="s-boundary-primary",
-            lifecycle="task",
+            lifecycle=lifecycle,
+            last_claim_epoch=1 if lifecycle == "pool" else None,
             state="running",
             work_dir=workspace_path,
             epoch="epoch",
@@ -5274,7 +5295,7 @@ async def _prepare_retained_debug_boundary(db, workspace_path: str, head_sha: st
         await conn.execute(
             update(tasks)
             .where(tasks.c.id == primary_task_id)
-            .values(status="IN_PROGRESS")
+            .values(status="IN_PROGRESS", claim_epoch=1 if lifecycle == "pool" else 0)
         )
         await conn.execute(
             update(integration_branch_owners)
@@ -5287,6 +5308,9 @@ async def _prepare_retained_debug_boundary(db, workspace_path: str, head_sha: st
         )
     await primary_service.record_result("operation", "failed-check", now=101.0)
     await primary_service.record_result("operation", "failed-check-2", now=102.0)
+    if lifecycle == "pool":
+        from src.claim_file import write_claim_file
+        write_claim_file(workspace_path, {"task_id": primary_task_id, "claim_epoch": 1})
     proof = {
         "session_id": "boundary-primary-session",
         "workspace_id": "boundary-workspace",
@@ -5378,8 +5402,13 @@ async def test_retained_dispatch_recovers_at_each_durable_boundary(
     assert (await db.get_task(primary_task_id)).status is TaskStatus.BLOCKED
 
 
+@pytest.mark.parametrize(("lifecycle", "protection"), [
+    (lifecycle, protection)
+    for lifecycle in ("task", "pool")
+    for protection in (None, "instance", "live", "foreign_task", "stage")
+] + [("pool", "epoch")])
 async def test_scheduler_launches_retained_debug_in_exact_workspace(
-    session_orch, tmp_path
+    session_orch, tmp_path, protection, lifecycle
 ):
     """The real scheduler preparation and launch attach the retained checkout."""
     from src.git.manager import GitManager
@@ -5436,7 +5465,7 @@ async def test_scheduler_launches_retained_debug_in_exact_workspace(
         (checkout / "untracked.txt").read_bytes(),
     )
     _primary_task_id, stopped = await _prepare_retained_debug_boundary(
-        db, str(checkout), retained_head
+        db, str(checkout), retained_head, lifecycle=lifecycle
     )
     debug = await RepairService(
         db,
@@ -5457,6 +5486,20 @@ async def test_scheduler_launches_retained_debug_in_exact_workspace(
                 materialized_at=1.0,
             )
         )
+    if protection == "instance":
+        await db.update_session("boundary-primary-session", instance_token="successor-instance")
+    elif protection == "epoch":
+        await db.update_session("boundary-primary-session", last_claim_epoch=2)
+    elif protection == "live":
+        await db.update_session("boundary-primary-session", desired_state="running")
+    elif protection == "foreign_task":
+        await db.update_workspace("boundary-workspace", locked_by_task_id="parent")
+    elif protection == "stage":
+        async with db.immediate() as conn:
+            await conn.execute(update(integration_repair_stages).where(
+                integration_repair_stages.c.operation_id == "operation",
+                integration_repair_stages.c.ordinal == 1,
+            ).values(retained_handoff={}))
     session_orch.git = GitManager()
     await session_orch._execute_task(
         AssignAction("debug-agent", debug_task_id, "p")
@@ -5466,6 +5509,19 @@ async def test_scheduler_launches_retained_debug_in_exact_workspace(
     owner = await BranchOwnership(db).get_owner(
         BranchKey(repository_id="repo", branch="aq/parent")
     )
+    if protection is not None:
+        assert session is None
+        assert not fake_provider(session_orch).starts
+        workspace = await db.get_workspace("boundary-workspace")
+        assert workspace.locked_by_agent_id is None
+        assert workspace.locked_by_task_id == (
+            "parent" if protection == "foreign_task" else debug_task_id
+        )
+        assert (
+            git("rev-parse", "HEAD"), git("ls-files", "--stage"),
+            (checkout / "tracked.txt").read_bytes(), (checkout / "untracked.txt").read_bytes(),
+        ) == before
+        return
     assert session is not None and session.state == "running"
     assert session.work_dir == str(checkout)
     assert owner["handoff_state"] == "attached"
@@ -5637,7 +5693,10 @@ async def test_retained_stop_proof_rejects_replaced_session_instance(db):
         stop=AsyncMock(),
         confirm_stopped=AsyncMock(side_effect=replace_instance),
     )
-    runtime = SimpleNamespace(
+    class Runtime(WorkspaceMixin, SimpleNamespace):
+        """Keep cleanup and stop proofs on the real workspace implementation."""
+
+    runtime = Runtime(
         db=db,
         config=SimpleNamespace(),
         session_providers=SimpleNamespace(create=lambda *_args: provider),
@@ -8174,6 +8233,64 @@ async def test_ordinary_default_sync_is_bounded_across_restart_and_archival(ordi
     assert (await env.store.get("ordinary")).repair_attempt_count == 2
 
 
+async def test_spent_default_sync_escalates_the_batch_once(ordinary_env):
+    """A spent sync left an epic batch sealed with nothing to run for 60m+ (train-56f15)."""
+    env = ordinary_env
+    decision = {"ref": "refs/heads/main", "sha": "c" * 40, "checks": ["unit"],
+                "provenance": "train_candidate"}
+    filed = await env.service.allocate(
+        "ordinary", target_ref=env.ref, head_sha=STARTING_SHA, sync_default_branch=decision,
+        authorize=AsyncMock(return_value=True), ttl_seconds=10,
+    )
+    await env.db.update_task(filed["task_id"], status=TaskStatus.COMPLETED)
+    env.now += 10
+    replays = [await env.service.allocate(
+        "ordinary", target_ref=env.ref, head_sha="d" * 40, sync_default_branch=decision,
+        authorize=AsyncMock(return_value=True),
+    ) for _ in range(3)]
+    assert {(r["outcome"], r["task_id"]) for r in replays} == {("sync_exhausted", filed["task_id"])}
+    assert len({r["escalation_id"] for r in replays}) == 1
+    incident = await env.db.get_escalation(replays[0]["escalation_id"])
+    assert (incident["state"], incident["source_identity"], incident["summary"]) == (
+        "needs_human", "ordinary", "Default-branch sync exhausted for batch ordinary")
+    assert "abort-batch ordinary --apply" in incident["decision_requested"]
+    assert "refresh-epic --task EPIC --apply" in incident["decision_requested"]
+    assert filed["task_id"] in incident["investigation"]
+    async with env.db._engine.connect() as conn:
+        notices = (await conn.execute(select(messages).where(
+            messages.c.body_kind == "integration_repair_exhausted",
+        ))).mappings().all()
+    assert [n["to_id"] for n in notices] == ["supervisor-p"]
+    assert (await env.store.get("ordinary")).repair_attempt_count == 1
+
+
+async def test_restart_refuses_an_ordinary_repair_that_is_not_the_current_attempt(ordinary_env):
+    """A restarted attempt-1 repair went READY but no claim or handoff could ever take it."""
+    env = ordinary_env
+    first = await env.service.allocate("ordinary", authorize=AsyncMock(return_value=True),
+                                       target_ref=env.ref, head_sha=STARTING_SHA, ttl_seconds=10)
+    await env.db.update_task(first["task_id"], status=TaskStatus.COMPLETED)
+    env.now += 10
+    second = await env.service.allocate("ordinary", authorize=AsyncMock(return_value=True),
+                                        target_ref=env.ref, head_sha=STARTING_SHA, ttl_seconds=10)
+    assert second["attempt_count"] == 2
+    await env.db.update_task(first["task_id"], status=TaskStatus.FAILED)
+    result = await TaskCommandsMixin._cmd_restart_task(
+        SimpleNamespace(db=env.db), {"task_id": first["task_id"]},
+    )
+    assert (result["success"], result["error_code"]) == (False, "stale_repair")
+    assert "attempt 1 but batch ordinary is open at attempt 2" in result["error"]
+    assert f"aq task close {first['task_id']} --obsolete" in result["error"]
+    assert (await env.db.get_task(first["task_id"])).status is TaskStatus.FAILED
+    current = await env.db.get_task(second["task_id"])
+    assert await env.service.stale(current) is None
+    assert await env.service.stale(await env.db.get_task(first["task_id"])) is not None
+    async with env.db.immediate() as conn:
+        await conn.execute(update(integration_batches).where(
+            integration_batches.c.id == "ordinary").values(intent="aborted"))
+    assert "is aborted at attempt 2" in await env.service.stale(current)
+
+
 @pytest.mark.parametrize("sync", [False, True])
 async def test_ordinary_allocated_repair_enters_hierarchy_frontier(ordinary_env, sync):
     from src.database.queries.claim_queries import _frontier_where
@@ -8395,18 +8512,28 @@ async def test_ordinary_repair_replay_never_regrants_claimed_expired_writer(
     assert (await env.store.get("ordinary")).repair_attempt_count == 1
 
 
-async def test_ordinary_repair_recovery_leaves_ready_but_still_claimed_writer_alone(ordinary_env):
+@pytest.mark.parametrize("attached", ["session", "workspace", "assignment"])
+async def test_ordinary_repair_recovery_leaves_ready_but_still_claimed_writer_alone(ordinary_env, attached):
     env = ordinary_env
     first = await env.service.allocate("ordinary", target_ref=env.ref, head_sha=STARTING_SHA,
                                        authorize=AsyncMock(return_value=True), ttl_seconds=10)
     task_id = first["task_id"]
     await env.db.update_task(task_id, status=TaskStatus.READY)
-    await env.db.create_session(SessionRecord(
-        id="closing", task_id=task_id, project_id="p", profile_id="repairer",
-        harness="fake", provider="fake", name="closing", lifecycle="pool", state="running",
-        claim_phase="active", epoch="epoch", instance_token="closing", started_at=1,
-        work_dir="/closing",
-    ))
+    if attached == "session":
+        await env.db.create_session(SessionRecord(
+            id="closing", task_id=task_id, project_id="p", profile_id="repairer",
+            harness="fake", provider="fake", name="closing", lifecycle="pool", state="running",
+            claim_phase="active", epoch="epoch", instance_token="closing", started_at=1,
+            work_dir="/closing",
+        ))
+    elif attached == "workspace":
+        await env.db.create_workspace(Workspace(
+            id="closing", project_id="p", workspace_path="/closing", source_type=RepoSourceType.CLONE,
+            locked_by_task_id=task_id,
+        ))
+    else:
+        await env.db.create_agent(Agent(id="closing", name="Closing", profile_id="repairer"))
+        await env.db.update_task(task_id, assigned_agent_id="closing")
     old = await env.locks.get(env.target)
     env.now += 10
     result = await env.service.recover_reservation(
@@ -8771,7 +8898,8 @@ async def test_ordinary_repair_worker_git_push_rejects_expired_or_wrong_ref(ordi
                                  apush_validated_delivery=AsyncMock(return_value=STARTING_SHA))
     plugin._ctx = SimpleNamespace(_bus=None)
     publication = SimpleNamespace(task_id=task_id, branch=env.ref.removeprefix("refs/heads/"),
-                                  default_branch="main", repository_url="/authorized")
+                                  default_branch="main", repository_url="/authorized",
+                                  batch_repair=None)
     plugin._worker_publication = AsyncMock(return_value=publication)
     plugin._publish_policy = AsyncMock(return_value=SimpleNamespace(notes=[]))
     plugin._source_ci_inherited_oids = AsyncMock(return_value=[])

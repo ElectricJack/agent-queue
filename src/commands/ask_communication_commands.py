@@ -22,10 +22,13 @@ def checked(name):
         @wraps(method)
         async def invoke(self, args):
             try:
-                project = args.get("project_id") if name == "ask_list" else None
+                from src.commands.contracts.ask import GLOBAL_CONTROL_COMMANDS
+
+                project_command = name == "ask_list" or name in GLOBAL_CONTROL_COMMANDS
+                project = args.get("project_id") if project_command else None
                 routed = (
                     {k: v for k, v in args.items() if k != "project_id"}
-                    if name == "ask_list"
+                    if project_command
                     else args
                 )
                 clean = self._ask_decision_args(routed)
@@ -59,6 +62,16 @@ def operator_only():
     principal = current_principal() or TRUSTED_LOCAL
     if principal.kind not in {PrincipalKind.LOCAL, PrincipalKind.SERVICE}:
         raise AskError("ask.operator_only", "This control requires the local operator or daemon")
+
+
+async def global_control(handler, project_id):
+    principal = current_principal() or TRUSTED_LOCAL
+    if principal.kind in {PrincipalKind.LOCAL, PrincipalKind.SERVICE}:
+        return
+    if principal.project_id is not None or not project_id:
+        raise AskError("ask.operator_only", "This control requires the global supervisor")
+    async with handler.db._engine.connect() as conn:
+        await live_supervisor(project_id, conn=conn)
 
 
 class AskCommunicationCommandsMixin:
@@ -413,7 +426,7 @@ class AskCommunicationCommandsMixin:
 
     @checked("ask_reconcile")
     async def _cmd_ask_reconcile(self, args):
-        operator_only()
+        await global_control(self, args.get("project_id"))
         from src.asks.reconcile import diagnostics, import_roots, resolve_case, scan
         from src.asks.delivery import destination
 
@@ -518,17 +531,24 @@ class AskCommunicationCommandsMixin:
 
     @checked("ask_cutover_status")
     async def _cmd_ask_cutover_status(self, args):
-        operator_only()
+        await global_control(self, args["project_id"])
         from src.asks.transport_controls import cutover_status
 
         return await cutover_status(self, args)
 
     @checked("ask_cutover")
     async def _cmd_ask_cutover(self, args):
-        operator_only()
+        await global_control(self, args["project_id"])
         from src.asks.transport_controls import cutover
 
         return await cutover(self, args)
+
+    @checked("ask_legacy_reset")
+    async def _cmd_ask_legacy_reset(self, args):
+        await global_control(self, args["project_id"])
+        from src.asks.legacy_reset import reset
+
+        return await reset(self, args)
 
     @checked("ask_repair_delivery")
     async def _cmd_ask_repair_delivery(self, args):

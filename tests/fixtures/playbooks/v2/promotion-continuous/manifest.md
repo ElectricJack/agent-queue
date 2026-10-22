@@ -1,6 +1,6 @@
 ---
 playbook_id: promotion-continuous
-artifact_sha256: sha256:afa967d75ab60cd197d7fd9023b8350c738285eff4c84da60de19d12fc957cba
+artifact_sha256: sha256:5d1b280c3c398315a49e6dfe5bdb2ef260c44abb9ba3e83694c42940547d4b00
 source_sha256: sha256:92457830a080559adc64d10202394da69ff316921263c53421b786262fdb0744
 contract_fingerprint: sha256:0fe70d5e2def4bd1e7282c1713a1a5971a64309b5f8ebfd40b11536e3670d3a8
 questions_resolved: 0

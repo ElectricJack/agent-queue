@@ -423,6 +423,16 @@ target.
 
 Conflict evidence in each target and batch's `detail` names the member,
 partial head, reason and files; the daemon log records the same build result.
+For a supervisor-filed fixer that works directly on an existing candidate, bind
+its publication authority before sending it to the batch branch:
+`aq task set TASK --repair-batch BATCH`. The supervisor/operator assignment grants
+that held task push access to the batch's candidate, preserving its canonical
+task branch. The fixer can use `aq git push` or explicitly name the candidate;
+the push must fast-forward the currently published candidate. Task descriptions
+and `--meta` do not grant this authority. A successful candidate push wakes the
+target's train visit, even after the automatic repair budget is exhausted;
+delivery still requires checks for the new exact SHA and unchanged operator intent.
+
 A repair claim with `needs_attention: repair_target_unpublished` found its
 remote target absent and reports an integration train defect. It does not
 consume slot-reset retries or create the ref from the worker slot.
@@ -515,6 +525,72 @@ and exact source withholding remain. Target visits and terminal cleanup repair
 stale seals left by older aborts. Cleanup retires the private candidate under its
 ref lease and releases only the batch's detached collector reservation; a live
 repair lease defers cleanup without preventing member rework.
+
+A withheld source is never silent. `aq integration status`, the pending visit
+and `aq task explain` name each one as `source_withheld_by_aborted_batch`
+(batch, source SHA, abort reason, repair attempts and the next action), and a
+dependent member reports `prerequisite_withheld`; the visit reads `blocked`, not
+idle. Status also lists every aborted member's disposition (`withheld`,
+`pending` after a batch-owned ejection, or `released`).
+
+### Release a withheld source
+
+When the unchanged source should be retried on the current target, an operator
+or the owning project supervisor
+releases exactly one (task, source) pair from the aborted batch. Preview is
+read-only and returns the frozen fences; apply needs both exact SHAs back and
+a nonblank reason:
+
+```bash
+aq integration release-withheld-source <batch-id> --task <task-id>
+aq integration release-withheld-source <batch-id> --task <task-id> --apply \
+  --source-sha <sha> --target-sha <sha> --reason "retry on current target"
+```
+
+Release records an operator note, never a pending conversion: the aborted batch,
+its abort reason and the task's completion stay immutable history. The next
+batch takes a fresh id but carries the aborted batch's repair attempt count, so
+the repair budget is not reset. Apply is idempotent (`already_released`). It
+refuses, naming the owner decision needed, when the source or target moved, the
+source is already delivered or its identity retired, an operator hold or failed
+source acceptance applies, a writer session or workspace lock is live, the
+batch is still active, a repair task or operation is outstanding, or the repair
+budget is exhausted under `on_exhausted: human` (`repair_exhausted`: reopen the
+task with feedback or archive it).
+
+An ordinary root or development batch blocked solely by proven pre-existing
+target failures can recover automatically. The train scans pending sources for
+trusted green checks covering those failures, rechecks source admission and
+atomically freezes a replacement containing the original members and the fix.
+The old batch and checks remain history; the replacement carries the repair
+count and still needs its own green candidate checks. Visit detail reports
+`reassembly` with the replacement ID and added members, and the event log records
+`integration.batch_reassembled`. Pauses, holds and outstanding repairs prevent
+replacement; without a green fix the existing bounded suite retries continue.
+
+### Settle a batch the target already contains
+
+Abort refuses a batch whose target already holds every member, and such a
+batch can still sit unsettled: its reused candidate's checks may never turn
+green (a run cancelled because a waived platform's job was cancelled). Settle
+it instead:
+
+```bash
+aq integration settle-batch <batch-id>
+aq integration settle-batch <batch-id> --apply --reason "target already matches"
+```
+
+The control requires every member source to be a Git ancestor of the observed
+target, or delivery trailers for it; a matching tree alone is refused with
+`target_not_settled`. Applying it records the batch as promoted at the observed
+target (never the untested candidate) and logs `integration.batch_settled` with
+the principal and reason; the next target visit runs epic completion. The train
+settles on its own an epic refresh whose epic already is the default head (an
+ancestor with an identical tree; a resolved merge still runs its checks). A refresh
+whose repair published a resolved merge into the epic stays sealed while that merge
+is red; abort it, or settle it once the epic has the frozen default head as an
+ancestor. A run whose only non-success job lies outside the required checks no longer
+holds candidate checks unknown.
 
 The train excludes current completions whose exact retained source is an ancestor
 of the project's default/development ref. Scoped legacy delivery attestations also

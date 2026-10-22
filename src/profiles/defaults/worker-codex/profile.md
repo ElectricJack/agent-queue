@@ -77,6 +77,9 @@ worker template.
     "NotebookEdit"
   ],
   "aq_commands": [
+    "wait_explain",
+    "wait_checkpoint",
+    "wait_ack",
     "artifact_verify",
     "object_checkpoint_read",
     "job_retain",
@@ -168,6 +171,7 @@ worker template.
     "test_selection_show"
   ],
   "plugin_tools": [
+    "read_file",
     "git_create_pr",
     "git_diff",
     "get_git_status",

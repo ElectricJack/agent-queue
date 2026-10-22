@@ -325,6 +325,9 @@ class ConfigService(Protocol):
     @property
     def git_identity(self) -> Any: ...
 
+    @property
+    def integration_git_first(self) -> str: ...
+
 
 @runtime_checkable
 class VaultWatcherService(Protocol):
@@ -594,23 +597,33 @@ class WorkspaceServiceImpl:
 
     async def validate_path(self, path: str) -> str | None:
         """Validate that a path resolves within an allowed directory."""
+        from src.commands.principal import current_principal
+
+        principal = current_principal()
+        scoped_project = principal.project_id if principal and principal.enforced else None
         real = os.path.realpath(path)
         from src.task_templates import editable_task_template_path
 
         template_path = editable_task_template_path(path, self._config.data_dir)
-        if template_path is not None:
+        if template_path is not None and scoped_project is None:
             return template_path
         workspace_real = os.path.realpath(self._config.workspace_dir)
-        if real.startswith(workspace_real + os.sep) or real == workspace_real:
+        if scoped_project is None and (
+            real.startswith(workspace_real + os.sep) or real == workspace_real
+        ):
             return real
         repos = await self._db.list_repos()
         for repo in repos:
+            if scoped_project is not None and repo.project_id != scoped_project:
+                continue
             if repo.source_path:
                 repo_real = os.path.realpath(repo.source_path)
                 if real.startswith(repo_real + os.sep) or real == repo_real:
                     return real
         workspaces = await self._db.list_workspaces()
         for ws in workspaces:
+            if scoped_project is not None and ws.project_id != scoped_project:
+                continue
             ws_real = os.path.realpath(ws.workspace_path)
             if real.startswith(ws_real + os.sep) or real == ws_real:
                 return real
@@ -719,6 +732,11 @@ class ConfigServiceImpl:
     def git_identity(self) -> Any:
         """The installation's default commit identity section (read per use)."""
         return self._config.git_identity
+
+    @property
+    def integration_git_first(self) -> str:
+        """Current publication mode, read at the fenced write boundary."""
+        return self._config.integration.git_first
 
 
 # ---------------------------------------------------------------------------

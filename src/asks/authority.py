@@ -11,6 +11,8 @@ from src.sessions.spec import named_session_name
 
 
 def visible(ask, principal=None, *, actor_id=None):
+    if ask["context"].get("legacy_discarded"):
+        return False
     principal = principal or current_principal() or TRUSTED_LOCAL
     if principal.project_id and principal.project_id != ask["project_id"]:
         return False
@@ -29,6 +31,8 @@ def visible(ask, principal=None, *, actor_id=None):
 
 
 def public_allowed(ask, config, *, actor_id=None):
+    if ask["context"].get("legacy_discarded"):
+        return False
     audience = ask["audience"]
     if audience.get("private") or audience.get("kind") == "private" or audience.get("principals"):
         return False

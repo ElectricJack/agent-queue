@@ -100,6 +100,32 @@ async def test_zero_verifier_rows_and_duplicate_audits_are_not_readiness_inputs(
             assert (await conn.execute(select(table))).first() is None
 
 
+@pytest.mark.parametrize("metadata", [
+    {"integration_rework_at": 2.0},
+    {"development_completion_id": "close-child-next"},
+])
+async def test_aggregate_cannot_reuse_a_childs_previous_close(epic_case, metadata):
+    case = epic_case
+    for key, value in metadata.items():
+        await case.db.set_task_meta("child", key, value)
+    readiness, _ = await evaluate(case)
+    child = readiness.graph.node("child").request
+    assert child.completion_id != "close-child"
+    assert child.completed_at is None
+    assert not readiness.ready
+    assert ("child", "missing_git_provenance") in readiness.blockers
+    # A fresh exact generation can satisfy the aggregate without altering the
+    # already contained source or weakening the reopened generation fence.
+    async with case.db.immediate() as conn:
+        await conn.execute(insert(task_completion_records).values(
+            id="close-child-next", task_id="child", outcome="pass", completed_at=3.0,
+        ))
+    await case.repo.retain(case.head, task="child", completion="close-child-next")
+    fresh, _ = await evaluate(case)
+    assert fresh.ready
+    assert fresh.graph.node("child").request.completion_id == "close-child-next"
+
+
 @pytest.mark.parametrize("mutation", ["new_child", "reopened", "claim", "policy", "retarget",
                                       "source", "hold", "check_rerun", "head"])
 async def test_completion_rechecks_graph_sources_policy_checks_and_ref(epic_case, mutation):

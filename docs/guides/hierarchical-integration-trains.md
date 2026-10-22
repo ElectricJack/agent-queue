@@ -258,8 +258,20 @@ branch and contained in its epic. Missing epic containment withholds the child e
 when no batch is open. Scheduler, pool demand, explain and claim share these rules.
 Explain reports `frontier_epic_refresh_pending` for the epic gate and names any
 blocking refresh batch id; default-branch proof retains its separate exclusion.
+For stale children, `aq doctor --check stall.sweep` reports `epic_refresh_needed`
+and the operator stall script prints `EPIC-REFRESH-NEEDED`, with the epic's refresh
+command and any blocking batch ids. A conflicting apply files an ordinary train
+repair on the epic branch. Repeating apply reuses that batch and repair; the child
+continues waiting for the refresh's checks, attestation and publication.
 Repairs for failed or missing CI start from the tested refresh candidate; conflict
 repairs start from the partial candidate containing the successful merges.
+Refresh failures are compared with the default SHA frozen into the batch. A
+failure already present on the epic is still repairable when that default SHA
+passes the check. Status reports `epic_refresh_checks_failed`, the exact baseline
+and a supervisor action. Exhausted repairs send one incident asking the
+supervisor to repair the refresh candidate or abort the batch with
+`aq integration abort-batch BATCH_ID --apply --reason REASON`. Red candidate
+checks continue to block publication after exhaustion.
 
 GitHub runs no `pull_request` workflows for a PR that conflicts with its base, so
 a conflicting root PR would wait for checks forever. When the PR read reports it
@@ -324,6 +336,13 @@ Selection now routes before root proof and reuses its member window within a
 single visit. Root proof still removes delivered work before the member limit;
 historical delivery and out-of-window dependency checks remain active.
 
+Time spent evaluating a root refused for red PR checks or exhausted automatic
+recovery does not spend the candidate-selection quantum. Later independent roots
+can reach admission during the same visit; green and other candidate work still
+spends the quantum. The outer visit deadline remains in effect. Red roots keep
+their named blockers, and their dependents still require delivery or an admitted
+paired repair before they can enter a batch.
+
 Two bounded, isolated benchmarks make the measurements reproducible:
 
 ```bash
@@ -348,11 +367,35 @@ used 961 Git commands in 2.864 seconds; the warm pass used zero commands with
 - `aq integration pause-batch BATCH_ID --apply` pauses publication for an unpromoted Git-first batch.
 - `aq integration resume-batch BATCH_ID --apply` resumes a paused Git-first batch.
 - `aq integration abort-batch BATCH_ID --apply --reason REASON` aborts an unpromoted Git-first batch.
+- `aq integration settle-batch BATCH_ID` previews settlement when every frozen source is already on its target. A legacy epic-sync instead requires every frozen source on the designated default branch; preview reports that default `target_ref` and its SHA, and replay can resume cleanup of an already promoted sync. An epic refresh settles once its epic has the frozen default head as an ancestor, including a merge its repair published to the epic; until then `abort-batch` withdraws it. Apply with `--apply --target-sha TARGET_SHA --reason REASON`. It records delivery without advancing the target; normal guarded branch cleanup still runs, and active human holds and incomplete or unavailable source proof refuse settlement. See the [required-job and settlement specification](../specs/design/required-job-train-settlement.md).
 - `aq integration refresh-epic --task EPIC_ID --apply` starts or advances the attested refresh; pending checks or repairs continue through the train.
+- `aq integration reverify-epic EPIC_ID` previews aggregate verification for a completed epic. Apply with `--apply --head HEAD_SHA --reason REASON` to request one bounded train visit, including when the old owner is released. The result names the actual visit state and blockers; `visited` does not mean checks or review passed. Read the [control specification](../specs/design/epic-aggregate-reverification.md) for the operator handoff.
 - `aq integration record-root-noop ROOT_TASK_ID` previews a no-artifact completion for an unheld no-code root; apply requires `--apply --head HEAD_SHA --reason REASON`.
 
-Removing a required check from project policy causes the next root or epic
-target visit to supersede an open, unpromoted batch that froze that check. Its
+After a hand landing, an ordinary open epic batch settles automatically when
+the configured default branch proves every frozen input, including when the
+epic ref has been deleted. Its membership and history remain available; no ref
+is recreated or published. Partial or unknown proof and human holds preserve
+the batch. Paused, epic sync/refresh and promotion batches keep their protocols.
+
+Completed root epics receive ordinary aggregate train visits automatically,
+including after child origins retire. They do not depend on a parent integration
+run. A missing root origin stays visible as a readiness blocker. Implementation
+settlement alone does not display delivery as complete: the epic waits for
+aggregate verification or reports unavailable delivery evidence. Both
+`integration.completed_undelivered` and `stall.sweep` report completed root
+branches outside the default branch even when a PR, batch or disposition
+accounts for the pending work. The diagnostic clears when the branch tip is
+contained; an unreadable ancestry result remains unknown.
+
+Reverification apply also retires the completed epic's own detached `worker`
+reservation under its branch fence. The reservation must have no session,
+workspace or unexpired lease. Preview leaves it intact; live writers, other
+owners, attached rows and open batches still block the request.
+
+A target visit first settles an ordinary batch whose complete frozen inputs are
+already delivered. Otherwise, removing a required check from project policy causes
+the next root or epic target visit to supersede an open, unpromoted batch that froze that check. Its
 sources can seal under the updated policy; the original snapshot and sources
 remain in the audit history. Special epic sync and refresh batches retain their
 purpose in an atomic replacement. The visit names `batch_required_checks_removed`
