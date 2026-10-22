@@ -103,15 +103,11 @@ TRAIN_HOLDER = "service:integration-train"
 # detached validation clone sees it. Never pushed.
 RETAINED_CANDIDATE_PREFIX = "refs/heads/aq/train-candidate/"
 MEMBER_LIMIT = 200
-# Leave time in the existing visit deadline to freeze and advance an admitted
-# prefix. This is a cooperative quantum, not a deadline for a fenced writer.
+# Leave time in the visit deadline to freeze and advance an admitted prefix: a
+# cooperative quantum (not a fenced writer's deadline) that red roots do not spend.
 SELECTION_WORK_SECONDS = 60.0
-# A red source still waits for its owner/repair, but cannot spend the budget
-# reserved for considering independent roots. The outer visit deadline remains.
-_RED_PR_REFUSALS = frozenset({
-    "pr_checks_red", "source_ci_repair_exhausted", "root_pr_checks_need_repair",
-    "root_pr_checks_unchanged", "root_pr_checks_recovery_exhausted",
-})
+_RED_PR_REFUSALS = frozenset({"pr_checks_red", "source_ci_repair_exhausted",
+    "root_pr_checks_need_repair", "root_pr_checks_unchanged", "root_pr_checks_recovery_exhausted"})
 #: A promotion lane is rebuilt on every visit; its subject trust and App client
 #: are kept per batch this long after last use, so a held request does not
 #: refetch S's manifest each time. S is immutable; the key carries the policy.
@@ -1408,8 +1404,7 @@ class DatabaseBatches:
                 blockers.append({
                     "code": "selection_deferred", "ref": target.target_ref,
                     "detail": "Candidate window capped; remaining sources need a fresh visit",
-                    "remaining": len(ids) - self.limit,
-                    "after_task_id": after or None,
+                    "remaining": len(ids) - self.limit, "after_task_id": after or None,
                 })
             return list(dict.fromkeys([*ids[:self.limit], *sorted(include_ids or ())]))
         async with self.db._engine.connect() as conn:
@@ -1423,12 +1418,10 @@ class DatabaseBatches:
 
     async def pending(
         self, target: TrainTarget, snapshot: GitTruthSnapshot, *,
-        blockers: list[dict[str, Any]] | None = None,
-        gate_pr: bool = True,
+        blockers: list[dict[str, Any]] | None = None, gate_pr: bool = True,
         include_ids: set[str] | None = None,
         candidate_ids: list[str] | None = None,
-        delivered_ids: set[str] | None = None,
-        selection_deadline: float | None = None,
+        delivered_ids: set[str] | None = None, selection_deadline: float | None = None,
         evaluated_ids: set[str] | None = None,
     ):
         """Exact pending inputs; report unknown delivery that prevents batching."""
@@ -1548,8 +1541,7 @@ class DatabaseBatches:
             if request is None or not is_valid_git_oid(base or ""):
                 if blockers is not None:
                     blockers.append({
-                        "code": "source_identity_unavailable", "ref": task_id,
-                        "task_id": task_id,
+                        "code": "source_identity_unavailable", "ref": task_id, "task_id": task_id,
                         "detail": "Completed source needs a current delivery request and exact origin base",
                     })
                 continue
@@ -1592,8 +1584,7 @@ class DatabaseBatches:
                 if evidence.error_detail:
                     detail += f": {evidence.error_detail}"
                 blockers.append({
-                    "code": evidence.reason, "ref": task_id, "task_id": task_id,
-                    "detail": detail,
+                    "code": evidence.reason, "ref": task_id, "task_id": task_id, "detail": detail,
                     "repository_id": target.repository_id, "target_ref": target.target_ref,
                 })
             source = evidence.source_oid
