@@ -443,6 +443,7 @@ class TrainControls:
         from src.integration.lock import CRITICAL_SECTION_SECONDS
         from src.integration.train_sources import DatabaseBatches
         from src.operator_decisions import history_on, related_on
+        from src.waits.sources import execute_batch_mutation
 
         if not dry_run and (not expected_target_sha or not reason.strip()):
             raise ValueError("apply requires the previewed target SHA and a nonblank reason")
@@ -450,12 +451,31 @@ class TrainControls:
         batch = await store.get(batch_id)
         if batch is None:
             raise TrainControlError("unknown_batch", "Git-first batch is missing")
-        if batch.epic_sync:
-            raise ValueError("settlement requires an ordinary Git-first batch")
         target = TrainTarget(batch.project_id, batch.repository_id, batch.target_ref)
+        binding = None
+        if batch.epic_sync:
+            # Containment in the epic alone does not discharge a sync's tested
+            # publication. Recovery requires its complete inputs on the default
+            # branch, including when the old epic ref has already been removed.
+            binding_query = select(repos.c.default_branch, repos.c.url).join(
+                projects, projects.c.integration_repository_id == repos.c.id,
+            ).where(projects.c.id == batch.project_id, repos.c.id == batch.repository_id,
+                    repos.c.project_id == batch.project_id)
+            async with self.db._engine.connect() as conn:
+                binding = (await conn.execute(binding_query)).first()
+            if binding is None:
+                raise ValueError("epic sync has no designated project repository")
+            target = TrainTarget(batch.project_id, batch.repository_id,
+                                "refs/heads/" + binding.default_branch.removeprefix("refs/heads/"))
         snapshot = await self.snapshot(self.db, target)
         if snapshot is None or snapshot.error or not snapshot.target_oid:
             raise ValueError("batch target cannot be observed")
+        if binding is not None and (
+            (snapshot.observation.project_id, snapshot.observation.repository_id,
+             snapshot.observation.target_ref) != target.key
+            or snapshot.observation.repository_url != binding.url
+        ):
+            raise ValueError("epic sync default branch observation identity changed")
         if expected_target_sha and snapshot.target_oid != expected_target_sha:
             raise ValueError("batch target changed; preview again")
         members = await store.members(batch.id)
@@ -472,7 +492,7 @@ class TrainControls:
             "refs/remotes/origin/" + candidate_ref(batch.id).removeprefix("refs/heads/"))
         result = {
             "outcome": "preview" if dry_run else "settled", "batch_id": batch.id,
-            "project_id": batch.project_id, "target_ref": batch.target_ref,
+            "project_id": batch.project_id, "target_ref": target.target_ref,
             "target_sha": snapshot.target_oid, "candidate_sha": candidate,
             "members": tuple(m.task_id for m in members), "dry_run": dry_run,
         }
@@ -482,6 +502,10 @@ class TrainControls:
             await self.db.lock_hierarchy_project(conn, batch.project_id)
             await conn.execute(select(projects.c.id).where(
                 projects.c.id == batch.project_id).with_for_update())
+            if binding is not None:
+                current = (await conn.execute(binding_query.with_for_update(of=repos))).first()
+                if current != binding:
+                    raise ValueError("epic sync repository binding changed; preview again")
             await store._target_lock(conn, batch)
             row = (await conn.execute(select(integration_batches).where(
                 integration_batches.c.id == batch.id,
@@ -490,6 +514,8 @@ class TrainControls:
                 raise ValueError("promotion intents require their promotion settlement protocol")
             if batch.intent == "aborted" or row["lifecycle"] == "aborted":
                 raise ValueError("aborted batch cannot be settled")
+            if batch.epic_sync and row["intent"] != "open":
+                raise ValueError("paused epic sync cannot be settled")
             if Batch.from_row(row) != batch or await store.members(batch.id) != members:
                 raise ValueError("frozen batch changed; preview again")
             decisions = await history_on(conn, batch.project_id,
@@ -499,8 +525,19 @@ class TrainControls:
             if not await snapshot.is_fresh():
                 raise ValueError("batch target changed; preview again")
             if not dry_run:
-                await batches.settle_on(conn, batch, BatchObservation(
-                    "delivered", None, snapshot.target_oid))
+                if batch.epic_sync:
+                    # This is observed project delivery, not a publication to
+                    # the epic. Preserve prior promotion/check/baseline history
+                    # and do not emit epic source-settled policy events.
+                    await execute_batch_mutation(conn, update(integration_batches).where(
+                        integration_batches.c.id == batch.id,
+                        integration_batches.c.lifecycle != "promoted",
+                    ).values(lifecycle="promoted", final_main_sha=snapshot.target_oid,
+                             tested_candidate_sha=row["tested_candidate_sha"] or candidate,
+                             updated_at=self.clock()))
+                else:
+                    await batches.settle_on(conn, batch, BatchObservation(
+                        "delivered", None, snapshot.target_oid))
                 await self.db.log_event("integration.batch_settled", project_id=batch.project_id,
                     payload=json.dumps({**result, "operator_id": operator_id,
                                         "reason": reason.strip()}), conn=conn)
@@ -863,32 +900,16 @@ class TrainControls:
         if not dry_run and (not origin_id or not reason.strip()):
             raise ValueError("retire requires the previewed origin id and a nonblank reason")
         async with self.db._engine.connect() as conn:
-            row = (
-                (
-                    await conn.execute(
-                        select(
-                            task_branch_origins,
-                            tasks.c.project_id,
-                            repos.c.default_branch,
-                        )
-                        .select_from(
-                            task_branch_origins.join(
-                                tasks, tasks.c.id == task_branch_origins.c.task_id
-                            )
-                            .join(projects, projects.c.id == tasks.c.project_id)
-                            .join(repos, repos.c.id == task_branch_origins.c.repository_id)
-                        )
-                        .where(
-                            tasks.c.id == task_id,
-                            tasks.c.status == "COMPLETED",
-                            projects.c.integration_repository_id == repos.c.id,
-                            task_branch_origins.c.retired_at.is_(None),
-                        )
-                    )
-                )
-                .mappings()
-                .one_or_none()
-            )
+            row = (await conn.execute(
+                select(task_branch_origins, tasks.c.project_id, repos.c.default_branch)
+                .select_from(task_branch_origins
+                    .join(tasks, tasks.c.id == task_branch_origins.c.task_id)
+                    .join(projects, projects.c.id == tasks.c.project_id)
+                    .join(repos, repos.c.id == task_branch_origins.c.repository_id))
+                .where(tasks.c.id == task_id, tasks.c.status == "COMPLETED",
+                       projects.c.integration_repository_id == repos.c.id,
+                       task_branch_origins.c.retired_at.is_(None))
+            )).mappings().one_or_none()
             routed = await delivery_targets(conn, [task_id], reduced=True)
         if row is None:
             raise ValueError("completed task has no live integration origin")
@@ -931,41 +952,18 @@ class TrainControls:
             raise ValueError("current completion is not proven delivered")
         async with self.db.immediate() as conn:
             # Share the publisher's batch lock before locking the task/origin.
-            active = (
-                (
-                    await conn.execute(
-                        select(integration_batches.c.id)
-                        .where(
-                            integration_batches.c.id.in_(
-                                select(integration_batch_members.c.batch_id).where(
-                                    integration_batch_members.c.task_id == task_id
-                                )
-                            ),
-                            integration_batches.c.intent != "aborted",
-                            integration_batches.c.lifecycle != "promoted",
-                        )
-                        .with_for_update()
-                    )
-                )
-                .scalars()
-                .all()
-            )
+            active = (await conn.execute(select(integration_batches.c.id).where(
+                integration_batches.c.id.in_(select(integration_batch_members.c.batch_id).where(
+                    integration_batch_members.c.task_id == task_id)),
+                integration_batches.c.intent != "aborted",
+                integration_batches.c.lifecycle != "promoted",
+            ).with_for_update())).scalars().all()
             if active:
                 raise ValueError("abort the task's open batches before retiring its origin")
             await conn.execute(select(tasks.c.id).where(tasks.c.id == task_id).with_for_update())
-            current = (
-                (
-                    await conn.execute(
-                        select(task_branch_origins)
-                        .where(
-                            task_branch_origins.c.id == row["id"],
-                        )
-                        .with_for_update()
-                    )
-                )
-                .mappings()
-                .one()
-            )
+            current = (await conn.execute(select(task_branch_origins).where(
+                task_branch_origins.c.id == row["id"],
+            ).with_for_update())).mappings().one()
             current_requests = await load_delivery_requests(
                 self.db,
                 [task_id],

@@ -103,3 +103,15 @@ completions; partial windows preserve cadence and prerequisite fences; stacked
 refresh cancellation still records a pushed completion; existing frozen repairs
 are not delayed by the new frontier. Production activation requires normal
 native delivery and deployment; a worker checkpoint does not clear the incident.
+
+## Red-source isolation (2026-10-21)
+
+A root refused for genuinely red PR checks, including an exhausted or unchanged
+automatic recovery, must not spend the cooperative candidate-selection quantum.
+Exclude the time spent evaluating that refused candidate so later roots can
+reach their own admission gates in the same visit. Preserve the refusal and
+cursor, the outer visit deadline, and the ordinary budget for other candidates.
+This grants no admission to a red source or its dependents: paired repair,
+prerequisite, exact-head and publication checks still apply. Deterministic tests
+must cover a slow red prefix followed by green independent work, and show that
+the green work still spends the quantum and that red prerequisites stay withheld.

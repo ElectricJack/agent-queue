@@ -1069,11 +1069,32 @@ class SupervisorConfig:
     #: The trailing underscore in the attribute name avoids the Python
     #: keyword ``global``. In YAML the section is written as ``global``.
     global_: GlobalSupervisorConfig = field(default_factory=GlobalSupervisorConfig)
+    turn_timeout_seconds: int = 900
+    question_timeout_seconds: int = 900
+    retry_backoff_seconds: int = 60
+    max_turn_retries: int = 2
+    max_session_age_seconds: int = 86400
+    context_ceiling_tokens: int = 160000
 
     def validate(self) -> list[ConfigError]:
         errors: list[ConfigError] = []
         errors.extend(self.global_.validate())
+        for key in ("turn_timeout_seconds", "question_timeout_seconds", "retry_backoff_seconds",
+                    "max_turn_retries", "max_session_age_seconds", "context_ceiling_tokens"):
+            value = getattr(self, key)
+            if type(value) is not int or value <= 0:
+                errors.append(ConfigError("supervisor", key, "must be a positive integer"))
         return errors
+
+    @classmethod
+    def from_mapping(cls, section: Mapping) -> SupervisorConfig:
+        """Build from the YAML ``supervisor`` section; ``global`` is the nested section."""
+        global_section = section.get("global", {}) or {}
+        kwargs = _dataclass_kwargs(cls, section)
+        kwargs["global_"] = GlobalSupervisorConfig(
+            idle_timeout_seconds=global_section.get("idle_timeout_seconds", 2700),
+        )
+        return cls(**kwargs)
 
 
 LLM_PROVIDER_IDS = frozenset({"anthropic", "google", "openai"})
@@ -2795,13 +2816,22 @@ class ResourceCgroupConfig:
 
 @dataclass
 class ScriptsConfig:
-    """Ordinary script processes, enabled by default; no isolation prerequisites."""
+    """Ordinary script processes, enabled by default; no isolation prerequisites.
+
+    Empty roots resolve under ``{data_dir}/scripts/`` (see :meth:`resolved`).
+    Without ``runtime_manifest`` a program's executable is an ordinary host
+    file found under ``runtime_root`` or ``search_path``; a manifest opts into
+    digest pinning of the declared runtime files instead.
+    """
 
     enabled: bool = True
     runtime_root: str = ""
     runtime_manifest: str = ""
     input_root: str = ""
     state_root: str = ""
+    search_path: list[str] = field(
+        default_factory=lambda: ["/usr/local/bin", "/usr/bin", "/bin"]
+    )
     env_allowlist: list[str] = field(default_factory=list)
     queue_seconds: int = 300
     wall_seconds: int = 60
@@ -2827,6 +2857,10 @@ class ScriptsConfig:
             if (not isinstance(value, str) or "\0" in value
                     or (value and not value.startswith("/"))):
                 error(name, "must be an absolute path when supplied")
+        if (not isinstance(self.search_path, list)
+                or any(not isinstance(value, str) or "\0" in value or not value.startswith("/")
+                       or ":" in value for value in self.search_path)):
+            error("search_path", "must be a list of absolute directories")
         if not isinstance(self.env_allowlist, list):
             error("env_allowlist", "must be a list of permitted environment names")
         else:
@@ -2845,6 +2879,20 @@ class ScriptsConfig:
             if type(value) is not int or value <= 0:
                 error(name, "must be a positive integer")
         return errors
+
+    def resolved(self, data_dir: str) -> ScriptsConfig:
+        """Copy with every empty root filled in under ``{data_dir}/scripts/``.
+
+        The manifest stays optional: an empty ``runtime_manifest`` selects host
+        executables rather than a default manifest path.
+        """
+        base = os.path.join(os.path.abspath(os.path.expanduser(data_dir)), "scripts")
+        return dataclasses.replace(
+            self,
+            runtime_root=self.runtime_root or os.path.join(base, "runtime"),
+            input_root=self.input_root or os.path.join(base, "inputs"),
+            state_root=self.state_root or os.path.join(base, "state"),
+        )
 
 
 @dataclass
@@ -5258,13 +5306,7 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
         config.llm = _llm_config_from_mapping(legacy_raw, legacy=True)
 
     if "supervisor" in raw:
-        s = raw["supervisor"]
-        global_section = s.get("global", {}) or {}
-        config.supervisor = SupervisorConfig(
-            global_=GlobalSupervisorConfig(
-                idle_timeout_seconds=global_section.get("idle_timeout_seconds", 2700),
-            ),
-        )
+        config.supervisor = SupervisorConfig.from_mapping(raw["supervisor"])
 
     # hook_engine config section removed (playbooks spec §13 Phase 3).
     # Existing config files with hook_engine section are silently ignored.

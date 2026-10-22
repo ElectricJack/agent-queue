@@ -181,6 +181,10 @@ class ForeignSlotClaim(GitError):
         super().__init__(reason)
 
 
+class SlotSourceDisagreement(GitError):
+    """A slot whose checkout contradicts its sentinel: every claim there fails alike."""
+
+
 # ---------------------------------------------------------------------------
 # Commit identity (docs/specs/git-identity.md)
 # ---------------------------------------------------------------------------
@@ -557,6 +561,15 @@ def _parse_status_branch_header(header: str) -> str:
 _RETAINED_VERIFY_TTL_SECONDS = 3600.0
 
 
+def _common_git_dir(git_dir: str) -> Path:
+    """Resolve a linked worktree's object-store owner, without running Git."""
+    directory = Path(git_dir)
+    common = directory / "commondir"
+    if common.is_file():
+        directory = (directory / common.read_text(encoding="utf-8").strip()).resolve()
+    return directory
+
+
 def _object_store_fingerprint(git_dir: str) -> tuple | None:
     """Every object-store file's (path, size, inode), or None if unreadable.
 
@@ -564,9 +577,11 @@ def _object_store_fingerprint(git_dir: str) -> tuple | None:
     by rename, so any new or replaced object changes it; mtime is left out
     because Git freshens existing objects on every fetch that names them.
     """
-    root = Path(git_dir) / "objects"
     entries = []
     try:
+        root = _common_git_dir(git_dir) / "objects"
+        if not root.is_dir():
+            return None
         for directory, _subdirs, files in os.walk(root):
             for name in files:
                 path = os.path.join(directory, name)
@@ -2346,11 +2361,22 @@ class GitManager:
             return
         fingerprint = _object_store_fingerprint(git_dir)
         started = time.monotonic()
-        await self._run_isolated_import_git(
-            [f"--git-dir={git_dir}", "fsck", "--full", "--no-dangling",
-             "--no-reflogs", "--no-progress"],
-            home=home, deadline=deadline, verify_integrity=True,
-        )
+        for attempt in range(2):
+            try:
+                await self._run_isolated_import_git(
+                    [f"--git-dir={git_dir}", "fsck", "--full", "--no-dangling",
+                     "--no-reflogs", "--no-progress"],
+                    home=home, deadline=deadline, verify_integrity=True,
+                )
+                break
+            except GitError as exc:
+                if attempt or not str(exc).startswith("retained Git object integrity"):
+                    raise
+                # A linked worktree shares objects with independent writers.
+                # Re-run the full gate once after a transient pack/ref change;
+                # the original acquisition deadline still bounds both checks.
+                await asyncio.sleep(0)
+                fingerprint = _object_store_fingerprint(git_dir)
         self.record_retained_store_verified(git_dir, fingerprint, started)
 
     def retained_store_verified(self, git_dir: str) -> bool:
@@ -5088,7 +5114,19 @@ class GitManager:
                               rb"notice: HEAD points to an unborn branch \([^\r\n]+\)", line,
                           )]
             if process.returncode != 0 or unexpected:
-                raise GitError("retained Git object integrity is unavailable")
+                # fsck paths and ref names are untrusted and can contain secrets.
+                # Preserve the diagnostic kind and object IDs, never raw text.
+                evidence = []
+                for line in unexpected:
+                    kind = re.match(rb"(?:missing|broken link|error|fatal|warning)\b", line)
+                    oids = re.findall(rb"(?<![0-9a-f])[0-9a-f]{40,64}(?![0-9a-f])", line)
+                    detail = (kind.group().decode("ascii") if kind else "diagnostic")
+                    if oids:
+                        detail += " " + " ".join(oid.decode("ascii") for oid in oids[:4])
+                    if detail not in evidence:
+                        evidence.append(detail)
+                detail = "; ".join(evidence[:16]) or f"fsck exit {process.returncode}"
+                raise GitError(f"retained Git object integrity is unavailable: {detail}")
         elif process.returncode == 0 and re.search(
             rb"(?m)^(?:error|fatal):", _without_stale_gc_report(stderr)
         ):

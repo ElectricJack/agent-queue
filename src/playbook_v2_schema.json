@@ -2530,9 +2530,17 @@
       "additionalProperties": false,
       "properties": {
         "executable_sha256": {
-          "pattern": "^[0-9a-f]{64}$",
-          "title": "Executable Sha256",
-          "type": "string"
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Executable Sha256"
         },
         "inputs": {
           "default": [],
@@ -2551,9 +2559,17 @@
           "type": "string"
         },
         "runtime_sha256": {
-          "pattern": "^[0-9a-f]{64}$",
-          "title": "Runtime Sha256",
-          "type": "string"
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Runtime Sha256"
         },
         "source_revision": {
           "title": "Source Revision",
@@ -2569,9 +2585,7 @@
       "required": [
         "program",
         "program_sha256",
-        "source_revision",
-        "runtime_sha256",
-        "executable_sha256"
+        "source_revision"
       ],
       "title": "PinnedScript",
       "type": "object"
@@ -2946,7 +2960,7 @@
     },
     "ScriptProgram": {
       "additionalProperties": false,
-      "description": "Source-authored DTO, independently of the compiler's semantic body.\n\nRuntime is a reviewed operator manifest identifier, never a host path. Argv\nhas a literal first element; all other elements and ``arguments`` are values.\nExactly one of script/argv/shell is legal. No template engine touches code.",
+      "description": "Source-authored DTO, independently of the compiler's semantic body.\n\nRuntime names the operator's opt-in runtime manifest, never a host path; it\nis only checked when a manifest is configured (``host`` by convention\notherwise). The executable is a relative name resolved under the runtime\nroot or the configured search path. Argv has a literal first element; all\nother elements and ``arguments`` are values. Exactly one of script/argv/shell\nis legal. No template engine touches code.",
       "properties": {
         "arguments": {
           "default": [],

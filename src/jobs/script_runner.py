@@ -1,4 +1,4 @@
-"""Ordinary script processes with bounded capture (historical module name).
+"""Ordinary script processes with bounded capture.
 
 E2 calls ``launch`` after principal, invocation, protected-output readiness and
 persistent launch-intent checks. E2 owns job recovery and encrypted storage; E3
@@ -36,7 +36,7 @@ BINDING_BYTES = 262144
 REQUEST_BYTES = MIB
 
 
-class SandboxRequest(FrozenModel):
+class ScriptRequest(FrozenModel):
     version: Literal[1] = 1
     execution_id: str = Field(pattern=r"^[0-9a-f]{32}$")
     run_id: str = Field(min_length=1, max_length=128)
@@ -64,7 +64,7 @@ class SandboxRequest(FrozenModel):
 
 
 @dataclass(frozen=True)
-class SandboxResult:
+class ScriptResult:
     execution_id: str
     outcome: str
     exit_code: int | None = None
@@ -106,7 +106,7 @@ class SandboxResult:
         return value
 
 
-def _parse_output(result: SandboxResult, request: SandboxRequest) -> SandboxResult:
+def _parse_output(result: ScriptResult, request: ScriptRequest) -> ScriptResult:
     program = request.pinned.program
     if program.output != "json" or not result.capture_complete:
         return result
@@ -143,9 +143,24 @@ def verify_runtime(settings: ScriptsConfig) -> RuntimeManifest:
     return manifest
 
 
-def _process_argv(settings: ScriptsConfig, request: SandboxRequest, inputs: Path) -> list[str]:
+def resolve_host_executable(settings: ScriptsConfig, name: str) -> Path:
+    """First executable regular file named ``name`` under the runtime root or search path.
+
+    Host mode (no runtime manifest) trusts the host's binaries the way a shell
+    does; the authored name stays relative, so it never names an arbitrary path.
+    """
+    roots = [settings.runtime_root, *settings.search_path] if settings.runtime_root else list(
+        settings.search_path)
+    for root in roots:
+        candidate = Path(root) / name
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return candidate
+    raise ScriptError("script_executable_unavailable")
+
+
+def _process_argv(executable: Path, request: ScriptRequest, inputs: Path) -> list[str]:
     program = request.pinned.program
-    argv = [str(Path(settings.runtime_root) / program.executable)]
+    argv = [str(executable)]
     if program.script is not None:
         argv.append(str(inputs / program.script))
     elif program.shell is not None:
@@ -215,9 +230,9 @@ async def _stop_process(process: asyncio.subprocess.Process) -> bool:
 
 
 async def launch(
-    settings: ScriptsConfig, request: SandboxRequest, *, jobs_enabled: bool,
+    settings: ScriptsConfig, request: ScriptRequest, *, jobs_enabled: bool,
     cancelled: asyncio.Event, lock_dir: str | Path, capacity: int,
-) -> SandboxResult:
+) -> ScriptResult:
     """Run once with shared box capacity and at most one active script per run.
 
     ``lock_dir``/``capacity`` must be the existing job contract's values. Call
@@ -225,10 +240,10 @@ async def launch(
     All returned payloads are private; never log or expose them without A3.
     """
     if not settings.enabled or not jobs_enabled:
-        return SandboxResult(request.execution_id, "admission_denied", reason="script_disabled",
+        return ScriptResult(request.execution_id, "admission_denied", reason="script_disabled",
                              cleanup_complete=True)
     if settings.validate():
-        return SandboxResult(request.execution_id, "admission_denied",
+        return ScriptResult(request.execution_id, "admission_denied",
                              reason="script_host_policy_invalid", cleanup_complete=True)
     process = None
     cm = None
@@ -249,19 +264,30 @@ async def launch(
     try:
         if len(request.model_dump_json().encode()) > REQUEST_BYTES:
             raise ScriptError("script_request_too_large")
-        if not all((settings.runtime_root, settings.runtime_manifest,
-                    settings.input_root, settings.state_root)):
-            raise ScriptError("script_storage_or_runtime_unconfigured")
+        if not (settings.input_root and settings.state_root):
+            raise ScriptError("script_storage_unconfigured")
         limits.narrow(ScriptLimits(**{key: getattr(settings, key) for key in ScriptLimits.model_fields}))
-        runtime = await asyncio.to_thread(verify_runtime, settings)
         pinned = request.pinned
-        if runtime.runtime != pinned.program.runtime or runtime.sha256 != pinned.runtime_sha256:
-            raise ScriptError("script_runtime_digest_mismatch")
-        executable = next((item for item in runtime.files if item.path == pinned.program.executable),
-                          None)
-        if (executable is None or not executable.executable
-                or executable.sha256 != pinned.executable_sha256):
-            raise ScriptError("script_executable_digest_mismatch")
+        if settings.runtime_manifest:
+            # Opt-in digest pinning: the manifest and the proposal-time pin must agree.
+            if not settings.runtime_root:
+                raise ScriptError("script_storage_unconfigured")
+            runtime = await asyncio.to_thread(verify_runtime, settings)
+            if (pinned.runtime_sha256 is None or runtime.runtime != pinned.program.runtime
+                    or runtime.sha256 != pinned.runtime_sha256):
+                raise ScriptError("script_runtime_digest_mismatch")
+            pinned_file = next((item for item in runtime.files
+                                if item.path == pinned.program.executable), None)
+            if (pinned_file is None or not pinned_file.executable
+                    or pinned_file.sha256 != pinned.executable_sha256):
+                raise ScriptError("script_executable_digest_mismatch")
+            executable = Path(settings.runtime_root) / pinned.program.executable
+        else:
+            if pinned.runtime_sha256 is not None:
+                # A digest-pinned artifact never silently degrades to host lookup.
+                raise ScriptError("script_runtime_manifest_required")
+            executable = await asyncio.to_thread(
+                resolve_host_executable, settings, pinned.program.executable)
         stdin = request.stdin
         root = Path(settings.state_root)
         root.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -271,7 +297,8 @@ async def launch(
         inputs.mkdir()
         scratch.mkdir()
         environment = script_environment(pinned.program.env_allowlist, tuple(settings.env_allowlist),
-                                         request.environment, home=str(scratch))
+                                         request.environment, home=str(scratch),
+                                         path=":".join(settings.search_path))
         count = sum(item.byte_count for item in pinned.inputs)
         if count > settings.input_bytes:
             raise ScriptError("script_input_limit_exceeded")
@@ -324,7 +351,7 @@ async def launch(
         os.close(intent)  # E2 owns durable recovery/retirement; never replay here.
         started = time.time()
         spawning = asyncio.create_task(asyncio.create_subprocess_exec(
-            *_process_argv(settings, request, inputs), env=environment,
+            *_process_argv(executable, request, inputs), env=environment,
             cwd=inputs if pinned.program.cwd == "inputs" else scratch,
             stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE, close_fds=True, start_new_session=True,
@@ -407,7 +434,7 @@ async def launch(
             temporary.cleanup()
     if not clean:
         cause, reason = "runtime_error", "script_cleanup_uncertain"
-    result = SandboxResult(
+    result = ScriptResult(
         request.execution_id, cause, exit_code=process.returncode if process else None, reason=reason,
         stdout=bytes(buffers["stdout"]), stderr=bytes(buffers["stderr"]),
         stdout_bytes=counts["stdout"], stderr_bytes=counts["stderr"],

@@ -793,16 +793,16 @@ class TestPromptDelivery:
         assert "task-1" in spec.prompt
 
     @pytest.mark.parametrize(
-        ("profile_id", "project_id"),
+        ("profile_id", "project_id", "supervisor_inbox"),
         [
-            ("supervisor", "proj-1"),
-            ("supervisor", None),
-            ("supervisor-global", None),
-            ("n-supervisor--proj-1", "proj-1"),
+            ("supervisor", "matter-engine-cpp", "session:supervisor-matter-engine-cpp"),
+            ("supervisor", None, "session:supervisor-agent-queue"),
+            ("supervisor-global", None, "session:supervisor-agent-queue"),
+            ("n-supervisor--proj-1", "proj-1", "session:supervisor-proj-1"),
         ],
     )
     def test_supervisor_named_bootstrap_establishes_patrol(
-        self, builder, profile_id, project_id
+        self, builder, profile_id, project_id, supervisor_inbox
     ):
         spec = builder.build_named_spec(
             profile=_Profile(id=profile_id),
@@ -825,7 +825,9 @@ class TestPromptDelivery:
         assert "python3 ~/.agent-queue/operator-checks/stall-sweep.py" in prompt
         assert "aq --json message inbox --inject" in prompt
         assert "aq --json message inbox --to profile:supervisor" in prompt
-        assert "aq --json message inbox --to session:supervisor-agent-queue" in prompt
+        assert f"aq --json message inbox --to {supervisor_inbox}`" in prompt
+        if project_id is not None:
+            assert "session:supervisor-agent-queue" not in prompt
         assert "FIX what it finds" in prompt
         assert "no scheduler" in prompt and "start of every turn" in prompt
         assert "re-establish it after any restart" in prompt

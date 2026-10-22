@@ -690,6 +690,24 @@ FRONTIER_PREDICATE_DETAILS = {
 }
 
 
+async def retire_owner_attachments(conn, task_id, sessions, workspaces, error, now, *,
+                                   exclusive=False):
+    """Retire *sessions*' branch attachments (every live one if *exclusive*) or raise *error*."""
+    owners = (await conn.execute(select(integration_branch_owners).where(
+        integration_branch_owners.c.owner_id == task_id,
+        integration_branch_owners.c.handoff_state.not_in(("released", "reserved")),
+        *(() if exclusive else (integration_branch_owners.c.session_id.in_(sessions),)),
+    ).with_for_update())).mappings().all()
+    for owner in owners:
+        if (owner["handoff_state"] != "attached" or owner["session_id"] not in sessions
+                or owner["workspace_id"] not in workspaces):
+            raise error
+        await conn.execute(update(integration_branch_owners).where(
+            integration_branch_owners.c.id == owner["id"],
+        ).values(handoff_state="reserved", session_id=None, workspace_id=None,
+                 confirmed_workspace_id=owner["workspace_id"], updated_at=now))
+
+
 class ClaimQueryMixin:
     """Expects ``self._engine`` plus Task/Session/Workspace/Hierarchy mixins.
 
@@ -1212,7 +1230,7 @@ class ClaimQueryMixin:
         only after fresh process death and guarded publication proofs. Recheck
         every persisted identity here. Pause wins; no route or profile changes.
         """
-        from src.database.tables import continuations, integration_branch_owners, wait_records
+        from src.database.tables import continuations, wait_records
         from src.waits.conditions import WaitError
         from src.waits.sources import execute_task_status_mutation
 
@@ -1241,21 +1259,11 @@ class ClaimQueryMixin:
             raise WaitError("continuation.stale_generation", "park ownership changed")
         paused = task["status"] == "PAUSED"
         resolved = wait["outcome"] != "pending"
-        owners = (await conn.execute(select(integration_branch_owners).where(
-            integration_branch_owners.c.owner_id == task_id,
-            integration_branch_owners.c.session_id == session_id,
-            integration_branch_owners.c.handoff_state != "released",
-        ).with_for_update())).mappings().all()
-        for owner in owners:
-            if (owner["handoff_state"] != "attached" or not detached_workspace_id
-                    or owner["workspace_id"] != detached_workspace_id):
-                raise WaitError("continuation.stop_uncertain", "branch detach proof changed")
-            # Retain the domain owner's fence and branch reservation. Only its
-            # stopped process attachment is retired; no transfer is authorized.
-            await conn.execute(update(integration_branch_owners).where(
-                integration_branch_owners.c.id == owner["id"],
-            ).values(handoff_state="reserved", session_id=None, workspace_id=None,
-                     confirmed_workspace_id=detached_workspace_id, updated_at=now))
+        # Only the stopped process attachment is retired; no transfer is authorized.
+        await retire_owner_attachments(
+            conn, task_id, {session_id}, {detached_workspace_id} - {None},
+            WaitError("continuation.stop_uncertain", "branch detach proof changed"), now,
+        )
         await execute_task_status_mutation(conn, update(tasks).where(
             tasks.c.id == task_id, tasks.c.claim_epoch == claim_epoch,
         ).values(status="PAUSED" if paused else "RESUME_PENDING" if resolved else "HIBERNATED",
