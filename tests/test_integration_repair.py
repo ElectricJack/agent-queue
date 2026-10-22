@@ -8454,18 +8454,28 @@ async def test_ordinary_repair_replay_never_regrants_claimed_expired_writer(
     assert (await env.store.get("ordinary")).repair_attempt_count == 1
 
 
-async def test_ordinary_repair_recovery_leaves_ready_but_still_claimed_writer_alone(ordinary_env):
+@pytest.mark.parametrize("attached", ["session", "workspace", "assignment"])
+async def test_ordinary_repair_recovery_leaves_ready_but_still_claimed_writer_alone(ordinary_env, attached):
     env = ordinary_env
     first = await env.service.allocate("ordinary", target_ref=env.ref, head_sha=STARTING_SHA,
                                        authorize=AsyncMock(return_value=True), ttl_seconds=10)
     task_id = first["task_id"]
     await env.db.update_task(task_id, status=TaskStatus.READY)
-    await env.db.create_session(SessionRecord(
-        id="closing", task_id=task_id, project_id="p", profile_id="repairer",
-        harness="fake", provider="fake", name="closing", lifecycle="pool", state="running",
-        claim_phase="active", epoch="epoch", instance_token="closing", started_at=1,
-        work_dir="/closing",
-    ))
+    if attached == "session":
+        await env.db.create_session(SessionRecord(
+            id="closing", task_id=task_id, project_id="p", profile_id="repairer",
+            harness="fake", provider="fake", name="closing", lifecycle="pool", state="running",
+            claim_phase="active", epoch="epoch", instance_token="closing", started_at=1,
+            work_dir="/closing",
+        ))
+    elif attached == "workspace":
+        await env.db.create_workspace(Workspace(
+            id="closing", project_id="p", workspace_path="/closing", source_type=RepoSourceType.CLONE,
+            locked_by_task_id=task_id,
+        ))
+    else:
+        await env.db.create_agent(Agent(id="closing", name="Closing", profile_id="repairer"))
+        await env.db.update_task(task_id, assigned_agent_id="closing")
     old = await env.locks.get(env.target)
     env.now += 10
     result = await env.service.recover_reservation(

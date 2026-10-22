@@ -144,7 +144,7 @@ async def _work_findings(ctx: DoctorContext, tasks: list, now: float, explains: 
                                         return_exceptions=True)
     repairs = await _waiting_train_repairs(ctx, [
         t.id for t in candidates
-        if t.status is TaskStatus.READY and now - t.updated_at > _TRAIN_REPAIR_CAPACITY_AGE
+        if t.status is TaskStatus.READY
     ])
     findings: list[dict] = []
     completions: dict[str, float | None] = {}
@@ -155,6 +155,17 @@ async def _work_findings(ctx: DoctorContext, tasks: list, now: float, explains: 
             ctx.incomplete("task_explanation_failed", project_id=task.project_id)
             continue
         reasons = why.get("reasons") or []
+        if task.id in repairs and any(
+            r.get("code") == "frontier_origin_not_materialized" for r in reasons
+        ):
+            findings.append(_finding(
+                "train_repair_off_frontier", task.project_id,
+                f"READY train repair {task.id} is outside the claim frontier; "
+                f"inspect aq integration reserve-owner --task-id {task.id}",
+                task_id=task.id, age_seconds=now-task.updated_at,
+                reasons=reasons, **repairs[task.id],
+            ))
+            continue
         from src.task_graph.readiness import DELIVERY_CODES, readiness_from_reasons
 
         if any(r.get("code") in DELIVERY_CODES for r in reasons):
@@ -222,16 +233,39 @@ async def _waiting_train_repairs(ctx: DoctorContext, task_ids: list[str]) -> dic
     if not task_ids:
         return {}
     from src.database.queries.claim_queries import active_train_repair_bindings
+    from src.database.tables import integration_batches
+    from src.integration.repair import ordinary_repair_id
 
     bindings = active_train_repair_bindings()
     async with ctx.db._engine.connect() as conn:
         rows = await _mapping_rows(conn, bindings.where(
             bindings.selected_columns.repair_task_id.in_(task_ids),
         ))
-    return {
+        ordinary = await _mapping_rows(conn, select(
+            task_table.c.id.label("repair_task_id"), integration_batches.c.id.label("batch_id"),
+            integration_batches.c.repair_attempt_count,
+        ).select_from(task_table.join(
+            integration_batches, integration_batches.c.id == task_table.c.created_by_id,
+        )).where(
+            task_table.c.id.in_(task_ids),
+            task_table.c.project_id == integration_batches.c.project_id,
+            task_table.c.repo_id == integration_batches.c.repository_id,
+            integration_batches.c.target_ref.is_not(None),
+            integration_batches.c.intent == "open",
+            integration_batches.c.lifecycle != "promoted",
+            integration_batches.c.repair_attempt_count > 0,
+        ))
+    found = {
         row["repair_task_id"]: {"operation_id": row["operation_id"], "batch_id": row["batch_id"]}
         for row in rows
     }
+    found.update({
+        row["repair_task_id"]: {"operation_id": None, "batch_id": row["batch_id"]}
+        for row in ordinary if row["repair_task_id"] == ordinary_repair_id(
+            row["batch_id"], row["repair_attempt_count"],
+        )
+    })
+    return found
 
 
 def _route_findings(tasks: list) -> list[dict]:
@@ -612,6 +646,7 @@ _SUBJECTS = {
     "restore_branch": ("task", "dependent_task_id"),
     "worker_relaunch_loop": ("task", "task_id"),
     "train_repair_capacity_wait": ("task", "task_id"),
+    "train_repair_off_frontier": ("task", "task_id"),
     "slot_capacity_short": None, "train_batch_stalled": ("batch", "batch_id"),
     "non_design_expensive_route": ("task", "task_id"),
     "pool_without_claim": ("session", "session_name"),
@@ -771,7 +806,7 @@ async def _check_sweep(ctx: DoctorContext) -> CheckResult:
     if active:
         runs.extend([
             _probe(ctx, active, ("unclaimed_work", "undelivered_blocker", "WAITING-ON-DELIVERY",
-                                 "train_repair_capacity_wait"),
+                                 "train_repair_capacity_wait", "train_repair_off_frontier"),
                    lambda c: _work_findings(c, tasks, now, _Explains(c))),
             _probe(ctx, active, ("container_dependency", "container_dependencies_truncated"),
                    lambda c: _container_dependency_findings(c, active)),
@@ -822,7 +857,7 @@ async def _check_sweep(ctx: DoctorContext) -> CheckResult:
         coverage.extend(partition(CHECK_ID, kind, None, complete=True, total=0)
                         for kind in _SUBJECTS if kind not in {p["kind"] for p in coverage})
     inventory_kinds = {"unclaimed_work", "undelivered_blocker", "worker_relaunch_loop",
-                       "train_repair_capacity_wait", "WAITING-ON-DELIVERY",
+                       "train_repair_capacity_wait", "train_repair_off_frontier", "WAITING-ON-DELIVERY",
                        "pool_without_claim", "idle_worker", "idle_pool", "delivery_stale",
                        "disabled_provider", "publisher_skip", "non_design_expensive_route"}
     coverage.extend(partition(CHECK_ID, "non_design_expensive_route", pid, complete=True)

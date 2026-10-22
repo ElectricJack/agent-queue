@@ -1058,6 +1058,13 @@ async def test_targets_follow_mode_routing_and_open_batches(world):
         ("refs/heads/main", "root"),
     ]
 
+    # The sealed batch remains discoverable without any pending completions.
+    await db.update_task("child", status=TaskStatus.BLOCKED)
+    await db.update_task("top", status=TaskStatus.BLOCKED)
+    assert [(t.target_ref, t.kind) for t in await DatabaseTargets(db).targets(time.time())] == [
+        ("refs/heads/aq/gone", "epic"), ("refs/heads/main", "root"),
+    ]
+
     async with db._engine.begin() as conn:
         await conn.execute(update(projects).where(projects.c.id == "p")
                            .values(hierarchical_integration_mode="development"))
@@ -6077,6 +6084,81 @@ async def test_hosted_red_candidate_files_one_repair_and_never_publishes(world):
     assert (red.repair["outcome"], again.repair["outcome"]) == ("filed", "exists")
     assert again.repair["task_id"] == red.repair["task_id"]
     assert git(origin.url, "rev-parse", "refs/heads/main") == main
+
+
+@pytest.mark.parametrize("recovery", [
+    "command", "tick", "admission_refused", "paused", "unpublished", "stale_allocation", "promoted",
+])
+async def test_detached_batch_repair_recovers_before_admission_and_build(world, monkeypatch, recovery):
+    from src.commands.integration_commands import IntegrationCommandsMixin
+    from src.doctor.models import DoctorContext
+    from src.doctor.stall_checks import _waiting_train_repairs
+
+    await completed(world, "a")
+    train, github, _ = await hosted_train(world)
+    testing = await train.visit(MAIN)
+    github.runs[testing.candidate_sha] = "failure"
+    red = await train.visit(MAIN)
+    task_id = red.repair["task_id"]
+    original = await train.repair.input(task_id)
+    await world.db.update_task(task_id, status=TaskStatus.READY)
+    old = (await train.repair.locks.get(BranchKey(
+        repository_id="r", branch=original["target_ref"],
+    ))).grant()
+    await train.repair.locks.release(old)
+    assert not await world.db.is_hierarchy_task_runnable(task_id)
+    assert (await world.db.get_task(task_id)).created_by_kind == "system"
+    assert await world.db.get_active_integration_repair_for_task(task_id) is None
+    assert await _waiting_train_repairs(DoctorContext(db=world.db, config=SimpleNamespace()), [task_id]) == {
+        task_id: {"operation_id": None, "batch_id": red.batch_id},
+    }
+    # Pending checks and a source-admission refusal must not strand the repair.
+    github.runs.pop(testing.candidate_sha)
+    refused = recovery in {"paused", "unpublished", "stale_allocation", "promoted"}
+    if recovery == "paused":
+        await BatchStore(world.db).set_intent(red.batch_id, "paused")
+    elif recovery == "unpublished":
+        git(world.origin.clone, "push", "origin", ":" + original["target_ref"])
+    elif recovery == "stale_allocation":
+        async with world.db.immediate() as conn:
+            await conn.execute(update(integration_batches).where(
+                integration_batches.c.id == red.batch_id,
+            ).values(repair_attempt_count=2))
+    elif recovery == "promoted":
+        async with world.db.immediate() as conn:
+            await conn.execute(update(integration_batches).where(
+                integration_batches.c.id == red.batch_id,
+            ).values(lifecycle="promoted"))
+    if recovery == "command" or refused:
+        handler = IntegrationCommandsMixin()
+        handler.db = world.db
+        handler.orchestrator = SimpleNamespace(integration_train=train)
+        result = await handler._cmd_integration_reserve_owner({"task_id": task_id})
+        if refused:
+            assert result["success"] is False and result["outcome"] == "not_eligible", result
+            lease = await train.repair.locks.get(old.target)
+            assert lease.holder is None and lease.fence == old.token
+            assert await train.repair.input(task_id) == original
+            return
+        assert result["success"] and result["outcome"] == "acquired", result
+        again = await handler._cmd_integration_reserve_owner({"task_id": task_id})
+        assert again["success"], again
+    else:
+        if recovery == "admission_refused":
+            monkeypatch.setattr(train.batches, "_supersede_removed_checks", AsyncMock(return_value={
+                "code": "batch_required_checks_removed", "detail": "policy changed",
+            }))
+        scheduled = await train.tick()
+        await train.drain()
+        assert "/".join(MAIN.key) in scheduled["started"]
+        if recovery == "admission_refused":
+            assert train.status()[0]["state"] == "blocked"
+    lease = await train.repair.locks.get(old.target)
+    assert (lease.holder, lease.fence) == (task_id, old.token + 1)
+    assert await world.db.is_hierarchy_task_runnable(task_id)
+    assert await train.repair.input(task_id) == original
+    assert (await train.batches.current(MAIN)).repair_attempt_count == 1
+    assert git(world.origin.url, "rev-parse", "main") == testing.target_sha
 
 
 @pytest.mark.parametrize(("push", "allowed"), [

@@ -320,6 +320,21 @@ async def test_train_repair_noncapacity_pool_wait_is_not_capacity_alarm(context,
     assert [f["kind"] for f in findings] == ["unclaimed_work"]
 
 
+async def test_ready_train_repair_missing_reservation_has_distinct_frontier_alarm(context, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    monkeypatch.setattr(module, "_waiting_train_repairs", AsyncMock(return_value={
+        "repair": {"batch_id": "train", "operation_id": None},
+    }))
+    context.handler = Handler({"repair": [reason("frontier_origin_not_materialized")]})
+    findings = await module._work_findings(
+        context, [task("repair", age=25*60)], NOW, module._Explains(context),
+    )
+    assert [f["kind"] for f in findings] == ["train_repair_off_frontier"]
+    assert findings[0]["batch_id"] == "train"
+    assert "reserve-owner --task-id repair" in findings[0]["detail"]
+
+
 @pytest.mark.parametrize("unowned", [0, 2])
 async def test_untracked_sessions_are_an_error_even_without_active_projects(
     context, monkeypatch, unowned,
