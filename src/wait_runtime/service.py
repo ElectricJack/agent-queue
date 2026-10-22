@@ -46,7 +46,6 @@ class WaitService:
 
         self.legacy_bridge = LegacyWaitBridge(self, clock=clock)
         self._bridge_lock = asyncio.Lock()
-        self._bridge_task = None
         self.registry.loop_handler = self.loop_escalation
         self._dispatcher = WakeDispatcher(
             self.registry, clock=clock,
@@ -226,12 +225,11 @@ class WaitService:
 
     async def _bounded_bridge(self):
         """Wait briefly for the bridge; a slow pass finishes beside the scheduler."""
-        if self._bridge_task is None or self._bridge_task.done():
+        task = getattr(self, "_bridge_task", None)
+        if task is None or task.done():
             self._bridge_task = asyncio.create_task(self._run_bridge())
-        try:
-            await asyncio.wait_for(asyncio.shield(self._bridge_task), BRIDGE_TICK_BUDGET_SECONDS)
-        except TimeoutError:
-            logger.warning("Wait startup bridge still running; scheduler continues")
+        # A slow pass keeps running; the scheduler continues after the budget.
+        await asyncio.wait({self._bridge_task}, timeout=BRIDGE_TICK_BUDGET_SECONDS)
 
     async def _run_bridge(self):
         try:
