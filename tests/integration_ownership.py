@@ -28,13 +28,14 @@ TRANSITION_BATCH_EXCEPTION = {'batch_id': 'train-56f15aff49843c6989224397ef6d704
  'decision_message_id': 'msg-dbb0120c6172499081721c033e894b39',
  'decision_message_ids': ['msg-7ed85e78d1af4f3e85b485a57967e794',
                           'msg-381054d695e64055979a687c4d811e7e',
-                          'msg-dbb0120c6172499081721c033e894b39'],
+                          'msg-dbb0120c6172499081721c033e894b39',
+                          'msg-90f9f1b1e0cd4e8e8d28071cffc927a6'],
  'decision_record': 'record:2720bdbe-7521-427e-8e72-1f40a3ff9818',
- 'decision_record_revision': '7a219c5d-10dd-4f2f-bfab-60ce7e82071a',
- 'measured_source_revision': 'cc9938f71350d5fb0e0bdc936fad5e1168506a31',
+ 'decision_record_revision': 'c169aafc-a845-48b0-99f3-ea7a6ee48637',
+ 'measured_source_revision': '68bcd20a05176cc8822912f803fa71560aa3307e',
  'original_owned_total_cap': 155499,
- 'measured_owned_total': 160152,
- 'delta': 4653,
+ 'measured_owned_total': 161328,
+ 'delta': 5829,
  'predecessors': [{'batch_id': 'train-77f0d8e451f6aed08d608e443031047a',
                    'decision_message_id': 'msg-edb5f857de344716a38857406fa69958',
                    'decision_record': 'record:2720bdbe-7521-427e-8e72-1f40a3ff9818',
@@ -50,7 +51,7 @@ TRANSITION_BATCH_EXCEPTION = {'batch_id': 'train-56f15aff49843c6989224397ef6d704
                    'measured_owned_total': 158958,
                    'provenance': 'Supervisor-authorized predecessor; added once after batch77 '
                                  'final delta1293.'}],
- 'batch_measured_delta': 1194,
+ 'batch_measured_delta': 2370,
  'restore_task': 'azure-ridge-72',
  'expires_at': 's4_modules',
  'category_approval_message_id': 'msg-90f9f1b1e0cd4e8e8d28071cffc927a6'}
@@ -68,9 +69,11 @@ TRANSITION_TABLE_EXCEPTION = {'batch_id': 'train-56f15aff49843c6989224397ef6d704
  'verification_task': 'stark-willow-95.18',
  'expires_at': 's4_modules',
  'category_approval_message_id': 'msg-90f9f1b1e0cd4e8e8d28071cffc927a6',
- 'decision_record_revision': '7a219c5d-10dd-4f2f-bfab-60ce7e82071a',
+ 'decision_record_revision': 'c169aafc-a845-48b0-99f3-ea7a6ee48637',
  'approved_storage_categories': ['integration_close_attempts'],
- 'restoration_verified_by': 'stark-willow-95.18'}
+ 'measured_source_revision': '68bcd20a05176cc8822912f803fa71560aa3307e',
+ 'restoration_status': 'awaiting_actual_landing',
+ 'restoration_verification_task': 'stark-willow-95.18'}
 FINAL_ENGINE_CAP = 11_999
 FINAL_TOTAL_CAP = 19_999
 FINAL_TABLE_CAP = 10

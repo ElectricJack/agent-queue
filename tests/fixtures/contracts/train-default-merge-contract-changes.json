@@ -3,7 +3,7 @@
   "default_base": "2f7cf17737abee5a417cb82c0637101b397dbe86",
   "previous_cli_catalogue_sha256": "55a8cf2f92877f0aa95e405c6d68dcc754fa7ace9fcd336eb9962c3d43a320c3",
   "default_cli_catalogue_sha256": "5343597e8f8e8d0da57fa0fb46f714e3cd3bb8ce428b5232904cea7ba9e6183b",
-  "cli_catalogue_sha256": "dc24fcac51f61be305a2d7ba8d3653cf02b01c5e92da2719e8838ca08ff6c000",
+  "cli_catalogue_sha256": "0328aba838496a70bec317eb404906c615a3a440b9950649945dbe0ad1622de3",
   "catalogue_sections": {
     "explicit": {
       "list": true,
@@ -1806,6 +1806,55 @@
           ]
         }
       }
+    },
+    "categories": {
+      "list": false,
+      "pairs": false,
+      "previous_order": [
+        "operator",
+        "policy",
+        "cron",
+        "git",
+        "ci",
+        "project",
+        "agent",
+        "supervisor",
+        "memory",
+        "knowledge",
+        "record",
+        "notes",
+        "files",
+        "task",
+        "playbook",
+        "plugin",
+        "system",
+        "message",
+        "escalation",
+        "decision",
+        "supervisor_inbox",
+        "review",
+        "github_issue",
+        "test_selection",
+        "digest",
+        "job",
+        "artifact",
+        "wait",
+        "collaboration",
+        "report",
+        "dashboard",
+        "discord",
+        "mcp",
+        "pool",
+        "provider",
+        "formula",
+        "graph"
+      ],
+      "entries": {
+        "integration": {
+          "previous": null,
+          "current": "Bound batch repair and author-close continuation"
+        }
+      }
     }
   },
   "default_catalogue_sections": {
@@ -3101,6 +3150,55 @@
           "current": "project"
         }
       }
+    },
+    "categories": {
+      "list": false,
+      "pairs": false,
+      "previous_order": [
+        "operator",
+        "policy",
+        "cron",
+        "git",
+        "ci",
+        "project",
+        "agent",
+        "supervisor",
+        "memory",
+        "knowledge",
+        "record",
+        "notes",
+        "files",
+        "task",
+        "playbook",
+        "plugin",
+        "system",
+        "message",
+        "escalation",
+        "decision",
+        "supervisor_inbox",
+        "review",
+        "github_issue",
+        "test_selection",
+        "digest",
+        "job",
+        "artifact",
+        "wait",
+        "collaboration",
+        "report",
+        "dashboard",
+        "discord",
+        "mcp",
+        "pool",
+        "provider",
+        "formula",
+        "graph"
+      ],
+      "entries": {
+        "integration": {
+          "previous": null,
+          "current": "Bound batch repair and author-close continuation"
+        }
+      }
     }
   },
   "transport_definitions": {
@@ -3119,6 +3217,7 @@
   },
   "contracts": {},
   "review_notes": [
-    "Merge the pinned default API additions with the candidate additions. Both frozen catalogue histories are retained byte for byte and reconstructed independently. The wait_cancel transport follows the default response and arguments; cancellation retains legacy wait identity compatibility."
+    "Merge the pinned default API additions with the candidate additions. Both frozen catalogue histories are retained byte for byte and reconstructed independently. The wait_cancel transport follows the default response and arguments; cancellation retains legacy wait identity compatibility.",
+    "Register the existing integration category so the candidate batch-fix and author-close commands receive their typed API routes; preserve both frozen category registries when reversing the merge evidence."
   ]
 }

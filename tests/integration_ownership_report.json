@@ -1043,7 +1043,7 @@
     "phase": "transition",
     "fixed_replacement_allowance": 15000,
     "engine_cap": 97627,
-    "owned_total_cap": 160152,
+    "owned_total_cap": 161328,
     "table_cap": 46,
     "expires_at": "s4_modules",
     "automatic_baseline_increase": false,
@@ -1054,14 +1054,15 @@
       "decision_message_ids": [
         "msg-7ed85e78d1af4f3e85b485a57967e794",
         "msg-381054d695e64055979a687c4d811e7e",
-        "msg-dbb0120c6172499081721c033e894b39"
+        "msg-dbb0120c6172499081721c033e894b39",
+        "msg-90f9f1b1e0cd4e8e8d28071cffc927a6"
       ],
       "decision_record": "record:2720bdbe-7521-427e-8e72-1f40a3ff9818",
-      "decision_record_revision": "7a219c5d-10dd-4f2f-bfab-60ce7e82071a",
-      "measured_source_revision": "cc9938f71350d5fb0e0bdc936fad5e1168506a31",
+      "decision_record_revision": "c169aafc-a845-48b0-99f3-ea7a6ee48637",
+      "measured_source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e",
       "original_owned_total_cap": 155499,
-      "measured_owned_total": 160152,
-      "delta": 4653,
+      "measured_owned_total": 161328,
+      "delta": 5829,
       "predecessors": [
         {
           "batch_id": "train-77f0d8e451f6aed08d608e443031047a",
@@ -1082,7 +1083,7 @@
           "provenance": "Supervisor-authorized predecessor; added once after batch77 final delta1293."
         }
       ],
-      "batch_measured_delta": 1194,
+      "batch_measured_delta": 2370,
       "restore_task": "azure-ridge-72",
       "expires_at": "s4_modules",
       "category_approval_message_id": "msg-90f9f1b1e0cd4e8e8d28071cffc927a6"
@@ -1102,11 +1103,13 @@
       "verification_task": "stark-willow-95.18",
       "expires_at": "s4_modules",
       "category_approval_message_id": "msg-90f9f1b1e0cd4e8e8d28071cffc927a6",
-      "decision_record_revision": "7a219c5d-10dd-4f2f-bfab-60ce7e82071a",
+      "decision_record_revision": "c169aafc-a845-48b0-99f3-ea7a6ee48637",
       "approved_storage_categories": [
         "integration_close_attempts"
       ],
-      "restoration_verified_by": "stark-willow-95.18"
+      "measured_source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e",
+      "restoration_status": "awaiting_actual_landing",
+      "restoration_verification_task": "stark-willow-95.18"
     }
   },
   "landing_delta": {
@@ -10751,6 +10754,366 @@
         107
       ],
       "baseline_span": null
+    },
+    "src/api/models/git.py::IntegrationBatchFixResponse": {
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "current_span": [
+        273,
+        282
+      ],
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/api/models/git.py::IntegrationContinueCloseResponse": {
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "current_span": [
+        283,
+        291
+      ],
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/api/models/git.py::RESPONSE_MODELS['integration_batch_fix']": {
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "current_span": [
+        295,
+        295
+      ],
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/api/models/git.py::RESPONSE_MODELS['integration_continue_close']": {
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "current_span": [
+        296,
+        296
+      ],
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/api/scope.py::_check_worker_git_scope": {
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "current_span": [
+        525,
+        587
+      ],
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/api/target_scope.py::_publication_delegation_project": {
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "current_span": [
+        126,
+        139
+      ],
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/cli/auto_commands.py::HANDCRAFTED_COVERAGE['integration_delegate_publication']": {
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "current_span": [
+        159,
+        159
+      ],
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/cli/auto_commands.py::HANDCRAFTED_COVERAGE['integration_revoke_publication']": {
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "current_span": [
+        160,
+        160
+      ],
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/commands/promote_commands.py::import from src.integration.promotion_steps import PROMOTION_CONTEXT, PROMOTION_RESULT, FlowSchema, PromotionSourceRefusal, check_source_green, fail_stranded_promotion_tasks_on, promotion_ref, promotion_task_defect": {
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "current_span": [
+        49,
+        58
+      ],
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/commands/resource_authorization.py::SESSION_COMMANDS": {
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "current_span": [
+        50,
+        56
+      ],
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/database/queries/claim_queries.py::retire_owner_attachments": {
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "current_span": [
+        691,
+        708
+      ],
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/doctor/stall_checks.py::_stranded_promotion_findings": {
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "current_span": [
+        967,
+        981
+      ],
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/orchestrator/workspace_attachments.py::detach_task_slot": {
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "current_span": [
+        796,
+        805
+      ],
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/plugins/internal/git.py::GitPlugin._push_delegated": {
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "current_span": [
+        912,
+        948
+      ],
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/plugins/internal/git.py::GitPlugin._worker_publication": {
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "current_span": [
+        722,
+        774
+      ],
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/plugins/services.py::ConfigService.integration_git_first": {
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "current_span": [
+        327,
+        329
+      ],
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/plugins/services.py::ConfigServiceImpl.integration_git_first": {
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "current_span": [
+        725,
+        729
+      ],
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/sessions/dialogs.py::first_match": {
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "current_span": [
+        86,
+        103
+      ],
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/tools/registry.py::CATEGORIES['integration']": {
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "current_span": [
+        80,
+        82
+      ],
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/wait_runtime/cancellation.py::cancel": {
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "current_span": [
+        2,
+        5
+      ],
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/wait_runtime/restart.py::readmit": {
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "current_span": [
+        34,
+        46
+      ],
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/wait_runtime/restart.py::release_continuations": {
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "current_span": [
+        47,
+        54
+      ],
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/wait_runtime/restart.py::restart_lock": {
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "current_span": [
+        28,
+        33
+      ],
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/waits/admission.py::AdmissionReader.delivery_admission": {
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "current_span": [
+        89,
+        105
+      ],
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/waits/dispatcher.py::WakeDispatcher.finish": {
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "current_span": [
+        130,
+        243
+      ],
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/waits/ownership.py::fence_owner": {
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "current_span": [
+        8,
+        56
+      ],
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/orchestrator/worktree_manager.py::slot_path": {
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "current_span": [
+        198,
+        201
+      ],
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/sessions/dialogs.py::run_dialog_dismissal": {
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "current_span": [
+        104,
+        162
+      ],
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/sessions/spec.py::import from src.sessions.dialogs import first_match": {
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "current_span": [
+        38,
+        38
+      ],
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/sessions/tmux.py::TmuxProvider._await_ready": {
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "current_span": [
+        404,
+        551
+      ],
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/sessions/tmux.py::import from src.sessions.dialogs import DialogBudget, first_match, run_dialog_dismissal": {
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "current_span": [
+        40,
+        40
+      ],
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/wait_runtime/restart.py::_release": {
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "current_span": [
+        55,
+        201
+      ],
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/wait_runtime/restart.py::import from src.database.queries.claim_queries import retire_owner_attachments": {
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "current_span": [
+        15,
+        16
+      ],
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/wait_runtime/restart.py::import from src.orchestrator.workspace_attachments import detach_task_slot": {
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "current_span": [
+        22,
+        22
+      ],
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/wait_runtime/service.py::WaitService.cancel": {
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "current_span": [
+        106,
+        108
+      ],
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/wait_runtime/service.py::WaitService.run": {
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "current_span": [
+        194,
+        210
+      ],
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/wait_runtime/service.py::import from src.wait_runtime.cancellation import cancel": {
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "current_span": [
+        23,
+        23
+      ],
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/waits/decisions.py::WaitDecisions.cancel": {
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "current_span": [
+        240,
+        303
+      ],
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/waits/decisions.py::WaitDecisions.decide": {
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "current_span": [
+        142,
+        239
+      ],
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/waits/decisions.py::import from src.waits.ownership import fence_owner": {
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "current_span": [
+        27,
+        27
+      ],
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/waits/dispatcher.py::WakeDispatcher.commit": {
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "current_span": [
+        39,
+        129
+      ],
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/waits/dispatcher.py::import from src.waits.ownership import fence_owner": {
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "current_span": [
+        26,
+        26
+      ],
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/waits/human.py::HumanWaits.lift": {
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "current_span": [
+        20,
+        102
+      ],
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/waits/human.py::import from src.waits.ownership import fence_owner": {
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "current_span": [
+        12,
+        12
+      ],
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/wait_runtime/restart.py::import from src.orchestrator.worktree_manager import slot_path": {
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "current_span": [
+        23,
+        23
+      ],
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
     }
   },
   "shared_state": {
@@ -13680,21 +14043,21 @@
   },
   "complete_candidate": {
     "batch_id": "train-56f15aff49843c6989224397ef6d7044",
-    "measured_source_revision": "cc9938f71350d5fb0e0bdc936fad5e1168506a31",
+    "measured_source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e",
     "frozen_sources_in_merge_order": [
       "bbcbd5a61d9c59e0a507f2e30160624e44196fca",
       "2f66afabac4add24a1e4eaa7927ae0798ec344bf"
     ],
     "groups": {
-      "shared": 61329,
-      "companions": 11877,
-      "engine": 84546,
+      "shared": 62418,
+      "companions": 11441,
+      "engine": 85069,
       "policy_sources": 1010,
       "policy": 489,
       "ui": 262,
       "guards": 639
     },
-    "owned_total": 160152,
+    "owned_total": 161328,
     "tables": {
       "integration_source_ci": [
         "src/database/tables.py",
@@ -13714,217 +14077,217 @@
       "integration_branch_owners": [
         "src/database/tables.py",
         3486,
-        3517
+        3520
       ],
       "integration_review_evidence": [
         "src/database/tables.py",
-        3519,
-        3560
+        3522,
+        3563
       ],
       "integration_root_authorizations": [
         "src/database/tables.py",
-        3565,
-        3597
+        3568,
+        3600
       ],
       "integration_promotion_intents": [
         "src/database/tables.py",
-        3599,
-        3734
+        3602,
+        3737
       ],
       "task_delivery_receipts": [
         "src/database/tables.py",
-        3736,
-        3828
+        3739,
+        3831
       ],
       "integration_batches": [
         "src/database/tables.py",
-        3830,
-        3911
+        3833,
+        3914
       ],
       "integration_batch_members": [
         "src/database/tables.py",
-        3913,
-        3956
+        3916,
+        3959
       ],
       "integration_candidate_revisions": [
         "src/database/tables.py",
-        3958,
-        3986
+        3961,
+        3989
       ],
       "integration_candidate_member_results": [
         "src/database/tables.py",
-        3988,
-        4030
+        3991,
+        4033
       ],
       "integration_candidate_publications": [
         "src/database/tables.py",
-        4032,
-        4071
+        4035,
+        4074
       ],
       "integration_candidate_resolutions": [
         "src/database/tables.py",
-        4073,
-        4169
+        4076,
+        4172
       ],
       "integration_candidate_ref_mutations": [
         "src/database/tables.py",
-        4188,
-        4255
+        4191,
+        4258
       ],
       "integration_root_intent_members": [
         "src/database/tables.py",
-        4257,
-        4345
+        4260,
+        4348
       ],
       "integration_repair_operations": [
         "src/database/tables.py",
-        4347,
-        4411
+        4350,
+        4414
       ],
       "integration_parent_episodes": [
         "src/database/tables.py",
-        4413,
-        4430
+        4416,
+        4433
       ],
       "integration_child_dispositions": [
         "src/database/tables.py",
-        4432,
-        4459
+        4435,
+        4462
       ],
       "integration_repair_stages": [
         "src/database/tables.py",
-        4461,
-        4502
+        4464,
+        4505
       ],
       "integration_delegate_releases": [
         "src/database/tables.py",
-        4518,
-        4547
+        4521,
+        4550
       ],
       "integration_owner_recoveries": [
         "src/database/tables.py",
-        4556,
-        4574
+        4559,
+        4577
       ],
       "integration_check_evidence": [
         "src/database/tables.py",
-        4576,
-        4638
+        4579,
+        4641
       ],
       "integration_attestation_publications": [
         "src/database/tables.py",
-        4640,
-        4696
+        4643,
+        4699
       ],
       "integration_cleanup_items": [
         "src/database/tables.py",
-        4698,
-        4811
+        4701,
+        4814
       ],
       "integration_repair_stage_evidence": [
         "src/database/tables.py",
-        4813,
-        4836
+        4816,
+        4839
       ],
       "integration_parent_verifications": [
         "src/database/tables.py",
-        4838,
-        4876
+        4841,
+        4879
       ],
       "integration_parent_operation_completions": [
         "src/database/tables.py",
-        4878,
-        4910
+        4881,
+        4913
       ],
       "integration_episode_receipt_acceptances": [
         "src/database/tables.py",
-        4912,
-        4960
+        4915,
+        4963
       ],
       "integration_parent_verification_evidence": [
         "src/database/tables.py",
-        4962,
-        4978
+        4965,
+        4981
       ],
       "integration_operation_artifact_pins": [
         "src/database/tables.py",
-        4980,
-        4997
+        4983,
+        5000
       ],
       "epic_dependencies": [
         "src/database/tables.py",
-        4999,
-        5009
+        5002,
+        5012
       ],
       "project_integration_schedules": [
         "src/database/tables.py",
-        5011,
-        5046
+        5014,
+        5049
       ],
       "project_integration_leases": [
         "src/database/tables.py",
-        5048,
-        5060
+        5051,
+        5063
       ],
       "integration_release_results": [
         "src/database/tables.py",
-        5062,
-        5076
+        5065,
+        5079
       ],
       "integration_history_waivers": [
         "src/database/tables.py",
-        5082,
-        5104
+        5085,
+        5107
       ],
       "integration_rollout_transitions": [
         "src/database/tables.py",
-        5106,
-        5154
+        5109,
+        5157
       ],
       "integration_history_waiver_consumptions": [
         "src/database/tables.py",
-        5156,
-        5190
+        5159,
+        5193
       ],
       "integration_legacy_gate_applicability": [
         "src/database/tables.py",
-        5192,
-        5231
+        5195,
+        5234
       ],
       "integration_legacy_suppression": [
         "src/database/tables.py",
-        5233,
-        5251
+        5236,
+        5254
       ],
       "integration_outbox": [
         "src/database/tables.py",
-        5253,
-        5276
+        5256,
+        5279
       ],
       "integration_outbox_artifact_pins": [
         "src/database/tables.py",
-        5278,
-        5294
+        5281,
+        5297
       ],
       "integration_legacy_deliveries": [
         "src/database/tables.py",
-        5305,
-        5337
+        5308,
+        5340
       ],
       "integration_subjects": [
         "src/database/tables.py",
-        5395,
-        5572
+        5398,
+        5575
       ],
       "integration_subject_journal": [
         "src/database/tables.py",
-        5579,
-        5646
+        5582,
+        5649
       ],
       "integration_close_attempts": [
         "src/database/tables.py",
-        7764,
-        7794
+        7767,
+        7797
       ]
     },
     "uninventoried_definitions": [],
@@ -13935,14 +14298,15 @@
       "decision_message_ids": [
         "msg-7ed85e78d1af4f3e85b485a57967e794",
         "msg-381054d695e64055979a687c4d811e7e",
-        "msg-dbb0120c6172499081721c033e894b39"
+        "msg-dbb0120c6172499081721c033e894b39",
+        "msg-90f9f1b1e0cd4e8e8d28071cffc927a6"
       ],
       "decision_record": "record:2720bdbe-7521-427e-8e72-1f40a3ff9818",
-      "decision_record_revision": "7a219c5d-10dd-4f2f-bfab-60ce7e82071a",
-      "measured_source_revision": "cc9938f71350d5fb0e0bdc936fad5e1168506a31",
+      "decision_record_revision": "c169aafc-a845-48b0-99f3-ea7a6ee48637",
+      "measured_source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e",
       "original_owned_total_cap": 155499,
-      "measured_owned_total": 160152,
-      "delta": 4653,
+      "measured_owned_total": 161328,
+      "delta": 5829,
       "predecessors": [
         {
           "batch_id": "train-77f0d8e451f6aed08d608e443031047a",
@@ -13963,7 +14327,7 @@
           "provenance": "Supervisor-authorized predecessor; added once after batch77 final delta1293."
         }
       ],
-      "batch_measured_delta": 1194,
+      "batch_measured_delta": 2370,
       "restore_task": "azure-ridge-72",
       "expires_at": "s4_modules",
       "category_approval_message_id": "msg-90f9f1b1e0cd4e8e8d28071cffc927a6"
@@ -13983,14 +14347,16 @@
       "verification_task": "stark-willow-95.18",
       "expires_at": "s4_modules",
       "category_approval_message_id": "msg-90f9f1b1e0cd4e8e8d28071cffc927a6",
-      "decision_record_revision": "7a219c5d-10dd-4f2f-bfab-60ce7e82071a",
+      "decision_record_revision": "c169aafc-a845-48b0-99f3-ea7a6ee48637",
       "approved_storage_categories": [
         "integration_close_attempts"
       ],
-      "restoration_verified_by": "stark-willow-95.18"
+      "measured_source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e",
+      "restoration_status": "awaiting_actual_landing",
+      "restoration_verification_task": "stark-willow-95.18"
     },
     "consolidation": "Reuse AuthorCloseMerge.defer for the existing deferred visit path (-2 owned lines); flatten the combined CI authorization guard (-1 owned line). All features and guard checks retained.",
-    "ownership_review": "Complete candidate definitions charged by explicit fingerprints with spans and reasons in candidate_definition_reviews; existing exclusions unchanged. Storage writer contexts re-reviewed in canonical storage_sinks.",
+    "ownership_review": "Pinned-default merged source fully measured; new complete definitions and storage contexts reviewed explicitly, preserving all prior decisions and exclusions.",
     "reviewed_definitions": {
       "src/api/graph.py::build_graph_router": {
         "span": [
@@ -14530,11 +14896,12 @@
       },
       "src/wait_runtime/cancellation.py::cancel": {
         "span": [
-          11,
-          59
+          2,
+          5
         ],
-        "fingerprint": "91fc764f79bc79b92b12144a8a4b2c6d1fb34f760464178b5ccabb6fe8db1556",
-        "reason": "Charge the complete discovered definition/import; its newline span was already included in the measured candidate. Preserve ownership on relocation without adding an exclusion."
+        "fingerprint": "d9edcc114fe80b0dce75da45385bcc79639b6589b3098b981d98c1e6276ad03d",
+        "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+        "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
       },
       "src/wait_runtime/lifecycle.py::WaitLifecycle.register_in_transaction": {
         "span": [
@@ -14570,11 +14937,12 @@
       },
       "src/waits/dispatcher.py::WakeDispatcher.finish": {
         "span": [
-          129,
-          239
+          130,
+          243
         ],
-        "fingerprint": "85430e648b982385a062c88bb921208577b73d5fde00e6748d9a9c95185ba1ea",
-        "reason": "Charge the complete discovered definition/import; its newline span was already included in the measured candidate. Preserve ownership on relocation without adding an exclusion."
+        "fingerprint": "72250fa356fd585f1ff3ace2752f5b66ef46ff299c317cb7b429c6edad297347",
+        "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+        "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
       },
       "src/waits/dispatcher.py::import from src.wait_runtime.legacy_parking import legacy_parked": {
         "span": [
@@ -14595,10 +14963,11 @@
       "src/waits/ownership.py::fence_owner": {
         "span": [
           8,
-          55
+          56
         ],
-        "fingerprint": "022d690a42c2501a28cdc4a72a2a0e6f3c3c5ed8d0d7adf10f62b89bbac837d4",
-        "reason": "Charge the complete discovered definition/import; its newline span was already included in the measured candidate. Preserve ownership on relocation without adding an exclusion."
+        "fingerprint": "229c150376f23c48525301185920db9ccaae966d8445cf34984cd2da0b102020",
+        "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+        "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
       },
       "src/waits/watchers/ci.py::CheckWatcher._ci": {
         "span": [
@@ -14679,6 +15048,384 @@
         ],
         "fingerprint": "cfc4b630f6c68addd9edcb923416ab74e5400a1791cdc763ab2c1ced74cfbf6c",
         "reason": "Charge the complete discovered definition/import; its newline span was already included in the measured candidate. Preserve ownership on relocation without adding an exclusion."
+      },
+      "src/api/models/git.py::IntegrationBatchFixResponse": {
+        "span": [
+          273,
+          282
+        ],
+        "fingerprint": "d2fdf35d58d7a7635408fd8cc2887e7eeb9b0b640d6dd9c770b9c19b1b42eb2a",
+        "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+        "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+      },
+      "src/api/models/git.py::IntegrationContinueCloseResponse": {
+        "span": [
+          283,
+          291
+        ],
+        "fingerprint": "f9ebdf31fbb261c43a786d9bebaefd889996e778853a454446aa73774ca23f12",
+        "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+        "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+      },
+      "src/api/models/git.py::RESPONSE_MODELS['integration_batch_fix']": {
+        "span": [
+          295,
+          295
+        ],
+        "fingerprint": "9f5c608333b6be98df460225a5317573c7a381d05eee6500c59f468a99ab1f86",
+        "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+        "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+      },
+      "src/api/models/git.py::RESPONSE_MODELS['integration_continue_close']": {
+        "span": [
+          296,
+          296
+        ],
+        "fingerprint": "dd0762347fc35f62737319c95cb3ea80ae1b03a679143ebdf136a561956f276b",
+        "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+        "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+      },
+      "src/api/scope.py::_check_worker_git_scope": {
+        "span": [
+          525,
+          587
+        ],
+        "fingerprint": "e21df5b4e47f2b7cd5880b07dad45d319fb30aabd97977c75f3b002cfdee1019",
+        "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+        "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+      },
+      "src/api/target_scope.py::_publication_delegation_project": {
+        "span": [
+          126,
+          139
+        ],
+        "fingerprint": "d67ed86f95d0052bee7598b6b9544abef510b27031ba858aaf7531ea243185f9",
+        "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+        "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+      },
+      "src/cli/auto_commands.py::HANDCRAFTED_COVERAGE['integration_delegate_publication']": {
+        "span": [
+          159,
+          159
+        ],
+        "fingerprint": "715f3bd6b29a490eae520d5f9d22235a4050f4d8b65fb86b480d1d141cba2c6b",
+        "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+        "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+      },
+      "src/cli/auto_commands.py::HANDCRAFTED_COVERAGE['integration_revoke_publication']": {
+        "span": [
+          160,
+          160
+        ],
+        "fingerprint": "efb4ae357bdd1737a1b513e2cc943c4f6a60a95aac874ac98195003ba838998f",
+        "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+        "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+      },
+      "src/commands/promote_commands.py::import from src.integration.promotion_steps import PROMOTION_CONTEXT, PROMOTION_RESULT, FlowSchema, PromotionSourceRefusal, check_source_green, fail_stranded_promotion_tasks_on, promotion_ref, promotion_task_defect": {
+        "span": [
+          49,
+          58
+        ],
+        "fingerprint": "ad6d4a0a391ae6f4258668944b00a83526e1fcc8755fe8b2dab231553ba41ced",
+        "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+        "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+      },
+      "src/commands/resource_authorization.py::SESSION_COMMANDS": {
+        "span": [
+          50,
+          56
+        ],
+        "fingerprint": "8a1ca2a768760aa968a1c9564664d1ae7746dfc51ace3bf4ccd362bd19b9b858",
+        "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+        "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+      },
+      "src/database/queries/claim_queries.py::retire_owner_attachments": {
+        "span": [
+          691,
+          708
+        ],
+        "fingerprint": "b8bd18cfb00f392bbd7b72b713bbe82a39af4b01d88a0db0c4ef58ee083215af",
+        "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+        "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+      },
+      "src/doctor/stall_checks.py::_stranded_promotion_findings": {
+        "span": [
+          967,
+          981
+        ],
+        "fingerprint": "b7e2eb40653a85fcb1ebc479533338eff89afd0f12f4a27f3050cfa3ab31500d",
+        "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+        "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+      },
+      "src/orchestrator/workspace_attachments.py::detach_task_slot": {
+        "span": [
+          796,
+          805
+        ],
+        "fingerprint": "1d07dba0eb8b092b6e8cb81fec26a6716042368db97b92d08aa8138808bb37e0",
+        "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+        "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+      },
+      "src/plugins/internal/git.py::GitPlugin._push_delegated": {
+        "span": [
+          912,
+          948
+        ],
+        "fingerprint": "74322cbe14a7c0ff186c6edf7cb210155e10e8f1339c563028a9a824cbebbf68",
+        "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+        "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+      },
+      "src/plugins/internal/git.py::GitPlugin._worker_publication": {
+        "span": [
+          722,
+          774
+        ],
+        "fingerprint": "cfffb4f336d4bdd4ce6be340db388f049fd1805b6d3a5ea2de54e6dc4a0c664f",
+        "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+        "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+      },
+      "src/plugins/services.py::ConfigService.integration_git_first": {
+        "span": [
+          327,
+          329
+        ],
+        "fingerprint": "acd18e95c2bb4048e999ee03cb2f5162be5fd85256d39cddb45c21d84e60ef1c",
+        "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+        "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+      },
+      "src/plugins/services.py::ConfigServiceImpl.integration_git_first": {
+        "span": [
+          725,
+          729
+        ],
+        "fingerprint": "f60d647e80c43fbdb93b12cd2a90701fdaf89b5b7f6a2c4bc79bb9194ebe32c8",
+        "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+        "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+      },
+      "src/sessions/dialogs.py::first_match": {
+        "span": [
+          86,
+          103
+        ],
+        "fingerprint": "edf6e7281ae9800d741e0022b248b30e4f80d0a0f354dea006948c2d8e4df340",
+        "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+        "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+      },
+      "src/tools/registry.py::CATEGORIES['integration']": {
+        "span": [
+          80,
+          82
+        ],
+        "fingerprint": "918377c3622e069e34eb80e02872deca9efd64afdad9ea0e1525308d3ec2e7b3",
+        "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+        "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+      },
+      "src/wait_runtime/restart.py::readmit": {
+        "span": [
+          34,
+          46
+        ],
+        "fingerprint": "2aa6bdaf4bdb78d2832fe536cd58cf2c91f95eb4c391d74f79955d25403ccbce",
+        "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+        "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+      },
+      "src/wait_runtime/restart.py::release_continuations": {
+        "span": [
+          47,
+          54
+        ],
+        "fingerprint": "e70d2a60b9b8d8b22ace97b1b0a4fbb1acd3956bd5d38220dd07e265dced59e8",
+        "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+        "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+      },
+      "src/wait_runtime/restart.py::restart_lock": {
+        "span": [
+          28,
+          33
+        ],
+        "fingerprint": "6664c73c0b5b3481e7de76a19545338ffd20d9e24d1bfdad776358c52a774ca0",
+        "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+        "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+      },
+      "src/waits/admission.py::AdmissionReader.delivery_admission": {
+        "span": [
+          89,
+          105
+        ],
+        "fingerprint": "83d73602c873a7aff2c2aaa253895c950d442864088e93ee7c269ba3427a6b20",
+        "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+        "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+      },
+      "src/orchestrator/worktree_manager.py::slot_path": {
+        "span": [
+          198,
+          201
+        ],
+        "fingerprint": "ab24cb8fd409de493de17952c00601b552ee5a8349f167f83e892263d937dd86",
+        "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+        "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+      },
+      "src/sessions/dialogs.py::run_dialog_dismissal": {
+        "span": [
+          104,
+          162
+        ],
+        "fingerprint": "f2676b4d43f9c5bc0727c4b6153e22f713fc8914deae1649258d2702b1ca1f99",
+        "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+        "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+      },
+      "src/sessions/spec.py::import from src.sessions.dialogs import first_match": {
+        "span": [
+          38,
+          38
+        ],
+        "fingerprint": "8d9ee2ef6ac3cf110522e51587a632e8420fe305b80a194b8053ef100e5e0909",
+        "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+        "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+      },
+      "src/sessions/tmux.py::TmuxProvider._await_ready": {
+        "span": [
+          404,
+          551
+        ],
+        "fingerprint": "910dfc7ccb9f06d4c4dbe3969c7b3bf55af2fe6a2b8ff2228914c9e83119d04b",
+        "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+        "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+      },
+      "src/sessions/tmux.py::import from src.sessions.dialogs import DialogBudget, first_match, run_dialog_dismissal": {
+        "span": [
+          40,
+          40
+        ],
+        "fingerprint": "a16d5c2a70e125069b956b0a243417b47ae201af26972caeec2b67482f07406b",
+        "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+        "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+      },
+      "src/wait_runtime/restart.py::_release": {
+        "span": [
+          55,
+          201
+        ],
+        "fingerprint": "9a501c9df55523800efe2edcb266f3bef99722aa9528ca2abffa5591042580e3",
+        "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+        "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+      },
+      "src/wait_runtime/restart.py::import from src.database.queries.claim_queries import retire_owner_attachments": {
+        "span": [
+          15,
+          16
+        ],
+        "fingerprint": "cc9561d5cb1c9e5c70e3208905fcaf7f5323e29f0311548a91091c572b351ca4",
+        "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+        "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+      },
+      "src/wait_runtime/restart.py::import from src.orchestrator.workspace_attachments import detach_task_slot": {
+        "span": [
+          22,
+          22
+        ],
+        "fingerprint": "19c56810ceb6404a9b816f71d5fe203bc844491bbd29b44b64bb6da8787ce52b",
+        "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+        "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+      },
+      "src/wait_runtime/service.py::WaitService.cancel": {
+        "span": [
+          106,
+          108
+        ],
+        "fingerprint": "ff4bdde9433a979c0765e5841084ab686be1a6d0d3b82ed734dcb9262849ab09",
+        "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+        "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+      },
+      "src/wait_runtime/service.py::WaitService.run": {
+        "span": [
+          194,
+          210
+        ],
+        "fingerprint": "fc00927f9ed8ad1325399b0d899a9d12af62ad9d7cfc3e62c274e3a09ca4f910",
+        "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+        "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+      },
+      "src/wait_runtime/service.py::import from src.wait_runtime.cancellation import cancel": {
+        "span": [
+          23,
+          23
+        ],
+        "fingerprint": "e24beef4871bbabbce215f94f7fd79cda4f636578aeb2a4bfb555f50f0329418",
+        "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+        "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+      },
+      "src/waits/decisions.py::WaitDecisions.cancel": {
+        "span": [
+          240,
+          303
+        ],
+        "fingerprint": "658d05aba44bb99bf3315bf484d0d9bcdf6562694478853f416f503baa3d489d",
+        "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+        "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+      },
+      "src/waits/decisions.py::WaitDecisions.decide": {
+        "span": [
+          142,
+          239
+        ],
+        "fingerprint": "10ab6e7a03f376894df34907e72a6e5168b7c5d8b382e20787d454aa86559796",
+        "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+        "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+      },
+      "src/waits/decisions.py::import from src.waits.ownership import fence_owner": {
+        "span": [
+          27,
+          27
+        ],
+        "fingerprint": "f8db0594f747303c8591f21da4534542071335ba7fb48223af289c1747bd58fe",
+        "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+        "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+      },
+      "src/waits/dispatcher.py::WakeDispatcher.commit": {
+        "span": [
+          39,
+          129
+        ],
+        "fingerprint": "95b4ea4ab4bc9824966779ae398ba5efc1c6afc85ae4bce72524f40a7c9d8503",
+        "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+        "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+      },
+      "src/waits/dispatcher.py::import from src.waits.ownership import fence_owner": {
+        "span": [
+          26,
+          26
+        ],
+        "fingerprint": "f8db0594f747303c8591f21da4534542071335ba7fb48223af289c1747bd58fe",
+        "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+        "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+      },
+      "src/waits/human.py::HumanWaits.lift": {
+        "span": [
+          20,
+          102
+        ],
+        "fingerprint": "a954e8792b9f7a1963c8d3971e98e66fd0f1bddab2cc355d73f90868019ff377",
+        "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+        "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+      },
+      "src/waits/human.py::import from src.waits.ownership import fence_owner": {
+        "span": [
+          12,
+          12
+        ],
+        "fingerprint": "f8db0594f747303c8591f21da4534542071335ba7fb48223af289c1747bd58fe",
+        "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+        "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+      },
+      "src/wait_runtime/restart.py::import from src.orchestrator.worktree_manager import slot_path": {
+        "span": [
+          23,
+          23
+        ],
+        "fingerprint": "c0437e95929e0fdfdb7e7952dc919ace606d1eba60a3b28a962116fafa1cf095",
+        "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+        "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
       }
     },
     "storage_context_reviews": {
@@ -14746,40 +15493,40 @@
         "reason": "Audits integration.source_ci_reopened with the already selected source head, generation and attempt; the event reports a guarded reopen and is not its authority. Complete-candidate enclosing context re-reviewed; original disposition retained."
       },
       "src/commands/surface_commands.py::SurfaceCommandsMixin._cmd_task_set::6081f9d27dc57e18ce5f31c465cfb8159e76c4d4c1a37d2b8b8d0c741d9fbeca": {
-        "line": 366,
+        "line": 379,
         "owner": "SurfaceCommandsMixin._cmd_task_set",
         "call": "log_event",
-        "owner_fingerprint": "01f5ef4b185f108d02e96b986d4a7e63015a291600666fd3ada58902fb779d6c",
+        "owner_fingerprint": "f0c61a6c8a2a1ae6fa3de00bde48513b752d862cfe4c7d381182a14bfba08d45",
         "integration_signal": true,
         "disposition": "ordinary",
-        "reason": "Audits removal of an ordinary task label; label history does not control Git integration or branch reservations. Complete-candidate enclosing context re-reviewed; original disposition retained."
+        "reason": "Audits removal of an ordinary task label; label history does not control Git integration or branch reservations. Complete-candidate enclosing context re-reviewed; original disposition retained. Re-reviewed in the pinned-default merge; the same call retains its ordinary audit or metadata purpose."
       },
       "src/commands/surface_commands.py::SurfaceCommandsMixin._cmd_task_set::8513b8ad44440cd5bfaed1abc65ab824b7856f8b84f009f84e3bd7f9a0f86647": {
-        "line": 373,
+        "line": 386,
         "owner": "SurfaceCommandsMixin._cmd_task_set",
         "call": "set_task_meta",
-        "owner_fingerprint": "01f5ef4b185f108d02e96b986d4a7e63015a291600666fd3ada58902fb779d6c",
+        "owner_fingerprint": "f0c61a6c8a2a1ae6fa3de00bde48513b752d862cfe4c7d381182a14bfba08d45",
         "integration_signal": true,
         "disposition": "ordinary",
-        "reason": "Stores the task work_dir display/context field through the scoped task-set command; it does not release workspace locks or integration owners. Complete-candidate enclosing context re-reviewed; original disposition retained."
+        "reason": "Stores the task work_dir display/context field through the scoped task-set command; it does not release workspace locks or integration owners. Complete-candidate enclosing context re-reviewed; original disposition retained. Re-reviewed in the pinned-default merge; the same call retains its ordinary audit or metadata purpose."
       },
       "src/commands/surface_commands.py::SurfaceCommandsMixin._cmd_task_set::cc1e1a1a54bb465b81b098e4b9a03d3717342bf5a286fd44dbf8b548c7a49003": {
-        "line": 378,
+        "line": 391,
         "owner": "SurfaceCommandsMixin._cmd_task_set",
         "call": "set_task_meta",
-        "owner_fingerprint": "01f5ef4b185f108d02e96b986d4a7e63015a291600666fd3ada58902fb779d6c",
+        "owner_fingerprint": "f0c61a6c8a2a1ae6fa3de00bde48513b752d862cfe4c7d381182a14bfba08d45",
         "integration_signal": true,
         "disposition": "ordinary",
-        "reason": "Writes task-set metadata through the command's key/authority checks and set_task_meta protections; the generic adapter creates no separate integration journal. Complete-candidate enclosing context re-reviewed; original disposition retained."
+        "reason": "Writes task-set metadata through the command's key/authority checks and set_task_meta protections; the generic adapter creates no separate integration journal. Complete-candidate enclosing context re-reviewed; original disposition retained. Re-reviewed in the pinned-default merge; the same call retains its ordinary audit or metadata purpose."
       },
       "src/commands/surface_commands.py::SurfaceCommandsMixin._cmd_task_set::efc628222166414397713182d90d1198aedc0c7804e05b3ccfd55c64a58c99f5": {
-        "line": 359,
+        "line": 372,
         "owner": "SurfaceCommandsMixin._cmd_task_set",
         "call": "log_event",
-        "owner_fingerprint": "01f5ef4b185f108d02e96b986d4a7e63015a291600666fd3ada58902fb779d6c",
+        "owner_fingerprint": "f0c61a6c8a2a1ae6fa3de00bde48513b752d862cfe4c7d381182a14bfba08d45",
         "integration_signal": true,
         "disposition": "ordinary",
-        "reason": "Audits addition of an ordinary task label; the event contains only the label and grants no delivery authority. Complete-candidate enclosing context re-reviewed; original disposition retained."
+        "reason": "Audits addition of an ordinary task label; the event contains only the label and grants no delivery authority. Complete-candidate enclosing context re-reviewed; original disposition retained. Re-reviewed in the pinned-default merge; the same call retains its ordinary audit or metadata purpose."
       },
       "src/commands/task_commands.py::TaskCommandsMixin._cmd_add_dependency::a4b11d12e44641f31dec92eda6c8cd14f1b9c6975b961f527226962bd27130a5": {
         "line": 4032,
@@ -14971,13 +15718,13 @@
         "reason": "Immutable ordinary event audit of the fenced operation named by this writer; existing Git/source/claim guards authorize mutation, never event replay."
       },
       "src/integration/batches.py::BatchStore.set_intent::6d729f7a8f24a4746d37ecea7871dfd209ea8cce995ce7499c8290475b86f660": {
-        "line": 724,
+        "line": 727,
         "owner": "BatchStore.set_intent",
         "call": "log_event",
-        "owner_fingerprint": "10164d0f974c7dfc7baa29a058d712c45ae257f700be0cd07d9911b01f5dccc1",
+        "owner_fingerprint": "4bd64ebb54cb1f4b56149f7a1a189f60c6a7df66d3d3f3b3a1432ece6810cb82",
         "integration_signal": true,
         "disposition": "ordinary",
-        "reason": "Operator audit of batch intent with principal and reason. Intent and terminal abort projection remain on the batch row; this event is never replayed and carries no ref-update lifecycle. Re-reviewed at the branch-retirement landing: the same transaction now queues an ordinary branch_retirements request; no ref replay or duplicate lifecycle. Complete-candidate enclosing context re-reviewed; original disposition retained."
+        "reason": "Operator audit of batch intent with principal and reason. Intent and terminal abort projection remain on the batch row; this event is never replayed and carries no ref-update lifecycle. Re-reviewed at the branch-retirement landing: the same transaction now queues an ordinary branch_retirements request; no ref replay or duplicate lifecycle. Complete-candidate enclosing context re-reviewed; original disposition retained. Re-reviewed in the pinned-default merge; the same call retains its ordinary audit or metadata purpose."
       },
       "src/integration/child_delivery.py::ChildDelivery._adopt_source::c7d104449a70d66ca26fe189a9a028a871a53fdf1db34120d93a682b87d109f1": {
         "line": 679,
@@ -15160,13 +15907,13 @@
         "reason": "Wait registration, continuation park/delivery/ACK or existing task recovery audit; no new integration journal or reference replay authority. Complete-candidate enclosing context re-reviewed; original disposition retained."
       },
       "src/wait_runtime/resume.py::ResumeTransaction.failed::7f9a172d90564131599dcbc17c8abdfadd20f21c0ea0e36f65fa816d1433dfc8": {
-        "line": 323,
+        "line": 332,
         "owner": "ResumeTransaction.failed",
         "call": "insert",
-        "owner_fingerprint": "9ec22a2fd3ec9a96aff94efe3dcf2d9157266a4698236edf4d9dfd20f997b795",
-        "integration_signal": true,
+        "owner_fingerprint": "8ee5da3fed3499f756251860eb293388659632cffceff0b807a30256c1fc6408",
+        "integration_signal": false,
         "disposition": "ordinary",
-        "reason": "Immutable ordinary event audit of the fenced operation named by this writer; existing Git/source/claim guards authorize mutation, never event replay."
+        "reason": "Immutable ordinary event audit of the fenced operation named by this writer; existing Git/source/claim guards authorize mutation, never event replay. Re-reviewed in the pinned-default merge; the same call retains its ordinary audit or metadata purpose."
       },
       "src/wait_runtime/scheduler.py::SchedulerWaitService.deadline_locked::e5139650d0a374a5e87df9bbfe8b5821ca25c26574dd678280b656466cf16ca5": {
         "line": 300,
@@ -15196,13 +15943,13 @@
         "reason": "Wait registration, continuation park/delivery/ACK or existing task recovery audit; no new integration journal or reference replay authority. Complete-candidate enclosing context re-reviewed; original disposition retained."
       },
       "src/waits/dispatcher.py::WakeDispatcher.finish::7f9a172d90564131599dcbc17c8abdfadd20f21c0ea0e36f65fa816d1433dfc8": {
-        "line": 193,
+        "line": 197,
         "owner": "WakeDispatcher.finish",
         "call": "insert",
-        "owner_fingerprint": "85430e648b982385a062c88bb921208577b73d5fde00e6748d9a9c95185ba1ea",
+        "owner_fingerprint": "72250fa356fd585f1ff3ace2752f5b66ef46ff299c317cb7b429c6edad297347",
         "integration_signal": false,
         "disposition": "ordinary",
-        "reason": "Wait registration, continuation park/delivery/ACK or existing task recovery audit; no new integration journal or reference replay authority. Complete-candidate enclosing context re-reviewed; original disposition retained."
+        "reason": "Wait registration, continuation park/delivery/ACK or existing task recovery audit; no new integration journal or reference replay authority. Complete-candidate enclosing context re-reviewed; original disposition retained. Re-reviewed in the pinned-default merge; the same call retains its ordinary audit or metadata purpose."
       },
       "src/asks/legacy_reset.py::discard::00635d16d37fb1dd71c4bae42449b7d1281cf5e926bbed2a8b06dc6bec86e325": {
         "line": 181,
@@ -15302,6 +16049,51 @@
         "integration_signal": false,
         "disposition": "intent",
         "reason": "Bounded operator containment audit or repository admission hold; explicit operator/configuration authority, not a ref replay journal."
+      },
+      "src/database/queries/claim_queries.py::ClaimQueryMixin.park_task_for_continuation::9db730027a1de7e70c139ab21146787d9948bcc16f5a6fec39ca36519907ee96": {
+        "line": 1298,
+        "owner": "ClaimQueryMixin.park_task_for_continuation",
+        "call": "log_event",
+        "owner_fingerprint": "359d350ab85d609adb511f91c8975dbe5fb46ec8708bc106c47e4342e9089059",
+        "integration_signal": false,
+        "disposition": "ordinary",
+        "reason": "Wait registration, continuation park/delivery/ACK or existing task recovery audit; no new integration journal or reference replay authority. Re-reviewed in the pinned-default merge; the same call retains its ordinary audit or metadata purpose."
+      },
+      "src/database/queries/task_recovery_queries.py::TaskRecoveryQueryMixin.decide_task_recovery::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
+        "line": 1299,
+        "owner": "TaskRecoveryQueryMixin.decide_task_recovery",
+        "call": "delete",
+        "owner_fingerprint": "425757cf9958bf6a3e1a769a2e63f8ad063767c48a5910976c5a3e92024cf530",
+        "integration_signal": true,
+        "disposition": "ordinary",
+        "reason": "Removes claimed_by_session or needs_attention only during a fenced recovery decision; incident identity, task state and recovery budget authorize retry. Re-reviewed in the pinned-default merge; the same call retains its ordinary audit or metadata purpose."
+      },
+      "src/integration/train_sources.py::DaemonLanes._epic_completion::1c9a3b6401e74048fbd63d079e3a77b1bf881244a09690c7a2d835a664010768": {
+        "line": 2928,
+        "owner": "DaemonLanes._epic_completion",
+        "call": "log_event",
+        "owner_fingerprint": "fc8a8855d821b813c521caac31e7e7ee622b73061ffbf5a0418b2b1aae402827",
+        "integration_signal": true,
+        "disposition": "ordinary",
+        "reason": "Audit notification that aggregate readiness started a fenced epic refresh; the existing refresh operation owns mutation and this event grants no Git publication or replay authority."
+      },
+      "src/sessions/obsolete.py::ObsoleteClose.close::37df82dbbcf4ce30cc0f9d0951d9e179f7f7f5023c7650af375ece047532cf8d": {
+        "line": 494,
+        "owner": "ObsoleteClose.close",
+        "call": "log_event",
+        "owner_fingerprint": "413463c39849d71f22e462b22783a7b8d68d5c87f3a7052fe78b2c523eca2080",
+        "integration_signal": true,
+        "disposition": "ordinary",
+        "reason": "Audits obsolete/cancelled task closure with reason, disposition, principal, previous status and released resources; explicit close guards own retirement authority. Re-reviewed in the pinned-default merge; the same call retains its ordinary audit or metadata purpose."
+      },
+      "src/sessions/obsolete.py::ObsoleteClose.close::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
+        "line": 428,
+        "owner": "ObsoleteClose.close",
+        "call": "delete",
+        "owner_fingerprint": "413463c39849d71f22e462b22783a7b8d68d5c87f3a7052fe78b2c523eca2080",
+        "integration_signal": true,
+        "disposition": "ordinary",
+        "reason": "Deletes ordinary close/claim metadata during fenced obsolete closure; branch retirement remains an independently guarded request rather than a metadata-driven ref replay. Re-reviewed in the pinned-default merge; the same call retains its ordinary audit or metadata purpose."
       }
     },
     "headroom": 0
@@ -15361,6 +16153,37 @@
       "restore_task": "azure-ridge-72",
       "category_restore_task": "stark-willow-95.17",
       "restoration_verified_by": "stark-willow-95.18",
+      "expires_at": "s4_modules"
+    },
+    {
+      "task_id": "repair-92f98f47a2ddc80bbb7965ce3eeb864a4fc809113ad127c82ec0039301b69619",
+      "batch_id": "train-56f15aff49843c6989224397ef6d7044",
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e",
+      "starting_revision": "f19a52b33682dec96755e9f4dc03d6955d2d2c10",
+      "pinned_default_revision": "2f7cf17737abee5a417cb82c0637101b397dbe86",
+      "measurement_command": "python tests/integration_ownership.py",
+      "owned_lines": 161328,
+      "engine_lines": 85069,
+      "tables": 46,
+      "repair_owned_delta": 1176,
+      "batch_owned_delta": 2370,
+      "cumulative_owned_delta": 5829,
+      "remaining_headroom": 0,
+      "approved_storage_categories": [
+        "integration_close_attempts"
+      ],
+      "decision_message_ids": [
+        "msg-7ed85e78d1af4f3e85b485a57967e794",
+        "msg-dbb0120c6172499081721c033e894b39",
+        "msg-90f9f1b1e0cd4e8e8d28071cffc927a6"
+      ],
+      "decision_record": "record:2720bdbe-7521-427e-8e72-1f40a3ff9818",
+      "decision_record_revision": "c169aafc-a845-48b0-99f3-ea7a6ee48637",
+      "disposition": "Final merged source remeasurement under the standing exact-final approval. Replaces this batch previous increment 1194; predecessor deltas 1293 and 2166 remain charged once. All discovered integration definitions and storage contexts reviewed, with no new exclusions, feature removals, table removals or historical baseline changes. Response-model and database-documentation candidate regressions fixed. Exact source includes the preserved pinned-default merge.",
+      "restore_task": "azure-ridge-72",
+      "category_restore_task": "stark-willow-95.17",
+      "restoration_verification_task": "stark-willow-95.18",
+      "restoration_status": "awaiting_actual_landing",
       "expires_at": "s4_modules"
     }
   ]

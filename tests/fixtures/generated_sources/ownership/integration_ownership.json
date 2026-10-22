@@ -9622,6 +9622,366 @@
         107
       ],
       "baseline_span": null
+    },
+    "src/api/models/git.py::IntegrationBatchFixResponse": {
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "current_span": [
+        273,
+        282
+      ],
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/api/models/git.py::IntegrationContinueCloseResponse": {
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "current_span": [
+        283,
+        291
+      ],
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/api/models/git.py::RESPONSE_MODELS['integration_batch_fix']": {
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "current_span": [
+        295,
+        295
+      ],
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/api/models/git.py::RESPONSE_MODELS['integration_continue_close']": {
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "current_span": [
+        296,
+        296
+      ],
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/api/scope.py::_check_worker_git_scope": {
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "current_span": [
+        525,
+        587
+      ],
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/api/target_scope.py::_publication_delegation_project": {
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "current_span": [
+        126,
+        139
+      ],
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/cli/auto_commands.py::HANDCRAFTED_COVERAGE['integration_delegate_publication']": {
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "current_span": [
+        159,
+        159
+      ],
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/cli/auto_commands.py::HANDCRAFTED_COVERAGE['integration_revoke_publication']": {
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "current_span": [
+        160,
+        160
+      ],
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/commands/promote_commands.py::import from src.integration.promotion_steps import PROMOTION_CONTEXT, PROMOTION_RESULT, FlowSchema, PromotionSourceRefusal, check_source_green, fail_stranded_promotion_tasks_on, promotion_ref, promotion_task_defect": {
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "current_span": [
+        49,
+        58
+      ],
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/commands/resource_authorization.py::SESSION_COMMANDS": {
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "current_span": [
+        50,
+        56
+      ],
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/database/queries/claim_queries.py::retire_owner_attachments": {
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "current_span": [
+        691,
+        708
+      ],
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/doctor/stall_checks.py::_stranded_promotion_findings": {
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "current_span": [
+        967,
+        981
+      ],
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/orchestrator/workspace_attachments.py::detach_task_slot": {
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "current_span": [
+        796,
+        805
+      ],
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/plugins/internal/git.py::GitPlugin._push_delegated": {
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "current_span": [
+        912,
+        948
+      ],
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/plugins/internal/git.py::GitPlugin._worker_publication": {
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "current_span": [
+        722,
+        774
+      ],
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/plugins/services.py::ConfigService.integration_git_first": {
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "current_span": [
+        327,
+        329
+      ],
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/plugins/services.py::ConfigServiceImpl.integration_git_first": {
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "current_span": [
+        725,
+        729
+      ],
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/sessions/dialogs.py::first_match": {
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "current_span": [
+        86,
+        103
+      ],
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/tools/registry.py::CATEGORIES['integration']": {
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "current_span": [
+        80,
+        82
+      ],
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/wait_runtime/cancellation.py::cancel": {
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "current_span": [
+        2,
+        5
+      ],
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/wait_runtime/restart.py::readmit": {
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "current_span": [
+        34,
+        46
+      ],
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/wait_runtime/restart.py::release_continuations": {
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "current_span": [
+        47,
+        54
+      ],
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/wait_runtime/restart.py::restart_lock": {
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "current_span": [
+        28,
+        33
+      ],
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/waits/admission.py::AdmissionReader.delivery_admission": {
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "current_span": [
+        89,
+        105
+      ],
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/waits/dispatcher.py::WakeDispatcher.finish": {
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "current_span": [
+        130,
+        243
+      ],
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/waits/ownership.py::fence_owner": {
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "current_span": [
+        8,
+        56
+      ],
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/orchestrator/worktree_manager.py::slot_path": {
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "current_span": [
+        198,
+        201
+      ],
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/sessions/dialogs.py::run_dialog_dismissal": {
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "current_span": [
+        104,
+        162
+      ],
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/sessions/spec.py::import from src.sessions.dialogs import first_match": {
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "current_span": [
+        38,
+        38
+      ],
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/sessions/tmux.py::TmuxProvider._await_ready": {
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "current_span": [
+        404,
+        551
+      ],
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/sessions/tmux.py::import from src.sessions.dialogs import DialogBudget, first_match, run_dialog_dismissal": {
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "current_span": [
+        40,
+        40
+      ],
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/wait_runtime/restart.py::_release": {
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "current_span": [
+        55,
+        201
+      ],
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/wait_runtime/restart.py::import from src.database.queries.claim_queries import retire_owner_attachments": {
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "current_span": [
+        15,
+        16
+      ],
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/wait_runtime/restart.py::import from src.orchestrator.workspace_attachments import detach_task_slot": {
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "current_span": [
+        22,
+        22
+      ],
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/wait_runtime/service.py::WaitService.cancel": {
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "current_span": [
+        106,
+        108
+      ],
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/wait_runtime/service.py::WaitService.run": {
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "current_span": [
+        194,
+        210
+      ],
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/wait_runtime/service.py::import from src.wait_runtime.cancellation import cancel": {
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "current_span": [
+        23,
+        23
+      ],
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/waits/decisions.py::WaitDecisions.cancel": {
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "current_span": [
+        240,
+        303
+      ],
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/waits/decisions.py::WaitDecisions.decide": {
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "current_span": [
+        142,
+        239
+      ],
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/waits/decisions.py::import from src.waits.ownership import fence_owner": {
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "current_span": [
+        27,
+        27
+      ],
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/waits/dispatcher.py::WakeDispatcher.commit": {
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "current_span": [
+        39,
+        129
+      ],
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/waits/dispatcher.py::import from src.waits.ownership import fence_owner": {
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "current_span": [
+        26,
+        26
+      ],
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/waits/human.py::HumanWaits.lift": {
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "current_span": [
+        20,
+        102
+      ],
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/waits/human.py::import from src.waits.ownership import fence_owner": {
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "current_span": [
+        12,
+        12
+      ],
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/wait_runtime/restart.py::import from src.orchestrator.worktree_manager import slot_path": {
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "current_span": [
+        23,
+        23
+      ],
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
     }
   },
   "exclusions": {
@@ -10041,6 +10401,7 @@
     "106e645db84ab73be287deac96cb2812dde48227fb74229b5e297c465fc6267e",
     "108c77cd39867b01e1233d55f6735045fa6ed922ba800625bd1d2a9ed9b657af",
     "109836841531d25084aab7647adc59e9bda0aef69b5c584295d51668fa131c80",
+    "10ab6e7a03f376894df34907e72a6e5168b7c5d8b382e20787d454aa86559796",
     "10afaab36e91114eb0d440e67ffb791f04ac39bf1d2d540d8579b2499718b057",
     "10be7ac93fc3256348d4da7e800243bfc3c33efc2323b16667bed829fc5707ee",
     "10ca6e10576953228c38eb0464df215c05efa358650b0896119dc5070b8f9087",
@@ -10188,6 +10549,7 @@
     "19b44a00bf4df714993606425a543e04dc09e0310b397bbe0ae30970bf8a4853",
     "19bf7d1e546171408b3646761a169a731e18f06ce3fbab93e51a5bf7f9f30726",
     "19c12a2bae981ccf2a30c9b18cdea5da4a9350b66a2621f5ebfb978ef1876078",
+    "19c56810ceb6404a9b816f71d5fe203bc844491bbd29b44b64bb6da8787ce52b",
     "19c83d72c69ae76306f05a6429a32db5ab7def6e43d6394a941ec72628dadee0",
     "19d46d98b48f97a4e59dc605db389be2de88e08f539b430c4bd706f2f7ff3bc7",
     "19d4d473518c059c1375ba839382b61dbd826647c08c83810a5e1a7c358faa58",
@@ -10238,6 +10600,7 @@
     "1c869f6dd687036730d241e4806ca9a985ede6dab771b843dedbd9a3f5185b2c",
     "1ce20300ff8182a9a879bebe754c8d8cfb2a19d2dec660e8707f4213818d2664",
     "1ce7f2d49468aa17fa840338ceb0cdf4444399b0cba97a4203edc9fd5ca4d310",
+    "1d07dba0eb8b092b6e8cb81fec26a6716042368db97b92d08aa8138808bb37e0",
     "1d20c96650de54063f92168337873a3eb3e44d51e565c18039f4eefaf6627670",
     "1d46ec9dd06a7d855b34d8bd65933ccc8d73657e3cc66a7f1890bebd7667a8cd",
     "1d4a2d8a947fc907a028b77b79574399106dc9c3cf557b127a72fd9a7fa77691",
@@ -10321,6 +10684,7 @@
     "228b986ea37a337e7d1a5f3e9098f2a36f4a745c05d8624eec86f73434be2369",
     "22955a1da8b1ae4b007a9e2e97f8210a39c3187b1ff58d82369463e9fc4ab599",
     "2297f986dc463caea169faf0eb5e8ca01e011111e00aab81176330253a4e1a11",
+    "229c150376f23c48525301185920db9ccaae966d8445cf34984cd2da0b102020",
     "22c86579b6e7821d739340f2218711be9a1cc43a57a29f83c4d5d380aea169ff",
     "22d7e6e149d72e1a2be91b0a6a0b80a0b9e5d8804ac0217f43e586cbb2564812",
     "22d94ba92b30ee04b400b466b9a0dcdff6b4824833c6f91e30101120cc196b90",
@@ -10451,6 +10815,7 @@
     "2a92429e5bd1154731db9fb2b39bcfd15799363f51ba8a3e6e1c03608eedda83",
     "2a9322660e262fa03e32ade3d3713e4dadb012f8efe30b070d31eb4786077a3e",
     "2a9bb63fc75fb886c971068057e274aa79bca9bfb8cd65a3ac6221798f05fa8e",
+    "2aa6bdaf4bdb78d2832fe536cd58cf2c91f95eb4c391d74f79955d25403ccbce",
     "2abc691fc963eea92b84039127ae814c3dced49232401c071611b72583eb179a",
     "2ac325fc27c4a7cb008655a118858e55a7c1176202469f124fc639f14a11d217",
     "2ae33978f78501405b4d4a8658dddaa1e5f1270848b13f23a79dba3768732f26",
@@ -11394,6 +11759,7 @@
     "656d947f41757db65487e12643cd64d3aed914c9e9fcd8e4184b3629057091b5",
     "657905aac09c9817e233984948d3790e7a599c4a6a58bdd516be49d5c82fab09",
     "657be4ce3c75e37272774ffda727faa11c2b673edc72ca6b504395f04d65e702",
+    "658d05aba44bb99bf3315bf484d0d9bcdf6562694478853f416f503baa3d489d",
     "6597e3572a11cb4b0cfeaa5c09acd1c79badb0f4a42293d63cbc0e71b124c5d3",
     "65a0dc85e7f9e3a1d56dc7320b0eddac8bf6174aea0643f03ddbd91217b54683",
     "65aa0649a34dd72401d543eddfc2c3fc3f00f4f3b3aea8293941231e93091761",
@@ -11409,6 +11775,7 @@
     "6645f103edd952aacbe39942ccd3f4f75b619b18f6f607a5ea2bd2fb57ddd508",
     "66562d52ed2e084c8a604af008d96281e937eae4c926d4b0b6238e0cdd8f8ad4",
     "6660e85d279ba5fed59ec4e89b5cae60b07ba4a8bd6340e27afa578d9af468d8",
+    "6664c73c0b5b3481e7de76a19545338ffd20d9e24d1bfdad776358c52a774ca0",
     "6682141ececa691e9a17ff958f3b6296c316ed0a9f9a9e396e2693ba73c08a5b",
     "66b218caeb50fdb45ccd5de0caec280ea70b2027bb162321788409b4316d55df",
     "66d78f726181ecc050ff9882bea39cdc48f8260bc4395d270084b8b055f9fc66",
@@ -11576,6 +11943,7 @@
     "7157e33cdba996812bdb7d7c6fae2929b3bdd175671c2219e26e8655cd6b2a88",
     "7158427aa80bd7f52a22f07ef67de537922f8954a20a77564ed76011debf418c",
     "715b32ef927574739dc297ad23fc74440f50fc1637518d33861f8cf5f0b94b0f",
+    "715f3bd6b29a490eae520d5f9d22235a4050f4d8b65fb86b480d1d141cba2c6b",
     "7161f34ebcf7c38d25d55f9dbc469c4218d02b3c4b9d642df7a22bbac934929f",
     "7168652cdd12175d94982c53d8416d757bacd2b93a1a12b49d807cae731428c7",
     "7173985080d8fc112e4b093a7ae212d2027ae04e69ce2133ac715c5e10deaf5a",
@@ -11594,6 +11962,7 @@
     "71fbe07b0f0f071cf8daef3848f33d635074a57f0eb150557ac7a21f2b579171",
     "7206b1109011c63d7a2b976d11b04c585098fc99b4e48b3488e6798296d7e76f",
     "7220555fff9324f3ed8aad8eb5740ff84b5172e003653b6ba1502a183f29bb86",
+    "72250fa356fd585f1ff3ace2752f5b66ef46ff299c317cb7b429c6edad297347",
     "723f685a7da7b35989d27d9d6a0b3cd35218bf7e89cdcd3496e90d0d5614d62b",
     "7258f4a7341188920fff7ec6db6794c8d4510f33eb144072a5d29bd24c59c9b7",
     "7260516383575d5ae86944ed702ab0643f7d361607321a561eb9e3a1039854ee",
@@ -11625,6 +11994,7 @@
     "73fdf22acfe3bc7054b183955de6cda9937b58aa6a46ffc8eecec1645515828a",
     "740fa17b919d904b5d24b934b0726de1dade8e0ce174a496127882cf67a52a97",
     "740fd34d7212103c4b9adc1d8e6bbac21e86b1757565aa065e2f0fbdb5b70310",
+    "74322cbe14a7c0ff186c6edf7cb210155e10e8f1339c563028a9a824cbebbf68",
     "747050c3354b6ccc20acd9bdb1b46917f9e12a00b42cb7603790e0f8e9ca71df",
     "7485a77815a3a5d6cf08634ad0187a403b04e621e61767d32369a5888adeb5ee",
     "7485ac8fd70ccab52af49acf6756f4cb2f568366fe9422925bdf6f9f8e8ae91e",
@@ -11862,6 +12232,7 @@
     "82f4b5e21f5335915c0ed458a61913e24674c6b7bf956a16dd18ad4496ba057b",
     "8379e20b31868ea983b677669f8cda4bd971cd351684e6a4e36905057cfc1750",
     "8392abb87caf406f33153264e4933e1367da2b259b6e39ea713576d340c5e60b",
+    "83d73602c873a7aff2c2aaa253895c950d442864088e93ee7c269ba3427a6b20",
     "83e6e3dccc390bea432151ca18f77740afa012561a136cbc7107c5a6f2a51dc0",
     "83f124c699b3c32b8df9fdaf309056efe54d4b577dfa082088404b75048408a8",
     "83f8b858db7c17a04f9ff76db9c0f4194a363a438db881264f761269bbd5776f",
@@ -11966,6 +12337,7 @@
     "89ea952e9ca03c865f58f78643bda04cc5839fb357dff6494cae4f66e99985a8",
     "8a02dff09e0f1e30f279a179a99050ac1f22c9cdfbd6e1d0a4e6a0a7ceb4224b",
     "8a1171738ada8f217fef777cf13f368b201c9a3892d90279f3da1bdbf8de42ce",
+    "8a1ca2a768760aa968a1c9564664d1ae7746dfc51ace3bf4ccd362bd19b9b858",
     "8a35a798640af4b51fb4183f75f654bb56671c16014bd007eab5f196d3fc9f63",
     "8a4518591358e46dc55c8aa85426a931b90a0af59e5622bd57a800749d4e7200",
     "8a4f42cd8614fc205b96b961728ff5f79453ea2a358868d3a32c012010402e5f",
@@ -12020,6 +12392,7 @@
     "8d94c4aa1927405d073102279777a995f5c329dd23142368dd952bca0ed206eb",
     "8d966c88009997740eac07d26e9ff886fc8dbee9a43a4cd52393e90d37a0fce0",
     "8d9dd0a5bdc981ea66eec125d9681ff37845d0c86d75e8d2f7a90fee74865e81",
+    "8d9ee2ef6ac3cf110522e51587a632e8420fe305b80a194b8053ef100e5e0909",
     "8d9f80e9be893d279445a70e9e8c11a9e438c17e6049259a6489dd6c0e61bd55",
     "8db461ca6476869f0fb1a076504d232ba3e9301514486ac496f6f3755cf9eefb",
     "8dcbbe437b0da0b4de54a90e5decbbe09e1676cda9a3d0228b78a92923baa3b3",
@@ -12071,12 +12444,14 @@
     "90ddc3826977a05a54d05b28feaf281d3a1ac72678289903b48905344f8443c3",
     "90ee4b6a72d7cc14e3af37bb36f027bdefcb130917805781cc9a5b8ccbcb7557",
     "90f66ad15b6dc5b06d1588f56126b12bd05a4e0896f514f2b97fa20f8980f9e1",
+    "910dfc7ccb9f06d4c4dbe3969c7b3bf55af2fe6a2b8ff2228914c9e83119d04b",
     "913c1f58d6a8a70b740f86a8dda5fa552a1b41d9e4e9a5c889d917004be86536",
     "91429664aa4de58ec13697b799ba8f0ca403c5d2ac7b66ef5557e15f3a25f05a",
     "91663114323349b5bc0b6ee679d79b416b5930a65a950190fec41495c70b55c8",
     "9169e277188bb2467d0982787c1171b88360af735cb66a8a077ecf0372ab0563",
     "916e8528f996f56ea0a65e261d9341df9b1794c1f916a691ec80ea2b99cd2246",
     "9180d73ebde3bfd781a4fcecdfc3178f9242e873ea7e5e5261b82cbfe49125f2",
+    "918377c3622e069e34eb80e02872deca9efd64afdad9ea0e1525308d3ec2e7b3",
     "9198535fe0031779730cecf85f3d132be919034a4a3c6707b494d9005f04e73f",
     "91a2d67292ff9e3f47206b991c566f3074bf134f0a513d52271de7081bddf1c0",
     "91cf11dbf6567a0d60c7f5a12c420150b314ce2054e4c739778f22b1179e103f",
@@ -12134,6 +12509,7 @@
     "951969ca02354d1967b8e784327ed26a3fdfd83169d3291ff5c1490081ac7537",
     "95581c0965d40559a0aeb3e215aab9e72a7905ecc47780918c00aaf441c54240",
     "9598b6294d2474cb0d068e53e96429e7711b9f7e63877f74faf43a60fe54a974",
+    "95b4ea4ab4bc9824966779ae398ba5efc1c6afc85ae4bce72524f40a7c9d8503",
     "95eb6473f04b40cc7cfa6557cf2a70aa2141d23388eb007f94a089c93fce8e9b",
     "95ec4ed6582a92cbd0718af5bd1318eb25700e84b7f52ff4160a9d1828094d9f",
     "96077a924a92fe70d1c2c62076c63ca719f12342e45a7f7204fc36fa9eb7771d",
@@ -12210,6 +12586,7 @@
     "9a32d1b33cd8dbc7b7e91a95a7632db9417434beac1507783a3468716956081f",
     "9a4281864eca6ecb520fb9e78538a2f44bbc29b0b799a656dc566042bbfc7925",
     "9a4ada2e709b3fbdde0b9e77569571f55abd53aab9c25d25f45211b8f1810d45",
+    "9a501c9df55523800efe2edcb266f3bef99722aa9528ca2abffa5591042580e3",
     "9a5194e65b5d6725a8a78640ccb0c54da03fe22fb0cf202324cb6b49738ddf8f",
     "9a9b068b7d0ba1076a373b22331bf7d31d79da2dc3fc808c2e6031de0d0f69d8",
     "9ab7095b8fbc1d7f5e55dd9a0ee61458f6dded259d5440ac1e0cdda3c8a69558",
@@ -12287,6 +12664,7 @@
     "9f4e3033047037a9c3c0334be509a37630632aec948ab2446039814ccc00aa3c",
     "9f573dff8e3f5a20d7230ccd5a5507673495e85eab92cf865817a3c56c41af30",
     "9f57ae38d11664e3deb77511aafe3b3c7c15d17a381bfbb6adbba7ef62baa056",
+    "9f5c608333b6be98df460225a5317573c7a381d05eee6500c59f468a99ab1f86",
     "9f710a8c5fc247e6e72cf848883d919bda05f8e38e772fdae1e0f2c5bd22dc11",
     "9f7701e6aa78b58a57444bbae41f0d44761a5cb93a7774b457c012629693b588",
     "9f9599bb281c6fd0bf9cf917314ea355f2d14b20ce5d5ed7bbee2d0e39166770",
@@ -12319,6 +12697,7 @@
     "a13e63415aa6c032489382a25af54d54e191cf3f5d16071a069e3eb34164b10c",
     "a15d81ea3a8db8b375bec9d9d84c174f2e95e5b6c553f6227c94db4cbc6b488e",
     "a16c38a2954804ad4a526e5eb25eb91caaf949e0ec6d8dc89bd7fdaea987fcb8",
+    "a16d5c2a70e125069b956b0a243417b47ae201af26972caeec2b67482f07406b",
     "a16e45aaa16b211bf95c53f2f2006c44d76c51be2f286594576d6e9e394fdfc0",
     "a177a6b1182537b54b244665945c8a15fbf5c17d405de5e8a03f4f8e56856d33",
     "a1c3cbc7fd1d7c69d7230b46309bfa1f7cdfc6a85faf3cf04d8b4e2c602e1f9f",
@@ -12436,6 +12815,7 @@
     "a92b134510b9aeead5e82eec903c957fd2a9d03f8ab143cd2c726f4b91c0feea",
     "a92c6df1774d51195e4cbc651ae952eeaafd2baf8a68901f52dd2f1ee2465aca",
     "a952e6565511c10c4b3cb032335c18358efb338ca753299468f2a0b67e447a8f",
+    "a954e8792b9f7a1963c8d3971e98e66fd0f1bddab2cc355d73f90868019ff377",
     "a978ebd22389e6928ea8b90a3a7df9f839306a69413dccde69c13ea1aafa1020",
     "a997f6b4da5b04758163e6c49415a7cdc1987a16bb3011f0e6d1f979e7d30dc9",
     "a998dbe0921ab54b0a25e80319fd59354e399b3c62604f389d636c82e6af71f4",
@@ -12465,6 +12845,7 @@
     "aae79c56012183b21f8f557c86a32062e1845d1391c10611c26a9b5c40f785c6",
     "ab0072cc8991bda2e54c6842dac8ecc6ebb234ddd331430296e31955d3471a75",
     "ab12e57852bdfbc9c2f80d769934f749b1dc9bccc0f831742e84fe737181a18c",
+    "ab24cb8fd409de493de17952c00601b552ee5a8349f167f83e892263d937dd86",
     "ab2cbea7ce3d53bb7f2b686206534cb24eb5fa8374aeae98140e4939b383b716",
     "ab2e4e7c0c0d10d63f0f2b6cb8227def2f2d96f242d2580f24be14642496d42d",
     "ab377165456cbb0203d5cf78d00c58f12bf038a24e0be9fe59aacff2bcaefbf3",
@@ -12495,6 +12876,7 @@
     "aca4e4a5de68c4f269035aad9662b648518a3636317cefa4ae9a71ec47e47d4e",
     "acbd9654ddd611aa55c1ad3f877e63bf14478ee91616f3506b57d566bd457063",
     "acd14c090c16792c4e755c56cbf82196df25328e364a0bb9d6cdd2562f309159",
+    "acd18e95c2bb4048e999ee03cb2f5162be5fd85256d39cddb45c21d84e60ef1c",
     "ace62dbe95c8bef087785d420ec4b896f1e1dfd4bc832e06a3f7b40e8224f4e8",
     "ad09bd759ba04d930100c64cc43dfa573d33b169e09fc47f0f3bd8b8a0ce4983",
     "ad0d3e4f99f991a7eef497b93362f57aecf36bfe14fd61126922e0b9560527db",
@@ -12502,6 +12884,7 @@
     "ad1faa81b6e0c909d2f41b0adb8958865124fbe92e34ec6fce2e8f129be499d4",
     "ad21ca3b8bce15e8123c22f21130ad0c920cdde9725be6c61e8659f11009a539",
     "ad6262e870c8d99d104ec0fc366d845edf9ffbe11f1da399089d489660570ed5",
+    "ad6d4a0a391ae6f4258668944b00a83526e1fcc8755fe8b2dab231553ba41ced",
     "ad8599f367f46c4d5249f2ffcb99ac2e24cd05f16ff30729b35ea7e74e77284a",
     "ad8c208b82dfc0e267e13cba6fd490c3fab912fcf590dcc1023966b35fe71e70",
     "ad8d9ce8f0facf0e3bbabbc51e765283f13354eaefa96a3c15c2217c4ca2020a",
@@ -12683,6 +13066,7 @@
     "b7b7cf0e820032e2713463e45e3cbddede4d94b4e6743ea358f2dc496b9ef913",
     "b7ba05388d1d456231f4b3b7969feacfe43caa93bd823ce2243719e4c2ed28af",
     "b7c1a7c1e65aebc051608bd4da3ad89c46e31238270acb64bac1c1880a16a763",
+    "b7e2eb40653a85fcb1ebc479533338eff89afd0f12f4a27f3050cfa3ab31500d",
     "b806e43796cb17eece81915230eaaa8ce5bcfd64e468a0e2edc2fb9c56070d50",
     "b811874a11ba530aeeaebf49f9698ec676d8b583bc39ac04622a582bb6238052",
     "b81657c23969d6142b6d4606112ebcd8016b248b260d13596c2c82b0c8c7c0d8",
@@ -12699,6 +13083,7 @@
     "b897f4daf9136c6415e70432760e10400514a014f1248d0a6cf123f03b68abb5",
     "b8992aaafbfcf3cbd506d94fc9a759ebfc36c4ace9170863c431c1755dc41390",
     "b8a126df8dad014f375d7544c995d51099be409aaad0b58d7f497a5a680cd972",
+    "b8bd18cfb00f392bbd7b72b713bbe82a39af4b01d88a0db0c4ef58ee083215af",
     "b8e0b3c2a24836f997432831c1ae6342b7ecc6fbc0d9fb604c7d9576e9619b12",
     "b901bcc8d048cbed4332d8f19086c3bc4ccc9c17f2007ce1b12842a713da4465",
     "b908a31ff4b049b72acc294844d1d626353f68b7c5ca27dd854de53976e8295d",
@@ -12822,6 +13207,7 @@
     "c02b3152be14a6f51e6705c91cbb277af6a7ab0a3d00b49c3523b716b9b7e75f",
     "c03074d86c9306dc76ffe762cb56526a12cb989e83af72807c899b4f43b15ec1",
     "c03310b1c13047f795b5a25d4353ff3a922a209f796b76bd1aa8d16ea04365d5",
+    "c0437e95929e0fdfdb7e7952dc919ace606d1eba60a3b28a962116fafa1cf095",
     "c0463f09e96da337fca613a016c4a0308549c60f767e986be9cb58944b5caa9a",
     "c0531accd167079d2683d42b385f529da15518464f9bf0eade80598836184432",
     "c061a58f9a7e8745d1ecbda373ddff9f2e3f6c666a6f767b26cff14d6c7e912a",
@@ -13002,6 +13388,7 @@
     "cc6a4fe15ef124175237c10ff46989755a84b484f5f3a30d286e97717f3c228e",
     "cc816ddf0a16fdb994c0b53c0a065cca626153d2e9ff929a1ff51949f7461569",
     "cc8d91c0637645c549f528add8b66a3ce023b4ceef4aef885eebe7d20564d7a4",
+    "cc9561d5cb1c9e5c70e3208905fcaf7f5323e29f0311548a91091c572b351ca4",
     "cca540fcd91cb13ae852c47e14f31fb89a28916fbc101ef9624c371bf70c4f7a",
     "ccadbda9dbafd14dbaf598831cb828c3144b13de6bd2c68b4f1d9fe60980ed13",
     "ccb7619ebfbbd6c57ef7e58274d5caa920c324cd08cd9e20bcf723c996b961f2",
@@ -13057,6 +13444,7 @@
     "cfdfa66455321b9e728cd4fcf69138da1de8c191563a33aeb535d409daf5233d",
     "cfebb0aeb808ece68b977430dde6c0b0040ddba014b00c4f28df9290ebb87a52",
     "cff9351872d83bec1d17727f0a7afa1fc419b098715a91b14bba5686e8286c13",
+    "cfffb4f336d4bdd4ce6be340db388f049fd1805b6d3a5ea2de54e6dc4a0c664f",
     "d01779f0ba8f89ffe1f24352430e9ece202fea5910b65a433f4a10f8f9433b7f",
     "d02e7cbe207d2fc5c2d8469e2b18c6e0ab553c648f8c888f36d511068becec38",
     "d05b549fb012592d719ab09497ae7208b8b9210acfad5039ee5f2abcfcfbaf4d",
@@ -13100,6 +13488,7 @@
     "d2ec7eb16902045331024be99e8f23827443b4efc44e8db527e63f5278ad04fd",
     "d2f6e6de4ac1aacf429d1a641ae76c1b108ef897533d95e1b807081f12c00c56",
     "d2faced0212eb32930f31f45821a87b5a61bcdc54daaefb2140b7282632d5fa5",
+    "d2fdf35d58d7a7635408fd8cc2887e7eeb9b0b640d6dd9c770b9c19b1b42eb2a",
     "d30a8f042ee77b1c9ddb4576e536ddb909807ef369cd6cf1435a282a5e51cf4b",
     "d30fdada1269b05c250e9f50c054e59b521c2b21f7fa5bba235b92b35917c6c9",
     "d315e6d3e9f83eae18775d320b926ec2e1f75e5b89fe813545d383994c326749",
@@ -13167,6 +13556,7 @@
     "d656c8c3e95122523a8e5db63986df691c8a75446870c230f07dccb7960267a7",
     "d65ed3128bf1f47b64ae95a97157183e5770f286f3a13d8861e4cad4b738c80f",
     "d66ed8f4366ad2d3665ee639953a61c9a2fcfce949a707a52ce18e46a97276a9",
+    "d67ed86f95d0052bee7598b6b9544abef510b27031ba858aaf7531ea243185f9",
     "d68c9ed9be4c7f06f4d50cfabfc471cbe3f40c6c4ab505d8887d20e1856b31f5",
     "d6b4c60ff5adcc8c80ffd3bdb67367a0c28413a95d6a20ad816fd7fae102ee46",
     "d6c24859041415cbe8be29937b6dabecd1c2cd122738c6f7993198f992d30725",
@@ -13214,6 +13604,7 @@
     "d9b16dfced0c5cab617cbcff8e5f4225f3be9fd48d9f40835f641fec42e9a9c7",
     "d9bd695b7ac52b4d80335025471e39635bf9a69fc16acf59f67a24a9869227a3",
     "d9d506615933b87445691cec6f513ac1830064a1a3a22b1a6ae980c551abc8ef",
+    "d9edcc114fe80b0dce75da45385bcc79639b6589b3098b981d98c1e6276ad03d",
     "d9f494c76dc926303220561be6f2f635a1f37a7967a70f422e4778001991dc8b",
     "d9f86e1922ab26535dc699b8a05101b18720937defdb6db5fec5c3c5d9b83437",
     "d9fe5f397c1b7c3200bad5020f2104a8e866228967d1d9fa7b495292f8dc4cf2",
@@ -13261,6 +13652,7 @@
     "dcc8c66cd08a7935306ccc84725503adc39f71b131c59c224ee6f27883ec5f97",
     "dcdb9cf28269429b0499d44e1389b6026f3d500af87d4ec4ea42bc2cd90b1941",
     "dcf11a19c03392bd1f4a1b7b70454dfe9d264aec4c7a027cbf6932ec9acba0ac",
+    "dd0762347fc35f62737319c95cb3ea80ae1b03a679143ebdf136a561956f276b",
     "dd14c19ac8c6f66a8daa43b78af4cd0ae83a2ddfbdd70079f3732b39534cc7fd",
     "dd1f90df6a4d76a231056b3fa18e7a72210050c5eceffa276957476e2ffa9045",
     "dd2fb4b460eee5828a783d708cb8271ef14943862a558c4a6732513b4238bd1c",
@@ -13342,8 +13734,10 @@
     "e1a49442d8ee8227d0f73d029f5215767568b6a2b6df3b4ae00e0c7974672635",
     "e1e65664afb4a6588411eeaaadf9a649a3db180fbf71fc425d126a1f4cff0239",
     "e1eeaaece5241f88da5f63fb99dd467301ccf4c3674797965372c3575af1cf6d",
+    "e21df5b4e47f2b7cd5880b07dad45d319fb30aabd97977c75f3b002cfdee1019",
     "e232dfc129b31542b3329806b5406e3a7da41cb6db179b43508883932fe24da5",
     "e2426fb9755376ee39fc37789b01e006168644d84b246c1b4a7c95e69667a248",
+    "e24beef4871bbabbce215f94f7fd79cda4f636578aeb2a4bfb555f50f0329418",
     "e268fb98d71482b83ba25a0d84f7a8ad314e2f16c931e56b02202c4467f813c4",
     "e2794048b288a6447941337ccbb74eb89bda5159ec49383913b37d6ace326f8e",
     "e2a75befac9890033de7a30e401068af8074d92726a8a3fbf0d9ebde014a5223",
@@ -13418,6 +13812,7 @@
     "e6f56717f5bd5b2af699175fa4297c296d012f95f37b1bedc533d1223527a533",
     "e6f72c2cf478bafd35ccf05587b9deba239ebaedc5ad5658a166256b48d4adf2",
     "e708f7ac538661b2a1e7c3ac4147a2c90dde8dde1ef65b4d2498fd8c2a099f1a",
+    "e70d2a60b9b8d8b22ace97b1b0a4fbb1acd3956bd5d38220dd07e265dced59e8",
     "e71a937478dd5779f29eb2784de6f5601cd2cd92523954f53eb0ba2bea3bfa8d",
     "e732c9189039f57ca28e494b2d606bc09df5664518790be314f06b7dbb94edfb",
     "e735f8eed55feb4aecd61929f70dfcccb96d5e640d292356803432c4c7f877b4",
@@ -13514,6 +13909,7 @@
     "edce44759e113de661a8ab404e12326ccee9a67a9954e35670f10aea396fbdae",
     "edcfa126d90dc92663777ec16cc202c6c4706e8239919df75071a589743c3134",
     "edf240b24ded5a3a9fb5a01faeef4eda2875b9edf83e0dcbc04a929ffab723c1",
+    "edf6e7281ae9800d741e0022b248b30e4f80d0a0f354dea006948c2d8e4df340",
     "edf7cd4095a07cc71f89b15d92cc5a9d496a95cc1de36910015a8415a59517ff",
     "ee0d0ee92aae9ad79db88f322b989b236b8193dbdd03a4587bf556b09ffbff51",
     "ee12e23b4a27702ac43d3afe2c84e4da685566ee227bc8b295857e9923832f49",
@@ -13536,6 +13932,7 @@
     "ef863ba212eeba97fe05f0b59674b712fde0c1af67fd62e449a1f4fd4214f596",
     "ef993d1671298ae2925ad99d6de5334b68def3e6a102353ae3d2135b873d7b61",
     "efb3a131fb81f3ee541edc7e269537e7782addee0e2951f7247fe9ba543ffb93",
+    "efb4ae357bdd1737a1b513e2cc943c4f6a60a95aac874ac98195003ba838998f",
     "efbb71f4f495b8e0d3f0334e7e2c235999e7090d10d2bd6395a4f97ae45b8664",
     "efc0d6ced1c69686b312617a726db2993e261db2ec13eedbb7c44cd107646485",
     "efc1a1e44f47a3f1fbafa6a0c4e7bf3d07e4e7611eb195a2b90defeb0f62a855",
@@ -13573,6 +13970,7 @@
     "f22d2fd6687a553e16f913e7c29b751676d544c84e0762598cc441c70db3a6c9",
     "f2381568b866cc6ecad207ea44b3ba870242a9c1251dec7a45681adca62c2008",
     "f25ce1911cebb826367a19884c725dde2137fa5edeef5b61a73b19bdcdcc9737",
+    "f2676b4d43f9c5bc0727c4b6153e22f713fc8914deae1649258d2702b1ca1f99",
     "f2b6860251b27b6dcb32617d9c82741a5cfe01b6ec8f9104c9a7d101b24eb08a",
     "f2cf72c771bb4e9c45517cc9db56ed07eb55f35fea6c316026e64bb0382ef059",
     "f2f5112495035100128cc43a2043a227eff35ad11836242c463a92934686ce3a",
@@ -13630,6 +14028,7 @@
     "f606dd09813cd40254578b5aba0aea2606a3c619ba9af36a254ba0405c0faf32",
     "f6085aa0f1607b08951b19448d7cbb290dd7cebe1c5c686200bb29c5d5054dd2",
     "f60b2f01aaf23bbb2f76a962d1069f17bf7ceda5a8a53da05efd90d6bebc9f36",
+    "f60d647e80c43fbdb93b12cd2a90701fdaf89b5b7f6a2c4bc79bb9194ebe32c8",
     "f60d8e566fbad8af49c050a44e7f8ff667aa6d6c2bb35bbdfcfc820f03f990d8",
     "f615f8ff270206e7667051c8cda30f0bd228f18973dba5827d2fde27ef6e34df",
     "f61b0f2caf4e4ee5e788e343552665be74f0b322669b25c5bd2bb2c92853cb17",
@@ -13683,6 +14082,7 @@
     "f8cd38e3f69d396956d9c0f238169afa0e35cfbb45d686d964edab1bca66c1f3",
     "f8d3a2afcc2890f3ae7a838e24659f46131cf5f74a5368d2af4e19aa93c2573a",
     "f8d8b501c89e2845bb4b10073342f248ca87f0c059b7bf665b05cc61839ef423",
+    "f8db0594f747303c8591f21da4534542071335ba7fb48223af289c1747bd58fe",
     "f8e26eb000ea3d95181b67002e04c7525ae8fcb55a0ee4b11aa454967b539846",
     "f8ee37b8dd692f25262e907acb71a508e316c8a8a8ada961bcf00eca8e10fed4",
     "f90afa9b5fbb5729a75b5c02d99e7898441775e9f12dc7b51d5a36821b4fb96e",
@@ -13696,6 +14096,7 @@
     "f973740d397a0627a51d4a98c08f0afb1bce5d0a98d88afc124d184f465c8e2a",
     "f99483af8b89a22ec7606a8d2390f8cb0aeb8ff61dd552491316f7ec033e8852",
     "f9b8f0784d4e447026f63873fdec46c86d7abbb65021b5ee4317988cad4a974e",
+    "f9ebdf31fbb261c43a786d9bebaefd889996e778853a454446aa73774ca23f12",
     "fa08de5c4776405342c765887c4f3365afec63695f7df63bf861b0e2847eca90",
     "fa15cdf50efbd384ca11a6aafd60a8d66448e75f69407765dc3bf8350e03cf16",
     "fa2de83dd220203866673352f17129c350abff873158bb12558011c84bb9442d",
@@ -13741,6 +14142,7 @@
     "fbd1a025e8e7e9f3e49b2109dec62a0066742387827869c6c16e952836a1ed62",
     "fbe2a2b8791eb5c949463f8b3ffd604fc0157342f5d019b776c5f31e780dc9b7",
     "fbe2f321c49b195402530dddce9a8f3e341bc6b51e404b694cceac2de2669ea9",
+    "fc00927f9ed8ad1325399b0d899a9d12af62ad9d7cfc3e62c274e3a09ca4f910",
     "fc1782ce6229f9780d764be33bfbc262529b96c6f68fcac849ed07db14170275",
     "fc29ab83286fce839d0221fbedc79473115a8b829e59e8919627461fb62ffe33",
     "fc2d5286d12ccd27462b13cf507c9bf012c93efc390169a75cc1a497f1965196",
@@ -13786,6 +14188,7 @@
     "ff0ccf14adb9aab771f93a23bee76658be558c22c1a4e84107f05be850b121f0",
     "ff20b1fa23e190b17e96bcf64e801fa3d2e7c7c1308d61c87a3a481b6f0db0ac",
     "ff466b29585e33a2b611122c515234dfbbf69eab7bd4cfb4e6205219c9577660",
+    "ff4bdde9433a979c0765e5841084ab686be1a6d0d3b82ed734dcb9262849ab09",
     "ff5afa62d1fd409b436180606cf2824b60d1e1e1e597b7816284c5221ab219da",
     "ff6374ad42c362fa4211db240fd0fdba246c5ebaca88b638b27fde032a4760dd",
     "ff69640850c7fb5bf7ee1f0947ee258adbc9221569a8523cf75d7628eca478ff",
@@ -14293,40 +14696,40 @@
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'work_commit_auto' Re-reviewed after the feedback-obligation close guard: audit call and payload unchanged."
     },
     "src/commands/surface_commands.py::SurfaceCommandsMixin._cmd_task_set::6081f9d27dc57e18ce5f31c465cfb8159e76c4d4c1a37d2b8b8d0c741d9fbeca": {
-      "line": 366,
+      "line": 379,
       "owner": "SurfaceCommandsMixin._cmd_task_set",
       "call": "log_event",
-      "owner_fingerprint": "01f5ef4b185f108d02e96b986d4a7e63015a291600666fd3ada58902fb779d6c",
+      "owner_fingerprint": "f0c61a6c8a2a1ae6fa3de00bde48513b752d862cfe4c7d381182a14bfba08d45",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Audits removal of an ordinary task label; label history does not control Git integration or branch reservations. Complete-candidate enclosing context re-reviewed; original disposition retained."
+      "reason": "Audits removal of an ordinary task label; label history does not control Git integration or branch reservations. Complete-candidate enclosing context re-reviewed; original disposition retained. Re-reviewed in the pinned-default merge; the same call retains its ordinary audit or metadata purpose."
     },
     "src/commands/surface_commands.py::SurfaceCommandsMixin._cmd_task_set::8513b8ad44440cd5bfaed1abc65ab824b7856f8b84f009f84e3bd7f9a0f86647": {
-      "line": 373,
+      "line": 386,
       "owner": "SurfaceCommandsMixin._cmd_task_set",
       "call": "set_task_meta",
-      "owner_fingerprint": "01f5ef4b185f108d02e96b986d4a7e63015a291600666fd3ada58902fb779d6c",
+      "owner_fingerprint": "f0c61a6c8a2a1ae6fa3de00bde48513b752d862cfe4c7d381182a14bfba08d45",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Stores the task work_dir display/context field through the scoped task-set command; it does not release workspace locks or integration owners. Complete-candidate enclosing context re-reviewed; original disposition retained."
+      "reason": "Stores the task work_dir display/context field through the scoped task-set command; it does not release workspace locks or integration owners. Complete-candidate enclosing context re-reviewed; original disposition retained. Re-reviewed in the pinned-default merge; the same call retains its ordinary audit or metadata purpose."
     },
     "src/commands/surface_commands.py::SurfaceCommandsMixin._cmd_task_set::cc1e1a1a54bb465b81b098e4b9a03d3717342bf5a286fd44dbf8b548c7a49003": {
-      "line": 378,
+      "line": 391,
       "owner": "SurfaceCommandsMixin._cmd_task_set",
       "call": "set_task_meta",
-      "owner_fingerprint": "01f5ef4b185f108d02e96b986d4a7e63015a291600666fd3ada58902fb779d6c",
+      "owner_fingerprint": "f0c61a6c8a2a1ae6fa3de00bde48513b752d862cfe4c7d381182a14bfba08d45",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Writes task-set metadata through the command's key/authority checks and set_task_meta protections; the generic adapter creates no separate integration journal. Complete-candidate enclosing context re-reviewed; original disposition retained."
+      "reason": "Writes task-set metadata through the command's key/authority checks and set_task_meta protections; the generic adapter creates no separate integration journal. Complete-candidate enclosing context re-reviewed; original disposition retained. Re-reviewed in the pinned-default merge; the same call retains its ordinary audit or metadata purpose."
     },
     "src/commands/surface_commands.py::SurfaceCommandsMixin._cmd_task_set::efc628222166414397713182d90d1198aedc0c7804e05b3ccfd55c64a58c99f5": {
-      "line": 359,
+      "line": 372,
       "owner": "SurfaceCommandsMixin._cmd_task_set",
       "call": "log_event",
-      "owner_fingerprint": "01f5ef4b185f108d02e96b986d4a7e63015a291600666fd3ada58902fb779d6c",
+      "owner_fingerprint": "f0c61a6c8a2a1ae6fa3de00bde48513b752d862cfe4c7d381182a14bfba08d45",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Audits addition of an ordinary task label; the event contains only the label and grants no delivery authority. Complete-candidate enclosing context re-reviewed; original disposition retained."
+      "reason": "Audits addition of an ordinary task label; the event contains only the label and grants no delivery authority. Complete-candidate enclosing context re-reviewed; original disposition retained. Re-reviewed in the pinned-default merge; the same call retains its ordinary audit or metadata purpose."
     },
     "src/commands/task_commands.py::TaskCommandsMixin._cmd_add_dependency::a4b11d12e44641f31dec92eda6c8cd14f1b9c6975b961f527226962bd27130a5": {
       "line": 4032,
@@ -14698,13 +15101,13 @@
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
     },
     "src/database/queries/task_recovery_queries.py::TaskRecoveryQueryMixin.decide_task_recovery::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
-      "line": 1293,
+      "line": 1299,
       "owner": "TaskRecoveryQueryMixin.decide_task_recovery",
       "call": "delete",
-      "owner_fingerprint": "19d83c3345c0430d48ae14400652bf93a3c4cd88a8f372530b36c47733650972",
+      "owner_fingerprint": "425757cf9958bf6a3e1a769a2e63f8ad063767c48a5910976c5a3e92024cf530",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Removes claimed_by_session or needs_attention only during a fenced recovery decision; incident identity, task state and recovery budget authorize retry."
+      "reason": "Removes claimed_by_session or needs_attention only during a fenced recovery decision; incident identity, task state and recovery budget authorize retry. Re-reviewed in the pinned-default merge; the same call retains its ordinary audit or metadata purpose."
     },
     "src/database/queries/triage_queries.py::_write_seen::2d36ab3da05dcd99c7a0cb4b8a22925dd23e723147d1b0fe6a07ff4716ee55ac": {
       "line": 77,
@@ -15787,13 +16190,13 @@
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Re-reviewed at the branch-retirement landing: the same transaction now queues an ordinary branch_retirements request; no ref replay or duplicate lifecycle."
     },
     "src/sessions/obsolete.py::ObsoleteClose.close::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
-      "line": 425,
+      "line": 428,
       "owner": "ObsoleteClose.close",
       "call": "delete",
-      "owner_fingerprint": "87443db5e14bc5882a0b0b93bfb5a8735adfa4a9bfcfe87608168902237d09e9",
+      "owner_fingerprint": "413463c39849d71f22e462b22783a7b8d68d5c87f3a7052fe78b2c523eca2080",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Deletes ordinary close/claim metadata during fenced obsolete closure; branch retirement remains an independently guarded request rather than a metadata-driven ref replay."
+      "reason": "Deletes ordinary close/claim metadata during fenced obsolete closure; branch retirement remains an independently guarded request rather than a metadata-driven ref replay. Re-reviewed in the pinned-default merge; the same call retains its ordinary audit or metadata purpose."
     },
     "src/sessions/questions.py::AgentQuestionService._native_plan::aa6c5d0c1b30091482569a6d39a2770d8640228ff9deb37a3361d0b064977889": {
       "line": 1016,
@@ -15949,13 +16352,13 @@
       "reason": "Clearing the exact holder from the task's own claimed_by_session record when the release takes that claim back; the claim itself, not a hold, ref replay or a duplicate lifecycle write."
     },
     "src/integration/batches.py::BatchStore.set_intent::6d729f7a8f24a4746d37ecea7871dfd209ea8cce995ce7499c8290475b86f660": {
-      "line": 724,
+      "line": 727,
       "owner": "BatchStore.set_intent",
       "call": "log_event",
-      "owner_fingerprint": "10164d0f974c7dfc7baa29a058d712c45ae257f700be0cd07d9911b01f5dccc1",
+      "owner_fingerprint": "4bd64ebb54cb1f4b56149f7a1a189f60c6a7df66d3d3f3b3a1432ece6810cb82",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Operator audit of batch intent with principal and reason. Intent and terminal abort projection remain on the batch row; this event is never replayed and carries no ref-update lifecycle. Re-reviewed at the branch-retirement landing: the same transaction now queues an ordinary branch_retirements request; no ref replay or duplicate lifecycle. Complete-candidate enclosing context re-reviewed; original disposition retained."
+      "reason": "Operator audit of batch intent with principal and reason. Intent and terminal abort projection remain on the batch row; this event is never replayed and carries no ref-update lifecycle. Re-reviewed at the branch-retirement landing: the same transaction now queues an ordinary branch_retirements request; no ref replay or duplicate lifecycle. Complete-candidate enclosing context re-reviewed; original disposition retained. Re-reviewed in the pinned-default merge; the same call retains its ordinary audit or metadata purpose."
     },
     "src/integration/train_controls.py::TrainControls.retire_origin::0b56c6446d96c90b01889f9a0444c2e70ac5351db133ff1989c85a029ccd494a": {
       "line": 543,
@@ -16390,13 +16793,13 @@
       "reason": "Audits pool.scaler_stalled with progress diagnostics; the event does not alter admission, reservations or delivery state. Complete-candidate enclosing context re-reviewed; original disposition retained."
     },
     "src/sessions/obsolete.py::ObsoleteClose.close::37df82dbbcf4ce30cc0f9d0951d9e179f7f7f5023c7650af375ece047532cf8d": {
-      "line": 488,
+      "line": 494,
       "owner": "ObsoleteClose.close",
       "call": "log_event",
-      "owner_fingerprint": "87443db5e14bc5882a0b0b93bfb5a8735adfa4a9bfcfe87608168902237d09e9",
+      "owner_fingerprint": "413463c39849d71f22e462b22783a7b8d68d5c87f3a7052fe78b2c523eca2080",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Audits obsolete/cancelled task closure with reason, disposition, principal, previous status and released resources; explicit close guards own retirement authority."
+      "reason": "Audits obsolete/cancelled task closure with reason, disposition, principal, previous status and released resources; explicit close guards own retirement authority. Re-reviewed in the pinned-default merge; the same call retains its ordinary audit or metadata purpose."
     },
     "src/sessions/obsolete.py::ObsoleteClose._release_stopped_claim::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
       "line": 361,
@@ -16912,13 +17315,13 @@
       "reason": "Wait registration, continuation park/delivery/ACK or existing task recovery audit; no new integration journal or reference replay authority. Complete-candidate enclosing context re-reviewed; original disposition retained."
     },
     "src/database/queries/claim_queries.py::ClaimQueryMixin.park_task_for_continuation::9db730027a1de7e70c139ab21146787d9948bcc16f5a6fec39ca36519907ee96": {
-      "line": 1125,
+      "line": 1298,
       "owner": "ClaimQueryMixin.park_task_for_continuation",
       "call": "log_event",
-      "owner_fingerprint": "21abdb7096408de95dde1329941055b5228d0d661d59671eb637416576ea9a47",
-      "integration_signal": true,
+      "owner_fingerprint": "359d350ab85d609adb511f91c8975dbe5fb46ec8708bc106c47e4342e9089059",
+      "integration_signal": false,
       "disposition": "ordinary",
-      "reason": "Wait registration, continuation park/delivery/ACK or existing task recovery audit; no new integration journal or reference replay authority."
+      "reason": "Wait registration, continuation park/delivery/ACK or existing task recovery audit; no new integration journal or reference replay authority. Re-reviewed in the pinned-default merge; the same call retains its ordinary audit or metadata purpose."
     },
     "src/database/queries/wait_queries.py::register_wait::7f9a172d90564131599dcbc17c8abdfadd20f21c0ea0e36f65fa816d1433dfc8": {
       "line": 442,
@@ -16975,13 +17378,13 @@
       "reason": "Wait registration, continuation park/delivery/ACK or existing task recovery audit; no new integration journal or reference replay authority. Complete-candidate enclosing context re-reviewed; original disposition retained."
     },
     "src/waits/dispatcher.py::WakeDispatcher.finish::7f9a172d90564131599dcbc17c8abdfadd20f21c0ea0e36f65fa816d1433dfc8": {
-      "line": 193,
+      "line": 197,
       "owner": "WakeDispatcher.finish",
       "call": "insert",
-      "owner_fingerprint": "85430e648b982385a062c88bb921208577b73d5fde00e6748d9a9c95185ba1ea",
+      "owner_fingerprint": "72250fa356fd585f1ff3ace2752f5b66ef46ff299c317cb7b429c6edad297347",
       "integration_signal": false,
       "disposition": "ordinary",
-      "reason": "Wait registration, continuation park/delivery/ACK or existing task recovery audit; no new integration journal or reference replay authority. Complete-candidate enclosing context re-reviewed; original disposition retained."
+      "reason": "Wait registration, continuation park/delivery/ACK or existing task recovery audit; no new integration journal or reference replay authority. Complete-candidate enclosing context re-reviewed; original disposition retained. Re-reviewed in the pinned-default merge; the same call retains its ordinary audit or metadata purpose."
     },
     "src/waits/mail.py::acknowledge_in_place::2d36ab3da05dcd99c7a0cb4b8a22925dd23e723147d1b0fe6a07ff4716ee55ac": {
       "line": 80,
@@ -17110,13 +17513,13 @@
       "reason": "Audits the transactionally published storage binding; relocation digest, quiescence and exact checks authorize the operation."
     },
     "src/wait_runtime/resume.py::ResumeTransaction.failed::7f9a172d90564131599dcbc17c8abdfadd20f21c0ea0e36f65fa816d1433dfc8": {
-      "line": 323,
+      "line": 332,
       "owner": "ResumeTransaction.failed",
       "call": "insert",
-      "owner_fingerprint": "9ec22a2fd3ec9a96aff94efe3dcf2d9157266a4698236edf4d9dfd20f997b795",
-      "integration_signal": true,
+      "owner_fingerprint": "8ee5da3fed3499f756251860eb293388659632cffceff0b807a30256c1fc6408",
+      "integration_signal": false,
       "disposition": "ordinary",
-      "reason": "Immutable ordinary event audit of the fenced operation named by this writer; existing Git/source/claim guards authorize mutation, never event replay."
+      "reason": "Immutable ordinary event audit of the fenced operation named by this writer; existing Git/source/claim guards authorize mutation, never event replay. Re-reviewed in the pinned-default merge; the same call retains its ordinary audit or metadata purpose."
     },
     "src/asks/legacy_reset.py::discard::00635d16d37fb1dd71c4bae42449b7d1281cf5e926bbed2a8b06dc6bec86e325": {
       "line": 181,
@@ -17216,6 +17619,15 @@
       "integration_signal": false,
       "disposition": "intent",
       "reason": "Bounded operator containment audit or repository admission hold; explicit operator/configuration authority, not a ref replay journal."
+    },
+    "src/integration/train_sources.py::DaemonLanes._epic_completion::1c9a3b6401e74048fbd63d079e3a77b1bf881244a09690c7a2d835a664010768": {
+      "line": 2928,
+      "owner": "DaemonLanes._epic_completion",
+      "call": "log_event",
+      "owner_fingerprint": "fc8a8855d821b813c521caac31e7e7ee622b73061ffbf5a0418b2b1aae402827",
+      "integration_signal": true,
+      "disposition": "ordinary",
+      "reason": "Audit notification that aggregate readiness started a fenced epic refresh; the existing refresh operation owns mutation and this event grants no Git publication or replay authority."
     }
   },
   "generic_dependencies": {
@@ -19834,14 +20246,15 @@
     "decision_message_ids": [
       "msg-7ed85e78d1af4f3e85b485a57967e794",
       "msg-381054d695e64055979a687c4d811e7e",
-      "msg-dbb0120c6172499081721c033e894b39"
+      "msg-dbb0120c6172499081721c033e894b39",
+      "msg-90f9f1b1e0cd4e8e8d28071cffc927a6"
     ],
     "decision_record": "record:2720bdbe-7521-427e-8e72-1f40a3ff9818",
-    "decision_record_revision": "7a219c5d-10dd-4f2f-bfab-60ce7e82071a",
-    "measured_source_revision": "cc9938f71350d5fb0e0bdc936fad5e1168506a31",
+    "decision_record_revision": "c169aafc-a845-48b0-99f3-ea7a6ee48637",
+    "measured_source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e",
     "original_owned_total_cap": 155499,
-    "measured_owned_total": 160152,
-    "delta": 4653,
+    "measured_owned_total": 161328,
+    "delta": 5829,
     "predecessors": [
       {
         "batch_id": "train-77f0d8e451f6aed08d608e443031047a",
@@ -19862,7 +20275,7 @@
         "provenance": "Supervisor-authorized predecessor; added once after batch77 final delta1293."
       }
     ],
-    "batch_measured_delta": 1194,
+    "batch_measured_delta": 2370,
     "restore_task": "azure-ridge-72",
     "expires_at": "s4_modules",
     "category_approval_message_id": "msg-90f9f1b1e0cd4e8e8d28071cffc927a6"
@@ -20413,11 +20826,12 @@
     },
     "src/wait_runtime/cancellation.py::cancel": {
       "span": [
-        11,
-        59
+        2,
+        5
       ],
-      "fingerprint": "91fc764f79bc79b92b12144a8a4b2c6d1fb34f760464178b5ccabb6fe8db1556",
-      "reason": "Charge the complete discovered definition/import; its newline span was already included in the measured candidate. Preserve ownership on relocation without adding an exclusion."
+      "fingerprint": "d9edcc114fe80b0dce75da45385bcc79639b6589b3098b981d98c1e6276ad03d",
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
     },
     "src/wait_runtime/lifecycle.py::WaitLifecycle.register_in_transaction": {
       "span": [
@@ -20453,11 +20867,12 @@
     },
     "src/waits/dispatcher.py::WakeDispatcher.finish": {
       "span": [
-        129,
-        239
+        130,
+        243
       ],
-      "fingerprint": "85430e648b982385a062c88bb921208577b73d5fde00e6748d9a9c95185ba1ea",
-      "reason": "Charge the complete discovered definition/import; its newline span was already included in the measured candidate. Preserve ownership on relocation without adding an exclusion."
+      "fingerprint": "72250fa356fd585f1ff3ace2752f5b66ef46ff299c317cb7b429c6edad297347",
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
     },
     "src/waits/dispatcher.py::import from src.wait_runtime.legacy_parking import legacy_parked": {
       "span": [
@@ -20478,10 +20893,11 @@
     "src/waits/ownership.py::fence_owner": {
       "span": [
         8,
-        55
+        56
       ],
-      "fingerprint": "022d690a42c2501a28cdc4a72a2a0e6f3c3c5ed8d0d7adf10f62b89bbac837d4",
-      "reason": "Charge the complete discovered definition/import; its newline span was already included in the measured candidate. Preserve ownership on relocation without adding an exclusion."
+      "fingerprint": "229c150376f23c48525301185920db9ccaae966d8445cf34984cd2da0b102020",
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
     },
     "src/waits/watchers/ci.py::CheckWatcher._ci": {
       "span": [
@@ -20562,6 +20978,384 @@
       ],
       "fingerprint": "cfc4b630f6c68addd9edcb923416ab74e5400a1791cdc763ab2c1ced74cfbf6c",
       "reason": "Charge the complete discovered definition/import; its newline span was already included in the measured candidate. Preserve ownership on relocation without adding an exclusion."
+    },
+    "src/api/models/git.py::IntegrationBatchFixResponse": {
+      "span": [
+        273,
+        282
+      ],
+      "fingerprint": "d2fdf35d58d7a7635408fd8cc2887e7eeb9b0b640d6dd9c770b9c19b1b42eb2a",
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/api/models/git.py::IntegrationContinueCloseResponse": {
+      "span": [
+        283,
+        291
+      ],
+      "fingerprint": "f9ebdf31fbb261c43a786d9bebaefd889996e778853a454446aa73774ca23f12",
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/api/models/git.py::RESPONSE_MODELS['integration_batch_fix']": {
+      "span": [
+        295,
+        295
+      ],
+      "fingerprint": "9f5c608333b6be98df460225a5317573c7a381d05eee6500c59f468a99ab1f86",
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/api/models/git.py::RESPONSE_MODELS['integration_continue_close']": {
+      "span": [
+        296,
+        296
+      ],
+      "fingerprint": "dd0762347fc35f62737319c95cb3ea80ae1b03a679143ebdf136a561956f276b",
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/api/scope.py::_check_worker_git_scope": {
+      "span": [
+        525,
+        587
+      ],
+      "fingerprint": "e21df5b4e47f2b7cd5880b07dad45d319fb30aabd97977c75f3b002cfdee1019",
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/api/target_scope.py::_publication_delegation_project": {
+      "span": [
+        126,
+        139
+      ],
+      "fingerprint": "d67ed86f95d0052bee7598b6b9544abef510b27031ba858aaf7531ea243185f9",
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/cli/auto_commands.py::HANDCRAFTED_COVERAGE['integration_delegate_publication']": {
+      "span": [
+        159,
+        159
+      ],
+      "fingerprint": "715f3bd6b29a490eae520d5f9d22235a4050f4d8b65fb86b480d1d141cba2c6b",
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/cli/auto_commands.py::HANDCRAFTED_COVERAGE['integration_revoke_publication']": {
+      "span": [
+        160,
+        160
+      ],
+      "fingerprint": "efb4ae357bdd1737a1b513e2cc943c4f6a60a95aac874ac98195003ba838998f",
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/commands/promote_commands.py::import from src.integration.promotion_steps import PROMOTION_CONTEXT, PROMOTION_RESULT, FlowSchema, PromotionSourceRefusal, check_source_green, fail_stranded_promotion_tasks_on, promotion_ref, promotion_task_defect": {
+      "span": [
+        49,
+        58
+      ],
+      "fingerprint": "ad6d4a0a391ae6f4258668944b00a83526e1fcc8755fe8b2dab231553ba41ced",
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/commands/resource_authorization.py::SESSION_COMMANDS": {
+      "span": [
+        50,
+        56
+      ],
+      "fingerprint": "8a1ca2a768760aa968a1c9564664d1ae7746dfc51ace3bf4ccd362bd19b9b858",
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/database/queries/claim_queries.py::retire_owner_attachments": {
+      "span": [
+        691,
+        708
+      ],
+      "fingerprint": "b8bd18cfb00f392bbd7b72b713bbe82a39af4b01d88a0db0c4ef58ee083215af",
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/doctor/stall_checks.py::_stranded_promotion_findings": {
+      "span": [
+        967,
+        981
+      ],
+      "fingerprint": "b7e2eb40653a85fcb1ebc479533338eff89afd0f12f4a27f3050cfa3ab31500d",
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/orchestrator/workspace_attachments.py::detach_task_slot": {
+      "span": [
+        796,
+        805
+      ],
+      "fingerprint": "1d07dba0eb8b092b6e8cb81fec26a6716042368db97b92d08aa8138808bb37e0",
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/plugins/internal/git.py::GitPlugin._push_delegated": {
+      "span": [
+        912,
+        948
+      ],
+      "fingerprint": "74322cbe14a7c0ff186c6edf7cb210155e10e8f1339c563028a9a824cbebbf68",
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/plugins/internal/git.py::GitPlugin._worker_publication": {
+      "span": [
+        722,
+        774
+      ],
+      "fingerprint": "cfffb4f336d4bdd4ce6be340db388f049fd1805b6d3a5ea2de54e6dc4a0c664f",
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/plugins/services.py::ConfigService.integration_git_first": {
+      "span": [
+        327,
+        329
+      ],
+      "fingerprint": "acd18e95c2bb4048e999ee03cb2f5162be5fd85256d39cddb45c21d84e60ef1c",
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/plugins/services.py::ConfigServiceImpl.integration_git_first": {
+      "span": [
+        725,
+        729
+      ],
+      "fingerprint": "f60d647e80c43fbdb93b12cd2a90701fdaf89b5b7f6a2c4bc79bb9194ebe32c8",
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/sessions/dialogs.py::first_match": {
+      "span": [
+        86,
+        103
+      ],
+      "fingerprint": "edf6e7281ae9800d741e0022b248b30e4f80d0a0f354dea006948c2d8e4df340",
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/tools/registry.py::CATEGORIES['integration']": {
+      "span": [
+        80,
+        82
+      ],
+      "fingerprint": "918377c3622e069e34eb80e02872deca9efd64afdad9ea0e1525308d3ec2e7b3",
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/wait_runtime/restart.py::readmit": {
+      "span": [
+        34,
+        46
+      ],
+      "fingerprint": "2aa6bdaf4bdb78d2832fe536cd58cf2c91f95eb4c391d74f79955d25403ccbce",
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/wait_runtime/restart.py::release_continuations": {
+      "span": [
+        47,
+        54
+      ],
+      "fingerprint": "e70d2a60b9b8d8b22ace97b1b0a4fbb1acd3956bd5d38220dd07e265dced59e8",
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/wait_runtime/restart.py::restart_lock": {
+      "span": [
+        28,
+        33
+      ],
+      "fingerprint": "6664c73c0b5b3481e7de76a19545338ffd20d9e24d1bfdad776358c52a774ca0",
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/waits/admission.py::AdmissionReader.delivery_admission": {
+      "span": [
+        89,
+        105
+      ],
+      "fingerprint": "83d73602c873a7aff2c2aaa253895c950d442864088e93ee7c269ba3427a6b20",
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/orchestrator/worktree_manager.py::slot_path": {
+      "span": [
+        198,
+        201
+      ],
+      "fingerprint": "ab24cb8fd409de493de17952c00601b552ee5a8349f167f83e892263d937dd86",
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/sessions/dialogs.py::run_dialog_dismissal": {
+      "span": [
+        104,
+        162
+      ],
+      "fingerprint": "f2676b4d43f9c5bc0727c4b6153e22f713fc8914deae1649258d2702b1ca1f99",
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/sessions/spec.py::import from src.sessions.dialogs import first_match": {
+      "span": [
+        38,
+        38
+      ],
+      "fingerprint": "8d9ee2ef6ac3cf110522e51587a632e8420fe305b80a194b8053ef100e5e0909",
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/sessions/tmux.py::TmuxProvider._await_ready": {
+      "span": [
+        404,
+        551
+      ],
+      "fingerprint": "910dfc7ccb9f06d4c4dbe3969c7b3bf55af2fe6a2b8ff2228914c9e83119d04b",
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/sessions/tmux.py::import from src.sessions.dialogs import DialogBudget, first_match, run_dialog_dismissal": {
+      "span": [
+        40,
+        40
+      ],
+      "fingerprint": "a16d5c2a70e125069b956b0a243417b47ae201af26972caeec2b67482f07406b",
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/wait_runtime/restart.py::_release": {
+      "span": [
+        55,
+        201
+      ],
+      "fingerprint": "9a501c9df55523800efe2edcb266f3bef99722aa9528ca2abffa5591042580e3",
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/wait_runtime/restart.py::import from src.database.queries.claim_queries import retire_owner_attachments": {
+      "span": [
+        15,
+        16
+      ],
+      "fingerprint": "cc9561d5cb1c9e5c70e3208905fcaf7f5323e29f0311548a91091c572b351ca4",
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/wait_runtime/restart.py::import from src.orchestrator.workspace_attachments import detach_task_slot": {
+      "span": [
+        22,
+        22
+      ],
+      "fingerprint": "19c56810ceb6404a9b816f71d5fe203bc844491bbd29b44b64bb6da8787ce52b",
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/wait_runtime/service.py::WaitService.cancel": {
+      "span": [
+        106,
+        108
+      ],
+      "fingerprint": "ff4bdde9433a979c0765e5841084ab686be1a6d0d3b82ed734dcb9262849ab09",
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/wait_runtime/service.py::WaitService.run": {
+      "span": [
+        194,
+        210
+      ],
+      "fingerprint": "fc00927f9ed8ad1325399b0d899a9d12af62ad9d7cfc3e62c274e3a09ca4f910",
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/wait_runtime/service.py::import from src.wait_runtime.cancellation import cancel": {
+      "span": [
+        23,
+        23
+      ],
+      "fingerprint": "e24beef4871bbabbce215f94f7fd79cda4f636578aeb2a4bfb555f50f0329418",
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/waits/decisions.py::WaitDecisions.cancel": {
+      "span": [
+        240,
+        303
+      ],
+      "fingerprint": "658d05aba44bb99bf3315bf484d0d9bcdf6562694478853f416f503baa3d489d",
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/waits/decisions.py::WaitDecisions.decide": {
+      "span": [
+        142,
+        239
+      ],
+      "fingerprint": "10ab6e7a03f376894df34907e72a6e5168b7c5d8b382e20787d454aa86559796",
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/waits/decisions.py::import from src.waits.ownership import fence_owner": {
+      "span": [
+        27,
+        27
+      ],
+      "fingerprint": "f8db0594f747303c8591f21da4534542071335ba7fb48223af289c1747bd58fe",
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/waits/dispatcher.py::WakeDispatcher.commit": {
+      "span": [
+        39,
+        129
+      ],
+      "fingerprint": "95b4ea4ab4bc9824966779ae398ba5efc1c6afc85ae4bce72524f40a7c9d8503",
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/waits/dispatcher.py::import from src.waits.ownership import fence_owner": {
+      "span": [
+        26,
+        26
+      ],
+      "fingerprint": "f8db0594f747303c8591f21da4534542071335ba7fb48223af289c1747bd58fe",
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/waits/human.py::HumanWaits.lift": {
+      "span": [
+        20,
+        102
+      ],
+      "fingerprint": "a954e8792b9f7a1963c8d3971e98e66fd0f1bddab2cc355d73f90868019ff377",
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/waits/human.py::import from src.waits.ownership import fence_owner": {
+      "span": [
+        12,
+        12
+      ],
+      "fingerprint": "f8db0594f747303c8591f21da4534542071335ba7fb48223af289c1747bd58fe",
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
+    },
+    "src/wait_runtime/restart.py::import from src.orchestrator.worktree_manager import slot_path": {
+      "span": [
+        23,
+        23
+      ],
+      "fingerprint": "c0437e95929e0fdfdb7e7952dc919ace606d1eba60a3b28a962116fafa1cf095",
+      "reason": "Pinned-default merge: charge the full integration-related definition or registration, including attached comments and blanks; no ownership exclusion or baseline change.",
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e"
     }
   },
   "transition_table_exception": {
@@ -20579,11 +21373,13 @@
     "verification_task": "stark-willow-95.18",
     "expires_at": "s4_modules",
     "category_approval_message_id": "msg-90f9f1b1e0cd4e8e8d28071cffc927a6",
-    "decision_record_revision": "7a219c5d-10dd-4f2f-bfab-60ce7e82071a",
+    "decision_record_revision": "c169aafc-a845-48b0-99f3-ea7a6ee48637",
     "approved_storage_categories": [
       "integration_close_attempts"
     ],
-    "restoration_verified_by": "stark-willow-95.18"
+    "measured_source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e",
+    "restoration_status": "awaiting_actual_landing",
+    "restoration_verification_task": "stark-willow-95.18"
   },
   "repair_measurements": [
     {
@@ -20640,6 +21436,37 @@
       "restore_task": "azure-ridge-72",
       "category_restore_task": "stark-willow-95.17",
       "restoration_verified_by": "stark-willow-95.18",
+      "expires_at": "s4_modules"
+    },
+    {
+      "task_id": "repair-92f98f47a2ddc80bbb7965ce3eeb864a4fc809113ad127c82ec0039301b69619",
+      "batch_id": "train-56f15aff49843c6989224397ef6d7044",
+      "source_revision": "68bcd20a05176cc8822912f803fa71560aa3307e",
+      "starting_revision": "f19a52b33682dec96755e9f4dc03d6955d2d2c10",
+      "pinned_default_revision": "2f7cf17737abee5a417cb82c0637101b397dbe86",
+      "measurement_command": "python tests/integration_ownership.py",
+      "owned_lines": 161328,
+      "engine_lines": 85069,
+      "tables": 46,
+      "repair_owned_delta": 1176,
+      "batch_owned_delta": 2370,
+      "cumulative_owned_delta": 5829,
+      "remaining_headroom": 0,
+      "approved_storage_categories": [
+        "integration_close_attempts"
+      ],
+      "decision_message_ids": [
+        "msg-7ed85e78d1af4f3e85b485a57967e794",
+        "msg-dbb0120c6172499081721c033e894b39",
+        "msg-90f9f1b1e0cd4e8e8d28071cffc927a6"
+      ],
+      "decision_record": "record:2720bdbe-7521-427e-8e72-1f40a3ff9818",
+      "decision_record_revision": "c169aafc-a845-48b0-99f3-ea7a6ee48637",
+      "disposition": "Final merged source remeasurement under the standing exact-final approval. Replaces this batch previous increment 1194; predecessor deltas 1293 and 2166 remain charged once. All discovered integration definitions and storage contexts reviewed, with no new exclusions, feature removals, table removals or historical baseline changes. Response-model and database-documentation candidate regressions fixed. Exact source includes the preserved pinned-default merge.",
+      "restore_task": "azure-ridge-72",
+      "category_restore_task": "stark-willow-95.17",
+      "restoration_verification_task": "stark-willow-95.18",
+      "restoration_status": "awaiting_actual_landing",
       "expires_at": "s4_modules"
     }
   ]

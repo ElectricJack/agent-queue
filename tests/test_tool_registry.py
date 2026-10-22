@@ -112,6 +112,7 @@ def test_registry_has_categories(registry):
     categories = registry.get_categories()
     cat_names = {c["name"] for c in categories}
     assert cat_names == {
+        "integration",
         "files",
         "git",
         "ci",

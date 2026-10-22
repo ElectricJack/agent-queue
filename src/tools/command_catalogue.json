@@ -20511,6 +20511,7 @@
     }
   },
   "categories": {
+    "integration": "Bound batch repair and author-close continuation",
     "operator": "Scoped operator setup and preflight",
     "policy": "Portable project policy profiles: export, diff and selective import",
     "cron": "Session-owned recurring prompts: register, inspect and cancel wake-ups.",
