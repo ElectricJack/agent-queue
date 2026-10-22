@@ -184,6 +184,11 @@ both sets only shrink, and admission consumers read none. Historical
 tables/foreign keys remain until rollback retention and a separately approved
 destructive migration permit deletion.
 
+The later `azure-ridge-72` adapter retirement removed the unused
+`parent_subjects` receipt query with its parent observer. Its baseline inventory
+entry above is historical; the receipt-reader ratchet no longer includes that
+module. Parent episode records and historical recovery remain retained.
+
 `main_promotion.py`, named in the approved spec's baseline inventory, is absent in
 this checkout. Promotion runtime uses `promotion_steps.py` and train publication;
 there is no file to retire under the old name. `parent_adapters.py` has no receipt
