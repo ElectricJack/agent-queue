@@ -3133,7 +3133,7 @@
   "delivery_receipts": {
     "mode": "typed",
     "producer": "src/commands/integration_commands.py:IntegrationCommandsMixin._cmd_delivery_receipts",
-    "source_digest": "sha256:8110193ec084d79e8b95c75ada02183ea4232721ccd860d2472db479cce0abab",
+    "source_digest": "sha256:9d65b35a26290b4fdba16c7c1e04248e53f14d77ec43f3838e8546a4c00164dd",
     "input_schema_source": "typed_contract",
     "schema_quality": "typed",
     "argument_reads_diagnostic_only": [],
@@ -3147,8 +3147,8 @@
     "result_policy": "retained typed adapter",
     "return_branches": [
       {
-        "return": "_failure('runtime_error', f'invalid receipt query: {exc}')",
-        "protocol": "delegated_producer"
+        "return": "{'success': True, 'outcome': 'found' if receipts else 'not_found', 'receipts': receipts}",
+        "protocol": "explicit_boolean: True"
       },
       {
         "return": "_failure('unauthorized', 'receipt query is outside the source project')",
@@ -3159,8 +3159,8 @@
         "protocol": "delegated_producer"
       },
       {
-        "return": "{'success': True, 'outcome': 'found' if receipts else 'not_found', 'receipts': receipts}",
-        "protocol": "explicit_boolean: True"
+        "return": "_failure('runtime_error', f'invalid receipt query: {exc}')",
+        "protocol": "delegated_producer"
       }
     ],
     "tests": [
@@ -7193,7 +7193,7 @@
   "integration_abort_batch": {
     "mode": "typed",
     "producer": "src/commands/integration_commands.py:IntegrationCommandsMixin._cmd_integration_abort_batch",
-    "source_digest": "sha256:a17fa3f6cbb13a2a0c3fe06bd70ad4599d37e4f214794eda280826852119042c",
+    "source_digest": "sha256:faa21c342cb9e5c36230d98d017d431c80d784a24c3db191a0becf867c76e4ed",
     "input_schema_source": "typed_contract",
     "schema_quality": "typed",
     "argument_reads_diagnostic_only": [],
@@ -7207,23 +7207,20 @@
     "result_policy": "retained typed adapter",
     "return_branches": [
       {
-        "return": "_failure('unauthorized', refusal)",
+        "return": "await self._train_control(args, 'abort_batch', 'IntegrationAbortBatchArgs', 'batch_id')",
         "protocol": "delegated_producer"
-      },
-      {
-        "return": "_failure('refused', str(exc))",
-        "protocol": "delegated_producer"
-      },
-      {
-        "return": "{'success': True, **result}",
-        "protocol": "explicit_boolean: True"
       }
     ],
     "tests": [
       "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
       "tests/test_generated_command_contracts.py::test_generic_result_protocol",
-      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
-    ]
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_integration_train_sources.py"
+    ],
+    "helper_producers": {
+      "_train_control": "sha256:5f7c588c050eb02de7b63d8bd18e6ce766f2639b857a038c1daf9a660e33fa39"
+    },
+    "review_notes": " Shared dispatch retains the existing request model, project authorization, exception boundary and result outcome. Helper producer digests pin delegated refusal envelopes."
   },
   "integration_app_verify": {
     "mode": "typed",
@@ -7282,7 +7279,7 @@
   "integration_authorize_root": {
     "mode": "typed",
     "producer": "src/commands/integration_commands.py:IntegrationCommandsMixin._cmd_integration_authorize_root",
-    "source_digest": "sha256:34f55ef2f30d4a0a9c4801277b7d735ae4ccbfcac7f1c5b6fb639d6a2c0d11ad",
+    "source_digest": "sha256:ced9ee77f600292767a94114fc78aa1b32e36f5c90fc3427bc824307941e6074",
     "input_schema_source": "typed_contract",
     "schema_quality": "typed",
     "argument_reads_diagnostic_only": [],
@@ -7296,16 +7293,16 @@
     "result_policy": "retained typed adapter",
     "return_branches": [
       {
-        "return": "_failure('invalid', f'invalid root authorization request: {exc}')",
-        "protocol": "delegated_producer"
+        "return": "{'success': result['outcome'] in {'would_authorize', 'authorized', 'already_authorized'}, 'dry_run': request.dry_run, **result}",
+        "protocol": "explicit_boolean: result['outcome'] in {'would_authorize', 'authorized', 'already_authorized'}"
       },
       {
         "return": "_failure('unauthorized', refusal)",
         "protocol": "delegated_producer"
       },
       {
-        "return": "{'success': result['outcome'] in {'would_authorize', 'authorized', 'already_authorized'}, 'dry_run': request.dry_run, **result}",
-        "protocol": "explicit_boolean: result['outcome'] in {'would_authorize', 'authorized', 'already_authorized'}"
+        "return": "_failure('invalid', f'invalid root authorization request: {exc}')",
+        "protocol": "delegated_producer"
       }
     ],
     "tests": [
@@ -7364,7 +7361,7 @@
   "integration_checkpoint_parent": {
     "mode": "typed",
     "producer": "src/commands/integration_commands.py:IntegrationCommandsMixin._cmd_integration_checkpoint_parent",
-    "source_digest": "sha256:7ce689341b6923e1fbe4d6aff2c90ef8b78bcc9905ce435b3dc30c2a611e7681",
+    "source_digest": "sha256:5d3402eb852e7dccfe18f5e55347c6c17526bfbdda774c8a5efdb75e4d7491fa",
     "input_schema_source": "typed_contract",
     "schema_quality": "typed",
     "argument_reads_diagnostic_only": [],
@@ -7378,8 +7375,8 @@
     "result_policy": "retained typed adapter",
     "return_branches": [
       {
-        "return": "_failure('dirty', f'invalid parent checkpoint: {exc}')",
-        "protocol": "delegated_producer"
+        "return": "{'success': True, **result}",
+        "protocol": "explicit_boolean: True"
       },
       {
         "return": "_failure('stale', 'task not found')",
@@ -7390,16 +7387,16 @@
         "protocol": "delegated_producer"
       },
       {
+        "return": "_failure('dirty', f'invalid parent checkpoint: {exc}')",
+        "protocol": "delegated_producer"
+      },
+      {
         "return": "_failure(outcome, str(exc))",
         "protocol": "delegated_producer"
       },
       {
         "return": "_failure('runtime_error', str(exc))",
         "protocol": "delegated_producer"
-      },
-      {
-        "return": "{'success': True, **result}",
-        "protocol": "explicit_boolean: True"
       }
     ],
     "tests": [
@@ -7411,7 +7408,7 @@
   "integration_ci_evidence": {
     "mode": "typed",
     "producer": "src/commands/integration_commands.py:IntegrationCommandsMixin._cmd_integration_ci_evidence",
-    "source_digest": "sha256:e9d39f30f9e557c214409080a648b72e7930649d8da4b7ec18e94d10367e5a00",
+    "source_digest": "sha256:d3dc5abc090c35232cf23bb01cc438da8f7b3372e76fb1b3f278dbdbad2b84e9",
     "input_schema_source": "typed_contract",
     "schema_quality": "typed",
     "argument_reads_diagnostic_only": [],
@@ -7425,8 +7422,8 @@
     "result_policy": "retained typed adapter",
     "return_branches": [
       {
-        "return": "_failure('runtime_error', f'invalid candidate CI request: {exc}')",
-        "protocol": "delegated_producer"
+        "return": "{'success': outcome in {'green', 'published', 'already_published'}, 'outcome': 'green' if outcome in {'published', 'already_published'} else public_outcome, 'batch_id': request.batch_id, 'revision': request.revision, 'evidence_ids': tuple(result.get('evidence_ids') or ()), 'aggregate_evidence_id': result.get('aggregate_evidence_id')}",
+        "protocol": "explicit_boolean: outcome in {'green', 'published', 'already_published'}"
       },
       {
         "return": "_failure('runtime_error', 'integration batch does not exist')",
@@ -7445,8 +7442,8 @@
         "protocol": "delegated_producer"
       },
       {
-        "return": "{'success': outcome in {'green', 'published', 'already_published'}, 'outcome': 'green' if outcome in {'published', 'already_published'} else public_outcome, 'batch_id': request.batch_id, 'revision': request.revision, 'evidence_ids': tuple(result.get('evidence_ids') or ()), 'aggregate_evidence_id': result.get('aggregate_evidence_id')}",
-        "protocol": "explicit_boolean: outcome in {'green', 'published', 'already_published'}"
+        "return": "_failure('runtime_error', f'invalid candidate CI request: {exc}')",
+        "protocol": "delegated_producer"
       }
     ],
     "tests": [
@@ -7458,7 +7455,7 @@
   "integration_cleanup": {
     "mode": "typed",
     "producer": "src/commands/integration_commands.py:IntegrationCommandsMixin._cmd_integration_cleanup",
-    "source_digest": "sha256:acd043080366125e929c46e4ad8bb59891a8cd62fd67e4a03faf1f88b4b525fc",
+    "source_digest": "sha256:aa34f63de7a5c723b00ac2f13d44c049cdaa8798cd62eaa22c5061c302d963f4",
     "input_schema_source": "typed_contract",
     "schema_quality": "typed",
     "argument_reads_diagnostic_only": [],
@@ -7472,8 +7469,8 @@
     "result_policy": "retained typed adapter",
     "return_branches": [
       {
-        "return": "_failure('runtime_error', f'invalid integration cleanup request: {exc}')",
-        "protocol": "delegated_producer"
+        "return": "{'success': outcome in {'advanced', 'complete', 'already_complete'}, 'outcome': outcome, 'batch_id': request.batch_id, 'item_count': materialized.item_count, 'completed_count': completed, 'conflict_count': conflicts}",
+        "protocol": "explicit_boolean: outcome in {'advanced', 'complete', 'already_complete'}"
       },
       {
         "return": "_failure('stale', 'integration batch does not exist')",
@@ -7488,8 +7485,8 @@
         "protocol": "explicit_boolean: False"
       },
       {
-        "return": "{'success': outcome in {'advanced', 'complete', 'already_complete'}, 'outcome': outcome, 'batch_id': request.batch_id, 'item_count': materialized.item_count, 'completed_count': completed, 'conflict_count': conflicts}",
-        "protocol": "explicit_boolean: outcome in {'advanced', 'complete', 'already_complete'}"
+        "return": "_failure('runtime_error', f'invalid integration cleanup request: {exc}')",
+        "protocol": "delegated_producer"
       }
     ],
     "tests": [
@@ -7501,7 +7498,7 @@
   "integration_clear_retained_recovery": {
     "mode": "typed",
     "producer": "src/commands/integration_commands.py:IntegrationCommandsMixin._cmd_integration_clear_retained_recovery",
-    "source_digest": "sha256:40046e010ed6dbe45195abba5878cdcc33009f0a0d3d7831add14f053d2d626c",
+    "source_digest": "sha256:7a29b3e0fb2ab5f7545f0679c13772e5a87485f4353ba0994a20700ed00b93b8",
     "input_schema_source": "typed_contract",
     "schema_quality": "typed",
     "effect": "destructive",
@@ -7541,7 +7538,7 @@
   "integration_close_delivered_pr": {
     "mode": "typed",
     "producer": "src/commands/integration_commands.py:IntegrationCommandsMixin._cmd_integration_close_delivered_pr",
-    "source_digest": "sha256:e975004228b984d12d27c10b645aea53385679227dd8b2b6137e941502e4902c",
+    "source_digest": "sha256:d8fdf9e5857408c3e1960ebdbf4626c7230cef322f3be9970ae830302b6254a8",
     "input_schema_source": "typed_contract",
     "schema_quality": "typed",
     "argument_reads_diagnostic_only": [],
@@ -7555,16 +7552,16 @@
     "result_policy": "retained typed adapter",
     "return_branches": [
       {
-        "return": "_failure('invalid', f'invalid delivered-PR close request: {exc}')",
-        "protocol": "delegated_producer"
+        "return": "{'success': result['outcome'] in {'would_close', 'closed', 'nothing_to_close'}, 'dry_run': request.dry_run, **result}",
+        "protocol": "explicit_boolean: result['outcome'] in {'would_close', 'closed', 'nothing_to_close'}"
       },
       {
         "return": "_failure('unauthorized', refusal)",
         "protocol": "delegated_producer"
       },
       {
-        "return": "{'success': result['outcome'] in {'would_close', 'closed', 'nothing_to_close'}, 'dry_run': request.dry_run, **result}",
-        "protocol": "explicit_boolean: result['outcome'] in {'would_close', 'closed', 'nothing_to_close'}"
+        "return": "_failure('invalid', f'invalid delivered-PR close request: {exc}')",
+        "protocol": "delegated_producer"
       }
     ],
     "tests": [
@@ -7576,7 +7573,7 @@
   "integration_complete_parent": {
     "mode": "typed",
     "producer": "src/commands/integration_commands.py:IntegrationCommandsMixin._cmd_integration_complete_parent",
-    "source_digest": "sha256:c6072b3a16eda3020a85584bd450ac5fc4e988bae5837399ef1728673ec29395",
+    "source_digest": "sha256:fec50dc897f1cac8d809e82810df55644e57fd5d3211de6233d2405b409f7b83",
     "input_schema_source": "typed_contract",
     "schema_quality": "typed",
     "argument_reads_diagnostic_only": [],
@@ -7590,8 +7587,8 @@
     "result_policy": "retained typed adapter",
     "return_branches": [
       {
-        "return": "_failure('invariant_error', f'invalid parent completion: {exc}')",
-        "protocol": "delegated_producer"
+        "return": "{'success': result['outcome'] in {'completed', 'already_completed'}, **result}",
+        "protocol": "explicit_boolean: result['outcome'] in {'completed', 'already_completed'}"
       },
       {
         "return": "_failure('invariant_error', 'parent task not found')",
@@ -7602,12 +7599,12 @@
         "protocol": "delegated_producer"
       },
       {
-        "return": "_failure('invariant_error', str(exc))",
+        "return": "_failure('invariant_error', f'invalid parent completion: {exc}')",
         "protocol": "delegated_producer"
       },
       {
-        "return": "{'success': result['outcome'] in {'completed', 'already_completed'}, **result}",
-        "protocol": "explicit_boolean: result['outcome'] in {'completed', 'already_completed'}"
+        "return": "_failure('invariant_error', str(exc))",
+        "protocol": "delegated_producer"
       }
     ],
     "tests": [
@@ -7716,7 +7713,7 @@
   "integration_delivery_readiness": {
     "mode": "typed",
     "producer": "src/commands/integration_commands.py:IntegrationCommandsMixin._cmd_integration_delivery_readiness",
-    "source_digest": "sha256:ecc11f27be33835e2f14313e84701bf6b7f36efb3f0a29e0f8783070e040bb6f",
+    "source_digest": "sha256:647eb236ca6c1c97f1ccbdd2729f72a8a15176b7d027acaf4290598a71eb9cad",
     "input_schema_source": "typed_contract",
     "schema_quality": "typed",
     "argument_reads_diagnostic_only": [],
@@ -7730,8 +7727,8 @@
     "result_policy": "retained typed adapter",
     "return_branches": [
       {
-        "return": "_failure('invariant_error', f'invalid readiness query: {exc}')",
-        "protocol": "delegated_producer"
+        "return": "{'success': result['outcome'] == 'ready', **result}",
+        "protocol": "explicit_boolean: result['outcome'] == 'ready'"
       },
       {
         "return": "_failure('invariant_error', 'parent task not found')",
@@ -7742,12 +7739,12 @@
         "protocol": "delegated_producer"
       },
       {
-        "return": "_failure('invariant_error', str(exc))",
+        "return": "_failure('invariant_error', f'invalid readiness query: {exc}')",
         "protocol": "delegated_producer"
       },
       {
-        "return": "{'success': result['outcome'] == 'ready', **result}",
-        "protocol": "explicit_boolean: result['outcome'] == 'ready'"
+        "return": "_failure('invariant_error', str(exc))",
+        "protocol": "delegated_producer"
       }
     ],
     "tests": [
@@ -7828,7 +7825,7 @@
   "integration_engine_transfer": {
     "mode": "typed",
     "producer": "src/commands/integration_commands.py:IntegrationCommandsMixin._cmd_integration_engine_transfer",
-    "source_digest": "sha256:533223e456e5cbf6144ce5d250238f3ba9b59b3e20d64ed107b025b6d60e13c0",
+    "source_digest": "sha256:8d5fac94311782a635efeba9f13e6eed7ffc27d39d8bb165727cfba07a291a06",
     "input_schema_source": "typed_contract",
     "schema_quality": "typed",
     "argument_reads_diagnostic_only": [],
@@ -7842,8 +7839,8 @@
     "result_policy": "retained typed adapter",
     "return_branches": [
       {
-        "return": "_failure('refused', str(exc))",
-        "protocol": "delegated_producer"
+        "return": "{'success': True, **result}",
+        "protocol": "explicit_boolean: True"
       },
       {
         "return": "_failure('refused', 'repository does not exist')",
@@ -7862,8 +7859,8 @@
         "protocol": "delegated_producer"
       },
       {
-        "return": "{'success': True, **result}",
-        "protocol": "explicit_boolean: True"
+        "return": "_failure('refused', str(exc))",
+        "protocol": "delegated_producer"
       }
     ],
     "tests": [
@@ -7875,7 +7872,7 @@
   "integration_file_children": {
     "mode": "typed",
     "producer": "src/commands/integration_commands.py:IntegrationCommandsMixin._cmd_integration_file_children",
-    "source_digest": "sha256:08235aa2c52374891541e8ad79f90312e8f0440cbf91bb105b95a79cc779487b",
+    "source_digest": "sha256:9d91a9f29906a62aed5956c3e4d5115b4b924a52211cf7ab8db9ce8bd16e165d",
     "input_schema_source": "typed_contract",
     "schema_quality": "typed",
     "argument_reads_diagnostic_only": [],
@@ -7889,8 +7886,8 @@
     "result_policy": "retained typed adapter",
     "return_branches": [
       {
-        "return": "_failure('invalid', f'invalid child filing: {exc}')",
-        "protocol": "delegated_producer"
+        "return": "{'success': True, **result}",
+        "protocol": "explicit_boolean: True"
       },
       {
         "return": "_failure('invalid', 'parent task not found')",
@@ -7901,16 +7898,16 @@
         "protocol": "delegated_producer"
       },
       {
+        "return": "_failure('invalid', f'invalid child filing: {exc}')",
+        "protocol": "delegated_producer"
+      },
+      {
         "return": "_failure(outcome, str(exc))",
         "protocol": "delegated_producer"
       },
       {
         "return": "_failure('runtime_error', str(exc))",
         "protocol": "delegated_producer"
-      },
-      {
-        "return": "{'success': True, **result}",
-        "protocol": "explicit_boolean: True"
       }
     ],
     "tests": [
@@ -7961,7 +7958,7 @@
   "integration_mutate_hierarchy": {
     "mode": "typed",
     "producer": "src/commands/integration_commands.py:IntegrationCommandsMixin._cmd_integration_mutate_hierarchy",
-    "source_digest": "sha256:f3037faef372c356faad11b2ce8ed0267414fa308c1915109fdea7a64f2dad9b",
+    "source_digest": "sha256:87c10e75f304163ebdc234330cfa3d84c156844a278041b64c374a55cb41f36f",
     "input_schema_source": "typed_contract",
     "schema_quality": "typed",
     "argument_reads_diagnostic_only": [],
@@ -7975,8 +7972,8 @@
     "result_policy": "retained typed adapter",
     "return_branches": [
       {
-        "return": "_failure('invalid', f'invalid hierarchy mutation: {exc}')",
-        "protocol": "delegated_producer"
+        "return": "{'success': True, **result}",
+        "protocol": "explicit_boolean: True"
       },
       {
         "return": "_failure('invalid', 'task not found')",
@@ -7987,12 +7984,12 @@
         "protocol": "delegated_producer"
       },
       {
-        "return": "_failure(outcome, str(exc))",
+        "return": "_failure('invalid', f'invalid hierarchy mutation: {exc}')",
         "protocol": "delegated_producer"
       },
       {
-        "return": "{'success': True, **result}",
-        "protocol": "explicit_boolean: True"
+        "return": "_failure(outcome, str(exc))",
+        "protocol": "delegated_producer"
       }
     ],
     "tests": [
@@ -8039,7 +8036,7 @@
   "integration_parent_verify": {
     "mode": "typed",
     "producer": "src/commands/integration_commands.py:IntegrationCommandsMixin._cmd_integration_parent_verify",
-    "source_digest": "sha256:40cfdbaac663ce866c71b03030f08b6b93b73b8bb702778e111a73acaaef26f6",
+    "source_digest": "sha256:8b15b30791ed489c6e2c260e156a3c571e115931f2cfdf66efe93595556f3b67",
     "input_schema_source": "typed_contract",
     "schema_quality": "typed",
     "argument_reads_diagnostic_only": [],
@@ -8053,8 +8050,8 @@
     "result_policy": "retained typed adapter",
     "return_branches": [
       {
-        "return": "_failure('invalid_evidence', f'invalid verification request: {exc}')",
-        "protocol": "delegated_producer"
+        "return": "{'success': result['outcome'] == 'verified', **result}",
+        "protocol": "explicit_boolean: result['outcome'] == 'verified'"
       },
       {
         "return": "_failure('stale_generation', 'parent task not found')",
@@ -8065,12 +8062,12 @@
         "protocol": "delegated_producer"
       },
       {
-        "return": "_failure('invalid_evidence', str(exc))",
+        "return": "_failure('invalid_evidence', f'invalid verification request: {exc}')",
         "protocol": "delegated_producer"
       },
       {
-        "return": "{'success': result['outcome'] == 'verified', **result}",
-        "protocol": "explicit_boolean: result['outcome'] == 'verified'"
+        "return": "_failure('invalid_evidence', str(exc))",
+        "protocol": "delegated_producer"
       }
     ],
     "tests": [
@@ -8103,8 +8100,14 @@
     "tests": [
       "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
       "tests/test_generated_command_contracts.py::test_generic_result_protocol",
-      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
-    ]
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_integration_train_sources.py"
+    ],
+    "helper_producers": {
+      "_integration_batch_intent": "sha256:c9602e271de174d08c9664e51648aed35e93ccd2741c235cdbc5a63ec384d94d",
+      "_train_control": "sha256:5f7c588c050eb02de7b63d8bd18e6ce766f2639b857a038c1daf9a660e33fa39"
+    },
+    "review_notes": " Shared dispatch retains the existing request model, project authorization, exception boundary and result outcome. Helper producer digests pin delegated refusal envelopes."
   },
   "integration_promotion_notes_input": {
     "mode": "typed",
@@ -8347,7 +8350,7 @@
   "integration_record_noop": {
     "mode": "typed",
     "producer": "src/commands/integration_commands.py:IntegrationCommandsMixin._cmd_integration_record_noop",
-    "source_digest": "sha256:1859e03954b69e245816fd2fce40208d8cf2e33b9b74ef6c435da2ae047aa93b",
+    "source_digest": "sha256:7a983a0dcdb6cfd45b8843ebf2b505160504bd062e670881cc3808fdbff0a750",
     "input_schema_source": "typed_contract",
     "schema_quality": "typed",
     "argument_reads_diagnostic_only": [],
@@ -8361,8 +8364,8 @@
     "result_policy": "retained typed adapter",
     "return_branches": [
       {
-        "return": "_failure('invalid', f'invalid no-op disposition: {exc}')",
-        "protocol": "delegated_producer"
+        "return": "{'success': True, 'outcome': 'recorded', 'receipt_id': receipt['id'], 'revision': receipt['revision'], 'reviewed_head_sha': receipt['reviewed_head_sha'], 'reviewed_tree_sha': receipt['reviewed_tree_sha']}",
+        "protocol": "explicit_boolean: True"
       },
       {
         "return": "_failure('invalid', 'disposition child not found')",
@@ -8378,6 +8381,10 @@
       },
       {
         "return": "_failure('invalid', 'child has no current no-op completion')",
+        "protocol": "delegated_producer"
+      },
+      {
+        "return": "_failure('invalid', f'invalid no-op disposition: {exc}')",
         "protocol": "delegated_producer"
       },
       {
@@ -8403,10 +8410,6 @@
       {
         "return": "_failure('runtime_error', str(exc))",
         "protocol": "delegated_producer"
-      },
-      {
-        "return": "{'success': True, 'outcome': 'recorded', 'receipt_id': receipt['id'], 'revision': receipt['revision'], 'reviewed_head_sha': receipt['reviewed_head_sha'], 'reviewed_tree_sha': receipt['reviewed_tree_sha']}",
-        "protocol": "explicit_boolean: True"
       }
     ],
     "tests": [
@@ -8418,7 +8421,7 @@
   "integration_record_repair": {
     "mode": "typed",
     "producer": "src/commands/integration_commands.py:IntegrationCommandsMixin._cmd_integration_record_repair",
-    "source_digest": "sha256:6cf5cca77c5d4a8c9a2b59021c73ba6784f7d36ca36c4fe3af35bd66a97c0f9f",
+    "source_digest": "sha256:82d601ad752f8cec6a5e28ffbbe140e2467611cdcb66d3b653e82145707a834c",
     "input_schema_source": "typed_contract",
     "schema_quality": "typed",
     "argument_reads_diagnostic_only": [],
@@ -8432,28 +8435,29 @@
     "result_policy": "retained typed adapter",
     "return_branches": [
       {
-        "return": "_failure('budget_exhausted', f'invalid repair evidence: {exc}')",
-        "protocol": "delegated_producer"
-      },
-      {
-        "return": "_failure('unauthorized', 'repair evidence authority is outside the operation')",
-        "protocol": "delegated_producer"
-      },
-      {
         "return": "{'success': result['outcome'] in {'continue', 'started', 'escalate'}, **result}",
         "protocol": "explicit_boolean: result['outcome'] in {'continue', 'started', 'escalate'}"
+      },
+      {
+        "return": "refusal",
+        "protocol": "delegated_producer"
       }
     ],
     "tests": [
       "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
       "tests/test_generated_command_contracts.py::test_generic_result_protocol",
-      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
-    ]
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_integration_repair.py"
+    ],
+    "helper_producers": {
+      "_repair_request": "sha256:6cf40e97dfdcb6cc925977b2ab167d18d37e639bab75605d03f80737790e0e6b"
+    },
+    "review_notes": " Shared dispatch retains the existing request model, project authorization, exception boundary and result outcome. Helper producer digests pin delegated refusal envelopes."
   },
   "integration_record_root_noop": {
     "mode": "typed",
     "producer": "src/commands/integration_commands.py:IntegrationCommandsMixin._cmd_integration_record_root_noop",
-    "source_digest": "sha256:f2b9ccf78f6c9fd2cf379cbdabb562128f6a659e61f2571dfe7759ea842d31f7",
+    "source_digest": "sha256:c6bc7408d4ea4999c92d32f6d0737a00fc83ed54f7989a1cc9c929ac3087ba5f",
     "input_schema_source": "typed_contract",
     "schema_quality": "typed",
     "argument_reads_diagnostic_only": [],
@@ -8467,28 +8471,25 @@
     "result_policy": "retained typed adapter",
     "return_branches": [
       {
-        "return": "_failure('unauthorized', refusal)",
+        "return": "await self._train_control(args, 'record_root_noop', 'IntegrationRecordRootNoopArgs', 'task_id', expected_project=True, extra_errors=(HierarchyError, BranchBusy, TimeoutError))",
         "protocol": "delegated_producer"
-      },
-      {
-        "return": "_failure('refused', str(exc))",
-        "protocol": "delegated_producer"
-      },
-      {
-        "return": "{'success': True, **result}",
-        "protocol": "explicit_boolean: True"
       }
     ],
     "tests": [
       "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
       "tests/test_generated_command_contracts.py::test_generic_result_protocol",
-      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
-    ]
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_integration_train_sources.py"
+    ],
+    "helper_producers": {
+      "_train_control": "sha256:5f7c588c050eb02de7b63d8bd18e6ce766f2639b857a038c1daf9a660e33fa39"
+    },
+    "review_notes": " Shared dispatch retains the existing request model, project authorization, exception boundary and result outcome. Helper producer digests pin delegated refusal envelopes."
   },
   "integration_recover_completed_container": {
     "mode": "typed",
     "producer": "src/commands/integration_commands.py:IntegrationCommandsMixin._cmd_integration_recover_completed_container",
-    "source_digest": "sha256:c171ab9b12d0407501a0275dc54eb9c2c3908187b8044ef3cf4d89cd7716c4de",
+    "source_digest": "sha256:0008bda7eabe2c11eec58438dc61f6916fd2c6112a5a3980e26054c6b9b66595",
     "input_schema_source": "typed_contract",
     "schema_quality": "typed",
     "effect": "destructive",
@@ -8527,7 +8528,7 @@
   "integration_redrive_child": {
     "mode": "typed",
     "producer": "src/commands/integration_commands.py:IntegrationCommandsMixin._cmd_integration_redrive_child",
-    "source_digest": "sha256:bff27dfd9309ae4ecf3f00f8114d77d61613203942cb238c8809a817a7df9bae",
+    "source_digest": "sha256:e9768b3f2ff9aee1aeab5a51436a1feffb6b62bf6d55c8623b7e33e28bf70430",
     "input_schema_source": "typed_contract",
     "schema_quality": "typed",
     "argument_reads_diagnostic_only": [],
@@ -8541,16 +8542,20 @@
     "result_policy": "retained typed adapter",
     "return_branches": [
       {
-        "return": "_failure('invalid', f'invalid child redrive request: {exc}')",
-        "protocol": "delegated_producer"
+        "return": "{'success': result['outcome'] in {'would_advance', 'advanced', 'nothing_to_redrive'}, 'dry_run': request.dry_run, **result}",
+        "protocol": "explicit_boolean: result['outcome'] in {'would_advance', 'advanced', 'nothing_to_redrive'}"
       },
       {
         "return": "_failure('unauthorized', refusal)",
         "protocol": "delegated_producer"
       },
       {
-        "return": "{'success': result['outcome'] in {'would_advance', 'advanced', 'nothing_to_redrive'}, 'dry_run': request.dry_run, **result}",
-        "protocol": "explicit_boolean: result['outcome'] in {'would_advance', 'advanced', 'nothing_to_redrive'}"
+        "return": "_failure('invalid', f'invalid child redrive request: {exc}')",
+        "protocol": "delegated_producer"
+      },
+      {
+        "return": "await collection.collect_parent(parent_id, time.time())",
+        "protocol": "delegated_producer"
       }
     ],
     "tests": [
@@ -8566,7 +8571,7 @@
   "integration_redrive_root": {
     "mode": "typed",
     "producer": "src/commands/integration_commands.py:IntegrationCommandsMixin._cmd_integration_redrive_root",
-    "source_digest": "sha256:3033805a5686a8291380a935089eb8a77622daab656c9520a5ee8eaf26dd8fff",
+    "source_digest": "sha256:56e36648c10427b81f7c76af6a8638b390889f322a23a9a588339cc1ea427289",
     "input_schema_source": "typed_contract",
     "schema_quality": "typed",
     "argument_reads_diagnostic_only": [],
@@ -8580,16 +8585,16 @@
     "result_policy": "retained typed adapter",
     "return_branches": [
       {
-        "return": "_failure('invalid', f'invalid root redrive request: {exc}')",
-        "protocol": "delegated_producer"
+        "return": "{'success': result['outcome'] in {'would_open', 'opened', 'would_collect', 'collecting', 'nothing_to_redrive'}, 'dry_run': request.dry_run, **result}",
+        "protocol": "explicit_boolean: result['outcome'] in {'would_open', 'opened', 'would_collect', 'collecting', 'nothing_to_redrive'}"
       },
       {
         "return": "_failure('unauthorized', refusal)",
         "protocol": "delegated_producer"
       },
       {
-        "return": "{'success': result['outcome'] in {'would_open', 'opened', 'would_collect', 'collecting', 'nothing_to_redrive'}, 'dry_run': request.dry_run, **result}",
-        "protocol": "explicit_boolean: result['outcome'] in {'would_open', 'opened', 'would_collect', 'collecting', 'nothing_to_redrive'}"
+        "return": "_failure('invalid', f'invalid root redrive request: {exc}')",
+        "protocol": "delegated_producer"
       }
     ],
     "tests": [
@@ -8636,7 +8641,7 @@
   "integration_refresh_epic": {
     "mode": "typed",
     "producer": "src/commands/integration_commands.py:IntegrationCommandsMixin._cmd_integration_refresh_epic",
-    "source_digest": "sha256:c9844b9f8ae0c5f0633efb50efb745197c3da943b1a930bcdc566c11a73b7de9",
+    "source_digest": "sha256:cdfa40e913f99b1f6604515d06b0f7511411049c82e7154db571d8b8201d89b5",
     "input_schema_source": "typed_contract",
     "schema_quality": "typed",
     "argument_reads_diagnostic_only": [],
@@ -8650,28 +8655,25 @@
     "result_policy": "retained typed adapter",
     "return_branches": [
       {
-        "return": "_failure('unauthorized', refusal)",
+        "return": "await self._train_control(args, 'refresh_epic', 'IntegrationRefreshEpicArgs', 'task_id', with_train=True)",
         "protocol": "delegated_producer"
-      },
-      {
-        "return": "_failure('refused', str(exc))",
-        "protocol": "delegated_producer"
-      },
-      {
-        "return": "{'success': True, **result}",
-        "protocol": "explicit_boolean: True"
       }
     ],
     "tests": [
       "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
       "tests/test_generated_command_contracts.py::test_generic_result_protocol",
-      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
-    ]
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_integration_train_sources.py"
+    ],
+    "helper_producers": {
+      "_train_control": "sha256:5f7c588c050eb02de7b63d8bd18e6ce766f2639b857a038c1daf9a660e33fa39"
+    },
+    "review_notes": " Shared dispatch retains the existing request model, project authorization, exception boundary and result outcome. Helper producer digests pin delegated refusal envelopes."
   },
   "integration_release": {
     "mode": "typed",
     "producer": "src/commands/integration_commands.py:IntegrationCommandsMixin._cmd_integration_release",
-    "source_digest": "sha256:cb3ff9bf83900960774695832356933aafa1170c56a7ce1b53363af9f50ebd09",
+    "source_digest": "sha256:043a0777005492870abd28430dd19057e58ebdc363c6cfc105f8b2d868cbed12",
     "input_schema_source": "typed_contract",
     "schema_quality": "typed",
     "argument_reads_diagnostic_only": [],
@@ -8685,8 +8687,8 @@
     "result_policy": "retained typed adapter",
     "return_branches": [
       {
-        "return": "_failure('runtime_error', f'invalid integration release request: {exc}')",
-        "protocol": "delegated_producer"
+        "return": "{'success': result.outcome in {'released', 'already_released', 'empty'}, **result.model_dump(mode='json')}",
+        "protocol": "explicit_boolean: result.outcome in {'released', 'already_released', 'empty'}"
       },
       {
         "return": "_failure('stale', 'integration batch does not exist')",
@@ -8697,8 +8699,8 @@
         "protocol": "delegated_producer"
       },
       {
-        "return": "{'success': result.outcome in {'released', 'already_released', 'empty'}, **result.model_dump(mode='json')}",
-        "protocol": "explicit_boolean: result.outcome in {'released', 'already_released', 'empty'}"
+        "return": "_failure('runtime_error', f'invalid integration release request: {exc}')",
+        "protocol": "delegated_producer"
       }
     ],
     "tests": [
@@ -8710,7 +8712,7 @@
   "integration_release_held_gate": {
     "mode": "typed",
     "producer": "src/commands/integration_commands.py:IntegrationCommandsMixin._cmd_integration_release_held_gate",
-    "source_digest": "sha256:43806a0ced1e4c92021b581a1f0f2b055310bd1f20d2fb92079541deac14e57c",
+    "source_digest": "sha256:80368c2b21e8e884a8329f567936b8e47c24a78c3eccc6464cdb4fa7e4c88beb",
     "input_schema_source": "typed_contract",
     "schema_quality": "typed",
     "argument_reads_diagnostic_only": [],
@@ -8724,11 +8726,11 @@
     "result_policy": "retained typed adapter",
     "return_branches": [
       {
-        "return": "_failure('unauthorized', 'a verified human operator is required')",
-        "protocol": "delegated_producer"
+        "return": "{'success': True, **result}",
+        "protocol": "explicit_boolean: True"
       },
       {
-        "return": "_failure('refused', str(exc))",
+        "return": "_failure('unauthorized', 'a verified human operator is required')",
         "protocol": "delegated_producer"
       },
       {
@@ -8748,8 +8750,8 @@
         "protocol": "delegated_producer"
       },
       {
-        "return": "{'success': True, **result}",
-        "protocol": "explicit_boolean: True"
+        "return": "_failure('refused', str(exc))",
+        "protocol": "delegated_producer"
       }
     ],
     "tests": [
@@ -8761,7 +8763,7 @@
   "integration_release_owner": {
     "mode": "typed",
     "producer": "src/commands/integration_commands.py:IntegrationCommandsMixin._cmd_integration_release_owner",
-    "source_digest": "sha256:884d91794a210bacdb64d97add2311745c00f4608510b04dfb310499167294fc",
+    "source_digest": "sha256:efd60403d26552c20855a735fa69eade3daac41d00e4f90a033b9cf7c33639b5",
     "input_schema_source": "typed_contract",
     "schema_quality": "typed",
     "argument_reads_diagnostic_only": [],
@@ -8809,7 +8811,7 @@
   "integration_release_stale_owners": {
     "mode": "typed",
     "producer": "src/commands/integration_commands.py:IntegrationCommandsMixin._cmd_integration_release_stale_owners",
-    "source_digest": "sha256:b158ead3e7841d548de61bb02418ef62b594bb3539cef9a52f2a20b8225cbca4",
+    "source_digest": "sha256:31a87d06b883f459b9e9d5b24d062235ae084f50607c4dcab5a4fce55599afa3",
     "input_schema_source": "typed_contract",
     "schema_quality": "typed",
     "argument_reads_diagnostic_only": [],
@@ -8823,8 +8825,8 @@
     "result_policy": "retained typed adapter",
     "return_branches": [
       {
-        "return": "_failure('invalid', f'invalid stale owner release request: {exc}')",
-        "protocol": "delegated_producer"
+        "return": "{'success': result['outcome'] != 'not_found', **result}",
+        "protocol": "explicit_boolean: result['outcome'] != 'not_found'"
       },
       {
         "return": "_failure('unauthorized', refusal)",
@@ -8835,8 +8837,8 @@
         "protocol": "delegated_producer"
       },
       {
-        "return": "{'success': result['outcome'] != 'not_found', **result}",
-        "protocol": "explicit_boolean: result['outcome'] != 'not_found'"
+        "return": "_failure('invalid', f'invalid stale owner release request: {exc}')",
+        "protocol": "delegated_producer"
       }
     ],
     "tests": [
@@ -8848,7 +8850,7 @@
   "integration_release_withheld_source": {
     "mode": "typed",
     "producer": "src/commands/integration_commands.py:IntegrationCommandsMixin._cmd_integration_release_withheld_source",
-    "source_digest": "sha256:0f3965dce3abbc83d738a1701c7c14a81f012e58e9f7f3e2d5890a0524344112",
+    "source_digest": "sha256:998effc13ca9c90af07cd69916107929cdcd4c8d69f9a0c6f2c700d4b4e3961a",
     "input_schema_source": "typed_contract",
     "schema_quality": "typed",
     "effect": "destructive",
@@ -8862,19 +8864,7 @@
     "argument_reads_diagnostic_only": [],
     "return_branches": [
       {
-        "return": "{'success': True, **result}",
-        "protocol": "explicit_boolean: True"
-      },
-      {
-        "return": "_failure('unauthorized', refusal)",
-        "protocol": "delegated_producer"
-      },
-      {
-        "return": "_failure(exc.outcome, str(exc))",
-        "protocol": "delegated_producer"
-      },
-      {
-        "return": "_failure('refused', str(exc))",
+        "return": "await self._train_control(args, 'release_withheld_source', 'IntegrationReleaseWithheldSourceArgs', 'batch_id', with_train=True, named_refusal=True)",
         "protocol": "delegated_producer"
       }
     ],
@@ -8887,14 +8877,18 @@
       "tests/test_integration_train_sources.py::test_release_withheld_source_allows_terminal_repair_history",
       "tests/test_integration_train_sources.py::test_release_withheld_source_handler_maps_refusals",
       "tests/test_integration_contracts.py",
-      "tests/test_operator_workers.py"
+      "tests/test_operator_workers.py",
+      "tests/test_integration_train_sources.py"
     ],
-    "review_notes": "Dev ff25a7d71: typed operational control, original-principal integration_operator gate. Candidate dd03f9ffb updates only this handler's docstring to describe owning-supervisor/local-operator apply authority; operator workers still require an exact human decision. TrainControls checks exact source/target, reason, acceptance, live writers, holds and repair budget; repeated apply is idempotent. Producer return branches and argument handling are unchanged: domain/authority failures use _failure and completed preview/apply emits explicit success. Generated invocation remains disabled."
+    "review_notes": "Dev ff25a7d71: typed operational control, original-principal integration_operator gate. Candidate dd03f9ffb updates only this handler's docstring to describe owning-supervisor/local-operator apply authority; operator workers still require an exact human decision. TrainControls checks exact source/target, reason, acceptance, live writers, holds and repair budget; repeated apply is idempotent. Producer return branches and argument handling are unchanged: domain/authority failures use _failure and completed preview/apply emits explicit success. Generated invocation remains disabled. Shared dispatch retains the existing request model, project authorization, exception boundary and result outcome. Helper producer digests pin delegated refusal envelopes.",
+    "helper_producers": {
+      "_train_control": "sha256:5f7c588c050eb02de7b63d8bd18e6ce766f2639b857a038c1daf9a660e33fa39"
+    }
   },
   "integration_reopen_collection": {
     "mode": "typed",
     "producer": "src/commands/integration_commands.py:IntegrationCommandsMixin._cmd_integration_reopen_collection",
-    "source_digest": "sha256:f737bd172cc63516e4511037749d5392aa1e508913d32b3c610e98d62eb98bff",
+    "source_digest": "sha256:49efe8269162ef0fdb732909a1f008af44d133647b978bcf9e36f29a3c23a891",
     "input_schema_source": "typed_contract",
     "schema_quality": "typed",
     "argument_reads_diagnostic_only": [],
@@ -8908,16 +8902,20 @@
     "result_policy": "retained typed adapter",
     "return_branches": [
       {
-        "return": "_failure('invalid', f'invalid collection reopen request: {exc}')",
-        "protocol": "delegated_producer"
+        "return": "{'success': result['outcome'] in {'would_reopen', 'reopened', 'nothing_to_reopen'}, 'dry_run': request.dry_run, **result}",
+        "protocol": "explicit_boolean: result['outcome'] in {'would_reopen', 'reopened', 'nothing_to_reopen'}"
       },
       {
         "return": "_failure('unauthorized', refusal)",
         "protocol": "delegated_producer"
       },
       {
-        "return": "{'success': result['outcome'] in {'would_reopen', 'reopened', 'nothing_to_reopen'}, 'dry_run': request.dry_run, **result}",
-        "protocol": "explicit_boolean: result['outcome'] in {'would_reopen', 'reopened', 'nothing_to_reopen'}"
+        "return": "await repair.dispatch(operation_id, stage)",
+        "protocol": "delegated_producer"
+      },
+      {
+        "return": "_failure('invalid', f'invalid collection reopen request: {exc}')",
+        "protocol": "delegated_producer"
       },
       {
         "return": "{'success': result['outcome'] in {'would_reopen', 'reopened', 'nothing_to_reopen'}, 'dry_run': request.dry_run, **result}",
@@ -8933,7 +8931,7 @@
   "integration_repair_close_current": {
     "mode": "typed",
     "producer": "src/commands/integration_commands.py:IntegrationCommandsMixin._cmd_integration_repair_close_current",
-    "source_digest": "sha256:bfc88095323323cb87cafc481d99770050f09ae5dbb9a582dc894ffc5d10543d",
+    "source_digest": "sha256:c10e7a0c5f6a0a173fbec522523e3a5728c81ae03a3f8ded2b3602cc32f70315",
     "input_schema_source": "typed_contract",
     "schema_quality": "typed",
     "argument_reads_diagnostic_only": [],
@@ -8947,8 +8945,8 @@
     "result_policy": "retained typed adapter",
     "return_branches": [
       {
-        "return": "_failure('runtime_error', f'invalid repair close request: {exc}')",
-        "protocol": "delegated_producer"
+        "return": "{'success': True, 'outcome': 'current', 'batch_id': batch['id'], 'revision': revision}",
+        "protocol": "explicit_boolean: True"
       },
       {
         "return": "_failure('unauthorized', 'caller cannot resolve this repair close')",
@@ -8956,6 +8954,14 @@
       },
       {
         "return": "_failure('stale', 'repair operation does not exist')",
+        "protocol": "delegated_producer"
+      },
+      {
+        "return": "_failure('stale', 'repair close is no longer the current candidate')",
+        "protocol": "delegated_producer"
+      },
+      {
+        "return": "_failure('runtime_error', f'invalid repair close request: {exc}')",
         "protocol": "delegated_producer"
       },
       {
@@ -8969,14 +8975,6 @@
       {
         "return": "_failure('stale', 'root batch does not match repair close')",
         "protocol": "delegated_producer"
-      },
-      {
-        "return": "_failure('stale', 'repair close is no longer the current candidate')",
-        "protocol": "delegated_producer"
-      },
-      {
-        "return": "{'success': True, 'outcome': 'current', 'batch_id': batch['id'], 'revision': revision}",
-        "protocol": "explicit_boolean: True"
       }
     ],
     "tests": [
@@ -8988,7 +8986,7 @@
   "integration_repair_dispatch": {
     "mode": "typed",
     "producer": "src/commands/integration_commands.py:IntegrationCommandsMixin._cmd_integration_repair_dispatch",
-    "source_digest": "sha256:d0660f5af21f906c925729bd19b4f9aa961ccea93470b87d37ac6701a2ffbee9",
+    "source_digest": "sha256:cc8bd51efedb957b95f99f55f4c12dd35066863f23e431c9d6cb081f837802e7",
     "input_schema_source": "typed_contract",
     "schema_quality": "typed",
     "argument_reads_diagnostic_only": [],
@@ -9002,32 +9000,33 @@
     "result_policy": "retained typed adapter",
     "return_branches": [
       {
-        "return": "_failure('stale', f'invalid repair dispatch: {exc}')",
-        "protocol": "delegated_producer"
+        "return": "{'success': result['outcome'] in {'dispatched', 'already_dispatched', 'writer_reused'}, **result}",
+        "protocol": "explicit_boolean: result['outcome'] in {'dispatched', 'already_dispatched', 'writer_reused'}"
       },
       {
-        "return": "_failure('unauthorized', 'repair dispatch authority is outside the operation')",
+        "return": "refusal",
         "protocol": "delegated_producer"
       },
       {
         "return": "_failure('stale', 'candidate repair subject is no longer current')",
         "protocol": "delegated_producer"
-      },
-      {
-        "return": "{'success': result['outcome'] in {'dispatched', 'already_dispatched', 'writer_reused'}, **result}",
-        "protocol": "explicit_boolean: result['outcome'] in {'dispatched', 'already_dispatched', 'writer_reused'}"
       }
     ],
     "tests": [
       "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
       "tests/test_generated_command_contracts.py::test_generic_result_protocol",
-      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
-    ]
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_integration_repair.py"
+    ],
+    "helper_producers": {
+      "_repair_request": "sha256:6cf40e97dfdcb6cc925977b2ab167d18d37e639bab75605d03f80737790e0e6b"
+    },
+    "review_notes": " Shared dispatch retains the existing request model, project authorization, exception boundary and result outcome. Helper producer digests pin delegated refusal envelopes."
   },
   "integration_repair_start": {
     "mode": "typed",
     "producer": "src/commands/integration_commands.py:IntegrationCommandsMixin._cmd_integration_repair_start",
-    "source_digest": "sha256:ef1366a12eb1be40a981ebb8656c2c54712030a38003d8f25949bc1b11d8c516",
+    "source_digest": "sha256:a76269dca5d0d5f916643ffcce9c8efb2addc7a3dce01ff84f7979f7e2f09d7f",
     "input_schema_source": "typed_contract",
     "schema_quality": "typed",
     "argument_reads_diagnostic_only": [],
@@ -9041,28 +9040,29 @@
     "result_policy": "retained typed adapter",
     "return_branches": [
       {
-        "return": "_failure('stale', f'invalid repair start: {exc}')",
-        "protocol": "delegated_producer"
-      },
-      {
-        "return": "_failure('unauthorized', 'repair start authority is outside the operation')",
-        "protocol": "delegated_producer"
-      },
-      {
         "return": "{'success': result['outcome'] in {'started', 'already_started'}, **result}",
         "protocol": "explicit_boolean: result['outcome'] in {'started', 'already_started'}"
+      },
+      {
+        "return": "refusal",
+        "protocol": "delegated_producer"
       }
     ],
     "tests": [
       "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
       "tests/test_generated_command_contracts.py::test_generic_result_protocol",
-      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
-    ]
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_integration_repair.py"
+    ],
+    "helper_producers": {
+      "_repair_request": "sha256:6cf40e97dfdcb6cc925977b2ab167d18d37e639bab75605d03f80737790e0e6b"
+    },
+    "review_notes": " Shared dispatch retains the existing request model, project authorization, exception boundary and result outcome. Helper producer digests pin delegated refusal envelopes."
   },
   "integration_repair_target": {
     "mode": "typed",
     "producer": "src/commands/integration_commands.py:IntegrationCommandsMixin._cmd_integration_repair_target",
-    "source_digest": "sha256:6ca7aad272b4a0309c2b6dc3d3fb34c00e3c08897330012f78eb82327b208551",
+    "source_digest": "sha256:267cd8ddec91b4dd8cc3d6274c66b9c3e02ab2504f889b6d7ee57e8410131685",
     "input_schema_source": "typed_contract",
     "schema_quality": "typed",
     "effect": "destructive",
@@ -9076,15 +9076,7 @@
     "argument_reads_diagnostic_only": [],
     "return_branches": [
       {
-        "return": "{'success': True, **result}",
-        "protocol": "explicit_boolean: True"
-      },
-      {
-        "return": "_failure('unauthorized', refusal)",
-        "protocol": "delegated_producer"
-      },
-      {
-        "return": "_failure('refused', str(exc))",
+        "return": "await self._train_control(args, 'repair_target', 'IntegrationRepairTargetArgs', 'batch_id', with_train=True, extra_errors=(BranchBusy, TimeoutError))",
         "protocol": "delegated_producer"
       }
     ],
@@ -9094,12 +9086,15 @@
       "tests/test_integration_train_sources.py",
       "tests/test_cli_integration.py"
     ],
-    "review_notes": "Preview/apply uses integration_operator for the batch project; unauthorized/refused outcomes retain explicit false envelopes. TrainControls.repair_target revalidates target, candidate, sealed subtree and allocator attempt; no authority or budget reset."
+    "review_notes": "Preview/apply uses integration_operator for the batch project; unauthorized/refused outcomes retain explicit false envelopes. TrainControls.repair_target revalidates target, candidate, sealed subtree and allocator attempt; no authority or budget reset. Shared dispatch retains the existing request model, project authorization, exception boundary and result outcome. Helper producer digests pin delegated refusal envelopes.",
+    "helper_producers": {
+      "_train_control": "sha256:5f7c588c050eb02de7b63d8bd18e6ce766f2639b857a038c1daf9a660e33fa39"
+    }
   },
   "integration_repair_timeout": {
     "mode": "typed",
     "producer": "src/commands/integration_commands.py:IntegrationCommandsMixin._cmd_integration_repair_timeout",
-    "source_digest": "sha256:076f286d72017b0b8a40dd7fc320a691fa70640a09405dfec395120b883bf38d",
+    "source_digest": "sha256:f92820b9217b07f2ecd5c636ad18c7e55aa874fc3411e671cf0237d3542e07a4",
     "input_schema_source": "typed_contract",
     "schema_quality": "typed",
     "argument_reads_diagnostic_only": [],
@@ -9113,28 +9108,29 @@
     "result_policy": "retained typed adapter",
     "return_branches": [
       {
-        "return": "_failure('stale', f'invalid repair timeout: {exc}')",
-        "protocol": "delegated_producer"
-      },
-      {
-        "return": "_failure('unauthorized', 'repair timeout authority is outside the operation')",
-        "protocol": "delegated_producer"
-      },
-      {
         "return": "{'success': result['outcome'] != 'stale', **result}",
         "protocol": "explicit_boolean: result['outcome'] != 'stale'"
+      },
+      {
+        "return": "refusal",
+        "protocol": "delegated_producer"
       }
     ],
     "tests": [
       "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
       "tests/test_generated_command_contracts.py::test_generic_result_protocol",
-      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
-    ]
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_integration_repair.py"
+    ],
+    "helper_producers": {
+      "_repair_request": "sha256:6cf40e97dfdcb6cc925977b2ab167d18d37e639bab75605d03f80737790e0e6b"
+    },
+    "review_notes": " Shared dispatch retains the existing request model, project authorization, exception boundary and result outcome. Helper producer digests pin delegated refusal envelopes."
   },
   "integration_reserve_owner": {
     "mode": "typed",
     "producer": "src/commands/integration_commands.py:IntegrationCommandsMixin._cmd_integration_reserve_owner",
-    "source_digest": "sha256:27984beb72a29f88ebb4a2a7aa70ff7adfde4b43cfadd8cbfaf590e1e1c25058",
+    "source_digest": "sha256:8deb8ae5589dd725bd10a77b89743d251ce56fe821fb3a81452dd4cb46a4e715",
     "input_schema_source": "typed_contract",
     "schema_quality": "typed",
     "argument_reads_diagnostic_only": [],
@@ -9148,8 +9144,8 @@
     "result_policy": "retained typed adapter",
     "return_branches": [
       {
-        "return": "_failure('not_eligible', f'invalid reservation request: {exc}')",
-        "protocol": "delegated_producer"
+        "return": "{'success': result['outcome'] in {'acquired', 'already_reserved'}, **result}",
+        "protocol": "explicit_boolean: result['outcome'] in {'acquired', 'already_reserved'}"
       },
       {
         "return": "_failure('not_found', 'task does not exist')",
@@ -9160,8 +9156,8 @@
         "protocol": "delegated_producer"
       },
       {
-        "return": "{'success': result['outcome'] in {'acquired', 'already_reserved'}, **result}",
-        "protocol": "explicit_boolean: result['outcome'] in {'acquired', 'already_reserved'}"
+        "return": "_failure('not_eligible', f'invalid reservation request: {exc}')",
+        "protocol": "delegated_producer"
       }
     ],
     "tests": [
@@ -9173,7 +9169,7 @@
   "integration_restore_task_origin": {
     "mode": "typed",
     "producer": "src/commands/integration_commands.py:IntegrationCommandsMixin._cmd_integration_restore_task_origin",
-    "source_digest": "sha256:8b494ec1009258739c8bb80c05c4f47a4db1c4e05b6868d2bcbc47584c1c3dbe",
+    "source_digest": "sha256:bc2f926b5b34deaa7b0de86b6c7ac20d75248603e41c7ed8138c12ee665e842d",
     "input_schema_source": "typed_contract",
     "schema_quality": "typed",
     "effect": "destructive",
@@ -9241,8 +9237,14 @@
     "tests": [
       "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
       "tests/test_generated_command_contracts.py::test_generic_result_protocol",
-      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
-    ]
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_integration_train_sources.py"
+    ],
+    "helper_producers": {
+      "_integration_batch_intent": "sha256:c9602e271de174d08c9664e51648aed35e93ccd2741c235cdbc5a63ec384d94d",
+      "_train_control": "sha256:5f7c588c050eb02de7b63d8bd18e6ce766f2639b857a038c1daf9a660e33fa39"
+    },
+    "review_notes": " Shared dispatch retains the existing request model, project authorization, exception boundary and result outcome. Helper producer digests pin delegated refusal envelopes."
   },
   "integration_retire_legacy_park": {
     "mode": "typed",
@@ -9282,7 +9284,7 @@
   "integration_retire_origin": {
     "mode": "typed",
     "producer": "src/commands/integration_commands.py:IntegrationCommandsMixin._cmd_integration_retire_origin",
-    "source_digest": "sha256:c8b425b3e90d50b089892f25485655f3323f9caba3a7891d4b231c61834aa3da",
+    "source_digest": "sha256:b35b9dbde78a6f0c56b016084f7425b87d6e2fcfbb09e7fbde81c07dc4373924",
     "input_schema_source": "typed_contract",
     "schema_quality": "typed",
     "argument_reads_diagnostic_only": [],
@@ -9296,28 +9298,25 @@
     "result_policy": "retained typed adapter",
     "return_branches": [
       {
-        "return": "_failure('unauthorized', refusal)",
+        "return": "await self._train_control(args, 'retire_origin', 'IntegrationRetireOriginArgs', 'task_id')",
         "protocol": "delegated_producer"
-      },
-      {
-        "return": "_failure('refused', str(exc))",
-        "protocol": "delegated_producer"
-      },
-      {
-        "return": "{'success': True, **result}",
-        "protocol": "explicit_boolean: True"
       }
     ],
     "tests": [
       "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
       "tests/test_generated_command_contracts.py::test_generic_result_protocol",
-      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
-    ]
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_integration_train_sources.py"
+    ],
+    "helper_producers": {
+      "_train_control": "sha256:5f7c588c050eb02de7b63d8bd18e6ce766f2639b857a038c1daf9a660e33fa39"
+    },
+    "review_notes": " Shared dispatch retains the existing request model, project authorization, exception boundary and result outcome. Helper producer digests pin delegated refusal envelopes."
   },
   "integration_reverify_epic": {
     "mode": "typed",
     "producer": "src/commands/integration_commands.py:IntegrationCommandsMixin._cmd_integration_reverify_epic",
-    "source_digest": "sha256:102f16ec2c2478b051faeef81a8efff16dd60aa5a649c7fc096988bcb1432c24",
+    "source_digest": "sha256:ae124f5d09ab3b064b19fbe578dbafe54a81efb10f5372431c6a7b2d92edfb99",
     "input_schema_source": "typed_contract",
     "schema_quality": "typed",
     "effect": "destructive",
@@ -9331,24 +9330,20 @@
     "argument_reads_diagnostic_only": [],
     "return_branches": [
       {
-        "return": "{'success': result['outcome'] != 'changed', **result}",
-        "protocol": "explicit_boolean_expression"
-      },
-      {
-        "return": "_failure('unauthorized', refusal)",
-        "protocol": "delegated_producer"
-      },
-      {
-        "return": "_failure('refused', str(exc))",
+        "return": "await self._train_control(args, 'reverify_epic', 'IntegrationReverifyEpicArgs', 'task_id', with_train=True, expected_project=True)",
         "protocol": "delegated_producer"
       }
     ],
     "tests": [
       "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
       "tests/test_target_scope.py",
-      "tests/test_cli_integration.py"
+      "tests/test_cli_integration.py",
+      "tests/test_integration_train_sources.py"
     ],
-    "review_notes": "Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. "
+    "review_notes": "Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled.  Shared dispatch retains the existing request model, project authorization, exception boundary and result outcome. Helper producer digests pin delegated refusal envelopes.",
+    "helper_producers": {
+      "_train_control": "sha256:5f7c588c050eb02de7b63d8bd18e6ce766f2639b857a038c1daf9a660e33fa39"
+    }
   },
   "integration_revoke_publication": {
     "mode": "typed",
@@ -9391,7 +9386,7 @@
   "integration_seal_now": {
     "mode": "typed",
     "producer": "src/commands/integration_commands.py:IntegrationCommandsMixin._cmd_integration_seal_now",
-    "source_digest": "sha256:df38b927a6d3323ef75b8127fad242407a6832af123015d90d475509867007e6",
+    "source_digest": "sha256:8117825be3cbd20046d13c9379fb0b3200bb7769fba0e0056001078cab8fdc40",
     "input_schema_source": "typed_contract",
     "schema_quality": "typed",
     "argument_reads_diagnostic_only": [],
@@ -9405,28 +9400,25 @@
     "result_policy": "retained typed adapter",
     "return_branches": [
       {
-        "return": "_failure('unauthorized', refusal)",
+        "return": "await self._train_control(args, 'seal_now', 'IntegrationSealNowArgs', 'project_id')",
         "protocol": "delegated_producer"
-      },
-      {
-        "return": "_failure('refused', str(exc))",
-        "protocol": "delegated_producer"
-      },
-      {
-        "return": "{'success': True, **result}",
-        "protocol": "explicit_boolean: True"
       }
     ],
     "tests": [
       "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
       "tests/test_generated_command_contracts.py::test_generic_result_protocol",
-      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
-    ]
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_integration_train_sources.py"
+    ],
+    "helper_producers": {
+      "_train_control": "sha256:5f7c588c050eb02de7b63d8bd18e6ce766f2639b857a038c1daf9a660e33fa39"
+    },
+    "review_notes": " Shared dispatch retains the existing request model, project authorization, exception boundary and result outcome. Helper producer digests pin delegated refusal envelopes."
   },
   "integration_settle_batch": {
     "mode": "typed",
     "producer": "src/commands/integration_commands.py:IntegrationCommandsMixin._cmd_integration_settle_batch",
-    "source_digest": "sha256:4308b075684896663d0077c2648aff0467e96ef85fddfd488a79246653f50f24",
+    "source_digest": "sha256:b6fd3cf007fe11810e8fa2de4c9fdcebeaaf85d9d1632d685f0e8fc1283d40dd",
     "input_schema_source": "typed_contract",
     "schema_quality": "typed",
     "effect": "destructive",
@@ -9440,19 +9432,7 @@
     "argument_reads_diagnostic_only": [],
     "return_branches": [
       {
-        "return": "{'success': True, **result}",
-        "protocol": "explicit_boolean: True"
-      },
-      {
-        "return": "_failure('unauthorized', refusal)",
-        "protocol": "delegated_producer"
-      },
-      {
-        "return": "_failure(exc.outcome, str(exc))",
-        "protocol": "delegated_producer"
-      },
-      {
-        "return": "_failure('refused', str(exc))",
+        "return": "await self._train_control(args, 'settle_batch', 'IntegrationSettleBatchArgs', 'batch_id', with_train=True, named_refusal=True)",
         "protocol": "delegated_producer"
       }
     ],
@@ -9464,7 +9444,10 @@
       "tests/test_doctor_cli_timeout.py",
       "tests/test_cli_integration.py"
     ],
-    "review_notes": "Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. "
+    "review_notes": "Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled.  Shared dispatch retains the existing request model, project authorization, exception boundary and result outcome. Helper producer digests pin delegated refusal envelopes.",
+    "helper_producers": {
+      "_train_control": "sha256:5f7c588c050eb02de7b63d8bd18e6ce766f2639b857a038c1daf9a660e33fa39"
+    }
   },
   "integration_status": {
     "mode": "typed",
@@ -9582,7 +9565,7 @@
   "integration_transfer_owner": {
     "mode": "typed",
     "producer": "src/integration/owner_guards.py:IntegrationCommandsMixin._cmd_integration_transfer_owner",
-    "source_digest": "sha256:19aa853860d35faccc2cbba3f363378f71982f395a8864aac075507c44739717",
+    "source_digest": "sha256:53df9dcd8c371cc00bd6205a77087ddcd0d5f9eb7e83f50b5ae92eebf0c62a63",
     "input_schema_source": "typed_contract",
     "schema_quality": "typed",
     "argument_reads_diagnostic_only": [],
@@ -9596,23 +9579,11 @@
     "result_policy": "retained typed adapter",
     "return_branches": [
       {
-        "return": "_failure('human_required', f'invalid ownership transfer: {exc}')",
-        "protocol": "delegated_producer"
+        "return": "{'success': True, 'outcome': 'transferred', 'fence': transferred.model_dump(mode='json')}",
+        "protocol": "explicit_boolean: True"
       },
       {
         "return": "_failure('human_required', 'target repository is not configured')",
-        "protocol": "delegated_producer"
-      },
-      {
-        "return": "_failure('human_required', refusal)",
-        "protocol": "delegated_producer"
-      },
-      {
-        "return": "_failure('human_required', 'playbook ownership transfer authority is outside the target scope')",
-        "protocol": "delegated_producer"
-      },
-      {
-        "return": "_failure('human_required', 'ownership transfer authority is unresolved')",
         "protocol": "delegated_producer"
       },
       {
@@ -9624,11 +9595,23 @@
         "protocol": "delegated_producer"
       },
       {
+        "return": "_failure('human_required', f'invalid ownership transfer: {exc}')",
+        "protocol": "delegated_producer"
+      },
+      {
+        "return": "_failure('human_required', refusal)",
+        "protocol": "delegated_producer"
+      },
+      {
         "return": "_failure('stale_owner', 'branch ownership fence is stale')",
         "protocol": "delegated_producer"
       },
       {
-        "return": "_failure('busy', 'parent delivery is not ready for verifier handoff')",
+        "return": "_failure('human_required', 'playbook ownership transfer authority is outside the target scope')",
+        "protocol": "delegated_producer"
+      },
+      {
+        "return": "_failure('human_required', 'ownership transfer authority is unresolved')",
         "protocol": "delegated_producer"
       },
       {
@@ -9644,8 +9627,8 @@
         "protocol": "delegated_producer"
       },
       {
-        "return": "{'success': True, 'outcome': 'transferred', 'fence': transferred.model_dump(mode='json')}",
-        "protocol": "explicit_boolean: True"
+        "return": "_failure('busy', 'parent delivery is not ready for verifier handoff')",
+        "protocol": "delegated_producer"
       }
     ],
     "tests": [
