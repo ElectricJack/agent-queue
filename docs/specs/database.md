@@ -3256,21 +3256,6 @@ it was issued against.  Append-only.
 | `consumed_by` | TEXT | NOT NULL, non-empty | Actor |
 | `consumed_at` | REAL | NOT NULL | Unix timestamp |
 
-### Table: `integration_legacy_gate_applicability`
-
-Per-gate evidence of whether a pre-rollout legacy gate still applies after a
-waived transition.  Append-only.
-
-| Column | Type | Constraints | Notes |
-|---|---|---|---|
-| `project_id` | TEXT | PK (with `gate_id`), REFERENCES projects(id) ON DELETE RESTRICT | Project |
-| `gate_id` | TEXT | PK, REFERENCES gates(id) ON DELETE RESTRICT | Legacy gate |
-| `waiver_id` | TEXT | NOT NULL REFERENCES integration_history_waivers(id) ON DELETE RESTRICT | Waiver |
-| `transition_id` | TEXT | NOT NULL REFERENCES integration_rollout_transitions(id) ON DELETE RESTRICT | Transition |
-| `blocker_digest` | TEXT | NOT NULL | `sha256:` digest |
-| `applicable` | BOOLEAN | NOT NULL | Gate still applies |
-| `created_at` | REAL | NOT NULL | Unix timestamp |
-
 ### Table: `integration_legacy_suppression`
 
 The one deliberately mutable rollout projection: which legacy routes (merge

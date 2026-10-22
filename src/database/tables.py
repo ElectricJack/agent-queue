@@ -5079,7 +5079,7 @@ integration_release_results = Table(
     Column("released_at", Float, nullable=False),
 )
 
-# Task 11 rollout controls.  Waivers/transitions/consumptions/applicability
+# Task 11 rollout controls.  Waivers/transitions/consumptions
 # are evidence, not mutable state; dual-dialect migrations install database
 # triggers that reject UPDATE and DELETE.  Only the per-project suppression
 # projection is deliberately reversible.
@@ -5190,47 +5190,6 @@ integration_history_waiver_consumptions = Table(
     CheckConstraint(
         "length(blocker_digest) = 71 AND blocker_digest LIKE 'sha256:%'",
         name="ck_integration_waiver_consumptions_blocker_digest",
-    ),
-)
-
-integration_legacy_gate_applicability = Table(
-    "integration_legacy_gate_applicability",
-    metadata,
-    Column("project_id", Text, nullable=False),
-    Column("gate_id", Text, nullable=False),
-    Column("waiver_id", Text, nullable=False),
-    Column("transition_id", Text, nullable=False),
-    Column("blocker_digest", Text, nullable=False),
-    Column("applicable", Boolean, nullable=False),
-    Column("created_at", Float, nullable=False),
-    PrimaryKeyConstraint("project_id", "gate_id", name="pk_integration_legacy_gate_applicability"),
-    ForeignKeyConstraint(
-        ["project_id"],
-        ["projects.id"],
-        name="fk_integration_legacy_gate_applicability_project",
-        ondelete="RESTRICT",
-    ),
-    ForeignKeyConstraint(
-        ["gate_id"],
-        ["gates.id"],
-        name="fk_integration_legacy_gate_applicability_gate",
-        ondelete="RESTRICT",
-    ),
-    ForeignKeyConstraint(
-        ["waiver_id"],
-        ["integration_history_waivers.id"],
-        name="fk_integration_legacy_gate_applicability_waiver",
-        ondelete="RESTRICT",
-    ),
-    ForeignKeyConstraint(
-        ["transition_id"],
-        ["integration_rollout_transitions.id"],
-        name="fk_integration_legacy_gate_applicability_transition",
-        ondelete="RESTRICT",
-    ),
-    CheckConstraint(
-        "length(blocker_digest) = 71 AND blocker_digest LIKE 'sha256:%'",
-        name="ck_integration_legacy_gate_applicability_blocker_digest",
     ),
 )
 

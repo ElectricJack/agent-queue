@@ -290,7 +290,7 @@ class IntegrationCleanupPolicy(BaseModel):
 
 
 class IntegrationTrainPolicy(BaseModel):
-    """Legacy timing fields remain readable; dispatch follows lane occupancy."""
+    """Deprecated timing fields only parse old snapshots; dispatch follows lane occupancy."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 

@@ -1372,8 +1372,7 @@ async def test_git_first_child_redrive_reads_parent_without_receipts(active_git_
     assert result["outcome"] == "nothing_to_redrive"
     assert ("already delivered" if contained else "train owns delivery") in result["reason"]
     delivery.collect.assert_not_awaited()
-    with pytest.raises(HierarchyError, match="never reissues receipts"):
-        await delivery._reissue_receipt({}, "old")
+    assert not hasattr(delivery, "_reissue_receipt")
 
 
 async def _make_delivered_root(db, origin):

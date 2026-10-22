@@ -13,7 +13,6 @@ CONTROL_TABLES = {
     "integration_history_waivers",
     "integration_rollout_transitions",
     "integration_history_waiver_consumptions",
-    "integration_legacy_gate_applicability",
     "integration_legacy_suppression",
 }
 IMMUTABLE_TABLES = CONTROL_TABLES - {"integration_legacy_suppression"}
@@ -58,26 +57,10 @@ def _exercise_live_guard_and_immutability(connection) -> None:
         ),
         {"digest": "sha256:" + "a" * 64},
     )
-    connection.execute(
-        text(
-            "INSERT INTO gates (id, project_id, gate_type, title, status, created_at) "
-            "VALUES ('legacy-gate', 'controlled', 'pr-merged', 'legacy', 'open', 1)"
-        )
-    )
-    connection.execute(
-        text(
-            "INSERT INTO integration_legacy_gate_applicability "
-            "(project_id, gate_id, waiver_id, transition_id, blocker_digest, applicable, "
-            "created_at) VALUES ('controlled', 'legacy-gate', 'waiver', 'transition', "
-            ":digest, false, 3)"
-        ),
-        {"digest": "sha256:" + "a" * 64},
-    )
     timestamp_columns = {
         "integration_history_waivers": "created_at",
         "integration_rollout_transitions": "created_at",
         "integration_history_waiver_consumptions": "consumed_at",
-        "integration_legacy_gate_applicability": "created_at",
     }
     for table in IMMUTABLE_TABLES:
         with pytest.raises(SQLAlchemyError), connection.begin_nested():
@@ -92,5 +75,62 @@ async def test_baseline_controls_are_append_only():
     try:
         async with database._engine.begin() as conn:
             await conn.run_sync(_exercise_live_guard_and_immutability)
+            # The never-written legacy gate applicability table is retired.
+            retired = await conn.scalar(
+                text("SELECT to_regclass('integration_legacy_gate_applicability')")
+            )
+        assert retired is None
+    finally:
+        await database.close()
+
+
+def _retire_gate_applicability_only_while_empty(connection) -> None:
+    from importlib import import_module
+
+    from alembic.migration import MigrationContext
+    from alembic.operations import Operations
+
+    revision = import_module("migrations.versions.a00000000117_retire_legacy_gate_applicability")
+    table = "integration_legacy_gate_applicability"
+
+    def present() -> bool:
+        return connection.scalar(text(f"SELECT to_regclass('{table}')")) is not None
+
+    with Operations.context(MigrationContext.configure(connection)):
+        revision.downgrade()
+        revision.downgrade()
+        assert present()
+        revision.upgrade()
+        revision.upgrade()
+        assert not present()
+        # A database that holds applicability rows keeps them as audit history.
+        revision.downgrade()
+        _exercise_live_guard_and_immutability(connection)
+        connection.execute(
+            text(
+                "INSERT INTO gates (id, project_id, gate_type, title, status, created_at) "
+                "VALUES ('legacy-gate', 'controlled', 'pr-merged', 'legacy', 'open', 1)"
+            )
+        )
+        connection.execute(
+            text(
+                f"INSERT INTO {table} (project_id, gate_id, waiver_id, transition_id, "
+                "blocker_digest, applicable, created_at) VALUES ('controlled', "
+                "'legacy-gate', 'waiver', 'transition', :digest, false, 3)"
+            ),
+            {"digest": "sha256:" + "a" * 64},
+        )
+        revision.upgrade()
+        assert present()
+        with pytest.raises(SQLAlchemyError), connection.begin_nested():
+            connection.execute(text(f"DELETE FROM {table}"))
+
+
+async def test_unused_gate_applicability_is_dropped_only_while_empty():
+    database = Database(lease_dsn("integration-controls-retire"))
+    await database.initialize()
+    try:
+        async with database._engine.begin() as conn:
+            await conn.run_sync(_retire_gate_applicability_only_while_empty)
     finally:
         await database.close()
