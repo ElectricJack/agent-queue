@@ -30,7 +30,7 @@ TRANSITION_BATCH_EXCEPTION = {'batch_id': 'train-745592300af5cef0338dec80ebabb46
  'decision_message_ids': ['msg-7ed85e78d1af4f3e85b485a57967e794',
                           'msg-381054d695e64055979a687c4d811e7e'],
  'decision_record': 'record:2720bdbe-7521-427e-8e72-1f40a3ff9818',
- 'measured_source_revision': '46bbf32d63840f5fe7e803a1df0a6698a88d172c',
+ 'measured_source_revision': 'f4023288602a401f027acb6e5deb9989ac193c6a',
  'original_owned_total_cap': 155499,
  'measured_owned_total': 160090,
  'delta': 4591,

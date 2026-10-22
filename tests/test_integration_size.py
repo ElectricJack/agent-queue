@@ -364,6 +364,9 @@ def test_batch_exception_is_exact_and_has_no_remaining_headroom(report, manifest
     assert exception["original_owned_total_cap"] == 155_499
     measured = exception["measured_owned_total"]
     assert measured == report["total"]
+    assert exception["measured_engine_lines"] == report["groups"]["engine"]
+    assert exception["measured_table_count"] == len(report["tables"])
+    assert exception["storage_categories"] == ["integration_close_attempts"]
     assert exception["delta"] == measured - 155_499
     assert [p.get("delta", p.get("authorized_delta")) for p in exception["predecessors"]] == [
         1_293, 2_166,
