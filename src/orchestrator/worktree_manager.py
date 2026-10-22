@@ -62,6 +62,7 @@ from src.git.manager import (
     ForeignSlotClaim,
     GitError,
     RemoteRefState,
+    SlotSourceDisagreement,
     _validate_ref,
     is_valid_git_oid,
 )
@@ -646,7 +647,9 @@ class WorktreeSlotManager:
                 or sentinel.base_workspace_id != (slot_ws.base_workspace_id or "")
                 or sentinel.project_id != slot_ws.project_id
             ):
-                raise GitError(f"slot {slot_ws.id} at {slot_dir} has a mismatched sentinel")
+                raise SlotSourceDisagreement(
+                    f"slot {slot_ws.id} at {slot_dir} has a mismatched sentinel"
+                )
             if slot_ws.is_slot and sentinel is not None and sentinel.branch:
                 actual = await self.git.aget_current_branch(str(slot_dir))
                 detached_predecessor = False
@@ -675,9 +678,17 @@ class WorktreeSlotManager:
                     detached_predecessor = await self._finished_predecessor(
                         slot_ws, sentinel, task,
                     )
+                if actual == "HEAD" and not detached_predecessor:
+                    # A restart can leave the slot detached at the task's own
+                    # recorded checkpoint with the branch ref gone.
+                    detached_predecessor = await self._restore_own_task_branch(
+                        slot_ws, base_ws, sentinel, task, head,
+                    )
                 if actual != sentinel.branch and not detached_predecessor:
-                    raise GitError(f"slot {slot_ws.id} branch disagrees with its source sentinel; "
-                                   "checkout left unchanged")
+                    raise SlotSourceDisagreement(
+                        f"slot {slot_ws.id} branch disagrees with its source sentinel; "
+                        "checkout left unchanged"
+                    )
             if recover_merge:
                 await self._recover_abandoned_merge(slot_ws, task)
             return
@@ -905,6 +916,52 @@ class WorktreeSlotManager:
         logger.warning(
             "Reclaiming slot %s from finished task %s (%s); sentinel branch %s is stale",
             slot_ws.id, sentinel.task_id, getattr(status, "value", status), sentinel.branch,
+        )
+        return True
+
+    async def _restore_own_task_branch(
+        self, slot_ws: Workspace, base_ws: Workspace, sentinel: WorktreeSentinel, task, head: str,
+    ) -> bool:
+        """Recreate the claimant's missing branch at its recorded checkpoint.
+
+        Applies only when the sentinel names the claimant and its branch, no
+        local branch and no diverging ``origin/<branch>`` exists, no foreign
+        binding retains the slot, and HEAD is exactly the task's recorded
+        integration checkpoint or pause head on that branch.  Creating the ref
+        at HEAD moves no commit, index or file; the reset that follows resumes
+        the branch instead of starting a fresh one from the default branch.
+        """
+        from src.orchestrator.task_checkpoint import CHECKPOINT_META
+
+        branch = sentinel.branch
+        if (sentinel.task_id != task.id or not head
+                or (getattr(task, "branch_name", None) or branch).removeprefix("refs/heads/")
+                != branch):
+            return False
+        cwd = str(slot_ws.workspace_path)
+        if await self._ref_exists(cwd, f"refs/heads/{branch}"):
+            return False
+        remote = f"refs/remotes/origin/{branch}"
+        if (await self._ref_exists(cwd, remote)
+                and await self.git.arev_parse(cwd, remote) != head):
+            return False
+        recorded = None
+        if hasattr(self.db, "get_integration_checkpoint"):
+            row = await self.db.get_integration_checkpoint(task.id) or {}
+            if row.get("branch", "").removeprefix("refs/heads/") == branch:
+                recorded = row.get("checkpoint_sha")
+        if recorded != head:
+            paused = await self.db.get_task_meta(task.id, CHECKPOINT_META) or {}
+            recorded = paused.get("head") if paused.get("branch") == branch else None
+        if recorded != head:
+            return False
+        if await self._slot_has_retained_binding(slot_ws.id, excluding_owner=task.id):
+            return False
+        async with self._git_mutex(base_ws.workspace_path):
+            await self.git._arun_unlocked(["switch", "-c", branch, head], cwd=cwd)
+        logger.warning(
+            "Recreated branch %s at recorded checkpoint %s in slot %s for task %s",
+            branch, head[:12], slot_ws.id, task.id,
         )
         return True
 

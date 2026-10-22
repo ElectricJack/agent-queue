@@ -26,7 +26,7 @@ from src.claim_timing import (
 )
 from src.database.queries.hierarchy_queries import ProjectIntegrationMode
 from src.database.queries.ingest_hold import IngestHeld
-from src.git.manager import ForeignSlotClaim
+from src.git.manager import ForeignSlotClaim, SlotSourceDisagreement
 from src.git.process import PREPARE_CLEANUP_HOLD, ProcessCleanupError
 from src.models import SUSPENDED_TASK_STATUSES, ClaimResult, TaskStatus
 from src.pool_claims import pool_claim_cap
@@ -2304,6 +2304,11 @@ class ClaimCommandsMixin:
                 "session_id": session.id, "failed_at": time.time(),
                 "retry": "manual" if attempt >= 3 else "automatic",
             })
+            # A slot whose checkout contradicts its sentinel refuses every
+            # claim alike.  Retaining this session's agent lock would keep it
+            # retrying there and block slot restore; give the lock back,
+            # drain, and quarantine the slot for the restore cooldown.
+            poisoned = isinstance(exc, SlotSourceDisagreement) and slot is not None
             await self.db.release_claim(
                 session.id,
                 expected_task_id=task.id, expected_claim_epoch=epoch,
@@ -2314,6 +2319,8 @@ class ClaimCommandsMixin:
                 result="prepare_failed",
                 needs_attention="slot_reset_failed",
                 prepare_backoff=True,
+                release_workspace_lock=poisoned,
+                drain_after_release=poisoned,
             )
             await self._record_prepare_failure(
                 task, failure, session=session, slot=slot, epoch=epoch,
@@ -2330,6 +2337,18 @@ class ClaimCommandsMixin:
                 },
             )
             self._resolve_claim_waiters(session.id, epoch, "prepare_failed")
+            drained = await self.db.get_session(session.id) if poisoned else None
+            if drained is not None and drained.desired_state == "stopped":
+                # Only once the release applied: a retained claim keeps its slot.
+                await self.db.update_workspace(
+                    slot.id, **disable_fields(CLAIM_FAILURES, failure.reason, now=time.time())
+                )
+                return self._simple(
+                    ClaimResult.DRAIN_REQUESTED,
+                    f"{failure.reason}; workspace {slot.id} released and quarantined. "
+                    "Run `aq session drain-ack` and exit 0.",
+                    drained, cap,
+                )
             return self._simple(ClaimResult.PREPARE_FAILED, failure.reason, row, cap)
         if not fresh:
             remove_claim_file_if_matches(row.work_dir, task.id, epoch, session_id=session.id)
