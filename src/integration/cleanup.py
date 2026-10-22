@@ -1188,7 +1188,7 @@ class IntegrationCleanupService:
         default_ref = "refs/heads/" + repository.default_branch.removeprefix("refs/heads/")
         frozen_batch = Batch.from_row(batch)
         if (batch["target_ref"] != default_ref and batch["trigger"] != "promotion"
-                and not (frozen_batch.epic_sync or frozen_batch.epic_refresh)):
+                and not frozen_batch.epic_refresh):
             root = snapshot.for_target(default_ref)
             members = await BatchStore(self.db).members(batch["id"])
             if (members and not root.error and root.target_oid
