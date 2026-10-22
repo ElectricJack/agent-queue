@@ -200,10 +200,7 @@ class DaemonFixerRuntime:
             harness = orch.harness_registry.get(profile.harness, project_id=state["project_id"])
             if harness is None:
                 raise ValueError("fixer harness is not registered")
-            await self.git.afetch_repository_oid(
-                str(repo.store), repository=repo.binding, oid=state["starting_sha"],
-                destination_ref=state["target_ref"],
-            )
+            await self._pin(str(repo.store), repo, state["starting_sha"])
             from src.warm_workspaces import WarmWorkspacePool, primary_store
 
             store = await primary_store(self.db, self.git, state["project_id"],
@@ -272,6 +269,10 @@ class DaemonFixerRuntime:
         await launch_session(self.db, provider, spec, row, registered=True,
                              bus=getattr(orch, "bus", None))
         return {"work_dir": str(path), "route": route}
+
+    async def _pin(self, checkout, repo, oid):  # exact fetches land only under refs/aq/
+        await self.git.afetch_repository_oid(await self.git.aget_git_path(checkout, "."),
+            repository=repo.binding, oid=oid, destination_ref=f"refs/aq/fixer-sources/{oid}")
 
     async def _checkout_released(self, manifest, path, head):
         """Unknown, live and unpublished owners retain their checkout."""
@@ -476,9 +477,8 @@ class DaemonFixerRuntime:
                     }:
                         raise PublishWithdrawn("save and publish all fixes before rebinding")
                     if branch != new_ref.removeprefix("refs/heads/"):
-                        await self.git.afetch_repository_oid(path,
-                            repository=repo.binding, oid=new_head, destination_ref=new_ref)
-                        await self.git.acheckout_branch(path, new_ref.removeprefix("refs/heads/"))
+                        await self._pin(path, repo, new_head)
+                        await self.git._arun(["checkout", "-B", new_ref[11:], new_head], cwd=path)
                     members = await BatchStore(self.db).members(destination)
                     state = {**bound, "batch_id": destination, "status": "active",
                              "target_ref": new_ref, "starting_sha": new_head, "head_sha": new_head,
