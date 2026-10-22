@@ -479,6 +479,11 @@ class IntegrationCommandsMixin:
                                          "batch_id", with_train=True,
                                          extra_errors=(BranchBusy, TimeoutError))
 
+    async def _cmd_integration_rerequest_check(self, args: dict) -> dict:
+        return await self._train_control(args, "rerequest_check", "IntegrationRerequestCheckArgs",
+                                         "batch_id", with_train=True,
+                                         extra_errors=(BranchBusy, TimeoutError))
+
     async def _integration_batch_intent(self, args, intent):
         return await self._train_control(args, "set_batch_intent", "IntegrationAbortBatchArgs",
                                          "batch_id", intent=intent)

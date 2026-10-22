@@ -9180,6 +9180,37 @@
     },
     "review_notes": " Shared dispatch retains the existing request model, project authorization, exception boundary and result outcome. Helper producer digests pin delegated refusal envelopes."
   },
+  "integration_rerequest_check": {
+    "mode": "typed",
+    "producer": "src/commands/integration_commands.py:IntegrationCommandsMixin._cmd_integration_rerequest_check",
+    "source_digest": "sha256:9134382f0e9c87d17d1dc1b2fba2476ef5822b285369e317cdd869e993fea7c9",
+    "input_schema_source": "typed_contract",
+    "schema_quality": "typed",
+    "effect": "destructive",
+    "retry_safe": true,
+    "principal_requirement": "original_principal",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "denial_reason": null,
+    "result_policy": "retained typed adapter",
+    "argument_reads_diagnostic_only": [],
+    "return_branches": [
+      {
+        "return": "await self._train_control(args, 'rerequest_check', 'IntegrationRerequestCheckArgs', 'batch_id', with_train=True, extra_errors=(BranchBusy, TimeoutError))",
+        "protocol": "delegated_producer"
+      }
+    ],
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_integration_check_reconciliation.py",
+      "tests/test_integration_contracts.py"
+    ],
+    "review_notes": "Typed operator/project-supervisor control uses the existing batch project authorization and refusal boundary. Preview refreshes authenticated evidence; apply pins the candidate, requires a reason and shares the durable automatic retry reservation. Steps never establish a green check. The helper retains explicit success and failure envelopes.",
+    "helper_producers": {
+      "_train_control": "sha256:5f7c588c050eb02de7b63d8bd18e6ce766f2639b857a038c1daf9a660e33fa39"
+    }
+  },
   "integration_reserve_owner": {
     "mode": "typed",
     "producer": "src/commands/integration_commands.py:IntegrationCommandsMixin._cmd_integration_reserve_owner",

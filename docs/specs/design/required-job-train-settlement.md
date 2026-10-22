@@ -1,5 +1,31 @@
 # Required jobs and train settlement
 
+A required hosted check stuck `in_progress` with no conclusion remains pending.
+When its authenticated latest workflow attempt completed, or every step of its
+matching job completed, retain the exact repository, head, producer, check, job
+and attempt identities and completion time as CI-owner reconciliation evidence.
+After five minutes, the train may re-run that specific Actions job once per
+repository/head/producer/check. Reserve the attempt durably before issuing the
+request; restarts, concurrent visits, transport failures and manual controls
+must not grant another attempt. Never infer success from steps or workflow
+conclusions. Only fresh normal required-check evidence can make the head green.
+
+`aq integration rerequest-check BATCH_ID --check NAME` previews this recovery.
+Apply requires the previewed candidate SHA and a nonblank reason, refreshes
+authenticated evidence, and shares the automatic retry bound. Local operators
+and the owning project supervisor may use it. Paused, aborted, held, actively repaired,
+superseded or moved candidates refuse recovery. Integration status retains the
+request outcome and exact job evidence, including an unavailable or ambiguous
+request, without allocating a code repair.
+
+GitHub App credentials retain Actions read by default. An explicit
+`integration.github_app.actions_permission: write` opts into Actions write for
+both the mint request and strict token-response validation, retaining all other
+identity and repository scoping. Granting and approving App permissions and
+restarting with this setting are operator actions. A denied rerun records
+permission-blocked remediation durably, consumes its retry bound and stays
+pending; no permission fallback or automatic denial loop is permitted.
+
 Hosted candidate validation judges the frozen required check names, trusted
 producer, repository, exact SHA and latest workflow attempt. A required job
 that succeeds is green even while an unrequired job in the same workflow is

@@ -158,6 +158,7 @@ class AppTokenProvider:
         if config.validate():
             raise ValueError("invalid GitHub App configuration")
         self.config = config
+        self.permissions = {**_PERMISSIONS, "actions": config.actions_permission}
         self.key_provider = key_provider
         self.transport = transport or AiohttpTransport()
         self.clock = clock
@@ -223,7 +224,7 @@ class AppTokenProvider:
             "POST",
             f"/app/installations/{self.config.installation_id}/access_tokens",
             credential=app_jwt,
-            json_body=selector | {"permissions": dict(_PERMISSIONS)},
+            json_body=selector | {"permissions": dict(self.permissions)},
             expected_statuses={201},
         )
 
@@ -235,7 +236,7 @@ class AppTokenProvider:
         token = payload.get("token")
         if not isinstance(token, str) or not token:
             raise GitHubAppError("credentials", "installation token response was malformed")
-        _validate_permissions(payload.get("permissions"))
+        _validate_permissions(payload.get("permissions"), self.permissions)
         expires_at = _parse_timestamp(payload.get("expires_at"))
         if expires_at - self.clock() <= 300:
             raise GitHubAppError("credentials", "installation token expiry was invalid")
@@ -306,12 +307,12 @@ def _single_repository(payload: dict[str, Any]) -> dict[str, Any]:
     return repositories[0]
 
 
-def _validate_permissions(value: Any) -> None:
+def _validate_permissions(value: Any, expected: dict[str, str]) -> None:
     if not isinstance(value, dict) or any(
-        value.get(name) != level for name, level in _PERMISSIONS.items()
+        value.get(name) != level for name, level in expected.items()
     ):
         raise GitHubAppError("permission", "installation permissions did not match")
-    extras = set(value) - set(_PERMISSIONS)
+    extras = set(value) - set(expected)
     if extras - {"metadata"} or ("metadata" in value and value["metadata"] != "read"):
         raise GitHubAppError("permission", "installation permissions did not match")
 
