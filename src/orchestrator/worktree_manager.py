@@ -919,6 +919,9 @@ class WorktreeSlotManager:
         )
         return True
 
+    async def _checkpoint_row(self, task_id: str) -> dict:
+        return await self.db.get_integration_checkpoint(task_id) or {}
+
     async def _restore_own_task_branch(
         self, slot_ws: Workspace, base_ws: Workspace, sentinel: WorktreeSentinel, task, head: str,
     ) -> bool:
@@ -945,11 +948,9 @@ class WorktreeSlotManager:
         if (await self._ref_exists(cwd, remote)
                 and await self.git.arev_parse(cwd, remote) != head):
             return False
-        recorded = None
-        if hasattr(self.db, "get_integration_checkpoint"):
-            row = await self.db.get_integration_checkpoint(task.id) or {}
-            if row.get("branch", "").removeprefix("refs/heads/") == branch:
-                recorded = row.get("checkpoint_sha")
+        row = await self._checkpoint_row(task.id)
+        recorded = (row.get("checkpoint_sha")
+                    if row.get("branch", "").removeprefix("refs/heads/") == branch else None)
         if recorded != head:
             paused = await self.db.get_task_meta(task.id, CHECKPOINT_META) or {}
             recorded = paused.get("head") if paused.get("branch") == branch else None
