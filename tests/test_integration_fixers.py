@@ -175,7 +175,7 @@ def test_no_split_without_a_strict_attributed_subset(groups):
 
 
 @pytest.fixture
-async def live_fixer(db, tmp_path, monkeypatch):
+async def live_fixer(db, tmp_path, monkeypatch, request):
     """Production session launch and real Git; substitute only credentials and routing."""
     from src.api.auth import SessionTokenStore
     from src.config import AppConfig, DiscordConfig
@@ -213,8 +213,17 @@ async def live_fixer(db, tmp_path, monkeypatch):
                        data_dir=str(tmp_path / "data"), workspace_dir=str(tmp_path / "work"))
     config.sessions.enabled, config.sessions.provider = True, "fake"
     registry = HarnessRegistry()
-    registry.upsert(Harness(id="codex", command="codex", model_flag="--model"))
-    profile = AgentProfile(id="fixer-profile", name="Fixer", harness="codex",
+    harness_id = getattr(request, "param", "codex")
+    permission_flag = ("--dangerously-bypass-approvals-and-sandbox" if harness_id == "codex"
+                       else "--dangerously-skip-permissions")
+    registry.upsert(Harness(id=harness_id, command=harness_id, model_flag="--model",
+                           permission_flag=permission_flag,
+                           supports_hooks=harness_id == "codex",
+                           hook_files=((".codex/hooks.json", "hooks/codex.json"),)
+                           if harness_id == "codex" else (),
+                           hook_trust_flag="--dangerously-bypass-hook-trust"
+                           if harness_id == "codex" else ""))
+    profile = AgentProfile(id="fixer-profile", name="Fixer", harness=harness_id,
                            model="test-model", lifecycle="pool")
     await db.create_profile(profile)
     transport = LocalGit(remote)
@@ -257,11 +266,17 @@ def principal_for(row):
                               session_instance_token=row.instance_token, project_id=row.project_id)
 
 
+@pytest.mark.parametrize("live_fixer", ["codex", "claude"], indirect=True)
 async def test_registered_named_launch_has_no_claim_and_preserves_checkout(db, live_fixer):
     service, runtime, orch, row, _, source, _ = live_fixer
     assert row.lifecycle == "named" and row.task_id is None and row.state == "running"
     provider = orch.session_providers.create("fake")
     spec = provider.sessions[row.name].spec
+    harness = orch.harness_registry.get(row.harness, project_id="p")
+    assert spec.command.count(harness.permission_flag) == 1
+    if row.harness == "codex":
+        assert "--dangerously-bypass-hook-trust" in spec.command
+        assert spec.hooks_provisioned
     assert "AQ_TASK_ID" not in spec.env and "AQ_CLAIM_EPOCH" not in spec.env
     assert spec.env["AQ_DB_SCOPE"] == "worker"
     assert spec.env["GIT_AUTHOR_EMAIL"]
@@ -273,6 +288,30 @@ async def test_registered_named_launch_has_no_claim_and_preserves_checkout(db, l
     assert not await db.get_task("real")
     async with db._engine.connect() as conn:
         assert await conn.scalar(select(func.count()).select_from(tasks)) == 0
+
+
+@pytest.mark.parametrize("checkout", ["unregistered", "primary"])
+async def test_fixer_refuses_checkout_without_linked_registration(db, live_fixer, monkeypatch,
+                                                                 checkout):
+    from pathlib import Path
+
+    _, runtime, orch, row, _, _, _ = live_fixer
+    state = (await db.get_integration_batch("real"))["fixer_state"]
+    path = Path(row.work_dir)
+    if checkout == "unregistered":
+        monkeypatch.setattr(runtime.git, "aworktree_list", AsyncMock(return_value=[]))
+    else:
+        path = runtime.git.remote_path.parent / "retained"
+    monkeypatch.setattr("src.warm_workspaces.WarmWorkspacePool.acquire",
+                        AsyncMock(return_value=path))
+    monkeypatch.setattr(db, "get_session", AsyncMock(return_value=None))
+    mint = AsyncMock()
+    monkeypatch.setattr(orch.token_store, "mint", mint)
+    starts = len(orch.session_providers.create("fake").starts)
+    with pytest.raises(ValueError, match="not a registered linked worktree"):
+        await runtime._start(state)
+    mint.assert_not_awaited()
+    assert len(orch.session_providers.create("fake").starts) == starts
 
 
 async def test_launch_pins_heads_target_start_in_daemon_namespace(db, live_fixer):
