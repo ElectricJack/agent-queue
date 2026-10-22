@@ -360,7 +360,7 @@ class PrerequisiteView:
     #: Dependent task id -> the cross-parent prerequisites it waits on, each
     #: with whether its exact default-branch source is already contained in
     #: the dependent's own parent branch (so no epic refresh is needed).
-    parent_containment: Mapping[str, Mapping[str, bool]] = field(default_factory=dict)
+    parent_containment: Mapping[str, Mapping[str, bool | None]] = field(default_factory=dict)
     parent_snapshots: tuple[DeliverySnapshot, ...] = ()
     parent_refs: Mapping[str, str] = field(default_factory=dict)
 
@@ -399,6 +399,7 @@ class PrerequisiteView:
 
     async def mode(self, mode, *, conn=None):
         from dataclasses import replace
+        from src.integration.delivery_truth import DeliveryState
 
         siblings, default = self.siblings.evidence, self.default.evidence
         if conn is not None:
@@ -418,6 +419,19 @@ class PrerequisiteView:
                 .select_from(tasks.join(parent, parent.c.id == tasks.c.parent_task_id))
                 .where(tasks.c.id.in_(self.parent_refs)))).all())
         return replace(mode,
+            observation_unavailable=False,
+            unknown_prerequisite_ids=frozenset(
+                tid for tid, proof in siblings.items() if proof.state is DeliveryState.UNKNOWN
+            ),
+            unknown_default_prerequisite_ids=frozenset(
+                tid for tid, proof in default.items() if proof.state is DeliveryState.UNKNOWN
+            ),
+            unknown_parent_task_ids=frozenset(
+                dependent for dependent, sources in self.parent_containment.items()
+                if sources and all(contained is not False for contained in sources.values())
+                and (any(contained is None for contained in sources.values())
+                     or self.parent_refs.get(dependent) in stale_parents)
+            ),
             # These sets release obligation gates; parent containment below still
             # requires actual proof and cannot borrow a retired obligation.
             delivered_prerequisite_ids=frozenset(tid for tid, p in siblings.items() if p.satisfied)
@@ -466,7 +480,7 @@ async def hierarchy_frontier_modes(
     Advisory reads reuse successful snapshots within READ_MAX_AGE and recheck target
     freshness. Claims take fresh views under task locks. cached_only diagnostics
     never fetch or check remote refs; display_unavailable records cache misses.
-    Missing observers and unstable views withhold only Git-gated work.
+    Missing observations allow preparation; proven missing ancestry withholds work.
     """
     from dataclasses import replace
 
@@ -474,11 +488,11 @@ async def hierarchy_frontier_modes(
 
     observer = prerequisite_observer(db)
     if observer is None:
-        # The correlated SQL predicates also fail closed without an overlay.
+        # The correlated predicates permit unknown ancestry without an overlay.
         # Avoid a project scan for ordinary frontiers with no Git observer.
         if not getattr(db, "_warned_missing_prerequisite_observer", False):
-            logger.warning("No Git prerequisite observer is registered; Git-gated "
-                           "candidates remain unavailable without receipt fallback")
+            logger.warning("No Git prerequisite observer is registered; candidates may "
+                           "proceed to Git preparation without receipt fallback")
             db._warned_missing_prerequisite_observer = True
         return {}
     if task_id is not None:
@@ -505,10 +519,13 @@ async def hierarchy_frontier_modes(
                 max_age=max_age, conn=conn,
             ), timeout)
         except TimeoutError:
-            # Fail closed for this read: no Git-proven prerequisite admits work,
-            # but one slow Git view never holds the scheduler, pools or explain.
+            # An unloaded view cannot veto preparation or hold the scheduler.
+            if views is not None:
+                views.pop(project.id, None)
+            if stack_views is not None:
+                stack_views.pop(project.id, None)
             logger.warning(
-                "hierarchy frontier for %s%s exceeded %.0fs; withholding Git-gated work",
+                "hierarchy frontier for %s%s exceeded %.0fs; allowing Git preparation",
                 project.id, f" task {task_id}" if task_id else "", timeout,
             )
             modes[project.id] = replace(
@@ -518,7 +535,7 @@ async def hierarchy_frontier_modes(
 
 
 #: Wall-clock bound on one project's Git prerequisite view in a scheduler,
-#: pool or claim read. Exceeding it withholds Git-gated work for that read.
+#: pool or claim read. Exceeding it leaves delivery unknown for that read.
 FRONTIER_MODE_TIMEOUT_SECONDS = 60.0
 #: Interactive diagnostics (explain, pool display) read cached evidence only and
 #: must answer inside a CLI request.
@@ -537,8 +554,6 @@ async def _project_frontier_mode(
         max_age=observer.READ_MAX_AGE if max_age is None else max_age,
         **({"cached_only": True} if cached_only else {}),
     )
-    if views is not None:
-        views[project.id] = view
     if cached_only:
         if display_unavailable is not None:
             unavailable = {
@@ -556,9 +571,10 @@ async def _project_frontier_mode(
             for snapshot in delivery.snapshots
         ):
             # An observer may fail before identifying the moving target.
-            # Without a target-specific result none of its Git-gated IDs
-            # are usable, while structurally independent work remains ready.
+            # Without a target-specific result delivery remains unknown.
             return replace(mode, observation_unavailable=True)
+    if views is not None:
+        views[project.id] = view
     # fresh() marks each target independently. verified_on discards only the
     # identities whose own target moved; a peer's unavailable parent is local.
     async with db._engine.connect() if conn is None else nullcontext(conn) as read:
@@ -934,17 +950,17 @@ class DeliveryObserver:
 
     async def _parent_containment(
         self, rows, default, *, cached_only=False,
-    ) -> tuple[dict[str, dict[str, bool]], tuple[DeliverySnapshot, ...]]:
+    ) -> tuple[dict[str, dict[str, bool | None]], tuple[DeliverySnapshot, ...]]:
         """Whether each cross-parent prerequisite is already in the dependent's epic.
 
         A child whose epic branch already contains every cross-epic
         prerequisite's exact default-branch source needs no epic refresh, so an
         unrelated open batch on that epic cannot withhold it. Anything not
-        proven here stays False and keeps the refresh rule.
+        proven here stays unknown; only a successful negative keeps the refresh rule.
         """
         from src.integration.delivery_truth import DeliveryState
 
-        result: dict[str, dict[str, bool]] = {}
+        result: dict[str, dict[str, bool | None]] = {}
         parents: dict[tuple[str, str, str], DeliverySnapshot] = {}
         if self.truth is None:
             return result, ()
@@ -955,7 +971,7 @@ class DeliveryObserver:
             if child_parent is None or (parent is not None and parent == child_parent):
                 continue
             sources = result.setdefault(dependent_id, {})
-            sources[tid] = False
+            sources[tid] = None
             proof = default.evidence.get(tid)
             if proof is None or not branch:
                 continue
@@ -976,11 +992,12 @@ class DeliveryObserver:
                     replace(proof.request, target_ref=parent_ref),
                     source_base=getattr(proof, "source_base", None),
                 )
-            except Exception as exc:  # noqa: BLE001 - unproven keeps the refresh rule
+            except Exception as exc:  # noqa: BLE001 - failed observations remain unknown
                 logger.debug("parent containment of %s for %s unknown: %s",
                              tid, dependent_id, exc)
                 continue
-            sources[tid] = bool(contained.satisfied and contained.source_oid == proof.source_oid)
+            if contained.state is not DeliveryState.UNKNOWN:
+                sources[tid] = bool(contained.satisfied and contained.source_oid == proof.source_oid)
         return result, tuple(parents.values())
 
     async def observe(self, task_ids: Iterable[str], *, max_age: float = 0.0,

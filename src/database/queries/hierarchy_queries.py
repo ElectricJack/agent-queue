@@ -363,9 +363,12 @@ class ProjectIntegrationMode:
 
     hierarchical: bool
     integration_repository_id: str | None
-    # Empty means unobserved: only a revalidated Git view may admit prerequisites.
+    # Admission distinguishes unknown observations from proven missing ancestry.
     delivered_prerequisite_ids: frozenset[str] = frozenset()
     observation_unavailable: bool = False
+    unknown_prerequisite_ids: frozenset[str] = frozenset()
+    unknown_default_prerequisite_ids: frozenset[str] = frozenset()
+    unknown_parent_task_ids: frozenset[str] = frozenset()
     cross_epic_prerequisites: str = "default_branch"
     default_prerequisite_ids: frozenset[str] = frozenset()
     #: Dependents whose epic branch already contains every cross-epic source.
@@ -387,6 +390,7 @@ class ProjectIntegrationMode:
         from src.integration.stacked_branches import stacked_policy
 
         return cls(
+            observation_unavailable=True,
             project_id=getattr(project, "id", None),
             train_playbook_id=((getattr(project, "hierarchical_integration_policy", None)
                                 or {}).get("train") or {}).get("playbook_id") or "fast-smooth-train",
@@ -640,7 +644,7 @@ def _delivered_same_parent_prerequisites(mode: ProjectIntegrationMode | None = N
     predecessor completes.  In a hierarchy project that is too early: the
     predecessor's source still belongs to its feature branch until delivery
     is proven on their common parent branch. Only the supplied Git view can
-    prove delivery; an absent view leaves affected prerequisites unproven.
+    prove delivery; unknown observations allow preparation to proceed.
 
     *mode*, when supplied, folds the two ``projects`` lookups away exactly as
     in :func:`materialized_origin_when_hierarchical`.
@@ -651,7 +655,10 @@ def _delivered_same_parent_prerequisites(mode: ProjectIntegrationMode | None = N
     prerequisite = tasks.alias("hierarchy_prerequisite_task")
     parent = tasks.alias("hierarchy_prerequisite_parent")
     origin = task_branch_origins.alias("hierarchy_prerequisite_origin")
-    delivered = prerequisite.c.id.in_(mode.delivered_prerequisite_ids) if mode else false()
+    delivered = (
+        true() if mode is None or mode.observation_unavailable else
+        prerequisite.c.id.in_(mode.delivered_prerequisite_ids | mode.unknown_prerequisite_ids)
+    )
     if mode is not None and mode.stacked:
         delivered = or_(delivered, prerequisite.c.id.in_(mode.stackable_prerequisite_ids))
     prerequisite_is_undelivered = exists(
@@ -772,13 +779,16 @@ def cross_parent_prerequisites_on_default(mode: ProjectIntegrationMode | None = 
     """Require exact Git delivery of cross-parent sources on the default branch.
 
     Epic containment and refresh batches have their own frontier predicate.
-    With no observation, a completed cross-parent source remains unproven.
+    With no observation, preparation proceeds without asserting delivery.
     """
     source, cross_edge = _cross_parent_prerequisites()
-    ids = mode.default_prerequisite_ids if mode else frozenset()
+    ids = (mode.default_prerequisite_ids | mode.unknown_default_prerequisite_ids
+           if mode else frozenset())
     if mode is not None and mode.stacked:
         ids |= mode.stackable_prerequisite_ids
     unproven = ~(source.c.id == any_(literal(list(ids), type_=ARRAY(Text)))) if ids else true()
+    if mode is None or mode.observation_unavailable:
+        unproven = false()
     return ~(_cross_parent_delivery_enabled(mode) & exists(cross_edge.where(unproven)))
 
 
@@ -811,8 +821,10 @@ def epic_refresh_ready(mode: ProjectIntegrationMode | None = None):
     has_epic = exists(select(literal_column("1")).where(
         parent.c.id == tasks.c.parent_task_id, parent.c.branch_name.is_not(None),
     ))
-    ids = mode.parent_contained_task_ids if mode else ()
+    ids = mode.parent_contained_task_ids | mode.unknown_parent_task_ids if mode else ()
     contained = tasks.c.id == any_(literal(sorted(ids), type_=ARRAY(Text))) if ids else false()
+    if mode is None or mode.observation_unavailable:
+        contained = true()
     pending = exists(open_epic_refresh_batches()) | (has_epic & ~contained)
     return ~(_cross_parent_delivery_enabled(mode) & exists(cross_edge) & pending)
 
@@ -925,19 +937,24 @@ class HierarchyQueryMixin:
         from the preserved origin without copying files or merging siblings.
         This uses the same current Git proof as admission,
         including its exact parent tip, rather than historical receipt rows.
-        Stale or unknown proof refuses preparation. ``None`` means no sibling
-        prerequisite needs a head; unobserved siblings cannot pass admission.
+        Stale or negative proof refuses the overlay. Unknown proof returns
+        ``None`` so the agent can prepare from its origin and merge prerequisites.
         """
         dependency = task_dependencies.alias("delivery_head_dependency")
         prerequisite = tasks.alias("delivery_head_prerequisite")
         from src.integration.delivery_observer import prerequisite_observer
+        from src.integration.delivery_truth import DeliveryState
+        from src.git.manager import GitError
 
         observer = prerequisite_observer(self)
         if observer is not None:
             task = await self.get_task(task_id)
             if task is None or task.parent_task_id is None:
                 return None
-            view = await observer.prerequisite_view(task.project_id, task_id=task_id)
+            try:
+                view = await observer.prerequisite_view(task.project_id, task_id=task_id)
+            except (TimeoutError, GitError, OSError):
+                return None
             if not await view.fresh():
                 raise ValueError("hierarchy prerequisite target moved during preparation")
             async with self._engine.connect() as conn:
@@ -946,14 +963,19 @@ class HierarchyQueryMixin:
                 ))).mappings().one_or_none()
                 if current is None or current["parent_task_id"] != task.parent_task_id:
                     raise ValueError("hierarchy prerequisite parent changed during preparation")
-                ids = set((await conn.execute(select(prerequisite.c.id).select_from(
+                sources = (await conn.execute(select(
+                    prerequisite.c.id, prerequisite.c.status,
+                ).select_from(
                     dependency.join(prerequisite,
                                     prerequisite.c.id == dependency.c.depends_on_task_id),
                 ).where(
                     dependency.c.task_id == task_id,
                     dependency.c.dep_type == DepType.BLOCKS.value,
                     prerequisite.c.parent_task_id == current["parent_task_id"],
-                ))).scalars())
+                ))).all()
+                if any(source.status != "COMPLETED" for source in sources):
+                    raise ValueError("hierarchy prerequisite delivery is not current")
+                ids = {source.id for source in sources}
                 if not ids:
                     return None
                 verified = await view.verified_on(conn, ids)
@@ -971,20 +993,28 @@ class HierarchyQueryMixin:
                     or origin["parent_ref"].removeprefix("refs/heads/")
                     != parent_branch.removeprefix("refs/heads/")):
                     raise ValueError("hierarchy prerequisite origin changed during preparation")
+                unknown = False
                 for tid in ids:
                     proof = verified.get(tid)
                     target = view.targets.get(tid)
+                    if proof is None and tid not in view.evidence:
+                        unknown = True
+                        continue
+                    if proof is not None and proof.state is DeliveryState.UNKNOWN:
+                        unknown = True
+                        continue
                     if (proof is None or not proof.satisfied or target is None
                         or target.repository_id != current["repo_id"]
                         or target.target_ref != "refs/heads/" + parent_branch.removeprefix(
                             "refs/heads/")):
                         raise ValueError("hierarchy prerequisite delivery is not current")
+                if unknown:
+                    return None
                 heads = {proof.target_oid for proof in verified.values()}
             if not await view.fresh() or len(heads) != 1:
                 raise ValueError("hierarchy prerequisite target moved during preparation")
             return heads.pop()
-        # Admission already withholds sibling-dependent work without a Git view.
-        # An ordinary root has no prerequisite overlay to prepare.
+        # Unknown delivery supplies no overlay; preparation uses the normal origin.
         return None
 
     async def mark_container(self, task_id: str, *, conn) -> None:

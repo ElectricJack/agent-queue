@@ -757,7 +757,7 @@ class ClaimQueryMixin:
             from dataclasses import replace
 
             # These counterfactual predicates classify diagnostic uncertainty
-            # only. The actual modes and all decision queries remain fail closed.
+            # only. The actual modes also admit unknown ancestry for preparation.
             display_modes = {
                 pid: replace(
                     mode,
@@ -867,7 +867,7 @@ class ClaimQueryMixin:
                         "prerequisite_not_on_default_branch",
                     }:
                         exclusion["detail"] += (
-                            "; delivery read is cache-only; missing or stale evidence withholds work"
+                            "; delivery read is cache-only; proven missing ancestry withholds work"
                         )
             result[task_id] = exclusions
         delivery_rows = [row for row in rows if any(

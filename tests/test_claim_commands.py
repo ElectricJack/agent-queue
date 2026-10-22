@@ -269,7 +269,13 @@ async def test_ordinary_preparation_rechecks_new_source_artifacts(
         await db.add_dependency("dependent", "source")
     sid, work_dir = await pool_session(db, tmp_path)
 
+    resets = 0
+
     async def reset(*args, **kwargs):
+        nonlocal resets
+        resets += 1
+        if resets > 1:
+            return "aq/dependent"
         if mutation == "completion":
             await db.save_task_completion(TaskCompletion(
                 id="late-source", task_id="source", outcome="pass", commits=["a" * 40],
@@ -282,10 +288,18 @@ async def test_ordinary_preparation_rechecks_new_source_artifacts(
 
     handler.orchestrator._worktree_slots.return_value.reset_slot_for_task = reset
     result = await settled_claim(scoped(handler, sid), {"next": True})
-    assert result["result"] == "no_ready_work", result
-    assert (await db.get_session(sid)).claims == 0
-    assert (await db.get_task("dependent")).status is TaskStatus.READY
-    assert not (work_dir / ".aq" / "claim.json").exists()
+    if result["result"] == "no_ready_work":
+        assert resets == 1
+        assert (await db.get_session(sid)).claims == 0
+        assert (await db.get_task("dependent")).status is TaskStatus.READY
+        assert not (work_dir / ".aq" / "claim.json").exists()
+        result = await settled_claim(scoped(handler, sid), {"next": True})
+    assert result["result"] == "claimed", result
+    assert result["claim_epoch"] == 2
+    assert resets == 2  # The first admission cannot authorize the changed source.
+    assert (await db.get_session(sid)).claims == 1
+    assert (await db.get_task("dependent")).status is TaskStatus.IN_PROGRESS
+    assert (work_dir / ".aq" / "claim.json").exists()
 
 
 async def test_ordinary_preparation_retries_a_locked_artifact_free_source(handler, db, tmp_path):
@@ -5605,16 +5619,10 @@ async def test_default_stack_claims_retained_cross_epic_or_root_source(
     assert json.loads((work_dir / ".aq/claim.json").read_text())["task_id"] == "dependent"
 
 
-async def test_unavailable_stack_evidence_withholds_only_stacked_work(
+async def test_unavailable_stack_evidence_allows_preparation_without_overlay(
     handler, db, tmp_path, development_admission, monkeypatch
 ):
-    """A failed or backed-off fetch is no stack change: eligible roots still claim.
-
-    GitTruth answers every snapshot of a repository with the recorded fetch error
-    until its backoff expires. That is missing evidence, so it proves no stacked
-    prerequisite, but it moved nothing either; refusing the whole project as
-    ``stack_snapshot_changed`` starved every stable root for the backoff.
-    """
+    """A failed fetch supplies no overlay and permits dependent and root claims."""
     from src.git.manager import GitError
     from src.integration.stacked_branches import observe_stacks
 
@@ -5644,8 +5652,7 @@ async def test_unavailable_stack_evidence_withholds_only_stacked_work(
     assert await (await observe_stacks(observer, PROJECT_ID)).fresh()
     # Fail exactly the fetch: renaming the remote can instead fail process-group
     # cleanup under CI load, which does not establish GitTruth's fetch backoff.
-    # Restore transport immediately; the recorded backoff must still withhold
-    # stacked work until the fake clock advances.
+    # Restore transport immediately; the recorded backoff still proves no stack.
     failed_fetch = AsyncMock(side_effect=GitError("transport unavailable"))
     with monkeypatch.context() as failure:
         failure.setattr(handler.orchestrator.git, "afetch_origin", failed_fetch)
@@ -5655,40 +5662,32 @@ async def test_unavailable_stack_evidence_withholds_only_stacked_work(
     state = await stack.currentness()
     assert state.state == "unavailable", state
     assert state.reason.startswith("snapshot_git_error:"), state
-    # Activation guards keep refusing the same evidence.
+    # The observation still proves nothing; admission does not assert delivery.
     assert not await stack.fresh()
 
     result = await settled_claim(scoped(handler, sid), {"next": True})
     assert result["result"] == "claimed", result
-    assert result["task"]["id"] == "solo"
-    assert json.loads((work_dir / ".aq/claim.json").read_text())["task_id"] == "solo"
+    assert result["task"]["id"] == "dependent"
+    assert json.loads((work_dir / ".aq/claim.json").read_text())["task_id"] == "dependent"
+    origin = await db.get_task_branch_origin_for_promotion("dependent", "repo")
+    assert not origin["stack_snapshot"]
+    assert origin["base_sha"] == env.base
 
     sid2, work_dir2 = await _cloned_pool_session(db, tmp_path, env, "s2", "agent-2")
-    for args, refused in (({"next": True}, "no_ready_work"),
-                          ({"task_id": "dependent"}, "claim_conflict")):
-        result = await settled_claim(scoped(handler, sid2), args)
-        assert result["result"] == refused, result
-        assert result["reason"] == "stack_snapshot_unavailable", result
-        assert result["stack_evidence"]["state"] == "unavailable"
-        assert result["stack_evidence"]["reason"].startswith("snapshot_git_error:")
-        assert not (work_dir2 / ".aq/claim.json").exists()
-        dependent = await db.get_task("dependent")
-        assert dependent.status is TaskStatus.READY and dependent.claim_epoch == 0
-    assert (await db.get_task("solo")).status is TaskStatus.IN_PROGRESS
-
-    # Fresh evidence after the backoff admits the stacked dependent through the
-    # normal frontier, exactly once.
-    clock[0] += 61
     result = await settled_claim(scoped(handler, sid2), {"next": True})
     assert result["result"] == "claimed", result
-    assert result["task"]["id"] == "dependent"
-    origin = await db.get_task_branch_origin_for_promotion("dependent", "repo")
-    assert origin["stack_snapshot"]["base_sha"] == env.head
+    assert result["task"]["id"] == "solo"
+    assert json.loads((work_dir2 / ".aq/claim.json").read_text())["task_id"] == "solo"
+
+    # Recovery yields real stack proof again without changing the claimed origin.
+    clock[0] += 61
+    recovered = await observe_stacks(observer, PROJECT_ID)
+    assert await recovered.fresh()
+    assert "prerequisite" in recovered.proofs
     owner = await BranchOwnership(db).get_owner(
         BranchKey(repository_id="repo", branch="aq/dependent"),
     )
-    assert owner["handoff_state"] == "attached" and owner["session_id"] == sid2
-    assert json.loads((work_dir / ".aq/claim.json").read_text())["task_id"] == "solo"
+    assert owner["handoff_state"] == "attached" and owner["session_id"] == sid
 
 
 async def test_moving_stack_ref_refuses_after_bounded_reobservation(
@@ -6093,7 +6092,7 @@ async def test_cross_epic_no_change_readiness_demand_explain_and_claim_agree(
         db=db, git=handler.orchestrator.git, bus=handler.orchestrator.bus,
         config=handler.config.worktrees, git_mutex=handler.orchestrator._git_mutex,
     ))
-    allowed = completion_kind in {"no_change", "contained_empty"}
+    allowed = completion_kind in {"no_change", "contained_empty", "missing"}
     assert await db.is_hierarchy_task_runnable("dependent") is allowed
     assert ("dependent" in await db.hierarchy_runnable_task_ids(["dependent"])) is allowed
     assert await db.count_ready_by_profile(PROJECT_ID) == ({"worker": 1} if allowed else {})
@@ -6803,6 +6802,18 @@ async def test_development_preparation_invalidates_old_admission(
         side_effect=reset
     )
     result = await settled_claim(scoped(handler, sid), {"next": True})
+    if movement in {"completion", "config"}:
+        # The changed source/target invalidates attempt one. Its new unknown
+        # observation may authorize a fresh preparation, never the old attempt.
+        if result["result"] == "no_ready_work":
+            assert resets == 1
+            result = await settled_claim(scoped(handler, sid), {"next": True})
+        assert result["result"] == "claimed", result
+        assert result["claim_epoch"] == 2
+        assert resets == 2
+        assert (await db.get_session(sid)).claims == 1
+        assert (work_dir / ".aq" / "claim.json").exists()
+        return
     assert result["result"] == "no_ready_work"
     assert (await db.get_session(sid)).claims == 0
     assert (await db.get_session(sid)).claim_phase is None
@@ -6890,7 +6901,7 @@ async def test_development_parallel_claims_remain_exclusive(
     assert sum([(await db.get_session(sid)).claims for sid in [sid1, sid2]]) == 1
 
 
-async def test_development_unknown_git_withholds_only_sensitive_work(
+async def test_development_unknown_git_allows_dependent_preparation(
     handler, db, tmp_path, development_admission
 ):
     from src.git.manager import GitError
@@ -6900,7 +6911,8 @@ async def test_development_unknown_git_withholds_only_sensitive_work(
     await mktask(db, "independent", profile_id="worker")
     sid, _ = await pool_session(db, tmp_path)
     result = await settled_claim(scoped(handler, sid), {"next": True})
-    assert result["task"]["id"] == "independent"
+    assert result["result"] == "claimed", result
+    assert result["task"]["id"] == "dependent"
 
 
 async def test_development_parallel_claims_can_skip_locked_peer(
@@ -7594,7 +7606,7 @@ async def pull_request_admission(handler, db, development_admission, monkeypatch
 
 @pytest.mark.parametrize("merged", [False, True])
 @pytest.mark.parametrize("status", [TaskStatus.READY, TaskStatus.IN_PROGRESS, TaskStatus.BLOCKED])
-async def test_pr_explain_reports_unobserved_containment_as_unknown(
+async def test_pr_explain_allows_unobserved_containment(
     handler, db, pull_request_admission, monkeypatch, merged, status
 ):
     from src.integration.admission import observe_admission
@@ -7623,11 +7635,9 @@ async def test_pr_explain_reports_unobserved_containment_as_unknown(
     assert "pull_request_dependency_delivery" not in {
         reason["code"] for reason in explanation["reasons"]
     }
-    [reason] = [reason for reason in explanation["reasons"]
-                if reason["code"] == "delivery_evidence_unavailable"]
-    assert reason["ref"] == "prerequisite"
-    assert "containment" in reason["detail"] and "unknown" in reason["detail"]
-    assert "cached-only" in reason["detail"]
+    assert "delivery_evidence_unavailable" not in {
+        reason["code"] for reason in explanation["reasons"]
+    }
     if status is TaskStatus.BLOCKED:
         assert any(reason["code"] == "blocked_terminal"
                    and "session_close_hard_failure" in reason["detail"]
@@ -7834,7 +7844,7 @@ async def test_pr_stacked_claim_requires_real_remote_and_prepared_ancestry(
 
 
 @pytest.mark.parametrize("state", ["open", "closed", "unknown", "moved", "malformed"])
-async def test_pr_default_requires_current_exact_source_and_known_pr(
+async def test_pr_default_withholds_invalid_source_but_allows_unknown_observation(
     handler, db, tmp_path, pull_request_admission, state
 ):
     from src.integration.admission import observe_admission
@@ -7850,10 +7860,11 @@ async def test_pr_default_requires_current_exact_source_and_known_pr(
     elif state == "malformed":
         env.pull.pop("state")
     batch = await observe_admission(db, ["dependent"], env.service)
-    assert ("dependent" in batch.allowed) == (state == "open")
+    allowed = state in {"open", "unknown"}
+    assert ("dependent" in batch.allowed) == allowed
     ready = await handler.execute("project_ready", {"project_id": PROJECT_ID, "brief": True})
-    assert ("dependent" in {t["id"] for t in ready["ready"]}) == (state == "open")
-    if state == "open":
+    assert ("dependent" in {t["id"] for t in ready["ready"]}) == allowed
+    if allowed:
         from src.orchestrator.worktree_manager import WorktreeSlotManager
 
         sid, work_dir = await pool_session(db, tmp_path)
@@ -8051,7 +8062,9 @@ async def test_pr_project_embedded_repository_has_the_same_source_admission(
     assert (await observe_admission(db, ["dependent"], env.service)).allowed == {"dependent"}
 
 
-async def test_pr_missing_current_source_cannot_erase_recorded_artifact(db, pull_request_admission):
+async def test_pr_missing_current_source_allows_preparation_without_erasing_artifact(
+    db, pull_request_admission,
+):
     from src.integration.admission import observe_admission
     from src.models import TaskCompletion
 
@@ -8066,7 +8079,10 @@ async def test_pr_missing_current_source_cannot_erase_recorded_artifact(db, pull
             completed_at=time.time(),
         )
     )
-    assert not (await observe_admission(db, ["dependent"], env.service)).allowed
+    view = await observe_admission(db, ["dependent"], env.service)
+    assert view.allowed == {"dependent"}
+    assert view.pr.workspace_sources == {}
+    assert view.pr.lock_ids >= {"prerequisite"}
 
 
 @pytest.mark.parametrize('source_status, expected', [

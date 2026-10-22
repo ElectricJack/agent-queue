@@ -538,15 +538,6 @@ async def observe_stacks(observer, project_id, *, task_id=None, max_age=0, snaps
     """Observe prerequisites; preparation and refresh need Git even for an empty set."""
     async with observer.db._engine.connect() as conn:
         rows = await _inputs(conn, project_id, task_id)
-        parents = dict(
-            (
-                await conn.execute(
-                    select(tasks.c.id, tasks.c.branch_name).where(
-                        tasks.c.id.in_({row["parent_task_id"] for row in rows})
-                    )
-                )
-            ).all()
-        )
         repository_query = select(repos).join(
             projects, projects.c.integration_repository_id == repos.c.id,
         ).where(projects.c.id == project_id)
@@ -748,7 +739,14 @@ class StackedBranches:
         ids = view.required(task_id)
         if not ids and parent_base is None:
             return None
-        if not await view.fresh():
+        if any(not row["authorized"] for row in view.rows):
+            raise StackPreparationChanged("prerequisite source has an explicit hold or rejection")
+        currentness = await view.currentness()
+        if currentness.state == "unavailable":
+            # Unknown delivery cannot veto a worker. Supply no automatic overlay;
+            # the agent can merge prerequisites using Git after normal preparation.
+            return None
+        if not currentness.current:
             raise StackPreparationChanged("prerequisite stack changed during preparation")
         async with self.db._engine.connect() as conn:
             proofs = await view.verified_on(conn, ids)
@@ -760,8 +758,6 @@ class StackedBranches:
                     tasks.c.id == task.parent_task_id,
                 )
             )
-        if any(not row["authorized"] for row in view.rows):
-            raise StackPreparationChanged("prerequisite source has an explicit hold or rejection")
         if set(proofs) != ids:
             # Delivered sources may have had their task refs cleaned up. The
             # established parent proof remains a valid preparation route.

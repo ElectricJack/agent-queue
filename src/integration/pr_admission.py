@@ -339,16 +339,21 @@ async def observe_pr_admission(db, ids, service, *, default_mode, cached_only=Fa
     batch.source_projects = fence["projects"]
     batch.source_repos = fence["repos"]
     proofs = {}
+    rejected = set()
     for source_id, (row, repo, url, completion) in sources.items():
         proof = None
         try:
-            # Interactive reads never initiate remote work or bless unknown proof.
+            # Interactive reads leave containment unknown and permit preparation.
             if cached_only or row["status"] != "COMPLETED" or not repo or not row["pr_url"]:
                 raise ValueError("current source unavailable")
             binding = await service.git.bind_github_repository(url)
             from src.git.github import GitHubAccess
 
-            GitHubAccess.validate_pr_url(binding, row["pr_url"])
+            try:
+                GitHubAccess.validate_pr_url(binding, row["pr_url"])
+            except ValueError:
+                rejected.add(source_id)
+                raise
             client = service.git._github_client(binding)
             pull = await client.pull_request(row["pr_url"])
             state, merged, head, branch, base, merge_oid, repository = _identity(pull)
@@ -364,6 +369,7 @@ async def observe_pr_admission(db, ids, service, *, default_mode, cached_only=Fa
                 and completion.commits
                 and completion.commits[-1] != head
             ):
+                rejected.add(source_id)
                 raise ValueError("PR does not identify the current completed source")
             snapshot = await service.delivery_observer.snapshot(
                 DeliveryTarget(
@@ -383,6 +389,7 @@ async def observe_pr_admission(db, ids, service, *, default_mode, cached_only=Fa
             source_ref = "refs/remotes/origin/" + branch
             source_head = observation.source_heads.get(source_ref)
             if source_head != head and (source_head is not None or not merged):
+                rejected.add(source_id)
                 raise ValueError("repository source branch no longer matches the PR head")
             if source_head is not None:
                 batch.snapshots.append(
@@ -398,13 +405,16 @@ async def observe_pr_admission(db, ids, service, *, default_mode, cached_only=Fa
                 snapshot.target_oid,
                 strict=True,
             )
-            proof = (head, oid, contained is True, observation, repo)
-        except Exception:  # Malformed, unavailable or foreign evidence fails closed.
+            if contained is not None:
+                proof = (head, oid, contained is True, observation, repo)
+        except Exception:  # Unavailable observations permit worker preparation.
             pass
         proofs[source_id] = proof
     for task_id, deps in required.items():
         for source_id in sorted(deps):
             proof = proofs[source_id]
+            if proof is None and source_id not in rejected:
+                continue
             satisfied = False
             if proof:
                 head, oid, contained, snapshot, repo = proof
@@ -439,13 +449,10 @@ async def observe_pr_admission(db, ids, service, *, default_mode, cached_only=Fa
             if not satisfied:
                 batch.allowed.discard(task_id)
                 batch.reasons.setdefault(task_id, []).append({
-                    "code": ("delivery_evidence_unavailable" if cached_only
-                             else "pull_request_dependency_delivery"),
+                    "code": "pull_request_dependency_delivery",
                     "ref": source_id,
-                    "detail": f"PR prerequisite {source_id}: " + (
-                        "cached-only read: PR identity, containment and claimability are unknown"
-                        if cached_only else
-                        "lacks containment on default branch or dependent's exact workspace base"),
+                    "detail": f"PR prerequisite {source_id}: lacks containment on default "
+                              "branch or dependent's exact workspace base",
                 })
     if not cached_only and not await batch.is_fresh():
         batch.allowed -= {tid for tid, deps in required.items() if deps}
