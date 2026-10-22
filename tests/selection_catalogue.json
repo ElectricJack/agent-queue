@@ -19874,7 +19874,7 @@
         "agent-waits"
       ],
       "default_arm": true,
-      "digest": "sha256:b5f6670a211a9869dfc4219ef40aa13fe82b59bdbf2fd0736fd5d44d51316fe3",
+      "digest": "sha256:46e06bd9b4e23297ce8c065e493aa5219921250513f8c6513bdf31eecd294431",
       "imports": [
         "src.commands.contracts.wait_v2",
         "src.commands.principal",
@@ -19885,6 +19885,7 @@
         "src.wait_runtime.legacy_bridge",
         "src.wait_runtime.legacy_human",
         "src.wait_runtime.legacy_parking",
+        "src.wait_runtime.legacy_pass",
         "src.wait_runtime.legacy_projection",
         "src.wait_runtime.service",
         "src.waits.adapters.legacy_escalation",
