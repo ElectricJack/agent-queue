@@ -359,7 +359,7 @@ async def test_missing_root_reservation_failure_does_not_starve_later_roots(db):
 
 
 @pytest.mark.parametrize("blocker", [
-    "child", "not_ready", "foreign_repo", "repair", "assigned", "workspace", "session",
+    "child", "not_ready", "foreign_repo", "repair", "writer", "assigned", "workspace", "session",
 ])
 async def test_missing_root_origin_rechecks_eligibility_under_project_lock(db, tmp_path, blocker):
     from src.database.tables import sessions
@@ -377,6 +377,8 @@ async def test_missing_root_origin_rechecks_eligibility_under_project_lock(db, t
         await db.update_task("root", repo_id="other")
     elif blocker == "repair":
         await db.update_task("root", created_by_kind="integration_repair")
+    elif blocker == "writer":
+        await db.update_task("root", created_by_kind="integration_writer")
     elif blocker == "assigned":
         await db.create_agent(Agent(id="writer", name="writer", profile_id="worker"))
         await db.update_task("root", assigned_agent_id="writer")

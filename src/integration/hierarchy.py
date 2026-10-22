@@ -187,6 +187,7 @@ def ready_root_origin_tasks():
             or_(tasks.c.repo_id.is_(None),
                 tasks.c.repo_id == projects.c.integration_repository_id),
             tasks.c.created_by_kind.is_distinct_from("integration_repair"),
+            tasks.c.created_by_kind.is_distinct_from("integration_writer"),
             ~select(sessions.c.id).where(
                 sessions.c.task_id == tasks.c.id, session_attached_clause(),
             ).exists(),
