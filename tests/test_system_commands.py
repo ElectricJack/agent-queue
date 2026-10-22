@@ -366,3 +366,39 @@ class TestRunCommand:
     async def test_missing_both_returns_error(self, handler):
         result = await handler.execute("run_command", {})
         assert result == {"success": False, "error": "command is required"}
+
+
+async def test_operational_retention_uses_private_worker_pool(handler):
+    from src.commands.principal import ExecutionPrincipal, principal_context
+
+    with principal_context(ExecutionPrincipal.service("retention-test")):
+        result = await handler.execute("operational_retention", {"dry_run": True, "batch_size": 1})
+    assert result["success"], result
+    assert result["dry_run"]
+    assert "token_ledger" in result["counts"]
+    assert "transcript_usage_calls" not in result["counts"]
+    assert not (Path(handler.config.data_dir) / "backups").exists()
+
+
+async def test_retention_request_cancel_does_not_overlap_worker(handler, monkeypatch):
+    import threading
+    from src.database import operational_retention
+
+    entered, release = threading.Event(), threading.Event()
+
+    def worker(*args, **kwargs):
+        entered.set()
+        release.wait(10)
+        return {"events": 0}
+
+    monkeypatch.setattr(operational_retention, "run_worker", worker)
+    request = asyncio.create_task(handler._cmd_operational_retention({}))
+    try:
+        assert await asyncio.to_thread(entered.wait, 5)
+        request.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await request
+        assert (await handler._cmd_operational_retention({}))["outcome"] == "already_running"
+    finally:
+        release.set()
+        await handler.orchestrator._operational_retention_task

@@ -397,15 +397,28 @@ class DatabaseTargets:
     parent branches its completed work routes to, and any open batch's target."""
 
     def __init__(self, db, *, limit: int = MEMBER_LIMIT, snapshot=project_snapshot,
-                 probe_timeout_seconds: float = 5.0, flow_problems=None) -> None:
+                 probe_timeout_seconds: float = 5.0, flow_problems=None,
+                 refresh_seconds: float = 0) -> None:
         self.db, self.limit = db, limit
         self.snapshot = snapshot
         self.probe_timeout_seconds = probe_timeout_seconds
         self.flow_problems = flow_problems
         self.retired_targets: set[tuple[str, str, str]] = set()
         self.deferred_revisits: dict[tuple[str, str, str], float] = {}
+        self.refresh_seconds = refresh_seconds
+        self._cached_targets = None
+        self._refresh_at = 0.0
+        self._generation = 0
+
+    def invalidate(self):
+        self._generation += 1
+        self._refresh_at = 0.0
 
     async def targets(self, now: float, *, project_id: str | None = None) -> list[TrainTarget]:
+        if (project_id is None and self._cached_targets is not None
+                and now < self._refresh_at):
+            return list(self._cached_targets)
+        generation = self._generation
         # A scoped read (one control's own project) probes only that project's
         # origin and leaves the fleet-wide retirement set to the tick.
         found: dict[tuple[str, str, str], TrainTarget] = {}
@@ -438,7 +451,11 @@ class DatabaseTargets:
                 self._project_targets(row, retired, deferred) for row in rows)):
             for target in targets:
                 found.setdefault(target.key, target)
-        return [found[key] for key in sorted(found)]
+        result = [found[key] for key in sorted(found)]
+        if project_id is None and generation == self._generation:
+            self._cached_targets = result
+            self._refresh_at = now + self.refresh_seconds
+        return result
 
     async def _project_targets(self, row, retired_sink, deferred_sink):
         project_id, repository_id = row["id"], row["repository_id"]
@@ -3442,6 +3459,7 @@ class TrainCommandDriver:
         self.train, self._commands = train, commands
 
     def wake(self, project_id, repository_id=None):
+        self.train.targets.invalidate()
         return self.train.wake(project_id, repository_id)
 
     def set_wake_callback(self, callback):
@@ -3477,6 +3495,7 @@ def train_for(orchestrator, *, clock: Callable[[], float] = time.time) -> Integr
     return IntegrationTrain(
         targets=DatabaseTargets(
             orchestrator.db,
+            refresh_seconds=30,
             flow_problems=lambda: getattr(orchestrator, "promotion_flow_problems", None),
         ),
         batches=batches,

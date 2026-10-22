@@ -1,5 +1,7 @@
 """Live in-place waits are occupied seats with an eviction candidate marker."""
 
+from contextlib import nullcontext
+
 from sqlalchemy import select
 from src.database.tables import sessions, tasks, wait_records
 
@@ -17,7 +19,7 @@ async def evictable_sessions(db, config):
         ))).scalars())
 
 
-async def continuation_occupancy(db, config):
+async def continuation_occupancy(db, config, *, conn=None):
     """Count a reserved launch before it has a session, and fence its new session.
 
     Resume owns the reservation scope and new_session_id. Never count the stopped
@@ -26,7 +28,7 @@ async def continuation_occupancy(db, config):
     """
     from src.database.tables import admission_reservations, continuations
 
-    async with db._engine.connect() as conn:
+    async with db._engine.connect() if conn is None else nullcontext(conn) as conn:
         rows = (await conn.execute(select(
             tasks.c.project_id, admission_reservations.c.scope,
             continuations.c.new_session_id, sessions.c.state,

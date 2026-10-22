@@ -20,6 +20,27 @@ class SystemCommandsMixin:
     """System command methods mixed into CommandHandler."""
 
     # -----------------------------------------------------------------------
+
+    async def _cmd_operational_retention(self, args: dict) -> dict:
+        """Run one archive-first batch on a private worker loop and DB pool."""
+        from src.database.operational_retention import run_worker
+
+        owner = self.orchestrator
+        pending = getattr(owner, "_operational_retention_task", None)
+        if pending is not None and not pending.done():
+            return {"success": True, "outcome": "already_running"}
+        batch_size = args.get("batch_size", 1000)
+        if isinstance(batch_size, bool) or not isinstance(batch_size, int) or not 1 <= batch_size <= 1000:
+            return {"success": False, "error": "batch_size must be between 1 and 1000"}
+        task = asyncio.create_task(asyncio.to_thread(
+            run_worker, self.db._engine.url, Path(self.config.data_dir) / "backups",
+            now=time.time(), dry_run=bool(args.get("dry_run", False)), batch_size=batch_size,
+        ), name="operational-retention")
+        owner._operational_retention_task = task
+        # Cancellation of an HTTP request cannot cancel a filesystem write in a
+        # thread or admit a second concurrent pass. Shutdown joins this task.
+        counts = await asyncio.shield(task)
+        return {"success": True, "counts": counts, "dry_run": bool(args.get("dry_run", False))}
     # System commands — config reload, status, diagnostics
     # -----------------------------------------------------------------------
 

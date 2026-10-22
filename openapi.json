@@ -17228,6 +17228,51 @@
         }
       }
     },
+    "/api/system/operational-retention": {
+      "post": {
+        "tags": [
+          "system"
+        ],
+        "summary": "Archive and collect one bounded batch of old operational records.",
+        "description": "Archive and collect one bounded batch of old operational records.",
+        "operationId": "operational_retention",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OperationalRetentionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/system/orchestrator-control": {
       "post": {
         "tags": [
@@ -56654,6 +56699,24 @@
           "error"
         ],
         "title": "OnboardingErrorInfo"
+      },
+      "OperationalRetentionRequest": {
+        "properties": {
+          "dry_run": {
+            "type": "boolean",
+            "title": "Dry Run",
+            "description": "Count eligible records without archiving or deletion.",
+            "default": false
+          },
+          "batch_size": {
+            "type": "integer",
+            "title": "Batch Size",
+            "description": "",
+            "default": 1000
+          }
+        },
+        "type": "object",
+        "title": "OperationalRetentionRequest"
       },
       "OperatorDecisionDTO": {
         "properties": {

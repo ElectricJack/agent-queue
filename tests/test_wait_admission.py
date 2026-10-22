@@ -12,7 +12,7 @@ from src.config import AppConfig
 from src.config_wait_policy import parse_wait_policy
 from src.database import Database
 from src.database.tables import (
-    admission_reservations, integration_branch_owners, tasks, wait_deadlines,
+    admission_reservations, integration_branch_owners, projects, tasks, wait_deadlines,
     wait_escalations, wait_records,
 )
 from src.models import Agent, AgentProfile, Project, RepoConfig, RepoSourceType, Task, TaskStatus
@@ -493,3 +493,51 @@ async def test_startup_bridge_runs_once_and_restart_honours_durable_marker(env):
     service.command = AsyncMock(side_effect=command)
     await service.startup_bridge()
     service.command.assert_not_awaited()
+
+
+async def test_scheduler_sync_uses_one_connection_under_graph_fence(env):
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    original = env.db._engine
+    engine = create_async_engine(original.url, pool_size=1, max_overflow=0, pool_timeout=0.2)
+    env.db._engine = engine
+    try:
+        assert (await sync(env))["success"]
+        assert await rows(env, wait_records)
+    finally:
+        env.db._engine = original
+        await engine.dispose()
+
+
+async def test_scheduler_dirty_projects_and_recovery_scan(env, monkeypatch):
+    from src.event_bus import EventBus
+
+    bus = env.o.bus = EventBus(validate_events=False)
+    service = SchedulerWaitService(env.o)
+    projects = [SimpleNamespace(id="p"), SimpleNamespace(id="other")]
+    monkeypatch.setattr("src.wait_runtime.scheduler.time.monotonic", lambda: 100)
+    assert service.due(projects) == projects
+    service._dirty.clear()
+    service._last_sync = {p.id: 100 for p in projects}
+    assert service.due(projects) == []
+    await bus.emit("task.closed", {"project_id": "p"})
+    assert service.due(projects) == projects[:1]
+    service._dirty.clear()
+    await bus.emit("config.updated", {})
+    assert service.due(projects) == projects
+    service._dirty.clear()
+    monkeypatch.setattr("src.wait_runtime.scheduler.time.monotonic", lambda: 160)
+    assert service.due(projects) == projects
+    service._unsubscribe()
+
+
+async def test_prepared_admission_does_not_admit_changed_project(env):
+    reader = env.service.reader
+    async with reader.prepared("p"):
+        async with env.db._engine.begin() as conn:
+            await conn.execute(update(projects).where(projects.c.id == "p").values(
+                hierarchical_integration_generation=projects.c.hierarchical_integration_generation + 1,
+            ))
+            observation = await reader.observe_task(conn, "holder")
+    assert observation.constraints["batch_hold"]["blocked"]
+    assert "delivery_not_verified" in observation.constraints["batch_hold"]["reasons"]

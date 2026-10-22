@@ -45,6 +45,32 @@ class SchedulerWaitService:
         self.reader = reader or AdmissionReader(orchestrator, clock=clock)
         self.registry = build_registry(resource_reader=self.reader)
         self.clock = clock
+        self._dirty = set()
+        self._all_dirty = True
+        self._last_sync = {}
+        bus = getattr(orchestrator, "bus", None)
+        if callable(getattr(bus, "subscribe", None)):
+            self._unsubscribe = bus.subscribe("*", self._changed)
+
+    def _changed(self, event):
+        # Time-based constraints still get the 60s recovery pass below. Hints
+        # only select work; sync re-reads authoritative rows before mutation.
+        kind = event.get("_event_type", "")
+        if kind.startswith(("task.", "session.", "project.", "workspace.", "provider.",
+                            "integration.", "gate.", "dependency.", "config.", "profile.")):
+            project = event.get("project_id")
+            if project:
+                self._dirty.add(project)
+            else:
+                self._all_dirty = True
+
+    def due(self, projects):
+        now = time.monotonic()
+        if self._all_dirty:
+            self._dirty.update(p.id for p in projects)
+            self._all_dirty = False
+        return [p for p in projects if p.id in self._dirty
+                or now - self._last_sync.get(p.id, float("-inf")) >= 60]
 
     def authorize(self, principal):
         if principal is None or principal.kind != PrincipalKind.SERVICE:
@@ -52,6 +78,13 @@ class SchedulerWaitService:
 
     async def sync(self, args, *, principal, scope=None, handler=None):
         self.authorize(principal)
+        # All costly admission observations happen before taking the graph fence.
+        if isinstance(self.reader, AdmissionReader):
+            async with self.reader.prepared(args["project_id"]):
+                return await self._sync(args, principal=principal, scope=scope, handler=handler)
+        return await self._sync(args, principal=principal, scope=scope, handler=handler)
+
+    async def _sync(self, args, *, principal, scope=None, handler=None):
         now = self.clock() if args.get("now") is None else args["now"]
         project_id = args["project_id"]
         # The contract carries a candidate list, never authoritative verdicts.
@@ -354,6 +387,7 @@ async def scheduler_tick(handler):
     if o is None:
         return
     service = getattr(o, "wait_scheduler_service", None) or SchedulerWaitService(o)
+    o.wait_scheduler_service = service
     handlers = getattr(o, "wait_v2_handlers", None)
     if handlers is None:
         handlers = o.wait_v2_handlers = {}
@@ -363,9 +397,16 @@ async def scheduler_tick(handler):
     handlers.setdefault("wait_deadline_fire", service.deadline)
     with principal_context(ExecutionPrincipal.service("scheduler-waits")):
         cycle_id = str(uuid.uuid4())
-        for project in _rotated(await o.db.list_projects()):
+        for project in service.due(_rotated(await o.db.list_projects())):
+            # Consume before awaiting, so events arriving during sync survive.
+            service._dirty.discard(project.id)
             result = await bounded_sync(handler, {
                 "project_id": project.id, "blockers": [], "cycle_id": cycle_id,
             })
             if not result.get("success"):
+                service._dirty.add(project.id)
                 raise WaitError("wait.scheduler_sync_failed", str(result))
+            if result.get("timed_out"):
+                service._dirty.add(project.id)
+            else:
+                service._last_sync[project.id] = time.monotonic()

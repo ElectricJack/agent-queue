@@ -238,6 +238,7 @@
         "tests/test_migrate_task_records.py",
         "tests/test_models.py",
         "tests/test_onboarding_queries.py",
+        "tests/test_operational_retention.py",
         "tests/test_sqlite_removal.py"
       ]
     },
@@ -12979,6 +12980,20 @@
       "markers": [],
       "summary": "SQLite/PostgreSQL parity tests for durable onboarding request storage."
     },
+    "tests/test_operational_retention.py": {
+      "areas": [
+        "database"
+      ],
+      "default_arm": true,
+      "digest": "sha256:94dfb7eb9660e1ee7a2d10353947bb19eeca121ed7d1855a848973d0b88343b7",
+      "imports": [
+        "src.database",
+        "src.database.operational_retention",
+        "src.database.tables"
+      ],
+      "markers": [],
+      "summary": "Archive-first retention on real PostgreSQL, including crash and race fences."
+    },
     "tests/test_operator_workers.py": {
       "areas": [
         "operator-workers"
@@ -17952,14 +17967,16 @@
         "command-dispatch"
       ],
       "default_arm": true,
-      "digest": "sha256:787cb482e1c71322f448a347f84a1d34528db8d56f163da1917cce673e3bebec",
+      "digest": "sha256:6a8085a3b5d6effc7668f35310041c562f6be8e7c3bdf2c8c9be8ede5aaf6483",
       "imports": [
         "src.api.models.system",
         "src.commands",
         "src.commands.handler",
+        "src.commands.principal",
         "src.commands.system_commands",
         "src.config",
         "src.database",
+        "src.database.operational_retention",
         "src.event_bus",
         "src.git.manager",
         "src.install",
@@ -19576,7 +19593,7 @@
         "agent-waits"
       ],
       "default_arm": true,
-      "digest": "sha256:b6460a8d4756eeec50c482025cfc68b669833ff2325a3f29be58b3de16ef83be",
+      "digest": "sha256:b9049d49f60a96ec33779e81d0f2aaaa12f3e0599196cac3bd7a2ca2008411af",
       "imports": [
         "src.commands.principal",
         "src.config",
@@ -19585,6 +19602,7 @@
         "src.database",
         "src.database.queries.wait_queries",
         "src.database.tables",
+        "src.event_bus",
         "src.integration.admission",
         "src.models",
         "src.scheduler",
