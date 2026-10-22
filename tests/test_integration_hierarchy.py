@@ -2581,3 +2581,37 @@ async def test_read_projection_names_cross_epic_landing_and_refresh(db, hierarch
     mode = replace(mode, parent_contained_task_ids=frozenset({dependent}))
     assert (await load_readiness(db, rows))[dependent]["claim_readiness"]["claimable"]
     assert (await db.get_task(dependent)).status == TaskStatus.READY
+
+
+async def test_reopen_feedback_reports_sealed_refusal_without_mutating_epic(
+    db, internal_plugins_handler,
+):
+    await _create(db, "epic")
+    await db.update_task("epic", status=TaskStatus.COMPLETED)
+    before = await db.get_task("epic")
+    async with db.immediate() as conn:
+        await conn.execute(insert(integration_batches).values(
+            id="sealed-feedback", project_id="p", repository_id="repo", request_id="request",
+            source_manifest_digest="digest", base_sha=BASE, lifecycle="sealing",
+            integration_branch="aq/integration/feedback", policy_snapshot={}, artifact_snapshot={},
+            cleanup_state="pending", created_at=1.0, updated_at=1.0,
+        ))
+        await conn.execute(insert(integration_batch_members).values(
+            batch_id="sealed-feedback", ordinal=0, task_id="epic", repository_id="repo",
+            source_sha=BASE, source_base_sha=BASE, reviewed_head_sha=BASE, reviewed_tree_sha=BASE,
+            review_evidence={},
+        ))
+        await conn.execute(update(integration_batches).where(
+            integration_batches.c.id == "sealed-feedback",
+        ).values(lifecycle="sealed"))
+    handler = await internal_plugins_handler(db=db)
+    result = await handler.execute("reopen_with_feedback", {
+        "task_id": "epic", "feedback": "Repair inherited target failures",
+    })
+    assert result["success"] is False
+    assert result["code"] == "hierarchy.sealed", result
+    assert "sealed subtree" in result["error"]
+    after = await db.get_task("epic")
+    assert after.status == before.status == TaskStatus.COMPLETED
+    assert after.description == before.description
+    assert await db.get_task_contexts("epic") == []
