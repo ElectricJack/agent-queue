@@ -20584,5 +20584,35 @@
       "integration_close_attempts"
     ],
     "restoration_verified_by": "stark-willow-95.18"
-  }
+  },
+  "repair_measurements": [
+    {
+      "task_id": "repair-2d46060fa82339e7c313ef8389112d5b6fad07855f062b03bf6180fd6df34e87",
+      "batch_id": "train-56f15aff49843c6989224397ef6d7044",
+      "source_revision": "969b4abd4831d643b1edc5a05db18e653c54b7a5",
+      "starting_revision": "f0a1ea83d639a506aeab41eea08e9d7d55f43598",
+      "measurement_command": "python tests/integration_ownership.py",
+      "owned_lines": 160145,
+      "engine_lines": 84546,
+      "tables": 46,
+      "repair_owned_delta": 0,
+      "batch_owned_delta": 1187,
+      "cumulative_owned_delta": 4646,
+      "remaining_headroom": 0,
+      "approved_storage_categories": [
+        "integration_close_attempts"
+      ],
+      "decision_message_ids": [
+        "msg-7ed85e78d1af4f3e85b485a57967e794",
+        "msg-dbb0120c6172499081721c033e894b39",
+        "msg-90f9f1b1e0cd4e8e8d28071cffc927a6"
+      ],
+      "decision_record": "record:2720bdbe-7521-427e-8e72-1f40a3ff9818",
+      "disposition": "Revision 115 postdates SQLite removal. Legacy import refuses populated PostgreSQL targets and preserves existing close-operation evidence, arguments, identities and retained candidates. Canonical wait coverage retains exact registry equality and verifies service/owner scope, budget reuse and terminal settlement.",
+      "restore_task": "azure-ridge-72",
+      "category_restore_task": "stark-willow-95.17",
+      "restoration_verified_by": "stark-willow-95.18",
+      "expires_at": "s4_modules"
+    }
+  ]
 }
