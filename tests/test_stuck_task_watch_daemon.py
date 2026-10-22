@@ -160,6 +160,8 @@ def assert_key_ready(watch):
 
 
 @pytest.mark.integration
+# Bound the whole multi-scenario world, including setup/restart and evidence reads.
+@pytest.mark.timeout(WORLD_BUDGET)
 def test_reviewed_watch_through_disposable_daemon(tmp_path):
     """Import, activate and execute the exact recording over the real daemon API."""
     env = world_env(tmp_path / "aq-e2e")
