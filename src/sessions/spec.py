@@ -222,7 +222,7 @@ SUPERVISOR_PATROL_PROMPT = (
     "`python3 ~/.agent-queue/operator-checks/stall-sweep.py` from the vault, "
     "poll all three supervisor inboxes (`aq --json message inbox --inject`, "
     "`aq --json message inbox --to profile:supervisor`, and "
-    "`aq --json message inbox --to session:supervisor-agent-queue`), and FIX "
+    "`aq --json message inbox --to {supervisor_inbox}`), and FIX "
     "what it finds rather than only reporting it. A scheduler job is not a "
     "background inbox poll or shell sleep loop. The patrol only lives as long "
     "as this session; re-establish it after any restart. If your harness has "
@@ -494,7 +494,12 @@ class SessionSpecBuilder:
                 f"You supervise project {project_id}; stay within that project's scope.\n"
                 if is_supervisor else ""
             ),
-            supervisor_patrol=SUPERVISOR_PATROL_PROMPT if is_supervisor else "",
+            supervisor_patrol=SUPERVISOR_PATROL_PROMPT.format(
+                supervisor_inbox=(
+                    f"session:supervisor-{project_id}"
+                    if project_id is not None else "session:supervisor-agent-queue"
+                ),
+            ) if is_supervisor else "",
         )
         return self._build(
             harness=harness,
