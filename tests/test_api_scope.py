@@ -108,6 +108,7 @@ EXPECTED_AGENT_COMMANDS = {
     "task_route",
     "integration_status",
     "integration_batch_fix",
+    "integration_continue_close",
     # Promotion validation and cached history reads are pinned to the worker's project.
     "promote_schema",
     "promote_validate",

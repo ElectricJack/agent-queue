@@ -35,6 +35,7 @@ from src.database.queries.result_queries import (
 )
 from src.database.queries.task_queries import StaleClaim
 from src.database.queries.task_subtask_queries import OPEN_SUBTASK_STATUSES, SubtasksOpenError
+from src.git.manager import GitError
 from src.models import TaskCompletion, TaskStatus
 from src.sessions.provider import (
     Cap,
@@ -1561,6 +1562,14 @@ class SessionCommandsMixin:
                     "error": f"integration review evidence refused: {exc}",
                 }
         completion_id = str(uuid.uuid4())
+        from src.integration.close_runtime import proposal as close_merge_proposal
+
+        try:
+            close_proposal = await close_merge_proposal(self, task, session, args)
+        except (ValueError, OSError, GitError) as exc:
+            return {"success": False, "error": str(exc), "code": "completion.source_invalid"}
+        if close_proposal is not None:
+            completion_id = close_proposal["id"]
         expect_claim_epoch = int(claim_epoch) if claim_epoch is not None else None
         # The terminal transition commits inside ``complete_session_task`` and
         # the completion record is saved only after it returns.  Draft the
@@ -1672,6 +1681,36 @@ class SessionCommandsMixin:
 
         if retry_in_session:
             await self.db.discard_pending_completion(task_id, completion_id)
+            if result.get("close_merge"):
+                operation = result["close_merge"]
+                condition = operation["evidence"].get("condition")
+                if condition:
+                    operation["wait"] = await self._cmd_wait_register({
+                        "schema_version": 2, "condition": condition,
+                        "idempotency_key": "close-check:" + operation["operation_id"] + ":"
+                        + str(condition.get("job_id") or condition.get("head_sha")) + ":"
+                        + str(condition.get("check_name", "")),
+                        "claim_epoch": task.claim_epoch,
+                    })
+                    if (not operation["wait"].get("success")
+                            and operation["wait"].get("code") != "wait.already_satisfied"):
+                        from src.integration.close_merge import CloseMerge
+                        from src.integration.close_runtime import DaemonClose
+
+                        runtime = DaemonClose(self.orchestrator)
+                        async with runtime.store.visit(operation["operation_id"]):
+                            row = await runtime.store.get(operation["operation_id"])
+                            await CloseMerge(runtime.store, runtime).defer(
+                                row, "candidate_wait_registration_unavailable")
+                        # Re-enter ordinary validation with the same retained
+                        # source; the deferred operation hands delivery back.
+                        return await self._cmd_task_close(args)
+                    operation["next_step"] = (
+                        f"Candidate check wait {operation['wait']['wait_id']}: "
+                        f"{operation['wait']['next_step']}. Then "
+                        + operation["next_step"])
+                return {"success": False, "result": "close_in_progress", "task_id": task_id,
+                        "close_merge": operation, "error": operation["next_step"]}
             # Not a close: the task is still IN_PROGRESS under this session's
             # claim, and the agent has to fix the listed git issues and call
             # ``aq task close`` again.  No completion record, no claim

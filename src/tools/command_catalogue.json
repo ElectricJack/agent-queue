@@ -13582,6 +13582,22 @@
         "title": "AskButtonArgs",
         "type": "object"
       }
+    },
+    {
+      "name": "integration_continue_close",
+      "description": "Continue the parent merge belonging to your held task and session.",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "operation_id"
+        ],
+        "properties": {
+          "operation_id": {
+            "type": "string"
+          }
+        }
+      }
     }
   ],
   "fallback": {
@@ -20421,6 +20437,7 @@
   },
   "tool_categories": {
     "integration_batch_fix": "integration",
+    "integration_continue_close": "integration",
     "operator_execute": "operator",
     "operator_preflight": "operator",
     "policy_export": "policy",

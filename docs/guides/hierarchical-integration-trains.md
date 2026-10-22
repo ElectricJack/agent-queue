@@ -765,3 +765,48 @@ whose PR is green yet not delivering answers `aq integration authorize-root`
 with the condition it fails or the train blocker it waits on, never a bare
 `not_eligible`. Re-landed content and archive dispositions are recorded as in
 [branch retirement](../specs/design/branch-retirement.md#re-landed-content).
+
+## Author-assisted parent merge on close
+
+A passing worker close in an active train project can retain the author through
+its merge into a non-default parent branch. The daemon freezes the clean,
+exactly published source commit, creates a separate warm candidate checkout and
+performs a real two-parent merge. The task branch remains the completion source.
+Conflicts and failed candidate checks return the candidate path to the same
+claim holder; commit fixes there, then run:
+
+```bash
+aq integration continue-close --operation-id <id>
+```
+
+Each changed candidate is regenerated and checked against the current parent
+check requirements. Managed jobs use the shared cache and resource limits. A
+pending exact job/check returns a verified wait; follow that receipt instead of
+polling. Only the publisher can update the parent, with a short expected-old
+lease, renewed claim and explicit-hold checks, and remote readback. Parent
+advances merge the retained candidate onto the new parent, preserving author
+fixes, with at most three automatic rebuilds.
+
+`hierarchical_integration_policy.close_merge` accepts `author_assist` (default
+`true`) and `author_budget_seconds` (default `1200`). Defaults are omitted from
+policy dumps. This reader uses the same live project mode and parent check
+projection as the git-first train; retired playbook-route pins do not gate a
+close. A disabled train completes source work normally without a close proposal
+or parent lease. `author_assist: false`, unavailable candidate validation, or
+exhausted automatic retries hand the exact retained candidate to the existing
+publisher. Root/default-branch publication remains publisher-owned.
+
+An author budget is an integration-origin verified wait. Expiry sends one
+incident to the project supervisor; it does not pause, wake, or release the
+author. Changed source generations cancel obsolete budget observations while
+retaining their workspaces. An uncertain push is resolved from current Git
+ancestry, never from the operation's stored `finished` state alone.
+
+Storage disposition: the approved fast-smooth-integration section 5 adds
+`integration_close_attempts` (migration `a00000000115`). It stores version-fenced
+proposal identity, retained candidate and validation evidence, and links the
+integration budget wait. It is not a delivery receipt or a second scheduler.
+The source completion continues through the existing accepted-close recovery
+protocol. This additive table and all close helpers remain charged to the
+integration ownership inventory; historical and final size/table caps are not
+raised by this feature.

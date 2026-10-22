@@ -60,6 +60,23 @@ def _with_reason(success: bool, payload: dict[str, Any]) -> dict[str, Any]:
 
 
 class IntegrationCommandsMixin:
+    async def _cmd_integration_continue_close(self, args: dict) -> dict:
+        """Resume only this author's saved close through all ordinary close guards."""
+        from src.integration.close_merge import CloseStore
+
+        op = await CloseStore(self.db).get(args["operation_id"])
+        principal = current_principal()
+        if (not op or principal.session_id != op["session_id"]
+                or principal.project_id != op["project_id"]):
+            return _failure("refused", "operation is not owned by this author session")
+        response = await self._cmd_task_close({
+            **op["close_args"], "task_id": op["task_id"], "session_id": op["session_id"],
+            "claim_epoch": op["claim_epoch"], "claim_next": False,
+        })
+        return {"success": response.get("success", False),
+                "outcome": "completed" if response.get("success") else "pending",
+                "operation_id": op["id"], "close": response}
+
     async def _cmd_integration_batch_fix(self, args: dict) -> dict:
         """Only the bound task-free fixer may inspect or publish its batch."""
         from src.integration.fixers import BatchFixerService

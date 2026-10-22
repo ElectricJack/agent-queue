@@ -336,7 +336,7 @@ async def register_wait(
         ceiling_anchor_at = await ceiling_anchor(conn, scope, now=now, policy=policy)
     ceiling_at = (
         ceiling_anchor_at + policy.in_place_ceiling_seconds
-        if decision.mode == "in_place" and cond.kind not in {"human", "resource"}
+        if decision.mode == "in_place" and cond.kind not in {"human", "resource", "close_merge"}
         else None
     )
     wait_id = str(uuid.uuid4())

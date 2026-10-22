@@ -4,9 +4,7 @@ from alembic import op
 from sqlalchemy.dialects.postgresql import JSONB
 
 revision = "a00000000116"
-# Parallel close-merge revision 115 is absent here. The assembled candidate
-# must rechain this revision after 115 once both source branches are present.
-down_revision = "a00000000114"
+down_revision = "a00000000115"
 branch_labels = None
 depends_on = None
 

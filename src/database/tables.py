@@ -5893,7 +5893,7 @@ wait_records = Table(
     ),
     CheckConstraint(
         "condition_kind IN ('task','dependency','job','ci_check','ci_run','pull_request',"
-        "'batch','message','human','timer','resource','playbook_condition')",
+        "'batch','message','human','timer','resource','playbook_condition','close_merge')",
         name="ck_wait_records_condition_kind",
     ),
     CheckConstraint(
@@ -7758,4 +7758,37 @@ wait_bridge_progress = Table(
                     name='ck_wait_bridge_progress_phase'),
     CheckConstraint("state IN ('pending','complete','held')",
                     name='ck_wait_bridge_progress_state'),
+)
+
+# A close proposal retains source/candidate identity, never asserts delivery.
+integration_close_attempts = Table(
+    "integration_close_attempts", metadata,
+    Column("id", Text, primary_key=True),
+    Column("project_id", Text, ForeignKey("projects.id"), nullable=False),
+    Column("task_id", Text, nullable=False),
+    Column("session_id", Text, nullable=False),
+    Column("claim_epoch", Integer, nullable=False),
+    Column("repository_id", Text, nullable=False),
+    Column("target_task_id", Text, nullable=False),
+    Column("target_ref", Text, nullable=False),
+    Column("source_oid", Text, nullable=False),
+    Column("base_oid", Text),
+    Column("candidate_oid", Text),
+    Column("candidate_path", Text),
+    Column("candidate_ref", Text, nullable=False),
+    Column("state", Text, nullable=False),
+    Column("version", Integer, nullable=False, server_default="0"),
+    Column("attempts", Integer, nullable=False, server_default="0"),
+    Column("policy_digest", Text),
+    Column("evidence", JSONB, nullable=False),
+    Column("close_args", JSONB, nullable=False),
+    Column("budget_wait_id", Text),
+    Column("last_failure", Text),
+    Column("created_at", Float, nullable=False),
+    Column("updated_at", Float, nullable=False),
+    UniqueConstraint("task_id", "session_id", "claim_epoch", "source_oid", "target_ref",
+                     name="uq_integration_close_generation"),
+    CheckConstraint("state IN ('preparing','needs_author','checking','publish_uncertain',"
+                    "'finished','deferred','cancelled')", name="ck_integration_close_state"),
+    CheckConstraint("version >= 0 AND attempts >= 0", name="ck_integration_close_counters"),
 )

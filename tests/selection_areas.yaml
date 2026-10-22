@@ -436,6 +436,7 @@ areas:
       - tests/test_integration_root_adapters.py
       - tests/test_integration_root_scenarios.py
       - tests/test_integration_train_regressions.py
+      - tests/test_integration_close_merge.py
       - tests/test_integration_gitops.py
       - tests/test_integration_git_truth.py
       - tests/test_integration_truth_reconciler.py
