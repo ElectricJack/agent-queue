@@ -115,6 +115,19 @@ Lifecycle-only status events do not reset the window. Missing Git evidence canno
 establish a loop. The loop event identifies the wait and registration history;
 checkpoint creates the actual continuation id and generation later.
 
+## Scheduler maintenance lock scope — 2026-10-22
+
+Scheduler sync discovers candidate owner identities without the graph lock, then
+reconciles each owner in a separate transaction. Fresh admission observations,
+wait receipts, deadline preservation, stale-row cleanup, initial age audit and
+priority retraction commit together for that owner. The graph fence is released
+between owners so slow per-item authorization cannot serialize an entire bridge
+or scheduler pass against unrelated wait mutations. New candidates are picked up
+on a later scan; cleanup always re-reads the current owner's rows under the fence.
+An interrupted pass resumes from committed receipts without renewing deadlines.
+The startup bridge retains its project and identity receipts and its local
+single-flight lock; it does not acquire a project-wide database fence.
+
 ## Transaction and graph ownership
 
 `WakeDispatcher.commit` runs inside the listener's READ COMMITTED transaction.

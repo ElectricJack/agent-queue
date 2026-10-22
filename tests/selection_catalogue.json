@@ -19600,7 +19600,7 @@
         "agent-waits"
       ],
       "default_arm": true,
-      "digest": "sha256:b6460a8d4756eeec50c482025cfc68b669833ff2325a3f29be58b3de16ef83be",
+      "digest": "sha256:ae0ebf101372b9b1fa4946f14b07b14824c26b1c8837944ba298c1e29d570b0e",
       "imports": [
         "src.commands.principal",
         "src.config",
@@ -19616,6 +19616,7 @@
         "src.wait_runtime.service",
         "src.waits.admission",
         "src.waits.conditions",
+        "src.waits.graph",
         "src.waits.occupancy",
         "src.waits.registry",
         "src.waits.reservations"
