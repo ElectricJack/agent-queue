@@ -68,6 +68,7 @@ DESIGN_INTEGRATION_COMMANDS = frozenset(
         "integration_pause_batch",
         "integration_resume_batch",
         "integration_repair_target",
+        "integration_rerequest_check",
         "integration_seal_now",
         "integration_retire_origin",
         "integration_refresh_epic",
@@ -210,6 +211,18 @@ class IntegrationRepairTargetArgs(IntegrationSettleBatchArgs):
     def require_preview_candidate(self):
         if not self.dry_run and not is_valid_git_oid(self.expected_candidate_sha or ""):
             raise ValueError("apply requires the previewed candidate SHA")
+        return self
+
+
+class IntegrationRerequestCheckArgs(IntegrationAbortBatchArgs):
+    check_name: str = Field(min_length=1)
+    expected_candidate_sha: str | None = None
+
+    @model_validator(mode="after")
+    def require_candidate(self):
+        if not self.dry_run and (not is_valid_git_oid(self.expected_candidate_sha or "")
+                                or not self.reason.strip()):
+            raise ValueError("apply requires the previewed candidate SHA and a nonblank reason")
         return self
 
 
@@ -2080,6 +2093,8 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
         ("integration_pause_batch", IntegrationAbortBatchArgs, "paused", IntegrationTrainControlValue),
         ("integration_resume_batch", IntegrationAbortBatchArgs, "resumed", IntegrationTrainControlValue),
         ("integration_repair_target", IntegrationRepairTargetArgs, "repairing", IntegrationRepairTargetValue),
+        ("integration_rerequest_check", IntegrationRerequestCheckArgs, "reconciled",
+         IntegrationRepairTargetValue),
         ("integration_seal_now", IntegrationSealNowArgs, "sealed", IntegrationTrainControlValue),
         ("integration_retire_origin", IntegrationRetireOriginArgs, "retired", IntegrationTrainControlValue),
         ("integration_refresh_epic", IntegrationRefreshEpicArgs, "refreshed", IntegrationRefreshEpicValue),

@@ -113,7 +113,7 @@ authenticated by the broker.
 
 For App mode, install the App on the repositories AQ will use, make its private
 key readable only by the daemon OS user, and set the existing configuration
-fields (there is no new setting or database migration):
+fields:
 
 ~~~yaml
 integration:
@@ -123,6 +123,15 @@ integration:
     installation_id: 67890
     private_key_path: /home/aq/.agent-queue/github-app.pem
 ~~~
+
+`integration.github_app.actions_permission` defaults to `read`. To enable the
+train's bounded rerun of a stuck Actions job, an operator must grant Actions
+**read and write** to the App, approve that permission for the installation,
+then set `actions_permission: write` in this block and restart the daemon.
+AQ requests and strictly validates that configured level; it never upgrades a
+read configuration automatically. A denied rerun stays pending, records
+`permission_blocked` with remediation, and consumes its one request bound.
+Other App permissions and repository selection remain unchanged.
 
 Replace the example IDs and key path with your installation's values; keep
 secrets out of the YAML and version control. App mode supports AQ operations
@@ -134,7 +143,7 @@ flow can validate an explicit URL but still refuses an App-backed clone; see
 
 The daemon constructs its GitHub credential provider from the effective
 configuration at startup. Changing the mode, App identity, installation or
-private-key reference requires a **daemon restart**; `aq system reload-config`
+private-key reference or Actions permission requires a **daemon restart**; `aq system reload-config`
 does not switch live requests to the new credentials. Ordinary installation
 token refresh happens in memory without a restart. GitHub health reports CLI
 availability and credential mode separately from access to a specific

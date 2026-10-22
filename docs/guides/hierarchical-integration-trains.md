@@ -622,6 +622,24 @@ source-CI observation path so the two agree.
 
 ## Delivery evidence
 
+The train automatically re-runs a required Actions job once if its check stays
+`in_progress` for five minutes after its workflow or all job steps completed.
+The check remains pending until fresh authenticated evidence concludes it.
+Integration status includes durable `check_reconciliation` evidence with the
+exact SHA, job, workflow attempt, actor and request outcome. A reserved request
+after interruption, or an unavailable request, consumes the same one-shot bound.
+
+The owning supervisor can preview and apply the same bounded recovery:
+
+```bash
+aq integration rerequest-check BATCH_ID --check 'Tests (postgres-integration)'
+aq integration rerequest-check BATCH_ID --check 'Tests (postgres-integration)' --apply --candidate-sha PREVIEW_SHA --reason 'Reconcile completed workflow with unfinished check'
+```
+
+This uses GitHub's [job rerun endpoint](https://docs.github.com/en/rest/actions/workflow-runs#re-run-a-job-from-a-workflow-run),
+which requires Actions write permission. A failed or ambiguous request is retained
+for supervisor attention; it never makes the check green or files a code repair.
+
 `task show` and the dashboard report delivery from receipts and observed Git
 history. A worker close, queued request or historical journal entry alone does
 not prove that the task's exact revision reached the default branch. Pending

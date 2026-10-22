@@ -269,6 +269,24 @@ def integration_repair_target(ctx, batch_id, expected_candidate_sha, expected_ta
     })
 
 
+@integration.command("rerequest-check")
+@click.argument("batch_id")
+@click.option("--check", "check_name", required=True, help="Exact required check name.")
+@click.option("--candidate-sha", "expected_candidate_sha", help="Candidate SHA from preview.")
+@click.option("--reason", default="", help="Required explanation when applying.")
+@click.option("--apply", is_flag=True, help="Request one bounded job rerun; default is preview.")
+@click.pass_context
+@_handle_errors
+def integration_rerequest_check(ctx, batch_id, check_name, expected_candidate_sha, reason, apply):
+    """Recover a required check stuck in progress after its workflow or steps finished."""
+    if apply and (not expected_candidate_sha or not reason.strip()):
+        raise click.UsageError("--apply requires --candidate-sha and --reason")
+    _execute(ctx, "integration_rerequest_check", {
+        "batch_id": batch_id, "check_name": check_name,
+        "expected_candidate_sha": expected_candidate_sha, "reason": reason, "dry_run": not apply,
+    })
+
+
 @integration.command("settle-batch")
 @click.argument("batch_id")
 @click.option("--target-sha", "expected_target_sha", help="Exact target SHA returned by preview.")

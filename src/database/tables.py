@@ -4602,6 +4602,8 @@ integration_check_evidence = Table(
     Column("check_name", Text, nullable=True),
     Column("run_url", Text, nullable=True),
     Column("due_at", Float, nullable=True),
+    # Independent of refreshable verdicts: one durable CI-owner request per exact check.
+    Column("check_reconciliation", JSONB, nullable=True),
     Index(
         "uq_integration_check_evidence_producer_run_attempt_checks",
         "producer_id",

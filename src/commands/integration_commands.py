@@ -59,6 +59,17 @@ def _with_reason(success: bool, payload: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+def _train_control(method, model_name, **options):
+    """Bind a fixed control and schema without importing train services at CLI startup."""
+    async def handle(self, args):
+        from src.commands.contracts import integration as schemas
+
+        return await self._integration_train_control(
+            method, getattr(schemas, model_name).model_validate(args), **options,
+        )
+    return handle
+
+
 class IntegrationCommandsMixin:
     async def _cmd_integration_delegate_publication(self, args: dict) -> dict:
         from src.commands.contracts.integration import IntegrationDelegatePublicationArgs
@@ -320,73 +331,55 @@ class IntegrationCommandsMixin:
             return _failure("refused", str(exc))
         return {"success": True, **result}
 
-    async def _cmd_integration_record_root_noop(self, args: dict) -> dict:
-        from src.commands.contracts.integration import IntegrationRecordRootNoopArgs
-        from src.integration.train_controls import TrainControls
+    _cmd_integration_record_root_noop = _train_control(
+        "record_root_noop", "IntegrationRecordRootNoopArgs",
+        errors=(ValueError, GitError, HierarchyError, BranchBusy, TimeoutError),
+    )
 
-        request = IntegrationRecordRootNoopArgs.model_validate(args)
-        task = await self.db.get_task(request.task_id)
-        operator, refusal = await integration_operator(self.db, task.project_id if task else None)
-        if refusal:
-            return _failure("unauthorized", refusal)
-        try:
-            result = await TrainControls(self.db).record_root_noop(
-                request.task_id, dry_run=request.dry_run,
-                expected_head_sha=request.expected_head_sha, operator_id=operator,
-                reason=request.reason, expected_project_id=task.project_id if task else None,
-            )
-        except (ValueError, GitError, HierarchyError, BranchBusy, TimeoutError) as exc:
-            return _failure("refused", str(exc))
-        return {"success": True, **result}
+    _cmd_integration_pause_batch = _train_control(
+        "set_batch_intent", "IntegrationAbortBatchArgs", intent="paused",
+    )
+    _cmd_integration_resume_batch = _train_control(
+        "set_batch_intent", "IntegrationAbortBatchArgs", intent="open",
+    )
 
+    _cmd_integration_repair_target = _train_control(
+        "repair_target", "IntegrationRepairTargetArgs",
+        errors=(ValueError, GitError, OSError, BranchBusy, TimeoutError),
+    )
 
-    async def _cmd_integration_pause_batch(self, args: dict) -> dict:
-        return await self._integration_batch_intent(args, "paused")
+    _cmd_integration_rerequest_check = _train_control(
+        "rerequest_check", "IntegrationRerequestCheckArgs",
+        errors=(ValueError, GitError, OSError, BranchBusy, TimeoutError),
+    )
 
-    async def _cmd_integration_resume_batch(self, args: dict) -> dict:
-        return await self._integration_batch_intent(args, "open")
-
-    async def _cmd_integration_repair_target(self, args: dict) -> dict:
-        from src.commands.contracts.integration import IntegrationRepairTargetArgs
+    async def _integration_train_control(self, method, request, *, preserve_outcome=False,
+                                         errors=(ValueError, GitError, OSError), **options):
+        """Shared authority boundary; methods and validated models come from explicit handlers."""
         from src.integration.batches import BatchStore
         from src.integration.train_controls import TrainControls
 
-        request = IntegrationRepairTargetArgs.model_validate(args)
-        batch = await BatchStore(self.db).get(request.batch_id)
-        operator, refusal = await integration_operator(self.db, batch.project_id if batch else None)
+        batch_id = getattr(request, "batch_id", None)
+        subject = (await BatchStore(self.db).get(batch_id) if batch_id
+                   else await self.db.get_task(request.task_id))
+        project_id = subject.project_id if subject else None
+        operator, refusal = await integration_operator(self.db, project_id)
         if refusal:
             return _failure("unauthorized", refusal)
+        if method in {"record_root_noop", "reverify_epic"}:
+            options["expected_project_id"] = project_id
+        if method == "release_withheld_source":
+            options["human_authority"] = operator.startswith(("human:", "operator session:"))
+        controls = TrainControls(self.db, train=getattr(
+            getattr(self, "orchestrator", None), "integration_train", None))
         try:
-            result = await TrainControls(self.db, train=getattr(
-                self.orchestrator, "integration_train", None,
-            )).repair_target(
-                request.batch_id, dry_run=request.dry_run,
-                expected_candidate_sha=request.expected_candidate_sha,
-                expected_target_sha=request.expected_target_sha,
-                operator_id=operator, reason=request.reason,
+            result = await getattr(controls, method)(
+                **request.model_dump(), operator_id=operator, **options,
             )
-        except (ValueError, GitError, OSError, BranchBusy, TimeoutError) as exc:
-            return _failure("refused", str(exc))
-        return {"success": True, **result}
-
-    async def _integration_batch_intent(self, args, intent):
-        from src.commands.contracts.integration import IntegrationAbortBatchArgs
-        from src.integration.batches import BatchStore
-        from src.integration.train_controls import TrainControls
-
-        request = IntegrationAbortBatchArgs.model_validate(args)
-        batch = await BatchStore(self.db).get(request.batch_id)
-        operator, refusal = await integration_operator(self.db, batch.project_id if batch else None)
-        if refusal:
-            return _failure("unauthorized", refusal)
-        try:
-            result = await TrainControls(self.db).set_batch_intent(
-                request.batch_id, intent, dry_run=request.dry_run,
-                operator_id=operator, reason=request.reason,
-            )
-        except (ValueError, GitError, OSError) as exc:
-            return _failure("refused", str(exc))
-        return {"success": True, **result}
+        except errors as exc:
+            return _failure(getattr(exc, "outcome", "refused") if preserve_outcome else "refused",
+                            str(exc))
+        return {"success": result.get("outcome") != "changed", **result}
 
     async def _cmd_integration_seal_now(self, args: dict) -> dict:
         from src.commands.contracts.integration import IntegrationSealNowArgs
@@ -404,43 +397,9 @@ class IntegrationCommandsMixin:
             return _failure("refused", str(exc))
         return {"success": True, **result}
 
-    async def _cmd_integration_refresh_epic(self, args: dict) -> dict:
-        """Preview or refresh an epic from the default branch through the train."""
-        from src.commands.contracts.integration import IntegrationRefreshEpicArgs
-        from src.integration.train_controls import TrainControls
+    _cmd_integration_refresh_epic = _train_control("refresh_epic", "IntegrationRefreshEpicArgs")
 
-        request = IntegrationRefreshEpicArgs.model_validate(args)
-        task = await self.db.get_task(request.task_id)
-        operator, refusal = await integration_operator(self.db, task.project_id if task else None)
-        if refusal:
-            return _failure("unauthorized", refusal)
-        try:
-            result = await TrainControls(self.db, train=getattr(
-                self.orchestrator, "integration_train", None)).refresh_epic(
-                request.task_id, dry_run=request.dry_run, operator_id=operator)
-        except (ValueError, GitError, OSError) as exc:
-            return _failure("refused", str(exc))
-        return {"success": True, **result}
-
-    async def _cmd_integration_reverify_epic(self, args: dict) -> dict:
-        """Request ordinary aggregate verification without reopening a completed epic."""
-        from src.commands.contracts.integration import IntegrationReverifyEpicArgs
-        from src.integration.train_controls import TrainControls
-
-        request = IntegrationReverifyEpicArgs.model_validate(args)
-        task = await self.db.get_task(request.task_id)
-        operator, refusal = await integration_operator(self.db, task.project_id if task else None)
-        if refusal:
-            return _failure("unauthorized", refusal)
-        try:
-            result = await TrainControls(self.db, train=getattr(
-                self.orchestrator, "integration_train", None)).reverify_epic(
-                    request.task_id, dry_run=request.dry_run, operator_id=operator,
-                    expected_head_sha=request.expected_head_sha, reason=request.reason,
-                    expected_project_id=task.project_id if task else None)
-        except (ValueError, GitError, OSError) as exc:
-            return _failure("refused", str(exc))
-        return {"success": result["outcome"] != "changed", **result}
+    _cmd_integration_reverify_epic = _train_control("reverify_epic", "IntegrationReverifyEpicArgs")
 
     async def _cmd_integration_promotion_publish(self, args: dict) -> dict:
         """Mechanism entry for one admitted promotion; no worker can publish a target."""
@@ -488,98 +447,17 @@ class IntegrationCommandsMixin:
                 "source_sha": observation.candidate_sha, "target_sha": observation.target_sha,
                 "detail": observation.detail}
 
-    async def _cmd_integration_settle_batch(self, args: dict) -> dict:
-        """Preview or settle an ordinary batch already proven on its target."""
-        from src.commands.contracts.integration import IntegrationSettleBatchArgs
-        from src.integration.batches import BatchStore
-        from src.integration.train_controls import TrainControlError, TrainControls
+    _cmd_integration_settle_batch = _train_control(
+        "settle_batch", "IntegrationSettleBatchArgs", preserve_outcome=True,
+    )
 
-        request = IntegrationSettleBatchArgs.model_validate(args)
-        batch = await BatchStore(self.db).get(request.batch_id)
-        operator, refusal = await integration_operator(self.db, batch.project_id if batch else None)
-        if refusal:
-            return _failure("unauthorized", refusal)
-        try:
-            result = await TrainControls(self.db, train=getattr(
-                self.orchestrator, "integration_train", None,
-            )).settle_batch(request.batch_id, dry_run=request.dry_run,
-                expected_target_sha=request.expected_target_sha, operator_id=operator,
-                reason=request.reason)
-        except TrainControlError as exc:
-            return _failure(exc.outcome, str(exc))
-        except (ValueError, GitError, OSError) as exc:
-            return _failure("refused", str(exc))
-        return {"success": True, **result}
+    _cmd_integration_release_withheld_source = _train_control(
+        "release_withheld_source", "IntegrationReleaseWithheldSourceArgs", preserve_outcome=True,
+    )
 
-    async def _cmd_integration_release_withheld_source(self, args: dict) -> dict:
-        """Preview or release one exact source an aborted batch withholds.
+    _cmd_integration_abort_batch = _train_control("abort_batch", "IntegrationAbortBatchArgs")
 
-        The owning supervisor or a local operator may apply. Operator workers
-        still need a grant bound to an exact human decision.
-        """
-        from src.commands.contracts.integration import IntegrationReleaseWithheldSourceArgs
-        from src.integration.batches import BatchStore
-        from src.integration.train_controls import TrainControlError, TrainControls
-
-        request = IntegrationReleaseWithheldSourceArgs.model_validate(args)
-        batch = await BatchStore(self.db).get(request.batch_id)
-        operator, refusal = await integration_operator(self.db, batch.project_id if batch else None)
-        if refusal:
-            return _failure("unauthorized", refusal)
-        try:
-            result = await TrainControls(self.db, train=getattr(
-                self.orchestrator, "integration_train", None,
-            )).release_withheld_source(
-                request.batch_id, request.task_id, dry_run=request.dry_run,
-                expected_source_sha=request.expected_source_sha,
-                expected_target_sha=request.expected_target_sha, operator_id=operator,
-                reason=request.reason,
-                human_authority=operator.startswith(("human:", "operator session:")),
-            )
-        except TrainControlError as exc:
-            return _failure(exc.outcome, str(exc))
-        except (ValueError, GitError, OSError) as exc:
-            return _failure("refused", str(exc))
-        return {"success": True, **result}
-
-    async def _cmd_integration_abort_batch(self, args: dict) -> dict:
-        """Preview or abort an unpromoted Git-first batch."""
-        from src.commands.contracts.integration import IntegrationAbortBatchArgs
-        from src.integration.batches import BatchStore
-        from src.integration.train_controls import TrainControls
-
-        request = IntegrationAbortBatchArgs.model_validate(args)
-        batch = await BatchStore(self.db).get(request.batch_id)
-        operator, refusal = await integration_operator(self.db, batch.project_id if batch else None)
-        if refusal:
-            return _failure("unauthorized", refusal)
-        try:
-            result = await TrainControls(self.db).abort_batch(
-                request.batch_id, dry_run=request.dry_run, operator_id=operator,
-                reason=request.reason,
-            )
-        except (ValueError, GitError, OSError) as exc:
-            return _failure("refused", str(exc))
-        return {"success": True, **result}
-
-    async def _cmd_integration_retire_origin(self, args: dict) -> dict:
-        """Retire only the previewed origin of a proven delivered completion."""
-        from src.commands.contracts.integration import IntegrationRetireOriginArgs
-        from src.integration.train_controls import TrainControls
-
-        request = IntegrationRetireOriginArgs.model_validate(args)
-        task = await self.db.get_task(request.task_id)
-        operator, refusal = await integration_operator(self.db, task.project_id if task else None)
-        if refusal:
-            return _failure("unauthorized", refusal)
-        try:
-            result = await TrainControls(self.db).retire_origin(
-                request.task_id, dry_run=request.dry_run, origin_id=request.origin_id,
-                operator_id=operator, reason=request.reason,
-            )
-        except (ValueError, GitError, OSError) as exc:
-            return _failure("refused", str(exc))
-        return {"success": True, **result}
+    _cmd_integration_retire_origin = _train_control("retire_origin", "IntegrationRetireOriginArgs")
 
     async def _cmd_integration_release_held_gate(self, args: dict) -> dict:
         """A human may lift a hold without changing its immutable gate answer."""

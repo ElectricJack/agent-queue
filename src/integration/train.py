@@ -1,31 +1,15 @@
-"""The reduced integration train: level-triggered visits over Git, checks and intent.
+"""Level-triggered Git-first visits over fetched Git, exact-head checks and durable intent.
 
-Under ``integration.git_first: active`` one :class:`IntegrationTrain` takes the
-place of the retired root, parent and development subject runtimes. Every
-visit derives progress from one fetched Git snapshot, the cached
-checks of the exact candidate commit and the batch's durable intent, so a
-restart or a missed notification is repaired by the next visit. There is no
-journal, generation or receipt to replay.
+Each target has one task. Ticks bound repository concurrency and admit the least
+recently started idle targets; checks refresh outside locks before the batch gate.
+Restarts and missed notifications recover on the next visit without journal replay.
 
-Each admitted target (project, repository, target ref) has its own task. A
-tick bounds repository concurrency and admits the least recently started idle
-targets without awaiting running visits. Checks are refreshed outside every
-lock; the batch gate reads only the cached verdict.
-
-A red candidate is refreshed before a repair is allocated: a green observation
-ends the repair with no attempt counted. A red candidate is then measured against
-the target commit it was built on. An open batch sealing its own epic subtree
-can repair proven inherited failures on its candidate; otherwise only failures
-the target does not also fail reach repair. An epic with pre-existing failures can
-receive one default-branch sync repair when that exact branch has trusted green
-checks and train-produced or attested provenance. An ordinary root can admit
-green pending baseline fixes through an atomic replacement batch. Otherwise
-the candidate's own suites are re-requested under bounded backoff, and the
-bound ends at a named blocker instead of an endless repair chain. The allocator
-counts attempts when it files, never per visit. A merge conflict files one
-ordinary repair whose brief names the conflicting member and every member still to
-be merged, because a repaired head that lacks one of them lets the target advance
-without it.
+Red candidates refresh before allocating repair. The target baseline distinguishes
+inherited failures from new ones. Eligible epic batches may repair inherited failures,
+sync proven default-branch fixes or atomically replace the batch with pending fixes.
+Otherwise suite re-requests use bounded backoff and end at a named blocker.
+Repair attempts count allocations, not visits. Merge-conflict briefs retain every
+frozen member so a partial merge can never authorize target publication.
 """
 
 from __future__ import annotations
@@ -510,8 +494,7 @@ class IntegrationTrain:
         """Bound each repository's visits; give new and longest-waiting targets a turn."""
         now = self.clock() if now is None else now
         if self._tick_lock.locked():
-            return {"started": [], "running": [], "skipped": ["tick_in_progress"],
-                    "deferred": []}
+            return {'started': [], 'running': [], 'skipped': ['tick_in_progress'], 'deferred': []}
         async with self._tick_lock:
             started, running, deferred = [], [], []
             targets = [target] if target is not None else await self.targets.targets(now)
@@ -544,8 +527,7 @@ class IntegrationTrain:
                     self._bounded(target, lane), name=f"integration-train:{label}"
                 )
                 started.append(label)
-            return {"started": started, "running": running, "skipped": [],
-                    "deferred": deferred}
+            return {'started': started, 'running': running, 'skipped': [], 'deferred': deferred}
 
     async def request_visit(self, target: TrainTarget) -> TrainVisit | None:
         """Request a bounded visit through the same admission as the daemon tick."""
@@ -786,9 +768,7 @@ class IntegrationTrain:
             if blockers and visit.state == "idle":
                 visit = replace(visit, state="blocked")
         if blockers:
-            visit = replace(visit, detail={
-                **(visit.detail or {}), "blockers": list(blockers),
-            })
+            visit = replace(visit, detail={**(visit.detail or {}), 'blockers': list(blockers)})
         return visit
 
     async def _visit_batch(
@@ -859,6 +839,17 @@ class IntegrationTrain:
             return await self._red(
                 target, lane, batch, members, observation, result, head, checks, snapshot
             )
+        if hasattr(checks, "reconcile_stuck"):
+            async def authorize_rerun():
+                return await lane.service.repair_authorized(
+                    batch, members, observation.candidate_sha,
+                )
+
+            reconciliation = await checks.reconcile_stuck(batch, head, authorize=authorize_rerun)
+            if reconciliation:
+                observation = replace(observation, detail={
+                    **(observation.detail or {}), "check_reconciliation": reconciliation,
+                })
         missing_push = [check for check in getattr(result, "checks", ())
                         if check.classification == "ci_not_triggered"]
         if missing_push:

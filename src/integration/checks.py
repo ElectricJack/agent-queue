@@ -1,15 +1,5 @@
-"""Exact-commit required checks: one refreshable cache per commit.
-
-A row in ``integration_check_evidence`` with ``sha`` set caches the latest
-attempt of one required check, on one exact commit, from one trusted
-producer.  A refresh overwrites it, so a rerun, a pending attempt or an
-unavailable provider replaces an older success instead of inheriting it.
-Providers are the existing ``HostedCIProducer`` and ``LocalCIProducer``;
-this module only reshapes what they observe into per-check rows.
-
-Refreshing observes the provider before opening any connection and writes in
-one short transaction afterwards, so a slow provider never holds a ref lock.
-"""
+"""Exact-head check cache. Refreshes replace earlier verdicts, including green,
+with the latest trusted attempt. Provider I/O precedes the short write transaction."""
 
 from __future__ import annotations
 
@@ -46,12 +36,7 @@ LOCAL_CHECKS_PRODUCER_ID = "local-jobs"
 def local_checks_producer_id(*, scope: str, names: tuple[str, ...], version: str,
                              commands: tuple[str, ...], queue_seconds: float,
                              run_seconds: float) -> str:
-    """Stable cache identity for one boundary's named command plan.
-
-    Attempts and refs change without invalidating a published head's evidence;
-    commands, check versions and execution bounds do invalidate it. Different
-    boundaries never overwrite each other's rows on the same commit.
-    """
+    """Bind the cache to a boundary, command plan, check version and execution bounds."""
     return LOCAL_CHECKS_PRODUCER_ID + ":" + digest({
         "scope": scope, "names": names, "version": version, "commands": commands,
         "queue_seconds": float(queue_seconds), "run_seconds": float(run_seconds),
@@ -146,11 +131,7 @@ class ChecksResult(BaseModel):
 def evaluate(
     required: RequiredChecks, head: HeadIdentity, rows: Iterable[CommitCheck], *, now: float
 ) -> ChecksResult:
-    """Pure verdict: green only when every required check succeeded on this exact head.
-
-    Rows for another repository, SHA, producer or check version are ignored,
-    so they can neither satisfy nor fail the required set.
-    """
+    """Require every named check to succeed on this repository, head, producer and version."""
     by_name = {
         row.name: row
         for row in rows
@@ -239,12 +220,7 @@ _HOSTED_CONCLUSIONS = {
 
 
 class HostedChecks:
-    """Per-check rows from the authenticated ``HostedCIProducer`` observation.
-
-    Pushing the candidate ref under ``aq/integration/**`` (or a git-first
-    batch candidate under ``aq/batches/**``) is expected to trigger the workflows,
-    so there is nothing to dispatch. ExactChecks bounds an absent push run.
-    """
+    """Authenticated hosted checks, triggered by candidate pushes; absent runs have a grace bound."""
 
     compares_targets = True
 
@@ -265,15 +241,7 @@ class HostedChecks:
         return ProducerRequest(outcome="already_running", reason="candidate_push_triggers_checks")
 
     async def rerequest(self, head: HeadIdentity, suites: tuple[int, ...]) -> tuple[int, ...]:
-        """Re-run this head's own check suites; never raise.
-
-        A re-run is what a candidate whose failures are not its own needs: the
-        head has not moved, so only a suite re-request produces new evidence.
-        Every suite id here was read from this repository's own cached rows for
-        this exact commit, so a re-request cannot reach another repository, commit
-        or check. An outage is the expected failure, not a defect: the caller is
-        bounded and ends at a named blocker instead of asking forever.
-        """
+        """Rerun cached suites of this exact head. Outages leave suites unaddressed for the bounded caller."""
         addressed = []
         for suite in suites:
             try:
@@ -348,13 +316,7 @@ _LOCAL_CONCLUSIONS = {
 
 
 class LocalChecks:
-    """Per-command rows from the detached-snapshot ``LocalCIProducer`` jobs.
-
-    The required check names label the plan's commands; every job is keyed by the
-    exact head and plan, and its result must name the same snapshot SHA. A
-    development target's own validation jobs are never requested, so there is no
-    target baseline to compare against and nothing to re-run for an unmoved head.
-    """
+    """Named detached-snapshot jobs keyed by exact head and plan. Targets have no local baseline."""
 
     compares_targets = False
 
@@ -363,13 +325,7 @@ class LocalChecks:
         names: tuple[str, ...] | None = None, version: str | None = None,
         scope: str = "development",
     ) -> None:
-        """*names* label the plan's commands, one per command, in order.
-
-        A policy-selected local runner passes the boundary's required check
-        names and version, so its rows are the same named checks a hosted
-        runner would report. A development source names each check after its
-        command, under the pinned artifact's version.
-        """
+        """Label each plan command with its boundary check name and version."""
         self.producer, self.project_id = producer, project_id
         plan = producer.plan
         if names is not None and len(names) != len(plan.commands):
@@ -421,6 +377,9 @@ class LocalChecks:
             )
         return tuple(rows)
 
+
+# Model fields shared verbatim with the cache; the other three are renamed/packed.
+_CACHE_FIELDS = tuple(k for k in CommitCheck.model_fields if k not in {"name", "reason", "detail"})
 
 _KEY = ("repository_id", "sha", "check_name", "producer_id")
 
@@ -482,12 +441,7 @@ class ExactChecks:
         return await self.provider.request(head)
 
     async def rerequest(self, head: HeadIdentity, names: Sequence[str]) -> tuple[int, ...]:
-        """Re-run the named required checks of this exact head, outside every lock.
-
-        Only rows this cache already holds for ``head`` name the suites, so the
-        re-request cannot reach another commit, repository or check, and it
-        returns what it actually addressed rather than what it intended.
-        """
+        """Rerun the cached suites of named checks on this exact head, outside every lock."""
         wanted = set(names)
         rows = (await self.read(head)).checks
         suites = sorted({
@@ -499,11 +453,7 @@ class ExactChecks:
         return await self.provider.rerequest(head, tuple(suites))
 
     async def refresh(self, head: HeadIdentity) -> ChecksResult:
-        """Observe the provider, overwrite each check's row, and return the verdict.
-
-        The observation starts before the write, so a refresh that began
-        later always wins over an older one that finishes after it.
-        """
+        """Observe before writing; a refresh started later always replaces an older observation."""
         now = self.clock()
         previous = (
             {check.name: check for check in (await self.read(head)).checks}
@@ -542,23 +492,20 @@ class ExactChecks:
                         )
         return await self.read(head)
 
-    async def refresh_if_due(self, head: HeadIdentity) -> ChecksResult:
-        """Reuse unfinished evidence until due; final checks get a fresh observation.
+    async def reconcile_stuck(self, batch, head, **kwargs):
+        from src.integration.check_reconciliation import CheckReconciliation
 
-        Explicit refresh remains available for reruns and publication proofs.
-        Final PR checks must be refreshed to detect reruns on an unchanged head.
-        """
+        return await CheckReconciliation(self.db, clock=self.clock).run(batch, head, self, **kwargs)
+
+    async def refresh_if_due(self, head: HeadIdentity) -> ChecksResult:
+        """Reuse unfinished evidence until due; refresh final verdicts to detect unchanged-head reruns."""
         cached = await self.read(head)
         if cached.due_at is not None and self.clock() < cached.due_at:
             return cached
         return await self.refresh(head)
 
     async def _bound_missing_push(self, head, observed, previous, now):
-        """Retain the grace period in the exact-head cache across visits/restarts.
-
-        Missing runs are infrastructure, never conclusive failed checks. A
-        later real push run replaces this diagnostic through the normal refresh.
-        """
+        """Persist missing-run grace across restarts; only a real push run replaces this diagnostic."""
         rows, diagnostic = [], None
         for check in observed:
             old = previous.get(check.name)
@@ -602,12 +549,7 @@ class ExactChecks:
 
 
 class RequestedChecks(ExactChecks):
-    """Request before every refresh, for a consumer that only refreshes.
-
-    The root PR gate refreshes a member head's checks and never requests them:
-    a hosted head's push requests its own. A local head's jobs exist only once
-    requested, and its sequential plan advances one request at a time.
-    """
+    """Request before refreshing so local sequential plans advance for consumers that only refresh."""
 
     async def refresh(self, head: HeadIdentity) -> ChecksResult:
         await self.request(head)
@@ -615,12 +557,7 @@ class RequestedChecks(ExactChecks):
 
 
 class HybridChecks:
-    """Require both local and hosted exact-head evidence without merging caches.
-
-    The projected trust binds both producers. For each name the
-    worse verdict wins, so neither green runner masks the other's failure or
-    absence. Hosted workflow failures without a failed job still block.
-    """
+    """Keep separate local/hosted caches; require both so neither masks the other's failure or absence."""
 
     compares_targets = False
 
@@ -643,6 +580,10 @@ class HybridChecks:
 
     async def rerequest(self, head: HeadIdentity, names: Sequence[str]) -> tuple[int, ...]:
         return await self.hosted.rerequest(head, names) if self.hosted is not None else ()
+
+    async def reconcile_stuck(self, batch, head, **kwargs):
+        return (await self.hosted.reconcile_stuck(batch, head, **kwargs)
+                if self.hosted is not None else [])
 
     async def refresh(self, head: HeadIdentity) -> ChecksResult:
         await self.local.refresh(head)
@@ -669,26 +610,10 @@ class HybridChecks:
 
 def _upsert(check: CommitCheck):
     table = integration_check_evidence
-    values = {
-        # Concurrent first observations must conflict only on the cache key:
-        # a second deterministic unique key can fail outside that upsert's arbiter.
-        # Updates retain the existing row ID, including older deterministic IDs.
-        "id": "check:" + uuid.uuid4().hex,
-        "repository_id": check.repository_id,
-        "sha": check.sha,
-        "check_name": check.name,
-        "producer_id": check.producer_id,
-        "required_check_version": check.required_check_version,
-        "workflow_id": check.workflow_id,
-        "run_id": check.run_id,
-        "attempt": check.attempt,
-        "run_url": check.run_url,
-        "conclusion": check.conclusion.value,
-        "classification": check.classification,
-        "checks": {"reason": check.reason, **check.detail},
-        "observed_at": check.observed_at,
-        "due_at": check.due_at,
-    }
+    # Refresh preserves the row ID and the independent recovery reservation.
+    values = {key: getattr(check, key) for key in _CACHE_FIELDS}
+    values.update(id="check:" + uuid.uuid4().hex, check_name=check.name,
+                  checks={"reason": check.reason, **check.detail})
     statement = insert(table).values(**values)
     excluded = statement.excluded
     return statement.on_conflict_do_update(
@@ -713,23 +638,9 @@ def _upsert(check: CommitCheck):
 def _from_row(row: Any) -> CommitCheck:
     detail = dict(row["checks"] or {})
     reason = detail.pop("reason", None)
-    return CommitCheck(
-        repository_id=row["repository_id"],
-        sha=row["sha"],
-        name=row["check_name"],
-        producer_id=row["producer_id"],
-        required_check_version=row["required_check_version"],
-        conclusion=Conclusion(row["conclusion"]),
-        classification=row["classification"],
-        run_id=row["run_id"],
-        workflow_id=row["workflow_id"],
-        attempt=row["attempt"],
-        run_url=row["run_url"],
-        reason=reason,
-        detail=detail,
-        observed_at=row["observed_at"],
-        due_at=row["due_at"],
-    )
+    return CommitCheck(**{key: row[key] for key in _CACHE_FIELDS},
+                       name=row["check_name"], reason=reason, detail=detail)
+
 
 
 __all__ = [
