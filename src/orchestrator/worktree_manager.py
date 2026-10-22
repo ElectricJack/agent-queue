@@ -501,16 +501,13 @@ class WorktreeSlotManager:
         await self._run_setup(target, kind.worktree_setup)
         return setup_hash
 
-    async def reprovision_slot(
-        self, slot_ws: Workspace, kind: WorkspaceKind, *, prune: bool = True,
-    ) -> None:
+    async def reprovision_slot(self, slot_ws: Workspace, kind: WorkspaceKind, *, prune=True):
         """Re-create a slot's missing worktree in place, keeping its row id.
 
         The slot reconciler's repair for a disabled slot whose directory is
         gone (``src.orchestrator.slot_restore``).  The row, its index and its
         id survive, so nothing that references the workspace goes stale; the
-        caller re-enables the row once this returns. Continuation setup passes
-        ``prune=False`` to preserve its staged worktree registrations.
+        caller re-enables the row once this returns.
         """
         base_ws = await self._base_of(slot_ws)
         if base_ws is None:

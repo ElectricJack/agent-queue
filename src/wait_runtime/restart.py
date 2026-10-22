@@ -7,16 +7,19 @@ Git effects are idempotent detaches; failed proofs retain database ownership.
 
 import asyncio
 import time
+from contextlib import nullcontext
 from dataclasses import replace
 from pathlib import Path
 
 from sqlalchemy import or_, select, update
 
+from src.database.queries.claim_queries import retire_owner_attachments
 from src.database.queries.continuation_queries import retire_task_waits
 from src.database.queries.job_queries import unpinned_workspace
-from src.database.tables import agents, continuations, integration_branch_owners, sessions, tasks
-from src.database.tables import wait_records, workspaces
-from src.orchestrator.workspace_attachments import detach_slot_for_integration_handoff
+from src.database.tables import agents, continuations, sessions, tasks, wait_records, workspaces
+from src.git.manager import GitError
+from src.models import SUSPENDED_TASK_STATUSES, TaskStatus
+from src.orchestrator.workspace_attachments import detach_task_slot
 from src.orchestrator.worktree_manager import slot_path
 from src.sessions.provider import SessionHandle
 from src.waits.conditions import WaitError
@@ -24,7 +27,34 @@ from src.waits.graph import lock_graph
 from src.waits.sources import execute_workspace_release
 
 
-async def release_restart_continuations(handler, task):
+def restart_lock(handler, task_id):
+    """Resume's task-control lock, held through cleanup and readmission."""
+    orch = getattr(handler, 'orchestrator', None)
+    return orch._task_control_lock(task_id) if orch is not None else nullcontext()
+
+
+async def readmit(handler, task, released):
+    """Return *task* to READY; after a release, only from the generation released."""
+    if not released:
+        await handler.db.transition_task(task.id, TaskStatus.READY, context='restart_task',
+                                         retry_count=0, assigned_agent_id=None)
+        return True
+    return await handler.db.transition_task_with_meta(
+        task.id, TaskStatus.READY, meta={}, context='restart_task',
+        from_statuses=(task.status,), extra_where=tasks.c.claim_epoch == task.claim_epoch,
+        force=task.status in SUSPENDED_TASK_STATUSES, retry_count=0, assigned_agent_id=None,
+    )
+
+
+async def release_continuations(handler, task):
+    """Release *task*'s stopped continuations; True when this restart must fence."""
+    try:
+        return await _release(handler, task)
+    except (GitError, OSError) as exc:
+        raise WaitError('wait.unavailable', f'cannot release continuation: {exc}') from exc
+
+
+async def _release(handler, task):
     db = handler.db
     async with db._engine.begin() as conn:
         await lock_graph(conn)
@@ -133,20 +163,6 @@ async def release_restart_continuations(handler, task):
                                 'writer stop proof is unavailable') from exc
             if stopped is not True:
                 raise WaitError('continuation.stop_uncertain', 'writer stop proof is unavailable')
-        owners = (await conn.execute(select(integration_branch_owners).where(
-            integration_branch_owners.c.owner_id == task.id,
-            integration_branch_owners.c.handoff_state != 'released',
-        ).with_for_update())).mappings().all()
-        for owner in owners:
-            if owner['handoff_state'] == 'reserved':
-                continue
-            if (owner['handoff_state'] != 'attached' or owner['session_id'] not in session_ids
-                    or owner['workspace_id'] not in by_id):
-                raise WaitError('wait.unavailable', 'continuation branch ownership changed')
-        project = await db.get_project(task.project_id)
-        repository = await db.get_repo(task.repo_id or project.integration_repository_id)
-        if candidates and repository is None:
-            raise WaitError('wait.unavailable', 'continuation repository binding is unavailable')
         if candidates:
             checkout = next(iter(candidates))
             for intent in intents:
@@ -154,22 +170,20 @@ async def release_restart_continuations(handler, task):
                     checkout, intent['saved_head'], f'refs/heads/{task.branch_name}', strict=True,
                 ) is not True:
                     raise WaitError('continuation.head_drift', 'saved continuation HEAD changed')
+        now = time.time()
+        # Every live attachment belongs to a writer proven stopped above. The
+        # transaction rolls back the retirement if a checkout cannot detach.
+        await retire_owner_attachments(
+            conn, task.id, session_ids, by_id.keys(),
+            WaitError('wait.unavailable', 'continuation branch ownership changed'), now,
+            exclusive=True,
+        )
         for path, workspace in sorted(candidates.items()):
-            if not await detach_slot_for_integration_handoff(
-                db, orch.git, orch._git_mutex, workspace, expected_branch=task.branch_name,
-                repository_url=repository.url, default_branch=repository.default_branch,
-                allow_published_detached_head=True,
-            ):
+            if not await detach_task_slot(db, orch, task, workspace, task.branch_name,
+                                          allow_published_detached_head=True):
                 raise WaitError('continuation.head_drift',
                                 f'cannot release continuation checkout {path}: '
                                 'clean, published branch proof is unavailable')
-        now = time.time()
-        for owner in owners:
-            if owner['handoff_state'] == 'attached':
-                await conn.execute(update(integration_branch_owners).where(
-                    integration_branch_owners.c.id == owner['id'],
-                ).values(handoff_state='reserved', session_id=None, workspace_id=None,
-                         confirmed_workspace_id=owner['workspace_id'], updated_at=now))
         released = await execute_workspace_release(conn, update(workspaces).where(
             workspaces.c.id.in_(by_id), unpinned_workspace(),
             or_(workspaces.c.locked_by_task_id == task.id, workspaces.c.locked_by_task_id.is_(None)),
