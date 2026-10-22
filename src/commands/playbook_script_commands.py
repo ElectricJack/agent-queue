@@ -57,7 +57,7 @@ class PlaybookScriptCommandsMixin:
                     or (kind == "profile" and principal.profile_id != scope_owner)):
                 raise JobError("unauthorized")
             request = ScriptRequest(execution_id=uuid.uuid4().hex, run_id=invocation.run_id,
-                                     pinned=pinned, **args)
+                                    pinned=pinned, **args)
             script = ScriptSubmission(invocation.run_id, invocation.step_id,
                                       invocation.iteration_path, invocation.attempt,
                                       invocation.artifact_ref.artifact_sha256,
