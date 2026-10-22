@@ -1,0 +1,229 @@
+{
+  "schema_version": 1,
+  "authority": {
+    "review_id": "rev-fair-lantern",
+    "revision": 2,
+    "sha256": "4518d9296649ddc2f0192ff73dd682864fb938e3d9687069282b4f6b0a86453f",
+    "verified_snapshot": "/tmp/aq-approved-fast-smooth-rev2.md",
+    "snapshot_retention": "worker-local; SHA pins native approved review revision, not current divergent vault file",
+    "source_key": "validation",
+    "governing_sections": [
+      11,
+      12,
+      14
+    ],
+    "acceptance_rows": 12,
+    "supervisor_disposition": "msg-6ea46b7503da4e408cbff30726d9ff4b",
+    "wait_reply": "msg-168f1f67262e443bb39249c768d3f22e",
+    "vault_state": "diverged",
+    "proposed_revision_3": "document-only / in_review; review reconciliation belongs to global/human owner"
+  },
+  "interpretation": "Named checks are bounded deterministic evidence, not a claim that every semantic clause, whole epic, source CI, landing or live activation is green. Parametrized function names include all instances in the recorded runs.",
+  "evidence_runs": {
+    "owner_modules": "verification.json checks[name=area]; inherited ratchet failures retained",
+    "new_canaries": "verification.json checks[name=rev2-canaries]",
+    "repair_adjacent": "verification.json checks[name=rev2-repair]",
+    "snapshot_checks": "verification.json checks[name=rev2-snapshots]",
+    "terminal_close": "verification.json checks[name=focused-final]"
+  },
+  "rows": [
+    {
+      "requirement": "One Git truth",
+      "status": "fixture_evidence",
+      "named_evidence": [
+        "tests/test_integration_git_truth.py::test_strict_shadow_rejects_equivalent_delivery",
+        "tests/test_integration_git_truth.py::test_strict_generation_and_target_fences",
+        "tests/test_integration_git_truth.py::test_strict_retained_generation_survives_deleted_source_branch",
+        "tests/test_integration_git_truth.py::test_strict_failed_git_is_unknown_with_safe_diagnostic",
+        "tests/test_integration_git_truth.py::test_strict_missing_commit_object_withholds_delivery",
+        "tests/test_integration_git_truth.py::test_strict_ancestry_disables_replacements_and_withholds_shallow_negatives",
+        "tests/test_integration_containment_cutover.py::test_apply_excludes_legacy_obligation_but_never_proves_containment",
+        "tests/test_integration_containment_cutover.py::test_actual_admission_metrics_watchdog_and_freeze_consume_exact_audit",
+        "tests/test_fast_smooth_integration_e2e.py::test_standalone_then_queued_stack_and_parallel_sources_reach_dev_after_restart"
+      ],
+      "limits": "Strict-contract tests establish ancestry semantics. Earlier legacy-equivalence tests in the same owner module are compatibility evidence, not authority to return contained. The connected flow asserts zero receipts; selected consumers are not a claim of exhaustive live consumer observation."
+    },
+    {
+      "requirement": "Stacked default",
+      "status": "fixture_evidence",
+      "named_evidence": [
+        "tests/test_integration_stacked_branches.py::test_project_policy_defaults_and_override",
+        "tests/test_integration_stacked_branches.py::test_single_stack_starts_at_completed_source_without_epic_delivery",
+        "tests/test_integration_stacked_branches.py::test_retained_completion_stacks_without_live_source_branch",
+        "tests/test_integration_stacked_branches.py::test_cross_epic_and_root_sources_stack_on_current_parent",
+        "tests/test_integration_stacked_branches.py::test_cross_epic_parent_decisions_travel_through_transitive_sources",
+        "tests/test_integration_stacked_branches.py::test_multiple_sources_merge_on_epic_and_pin_exact_base",
+        "tests/test_integration_stacked_branches.py::test_prepare_conflict_files_once_and_requires_published_resolution",
+        "tests/test_integration_stacked_branches.py::test_reopened_abandoned_or_unproved_prerequisite_pauses_delivery",
+        "tests/test_fast_smooth_integration_e2e.py::test_standalone_then_queued_stack_and_parallel_sources_reach_dev_after_restart"
+      ],
+      "limits": "Git stacks remain same-repository; cross-repository artifact contracts and opt-outs remain holds, not Git delivery claims."
+    },
+    {
+      "requirement": "Merge on complete",
+      "status": "fixture_evidence",
+      "named_evidence": [
+        "tests/test_integration_close_merge.py::test_clean_merge_is_two_parent_and_lost_push_reply_recovers",
+        "tests/test_integration_close_merge.py::test_conflict_budget_keeps_author_and_parent_movement_preserves_fix",
+        "tests/test_integration_close_merge.py::test_disabled_or_publisher_only_does_not_prepare_or_publish",
+        "tests/test_integration_close_merge.py::test_budget_expiry_only_notifies_supervisor_and_keeps_claim",
+        "tests/test_integration_close_merge.py::test_changed_candidate_runs_fresh_checks_and_concurrent_visit_is_fenced",
+        "tests/test_task_close_completion_recovery.py::test_restart_before_transition_drops_draft",
+        "tests/test_task_close_completion_recovery.py::test_restart_after_accepted_transition_recovers_exactly_once",
+        "tests/test_task_close_completion_recovery.py::test_recovery_replay_is_idempotent_if_the_draft_survives_its_save",
+        "tests/test_task_close_completion_recovery.py::test_accepted_marker_is_written_with_the_transition_or_not_at_all",
+        "tests/test_task_close_accepted_tail.py::test_unknown_failure_close_keeps_pool_claim_and_slot",
+        "tests/test_fast_smooth_integration_e2e.py::test_closing_siblings_race_and_lost_publication_reply_preserve_both_authors",
+        "tests/test_fast_smooth_integration_e2e.py::test_conflicted_author_restart_rechecks_fix_against_moved_parent"
+      ],
+      "limits": "Controlled check/authorization ports; real original ancestry is proved at parent boundary. Parent publication alone does not establish dev delivery."
+    },
+    {
+      "requirement": "Batched dispatch",
+      "status": "fixture_evidence",
+      "named_evidence": [
+        "tests/test_epic_train_end_to_end.py::test_idle_departure_queues_during_ci_and_departs_on_settle",
+        "tests/test_epic_train_end_to_end.py::test_empty_lane_clock_cannot_create_a_batch",
+        "tests/test_epic_train_end_to_end.py::test_departure_revalidates_queued_prerequisite_closure",
+        "tests/test_integration_train_sources.py::test_root_busy_queue_and_frozen_batch_survive_restart_without_cadence",
+        "tests/test_fast_smooth_integration_e2e.py::test_standalone_then_queued_stack_and_parallel_sources_reach_dev_after_restart"
+      ],
+      "limits": ""
+    },
+    {
+      "requirement": "Red batch",
+      "status": "partial_substantive_behavior_missing",
+      "named_evidence": [
+        "tests/test_integration_failure_groups.py::test_recorded_groups_are_stable_without_mutating_inputs",
+        "tests/test_integration_failure_groups.py::test_build_noise_is_discarded_only_on_its_job_and_platform",
+        "tests/test_integration_failure_groups.py::test_symptoms_merge_and_keep_exact_frozen_proof",
+        "tests/test_integration_failure_groups.py::test_shared_files_and_untouched_files_never_blame_a_member",
+        "tests/test_integration_failure_groups.py::test_cancelled_only_workflow_failure_is_infrastructure",
+        "tests/test_integration_fixers.py::test_failure_input_uses_frozen_file_ownership_and_ignores_observation_clock",
+        "tests/test_integration_fixers.py::test_exhaustion_reports_once_without_spawning_or_waking_then_green_wins",
+        "tests/test_integration_fixers.py::test_pending_recovery_does_not_spend_red_round_or_wake",
+        "tests/test_integration_fixers.py::test_same_head_new_check_attempt_is_one_new_round",
+        "tests/test_integration_fixers.py::test_registered_named_launch_has_no_claim_and_preserves_checkout",
+        "tests/test_integration_fixers.py::test_split_dependency_closure_preserves_fixes_and_green_remainder",
+        "tests/test_integration_fixers.py::test_deferred_successor_observes_late_fix_on_retained_writer",
+        "tests/test_fast_smooth_integration_e2e.py::test_red_split_lands_healthy_then_all_deferred_sources_and_companion_after_restart",
+        "tests/test_fast_smooth_integration_e2e.py::test_fixer_budget_restart_escalates_once_without_refiling_or_waking"
+      ],
+      "limits": "PARTIAL APPROVED ACCEPTANCE: deterministic groups/build precedence, single-family time/round caps, exactly one supervisor incident without exhaustion wakes/refiling, retained fixes and attributed split are exercised. Source src/integration/fixers.py::BatchFixerService.allocate stores a single session per batch family and consumes all groups as one failure_evidence input. src/integration/fixer_runtime.py::DaemonFixerRuntime.failure_input groups records but does not schedule per-group agents. RepairPolicy has primary_attempts/primary_seconds and no max_parallel_fixers or independent max_rounds field. No implemented per-group branch allocator, four-group fan-out cap, coverage-declaration cancellation or parallel group merge-back/one-CI path was found. These approved row semantics cannot be certified by adding passing tests around the single-fixer service. No production expansion or test weakening was made."
+    },
+    {
+      "requirement": "Advisory epic CI",
+      "status": "fixture_evidence",
+      "named_evidence": [
+        "tests/test_integration_train_sources.py::test_advisory_epic_checks_never_hold_completion",
+        "tests/test_integration_train_sources.py::test_epic_completion_revalidates_after_provenance_and_replays",
+        "tests/test_integration_service.py::test_ci_source_is_unset_by_default_without_changing_frozen_snapshots",
+        "tests/test_integration_service.py::test_ci_hosted_requirement_defaults_preserve_existing_snapshot_shape",
+        "tests/test_integration_models.py::test_speculative_defaults_do_not_change_snapshots"
+      ],
+      "limits": "Actual owner uses reviewed playbook-required epic checks: red/missing required checks hold, disabling that activation permits completion. Snapshot checks cover existing CI defaults; no new mode field or unapproved live policy epoch is asserted."
+    },
+    {
+      "requirement": "Warm caches",
+      "status": "fixture_evidence",
+      "named_evidence": [
+        "tests/test_integration_workspaces.py::test_candidate_reuses_across_released_batches_and_shares_objects",
+        "tests/test_integration_workspaces.py::test_cache_setting_reaches_real_job_contract_and_common_wait_sample",
+        "tests/test_integration_workspaces.py::test_fixer_reuse_requires_stopped_process_terminal_batch_and_saved_head",
+        "tests/test_integration_workspaces.py::test_next_fixer_batch_reuses_stopped_checkout_with_build_output",
+        "tests/test_integration_workspaces.py::test_detached_runner_records_cache_delta_and_build_elapsed"
+      ],
+      "limits": "Fixture cache retention and job environment contracts, not live disk capacity or measured native build time."
+    },
+    {
+      "requirement": "Speculative CI",
+      "status": "fixture_evidence",
+      "named_evidence": [
+        "tests/test_integration_models.py::test_speculative_ci_refuses_local_and_hybrid_root",
+        "tests/test_integration_models.py::test_speculation_requires_public_free_hosted_or_subminute_measurement",
+        "tests/test_integration_models.py::test_hosted_speculation_accepts_eligible_compute",
+        "tests/test_integration_train.py::test_kept_speculative_candidate_publishes_exact_sha_without_rebuild",
+        "tests/test_integration_train.py::test_speculative_candidate_discarded_after_predecessor_changes",
+        "tests/test_integration_train.py::test_slow_speculative_build_never_delays_predecessor"
+      ],
+      "limits": "Controlled CI only; no hosted speculative job or live project activation."
+    },
+    {
+      "requirement": "Automatic epic",
+      "status": "fixture_evidence",
+      "named_evidence": [
+        "tests/test_integration_train_sources.py::test_collected_two_child_epic_gets_completion_and_lands_via_root",
+        "tests/test_integration_train_sources.py::test_frozen_epic_rechecks_readiness_before_root_publication",
+        "tests/test_integration_train_sources.py::test_epic_completion_preserves_readiness_constraints",
+        "tests/test_integration_train_sources.py::test_epic_completion_revalidates_after_provenance_and_replays",
+        "tests/test_integration_train_sources.py::test_root_leaf_close_wakes_idle_lane_without_synthetic_epic",
+        "tests/test_integration_train_sources.py::test_unknown_root_withholds_only_itself_and_dependents_while_healthy_batch_publishes",
+        "tests/test_integration_batches.py::test_root_and_child_share_exact_candidate_gate_and_publication",
+        "tests/test_integration_batches.py::test_target_moves_rebuild_and_retest_exact_sha",
+        "tests/test_integration_batches.py::test_green_does_not_override_hold_or_changed_candidate",
+        "tests/test_fast_smooth_integration_e2e.py::test_standalone_then_queued_stack_and_parallel_sources_reach_dev_after_restart"
+      ],
+      "limits": "Nested/epic boundaries are owner fixtures; the connected rootless and multi-input flow explicitly targets configured dev. Actual live review/promotion bindings stay unresolved."
+    },
+    {
+      "requirement": "Watchdog",
+      "status": "fixture_evidence",
+      "named_evidence": [
+        "tests/test_integration_delivery_watchdog.py::test_threshold_uses_floor_without_measurements",
+        "tests/test_integration_delivery_watchdog.py::test_threshold_comes_from_measured_ci_and_slow_takes_no_action",
+        "tests/test_integration_delivery_watchdog.py::test_stuck_generation_gets_one_takeover_and_one_incident_across_restart",
+        "tests/test_integration_delivery_watchdog.py::test_unavailable_git_resets_stuck_scans_and_never_hands_over",
+        "tests/test_integration_delivery_watchdog.py::test_doctor_names_stuck_generation_reason_and_its_landing_task"
+      ],
+      "limits": "Exact blocker record, incident and explanation command are fixture evidence; no live CLI explanation/incident pair or production CI distribution was observed."
+    },
+    {
+      "requirement": "Metrics",
+      "status": "fixture_evidence",
+      "named_evidence": [
+        "tests/test_delivery_latency.py::test_quantile_interpolates_and_answers_none_without_data",
+        "tests/test_delivery_latency.py::test_pending_never_enters_percentiles_but_is_counted",
+        "tests/test_delivery_latency.py::test_completions_before_instrumentation_are_censored_not_samples",
+        "tests/test_delivery_latency.py::test_late_sample_counts_in_its_completion_cohort",
+        "tests/test_delivery_latency.py::test_reopened_task_counts_each_generation_once",
+        "tests/test_delivery_latency.py::test_overlapping_segments_are_not_forced_to_sum",
+        "tests/test_delivery_latency.py::test_no_samples_is_null_not_zero",
+        "tests/test_delivery_latency.py::test_parent_ref_sightings_report_parent_delay",
+        "tests/test_delivery_latency.py::test_drilldown_names_source_target_reason_and_linked_waits",
+        "tests/test_delivery_latency.py::test_recorder_failure_never_breaks_observation"
+      ],
+      "limits": "Backend fixture evidence only; no dashboard browser check or 24-hour/seven-day live SLO attestation."
+    },
+    {
+      "requirement": "Migration",
+      "status": "fixture_evidence",
+      "named_evidence": [
+        "tests/test_integration_containment_cutover.py::test_preview_has_no_durable_mutations_and_preserves_dirty_work",
+        "tests/test_integration_containment_cutover.py::test_apply_refuses_stale_manifest",
+        "tests/test_integration_containment_cutover.py::test_apply_refuses_live_writer_even_with_fresh_digest",
+        "tests/test_integration_containment_cutover.py::test_apply_excludes_legacy_obligation_but_never_proves_containment",
+        "tests/test_integration_containment_cutover.py::test_legacy_private_source_is_retained_without_deleting_original",
+        "tests/test_project_relocation.py::test_preview_is_read_only_and_apply_preserves_every_path_family",
+        "tests/test_project_relocation.py::test_missing_current_windows_check_refuses_and_linux_only_edit_does_not",
+        "tests/test_project_relocation.py::test_dirty_refuses_but_retains_verified_non_git_backup",
+        "tests/test_project_relocation.py::test_crash_never_publishes_partial_binding_and_restart_reuses_verified_copies",
+        "tests/test_project_relocation.py::test_reverse_plan_preserves_new_commits_ignored_files_and_original_backup",
+        "tests/test_project_relocation.py::test_fresh_precommit_checks_refuse_new_writer_or_changed_copy",
+        "tests/test_project_relocation.py::test_repository_origin_cannot_depend_on_abandoned_storage"
+      ],
+      "limits": "Live inventory, two verified backups, native capacity, current Windows/Linux policy, product health and owner activation remain unresolved. Fixtures cannot supply them."
+    }
+  ],
+  "unapproved_revision_3_proposals": {
+    "status": "unapproved_proposal_only",
+    "rows": [
+      "Policy owns decisions",
+      "Project off/on switch",
+      "Live required checks",
+      "Green wins",
+      "Never blocked by default",
+      "Retained reduction goals"
+    ],
+    "disposition": "Separate from the twelve approved rows; neither passing acceptance nor missing approved implementation prerequisites. No policy implementation expansion. Global/human owner reconciles divergent vault review."
+  }
+}
