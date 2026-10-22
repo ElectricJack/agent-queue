@@ -1918,6 +1918,43 @@ def test_hoisted_frontier_never_names_the_projects_table(mode_value):
     assert "projects" in str(select(tasks.c.id).where(_frontier_where("p")))
 
 
+@pytest.mark.parametrize("playbook_id", ["fast-smooth-train", "custom-train"])
+async def test_hoisted_frontier_reads_current_train_switch_without_project_lookups(
+    db, hierarchy, playbook_id,
+):
+    from src.database.queries.claim_queries import _frontier_where
+    from src.database.queries.hierarchy_queries import ProjectIntegrationMode
+
+    project = await db.get_project("p")
+    policy = {**project.hierarchical_integration_policy, "train": {"playbook_id": playbook_id}}
+    await db.update_project("p", hierarchical_integration_policy=policy)
+    await _create(db, "parent")
+    filed = await hierarchy.file_children("parent", [{"title": "first"}, {"title": "second"}], 0)
+    first, second = [row["task_id"] for row in filed["children"]]
+    await db.add_dependency(second, first, "blocks")
+    await _create(db, "loose")
+    async with db.immediate() as conn:
+        await conn.execute(update(task_branch_origins).values(materialized=True))
+        await conn.execute(update(tasks).where(tasks.c.id == first).values(status="COMPLETED"))
+        await conn.execute(update(tasks).where(tasks.c.id.in_((second, "loose"))).values(
+            status="READY", is_blocked=False))
+    # Reuse the same project snapshot across toggles: activation is not hoisted.
+    mode = ProjectIntegrationMode.of(await db.get_project("p"))
+    assert "projects" not in str(select(tasks.c.id).where(_frontier_where("p", mode)))
+    assert await _frontier_ids(db, mode) == await _frontier_ids(db) == set()
+    for selected, enabled, expected in (
+        ("unrelated-playbook", False, set()),
+        (playbook_id, False, {"loose", second}),
+        (playbook_id, True, set()),
+    ):
+        await db.set_playbook_activation(
+            playbook_id=selected, scope="project", scope_identifier="p",
+            artifact_sha256=None, enabled=enabled, activated_by="test",
+            health="unavailable" if enabled else "disabled", reasons="[]",
+        )
+        assert await _frontier_ids(db, mode) == await _frontier_ids(db) == expected
+
+
 @pytest.mark.parametrize("unrelated_reworks", [0, 1, 2])
 async def test_sibling_prerequisite_needs_git_overlay_despite_matching_receipt(
     db, hierarchy, unrelated_reworks

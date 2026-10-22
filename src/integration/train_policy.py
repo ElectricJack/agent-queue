@@ -31,12 +31,17 @@ def train_disabled_for_project(project_table=projects):
         project_table.c.hierarchical_integration_policy["train"]["playbook_id"].as_string(),
         "fast-smooth-train",
     )
+    return train_activation_disabled(project_table.c.id, selected).correlate(project_table)
+
+
+def train_activation_disabled(project_id, playbook_id):
+    """Read current activation intent using an already-resolved project binding."""
     return exists().where(
         playbook_activations.c.scope == "project",
-        playbook_activations.c.scope_identifier == project_table.c.id,
-        playbook_activations.c.playbook_id == selected,
+        playbook_activations.c.scope_identifier == project_id,
+        playbook_activations.c.playbook_id == playbook_id,
         playbook_activations.c.enabled.is_(False),
-    ).correlate(project_table)
+    )
 
 
 def artifact_policy(digest, path):
