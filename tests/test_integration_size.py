@@ -73,7 +73,19 @@ def test_pinned_table_predicate_names_all_45(manifest):
 
 
 def test_replacement_adds_no_new_integration_storage_category(report, manifest):
-    assert report["tables"].keys() <= manifest["baseline"]["tables"].keys(), (
+    # The approved author-close category remains visible and charged. No
+    # unreviewed category inherits this exact feature disposition.
+    assert manifest["storage_dispositions"] == {
+        "integration_close_attempts": {
+            "task": "stark-willow-95.15",
+            "authority": "Approved fast-smooth-integration section 5 and current task close "
+                         "contract, 2026-10-21",
+            "purpose": "Version-fenced retained author candidate and wait evidence, never delivery "
+                       "truth. Additive table charged; no cap increase.",
+        },
+    }
+    approved = set(manifest["storage_dispositions"]) if manifest["phase"] == "transition" else set()
+    assert report["tables"].keys() <= manifest["baseline"]["tables"].keys() | approved, (
         "Replacement reshapes the existing five tables; a renamed journal or "
         "new storage category needs a design disposition, not unused table allowance."
     )
@@ -351,12 +363,16 @@ def test_batch_exception_is_exact_and_has_no_remaining_headroom(report, manifest
     assert exception == ownership.TRANSITION_BATCH_EXCEPTION
     assert exception["original_owned_total_cap"] == 155_499
     measured = exception["measured_owned_total"]
-    assert measured == 156_792
-    assert exception["delta"] == measured - 155_499 == 1_293
+    assert measured == report["total"]
+    assert exception["delta"] == measured - 155_499
+    assert [p.get("delta", p.get("authorized_delta")) for p in exception["predecessors"]] == [
+        1_293, 2_166,
+    ]
+    assert exception["batch_measured_delta"] == measured - 158_958
     assert ownership.transition_owned_cap(manifest) == measured
     too_large = {**report, "total": measured + 1}
     assert ownership.budget_errors(too_large, manifest) == [
-        "owned total: 156,793 exceeds 156,792 in transition",
+        f"owned total: {measured + 1:,} exceeds {measured:,} in transition",
     ]
     # Changing the historical snapshot still cannot enlarge the exception.
     copy = deepcopy(manifest)
@@ -365,7 +381,7 @@ def test_batch_exception_is_exact_and_has_no_remaining_headroom(report, manifest
     copy.pop("transition_exception")
     assert ownership.transition_owned_cap(copy) == 155_499
     assert ownership.budget_errors({**report, "total": measured}, copy) == [
-        "owned total: 156,792 exceeds 155,499 in transition",
+        f"owned total: {measured:,} exceeds 155,499 in transition",
     ]
     # The exception is an upper bound: later genuine reductions still pass.
     assert ownership.budget_errors({**report, "total": measured - 1}, manifest) == []
@@ -397,7 +413,8 @@ def test_cutover_evidence_uses_the_enforced_caps(manifest, report, monkeypatch, 
     result = script["ownership"]()
     assert result["budget_errors"] == ownership.budget_errors(report, copy)
     transition = phase == "transition"
-    assert result["owned_cap_in_phase"] == (156_792 if transition else 19_999)
+    assert result["owned_cap_in_phase"] == (
+        ownership.transition_owned_cap(copy) if transition else 19_999)
     assert result["engine_cap_in_phase"] == (97_627 if transition else 11_999)
     assert result["table_cap_in_phase"] == (45 if transition else 10)
     assert result["transition_exception"] == (copy["transition_exception"] if transition else None)
@@ -405,7 +422,7 @@ def test_cutover_evidence_uses_the_enforced_caps(manifest, report, monkeypatch, 
     ledger["ownership"] = result
     rendered = script["render"](ledger)
     if transition:
-        assert "156,792 transition cap" in rendered
+        assert f"{ownership.transition_owned_cap(copy):,} transition cap" in rendered
         assert copy["transition_exception"]["decision_message_id"] in rendered
     else:
         assert f"19,999 {phase} cap" in rendered

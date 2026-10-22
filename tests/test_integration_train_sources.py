@@ -6956,7 +6956,7 @@ async def test_closed_epic_sync_remains_bounded_and_respects_holds(collected_epi
     if reason in {"default_red", "hold"}:
         for _ in range(3):
             visit = await case.train.visit(case.target)
-            assert visit.state == "blocked" and visit.batch_id is None and visit.repair is None
+            assert visit.state == "blocked" and visit.batch_id is None and visit.repair is None, visit
         return
     first = await case.train.visit(case.target)
     assert first.state == "repair", first

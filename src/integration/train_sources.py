@@ -2911,9 +2911,11 @@ class DaemonLanes:
                         sha=head, generation=0)))
             # Conclusive red heads retain the existing bounded baseline-sync
             # and repair path. A refresh must not allocate a parallel repair.
-            known_red = any([(await exact.read(identity)).state.value == "red"
-                             for exact, identity in pending_checks
-                             if identity.ref == target.target_ref])
+            node = graph.node(graph.epic_id)
+            exact = resolved.get((snapshot.target_oid, node.policy))
+            known_red = exact is not None and (await _exact_head_verdict(exact, HeadIdentity(
+                repository_id=graph.repository_id, ref=target.target_ref,
+                sha=snapshot.target_oid, generation=0))).state.value == "red"
             # A closed, collected epic may predate the default branch's trust
             # configuration. Refresh it before requesting aggregate checks;
             # waiting for a conflicting root PR cannot help until those checks
