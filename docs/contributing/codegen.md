@@ -395,6 +395,18 @@ built-in handlers. Adding a handler or changing its return branches requires
 reviewing and updating that evidence. Static argument reads are diagnostic;
 they never silently expand the public schema.
 
+After reviewing a handler's return branches and contract fields, refresh its
+source digest with `python scripts/refresh-command-audit-digest.py --command explain_task --write`
+(repeat `--command` for each reviewed handler). The default mode, also available
+as `--check`, reports digest drift without writing. This command updates only
+the selected handler digests; return
+branches and other audit evidence stay authored. A reviewed helper requires
+`--helper <existing-helper-name>` with exactly one `--command`; this updates only
+that command's existing helper pin, preserving the handler and other helper
+digests. Repeat the command explicitly if multiple audit rows pin that helper.
+Unknown selections are refused. This workflow is separate from bulk
+generated-artifact regeneration.
+
 Generated results must be JSON objects with an actual boolean `success` at
 every producer exit, including early refusals and delegated helpers. Only the
 executor's `_consume` boundary interprets this protocol: true means success,

@@ -631,6 +631,7 @@
         "tests/test_integration_attestation.py",
         "tests/test_integration_batches.py",
         "tests/test_integration_candidate_baseline.py",
+        "tests/test_integration_check_reconciliation.py",
         "tests/test_integration_checks.py",
         "tests/test_integration_ci.py",
         "tests/test_integration_ci_producers.py",
@@ -672,6 +673,7 @@
         "tests/test_integration_subjects.py",
         "tests/test_integration_superseded_completion.py",
         "tests/test_integration_train.py",
+        "tests/test_integration_train_policy.py",
         "tests/test_integration_train_sources.py",
         "tests/test_integration_truth_reconciler.py",
         "tests/test_integration_workspaces.py"
@@ -3379,8 +3381,9 @@
         "integration-ownership"
       ],
       "default_arm": true,
-      "digest": "sha256:fedc61cb29afe255b42b7b01275879c125d737de3f5dad430867f3dcc38d97f0",
+      "digest": "sha256:183e87a56e085cb1bbc4610a3534f76ee94d4b8c0ce0632400f59f4add9ad9d5",
       "imports": [
+        "src.commands.detached",
         "src.commands.integration_commands",
         "src.commands.principal",
         "src.commands.task_commands",
@@ -5637,7 +5640,7 @@
         "development-delivery"
       ],
       "default_arm": true,
-      "digest": "sha256:912e9c33f8f0e70e7695c68cdbe7f2366ea1e5eb85a5a8a201864cde88f911c2",
+      "digest": "sha256:2f0f1eeee4a08fa342730ec0657db0638df889a8ec6d543f3f6fd48406c3bea0",
       "imports": [
         "src.commands.handler",
         "src.commands.principal",
@@ -5664,6 +5667,7 @@
         "src.integration.repository_recovery",
         "src.integration.service",
         "src.integration.source_trailer",
+        "src.integration.stacked_branches",
         "src.integration.status",
         "src.models",
         "src.orchestrator",
@@ -7152,13 +7156,15 @@
         "file-access"
       ],
       "default_arm": true,
-      "digest": "sha256:39a221b29fa50803dc039b84cd763f42fbe2fb4e2583bc32ab440bb00d1a5038",
+      "digest": "sha256:11c838551ce89885074c4a0c69486847d0f8e771f5fa6b506b2d7d9248db033a",
       "imports": [
+        "src.commands.principal",
         "src.config",
         "src.database",
         "src.git.manager",
         "src.models",
         "src.plugins.internal.files",
+        "src.profiles.capabilities",
         "src.task_templates",
         "src.tools"
       ],
@@ -8580,23 +8586,51 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:14a39086f9129ea204d0e9b93df660f10b279e32e0d61841349eb2ce5b7c2b42",
+      "digest": "sha256:33084a017635987a3ffcc8df401166bc004cc4edbfc79c7c2b6d07103d097b1b",
       "imports": [
         "src.database.tables",
         "src.integration.batches",
         "src.integration.candidate_baseline",
         "src.integration.checks",
         "src.integration.ci_producers",
+        "src.integration.models",
         "src.integration.repair",
         "src.integration.runtime_contracts",
         "src.integration.status",
         "src.integration.train",
+        "src.integration.train_controls",
         "src.models"
       ],
       "markers": [
         "parametrize"
       ],
       "summary": "A red candidate is judged against the target's own checks, with real evidence rows."
+    },
+    "tests/test_integration_check_reconciliation.py": {
+      "areas": [
+        "integration-trains"
+      ],
+      "default_arm": true,
+      "digest": "sha256:16965a7c59ddf52c2a83f059b0adbd2d388e0c4edc574aa43e4ece9c67fbba11",
+      "imports": [
+        "src.commands.integration_commands",
+        "src.commands.principal",
+        "src.database.tables",
+        "src.git.github",
+        "src.integration.batches",
+        "src.integration.candidate_baseline",
+        "src.integration.check_reconciliation",
+        "src.integration.checks",
+        "src.integration.ci_producers",
+        "src.integration.status",
+        "src.integration.train",
+        "src.models",
+        "src.profiles.capabilities"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Phantom Actions checks remain pending and get one exact-job recovery attempt."
     },
     "tests/test_integration_checks.py": {
       "areas": [
@@ -9769,13 +9803,12 @@
         "integration-promotion"
       ],
       "default_arm": true,
-      "digest": "sha256:6aa55f243dd9ff569c118e8f77c5fc0ecf40a467bfd50ad2de353f2d81ee7677",
+      "digest": "sha256:78630cc5d10fca38d9cfac83028b502df041e2495550c21950d61276e1c96e31",
       "imports": [
         "src.commands.contracts",
         "src.commands.contracts.builtin",
         "src.commands.principal",
         "src.commands.task_commands",
-        "src.database.queries.hierarchy_queries",
         "src.database.tables",
         "src.git.manager",
         "src.integration.delivery_observer",
@@ -10120,6 +10153,27 @@
       ],
       "summary": "The reduced train: per-target level-triggered visits over Git, checks and intent."
     },
+    "tests/test_integration_train_policy.py": {
+      "areas": [
+        "integration-trains"
+      ],
+      "default_arm": true,
+      "digest": "sha256:18f8cd11696006e2e9d36588e0f44f858995928cd4c725ac8a0e22d559f7aeb2",
+      "imports": [
+        "src.database.tables",
+        "src.integration.batches",
+        "src.integration.canonical_reservation",
+        "src.integration.lock",
+        "src.integration.manual_control",
+        "src.integration.train_policy",
+        "src.integration.train_sources",
+        "src.playbooks.train_policy"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Project policy edits affect existing Git train work without a new batch."
+    },
     "tests/test_integration_train_promotion.py": {
       "areas": [
         "integration-promotion"
@@ -10278,7 +10332,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:fb12e3a94b22eb58b69057bf58044728b827a28da6f3693936559343a7a5cae3",
+      "digest": "sha256:96354b23128278e564285fbaa225974cb0adf859e70a97619be6e7da7c1cc134",
       "imports": [
         "src.commands.integration_commands",
         "src.commands.principal",
@@ -10288,10 +10342,12 @@
         "src.integration.delivery_observer",
         "src.integration.delivery_truth",
         "src.integration.git_truth",
+        "src.integration.repair",
         "src.integration.truth_reconciler",
         "src.integration.truth_retention",
         "src.models",
-        "src.orchestrator.worktree_manager"
+        "src.orchestrator.worktree_manager",
+        "src.sessions.obsolete"
       ],
       "markers": [
         "parametrize"
@@ -10786,8 +10842,9 @@
         "knowledge-records"
       ],
       "default_arm": true,
-      "digest": "sha256:8ad30659e5226c80e160e5cbf83658a382b73d1a72ecd68a061d5d6eaa25014c",
+      "digest": "sha256:5ee8ca13aee1be8dee4b5fff75625e79d236e58d548f361aa91bebeb209dfeb8",
       "imports": [
+        "src.commands.principal",
         "src.config",
         "src.database.tables",
         "src.models",
@@ -10796,6 +10853,7 @@
         "src.profiles.parser"
       ],
       "markers": [
+        "parametrize",
         "usefixtures"
       ],
       "summary": "End-to-end command execution for the K03 knowledge/record surface."
@@ -14391,10 +14449,11 @@
         "prime"
       ],
       "default_arm": true,
-      "digest": "sha256:f91a9590c716562833c3065d3b353ae8067ddfc7a2a02190ef20aca426677bc5",
+      "digest": "sha256:d0c698f7438989033ac995580ae61c5d1fd913ac25cfa394fe89a56d40ca40cf",
       "imports": [
         "src.api.scope",
         "src.config",
+        "src.config_wait_policy",
         "src.handoffs",
         "src.knowledge.budget",
         "src.models",
@@ -17202,11 +17261,12 @@
         "session-runtime"
       ],
       "default_arm": true,
-      "digest": "sha256:117baae2c5c0fee006a5c4bea87406bbbda0d3e63800dfe9009658b04c0e2591",
+      "digest": "sha256:51f9bb5dd27894c3d8e66cade24ecbf856d34eaf9b291f5159f58d2a5b35b7f4",
       "imports": [
         "src.cli",
         "src.cli.agent_surface",
         "src.config",
+        "src.config_wait_policy",
         "src.intelligence_classes",
         "src.models",
         "src.sessions",
@@ -19544,7 +19604,7 @@
         "agent-waits"
       ],
       "default_arm": true,
-      "digest": "sha256:f3b35c5721e3532a20bc347c355bd29819a00fed15f29a7e21ae517bd25f65b9",
+      "digest": "sha256:7bc0d019c09efcf9e60bc84de7fa8c02cebdfa467f69206a00bbc2af4d3a575c",
       "imports": [
         "src.api.codegen",
         "src.api.models.wait",
@@ -19568,6 +19628,7 @@
         "src.profiles.capabilities",
         "src.profiles.capability_sync",
         "src.profiles.drift",
+        "src.profiles.sync",
         "src.tools.definitions",
         "src.wait_runtime.lifecycle",
         "src.wait_runtime.service",

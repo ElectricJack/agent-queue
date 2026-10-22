@@ -1332,6 +1332,16 @@ class Orchestrator(
             if (identity.get("claim_phase") == "preparing"
                     and (identity["id"], identity["last_claim_epoch"], identity["instance_token"])
                     not in proved):
+                # No live request was cancelled above: the attempt ended before
+                # this pause (failed, cancelled by a restart, timed out). Its
+                # durable failure record proves it unwound its git children.
+                from src.database.queries.task_queries import settled_preparation_proved
+
+                if settled_preparation_proved(
+                    await self.db.settled_task_preparation(task_id), identity,
+                    identity["last_claim_epoch"],
+                ):
+                    continue
                 raise PauseFenceError(
                     "Task remains paused; interrupted preparation termination is unproved. "
                     "Source and claim are retained for guarded recovery; Resume is not cleanup."
@@ -2381,10 +2391,14 @@ class Orchestrator(
         owner_recovery = owner_recovery_for(self)
         self.development_integration.owner_recovery = owner_recovery
         from src.integration.truth_reconciler import GitTruthReconciler
+        from src.sessions.obsolete import ObsoleteClose, obsolete_owner_release_for
 
         self.git_truth_reconciler = GitTruthReconciler(
             self.db, self.git, data_dir=self.config.data_dir,
             owner_recovery=owner_recovery if self.config.integration.owner_recovery_sweep else None,
+            obsolete_close=ObsoleteClose(
+                self.db, release_owner=obsolete_owner_release_for(self), git_manager=self.git,
+            ),
         )
 
         async def reconcile_git_truth(now):
@@ -4842,16 +4856,11 @@ class Orchestrator(
         for p in projects:
             project_usage[p.id] = await self.db.get_project_token_usage(p.id, since=window_start)
 
-        # Active (BUSY) agent count per project — used to enforce each
-        # project's max_concurrent_agents limit.  We look up the project
-        # from the agent's current task rather than storing it on the agent
-        # directly, because agent-project affinity is transient.
-        active_counts: dict[str, int] = {}
-        for a in agents:
-            if a.state == AgentState.BUSY and a.current_task_id:
-                task = await self.db.get_task(a.current_task_id)
-                if task:
-                    active_counts[task.project_id] = active_counts.get(task.project_id, 0) + 1
+        # Session ownership, including idle pools and unconfirmed stops, is
+        # capacity. Historical agent task pointers are not execution proof.
+        from src.orchestrator.agent_reconciler import project_live_session_counts
+
+        active_counts = project_live_session_counts(live_sessions)
 
         total_used = sum(project_usage.values())
 

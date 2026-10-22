@@ -371,6 +371,9 @@ class KnowledgeCommandsMixin:
             return exc.result()
 
     async def _cmd_record_capabilities(self, args):
+        from src.commands.contracts.models import SideEffectClass
+        from src.commands.contracts.registry import CONTRACTS
+
         cfg = self.config.knowledge
         principal = current_principal()
         grants = set()
@@ -381,13 +384,34 @@ class KnowledgeCommandsMixin:
                 if name.startswith(("knowledge_", "record_", "link_"))
             }
         if principal is not None and principal.kind.value == "local":
-            from src.commands.contracts.registry import CONTRACTS
-
             grants = {
                 name
                 for name in CONTRACTS.names()
                 if name.startswith(("knowledge_", "record_", "link_"))
             }
+        # A profile grant alone does not admit an operation. Use the same
+        # service gate as reads, including live session and project activation.
+        # Object ownership, revision and write claim checks still run on use.
+        available = set()
+        unavailable = {}
+        async with self.db._engine.connect() as conn:
+            for name in sorted(grants):
+                if name == "record_capabilities":
+                    available.add(name)
+                    continue
+                try:
+                    await self._record_service()._access(
+                        conn, principal, name, _knowledge_scope(args)
+                    )
+                    registration = CONTRACTS.get(name)
+                    if registration and registration.contract.execution.side_effect != SideEffectClass.READ:
+                        if not cfg.writes_enabled:
+                            raise RecordError("knowledge.read_only")
+                        if cfg.legacy_memory_mode != "disabled":
+                            raise RecordError("knowledge.legacy_writer_conflict")
+                    available.add(name)
+                except RecordError as exc:
+                    unavailable[name] = exc.code
         return {
             "success": True,
             "outcome": "read",
@@ -419,7 +443,9 @@ class KnowledgeCommandsMixin:
                         "import_apply",
                     )
                 },
-                "granted_operations": sorted(grants),
+                "profile_granted_operations": sorted(grants),
+                "granted_operations": sorted(available),
+                "unavailable_operations": unavailable,
             },
         }
 

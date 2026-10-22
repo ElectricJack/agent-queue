@@ -1680,12 +1680,22 @@
             "$ref": "#/$defs/SubjectDecisionTable"
           },
           "maxProperties": 3,
-          "minProperties": 1,
           "propertyNames": {
             "$ref": "#/$defs/SubjectKind"
           },
           "title": "Tables",
           "type": "object"
+        },
+        "train": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TrainPolicy"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         "version": {
           "const": 1,
@@ -1695,8 +1705,7 @@
         }
       },
       "required": [
-        "max_wait_seconds",
-        "tables"
+        "max_wait_seconds"
       ],
       "title": "IntegrationPolicy",
       "type": "object"
@@ -3786,6 +3795,58 @@
         }
       },
       "title": "ToolUsePolicy",
+      "type": "object"
+    },
+    "TrainPolicy": {
+      "additionalProperties": false,
+      "properties": {
+        "conflict": {
+          "default": "repair",
+          "enum": [
+            "repair",
+            "wait"
+          ],
+          "title": "Conflict",
+          "type": "string"
+        },
+        "idle": {
+          "default": "merge",
+          "enum": [
+            "merge",
+            "wait"
+          ],
+          "title": "Idle",
+          "type": "string"
+        },
+        "red": {
+          "default": "repair",
+          "enum": [
+            "repair",
+            "wait"
+          ],
+          "title": "Red",
+          "type": "string"
+        },
+        "required_checks": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RequiredCheckSet"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "wait_seconds": {
+          "default": 30,
+          "exclusiveMinimum": 0,
+          "maximum": 3600,
+          "title": "Wait Seconds",
+          "type": "integer"
+        }
+      },
+      "title": "TrainPolicy",
       "type": "object"
     },
     "Trigger": {

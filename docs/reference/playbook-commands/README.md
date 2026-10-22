@@ -127,7 +127,9 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`integration_repair_close_current`](integration_repair_close_current.md) | Resolve exact current repair close | Resolve exact current repair close |
 | [`integration_repair_dispatch`](integration_repair_dispatch.md) | Integration Repair Dispatch | Create the repair task and hand the current branch writer fence to it. |
 | [`integration_repair_start`](integration_repair_start.md) | Integration Repair Start | Activate or durably continue one operation's bounded repair stage. |
+| [`integration_repair_target`](integration_repair_target.md) | Integration Repair Target | Authenticated hierarchical integration operational control. |
 | [`integration_repair_timeout`](integration_repair_timeout.md) | Integration Repair Timeout | Expire the current repair stage once its absolute deadline has passed. |
+| [`integration_rerequest_check`](integration_rerequest_check.md) | Integration Rerequest Check | Authenticated hierarchical integration operational control. |
 | [`integration_reserve_owner`](integration_reserve_owner.md) | Integration Reserve Owner | Authenticated hierarchical integration operational control. |
 | [`integration_restore_task_origin`](integration_restore_task_origin.md) | Integration Restore Task Origin | Authenticated hierarchical integration operational control. |
 | [`integration_resume_batch`](integration_resume_batch.md) | Integration Resume Batch | Authenticated hierarchical integration operational control. |

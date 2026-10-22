@@ -1530,3 +1530,103 @@ async def test_stack_currentness_separates_moved_refs_from_missing_git_evidence(
     assert await StackView(db=None, project_id="p").fresh()
     unproven = _stack_view({"main": _ref(_TARGET)}, proofs=proof).without_proofs()
     assert (unproven.proofs, unproven.delivered_refs) == ({}, {})
+
+
+@pytest.mark.parametrize("projection", ["missing", "stale", "prerequisite_missing"])
+@pytest.mark.parametrize("constraint", ["none", "hold", "generation"])
+async def test_stack_publication_recovers_checkpoint_from_current_git_completion(
+    stack, projection, constraint,
+):
+    task_id = "first" if projection == "prerequisite_missing" else "child"
+    async with stack.db._engine.begin() as conn:
+        query = (update(task_integration_checkpoints).values(checkpoint_sha=stack.base)
+                 if projection == "stale" else delete(task_integration_checkpoints))
+        await conn.execute(query.where(task_integration_checkpoints.c.task_id == task_id))
+    if constraint == "hold":
+        old = await stack_record(stack)
+        async with stack.db._engine.begin() as conn:
+            await conn.execute(update(task_branch_origins).where(
+                task_branch_origins.c.task_id == "child",
+            ).values(stack_snapshot={**old, "hold": "operator_hold"}))
+    elif constraint == "generation":
+        changed = stack.origin.work("first", "changed")
+        await close(stack.db, "first", [changed], close_id="changed", origin=stack.origin)
+    observed = await snapshot(stack.world)
+    assert await stack.service.current(
+        "child", source_sha=stack.child, snapshot=observed,
+    ) is (constraint == "none")
+
+
+@pytest.mark.parametrize("changed", [False, True])
+async def test_lost_stack_projection_still_proves_current_prerequisite_ancestry(stack, changed):
+    async with stack.db._engine.begin() as conn:
+        await conn.execute(update(task_branch_origins).where(
+            task_branch_origins.c.task_id == "child",
+        ).values(stack_snapshot=None))
+    if changed:
+        head = stack.origin.work("first", "new-prerequisite")
+        await close(stack.db, "first", [head], close_id="new-prerequisite", origin=stack.origin)
+    assert await stack.service.current(
+        "child", source_sha=stack.child, snapshot=await snapshot(stack.world),
+    ) is (not changed)
+
+
+@pytest.mark.parametrize("locator", ["missing", "moved", "generation"])
+async def test_current_source_rejection_survives_checkpoint_drift(stack, locator):
+    from src.database.tables import integration_review_evidence
+
+    async with stack.db.immediate() as conn:
+        await conn.execute(insert(integration_review_evidence).values(
+            id="explicit-source-rejection", source_task_id="first", repository_id="r",
+            source_base=stack.base, reviewed_head_sha=stack.first,
+            reviewed_tree_sha=git(stack.origin.clone, "rev-parse", stack.first + "^{tree}"),
+            generation=0, verdict="rejected", review_kind="root",
+            reviewer_identity="human:test", evidence={"decision_path": "tree_review"},
+            created_at=1,
+        ))
+        source = task_integration_checkpoints.c.task_id == "first"
+        if locator == "missing":
+            await conn.execute(delete(task_integration_checkpoints).where(source))
+        else:
+            values = ({"checkpoint_sha": stack.base} if locator == "moved"
+                      else {"generation": 99, "version": 99})
+            await conn.execute(update(task_integration_checkpoints).where(source).values(**values))
+        # Exercise the lost-stack recovery, where fresh Git otherwise proves
+        # the child's exact source includes this completed prerequisite.
+        await conn.execute(update(task_branch_origins).where(
+            task_branch_origins.c.task_id == "child",
+        ).values(stack_snapshot=None))
+    observed = await snapshot(stack.world)
+    assert not await stack.service.current("child", source_sha=stack.child, snapshot=observed)
+    # A later explicit approval of that exact source clears the veto even
+    # when the checkpoint remains stale or absent.
+    async with stack.db.immediate() as conn:
+        await conn.execute(insert(integration_review_evidence).values(
+            id="explicit-source-approval", source_task_id="first", repository_id="r",
+            source_base=stack.base, reviewed_head_sha=stack.first,
+            reviewed_tree_sha=git(stack.origin.clone, "rev-parse", stack.first + "^{tree}"),
+            generation=0, verdict="approved", review_kind="root",
+            reviewer_identity="human:test", evidence={"decision_path": "tree_review"},
+            created_at=2,
+        ))
+    assert await stack.service.current("child", source_sha=stack.child, snapshot=observed)
+
+
+async def test_inherited_repository_rejection_uses_project_when_checkpoint_is_missing(stack):
+    from src.database.tables import integration_review_evidence
+    from src.integration.stacked_branches import _unauthorized_sources
+
+    async with stack.db.immediate() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == "first").values(repo_id=None))
+        await conn.execute(delete(task_integration_checkpoints).where(
+            task_integration_checkpoints.c.task_id == "first",
+        ))
+        await conn.execute(insert(integration_review_evidence).values(
+            id="inherited-source-rejection", source_task_id="first", repository_id="r",
+            source_base=stack.base, reviewed_head_sha=stack.first,
+            reviewed_tree_sha=git(stack.origin.clone, "rev-parse", stack.first + "^{tree}"),
+            generation=0, verdict="rejected", review_kind="root",
+            reviewer_identity="human:test", evidence={"decision_path": "tree_review"},
+            created_at=1,
+        ))
+        assert await _unauthorized_sources(conn, {"first"}) == {"first"}

@@ -172,6 +172,7 @@ list and run python scripts/generate-worker-capabilities.py. -->
     "test_selection_show"
   ],
   "plugin_tools": [
+    "read_file",
     "git_create_pr",
     "git_diff",
     "get_git_status",

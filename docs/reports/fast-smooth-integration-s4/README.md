@@ -1,5 +1,30 @@
 # Fast and smooth integration: S4 verification and operator handoff
 
+## Authority correction, 2026-10-22
+
+The original report below records the evidence available to the S4 worker; its
+classification of the later decisions as unapproved was incorrect. Jack's
+2026-10-13 revision-3 playbook-policy decisions and 2026-10-20 revision-4
+retrospective decisions override revision 2 where they conflict. The recorded
+global disposition `msg-783a64391ca9486396693940ef3cb409` confirms that authority.
+The user subsequently requested direct completion and delivery to `dev` on
+2026-10-22, with the agent-queue project stopped during that work.
+
+The accepted repair disposition `msg-6bc788cb753744729ef5354ca185620c` uses one
+in-place session per batch family, dependency-closed splits, retained companion
+sources and finite revisits. The old requirement for separate repair tasks,
+claims and worktrees is superseded. The single-session fixtures below establish
+that accepted behavior; their absence of the superseded fan-out machinery is
+not an outstanding implementation requirement.
+
+Playbook-controlled decisions, the project switch, current required checks,
+Git-based reconciliation and bounded revisits are required work. Their completion
+is tracked by the operator integration change rather than another review gate.
+The historical measurements and test results below remain historical evidence;
+this correction does not turn a failing check into a pass or attest a live cutover.
+
+## Original verification receipt
+
 Task `stark-willow-95.18`, 2026-10-21. Prepared source:
 `3e60b49c6ec251d91862e31f6eb3c16a61e3dd44` (the completed S4 policy/docs
 predecessor). The governing specification is native approved review
@@ -86,7 +111,7 @@ The inherited failing checks remain failures in the verification receipt.
 | Metrics | Named quantile/cohort/segment tests include pending, censored, late, reopened, overlapping and no-data work; recorder failure cannot break observation. Backend evidence, not dashboard browser validation or a live SLO. |
 | Migration | Cutover preview/stale/live-writer/retention tests; relocation path-family/current-Windows/dirty/restart/reverse-plan tests. Actual sources, backups, runners, native storage and product health remain operator-owned unresolved fields. |
 
-### Approved Red batch gap and tested bounds
+### Original Red batch assessment (superseded above)
 
 `src/integration/fixers.py::BatchFixerService.allocate` allocates one session
 per batch family. `src/integration/fixer_runtime.py::DaemonFixerRuntime.failure_input`
@@ -110,7 +135,7 @@ it does not expand into implementing a new repair scheduler or certify the full
 Red batch row. Deterministic grouping/build precedence and attributed split with
 companion repair sources are independently exercised by the named tests.
 
-### Separate unapproved revision-3 proposals
+### Original revision-3 classification (superseded above)
 
 The prior report incorrectly included six additional rows: **Policy owns
 decisions; Project off/on switch; Live required checks; Green wins; Never blocked

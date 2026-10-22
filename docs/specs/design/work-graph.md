@@ -155,6 +155,13 @@ cache. An explanation shares one request-scoped pool measurement between the
 pool wait reason and capacity spill planning. Actual scheduling, routing and
 claim admission retain their existing fresh observations and guards.
 
+For pull-request prerequisites, interactive explanations do not observe the
+current PR identity or its Git containment. They report
+`delivery_evidence_unavailable`, explicitly naming containment and claimability
+as unknown in this cached-only read, rather than asserting that the source is
+missing from the default branch. This also applies to merged PRs and running
+tasks. Fresh admission still requires the current PR and containment proof.
+
 For a development worker close, the completion generation id becomes visible in
 the same database transaction as the `COMPLETED` transition. Git provenance is
 already retained before that transition. Delivery readers use this current id

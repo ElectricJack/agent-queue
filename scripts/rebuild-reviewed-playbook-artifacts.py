@@ -70,6 +70,7 @@ from src.playbooks.validation import (  # noqa: E402
 FIXTURE_ROOT = REPO_ROOT / "tests" / "fixtures" / "playbooks" / "v2"
 INPUT_ROOT = REPO_ROOT / "tests/fixtures/generated_sources/playbooks"
 SHIPPED = {
+    "fast-smooth-train": "src/prompts/integration_playbooks/fast-smooth-train.md",
     "stuck-task-watch": "src/prompts/reviewed_playbooks/stuck-task-watch/source.md",
     "stuck-task-watch-reminder": "src/prompts/reviewed_playbooks/stuck-task-watch-reminder/source.md",
     "object-loop": "src/prompts/project_playbooks/matter-engine-cpp/object-loop.md",
@@ -308,6 +309,12 @@ def _load(rel_path: str) -> PlaybookSource:
 
 
 def semantic_body(playbook_id: str, source: PlaybookSource) -> dict[str, Any]:
+    if playbook_id == "fast-smooth-train":
+        ref = _source_ref_for_heading(source, "## Rule: observe-policy")
+        return {"rules": [{"id": "observe-policy", "name": "observe-policy",
+            "trigger": {"event_type": "integration.readiness_changed"},
+            "entry_step": "completed", "source": ref}],
+            "steps": {"completed": _terminal("observe-policy", "completed", ref)}}
     if playbook_id in {"promotion-request", "promotion-continuous"}:
         return _promotion_policy_body(source)
     if playbook_id == "object-loop":

@@ -1693,6 +1693,19 @@ class ClaimQueryMixin:
         async with self.immediate() as conn:
             return await _run(conn)
 
+    async def _manually_paused_claim(self, conn, task_id) -> bool:
+        """Whether a manual pause owns *task_id*'s claim, locking its row.
+
+        The pause's stop path proves the preparation ended and releases the
+        workspace it snapshotted; a timeout release would strand that pause.
+        """
+        return bool(task_id) and (await conn.execute(
+            select(tasks.c.id).where(
+                tasks.c.id == task_id, tasks.c.status == TaskStatus.PAUSED.value,
+                tasks.c.resume_after.is_(None),
+            ).with_for_update()
+        )).first() is not None
+
     async def _release_claim_on(
         self,
         conn,
@@ -1736,6 +1749,7 @@ class ClaimQueryMixin:
         if preparation_expired_before is not None and (
             row["claim_phase"] not in ("claiming", "preparing")
             or (row["claim_phase_at"] or 0.0) > preparation_expired_before
+            or await self._manually_paused_claim(conn, task_id)
         ):
             return out
         # A task close may race pool reconciliation: the reconciler can

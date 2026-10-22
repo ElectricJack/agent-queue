@@ -268,6 +268,22 @@ class PlaybookArtifactQueryMixin:
         reasons: str,
     ) -> None:
         async with self.immediate() as conn:
+            if scope == "project":
+                # A policy edit/disable cannot race the train's fenced push.
+                # Take the repository fence before changing the activation;
+                # worker source publication does not participate in this fence.
+                from src.database.tables import projects
+                from src.integration.engine import lock_key
+
+                repository_id = await conn.scalar(select(
+                    projects.c.integration_repository_id,
+                ).where(projects.c.id == scope_identifier))
+                if repository_id:
+                    await conn.execute(text("SELECT pg_advisory_xact_lock(:key)"),
+                                       {"key": lock_key(repository_id)})
+                # Worker reservations already hold hierarchy before touching
+                # owner rows. Match that guard after the publisher's repo fence.
+                await self.lock_hierarchy_project(conn, scope_identifier)
             if artifact_sha256 is not None:
                 found = await conn.execute(
                     select(playbook_artifacts.c.artifact_sha256).where(
@@ -307,6 +323,15 @@ class PlaybookArtifactQueryMixin:
                         },
                     )
                 )
+                if scope == "project" and not enabled:
+                    from src.integration.train_policy import (
+                        release_idle_reservations_on,
+                        train_policy_on,
+                    )
+
+                    if (await train_policy_on(conn, scope_identifier)).reason == (
+                            "train_playbook_disabled"):
+                        await release_idle_reservations_on(conn, scope_identifier, now)
                 return
             # Generic fallback for any other dialect: update first, insert
             # only when the row is genuinely absent.

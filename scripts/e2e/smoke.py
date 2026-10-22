@@ -1017,6 +1017,20 @@ def s3_worker_filed_work(state: dict) -> str:
 
 def s4_formulas(state: dict) -> str:
     """A formula resolves, cooks, renders back as-cooked, and settles."""
+    # S1 leaves two live idle pool sessions at the project's cap of two.
+    # Formula role tasks run in their own task sessions, so provision one
+    # additional seat while exercising their sequential execution. Idle
+    # pool sessions consume real capacity even without current task pins.
+    project = api_checked("get_project", {"project_id": PROJECT})
+    cap = project["max_concurrent_agents"]
+    api_checked("edit_project", {"project_id": PROJECT, "max_concurrent_agents": cap + 1})
+    try:
+        return _s4_formulas(state)
+    finally:
+        api_checked("edit_project", {"project_id": PROJECT, "max_concurrent_agents": cap})
+
+
+def _s4_formulas(state: dict) -> str:
     names = {f["name"] for f in aq("formula", "list", "--project-id", PROJECT)["formulas"]}
     check({"base-review", "review-and-fix"} <= names, f"formula fixtures missing: {names}")
 

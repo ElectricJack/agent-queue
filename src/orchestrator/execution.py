@@ -1021,9 +1021,9 @@ class ExecutionMixin:
         if resuming:
             await self.wait_service.lifecycle.resume.bind_launch(action, launch_record)
 
-        hierarchy_enabled = getattr(
-            project, "hierarchical_integration_mode", "disabled"
-        ) in {"hierarchy", "train"}
+        from src.integration.train_policy import worker_integration_enabled
+
+        hierarchy_enabled = await worker_integration_enabled(self.db, project)
         integration_ownership = None
         integration_fence = None
         if hierarchy_enabled:
@@ -1567,10 +1567,9 @@ class ExecutionMixin:
             try:
                 children = await self.db.get_children(task.id, limit=1)
                 checkpoint = await self.db.get_integration_checkpoint(task.id)
-                hierarchy_enabled = (
-                    getattr(project, "hierarchical_integration_mode", "disabled")
-                    in {"hierarchy", "train"}
-                )
+                from src.integration.train_policy import worker_integration_enabled
+
+                hierarchy_enabled = await worker_integration_enabled(self.db, project)
                 managed_parent = bool(
                     hierarchy_enabled
                     and (children or checkpoint and checkpoint.get("episode_id") is not None)

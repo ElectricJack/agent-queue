@@ -891,6 +891,7 @@ class ClaimCommandsMixin:
                     # The previous request failed or the daemon restarted.
                     # Retry this exact held preparation under the task lock;
                     # never discard its attached fence to manufacture a new claim.
+                    await self._mark_prepare_failure_retried(conn, row.task_id)
                     new_claim = (row, held, None)
                 else:
                     out = self._simple(ClaimResult.CLAIM_IN_PROGRESS, kind, row, cap)
@@ -1638,6 +1639,27 @@ class ClaimCommandsMixin:
         })
         return retired
 
+    async def _mark_prepare_failure_retried(self, conn, task_id) -> None:
+        """Stamp the last failure record before a same-epoch preparation retry.
+
+        Pause recovery accepts that record as proof the attempt it describes
+        unwound its git children; the retry is a new attempt it says nothing
+        about, and one that dies without its own record must stay unproved.
+        """
+        import json
+
+        from sqlalchemy import select, update
+
+        from src.database.tables import task_metadata
+
+        where = (task_metadata.c.task_id == task_id, task_metadata.c.key == PREPARE_FAILURE)
+        encoded = await conn.scalar(select(task_metadata.c.value).where(*where).with_for_update())
+        record = json.loads(encoded) if encoded is not None else None
+        if isinstance(record, dict) and "retried_at" not in record:
+            await conn.execute(update(task_metadata).where(*where).values(
+                value=json.dumps({**record, "retried_at": time.time()}),
+            ))
+
     async def _record_prepare_failure(
         self, task, failure, *, session, slot, epoch, disposition, attempt=None,
         cleanup_unproved=False,
@@ -1728,10 +1750,9 @@ class ClaimCommandsMixin:
                     self._development_integration(),
                     default_mode=self.config.integration.default_mode,
                 )
-            hierarchy_enabled = getattr(project, "hierarchical_integration_mode", "disabled") in {
-                "hierarchy",
-                "train",
-            }
+            from src.integration.train_policy import worker_integration_enabled
+
+            hierarchy_enabled = await worker_integration_enabled(self.db, project)
 
             async def check_checkout(*, conn=None):
                 nonlocal stage
@@ -2264,6 +2285,34 @@ class ClaimCommandsMixin:
                         **failure.event_fields(),
                     },
                 )
+                self._resolve_claim_waiters(session.id, epoch, "prepare_failed")
+                return self._simple(ClaimResult.PREPARE_FAILED, failure.reason, row, cap)
+            if isinstance(exc, ChildPreparationConflict):
+                # The merge was cleanly aborted. Without a managed train
+                # origin there is no train repair to reserve; retrying the
+                # same inputs would only quarantine an otherwise healthy slot.
+                await self.db.set_task_meta(task.id, "child_preparation_conflict", {
+                    "child_head": exc.child_head, "parent_head": exc.parent_head,
+                    "merge_head": exc.merge_head, "files": list(exc.files),
+                    "reason": failure.reason,
+                })
+                await self.db.release_claim(
+                    session.id,
+                    expected_task_id=task.id, expected_claim_epoch=epoch,
+                    expected_instance_token=session.instance_token,
+                    task_status=TaskStatus.BLOCKED, context="merge_conflict",
+                    now=time.time(), result="prepare_failed",
+                    needs_attention="child_preparation_conflict",
+                )
+                await self._record_prepare_failure(
+                    task, failure, session=session, slot=slot, epoch=epoch,
+                    disposition="blocked",
+                )
+                await self.orchestrator.bus.emit("pool.prepare_failed", {
+                    "project_id": session.project_id, "profile_id": session.profile_id,
+                    "session_id": session.id, "task_id": task.id,
+                    **failure.event_fields(),
+                })
                 self._resolve_claim_waiters(session.id, epoch, "prepare_failed")
                 return self._simple(ClaimResult.PREPARE_FAILED, failure.reason, row, cap)
             if isinstance(exc, ForeignSlotClaim):

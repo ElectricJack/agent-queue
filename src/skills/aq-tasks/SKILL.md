@@ -215,8 +215,11 @@ and `.aq/claim.json`), run `aq session drain-ack` and exit: the pool can recycle
 The server marks an idle session for drain on the second identical failure.
 If preparation retained ownership, preserve it and **end the turn awaiting the
 supervisor's inbox delivery**. Durable waits require an active claim and cannot be
-registered during preparation. If you hold an active claim, register **one** durable
-message wait for the reply with the returned thread/cursor, then end the turn:
+registered during preparation. If you hold an active claim and prime reports waits
+enabled for the project, register **one** durable message wait for the reply with
+the returned thread/cursor, then end the turn. If waits are disabled or registration
+returns `wait.disabled`, preserve the claim and end the turn awaiting the supervisor
+inbox delivery; do not retry registration or poll:
 
 ```bash
 aq wait register --kind message --ref <reply-thread> --after-seq <cursor> \

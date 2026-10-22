@@ -1242,12 +1242,17 @@ async def test_missing_provenance_reopen_requires_operator_control(
         if caller in {"operator", "supervisor"}:
             assert (await reopen_command(db, "missing"))["status"] == "READY"
         else:
-            with pytest.raises(HierarchyError, match="delivery_unknown"):
-                await reopen_command(db, "missing")
+            refused = await reopen_command(db, "missing")
+            assert refused["success"] is False
+            assert refused["code"] == "hierarchy.delivery_unknown"
+            assert "delivery_unknown" in refused["error"]
     task = await db.get_task("missing")
     assert task.status is (TaskStatus.READY if caller in {"operator", "supervisor"}
                            else TaskStatus.COMPLETED)
     assert task.branch_name == before.branch_name
+    if caller not in {"operator", "supervisor"}:
+        assert task.description == before.description
+        assert task.retry_count == before.retry_count
     assert git(origin.url, "rev-parse", "aq/missing") == head
     assert (await db.get_task_completion("missing")).id == "close-missing"
 
@@ -2039,7 +2044,7 @@ async def test_cleanup_guard_rechecks_current_target_without_receipts(world, tmp
 @pytest.mark.parametrize("cross_epic", [False, True])
 @pytest.mark.parametrize("proof", ["current", "missing", "reopened", "held"])
 async def test_resume_uses_git_prerequisites_without_legacy_receipts(
-    world, tmp_path, proof, cross_epic, prerequisite_policy,
+    world, tmp_path, proof, cross_epic, prerequisite_policy, monkeypatch,
 ):
     from types import SimpleNamespace
 
@@ -2052,6 +2057,22 @@ async def test_resume_uses_git_prerequisites_without_legacy_receipts(
     from src.wait_runtime.resume import ResumeTransaction
     from src.wait_runtime.scheduler import SchedulerWaitService
 
+    import src.integration.stacked_branches as stacks
+    import src.wait_runtime.resume as resume
+
+    # This verifies Git admission, not whether shared CI finishes inside the
+    # two-second advisory cache TTL. Exercise expiry separately below.
+    cache_now = time.monotonic()
+    monkeypatch.setattr(stacks, "time", SimpleNamespace(monotonic=lambda: cache_now))
+    if proof == "expired":
+        locked = resume.locked_suspension
+
+        async def after_observation_expires(*args, **kwargs):
+            nonlocal cache_now
+            cache_now += 3
+            return await locked(*args, **kwargs)
+
+        monkeypatch.setattr(resume, "locked_suspension", after_observation_expires)
     db, origin, _, _ = world
     transport = GitManager()
     observer = DeliveryObserver(db, git=transport, data_dir=tmp_path / "resume-proof",
@@ -2103,7 +2124,7 @@ async def test_resume_uses_git_prerequisites_without_legacy_receipts(
             branch="aq/dependent", saved_head=head, stopped_at=now,
             prior_status="IN_PROGRESS", held_cursor_seq=0, resume_state="queued", created_at=now,
         ))
-    if proof == "missing":
+    if proof in {"missing", "expired"}:
         # The source exists, but is absent from the parent delivery target.
         base = git(origin.clone, "rev-list", "--max-parents=0", "main")
         git(origin.clone, "push", "--force", "origin", f"{base}:aq/epic")
@@ -2124,7 +2145,15 @@ async def test_resume_uses_git_prerequisites_without_legacy_receipts(
     # permits that source before parent delivery; the authored opt-out does not.
     admitted = proof == "current" or (proof == "missing" and prerequisite_policy is None)
     assert (action is not None) == admitted, observed
+    if proof == "expired":
+        assert "epic_refresh_pending" in observed.constraints["batch_hold"]["reasons"]
     async with db._engine.connect() as conn:
         state = await conn.scalar(select(continuations.c.resume_state).where(
             continuations.c.id == "resume"))
     assert state == ("reserved" if admitted else "queued")
+
+
+async def test_resume_withholds_expired_stack_observation(world, tmp_path, monkeypatch):
+    await test_resume_uses_git_prerequisites_without_legacy_receipts(
+        world, tmp_path, "expired", True, None, monkeypatch,
+    )

@@ -8314,6 +8314,64 @@ async def test_ordinary_default_sync_is_bounded_across_restart_and_archival(
     assert (await env.store.get("ordinary")).repair_attempt_count == 2
 
 
+async def test_spent_default_sync_escalates_the_batch_once(ordinary_env):
+    """A spent sync left an epic batch sealed with nothing to run for 60m+ (train-56f15)."""
+    env = ordinary_env
+    decision = {"ref": "refs/heads/main", "sha": "c" * 40, "checks": ["unit"],
+                "provenance": "train_candidate"}
+    filed = await env.service.allocate(
+        "ordinary", target_ref=env.ref, head_sha=STARTING_SHA, sync_default_branch=decision,
+        authorize=AsyncMock(return_value=True), ttl_seconds=10,
+    )
+    await env.db.update_task(filed["task_id"], status=TaskStatus.COMPLETED)
+    env.now += 10
+    replays = [await env.service.allocate(
+        "ordinary", target_ref=env.ref, head_sha="d" * 40, sync_default_branch=decision,
+        authorize=AsyncMock(return_value=True),
+    ) for _ in range(3)]
+    assert {(r["outcome"], r["task_id"]) for r in replays} == {("sync_exhausted", filed["task_id"])}
+    assert len({r["escalation_id"] for r in replays}) == 1
+    incident = await env.db.get_escalation(replays[0]["escalation_id"])
+    assert (incident["state"], incident["source_identity"], incident["summary"]) == (
+        "needs_human", "ordinary", "Default-branch sync exhausted for batch ordinary")
+    assert "abort-batch ordinary --apply" in incident["decision_requested"]
+    assert "refresh-epic --task EPIC --apply" in incident["decision_requested"]
+    assert filed["task_id"] in incident["investigation"]
+    async with env.db._engine.connect() as conn:
+        notices = (await conn.execute(select(messages).where(
+            messages.c.body_kind == "integration_repair_exhausted",
+        ))).mappings().all()
+    assert [n["to_id"] for n in notices] == ["supervisor-p"]
+    assert (await env.store.get("ordinary")).repair_attempt_count == 1
+
+
+async def test_restart_refuses_an_ordinary_repair_that_is_not_the_current_attempt(ordinary_env):
+    """A restarted attempt-1 repair went READY but no claim or handoff could ever take it."""
+    env = ordinary_env
+    first = await env.service.allocate("ordinary", authorize=AsyncMock(return_value=True),
+                                       target_ref=env.ref, head_sha=STARTING_SHA, ttl_seconds=10)
+    await env.db.update_task(first["task_id"], status=TaskStatus.COMPLETED)
+    env.now += 10
+    second = await env.service.allocate("ordinary", authorize=AsyncMock(return_value=True),
+                                        target_ref=env.ref, head_sha=STARTING_SHA, ttl_seconds=10)
+    assert second["attempt_count"] == 2
+    await env.db.update_task(first["task_id"], status=TaskStatus.FAILED)
+    result = await TaskCommandsMixin._cmd_restart_task(
+        SimpleNamespace(db=env.db), {"task_id": first["task_id"]},
+    )
+    assert (result["success"], result["error_code"]) == (False, "stale_repair")
+    assert "attempt 1 but batch ordinary is open at attempt 2" in result["error"]
+    assert f"aq task close {first['task_id']} --obsolete" in result["error"]
+    assert (await env.db.get_task(first["task_id"])).status is TaskStatus.FAILED
+    current = await env.db.get_task(second["task_id"])
+    assert await env.service.stale(current) is None
+    assert await env.service.stale(await env.db.get_task(first["task_id"])) is not None
+    async with env.db.immediate() as conn:
+        await conn.execute(update(integration_batches).where(
+            integration_batches.c.id == "ordinary").values(intent="aborted"))
+    assert "is aborted at attempt 2" in await env.service.stale(current)
+
+
 @pytest.mark.parametrize("sync", [False, True])
 async def test_ordinary_allocated_repair_enters_hierarchy_frontier(ordinary_env, sync):
     from src.database.queries.claim_queries import _frontier_where

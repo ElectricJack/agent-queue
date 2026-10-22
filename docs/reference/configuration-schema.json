@@ -808,6 +808,14 @@
           "additionalProperties": false,
           "default": null,
           "properties": {
+            "actions_permission": {
+              "default": "read",
+              "enum": [
+                "read",
+                "write"
+              ],
+              "type": "string"
+            },
             "app_id": {
               "minimum": 1,
               "type": "integer"

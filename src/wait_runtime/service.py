@@ -164,6 +164,11 @@ class WaitService:
     async def drain(self, watermark):
         return await self.orch._command_handler.wait_service_drain(self.listener, watermark)
 
+    async def quarantine_deadline(self, deadline, refusal):
+        return await self.orch._command_handler.wait_service_quarantine_deadline(
+            self.timers, deadline, refusal,
+        )
+
     async def source_commit(self, args, *, principal, scope, handler):
         seq = await self.orch.db.wait_source_commit(**args)
         return {"success": True, "source_seq": seq}
