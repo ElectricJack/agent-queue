@@ -374,7 +374,7 @@ def test_batch_exception_is_exact_and_has_no_remaining_headroom(report, manifest
     assert exception["batch_measured_delta"] == measured - 158_958
     grant, = exception["supplemental_grants"]
     assert grant["task_id"] == "fresh-apex-30"
-    assert grant["approval_message_id"] == "msg-f433abd4"
+    assert grant["approval_message_id"] == "msg-4e25c0d3"
     assert grant["authorized_delta"] == 5
     assert grant["prior_owned_total_cap"] + grant["authorized_delta"] == measured
     assert grant["measured_owned_total"] == measured

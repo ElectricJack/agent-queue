@@ -59,8 +59,8 @@ TRANSITION_BATCH_EXCEPTION = {'batch_id': 'train-745592300af5cef0338dec80ebabb46
  'delivery_method': 'operator direct integration; user request 2026-10-22',
  'supplemental_grants': [{
      'task_id': 'fresh-apex-30',
-     'approval_message_id': 'msg-f433abd4',
-     'relay_message_id': 'msg-d145f0ea3fd44b9aa679c60aa0af7f99',
+     'approval_message_id': 'msg-4e25c0d3',
+     'relay_message_id': 'msg-bd98955a2fa443cc920ce725e42a5c3f',
      'measured_source_revision': 'd9c50555a1d87beaefbfc8de3b13229a6ab9f061',
      'prior_owned_total_cap': 160820,
      'authorized_delta': 5,
