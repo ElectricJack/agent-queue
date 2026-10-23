@@ -25,6 +25,9 @@ import asyncio
 import json
 import logging
 import time
+from collections import OrderedDict
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -37,6 +40,7 @@ from src.git.github_contracts import GitHubAccessError
 from src.git.manager import GitError
 from src.integration.source_ancestry import SourceAncestryInvalid, SourceAncestryObservation
 from src.integration.source_ci import pull_request_conflicts
+from src.integration.selection_metrics import selection_count
 from src.models import TaskStatus
 from src.projects.github import GitHubError
 
@@ -52,6 +56,22 @@ MERGEABILITY_RETRY_SECONDS = 15
 #: fetch queue. A visit waits this long for it, then defers that root and goes
 #: on; the recovery keeps running and a later visit takes its outcome.
 ROOT_PR_RECOVERY_WAIT_SECONDS = 30.0
+
+# Successful observations must survive a cold pass through a large frontier,
+# but reviews and rerun checks can change without a new head.
+PR_GATE_CACHE_SECONDS = 600.0
+PR_GATE_CACHE_LIMIT = 2048
+_PR_TARGET: ContextVar[tuple | None] = ContextVar("root_pr_target", default=None)
+
+
+@contextmanager
+def root_pr_target_scope(target, target_sha):
+    """Bind admission to the fetched target, including paired-repair admission."""
+    token = _PR_TARGET.set((target.key, target_sha))
+    try:
+        yield
+    finally:
+        _PR_TARGET.reset(token)
 
 
 def _pull_fingerprint(pull):
@@ -85,7 +105,7 @@ def pull_request_mismatch(pull, binding, *, branch, base_ref, head_sha):
 
 
 class RootPullRequestGate:
-    """Read the PR at freeze time; unavailable observations back off, never admit.
+    """Observe exact PR admission; reuse bounded observations on unchanged tips.
 
     Git alone has already decided this source is pending. These observations
     authorize admission, and have no bearing on delivery or a frozen batch.
@@ -99,6 +119,8 @@ class RootPullRequestGate:
         self._deferred = {}
         self._recoveries = {}
         self._running = set()
+        self._admitted = OrderedDict()
+        self._target_tips = {}
 
     async def __call__(self, target, member):
         return await self._observe(target, member)
@@ -130,6 +152,12 @@ class RootPullRequestGate:
                     conn=conn, reduced=True)).get(member.task_id)
         policy = row["hierarchical_integration_policy"] or {}
         url = row["pr_url"]
+        observed_target = _PR_TARGET.get()
+        scoped = observed_target is not None and observed_target[0] == target.key
+        if scoped:
+            self._target_tips[target.key] = observed_target[1]
+        target_sha = self._target_tips.get(target.key)
+        root = (target.key, member.task_id)
 
         def blocker(code, **detail):
             return {"code": code, "task_id": member.task_id, "ref": member.task_id,
@@ -137,23 +165,39 @@ class RootPullRequestGate:
                     "detail": f"root {member.task_id} PR admission: {code}", **detail}
 
         if not isinstance(url, str) or not url.strip():
+            self._admitted.pop(root, None)
             return blocker("awaiting_pr")
         key = (target.key, member.task_id, member.source_sha, url, row["branch_name"],
-               json.dumps(policy, sort_keys=True), request)
+               json.dumps(policy, sort_keys=True), request, member.source_base_sha,
+               row["hierarchical_integration_generation"], target_sha)
+        # A target move invalidates admission, but cannot cancel an exact-source
+        # recovery that may already be publishing or recording its outcome.
+        recovery_key = key[:-1]
         for stale in list(self._deferred):
             if stale[:2] == key[:2] and stale != key:
                 del self._deferred[stale]
         for stale in list(self._recoveries):
-            if stale[:2] == key[:2] and stale != key:
+            if stale[:2] == recovery_key[:2] and stale != recovery_key:
                 # A superseded observation could only answer stale; at most one
                 # recovery runs per target and root.
                 self._recoveries.pop(stale).cancel()
         previous = self._deferred.get(key)
         now = self.clock()
-        recovered = key in self._recoveries and self._recoveries[key].done()
+        admitted = self._admitted.get(root)
+        if (not repaired_source and scoped and target_sha and admitted is not None
+                and admitted[0] == key and now < admitted[1]):
+            self._admitted.move_to_end(root)
+            selection_count("pr_gate_cache_hits")
+            return None
+        # Never fall back to a stale success after an unsuccessful refresh.
+        self._admitted.pop(root, None)
+        recovered = (recovery_key in self._recoveries
+                     and self._recoveries[recovery_key].done())
         if (previous and now < previous["retry_at"] and not recovered
                 and not (repaired_source and previous["code"] == "pr_checks_red")):
+            selection_count("pr_gate_cache_hits")
             return previous
+        selection_count("pr_gate_cache_misses")
 
         def defer(code, *, due_at=None, **detail):
             delay = min((previous or {}).get("retry_seconds", 30) * 2, 600)
@@ -231,7 +275,7 @@ class RootPullRequestGate:
                     # Workflow-level failure, absent checks and cancellations do
                     # not establish a failed required job that a worker can fix.
                     if any(check.conclusion is Conclusion.FAILURE for check in result.checks):
-                        recovery = await self._recover(key, RootPRCheckFailure(
+                        recovery = await self._recover(recovery_key, RootPRCheckFailure(
                             request=request, source_sha=member.source_sha,
                             source_base_sha=member.source_base_sha, pr_url=url,
                             policy_generation=row["hierarchical_integration_generation"],
@@ -246,6 +290,10 @@ class RootPullRequestGate:
                 if state != "approved":
                     return defer(state)
             self._deferred.pop(key, None)
+            if not repaired_source and scoped and target_sha and result.green:
+                self._admitted[root] = (key, self.clock() + PR_GATE_CACHE_SECONDS)
+                while len(self._admitted) > PR_GATE_CACHE_LIMIT:
+                    self._admitted.popitem(last=False)
             return None
         except ReviewerPermissionUnavailable as exc:
             return defer("pr_review_permission_unavailable", reason=str(exc))
