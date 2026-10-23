@@ -258,7 +258,7 @@ async def _stage_check_definitions(conn) -> dict[str, str]:
     return {row["conname"]: row["definition"] for row in rows}
 
 
-async def _insert_stage_rows(conn, stage: int, suffix: str) -> None:
+async def _insert_stage_rows(conn, stage: int, suffix: str, *, deadline=1.0) -> None:
     """One resolution (for member *stage*) and one mutation at *stage*.
 
     Only CHECK constraints are under test: ``session_replication_role =
@@ -276,10 +276,10 @@ async def _insert_stage_rows(conn, stage: int, suffix: str) -> None:
             "repository_id, branch, target_branch, target_kind, fence_owner_id, fence_token, "
             "partial_head_sha, source_base_sha, source_head_sha, resolved_head_sha, "
             "resolved_tree_sha, repair_commit_shas, state, created_at, updated_at) VALUES "
-            "($1, 'batch', 0, $2, 'op', 'batch', $2, 1.0, 'p', 'repair', 'session', 'token', "
+            "($1, 'batch', 0, $2, 'op', 'batch', $2, $4, 'p', 'repair', 'session', 'token', "
             "'workspace', '/w', 'repo', 'refs/heads/b', 'refs/heads/t', 'qualified', "
             "'repair', 1, $3, $3, $3, $3, $3, '[]', 'reserved', 1.0, 1.0)",
-            f"resolution-{suffix}", stage, oid,
+            f"resolution-{suffix}", stage, oid, deadline,
         )
         await conn.execute(
             "INSERT INTO integration_candidate_ref_mutations (id, batch_id, revision, purpose, "
@@ -1278,3 +1278,58 @@ async def test_held_ingestion_downgrade_refuses_pending_batches_atomically(state
         await conn.close()
     allowed = _alembic_pg(dsn, "downgrade", "a00000000099")
     assert allowed.returncode == 0, allowed.stderr
+
+
+async def test_unlimited_repair_deadline_upgrade_preserves_reservations_and_replays():
+    dsn = await create_scratch_database("repairdeadline121")
+    before = _alembic_pg(dsn, "upgrade", "a00000000120")
+    assert before.returncode == 0, before.stderr
+    conn = await _pg_conn(dsn)
+    try:
+        # The squashed baseline uses live metadata. Reproduce the deployed shape.
+        await conn.execute(
+            "ALTER TABLE integration_candidate_resolutions "
+            "ALTER COLUMN stage_deadline_at SET NOT NULL"
+        )
+        await conn.execute(
+            "ALTER TABLE integration_subjects DROP CONSTRAINT ck_integration_subjects_budget"
+        )
+        await conn.execute(
+            "ALTER TABLE integration_subjects ADD CONSTRAINT ck_integration_subjects_budget "
+            "CHECK (budget_ordinal IS NULL OR budget_deadline_at IS NOT NULL)"
+        )
+        await _insert_stage_rows(conn, 0, "finite", deadline=123.0)
+    finally:
+        await conn.close()
+    upgraded = _alembic_pg(dsn, "upgrade", "head")
+    assert upgraded.returncode == 0, upgraded.stderr
+    conn = await _pg_conn(dsn)
+    try:
+        assert "budget_deadline_at IS NOT NULL" not in await conn.fetchval(
+            "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
+            "WHERE conname='ck_integration_subjects_budget'"
+        )
+        assert await conn.fetchval(
+            "SELECT stage_deadline_at FROM integration_candidate_resolutions "
+            "WHERE id='resolution-finite'"
+        ) == 123.0
+        await _insert_stage_rows(conn, 1, "unlimited", deadline=None)
+        assert await conn.fetchval(
+            "SELECT stage_deadline_at FROM integration_candidate_resolutions "
+            "WHERE id='resolution-unlimited'"
+        ) is None
+    finally:
+        await conn.close()
+    # Replay the guarded DDL against an already-upgraded schema with real NULLs.
+    stamped = _alembic_pg(dsn, "stamp", "a00000000120")
+    assert stamped.returncode == 0, stamped.stderr
+    again = _alembic_pg(dsn, "upgrade", "head")
+    assert again.returncode == 0, again.stderr
+    refused = _alembic_pg(dsn, "downgrade", "a00000000120")
+    assert refused.returncode != 0
+    conn = await _pg_conn(dsn)
+    try:
+        assert await conn.fetchval("SELECT count(*) FROM integration_candidate_resolutions") == 2
+        assert await conn.fetchval("SELECT version_num FROM alembic_version") == "a00000000121"
+    finally:
+        await conn.close()

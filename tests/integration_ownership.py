@@ -45,10 +45,10 @@ TRANSITION_BATCH_EXCEPTION = {'batch_id': 'train-745592300af5cef0338dec80ebabb46
                           'msg-96fed6b8e86148f0bbf55ded244c9a0f',
                           'msg-76ff7843e72d451b9017a0b4db30c970'],
  'decision_record': 'record:2720bdbe-7521-427e-8e72-1f40a3ff9818',
- 'measured_source_revision': '8763599c2cc51b9129887c4c40caaef70bf3e092',
+ 'measured_source_revision': 'ae110ecb68ad88138e43c96457e1feb9fc3ff5ef',
  'original_owned_total_cap': 155499,
- 'measured_owned_total': 161232,
- 'delta': 5733,
+ 'measured_owned_total': 161217,
+ 'delta': 5718,
  'predecessors': [{'batch_id': 'train-77f0d8e451f6aed08d608e443031047a',
                    'decision_message_id': 'msg-edb5f857de344716a38857406fa69958',
                    'decision_record': 'record:2720bdbe-7521-427e-8e72-1f40a3ff9818',
@@ -69,7 +69,7 @@ TRANSITION_BATCH_EXCEPTION = {'batch_id': 'train-745592300af5cef0338dec80ebabb46
  'storage_categories': ['integration_close_attempts'],
  'category_restore_task': 'stark-willow-95.17',
  'verification_task': 'stark-willow-95.18',
- 'measured_engine_lines': 85544,
+ 'measured_engine_lines': 85010,
  'measured_table_count': 45,
  'delivery_method': 'operator direct integration; user request 2026-10-22',
  'amendments': [{'task_id': 'solid-impact-56',
@@ -450,6 +450,38 @@ TRANSITION_BATCH_EXCEPTION = {'batch_id': 'train-745592300af5cef0338dec80ebabb46
                                         'the retained starting head; the other members add no '
                                         'owned lines. Preserve every historical grant and batch '
                                         'measurement.'},
+ 'post_release_structure_measurement': {'task_id': 'swift-nexus-38',
+                                        'referenced_decision': 'size-cap-delegation-2026-10-23',
+                                        'operator_decision': '6679052c',
+                                        'operator_task': 'sharp-cascade-53',
+                                        'pull_request': 'https://github.com/ElectricJack/agent-queue/pull/1775',
+                                        'required_pr_head': '14183dc9d82cdc4cb32610827e228b49b6e488d2',
+                                        'dev_source_revision': 'c177d24e86d25fde7804131c94bfd637b0eb540a',
+                                        'previous_source_revision': '73e99672d2447c44ef6a71d43a0187f2d16630af',
+                                        'measured_source_revision': '063b7620f635b34aeb376d1d9d4280dd22273b7d',
+                                        'previous_owned_total': 161162,
+                                        'previous_engine_lines': 85543,
+                                        'previous_table_count': 45,
+                                        'authorized_owned_delta': -38,
+                                        'authorized_engine_delta': -554,
+                                        'authorized_table_delta': 0,
+                                        'measured_owned_total': 161124,
+                                        'measured_engine_lines': 84989,
+                                        'measured_table_count': 45,
+                                        'measured_groups': {'shared': 62537,
+                                                            'companions': 11168,
+                                                            'engine': 84989,
+                                                            'policy_sources': 1042,
+                                                            'policy': 493,
+                                                            'ui': 262,
+                                                            'guards': 633},
+                                        'reason': 'Exact combined-tree remeasurement after merging '
+                                                  'PR #1775 head with dev. Approval pre-granted by '
+                                                  'size-cap-delegation-2026-10-23, operator '
+                                                  'decision 6679052c on sharp-cascade-53. Preserve '
+                                                  'ownership classifications and all historical '
+                                                  'grants; no production code moved or trimmed for '
+                                                  'the count.'},
  'restart_hold_repair_merge_measurement': {'task_id': 'fair-flare-10',
                                            'root_task_id': 'prime-crest-79',
                                            'pull_request': 'https://github.com/ElectricJack/agent-queue/pull/1900',
@@ -457,23 +489,24 @@ TRANSITION_BATCH_EXCEPTION = {'batch_id': 'train-745592300af5cef0338dec80ebabb46
                                            'operator_decision': '6679052c',
                                            'operator_task': 'sharp-cascade-53',
                                            'decision_message_id': 'msg-76ff7843e72d451b9017a0b4db30c970',
-                                           'previous_source_revision': 'dae4a86819d8c4ed6ec70d0d9349f3895f284c4d',
+                                           'previous_source_revision': 'd60c0f238c8205f495a384c0bd77c322a8fc89ac',
                                            'previous_measurement_revision': '4bafa45f1ac0a466eab372c7b6b0b866f67bb832',
-                                           'previous_owned_total': 161213,
-                                           'previous_engine_lines': 85544,
+                                           'previous_owned_total': 161198,
+                                           'previous_engine_lines': 85010,
                                            'previous_table_count': 45,
                                            'authorized_owned_delta': 19,
                                            'authorized_shared_delta': 19,
                                            'authorized_engine_delta': 0,
                                            'authorized_table_delta': 0,
-                                           'measured_source_revision': '8763599c2cc51b9129887c4c40caaef70bf3e092',
-                                           'measured_owned_total': 161232,
-                                           'measured_engine_lines': 85544,
+                                           'measured_source_revision': 'ae110ecb68ad88138e43c96457e1feb9fc3ff5ef',
+                                           'measured_owned_total': 161217,
+                                           'measured_engine_lines': 85010,
                                            'measured_table_count': 45,
                                            'reason': 'Compose the unchanged approved +19 restart '
                                                      'hold repair grant on current dev for PR '
                                                      '#1900. Preserve every historical grant and '
-                                                     'frozen batch measurement.'}}
+                                                     'frozen batch measurement.',
+                                           'previous_recorded_owned_cap': 161213}}
 FINAL_ENGINE_CAP = 11_999
 FINAL_TOTAL_CAP = 19_999
 FINAL_TABLE_CAP = 10

@@ -1319,6 +1319,7 @@
         "tests/test_hierarchy_queries.py",
         "tests/test_hierarchy_settlement.py",
         "tests/test_phases.py",
+        "tests/test_task_split.py",
         "tests/test_worker_filing.py"
       ]
     },
@@ -3570,7 +3571,7 @@
         "ci-sentinel"
       ],
       "default_arm": true,
-      "digest": "sha256:7f889a7670b9a140192e6903f1fe6c327e62440ced52f45f0eef2970b8d2ce2a",
+      "digest": "sha256:507b7b7c1f7db4b9990121e74ebb6ac35d2c37360bba17c0ceeeafc67cef10ee",
       "imports": [
         "src.commands.ci_commands",
         "src.commands.contracts",
@@ -3582,7 +3583,9 @@
         "src.models",
         "src.orchestrator"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "``ci_baseline_status`` — the observation half of the ci-main-sentinel."
     },
     "tests/test_ci_completion.py": {
@@ -6765,7 +6768,7 @@
         "epic-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:7626d9c926eff3dd256c4022503675d57c9f40ab555def265f3790f0cfdc0fc7",
+      "digest": "sha256:5229b178b452dbc5465214e930a414347758063964fca9bc7dd598eefc6823cb",
       "imports": [
         "src.commands.handler",
         "src.config",
@@ -6781,6 +6784,7 @@
         "src.integration.provenance",
         "src.integration.repository_git",
         "src.integration.reviews",
+        "src.integration.root_pr_recovery",
         "src.integration.source_ci",
         "src.integration.source_repairs",
         "src.integration.train_sources",
@@ -10133,14 +10137,18 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:ef2beafdc82bea01839ff8fa0100523f09b55b3519f557eedc6f5c76c3e1c8f6",
+      "digest": "sha256:867524cd949af212da57cb6b62904af077afd161a2e610c6a8d7a96b382c4e87",
       "imports": [
         "src.database",
         "src.database.tables",
         "src.integration.models",
+        "src.integration.records",
+        "src.integration.status",
         "src.models"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "Durable hierarchical-integration persistence contracts."
     },
     "tests/test_integration_stranded_children.py": {
@@ -18765,6 +18773,31 @@
       ],
       "markers": [],
       "summary": "Dock markers from live attempts, not ``agents.current_task_id``."
+    },
+    "tests/test_task_split.py": {
+      "areas": [
+        "task-hierarchy"
+      ],
+      "default_arm": true,
+      "digest": "sha256:1ee106657cdc553cd1680ae3766b226539127a8f0e0f7a4e2ef20f414f1263a0",
+      "imports": [
+        "src.commands.contracts",
+        "src.commands.contracts.builtin",
+        "src.database.tables",
+        "src.git.manager",
+        "src.integration.admission",
+        "src.integration.delivery_observer",
+        "src.integration.delivery_truth",
+        "src.integration.git_truth",
+        "src.integration.hierarchy",
+        "src.integration.provenance",
+        "src.mcp_registration",
+        "src.models"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Started mixed tasks retain code ownership while explicit acceptance moves out."
     },
     "tests/test_task_subtask_commands.py": {
       "areas": [
