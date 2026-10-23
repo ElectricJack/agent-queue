@@ -18,6 +18,7 @@ from src.database.tables import (
 )
 from src.models import Agent, AgentProfile, Project, RepoConfig, RepoSourceType, Task, TaskStatus
 from src.integration.admission import observe_admission
+from src.integration.stacked_branches import StackView
 from src.waits.admission import AdmissionReader
 from src.waits.conditions import Scope, WaitError
 from src.waits.graph import GRAPH_LOCK, recompute_from
@@ -70,6 +71,42 @@ async def rows(env, table):
 async def sync(env, now=NOW):
     return await env.service.sync({"project_id": "p", "cycle_id": str(now), "blockers": [],
                                    "now": now}, principal=SERVICE)
+
+
+async def test_scheduler_sync_reads_stack_inputs_once_per_project_per_pass(env, monkeypatch):
+    for i in range(4):
+        await env.db.create_task(Task(id=f"candidate-{i}", project_id="p", title="Candidate",
+                                     description="", status=TaskStatus.READY))
+    read = AsyncMock(return_value=())
+    monkeypatch.setattr("src.integration.stacked_branches._inputs", read)
+    view = StackView(env.db, "p")
+    view.proofs = {"source": {"task_id": "source"}}
+
+    async def observe(conn, task_id, **kwargs):
+        # Admission verifies the same project inputs at both read boundaries.
+        await view.verified_on(conn)
+        await view.verified_on(conn)
+
+    observed = AsyncMock(side_effect=observe)
+    env.service.reader = SimpleNamespace(observe_task=observed)
+    assert (await sync(env))["success"]
+    assert observed.await_count == 5
+    assert read.await_count == 1
+    assert (await sync(env, NOW + 1))["success"]
+    assert observed.await_count == 10
+    assert read.await_count == 2
+    async with env.db._engine.connect() as conn:
+        await view.verified_on(conn)
+        await view.verified_on(conn)
+    assert read.await_count == 4
+
+
+async def test_empty_stack_verification_does_not_read_project_history(env, monkeypatch):
+    read = AsyncMock(side_effect=AssertionError("empty proof set scanned project history"))
+    monkeypatch.setattr("src.integration.stacked_branches._inputs", read)
+    async with env.db._engine.connect() as conn:
+        assert await StackView(env.db, "p").verified_on(conn) == {}
+    read.assert_not_awaited()
 
 
 async def fire(env, deadline, now):
@@ -590,3 +627,31 @@ async def test_interrupted_sync_replays_committed_owner_receipts(env, monkeypatc
     assert {r["id"]: r["decision_inputs"]["registration_receipt"] for r in after} == {
         r["id"]: r["decision_inputs"]["registration_receipt"] for r in before}
     assert await rows(env, wait_deadlines) == deadlines
+async def test_tick_runs_startup_bridge_beside_the_scheduler(env, monkeypatch):
+    import asyncio
+    from src.wait_runtime.service import WaitService
+
+    import src.wait_runtime.service as service_module
+
+    service = WaitService(env.o, clock=lambda: NOW)
+    started, release = asyncio.Event(), asyncio.Event()
+    calls = 0
+
+    async def slow_bridge():
+        nonlocal calls
+        calls += 1
+        started.set()
+        await release.wait()
+
+    monkeypatch.setattr(service_module, "BRIDGE_TICK_BUDGET_SECONDS", 0.05)
+    monkeypatch.setattr(WaitService, "enabled", property(lambda self: True))
+    service.processing_enabled = AsyncMock(return_value=True)
+    service.startup_bridge = slow_bridge
+    service.lifecycle.tick = AsyncMock()
+    service.listener.tick = AsyncMock(return_value=False)
+    await asyncio.wait_for(service.tick(), 1)
+    await asyncio.wait_for(started.wait(), 1)
+    await asyncio.wait_for(service.tick(), 1)
+    assert calls == 1
+    release.set()
+    await service._bridge_task
