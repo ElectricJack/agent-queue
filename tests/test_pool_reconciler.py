@@ -449,9 +449,12 @@ async def test_container_sibling_contained_by_external_fast_forward_releases_dep
     # The leaf sibling and one child are contained; the other child is not.
     _fast_forward_epic(env, "aq/first", "aq/group-a")
     frontier_clock.return_value += env.observer.READ_MAX_AGE + 0.01
-    modes = await frontier(True)
+    modes = await frontier(False)
     assert modes[PROJECT_ID].delivered_prerequisite_ids == {"first"}
-    assert modes[PROJECT_ID].unknown_prerequisite_ids == {"group"}
+    # An observed but unprovable aggregate is not an unloaded Git observation.
+    assert modes[PROJECT_ID].unknown_prerequisite_ids == frozenset()
+    view = await env.observer.prerequisite_view(PROJECT_ID)
+    assert view.siblings.evidence["group"].reason == "missing_git_provenance"
     _fast_forward_epic(env, "aq/group-b")
     frontier_clock.return_value += env.observer.READ_MAX_AGE + 0.01
     modes = await frontier(True)
@@ -686,6 +689,11 @@ async def test_git_first_frontier_distinguishes_invalidated_and_unknown_proof(
             completed_at=time.time(),
         ))
         await db.set_task_meta("first", DEVELOPMENT_COMPLETION_ID_KEY, "close-first-again")
+        view = await env.observer.prerequisite_view(PROJECT_ID)
+        proof = view.siblings.evidence["first"]
+        assert proof.request.completion_id == "close-first-again"
+        assert proof.reason == "missing_git_provenance"
+        assert not proof.unloaded
     elif movement == "unstable":
         view = await env.observer.prerequisite_view(PROJECT_ID)
         monkeypatch.setattr(type(view), "fresh", AsyncMock(return_value=False))
@@ -703,7 +711,7 @@ async def test_git_first_frontier_distinguishes_invalidated_and_unknown_proof(
                 after_sha=env.source, disposition="code", created_at=time.time(),
             ))
 
-    allowed = movement in {"generation", "unstable", "shadow"}
+    allowed = movement in {"unstable", "shadow"}
     assert await db.is_hierarchy_task_runnable("second") is allowed
     assert await db.count_ready_by_profile(PROJECT_ID) == ({"worker": 1} if allowed else {})
     await orch._schedule()
@@ -713,7 +721,7 @@ async def test_git_first_frontier_distinguishes_invalidated_and_unknown_proof(
     # DB-invalidated identities give a negative result. A rewind invalidates
     # the bounded advisory cache; display does not fetch a replacement proof.
     assert ("frontier_sibling_prerequisite_not_delivered" in explained["reason_codes"]) is (
-        movement == "retarget"
+        movement in {"retarget", "generation"}
     )
     assert "delivery_evidence_unavailable" not in explained["reason_codes"]
     if movement == "unstable":
