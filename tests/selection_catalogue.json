@@ -2808,7 +2808,7 @@
         "metrics"
       ],
       "default_arm": true,
-      "digest": "sha256:afe15c11f4c43a56e14d6bb92f5c9f441ef53ad7328857cfa6b17845f67394ae",
+      "digest": "sha256:2dc1affe61a1816a0971d20f2c6a5e79dd990ec68ada558c70759e3141c35511",
       "imports": [
         "src.api",
         "src.api.perf_middleware",
@@ -2816,7 +2816,8 @@
         "src.metrics.perf"
       ],
       "markers": [
-        "parametrize"
+        "parametrize",
+        "skip"
       ],
       "summary": "Route labels are templates, streams are handshakes, failures are re-raised."
     },
@@ -5704,7 +5705,7 @@
         "development-delivery"
       ],
       "default_arm": true,
-      "digest": "sha256:2f0f1eeee4a08fa342730ec0657db0638df889a8ec6d543f3f6fd48406c3bea0",
+      "digest": "sha256:621234c5fc3bbcc1bdc32ec6914cd6874d47704a3dd94a978f894c9fa94dc1e7",
       "imports": [
         "src.commands.handler",
         "src.commands.principal",
@@ -5742,7 +5743,8 @@
         "src.wait_runtime.scheduler"
       ],
       "markers": [
-        "parametrize"
+        "parametrize",
+        "skip"
       ],
       "summary": "Every delivery consumer asks git the same question and gets the same answer."
     },
