@@ -23,7 +23,6 @@ from src.database.tables import (
     integration_repair_operations,
     sessions,
     task_branch_origins,
-    task_delivery_receipts,
     task_integration_checkpoints,
     task_metadata,
     task_session_attempts,
@@ -1988,16 +1987,6 @@ class HierarchyIntegration:
             raise _needs_quiescence(
                 "task has landed work", {"kind": "delivery", "task_id": task_id}, _CONTINUE_LANDED,
             ) from exc
-        delivered = await conn.scalar(
-            select(task_delivery_receipts.c.id)
-            .where(task_delivery_receipts.c.source_task_id == task_id).limit(1)
-        )
-        if delivered:
-            raise _needs_quiescence(
-                "task has landed work",
-                {"kind": "delivery", "task_id": task_id, "receipt_id": delivered},
-                _CONTINUE_LANDED,
-            )
         if busy or live:
             raise _needs_quiescence(
                 "task has started work",

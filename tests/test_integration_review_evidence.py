@@ -25,7 +25,10 @@ from src.database.tables import (
     tasks,
 )
 from src.git.manager import GitManager
+from src.integration.delivery_observer import DeliveryObserver
+from src.integration.delivery_truth import CONTAINMENT_CONTRACT_VERSION
 from src.integration.git_truth import GitTruth
+from src.integration.provenance import CompletedSource, CompletionIdentity, GitProvenance
 from src.integration.models import BranchKey
 from src.integration.ownership import BranchOwnership
 from src.integration.repository_git import RepositoryGit
@@ -40,6 +43,7 @@ from src.models import (
     RepoSourceType,
     SessionRecord,
     Task,
+    TaskCompletion,
     TaskStatus,
     Workspace,
 )
@@ -192,6 +196,11 @@ async def review_case(tmp_path, reuse_database):
         state="running",
     )
     promotion = RepositoryGit(db, data_dir=tmp_path / "data", git_manager=GitManager())
+    db.set_prerequisite_observer(DeliveryObserver(
+        db, git=GitManager(), data_dir=tmp_path / "observer",
+        truth=GitTruth(GitManager(), contract_version=CONTAINMENT_CONTRACT_VERSION),
+    ))
+    await _retain_review_source(db, work, "leaf", head)
     yield {
         "db": db,
         "promotion": promotion,
@@ -200,6 +209,19 @@ async def review_case(tmp_path, reuse_database):
         "head": head,
         "work": work,
     }
+
+
+async def _retain_review_source(db, work, task_id, head):
+    completion_id = f"close-{task_id}"
+    await db.save_task_completion(TaskCompletion(
+        id=completion_id, task_id=task_id, outcome="pass", commits=[head],
+        completed_at=time.time(),
+    ))
+    await GitProvenance(
+        GitManager(), str(work), repository_url=_git(["remote", "get-url", "origin"], work),
+    ).write_completion(CompletedSource(
+        CompletionIdentity("p", "repo", task_id, completion_id), head,
+    ))
 
 
 async def test_leaf_close_records_checkpoint_and_suppresses_legacy_final_review(
@@ -211,6 +233,11 @@ async def test_leaf_close_records_checkpoint_and_suppresses_legacy_final_review(
 
     case = review_case
     db = case["db"]
+    # The publisher-only close route: this close hands parent delivery to the
+    # train rather than running an author-assisted parent merge.
+    await db.update_project(
+        "p", hierarchical_integration_policy={"close_merge": {"author_assist": False}}
+    )
     await db.create_profile(
         AgentProfile(id="worker", name="Worker", harness="claude", needs_workspace=True)
     )
@@ -366,6 +393,47 @@ async def test_leaf_close_records_checkpoint_and_suppresses_legacy_final_review(
 
 
 
+@pytest.mark.parametrize("proof", ["pending", "contained", "missing"])
+async def test_reviewer_reopen_command_requires_git_delivery_proof(review_case, proof):
+    from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_context
+    from src.commands.task_commands import TaskCommandsMixin
+    from src.profiles.capabilities import DENY_ALL
+
+    case, db = review_case, review_case["db"]
+    if proof == "contained":
+        _git(["push", "origin", f"{case['head']}:refs/heads/aq/parent"], case["work"])
+    elif proof == "missing":
+        db.set_prerequisite_observer(None)
+    handler = TaskCommandsMixin()
+    handler.db = db
+    handler._current_scope = {"kind": "session", "task_id": "review", "session_id": "session"}
+    handler._integration_repository_git = lambda: case["promotion"]
+    principal = ExecutionPrincipal(
+        kind=PrincipalKind.SESSION, policy=DENY_ALL, session_id="session", project_id="p",
+    )
+    with principal_context(principal):
+        if proof == "pending":
+            result = await handler._cmd_reopen_with_feedback({
+                "task_id": "leaf", "feedback": "fix it",
+            })
+            assert result["success"] is True
+        else:
+            result = await handler._cmd_reopen_with_feedback({
+                "task_id": "leaf", "feedback": "fix it",
+            })
+            assert result["success"] is False
+            assert result["code"] == {
+                "contained": "hierarchy.delivery_target_fixed",
+                "missing": "hierarchy.delivery_unknown",
+            }[proof]
+    async with db._engine.connect() as conn:
+        verdicts = (await conn.execute(select(integration_review_evidence))).mappings().all()
+    assert [row["verdict"] for row in verdicts] == (["rejected"] if proof == "pending" else [])
+    task = await db.get_task("leaf")
+    assert task.status is (TaskStatus.READY if proof == "pending" else TaskStatus.COMPLETED)
+    assert ("fix it" in task.description) is (proof == "pending")
+
+
 async def test_reject_then_successful_review_close_never_mints_approval(review_case):
     case = review_case
     db = case["db"]
@@ -373,12 +441,16 @@ async def test_reject_then_successful_review_close_never_mints_approval(review_c
     rejected = await producer.snapshot(
         await db.get_task("review"), case["session"], verdict="rejected", feedback="fix it"
     )
+    delivery = await db.observe_removal_delivery(
+        [rejected["source_task_id"]], for_mutation=True,
+    )
     async with db.immediate() as conn:
         await producer.reject_and_reopen_on(
             conn,
             "leaf",
             "review",
             rejected,
+            integration_delivery=delivery,
             context="reopen_with_feedback",
             assigned_agent_id=None,
         )
@@ -439,7 +511,7 @@ async def test_parent_review_rejection_rolls_completed_episode_for_next_collecti
                 parent_task_id="parent",
                 repository_id="repo",
                 generation=0,
-                pre_collection_checkpoint_sha=case["base"],
+                pre_collection_checkpoint_sha=case["head"],
                 created_at=2.0,
             )
         )
@@ -465,7 +537,7 @@ async def test_parent_review_rejection_rolls_completed_episode_for_next_collecti
                 parent_task_id="parent",
                 episode_id="completed-episode",
                 generation=0,
-                head_sha=case["base"],
+                head_sha=case["head"],
                 required_check_version="test",
                 created_at=2.0,
             )
@@ -484,8 +556,8 @@ async def test_parent_review_rejection_rolls_completed_episode_for_next_collecti
                 task_id="parent",
                 repository_id="repo",
                 branch="aq/parent",
-                checkpoint_sha=case["base"],
-                verified_sha=case["base"],
+                checkpoint_sha=case["head"],
+                verified_sha=case["head"],
                 verified_generation=0,
                 generation=0,
                 episode_id="completed-episode",
@@ -500,6 +572,8 @@ async def test_parent_review_rejection_rolls_completed_episode_for_next_collecti
         await conn.execute(
             update(tasks).where(tasks.c.id == "parent").values(status="COMPLETED")
         )
+    _git(["push", "origin", f"{case['head']}:refs/heads/aq/parent"], case["work"])
+    await _retain_review_source(db, case["work"], "parent", case["head"])
     await db.append_integration_review_evidence(
         {
             "id": "unrelated-old-rejection",
@@ -522,12 +596,16 @@ async def test_parent_review_rejection_rolls_completed_episode_for_next_collecti
     rejected = await producer.snapshot(
         await db.get_task("review"), case["session"], verdict="rejected"
     )
+    delivery = await db.observe_removal_delivery(
+        [rejected["source_task_id"]], for_mutation=True,
+    )
     async with db.immediate() as conn:
         await producer.reject_and_reopen_on(
             conn,
             "parent",
             "review",
             rejected,
+            integration_delivery=delivery,
             context="reopen_with_feedback",
             assigned_agent_id=None,
         )
@@ -621,6 +699,7 @@ async def test_rejection_transaction_crash_rolls_back_evidence_and_reopen(review
         await db.get_task("review"), case["session"], verdict="rejected", feedback="fix"
     )
 
+    delivery = await db.observe_removal_delivery(["leaf"], for_mutation=True)
     with pytest.raises(RuntimeError, match="crash after writes"):
         async with db.immediate() as conn:
             await producer.reject_and_reopen_on(
@@ -628,18 +707,23 @@ async def test_rejection_transaction_crash_rolls_back_evidence_and_reopen(review
                 "leaf",
                 "review",
                 evidence,
+                integration_delivery=delivery,
                 context="reopen_with_feedback",
                 assigned_agent_id=None,
             )
             raise RuntimeError("crash after writes")
 
     assert (await db.get_task("leaf")).status is TaskStatus.COMPLETED
+    delivery = await db.observe_removal_delivery(
+        [evidence["source_task_id"]], for_mutation=True,
+    )
     async with db.immediate() as conn:
         await producer.reject_and_reopen_on(
             conn,
             "leaf",
             "review",
             evidence,
+            integration_delivery=delivery,
             context="reopen_with_feedback",
             assigned_agent_id=None,
         )
@@ -701,12 +785,16 @@ async def test_approval_snapshot_is_stale_after_another_reviewer_rejects(review_
     rejected = await producer.snapshot(
         await db.get_task("review-2"), session_2, verdict="rejected", feedback="stale"
     )
+    delivery = await db.observe_removal_delivery(
+        [rejected["source_task_id"]], for_mutation=True,
+    )
     async with db.immediate() as conn:
         await producer.reject_and_reopen_on(
             conn,
             "leaf",
             "review-2",
             rejected,
+            integration_delivery=delivery,
             context="reopen_with_feedback",
             assigned_agent_id=None,
         )

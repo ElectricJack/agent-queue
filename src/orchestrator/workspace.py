@@ -195,10 +195,9 @@ class WorkspaceMixin:
         project = await self.db.get_project(task.project_id)
         integration_origin = None
         integration_fence = None
-        if getattr(project, "hierarchical_integration_mode", "disabled") in {
-            "hierarchy",
-            "train",
-        }:
+        from src.integration.train_policy import worker_integration_enabled
+
+        if await worker_integration_enabled(self.db, project):
             try:
                 integration_origin, integration_fence, _integration_role = (
                     await self._hierarchy_origin_and_fence(task, project)

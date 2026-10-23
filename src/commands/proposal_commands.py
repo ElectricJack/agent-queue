@@ -37,7 +37,6 @@ from src.database.tables import (
     ingest_batch_receipts,
     events,
     gates,
-    ingest_batch_members,
     ingest_batches,
     task_dependencies,
     task_metadata,

@@ -256,7 +256,6 @@ own. These tables are its control-plane identity, and they use **named
 | `integration_rollout_transitions` | Every change of a project's integration mode, with the operator, the reason and the blocker digest. Immutable. |
 | `integration_history_waivers` | An operator's explicit waiver of a history blocker, with a `sha256:`-prefixed digest of exactly what was waived. Immutable. |
 | `integration_history_waiver_consumptions` | Which transition consumed which waiver. One consumption per transition. |
-| `integration_legacy_gate_applicability` | Whether a legacy gate still applies to a project under the current rollout, and under which waiver. |
 | `integration_legacy_suppression` | The per-project projection of which legacy behaviours are suppressed. Deliberately the one reversible control in this group. |
 
 ## Related pages
