@@ -3,7 +3,15 @@
 **Task:** `amber-stone.2` (epic `amber-stone`, "make dashboard state server-backed and
 synchronized across machines")
 **Date:** 2026-09-10
-**Status:** approved contract, not yet implemented
+**Status:** implemented contract; audited against `origin/dev` at `52d2efe4c` on 2026-10-22
+
+The migration and server-backed documents described here have shipped. Implementation
+models in `src/api/models/dashboard.py` and the namespace registry in
+`src/dashboard_state/namespaces.py` define the current fields. The companion boundary
+inventory records the pre-migration state; it is not a list of current browser-storage
+keys. See the [dashboard guide](../../guides/dashboard.md#state-ownership-and-live-updates)
+for current pane restoration and compact/focus behavior.
+
 **Input:** [the state-boundary inventory](2026-09-10-dashboard-state-boundary-inventory.md)
 (`amber-stone.1`)
 **Consumers:** `amber-stone.3` (storage + API), `.4` (nav organization), `.5` (shell
@@ -302,9 +310,14 @@ class CommandCenterProjectView(BaseModel):
     expanded_task_ids: list[str] = []           # ≤ 5,000; no duplicates
     expanded_finished_task_ids: list[str] = []  # subset of expanded_task_ids; ≤ 5,000
     manual_positions: dict[str, ManualPosition] = {}   # task id → position; ≤ 5,000
+    expanded_initialised: bool = False
 ```
 
-Default: all empty. The subset invariant that `useGraphHierarchy.ts` maintains today is a
+Default: empty collections and `expanded_initialised=False`. The flag distinguishes
+an untouched view from an explicitly empty expansion. The current tiled canvas enters
+containers instead of expanding them in place, and task-node manual pinning has been
+retired; these fields remain in the document contract for compatibility. Playbook nodes
+still support manual positions. The subset invariant is a
 server validation (`invalid_value` at `expanded_finished_task_ids`), so no client can
 persist a finished-expanded id that is not expanded. Filter-forced expansion
 (`forced_expansion_for` on the server layout path) is derived state and is never written
@@ -339,7 +352,7 @@ No table, migration, command, route, event type or WebSocket change is involved.
 
 ### 5.1 Table
 
-`src/database/tables.py`, house style (`sa.JSON`, float epochs, named constraints):
+`src/database/tables.py`, house style (`JSONB`, float epochs, named constraints):
 
 ```python
 dashboard_state_documents = Table(
@@ -350,7 +363,7 @@ dashboard_state_documents = Table(
     Column("namespace", Text, nullable=False, primary_key=True),
     Column("subject", Text, nullable=False, primary_key=True),    # "" for global namespaces
     Column("revision", Integer, nullable=False, server_default="0"),
-    Column("value", JSON, nullable=True),                         # NULL = reset / default
+    Column("value", JSONB, nullable=True),                         # NULL = reset / default
     Column("created_at", Float, nullable=False),
     Column("updated_at", Float, nullable=False),
     CheckConstraint("scope IN ('workspace','user')", name="ck_dashboard_state_scope"),
@@ -564,7 +577,7 @@ class DashboardStateDocumentResponse(BaseModel):   # get, put, reset
 `dashboard_state_list` returns every `workspace` document that has a row, plus every
 `user` document owned by the caller that has a row, plus a **synthesized revision-0
 document for every global namespace that has no row**, so the bootstrap always contains
-all five global namespaces and the client never special-cases absence. Project-keyed
+all four global namespaces and the client never special-cases absence. Project-keyed
 documents appear only when they have a row.
 
 Request bodies:

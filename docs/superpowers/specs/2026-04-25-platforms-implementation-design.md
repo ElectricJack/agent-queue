@@ -13,6 +13,14 @@ tags: [spec, platforms, adapters, refactor]
 > home](../../README.md) for current behaviour; see [historical
 > material](../../history/README.md).
 
+> **Obsolete platform design (audit 2026-10-23).** `src/platforms/`,
+> `default_platform` and SDK/CLI platform dispatch described below are not
+> the current runtime. Every agent is a tmux session selected by profile
+> `harness`; `src/runtimes/` is an empty injection seam. Do not implement
+> this proposal as launch guidance. See the current
+> [session runtime design](../../specs/design/session-runtime.md) and
+> [harness reference](../../reference/harnesses.md).
+
 ## Scope
 
 This spec covers **only** the platform abstraction and three platform implementations. Profile schema changes, validation, Discord surfacing, and the strict task-creation gate are deferred to a separate spec: [`2026-04-25-profile-validation-design.md`](./2026-04-25-profile-validation-design.md).

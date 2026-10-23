@@ -731,9 +731,9 @@ and then sits idle holding a workspace.
 ### Two things that will bite you first
 
 **`aq` inside the session must be *this* worktree's.** The pip-installed
-`aq` resolves `src` through the editable install — usually a different
-checkout, with no `aq task claim` in it at all — so a worker fails its very
-first command with "No such command". `e2e-env.sh` writes
+`aq` resolves `src` through the editable install, which may point to a different
+checkout and expose a different claim protocol or command surface.
+`e2e-env.sh` writes
 `$AQ_E2E_HOME/bin/aq` (a wrapper around `scripts/e2e/aq.py`) and
 `e2e-daemon.sh start` puts that directory first on the daemon's PATH, which
 tmux sessions inherit. Verify before blaming the agent:

@@ -269,6 +269,8 @@ _EXCLUDED_TABLES: frozenset[str] = frozenset(
         "record_compatibility_usage",
         # Per-API-call transcript usage maxima shipped in revision 56.
         "transcript_usage_calls",
+        # Permanent transcript replay fences shipped in PostgreSQL revision 121.
+        "transcript_usage_fences",
         # Encrypted playbook private values (revision 95), protected
         # observation snapshots (revision 97) and durable playbook state
         # namespaces and journals (revision 98) shipped after SQLite removal;
