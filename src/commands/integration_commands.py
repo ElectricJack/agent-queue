@@ -19,7 +19,7 @@ from src.commands.operator_authority import local_or_operator
 from src.commands.detached import detached_operations
 from src.commands.principal import PrincipalKind, TRUSTED_LOCAL, current_principal
 from src.commands.supervisor_authority import integration_operator
-from src.git.manager import GitError
+from src.git.manager import GitError, _validate_ref
 from src.git.manager import RemoteRefState
 from src.database.queries.hierarchy_queries import HierarchyError
 from src.integration.models import BranchKey, Fence
@@ -2608,6 +2608,27 @@ class IntegrationCommandsMixin:
                 raise GitError(f"repository branch {branch!r} does not exist")
             return head
 
+        async def filing_head(repo, branch):
+            # Filing only pins a starting commit. Reuse the retained Git evidence
+            # without asking GitHub for credentials while its API is in backoff.
+            # Live remote guards continue to use resolve_head/branch_head above.
+            branch = _validate_ref(branch.removeprefix("refs/heads/"))
+            promotion = origin_git(repo)
+            resolved = await promotion._resolve_repository(repo.id)
+            await promotion._ensure_retained_repository(resolved)
+            store = str(resolved.retained_git_dir)
+            tracking = f"refs/remotes/origin/{branch}^{{commit}}"
+            async with promotion.git.arepository_transaction(store):
+                for ref in (tracking, f"refs/heads/{branch}^{{commit}}"):
+                    head = await promotion.git.arev_parse(store, ref)
+                    if head is not None:
+                        return head
+                await promotion._fetch_all_heads(resolved.retained_git_dir, resolved.origin_url)
+                head = await promotion.git.arev_parse(store, tracking)
+                if head is None:
+                    raise GitError(f"repository branch {branch!r} does not exist")
+                return head
+
         async def branch_base(repo, head, parent_head):
             promotion = origin_git(repo)
             resolved = await promotion._resolve_repository(repo.id)
@@ -2641,6 +2662,7 @@ class IntegrationCommandsMixin:
         return HierarchyIntegration(
             self.db,
             default_head_resolver=resolve_head,
+            filing_head_resolver=filing_head,
             branch_head_resolver=branch_head,
             branch_base_resolver=branch_base,
             branch_materializer=materialize,

@@ -1206,6 +1206,7 @@ async def test_shared_stack_inputs_are_per_project_and_reset_after_exit(monkeypa
     monkeypatch.setattr("src.integration.stacked_branches._inputs", read)
     conn = object()
     first, second = StackView(None, "p"), StackView(None, "q")
+    first.proofs = second.proofs = {"source": {"task_id": "source"}}
 
     async def scoped():
         async with shared_stack_inputs():
@@ -1224,7 +1225,8 @@ async def test_shared_stack_inputs_are_per_project_and_reset_after_exit(monkeypa
     for _ in range(2):
         await first.verified_on(conn)
     assert read.await_args_list == [((conn, "p"),), ((conn, "q"),),
-                                   ((conn, "p"),), ((conn, "p"),)]
+                                   ((conn, "p"), {"source_ids": {"source"}}),
+                                   ((conn, "p"), {"source_ids": {"source"}})]
 
 
 async def test_shared_stack_inputs_isolate_overlapping_passes(monkeypatch):
@@ -1233,6 +1235,7 @@ async def test_shared_stack_inputs_isolate_overlapping_passes(monkeypatch):
     entered, finished = asyncio.Event(), asyncio.Event()
     conn = object()
     view = StackView(None, "p")
+    view.proofs = {"source": {"task_id": "source"}}
 
     async def first_pass():
         async with shared_stack_inputs():
@@ -1250,6 +1253,16 @@ async def test_shared_stack_inputs_isolate_overlapping_passes(monkeypatch):
 
     await asyncio.gather(first_pass(), second_pass())
     assert read.await_count == 2
+
+
+async def test_stack_verification_reads_only_requested_proof_sources(monkeypatch):
+    proof = {"task_id": "source", "retained": True}
+    read = AsyncMock(return_value=({"task_id": "source"},))
+    monkeypatch.setattr("src.integration.stacked_branches._inputs", read)
+    view = StackView(None, "p", proofs={"source": proof, "other": {"task_id": "other"}})
+    conn = object()
+    assert await view.verified_on(conn, {"source"}) == {"source": proof}
+    read.assert_awaited_once_with(conn, "p", source_ids={"source"})
 
 
 async def test_stack_withholds_prerequisite_when_local_object_validation_fails(stack, monkeypatch):

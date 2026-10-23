@@ -749,6 +749,7 @@ async def observe_admission(
         views=batch.hierarchy_views, stack_views=batch.stack_views,
         display_unavailable=unavailable, conn=hierarchy_conn,
         **({"max_age": 0} if not cached_only else {}),
+        **({"task_ids": ids} if cached_only else {}),
     ) if pids else {}
     batch.hierarchy_modes = dict(modes)
     batch.lock_ids |= set().union(*batch.hierarchy_required.values())

@@ -2220,8 +2220,9 @@ async def test_file_root_materializes_its_reserved_epic_branch(db):
 
 
 @pytest.mark.parametrize("mode", ["hierarchy", "train"])
+@pytest.mark.parametrize("empty_retained", [False, True])
 async def test_new_root_bootstraps_from_real_remote_default_branch(
-    db, internal_plugins_handler, tmp_path, mode
+    db, internal_plugins_handler, tmp_path, mode, empty_retained
 ):
     """The command handler's real git-backed resolver, not a stub.
 
@@ -2231,7 +2232,8 @@ async def test_new_root_bootstraps_from_real_remote_default_branch(
     that resolver looked up a branch nothing had pushed and creation rolled
     back with ``repository branch 'aq/<id>' does not exist``.
     """
-    from src.git.manager import GitManager
+    from src.git.manager import GitError, GitManager
+    from src.integration.repository_git import RepositoryGit
 
     await db.update_project("p", hierarchical_integration_mode=mode)
     origin = tmp_path / "origin.git"
@@ -2244,10 +2246,14 @@ async def test_new_root_bootstraps_from_real_remote_default_branch(
     _git(["add", "shared.txt"], work)
     _git(["commit", "-m", "base"], work)
     base = _git(["rev-parse", "HEAD"], work)
-    _git(["push", "origin", "main"], work)
     await db.update_repo("repo", source_path=str(work))
 
     handler = await internal_plugins_handler(db=db, git=GitManager())
+    if empty_retained:
+        retained = RepositoryGit(db, data_dir=handler.config.data_dir, git_manager=handler._git)
+        resolved = await retained._resolve_repository("repo")
+        await retained._ensure_retained_repository(resolved)
+    _git(["push", "origin", "main"], work)
     assert getattr(handler.orchestrator, "hierarchy_integration", None) is None
     result = await handler.execute(
         "create_task", {"project_id": "p", "title": "Real root", "description": "No branch"}
@@ -2263,6 +2269,85 @@ async def test_new_root_bootstraps_from_real_remote_default_branch(
     assert [(row["base_sha"], row["parent_ref"], row["materialized"]) for row in origins] == [
         (base, "main", False)
     ]
+    with pytest.raises(GitError, match="repository branch 'missing' does not exist"):
+        await handler._hierarchy_integration_service()._resolve_head(
+            await db.get_repo("repo"), "missing", filing=True,
+        )
+    assert await handler._hierarchy_integration_service()._resolve_head(
+        await db.get_repo("repo"), "refs/heads/main", filing=True,
+    ) == base
+    with pytest.raises(GitError, match="invalid branch name"):
+        await handler._hierarchy_integration_service()._resolve_head(
+            await db.get_repo("repo"), "main~0", filing=True,
+        )
+
+
+@pytest.mark.parametrize("mode", ["hierarchy", "train"])
+@pytest.mark.parametrize("tracking", [False, True])
+async def test_new_root_uses_retained_git_while_github_app_is_in_backoff(
+    db, internal_plugins_handler, tmp_path, mode, tracking
+):
+    from unittest.mock import AsyncMock
+
+    from src.config import GitHubAppConfig
+    from src.git.github import GitHubAccess, GitHubClient
+    from src.git.github_contracts import GitHubAccessError, GitHubRepositoryBinding
+    from src.git.manager import GitError
+    from src.integration.repository_git import RepositoryGit
+
+    await db.update_project("p", hierarchical_integration_mode=mode)
+    origin = tmp_path / "origin.git"
+    work = tmp_path / "work"
+    _git(["init", "--bare", "--initial-branch=dev", str(origin)], tmp_path)
+    _git(["clone", str(origin), str(work)], tmp_path)
+    _git(["config", "user.name", "Seed"], work)
+    _git(["config", "user.email", "seed@example.test"], work)
+    (work / "shared.txt").write_text("base\n")
+    _git(["add", "shared.txt"], work)
+    _git(["commit", "-m", "base"], work)
+    base = _git(["rev-parse", "HEAD"], work)
+    _git(["push", "origin", "dev"], work)
+    await db.update_repo("repo", source_path=str(work), default_branch="dev")
+
+    access = GitHubAccess.from_config(
+        GitHubAppConfig("Iv1.client", 101, 202, "/unused/key.pem"),
+    )
+    access.runner._retry_at = time.time() + 3600
+    client = GitHubClient(GitHubRepositoryBinding(303, "acme/widgets"), access=access)
+    with pytest.raises(GitHubAccessError, match="backing off"):
+        await client.exact_head_ref("dev")
+
+    git = GitManager(github_access=access)
+    handler = await internal_plugins_handler(db=db, git=git)
+    retained = RepositoryGit(db, data_dir=handler.config.data_dir, git_manager=git)
+    resolved = await retained._resolve_repository("repo")
+    await retained._ensure_retained_repository(resolved)
+    store = resolved.retained_git_dir
+    if tracking:
+        # The fetched ref must win over the bare clone's older local head.
+        (work / "shared.txt").write_text("next\n")
+        _git(["commit", "-am", "next"], work)
+        base = _git(["rev-parse", "HEAD"], work)
+        _git(["push", "origin", "dev"], work)
+        _git(["fetch", "origin", "+refs/heads/dev:refs/remotes/origin/dev"], store)
+
+    github_url = "https://github.com/acme/widgets.git"
+    _git(["remote", "set-url", "origin", github_url], store)
+    await db.update_repo("repo", url=github_url)
+    access.bind_repository = AsyncMock(wraps=access.bind_repository)
+    result = await handler.execute("create_task", {
+        "project_id": "p", "title": "Offline root", "description": "GitHub is in backoff",
+    })
+    assert result["success"], result
+    task_id = result["created"]
+    assert (await db.get_integration_checkpoint(task_id))["checkpoint_sha"] == base
+    assert [(row["base_sha"], row["parent_ref"]) for row in await _origins(db)] == [(base, "dev")]
+    access.bind_repository.assert_not_awaited()
+    # Mutations still require live evidence, even when a local ref exists.
+    with pytest.raises(GitError, match="backing off"):
+        await handler._hierarchy_integration_service()._resolve_head(
+            await db.get_repo("repo"), "dev"
+        )
 
 
 @pytest.mark.parametrize("mode", ["hierarchy", "train"])
