@@ -12,6 +12,11 @@ tags: [design, supervisor, sessions, messages, planning, multi-project]
 > see [historical material](../../history/README.md) for how this material is
 > organised.
 
+> **Current implementation:** [Supervisors and policy](../systems/supervisors-and-policy.md)
+> and [Supervisor turn health](../supervisor-turn-health.md). The August design
+> below predates opt-in project supervisors, global-only report authorship,
+> turn-health recovery and instance-fenced restart. It is not an operating guide.
+
 **Status:** Approved direction (2026-08-19), amended by [../messaging/discord](../messaging/discord.md):
 Discord now reaches the supervisor only through durable escalation threads;
 the project-channel chat and task-thread routes described below are retired.

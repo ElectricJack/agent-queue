@@ -1,5 +1,9 @@
 # Portable policy profiles (v1)
 
+Current command behavior is audited against `origin/dev` at `52d2efe4c`
+(2026-10-22). See [Supervisors and policy](../systems/supervisors-and-policy.md)
+for the authority and lifecycle around these imports.
+
 ## Deliberate installation and project setup
 
 Daemon restart does not install, refresh, retire or reactivate playbooks. Existing
@@ -88,8 +92,10 @@ against the target registry. They are never activated by import or approval alon
 Project agent settings, promotion flows and routing bindings are explicitly inactive typed drafts; global
 placement produces reusable system templates. Promotion drafts retain their policy
 fields, and activation after repository/trust setup uses the existing authorized
-`edit_project` command and integration generation fence. Import does not write
-active promotion configuration or repository trust anchors.
+`edit_project` command and integration generation fence. Importing a standalone
+promotion-flow item does not activate it. The separately selected integration
+settings item can configure its included promotion flow through that authorized
+path, as described below. Neither item imports repository trust anchors.
 
 No signatures or continuing synchronization are part of v1. Copying identical
 items is idempotent. Write failures compensate touched files; review failures are
@@ -112,6 +118,8 @@ No playbook is fabricated or activated by this operation. An absent integration
 policy leaves the target's reviewed policy in place. Configuration refusals
 occur before writing other selected files; later file/review failures report any
 already-configured integration item. Reapplying identical settings is a no-op.
+The legacy `development` integration mode is omitted from this item because its
+policy pins local task/artifact identities; other policy families remain exportable.
 
 Exported playbook sources and artifacts replace installation, vault, home and
 workspace roots with target-install placeholders. Unrecognized absolute machine
@@ -130,6 +138,26 @@ validates and synchronizes profiles while preserving local non-portable settings
 are interactive preview workflows and reject `--json` before starting. `--yes`
 accepts project defaults but skips system-origin items without an explicit `--scope`;
 it never opts into overwrites.
+
+## CLI workflow
+
+Run these as the local operator. A supervisor token alone does not authorize
+policy export/import. A scoped operator worker may preview/apply project items
+through its audited grant, but cannot select global placement or agent settings.
+
+```bash
+aq policy export --project source-project --out ./team.aqpolicy
+aq policy diff ./team.aqpolicy --project target-project --json
+aq policy apply ./team.aqpolicy --project target-project
+```
+
+Export displays exact files before confirming the checksum-bound, create-only
+write. Apply prompts for placeholder values, placement and overwrite consent,
+then shows a final preview. Use repeatable `--only ITEM`, `--skip ITEM`,
+`--scope ITEM=project|global|skip` and `--set NAME=VALUE` to narrow the import.
+The result distinguishes pending reviews, pending configuration and already
+configured integration settings; successful import alone does not activate a
+playbook. Inspect retained draft locations if review submission fails.
 
 Validation includes typed Handler/API round trips against disposable PostgreSQL,
 CLI selection tests, generated-client dashboard interaction tests, and
