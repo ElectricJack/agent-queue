@@ -13,6 +13,7 @@ from src.database.queries.claim_queries import CLAIMED_BY_SESSION_KEY
 from src.database.queries.job_queries import unpinned_workspace
 from src.database.tables import sessions, task_metadata, tasks, workspaces
 from src.workspace_disable import kind_slot_cap
+from src.workspace_ownership import claim_blocks_acquisition, unattached_workspace
 from src.models import (
     KIND_MODE_WORKTREE,
     RepoSourceType,
@@ -515,6 +516,7 @@ class WorkspaceQueryMixin:
                             & (func.coalesce(workspaces.c.kind_id, "project-repo") == kind_id)
                             & (workspaces.c.locked_by_agent_id.is_(None))
                             & task_available
+                            & unattached_workspace()
                             & (workspaces.c.enabled.is_(True))
                             & slot_filter
                         )
@@ -531,6 +533,7 @@ class WorkspaceQueryMixin:
                         & (func.coalesce(workspaces.c.kind_id, "project-repo") == kind_id)
                         & (workspaces.c.locked_by_agent_id.is_(None))
                         & task_available
+                        & unattached_workspace()
                         & (workspaces.c.enabled.is_(True))
                         & slot_filter
                     )
@@ -554,10 +557,12 @@ class WorkspaceQueryMixin:
                         select(workspaces).where(
                             (workspaces.c.id == ws_id)
                             & (workspaces.c.locked_by_agent_id.is_(None))
-                        )
+                        ).with_for_update(skip_locked=True)
                     )
                 ).mappings().fetchone()
                 if not ws_row:
+                    continue
+                if await claim_blocks_acquisition(conn, ws_row["workspace_path"]):
                     continue
 
                 # Path-level conflict check — preserved from acquire_workspace.
@@ -592,6 +597,7 @@ class WorkspaceQueryMixin:
                         (workspaces.c.id == ws_row["id"])
                         & (workspaces.c.locked_by_agent_id.is_(None))
                         & task_available
+                        & unattached_workspace()
                         & (workspaces.c.enabled.is_(True))
                         & slot_filter
                     )
@@ -762,6 +768,20 @@ class WorkspaceQueryMixin:
             row = result.fetchone()
             return row[0] if row else None
 
+    async def protected_workspace_ids(self, rows: list[Workspace]) -> set[str]:
+        """Observe independent ownership even when lock columns have been cleared."""
+        if not rows:
+            return set()
+        async with self._engine.connect() as conn:
+            protected = set((await conn.execute(select(workspaces.c.id).where(
+                workspaces.c.id.in_([w.id for w in rows]),
+                or_(~unattached_workspace(), workspaces.c.job_pin_count > 0),
+            ))).scalars())
+            for ws in rows:
+                if ws.id not in protected and await claim_blocks_acquisition(conn, ws.workspace_path):
+                    protected.add(ws.id)
+            return protected
+
     async def count_available_workspaces(
         self,
         project_id: str,
@@ -787,32 +807,16 @@ class WorkspaceQueryMixin:
         # Pool workers acquire their primary kind. Callers restrict the
         # count to that kind so an auto-attached vault cannot advertise a
         # launch slot when the repository has no acquirable capacity.
-        # The legacy path stays a single SQL COUNT: it runs per project on
-        # every 5 s cascade cycle and, with worktrees off (the default), no
-        # kind resolution is needed to answer it.
-        if workspace_snapshot is not None and worktree_slot_cap is None:
-            return sum(w.project_id == project_id and w.enabled
-                       and w.locked_by_agent_id is None and w.locked_by_task_id is None
-                       and (kind_id is None or (w.kind_id or "project-repo") == kind_id)
-                       for w in workspace_snapshot)
-        if worktree_slot_cap is None:
-            async with self._engine.begin() as conn:
-                result = await conn.execute(
-                    select(func.count())
-                    .select_from(workspaces)
-                    .where(
-                        (workspaces.c.project_id == project_id)
-                        & (workspaces.c.locked_by_agent_id.is_(None))
-                        & (workspaces.c.locked_by_task_id.is_(None))
-                        & (workspaces.c.enabled.is_(True))
-                        & (func.coalesce(workspaces.c.kind_id, "project-repo") == kind_id
-                           if kind_id is not None else true())
-                    )
-                )
-                return result.fetchone()[0]
-
+        # Count physical holds using the same independent ownership fences
+        # as acquisition; cleared lock columns alone do not make a slot free.
         all_rows = (await self.list_workspaces(project_id) if workspace_snapshot is None
                     else [w for w in workspace_snapshot if w.project_id == project_id])
+        protected = await self.protected_workspace_ids(all_rows)
+        if worktree_slot_cap is None:
+            return sum(w.enabled and w.locked_by_agent_id is None
+                       and w.locked_by_task_id is None and w.id not in protected
+                       and (kind_id is None or (w.kind_id or "project-repo") == kind_id)
+                       for w in all_rows)
         if kind_id is not None:
             all_rows = [w for w in all_rows if (w.kind_id or "project-repo") == kind_id]
         rows = [w for w in all_rows if w.enabled]
@@ -849,7 +853,8 @@ class WorkspaceQueryMixin:
             kind = kinds.get(kid)
             worktree_mode = _is_worktree_mode(kind)
             if not worktree_mode:
-                if w.locked_by_agent_id is None and w.locked_by_task_id is None:
+                if (w.locked_by_agent_id is None and w.locked_by_task_id is None
+                        and w.id not in protected):
                     total += 1
                 continue
             if w.slot_index is not None:
@@ -863,7 +868,7 @@ class WorkspaceQueryMixin:
                 if s.base_workspace_id == w.id
                 and s.slot_index is not None
                 and (not s.enabled or s.locked_by_agent_id is not None
-                     or s.locked_by_task_id is not None)
+                     or s.locked_by_task_id is not None or s.id in protected)
                 and s.slot_index < cap
             )
             total += max(0, cap - unavailable_slots)

@@ -473,6 +473,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`read_logs`](read_logs.md) | Read Logs | Read and filter the daemon's JSONL log file. |
 | [`read_note`](read_note.md) | Read Note | Execute the read_note command. |
 | [`read_prompt`](read_prompt.md) | Read Prompt | Read a specific prompt template's content and metadata. |
+| [`rebind_workspace`](rebind_workspace.md) | Rebind Workspace | Restore a lost lock from the exact active claim, without rewriting it. |
 | [`reconcile_agent_cron`](reconcile_agent_cron.md) | Reconcile Agent Cron | Execute the reconcile_agent_cron command. |
 | [`reconcile_agent_waits`](reconcile_agent_waits.md) | Reconcile Agent Waits | Execute the reconcile_agent_waits command. |
 | [`reconcile_collaborations`](reconcile_collaborations.md) | Reconcile Collaborations | Execute the reconcile_collaborations command. |
@@ -482,7 +483,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`record_search`](record_search.md) | Record Search | Search authorized records with a bounded query. |
 | [`record_show`](record_show.md) | Record Show | Read a record by identity, pinned to a revision when knowledge. |
 | [`release_project_constraint`](release_project_constraint.md) | Release Project Constraint | Release (remove) the scheduling constraint from a project. |
-| [`release_workspace`](release_workspace.md) | Release Workspace | Admin force-release a stuck workspace lock. |
+| [`release_workspace`](release_workspace.md) | Release Workspace | Release only after rechecking the checkout's independent fences. |
 | [`reload_config`](reload_config.md) | Reload Config | Manually trigger a config hot-reload from disk. |
 | [`remove_dependency`](remove_dependency.md) | Remove Dependency | Remove a dependency edge: *task_id* no longer depends on *depends_on*. |
 | [`remove_task`](remove_task.md) | Remove Task | Deprecated alias for the unified delete action. |

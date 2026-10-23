@@ -799,6 +799,7 @@ async def orch(db, tmp_path):
     # uninitialized) db the constructor saw -- point it at the test db too
     # so ``_schedule()`` (which reconciles agents first) works end to end.
     o._agent_reconciler._db = db
+    o.session_reconciler.db = db
     o.git = MagicMock()
     o._ensure_control_files_excluded = AsyncMock(return_value=True)
     o.bus.emit = AsyncMock()
@@ -2298,3 +2299,76 @@ async def test_admission_view_projects_identical_ids_counts_and_reasons(
         "delivery_evidence_unavailable",
     ]
     assert not unknown.reasons.get("independent")
+
+
+@pytest.mark.parametrize("obstacle", [None, "process", "unknown", "marker", "owner", "successor", "reservation", "generation"])
+async def test_stopped_idle_workspace_recovery_requires_fresh_proofs(orch, db, monkeypatch, obstacle):
+    from src.claim_file import read_claim_file, write_claim_file
+    from src.workspace_ownership import release_stopped_idle_workspace
+
+    await ready(db, "closed-task")
+    await orch._reconcile_pools()
+    await orch.wait_for_pool_launches()
+    session = (await db.list_sessions(lifecycle="pool"))[0]
+    ws = await db.get_workspace_for_agent(session.agent_id)
+    provider = orch.session_providers.create(session.provider, orch.config)
+    await provider.stop(orch.session_reconciler._handle(session), grace=0)
+    await db.update_session(session.id, state="stopped", desired_state="stopped")
+    session = await db.get_session(session.id)
+    quiescent = AsyncMock(return_value=obstacle != "process")
+    if obstacle == "unknown":
+        quiescent.side_effect = OSError("process inventory unavailable")
+    monkeypatch.setattr("src.sessions.proctable.workspace_quiescent", quiescent)
+    if obstacle == "marker":
+        write_claim_file(session.work_dir, {"task_id": "closed-task", "claim_epoch": 1})
+    elif obstacle == "owner":
+        async with db.immediate() as conn:
+            await conn.execute(insert(integration_branch_owners).values(
+                id="retained", repository_id="repo", ref="aq/closed-task",
+                owner_id="closed-task", owner_role="worker", fence_token=1,
+                handoff_state="attached", workspace_id=ws.id, session_id=session.id,
+                created_at=1, updated_at=1,
+            ))
+    elif obstacle in {"successor", "reservation"}:
+        await db.update_agent(session.agent_id, state=AgentState.IDLE)
+        await db.update_agent(session.agent_id, state=AgentState.BUSY)
+    if obstacle == "successor":
+        await ready(db, "successor")
+        await db.update_agent(session.agent_id, current_task_id="successor")
+    if obstacle is None:
+        await db.update_agent(session.agent_id, state=AgentState.IDLE)
+    if obstacle == "generation":
+        async def changed(*_args):
+            await db.update_workspace(ws.id, generation=ws.generation + 1)
+            return True
+        quiescent.side_effect = changed
+    if obstacle == "unknown":
+        with pytest.raises(OSError):
+            await release_stopped_idle_workspace(orch, session)
+    else:
+        assert await release_stopped_idle_workspace(orch, session) is (obstacle is None)
+    current = await db.get_workspace(ws.id)
+    assert (current.locked_by_agent_id is None) is (obstacle is None)
+    assert (await db.get_session(session.id)).state == "stopped"
+    if obstacle == "marker":
+        assert read_claim_file(session.work_dir)["task_id"] == "closed-task"
+
+
+async def test_reconciler_recovers_stopped_history_without_a_live_session(orch, db, monkeypatch):
+    from src.workspace_ownership import stopped_idle_workspace_sessions
+
+    await ready(db, "completed")
+    await orch._reconcile_pools()
+    await orch.wait_for_pool_launches()
+    session = (await db.list_sessions(lifecycle="pool"))[0]
+    slot = await db.get_workspace_for_agent(session.agent_id)
+    provider = orch.session_providers.create(session.provider, orch.config)
+    await provider.stop(orch.session_reconciler._handle(session), grace=0)
+    await db.update_session(session.id, state="stopped", desired_state="stopped")
+    await db.update_agent(session.agent_id, state=AgentState.IDLE)
+    await db.transition_task("completed", TaskStatus.COMPLETED, force=True)
+    monkeypatch.setattr("src.sessions.proctable.workspace_quiescent", AsyncMock(return_value=True))
+    assert [s.id for s in await stopped_idle_workspace_sessions(db)] == [session.id]
+    await orch.session_reconciler._step_stopped_idle_workspaces([], time.time())
+    assert (await db.get_workspace(slot.id)).locked_by_agent_id is None
+    assert await stopped_idle_workspace_sessions(db) == []

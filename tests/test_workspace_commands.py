@@ -1250,3 +1250,190 @@ async def test_real_cutover_preserves_writer_and_provisions_each_base_with_its_k
     assert _git_cli(["rev-parse", "HEAD"], old_path) == old_head
     assert (old_path / "unpublished.txt").read_text() == "writer still working\n"
     assert await orch.db.get_task_meta("tsk-1", "manual_pause_checkpoint") == {"saved": True}
+
+
+class TestWorkspaceOwnershipControls:
+    async def _held(self, setup):
+        from src.claim_file import write_claim_file
+        from src.models import TaskStatus
+
+        handler, db, tmp_path = setup
+        path = tmp_path / "held"
+        path.mkdir()
+        await db.create_agent(Agent(id="holder", name="holder", profile_id="p"))
+        await db.create_task(Task(id="held", project_id="p1", title="held", description="",
+                                  status=TaskStatus.IN_PROGRESS, assigned_agent_id="holder"))
+        await db.update_agent("holder", current_task_id="held")
+        await db.update_task("held", claim_epoch=7)
+        await db.create_workspace(_Workspace(
+            id="held-ws", project_id="p1", workspace_path=str(path),
+            source_type=RepoSourceType.LINK, locked_by_agent_id="holder",
+            locked_by_task_id="held",
+        ))
+        await db.create_session(SessionRecord(
+            id="holder-session", agent_id="holder", task_id="held", project_id="p1",
+            profile_id="p", harness="fake", provider="fake", name="holder-session",
+            lifecycle="pool", state="running", desired_state="running", work_dir=str(path),
+            epoch="e", instance_token="instance", started_at=1, last_activity=1,
+        ))
+        await db.update_session("holder-session", claim_phase="active", last_claim_epoch=7)
+        await db.set_task_meta("held", CLAIMED_BY_SESSION_KEY, "holder-session")
+        write_claim_file(str(path), {"task_id": "held", "session_id": "holder-session",
+                                     "claim_epoch": 7})
+        return handler, db, path
+
+    @pytest.mark.parametrize("protection", ["claim_file", "session", "integration_owner"])
+    async def test_release_refuses_independent_protection_even_with_cleared_lock(
+        self, setup, protection,
+    ):
+        from sqlalchemy import insert
+        from src.claim_file import read_claim_file, remove_claim_file
+        from src.database.tables import integration_branch_owners
+
+        handler, db, path = await self._held(setup)
+        if protection != "claim_file":
+            remove_claim_file(str(path))
+        if protection != "session":
+            await db.update_session("holder-session", state="stopped", desired_state="stopped",
+                                    task_id=None, claim_phase=None)
+        if protection == "integration_owner":
+            async with db.immediate() as conn:
+                await conn.execute(insert(integration_branch_owners).values(
+                    id="attached", repository_id="repo", ref="aq/held", owner_id="held",
+                    owner_role="worker", fence_token=1, handoff_state="attached",
+                    workspace_id="held-ws", session_id="holder-session",
+                    created_at=1, updated_at=1,
+                ))
+        await db.update_workspace("held-ws", locked_by_agent_id=None, locked_by_task_id=None)
+        before = read_claim_file(str(path))
+        result = await handler._cmd_release_workspace({"workspace_id": "held-ws"})
+        assert result["success"] is False
+        assert protection in {b["kind"] for b in result["blockers"]}
+        assert read_claim_file(str(path)) == before
+        assert (await db.get_session("holder-session")).task_id == (
+            "held" if protection == "session" else None
+        )
+
+    async def test_force_names_exact_task_and_preserves_claim_and_attachment(self, setup):
+        from sqlalchemy import insert, select
+        from src.claim_file import read_claim_file
+        from src.database.tables import integration_branch_owners
+
+        handler, db, path = await self._held(setup)
+        async with db.immediate() as conn:
+            await conn.execute(insert(integration_branch_owners).values(
+                id="attached", repository_id="repo", ref="aq/held", owner_id="held",
+                owner_role="worker", fence_token=1, handoff_state="attached",
+                workspace_id="held-ws", session_id="holder-session", created_at=1, updated_at=1,
+            ))
+        claim = read_claim_file(str(path))
+        for args in ({}, {"force": True}, {"force": True, "task_id": "wrong"}):
+            result = await handler._cmd_release_workspace({"workspace_id": "held-ws", **args})
+            assert result["success"] is False
+            assert (await db.get_workspace("held-ws")).locked_by_task_id == "held"
+        result = await handler._cmd_release_workspace({
+            "workspace_id": "held-ws", "force": True, "task_id": "held",
+        })
+        assert result["success"] is True
+        assert (await db.get_workspace("held-ws")).locked_by_agent_id is None
+        assert read_claim_file(str(path)) == claim
+        async with db._engine.connect() as conn:
+            owner = (await conn.execute(select(integration_branch_owners))).mappings().one()
+        assert owner["workspace_id"] == "held-ws"
+        assert owner["handoff_state"] == "attached"
+        assert owner["session_id"] == "holder-session"
+        assert await db.acquire_one_unlocked("p1", "project-repo", "exclusive", None, "new") is None
+        assert await db.count_available_workspaces("p1", kind_id="project-repo") == 0
+
+    @pytest.mark.parametrize("fault", [None, "epoch", "task", "session", "lock", "path", "assignment", "metadata"])
+    async def test_rebind_verifies_the_exact_active_claim(self, setup, fault):
+        from src.claim_file import read_claim_file, write_claim_file
+
+        handler, db, path = await self._held(setup)
+        await db.update_workspace("held-ws", locked_by_agent_id=None, locked_by_task_id=None)
+        claim = read_claim_file(str(path))
+        if fault in {"epoch", "task", "session"}:
+            claim[{"epoch": "claim_epoch", "task": "task_id", "session": "session_id"}[fault]] = (
+                8 if fault == "epoch" else "foreign"
+            )
+            write_claim_file(str(path), claim)
+        elif fault == "lock":
+            await db.create_task(Task(id="foreign", project_id="p1", title="foreign", description=""))
+            await db.update_workspace("held-ws", locked_by_task_id="foreign")
+        elif fault == "path":
+            await db.update_session("holder-session", work_dir=str(path / "other"))
+        elif fault == "assignment":
+            await db.update_agent("holder", current_task_id=None)
+        elif fault == "metadata":
+            await db.set_task_meta("held", CLAIMED_BY_SESSION_KEY, "foreign")
+        result = await handler._cmd_rebind_workspace({
+            "workspace_id": "held-ws", "task_id": "held", "session_id": "holder-session",
+        })
+        assert result["success"] is (fault is None)
+        ws = await db.get_workspace("held-ws")
+        assert ws.locked_by_agent_id == ("holder" if fault is None else None)
+        assert read_claim_file(str(path)) == claim
+
+    @pytest.mark.parametrize("protection", ["claim", "session", "owner", "job"])
+    async def test_pool_acquisition_rechecks_fences_with_empty_lock(self, setup, protection):
+        from sqlalchemy import insert
+        from src.claim_file import remove_claim_file
+        from src.database.tables import integration_branch_owners
+
+        handler, db, path = await self._held(setup)
+        if protection != "claim":
+            remove_claim_file(str(path))
+        if protection != "session":
+            await db.update_session("holder-session", state="stopped", desired_state="stopped",
+                                    task_id=None, claim_phase=None)
+        if protection == "owner":
+            async with db.immediate() as conn:
+                await conn.execute(insert(integration_branch_owners).values(
+                    id="attached", repository_id="repo", ref="aq/held", owner_id="held",
+                    owner_role="worker", fence_token=1, handoff_state="handoff_pending",
+                    confirmed_workspace_id="held-ws", created_at=1, updated_at=1,
+                ))
+        await db.update_workspace("held-ws", locked_by_agent_id=None, locked_by_task_id=None,
+                                  **({"job_pin_count": 1} if protection == "job" else {}))
+        # Both snapshot placement and acquisition must reject the erased lock.
+        assert await db.count_available_workspaces("p1", kind_id="project-repo") == 0
+        assert await db.acquire_one_unlocked("p1", "project-repo", "exclusive", None, "new") is None
+
+
+    @pytest.mark.parametrize("status", ["HIBERNATED", "RESUME_PENDING", "COMPLETED"])
+    async def test_capacity_holds_identify_continuations_and_stopped_locks(self, setup, status):
+        from src.claim_file import remove_claim_file
+        from src.models import TaskStatus
+        from src.workspace_ownership import workspace_capacity_holds
+
+        _handler, db, path = await self._held(setup)
+        await db.transition_task("held", TaskStatus(status), force=True)
+        await db.update_session("holder-session", state="stopped", desired_state="stopped",
+                                task_id=None, claim_phase=None)
+        remove_claim_file(str(path))
+        if status == "COMPLETED":
+            await db.update_workspace("held-ws", locked_by_task_id=None)
+        [hold] = await workspace_capacity_holds(db, "p1")
+        assert hold["reason"] == (
+            "stopped_agent_lock" if status == "COMPLETED" else "hibernated_checkout"
+        )
+        assert hold["workspace_id"] == "held-ws"
+        assert hold["session"]["id"] == "holder-session"
+        assert await db.count_available_workspaces("p1", kind_id="project-repo") == 0
+
+
+    async def test_release_preserves_taskless_agent_launch_reservation(self, setup):
+        from src.claim_file import remove_claim_file
+        from src.models import AgentState
+
+        handler, db, path = await self._held(setup)
+        remove_claim_file(str(path))
+        await db.update_session("holder-session", state="stopped", desired_state="stopped",
+                                task_id=None, claim_phase=None)
+        await db.update_workspace("held-ws", locked_by_task_id=None)
+        await db.update_agent("holder", state=AgentState.BUSY, current_task_id=None)
+        for args in ({}, {"force": True, "task_id": "held"}):
+            result = await handler._cmd_release_workspace({"workspace_id": "held-ws", **args})
+            assert result["success"] is False
+            assert {b["kind"] for b in result["blockers"]} == {"agent"}
+            assert (await db.get_workspace("held-ws")).locked_by_agent_id == "holder"

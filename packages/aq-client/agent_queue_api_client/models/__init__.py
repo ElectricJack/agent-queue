@@ -1514,6 +1514,8 @@ from .read_prompt_request import ReadPromptRequest
 from .read_prompt_response import ReadPromptResponse
 from .read_prompt_response_422 import ReadPromptResponse422
 from .ready_task import ReadyTask
+from .rebind_workspace_request import RebindWorkspaceRequest
+from .rebind_workspace_response_422 import RebindWorkspaceResponse422
 from .receipt_dto import ReceiptDTO
 from .receipt_dto_step_kind import ReceiptDTOStepKind
 from .record_capabilities_request import RecordCapabilitiesRequest
@@ -3716,6 +3718,8 @@ __all__ = (
     "ReadPromptResponse",
     "ReadPromptResponse422",
     "ReadyTask",
+    "RebindWorkspaceRequest",
+    "RebindWorkspaceResponse422",
     "ReceiptDTO",
     "ReceiptDTOStepKind",
     "RecordCapabilitiesRequest",

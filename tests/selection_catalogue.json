@@ -14259,9 +14259,10 @@
         "worker-pools"
       ],
       "default_arm": true,
-      "digest": "sha256:b6261ebb581c040bbbfd3bc0d799f8010a79e241750d4f0e363988bdcdf9129e",
+      "digest": "sha256:59612d951c8035624ed5f4c7c0a7d25f35c3196ed87451e8f949dd222a98920e",
       "imports": [
         "src.api.auth",
+        "src.claim_file",
         "src.commands.claim_commands",
         "src.commands.handler",
         "src.config",
@@ -14291,7 +14292,8 @@
         "src.orchestrator.pools",
         "src.pool_claims",
         "src.scheduler",
-        "src.sessions.harness_parser"
+        "src.sessions.harness_parser",
+        "src.workspace_ownership"
       ],
       "markers": [
         "parametrize"
@@ -20312,7 +20314,7 @@
         "workspaces"
       ],
       "default_arm": true,
-      "digest": "sha256:0ea7e041967e324dfdb993bbbaffdb4e74b0f0e54afd5405940ba939c4e7e4f3",
+      "digest": "sha256:e60f0be35a266a39419f3ff9cc642f96d1c7436b837903d45d88774d91c847b6",
       "imports": [
         "src.claim_file",
         "src.commands.handler",
@@ -20327,6 +20329,7 @@
         "src.orchestrator.worktree_manager",
         "src.runtimes.base",
         "src.sessions.proctable",
+        "src.workspace_ownership",
         "src.workspace_registration"
       ],
       "markers": [

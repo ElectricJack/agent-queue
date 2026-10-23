@@ -12933,6 +12933,51 @@
         }
       }
     },
+    "/api/project/rebind-workspace": {
+      "post": {
+        "tags": [
+          "project"
+        ],
+        "summary": "Restore workspace lock columns from an existing coherent active pool claim.",
+        "description": "Restore workspace lock columns from an existing coherent active pool claim.",
+        "operationId": "rebind_workspace",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RebindWorkspaceRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/project/release-constraint": {
       "post": {
         "tags": [
@@ -12985,8 +13030,8 @@
         "tags": [
           "project"
         ],
-        "summary": "Force-release a stuck workspace lock. Use when a workspace is locked by a dead agent or stale task.",
-        "description": "Force-release a stuck workspace lock. Use when a workspace is locked by a dead agent or stale task.",
+        "summary": "Release a stuck workspace after checking claim, session, integration and job ownership.",
+        "description": "Release a stuck workspace after checking claim, session, integration and job ownership.",
         "operationId": "release_workspace",
         "requestBody": {
           "content": {
@@ -68778,6 +68823,32 @@
         "title": "ReadyTask",
         "description": "One frontier row.\n\nTwo shapes share this model: the default (``task_id``, ``title``,\n``priority``) and ``brief: true`` (``id``, ``title``, ``status``,\n``priority``, ``is_blocked``, ``profile_id``).  Both keys are optional so\neither projection validates."
       },
+      "RebindWorkspaceRequest": {
+        "properties": {
+          "workspace_id": {
+            "type": "string",
+            "title": "Workspace Id",
+            "description": "Workspace to re-bind"
+          },
+          "task_id": {
+            "type": "string",
+            "title": "Task Id",
+            "description": "Task holding the active claim"
+          },
+          "session_id": {
+            "type": "string",
+            "title": "Session Id",
+            "description": "Session holding that exact claim"
+          }
+        },
+        "type": "object",
+        "required": [
+          "workspace_id",
+          "task_id",
+          "session_id"
+        ],
+        "title": "RebindWorkspaceRequest"
+      },
       "ReceiptDTO": {
         "properties": {
           "receipt_id": {
@@ -69850,6 +69921,30 @@
             "type": "string",
             "title": "Workspace Id",
             "description": "Workspace ID to release"
+          },
+          "force": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Force",
+            "description": "Override only the exact named task protection"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id",
+            "description": "Exact protected task; required with force"
           }
         },
         "type": "object",
