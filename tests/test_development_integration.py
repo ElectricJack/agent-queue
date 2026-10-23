@@ -2228,6 +2228,80 @@ async def test_retained_maintenance_runs_foreground_and_drops_stale_gc_log(setup
     assert git(store, 'config', 'gc.autoDetach') == 'false'
 
 
+@pytest.mark.parametrize('transport', ['direct', 'isolated'])
+async def test_retained_incremental_pack_reuses_full_verification(setup, monkeypatch, transport):
+    _db, service, source, remote, repo = setup
+    if transport == 'isolated':
+        async def isolated(checkout_path, **options):
+            await service.git._afetch_origin_with_auth_to_url(
+                checkout_path, source_url=remote.as_uri(), token='disposable-test-token',
+                refetch=options.get('refetch', False),
+            )
+        monkeypatch.setattr(service.git, 'afetch_origin', isolated)
+    store = await service.store(repo)
+    directory = str(store / '.git')
+    baseline_age = service.git._retained_verified[directory][1]
+    packs = set((store / '.git' / 'objects' / 'pack').glob('*.pack'))
+    git(store, 'config', 'fetch.unpackLimit', '1')
+    # Exceed Git's unpack threshold even in the isolated import environment.
+    for number in range(120):
+        (source / f'incremental-{number}.txt').write_text(f'incoming checked object {number}\n')
+    git(source, 'add', '.')
+    git(source, 'commit', '-m', 'incremental pack')
+    git(source, 'push', 'origin', 'main')
+    with (
+        patch.object(service.git, 'arun_git_result', wraps=service.git.arun_git_result) as run,
+        patch.object(service.git, '_run_isolated_import_git',
+                     wraps=service.git._run_isolated_import_git) as imported,
+    ):
+        await service.store(repo)
+        await service.store(repo)
+    assert set((store / '.git' / 'objects' / 'pack').glob('*.pack')) > packs
+    assert not any('fsck' in call.args[0] for call in run.await_args_list)
+    assert not any('fsck' in call.args[0] for call in imported.await_args_list)
+    assert await service.git.aretained_store_verified(directory)
+    assert service.git._retained_verified[directory][1] == baseline_age
+    assert git(store, 'rev-parse', 'origin/main') == git(source, 'rev-parse', 'HEAD')
+
+
+async def test_retained_temporary_object_files_do_not_invalidate_verification(setup):
+    _db, service, source, _remote, repo = setup
+    store = await service.store(repo)
+    objects = store / '.git' / 'objects'
+    (objects / 'pack' / 'tmp_pack_aborted').write_bytes(b'incomplete pack')
+    oid = git(source, 'rev-parse', 'HEAD')
+    fanout = objects / oid[:2]
+    fanout.mkdir(exist_ok=True)
+    (fanout / 'tmp_obj_aborted').write_bytes(b'incomplete loose object')
+    with patch.object(service.git, 'arun_git_result', wraps=service.git.arun_git_result) as run:
+        await service.store(repo)
+    assert not any('fsck' in call.args[0] for call in run.await_args_list)
+    assert await service.git.aretained_store_verified(str(store / '.git'))
+
+
+async def test_retained_fingerprint_scans_run_off_event_loop(setup, monkeypatch):
+    import threading
+
+    from src.git import manager
+
+    _db, service, _source, _remote, repo = setup
+    store = await service.store(repo)
+    loop_thread = threading.get_ident()
+    fingerprint = manager._object_store_fingerprint
+    scanned = []
+
+    def off_loop(directory):
+        assert threading.get_ident() != loop_thread
+        scanned.append(directory)
+        return fingerprint(directory)
+
+    monkeypatch.setattr(manager, '_object_store_fingerprint', off_loop)
+    await service.store(repo)
+    service.git._retained_verified.clear()
+    await service.store(repo)
+    assert scanned and all(directory == str(store / '.git') for directory in scanned)
+
+
 async def test_supervisor_clears_exhausted_retained_incident_after_clean_fsck(
     setup, tmp_path, monkeypatch,
 ):
