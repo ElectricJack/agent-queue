@@ -38,10 +38,10 @@ TRANSITION_BATCH_EXCEPTION = {'batch_id': 'train-745592300af5cef0338dec80ebabb46
                           'msg-330ea2478c724381acbb5512fc99e4b5',
                           'msg-e2dd5a423516458eb564e745a12ab30e'],
  'decision_record': 'record:2720bdbe-7521-427e-8e72-1f40a3ff9818',
- 'measured_source_revision': '344a85b9d8388521975af9b830e4d8b17817562e',
+ 'measured_source_revision': 'bd8fcfe183d6a59ea90f4498cda2bee80a7222f4',
  'original_owned_total_cap': 155499,
- 'measured_owned_total': 161081,
- 'delta': 5582,
+ 'measured_owned_total': 161102,
+ 'delta': 5603,
  'predecessors': [{'batch_id': 'train-77f0d8e451f6aed08d608e443031047a',
                    'decision_message_id': 'msg-edb5f857de344716a38857406fa69958',
                    'decision_record': 'record:2720bdbe-7521-427e-8e72-1f40a3ff9818',
@@ -55,14 +55,14 @@ TRANSITION_BATCH_EXCEPTION = {'batch_id': 'train-745592300af5cef0338dec80ebabb46
                    'measured_source_revision': 'cbfd455b0e9f053854a2c1becfa1efaeef231582',
                    'authorized_delta': 2166,
                    'measured_owned_total': 158958}],
- 'batch_measured_delta': 2123,
+ 'batch_measured_delta': 2144,
  'restore_task': 'azure-ridge-72',
  'expires_at': 's4_modules',
  'category_approval_message_id': 'msg-90f9f1b1e0cd4e8e8d28071cffc927a6',
  'storage_categories': ['integration_close_attempts'],
  'category_restore_task': 'stark-willow-95.17',
  'verification_task': 'stark-willow-95.18',
- 'measured_engine_lines': 85496,
+ 'measured_engine_lines': 85517,
  'measured_table_count': 45,
  'delivery_method': 'operator direct integration; user request 2026-10-22',
  'amendments': [{'task_id': 'solid-impact-56',
@@ -133,7 +133,25 @@ TRANSITION_BATCH_EXCEPTION = {'batch_id': 'train-745592300af5cef0338dec80ebabb46
                  'reason': 'Recover orphaned launching fixer reservations after a per-attempt '
                            'grace period; fence late registration and completion by session, '
                            'instance and launch timestamp. Exact self-approved measurement under '
-                           'the project supervisor delegation.'}],
+                           'the project supervisor delegation.'},
+                {'task_id': 'stark-beacon-94',
+                 'decision_id': 'size-cap-delegation-2026-10-23',
+                 'operator_decision': '6679052c',
+                 'operator_task': 'sharp-cascade-53',
+                 'pr_url': 'https://github.com/ElectricJack/agent-queue/pull/1817',
+                 'measured_source_revision': '24d081eecf0c00a912a064e37ba616334382e263',
+                 'previous_owned_total': 161053,
+                 'previous_engine_lines': 85468,
+                 'previous_table_count': 45,
+                 'authorized_owned_delta': 21,
+                 'authorized_engine_delta': 21,
+                 'authorized_table_delta': 0,
+                 'reason': 'Exclude published base history from repair identity checks; supervisor '
+                           'granted the exact measured footprint for PR #1817 under the delegated '
+                           'operator decision. Plain merge retains the existing implementation and '
+                           'all dev amendments.',
+                 'base_revision': 'dd95038cca3fef9aae70eb0092079fe24d52a062',
+                 'previous_source_revision': '438aa36cc93945305ea291622009f6b34d4ee733'}],
  'supplemental_grants': [{'task_id': 'fresh-apex-30',
                           'approval_message_id': 'msg-4e25c0d3',
                           'relay_message_id': 'msg-bd98955a2fa443cc920ce725e42a5c3f',
@@ -182,15 +200,17 @@ TRANSITION_BATCH_EXCEPTION = {'batch_id': 'train-745592300af5cef0338dec80ebabb46
                                            'agile-beacon-80': {'owned': 65, 'engine': 65},
                                            'nimble-torrent-12': {'owned': 1, 'engine': 0},
                                            'prime-impact-40': {'owned': 103, 'engine': 82},
-                                           'quick-pinnacle-97': {'owned': 28, 'engine': 28}},
+                                           'quick-pinnacle-97': {'owned': 28, 'engine': 28},
+                                           'stark-beacon-94': {'owned': 21, 'engine': 21}},
                        'reason': 'Compose the existing exact grants on their common measured dev '
                                  'tree; preserve each historical measurement below.',
-                       'source_revision': '344a85b9d8388521975af9b830e4d8b17817562e',
+                       'source_revision': 'bd8fcfe183d6a59ea90f4498cda2bee80a7222f4',
                        'member_sources': {'agile-beacon-80': '6ba25e2472d4a8c6bb145d6f9bc2e067c8ebad61',
                                           'grand-quest-20': 'd60c599767a340d3e3fd6dba2eff8451d349d7e7',
                                           'nimble-torrent-12': '9f2dd1988046baa0e40681c4457f4729b55e80c6',
                                           'prime-impact-40': '0b090fb969c46143f8cce7a55dd21f7d8bf1b1d8',
-                                          'quick-pinnacle-97': '344a85b9d8388521975af9b830e4d8b17817562e'}}}
+                                          'quick-pinnacle-97': '344a85b9d8388521975af9b830e4d8b17817562e',
+                                          'stark-beacon-94': '7cf8687ede868f8f714a655a63a00ba5dd428266'}}}
 FINAL_ENGINE_CAP = 11_999
 FINAL_TOTAL_CAP = 19_999
 FINAL_TABLE_CAP = 10
