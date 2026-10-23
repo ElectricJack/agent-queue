@@ -291,7 +291,11 @@ maintenance. This inbox fence does not change `message_status`'s project view:
 project supervisors can still inspect their project's rows and reports addressed
 to their mailboxes by other projects (clear-zenith-84).
 `message_status` applies the same fence to the one row it reads, answering
-"not found" for a message outside the caller's mailboxes. It is on the agent
+"not found" for a message outside the caller's mailboxes. A non-elevated named
+session may read its UUID mailbox and its persisted session-name mailbox;
+batch-fixer repair notices use the latter. The name is resolved from the caller's
+session row, never accepted as an arbitrary alias supplied by the caller.
+Reading the notice acknowledges it and stops further nudges. It is on the agent
 surface because the idle-session nudge names `aq message status <id>`, and
 by then the row is delivered, so `message_inbox` no longer lists it.
 A project-pinned caller also sees only its project's view

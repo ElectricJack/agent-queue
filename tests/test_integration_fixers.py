@@ -1,20 +1,26 @@
 """Task-free in-place repair survives replay, budget exhaustion and green."""
 
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID, uuid4
 
 import asyncio
+import re
 import pytest
 from sqlalchemy import func, select, update
 
+from src.api.auth import RequestScope
+from src.api.scope import check_command_scope
+from src.commands.handler import CommandHandler
 from src.commands.principal import ExecutionPrincipal
+from src.config import MessagesConfig
 from src.database.tables import integration_batches, messages, tasks
 from src.git.manager import _git_preparation_error
 from src.integration.batches import Batch, BatchMember, BatchStore, candidate_ref
 from src.integration.fixers import BatchFixerService, split_members
 from src.integration.models import RepairPolicy
-from src.models import Project, RepoConfig, RepoSourceType
+from src.messages.delivery import MessageDeliveryEngine
+from src.models import AgentProfile, Project, RepoConfig, RepoSourceType
 
 HEAD = "a" * 40
 NEXT = "b" * 40
@@ -136,6 +142,67 @@ async def register(db, state, session_state):
         epoch="test", instance_token=state["instance_token"], started_at=1, task_id=None,
         state=session_state, desired_state="stopped" if session_state == "stopped" else "running",
     ))
+
+
+@pytest.mark.parametrize("consume", ["status", "inbox"])
+async def test_fixer_renotification_can_be_read_by_named_session(db, fixer, monkeypatch, consume):
+    service, runtime, now = fixer
+    await allocate(service)
+    owner = await state(db)
+    await register(db, owner, "running")
+    await db.create_profile(AgentProfile(
+        id="fixer", name="Fixer", aq_commands=["message_status", "message_inbox"],
+        harness_tools=[], plugin_tools=[],
+    ))
+    await allocate(service, NEXT, brief="Tests default-6/8 failed; repair this push")
+    [notice] = await notices(db)
+    assert notice["id"].startswith("msg-fixer-")
+    assert notice["to_id"] == owner["session_name"]
+
+    sessions = SimpleNamespace(activity=AsyncMock(return_value="idle"),
+                               nudge=AsyncMock(return_value=True))
+    config = MagicMock()
+    config.messages = MessagesConfig(enabled=True)
+    engine = MessageDeliveryEngine(db=db, sessions=sessions, config=config.messages, bus=None)
+    monkeypatch.setattr("src.messages.delivery.time", SimpleNamespace(time=lambda: now[0]))
+    for elapsed in (0, 61, 121):
+        now[0] += elapsed
+        await engine.run_delivery_pass()
+    assert sessions.nudge.await_count == 3
+    text = sessions.nudge.await_args.kwargs["text"]
+    assert sessions.nudge.await_args.kwargs["target_id"] == owner["session_name"]
+    pointer = re.fullmatch(
+        r"Handle `aq message status (\S+) --json` \(running it marks the message read\)\.",
+        text,
+    )
+    assert pointer and pointer.group(1) == notice["id"]
+    assert (await db.get_message(notice["id"])).read_at is None
+
+    orch = MagicMock(db=db)
+    orch.bus.emit = AsyncMock()
+    handler = CommandHandler(orch, config)
+    scope = {"kind": "session", "session_id": owner["session_id"], "task_id": None,
+             "project_id": "p", "elevated": False,
+             "session_instance_token": owner["instance_token"]}
+    args = {"message_id": pointer.group(1)} if consume == "status" else {
+        "to_kind": "session", "to_id": owner["session_name"], "inject": True,
+    }
+    command = "message_status" if consume == "status" else "message_inbox"
+    assert check_command_scope(command, args, RequestScope(**scope)) is None
+    result = await handler.execute(command, {**args, "_scope": scope})
+    assert "error" not in result, result
+    body = result["message"]["body"] if consume == "status" else result["messages"][0]["body"]
+    assert "Tests default-6/8 failed; repair this push" in body
+    stored = await db.get_message(notice["id"])
+    assert stored.delivered_at is not None
+    if consume == "status":
+        assert result["state"] == "acknowledged" and stored.read_at is not None
+    else:
+        assert stored.archived_at is not None
+    now[0] += 301
+    await engine.run_delivery_pass()
+    assert sessions.nudge.await_count == 3
+    runtime.start.assert_awaited_once()
 
 
 @pytest.mark.parametrize("legacy", [False, True])
