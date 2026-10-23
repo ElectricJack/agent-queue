@@ -324,6 +324,89 @@ async def test_disabled_project_supervisor_does_not_restart_or_stop_without_turn
     assert (await db.get_session(row.id)).desired_state == "stopped"
 
 
+async def test_paused_project_supervisor_finishes_its_turn_before_stopping(
+    db, provider, reconciler, config, monkeypatch, tmp_path,
+):
+    """A paused project's supervisor stops the same way a disabled one does.
+
+    The pause does NOT touch ``supervisor_enabled``; when the reconciler
+    drains it the stop is recorded with a pause-specific ``end_reason`` so
+    an operator can tell the two apart.
+    """
+    from src.models import ProjectStatus
+
+    row = await _session(
+        db, provider, task_id=None, name="n-supervisor--p1", lifecycle="named",
+        profile_id="supervisor", started_at=NOW - 100,
+    )
+    await db.update_project("p1", status=ProjectStatus.PAUSED)
+    assert (await db.get_project("p1")).supervisor_enabled is True
+    config.sessions.idle_stop_grace_seconds = 1
+    entry = SimpleNamespace(type="tool_use", text="working", ts=NOW, turn_complete=False)
+    reader = SimpleNamespace(
+        resolve_session=lambda _: tmp_path / "transcript",
+        read_new=AsyncMock(side_effect=lambda *_: ([entry], 1)),
+    )
+    monkeypatch.setattr("src.sessions.transcripts.resolve_reader", lambda _, **kwargs: reader)
+    handle = reconciler._handle(row)
+    await reconciler.tick(now=NOW)
+    await reconciler.tick(now=NOW + 100)
+    assert await provider.is_running(handle)
+    assert (await db.get_session(row.id)).desired_state == "stopped"
+    entry = SimpleNamespace(type="assistant", text="done", ts=NOW + 101, turn_complete=True)
+    await reconciler.tick(now=NOW + 102)
+    assert not await provider.is_running(handle)
+    stopped = await db.get_session(row.id)
+    assert stopped.state == "stopped"
+    # Distinct from the disable path so operators can tell it was the pause.
+    assert stopped.end_reason == "project_paused"
+
+
+async def test_paused_project_supervisor_does_not_respawn(
+    db, provider, reconciler,
+):
+    """The up-convergence safety net must not start a paused supervisor."""
+    from src.models import ProjectStatus
+
+    row = await _session(
+        db, provider, task_id=None, name="n-supervisor--p1", lifecycle="named",
+        profile_id="supervisor", started_at=NOW - 100,
+    )
+    await db.update_project("p1", status=ProjectStatus.PAUSED)
+    # Even if a prior intent lingers as "running", the paused guard must
+    # refuse to start it and flip it back to "stopped".
+    await db.update_session(row.id, desired_state="running")
+    reconciler.starter = SimpleNamespace(ensure_started=AsyncMock())
+    await reconciler._converge_named_up(NOW + 1000)
+    reconciler.starter.ensure_started.assert_not_awaited()
+    assert (await db.get_session(row.id)).desired_state == "stopped"
+    # The pause path never touches the operator's supervisor-enabled intent.
+    assert (await db.get_project("p1")).supervisor_enabled is True
+
+
+async def test_paused_project_does_not_drain_the_global_supervisor(
+    db, provider, reconciler,
+):
+    """A pause is project-scoped: the global supervisor stays running.
+
+    ``_disabled_project_supervisor`` keys off ``row.project_id``; a ``None``
+    project id is the global supervisor, which a pause must never touch.
+    """
+    from src.models import ProjectStatus
+
+    global_row = await _session(
+        db, provider, task_id=None, name="n-supervisor--global", lifecycle="named",
+        profile_id="supervisor", project_id=None, started_at=NOW - 100,
+        sid="global",
+    )
+    await db.update_project("p1", status=ProjectStatus.PAUSED)
+    assert (
+        await reconciler._disabled_project_supervisor(global_row)
+    ) is False
+    await reconciler._converge_named_up(NOW + 1000)
+    assert (await db.get_session(global_row.id)).desired_state == "running"
+
+
 async def _claimed_pool_session(
     db,
     provider,

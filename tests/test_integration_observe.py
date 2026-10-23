@@ -839,7 +839,8 @@ async def test_writer_push_baseline_uses_last_builder_write_not_a_late_reconcili
     assert (await observe(data, git)).writer.status is WriterStatus.CLAIMED
 
 
-async def test_current_operation_budget_conflicts_and_proven_writer_push():
+@pytest.mark.parametrize("deadline, limit", [(950, 2), (None, 2), (950, 0), (None, 0)])
+async def test_current_operation_budget_conflicts_and_proven_writer_push(deadline, limit):
     data = writer_snapshot(
         "IN_PROGRESS", [{"id": "live", "task_id": "repair", "state": "running", "started_at": 900}]
     )
@@ -855,10 +856,10 @@ async def test_current_operation_budget_conflicts_and_proven_writer_push():
                 "starting_sha": BASE,
                 "intelligence_class": "deep-high",
                 "started_at": 800,
-                "deadline_at": 950,
+                "deadline_at": deadline,
                 "attempts": 1,
                 "dossier": {
-                    "budget": {"attempt_limit": 2},
+                    "budget": {"attempt_limit": limit},
                     "supervisor_recovery": {
                         "reason": "unchanged",
                         "subject": {"candidate_sha": HEAD},
@@ -893,6 +894,10 @@ async def test_current_operation_budget_conflicts_and_proven_writer_push():
     assert facts.writer.fence_token == 4 and facts.budget.intelligence_class == "deep-high"
     assert facts.budget.attempts == 1 and facts.no_progress and not facts.ladder_exhausted
     assert facts.conflicts[0].files == ("a.py", "z.py")
+
+    assert facts.budget.deadline_at == deadline
+    assert facts.budget.attempt_limit == (limit or None)
+    assert facts.budget.expired(100_000) == (deadline is not None)
 
 
 async def test_journals_keep_only_unresolved_writes_and_ci_requests_are_pending():
