@@ -10356,7 +10356,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:18ca53f0c95a42f2745ffd0c0d0184504645ed92f6d3cc556e2d12525546bb45",
+      "digest": "sha256:ba43444068fc005ab605ca8e5809f4bb9a9133e587326dab937eae224dcb2ca9",
       "imports": [
         "src.commands",
         "src.commands.integration_commands",
@@ -10397,6 +10397,7 @@
         "src.integration.repair",
         "src.integration.reviews",
         "src.integration.root_pr_recovery",
+        "src.integration.root_pr_refresh",
         "src.integration.root_pull_requests",
         "src.integration.runtime_contracts",
         "src.integration.selection_metrics",
