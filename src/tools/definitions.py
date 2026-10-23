@@ -225,6 +225,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "get_task_tree": "task",
     "task_children": "task",
     "task_progress": "task",
+    "task_split": "task",
     "reparent_task": "task",
     "get_task_dependencies": "task",
     "task_deps": "task",
@@ -1470,7 +1471,10 @@ _ALL_TOOL_DEFINITIONS = [
         "name": "reparent_task",
         "description": (
             "Move a task under another container (parent_id) or to the root (root=true). "
-            "Ids never change."
+            "Ids never change. In hierarchical projects the move is an integration "
+            "hierarchy mutation: live, owned or code-carrying work answers "
+            "needs_quiescence with its owner and safe continuation, and the optional "
+            "expected_*_generation fences refuse a stale parent."
         ),
         "input_schema": {
             "type": "object",
@@ -1478,6 +1482,14 @@ _ALL_TOOL_DEFINITIONS = [
                 "task_id": {"type": "string"},
                 "parent_id": {"type": "string"},
                 "root": {"type": "boolean", "default": False},
+                "expected_old_generation": {
+                    "type": "integer",
+                    "description": "Hierarchical projects: the old parent's integration generation.",
+                },
+                "expected_new_generation": {
+                    "type": "integer",
+                    "description": "Hierarchical projects: the new parent's integration generation.",
+                },
             },
             "required": ["task_id"],
         },
@@ -2821,11 +2833,13 @@ _ALL_TOOL_DEFINITIONS = [
     },
     {
         "name": "restart_task",
-        "description": "Reset a completed, failed, or blocked task back to READY so it gets picked up by an agent again.",
+        "description": "Reset a completed, failed, or blocked task to READY. Recovery holds require override_hold, a reason and operator/global-supervisor authority; the release is audited.",
         "input_schema": {
             "type": "object",
             "properties": {
                 "task_id": {"type": "string", "description": "Task ID to restart"},
+                "override_hold": {"type": "boolean", "description": "Explicitly release the recovery hold (operator/global supervisor only)"},
+                "reason": {"type": "string", "description": "Required reason for overriding a recovery hold"},
             },
             "required": ["task_id"],
         },

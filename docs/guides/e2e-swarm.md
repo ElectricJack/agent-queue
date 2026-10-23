@@ -17,7 +17,7 @@ It comes in two tiers.
 | Who is the worker | `scripts/e2e-smoke.sh` | a real `claude` process |
 | Command-only playbooks / supervisor | on / off | on / on (a live agent needs the supervisor) |
 | Durable messages | local sink only | on |
-| Runtime | ~4 minutes | as long as the model takes |
+| Runtime | several minutes, depending on box load | as long as the model takes |
 | Deterministic | yes | no |
 | Costs tokens | no | yes |
 | Use it for | every change to claims / pools / formulas / hierarchy | before shipping a change to the bootstrap prompt or the harness |
@@ -734,9 +734,9 @@ and then sits idle holding a workspace.
 ### Two things that will bite you first
 
 **`aq` inside the session must be *this* worktree's.** The pip-installed
-`aq` resolves `src` through the editable install — usually a different
-checkout, with no `aq task claim` in it at all — so a worker fails its very
-first command with "No such command". `e2e-env.sh` writes
+`aq` resolves `src` through the editable install, which may point to a different
+checkout and expose a different claim protocol or command surface.
+`e2e-env.sh` writes
 `$AQ_E2E_HOME/bin/aq` (a wrapper around `scripts/e2e/aq.py`) and
 `e2e-daemon.sh start` puts that directory first on the daemon's PATH, which
 tmux sessions inherit. Verify before blaming the agent:

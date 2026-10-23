@@ -155,6 +155,8 @@ AUDITED_READS |= {"playbook_state_get", "playbook_state_list", "playbook_state_i
 
 
 def resource_requirements(name: str) -> tuple[str, ...]:
+    if name == "object_checkpoint_read":
+        return ("held_session_or_project_playbook_invocation",)
     if name == "playbook_script_run":
         return ("pinned_script_invocation",)
     if name in STATE_COMMANDS:
@@ -239,11 +241,11 @@ async def authorize_resources(
         "promote_approve", "operator_execute", "operator_preflight",
     }:
         return deny("unauthorized")
-    if command in SESSION_COMMANDS | HELD_COMMANDS and principal.kind is PrincipalKind.PLAYBOOK:
+    if (command in SESSION_COMMANDS | HELD_COMMANDS and command != "object_checkpoint_read"
+            and principal.kind is PrincipalKind.PLAYBOOK):
         return deny("session_required")
-    # Typed adapters already implement their domain's ownership language and
-    # outcome protocol. In particular, stale repair inputs, tagged message
-    # recipients and operator preflights must reach those independent gates.
+    # Typed adapters enforce their own ownership and outcome protocols, including stale repair
+    # inputs, tagged message recipients and operator preflights.
     if not generated:
         from src.commands.contracts import CONTRACTS
 

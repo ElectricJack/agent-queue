@@ -454,7 +454,11 @@ def session_token(session_id: str) -> str:
 
 
 #: The stage profiles a role task keeps (mandatory routing §4, D3): never routed.
-ROLE_PROFILES = frozenset({"triage", "spec-ingest", "fidelity-reviewer", "reviewer", "final-reviewer"})
+# S4 and S19 deliberately dispatch dedicated stages, outside ordinary worker selection.
+ROLE_PROFILES = frozenset({
+    "triage", "spec-ingest", "fidelity-reviewer", "reviewer", "final-reviewer", "coding", "planner",
+})
+
 #: Why the operator overrides a route in this kit; the override needs 10-400 chars.
 OVERRIDE_REASON = "e2e Tier 1: the operator routes this task by hand"
 
@@ -1929,15 +1933,17 @@ def set_provider_state(key: str, state: str, reason: str = "e2e S16") -> dict:
 
 
 def set_failover_policy_enabled(enabled: bool) -> None:
-    """Keep S16's operator-driven sweeps isolated from the automatic policy."""
-    result = aq(
-        "playbook",
-        "set-enabled",
-        "--playbook-id",
-        FAILOVER_PLAYBOOK,
-        "--enabled" if enabled else "--no-enabled",
-    )
-    check(result.get("enabled") is enabled, f"could not set {FAILOVER_PLAYBOOK}: {result}")
+    """Isolate manual sweeps from failover and unavailable-route recovery."""
+    project = api_checked("get_project", {"project_id": PROJECT})
+    for playbook in (FAILOVER_PLAYBOOK, project["assignment_playbook_id"]):
+        result = aq(
+            "playbook", "set-enabled", "--playbook-id", playbook,
+            "--enabled" if enabled else "--no-enabled",
+        )
+        check(result.get("enabled") is enabled, f"could not set {playbook}: {result}")
+    if not enabled:
+        # Router readiness is cached until the cascade observes the activation.
+        observe_scheduler_cycles(lambda: None)
 
 
 def wait_for_restored_readiness() -> None:
@@ -2087,9 +2093,11 @@ def _run_failover_phase(state: dict, phase) -> str:
     # shipped provider-failover playbook would otherwise consume S16's state
     # change and move the first task before this scenario can inspect the full
     # held set and exercise the operator's dry-run/live commands itself.
+    # The ready router's unavailable-route recovery would also clear those
+    # deliberately stranded routes, so pause its activation for this phase.
     try:
         set_failover_policy_enabled(False)
-        note("paused the automatic provider-failover playbook for manual sweep coverage")
+        note("paused automatic failover and routing recovery for manual sweep coverage")
         return phase(state)
     finally:
         try:

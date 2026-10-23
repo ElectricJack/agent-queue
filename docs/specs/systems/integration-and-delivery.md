@@ -318,6 +318,22 @@ Each visit to a target (`_visit_target`, then `DatabaseBatches.open_batch`, then
   - a **debug** stage: 3600 s × 3
   - then **human** (`_escalate_on`), or `continue` if `on_exhausted` says so.
 
+  Zero in `primary_seconds`, `debug_seconds`, `primary_attempts`, or
+  `debug_attempts` disables that limit. Unlimited durations store a null stage
+  deadline, including in resolution reservations; they never expire or refuse
+  publication because of elapsed time. An unlimited primary attempt budget
+  stays primary; an unlimited debug budget stays debug after a finite primary
+  budget is spent. `source_ci_infra_attempts: 0` keeps retrying cancellation-only
+  observations with the configured bounded backoff. Positive limits in frozen
+  snapshots keep their existing behavior.
+
+  Task-free batch fixers use the complete configured primary attempt budget
+  for distinct red observations. Without a repair policy they have no time or
+  round limit. Successive failed source heads can reopen the original branch
+  without a lineage cap; exact-head and concurrent-writer guards still apply.
+  The main CI sentinel also defaults to unlimited attempts; its
+  optional `max_attempts` argument can set a positive limit, and zero disables it.
+
   When the repair task closes, the fenced publication moves the candidate and
   `resume_completed` re-seals the batch.
 - **The candidate drifted.** If a source moves under a batch, the batch reselects.

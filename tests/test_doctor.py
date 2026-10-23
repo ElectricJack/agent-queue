@@ -1101,6 +1101,53 @@ class TestPluginRegistration:
 
 
 class TestCliExitCodes:
+    @pytest.mark.parametrize("checks", [[], ["--check", "db.connect"],
+                                        ["--check", "db.alembic_orphan", "--check", "db.connect"]])
+    def test_offline_requires_only_the_orphan_check(self, checks):
+        from click.testing import CliRunner
+
+        from src.cli.app import cli
+
+        result = CliRunner().invoke(cli, ["doctor", "--offline", *checks])
+        assert result.exit_code == 2
+        assert "--offline requires --check db.alembic_orphan exclusively" in result.output
+
+    @pytest.mark.parametrize("scope,token", [("worker", ""), ("cli", "agent-token")])
+    def test_offline_refuses_agent_sessions_before_loading_config(self, monkeypatch, scope, token):
+        from click.testing import CliRunner
+
+        from src.cli.app import cli
+
+        monkeypatch.setattr("src.database.migration_guard.current_scope", lambda: scope)
+        monkeypatch.setenv("AQ_API_TOKEN", token)
+        monkeypatch.setattr("src.cli.db._load_config", lambda: pytest.fail("must refuse first"))
+        result = CliRunner().invoke(cli, ["doctor", "--offline", "--check", "db.alembic_orphan"])
+        assert result.exit_code == 4
+        assert "local operator workflow" in " ".join(result.output.split())
+
+    def test_offline_connection_failure_is_not_healthy_and_disposes_engine(self, monkeypatch):
+        import json
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock, MagicMock
+
+        from click.testing import CliRunner
+
+        from src.cli.app import cli
+
+        engine = MagicMock()
+        engine.connect.return_value.__aenter__.side_effect = RuntimeError("database unreachable")
+        engine.dispose = AsyncMock()
+        monkeypatch.setattr("src.database.migration_guard.current_scope", lambda: "cli")
+        monkeypatch.delenv("AQ_API_TOKEN", raising=False)
+        monkeypatch.setattr("src.cli.db._load_config", lambda: SimpleNamespace())
+        monkeypatch.setattr("src.cli.db._make_engine", lambda config: (engine, "scratch"))
+        result = CliRunner().invoke(
+            cli, ["doctor", "--offline", "--check", "db.alembic_orphan", "--json"]
+        )
+        assert result.exit_code == 3, result.output
+        assert json.loads(result.output)["error"]["code"] == "doctor_failed"
+        engine.dispose.assert_awaited_once()
+
     @pytest.mark.parametrize("exit_code", [0, 1, 2])
     def test_doctor_exits_with_runner_code(self, exit_code, monkeypatch):
         from click.testing import CliRunner

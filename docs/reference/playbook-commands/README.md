@@ -579,6 +579,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`task_route_override`](task_route_override.md) | Task Route Override | Pin one task to a worker profile in an emergency (spec §7, D2). |
 | [`task_set`](task_set.md) | Task Set | Work-state contract writes. Never performs status transitions. |
 | [`task_show`](task_show.md) | Task Show | Full task detail in one round trip: fields + deps + context + labels. |
+| [`task_split`](task_split.md) | Split task acceptance | Keep code on its existing delivery path and relocate explicit remaining acceptance. |
 | [`task_subtask_add`](task_subtask_add.md) | Task Subtask Add | Execute the task_subtask_add command. |
 | [`task_subtask_get`](task_subtask_get.md) | Task Subtask Get | Execute the task_subtask_get command. |
 | [`task_subtask_update`](task_subtask_update.md) | Task Subtask Update | Execute the task_subtask_update command. |
