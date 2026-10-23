@@ -398,7 +398,8 @@ def test_batch_exception_is_exact_and_has_no_remaining_headroom(report, manifest
     assert composition["source_revision"] == exception["measured_source_revision"]
     assert set(composition["member_sources"]) == {
         "agile-beacon-80", "grand-quest-20", "nimble-torrent-12", "prime-impact-40",
-        "fleet-dune-15",
+        "fleet-dune-15", "stark-glacier-67", "swift-bridge-27",
+        "swift-harbor-34", "swift-orbit-41",
     }
     assert composition["base_revision"] == merged["dev_source_revision"]
     assert composition["base_owned_total"] == merged["dev_owned_total"]
@@ -428,6 +429,10 @@ def test_batch_exception_is_exact_and_has_no_remaining_headroom(report, manifest
     assert push["request_message_id"] == "msg-027dff134dbc4cd8b5966c36151384ba"
     assert push["decision_id"] == merged["decision_id"]
     assert push["authorized_owned_delta"] == push["authorized_engine_delta"] == 13
+    assert composition["approved_deltas"][push["task_id"]] == {
+        "owned": push["authorized_owned_delta"], "engine": push["authorized_engine_delta"],
+    }
+    assert push["approval_message_id"] in exception["decision_message_ids"]
     assert merged["dev_owned_total"] + merged["authorized_owned_delta"] == (
         push["prior_owned_total_cap"]
     )

@@ -9134,9 +9134,10 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:c3146fdc9b2af1f4236a3641b00a6457fe751123f9e8b35cbad79776a7d50e35",
+      "digest": "sha256:bfe8a1cf4d5d96307332206189c5f86ee92e8c2df4d0abbc36f685604df84c27",
       "imports": [
         "src.api.auth",
+        "src.commands.integration_commands",
         "src.commands.principal",
         "src.config",
         "src.database.tables",

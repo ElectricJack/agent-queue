@@ -62,9 +62,7 @@ SUPERVISOR_HEALTH_CHANGES = ROOT / "tests/fixtures/contracts/supervisor-health-c
 TARGET_REPAIR_CHANGES = ROOT / "tests/fixtures/contracts/target-repair-contract-changes.json"
 PR_REPAIR_CHANGES = ROOT / "tests/fixtures/contracts/pr-repair-publication-contract-changes.json"
 ROUTING_CHANGES = ROOT / "tests/fixtures/contracts/routing-building-blocks-artifact-changes.json"
-
 FAILOVER_CHANGES = ROOT / "tests/fixtures/contracts/provider-failover-playbook-changes.json"
-
 TRIAGE_CHANGES = ROOT / "tests/fixtures/contracts/supervisor-triage-artifact-changes.json"
 
 
@@ -551,6 +549,7 @@ def test_legacy_playbook_fixtures_are_unchanged():
         if path in object_loop:
             assert object_loop[path]["previous_sha256"] == digest
             historical = ROOT / object_loop[path]["preserved_previous_path"]
+            assert hashlib.sha256(historical.read_bytes()).hexdigest() == digest
             assert object_loop[path]["sha256"] != digest
             digest = object_loop[path]["sha256"]
         assert hashlib.sha256((ROOT / path).read_bytes()).hexdigest() == digest, path
