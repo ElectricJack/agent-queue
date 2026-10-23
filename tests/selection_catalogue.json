@@ -1452,6 +1452,7 @@
         "tests/test_transcript_completions.py",
         "tests/test_transcript_identity.py",
         "tests/test_transcript_readers.py",
+        "tests/test_transcript_retention.py",
         "tests/test_transcript_watcher.py"
       ]
     },
@@ -19287,18 +19288,37 @@
       ],
       "summary": "Transcript reader tests (S3, Task B1)."
     },
+    "tests/test_transcript_retention.py": {
+      "areas": [
+        "transcripts"
+      ],
+      "default_arm": true,
+      "digest": "sha256:9a069530ae6ae1b24536a213d73c4dc625e14292e9fe393ef4c2ab6ee962b1db",
+      "imports": [
+        "src.database",
+        "src.database.tables",
+        "src.models",
+        "src.sessions.transcripts",
+        "src.sessions.transcripts.retention"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Archive-before-delete and exact anti-replay after dedupe compaction."
+    },
     "tests/test_transcript_watcher.py": {
       "areas": [
         "transcripts"
       ],
       "default_arm": true,
-      "digest": "sha256:10e9ac877ea6348d6a726c685f12407ae3a9cacfbb98a639fb66cff596eb1f25",
+      "digest": "sha256:a83c5a93460c67f21c4252b0c8c65f221d849f5bf8c06d3798ffdccbc5a48f4e",
       "imports": [
         "src.database",
         "src.database.tables",
         "src.models",
         "src.providers.snapshot",
         "src.sessions.transcripts.base",
+        "src.sessions.transcripts.retention",
         "src.sessions.transcripts.watcher"
       ],
       "markers": [
