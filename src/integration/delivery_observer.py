@@ -34,7 +34,7 @@ from src.database.tables import (
     task_completion_records,
     tasks,
 )
-from src.git.manager import GitError, RemoteRefState
+from src.git.manager import GitError, RemoteRefState, within_git_read_budget
 from src.integration.delivery_truth import (
     DeliveryEvidence,
     DeliveryRequest,
@@ -716,11 +716,11 @@ class DeliveryObserver:
             and (recent[1].error is None or cached_only)
             and (not cached_only or recent[1]._freshness.get(target.target_ref, True))):
             return recent[1]
-        if cached_only:
-            # Interactive diagnostic reads must never queue behind a fetch or start
-            # one. Expired evidence is unknown, not evidence of non-delivery.
+        if cached_only or (shared := await within_git_read_budget(
+                self._shared_observation, target, path)) is None:
+            # Interactive or over-budget reads never wait on a fetch: unknown, not undelivered.
             return self._unavailable(target, path, "snapshot_unavailable")
-        snapshot, stamp, flight = await self._shared_observation(target, path)
+        snapshot, stamp, flight = shared
         # Each caller owns its request caches and freshness marks, as if it had
         # fetched alone; observers sharing a store read with their own transport.
         snapshot = replace(snapshot, git=self.git, _cache={}, _identities={}, _freshness={})
