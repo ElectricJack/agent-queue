@@ -1333,3 +1333,35 @@ async def test_unlimited_repair_deadline_upgrade_preserves_reservations_and_repl
         assert await conn.fetchval("SELECT version_num FROM alembic_version") == "a00000000121"
     finally:
         await conn.close()
+
+
+async def test_transcript_fences_upgrade_from_deployed_repair_revision():
+    """An install already stamped 121 must still run the later fence migration."""
+    dsn = await create_scratch_database("transcriptfences122")
+    before = _alembic_pg(dsn, "upgrade", "a00000000121")
+    assert before.returncode == 0, before.stderr
+    conn = await _pg_conn(dsn)
+    try:
+        # Reproduce deployed 121 rather than the live-metadata baseline shape.
+        await conn.execute("DROP TABLE transcript_usage_fences")
+        await conn.execute("DROP INDEX IF EXISTS idx_transcript_usage_calls_updated")
+        await _insert_stage_rows(conn, 0, "unlimited", deadline=None)
+    finally:
+        await conn.close()
+    upgraded = _alembic_pg(dsn, "upgrade", "head")
+    assert upgraded.returncode == 0, upgraded.stderr
+    conn = await _pg_conn(dsn)
+    try:
+        assert await conn.fetchval("SELECT version_num FROM alembic_version") == "a00000000122"
+        assert await conn.fetchval("SELECT to_regclass('transcript_usage_fences')")
+        assert await conn.fetchval("SELECT to_regclass('idx_transcript_usage_calls_updated')")
+        assert await conn.fetchval("SELECT to_regclass('idx_transcript_usage_fences_keys')")
+        row = await conn.fetchrow(
+            "SELECT stage_deadline_at FROM integration_candidate_resolutions "
+            "WHERE id='resolution-unlimited'"
+        )
+        assert row is not None and row["stage_deadline_at"] is None
+    finally:
+        await conn.close()
+    again = _alembic_pg(dsn, "upgrade", "head")
+    assert again.returncode == 0, again.stderr
