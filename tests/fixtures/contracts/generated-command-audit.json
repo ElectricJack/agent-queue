@@ -17084,6 +17084,54 @@
     },
     "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys."
   },
+  "rebind_workspace": {
+    "mode": "json_object",
+    "producer": "src/commands/agent_commands.py:AgentCommandsMixin._cmd_rebind_workspace",
+    "source_digest": "sha256:223f45cc39002861248c3186c0c7ec6f29226f4ae7d06524f26008ef54e79295",
+    "input_schema_source": "explicit_tool",
+    "schema_quality": "declared",
+    "argument_reads_diagnostic_only": [
+      "session_id",
+      "task_id",
+      "workspace_id"
+    ],
+    "effect": "destructive",
+    "retry_safe": false,
+    "principal_requirement": "original_principal",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "denial_reason": null,
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "return_branches": [
+      {
+        "return": "session belongs to a different project scope",
+        "protocol": "explicit_boolean: False (_session_project_scope_error)"
+      },
+      {
+        "return": "missing workspace_id, task_id or session_id",
+        "protocol": "explicit_boolean: False"
+      },
+      {
+        "return": "missing or incoherent session/task/agent/workspace/claim, or conflicting ownership",
+        "protocol": "explicit_boolean: False (src.workspace_ownership.rebind_workspace)"
+      },
+      {
+        "return": "restored exact active claim binding",
+        "protocol": "explicit_boolean: True (src.workspace_ownership.rebind_workspace)"
+      }
+    ],
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_workspace_commands.py::TestWorkspaceOwnershipControls",
+      "tests/test_command_scope_matrix.py::test_a_project_supervisor_cannot_reach_another_projects_session"
+    ],
+    "helper_producers": {},
+    "review_notes": "Handler rejects foreign project sessions before argument validation and returns success=false for missing required identities. Delegates unchanged boolean outcomes from src.workspace_ownership.rebind_workspace. Reviewed all exits: every identity, assignment, path, epoch, metadata, phase or ownership mismatch returns success=false; coherent restoration returns success=true. Original-principal resource gates resolve workspace, task and session. Only the workspace lock row is repaired; marker/session/task/enabled state is preserved."
+  },
   "reconcile_agent_cron": {
     "mode": "json_object",
     "producer": "src/commands/cron_commands.py:CronCommandsMixin._cmd_reconcile_agent_cron",
@@ -17407,10 +17455,12 @@
   "release_workspace": {
     "mode": "json_object",
     "producer": "src/commands/agent_commands.py:AgentCommandsMixin._cmd_release_workspace",
-    "source_digest": "sha256:8c65240bf8bc5960abfc4731b289a01e1541d0231c26583278b86b9659ef3fef",
+    "source_digest": "sha256:f6dfdaf1942f576a19e97309edf7df8765f8f2c840e505a96fc5dd61e4d617b0",
     "input_schema_source": "explicit_tool",
     "schema_quality": "declared",
     "argument_reads_diagnostic_only": [
+      "force",
+      "task_id",
       "workspace_id"
     ],
     "effect": "destructive",
@@ -17424,25 +17474,22 @@
     "result_policy": "strict boolean success at producer; no inferred outcome",
     "return_branches": [
       {
-        "return": "{'success': False, 'error': f\"Workspace '{workspace_id}' not found\"}",
-        "protocol": "explicit_boolean: False"
+        "return": "workspace missing, protected ownership, inexact force task, or job pin",
+        "protocol": "explicit_boolean: False (src.workspace_ownership.release_workspace)"
       },
       {
-        "return": "{'success': True, 'workspace_id': workspace_id, 'status': 'already_unlocked'}",
-        "protocol": "explicit_boolean: True"
-      },
-      {
-        "return": "{'success': True, 'workspace_id': workspace_id, 'released_from_agent': ws.locked_by_agent_id, 'released_from_task': ws.locked_by_task_id}",
-        "protocol": "explicit_boolean: True"
+        "return": "released lock row with preserved independent ownership",
+        "protocol": "explicit_boolean: True (src.workspace_ownership.release_workspace)"
       }
     ],
     "tests": [
       "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
       "tests/test_generated_command_contracts.py::test_generic_result_protocol",
-      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_workspace_commands.py::TestWorkspaceOwnershipControls"
     ],
     "helper_producers": {},
-    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys."
+    "review_notes": "Delegates unchanged boolean outcomes from src.workspace_ownership.release_workspace. Reviewed all exits: missing workspace, protected ownership, mismatched/taskless force and job pins refuse with success=false; successful row-only release returns success=true. Original-principal project/resource gates apply; independent markers and integration attachments survive forced release."
   },
   "reload_config": {
     "mode": "json_object",

@@ -70,6 +70,34 @@ ROUTING_CHANGES = ROOT / "tests/fixtures/contracts/routing-building-blocks-artif
 STRUCTURE_CHANGES = ROOT / "tests/fixtures/contracts/post-release-structure-contract-changes.json"
 
 
+WORKSPACE_CHANGES = ROOT / "tests/fixtures/contracts/workspace-ownership-contract-changes.json"
+
+
+def _workspace_changes():
+    return json.loads(WORKSPACE_CHANGES.read_text())
+
+
+def _before_workspace_catalogue(catalogue=None):
+    return _revert_catalogue(
+        json.loads(render_command_catalogue()) if catalogue is None else catalogue,
+        _workspace_changes(),
+    )
+
+
+def test_workspace_catalogue_only_changes_guarded_ownership_controls():
+    evidence = _workspace_changes()
+    snapshot = command_snapshot()
+    assert set(evidence["transport_definitions"]) == {"release_workspace"}
+    assert set(evidence["new_commands"]) == {"rebind_workspace"}
+    for name, approved in evidence["new_commands"].items():
+        assert _digest(snapshot.commands[name].tool_definition()) == approved["transport_sha256"]
+        assert CONTRACTS.require(name).contract.fingerprint() == approved["contract_fingerprint"]
+    previous = _before_restart_hold_catalogue()
+    assert hashlib.sha256((json.dumps(previous, indent=2) + "\n").encode()).hexdigest() == (
+        evidence["previous_cli_catalogue_sha256"]
+    )
+
+
 def _structure_changes():
     changes = json.loads(STRUCTURE_CHANGES.read_text())
     assert changes["source_base"] == "908112dce62681fb4761e80a218382c75fc939cf"
@@ -112,49 +140,6 @@ def test_structure_catalogue_preserves_reviewed_delta():
     assert hashlib.sha256((json.dumps(previous, indent=2) + "\n").encode()).hexdigest() == (
         _pr_repair_changes()["cli_catalogue_sha256"]
     )
-
-
-def _retention_changes():
-    return json.loads(
-        (ROOT / "tests/fixtures/contracts/operational-retention-contract-changes.json").read_text()
-    )
-
-
-def _before_retention_catalogue(catalogue=None):
-    evidence = _retention_changes()
-    catalogue = json.loads(render_command_catalogue()) if catalogue is None else catalogue
-    entries = [e for e in catalogue["explicit"] if e.get("name") == evidence["command"]]
-    assert entries == [evidence["explicit_entry"]]
-    catalogue["explicit"].remove(entries[0])
-    assert catalogue["tool_categories"].pop(evidence["command"]) == evidence["tool_category"]
-    return catalogue
-
-
-def test_retention_catalogue_only_adds_reviewed_command():
-    evidence = _retention_changes()
-    assert CONTRACTS.require(evidence["command"]).contract.fingerprint() == (
-        evidence["contract_fingerprint"]
-    )
-    catalogue = _before_wait_requeue_catalogue()
-    previous = json.dumps(catalogue, indent=2) + "\n"
-    assert hashlib.sha256(previous.encode()).hexdigest() == (
-        evidence["previous_cli_catalogue_sha256"]
-    )
-
-
-def test_retention_original_catalogue_evidence():
-    evidence = _retention_changes()
-    catalogue = _before_wait_requeue_catalogue()
-    template = json.loads(render_command_catalogue())
-    explicit = {row["name"]: row for row in catalogue["explicit"]}
-    explicit[evidence["command"]] = evidence["explicit_entry"]
-    catalogue["explicit"] = [explicit[row["name"]] for row in template["explicit"]
-                             if row["name"] in explicit]
-    categories = {**catalogue["tool_categories"], evidence["command"]: evidence["tool_category"]}
-    catalogue["tool_categories"] = {name: categories[name] for name in template["tool_categories"]
-                                    if name in categories}
-    original = json.dumps(catalogue, indent=2) + "\n"
-    assert hashlib.sha256(original.encode()).hexdigest() == evidence["cli_catalogue_sha256"]
 
 
 def _stuck_check_changes():
@@ -499,6 +484,7 @@ def test_legacy_execution_documents_and_fingerprints():
             _completion_changes(),
             _restart_hold_changes(),
             _updater_changes(),
+            _workspace_changes(),
         ):
             later = recording["contracts"].get(name)
             if later:
@@ -541,7 +527,8 @@ def test_transport_views_and_cli_serialization_preserve_golden_evidence():
             assert approved["previous_sha256"] == digest
             digest = approved["sha256"]
         for recording in (_hibernation_changes(), _dispatch_changes(), _merge_changes(),
-                          _leaf_changes(), _completion_changes(), _restart_hold_changes()):
+                          _leaf_changes(), _completion_changes(), _restart_hold_changes(),
+                          _workspace_changes()):
             if name in recording["transport_definitions"]:
                 approved = recording["transport_definitions"][name]
                 assert approved["previous_sha256"] == digest
@@ -1195,6 +1182,49 @@ def test_target_repair_catalogue_only_adds_reviewed_command():
     _revert_target_repair_catalogue(_dev_catalogue())
 
 
+def _retention_changes():
+    return json.loads(
+        (ROOT / "tests/fixtures/contracts/operational-retention-contract-changes.json").read_text()
+    )
+
+
+def _before_retention_catalogue(catalogue=None):
+    evidence = _retention_changes()
+    catalogue = json.loads(render_command_catalogue()) if catalogue is None else catalogue
+    entries = [e for e in catalogue["explicit"] if e.get("name") == evidence["command"]]
+    assert entries == [evidence["explicit_entry"]]
+    catalogue["explicit"].remove(entries[0])
+    assert catalogue["tool_categories"].pop(evidence["command"]) == evidence["tool_category"]
+    return catalogue
+
+
+def test_retention_catalogue_only_adds_reviewed_command():
+    evidence = _retention_changes()
+    assert CONTRACTS.require(evidence["command"]).contract.fingerprint() == (
+        evidence["contract_fingerprint"]
+    )
+    catalogue = _before_wait_requeue_catalogue()
+    previous = json.dumps(catalogue, indent=2) + "\n"
+    assert hashlib.sha256(previous.encode()).hexdigest() == (
+        evidence["previous_cli_catalogue_sha256"]
+    )
+
+
+def test_retention_original_catalogue_evidence():
+    evidence = _retention_changes()
+    catalogue = _before_wait_requeue_catalogue()
+    template = json.loads(render_command_catalogue())
+    explicit = {row["name"]: row for row in catalogue["explicit"]}
+    explicit[evidence["command"]] = evidence["explicit_entry"]
+    catalogue["explicit"] = [explicit[row["name"]] for row in template["explicit"]
+                             if row["name"] in explicit]
+    categories = {**catalogue["tool_categories"], evidence["command"]: evidence["tool_category"]}
+    catalogue["tool_categories"] = {name: categories[name] for name in template["tool_categories"]
+                                    if name in categories}
+    original = json.dumps(catalogue, indent=2) + "\n"
+    assert hashlib.sha256(original.encode()).hexdigest() == evidence["cli_catalogue_sha256"]
+
+
 OBJECT_LOOP_CHANGES = ROOT / "tests/fixtures/contracts/object-loop-port-changes.json"
 
 
@@ -1231,9 +1261,10 @@ def test_updater_catalogue_only_changes_guarded_update_description():
     assert hashlib.sha256(original.encode()).hexdigest() == evidence["cli_catalogue_sha256"]
 
 
-
 def _before_parallel_catalogue():
     catalogue = json.loads(render_command_catalogue())
     catalogue = _before_updater_catalogue(catalogue)
     catalogue = _before_retention_catalogue(catalogue)
+    catalogue = _before_workspace_catalogue(catalogue)
     return catalogue
+

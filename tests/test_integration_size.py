@@ -412,6 +412,7 @@ def test_batch_exception_is_exact_and_has_no_remaining_headroom(report, manifest
         "fair-dune-41",
         "fair-flare-10",
         "fair-harbor-71",
+        "nimble-meadow-99",
         "nimble-torrent-12",
         "noble-flare-12",
         "prime-grove-46",
@@ -861,3 +862,28 @@ def test_restart_hold_repair_merge_preserves_exact_grant(report, manifest):
             == "a36c389c39a33ff60bffa98cc019591298bdcfa9")
     recorded = json.loads((ROOT / "tests/integration_ownership_report.json").read_text())
     assert recorded["restart_hold_repair_merge_measurement"] == merged
+
+
+def test_workspace_ownership_merge_measurement_is_exact(report, manifest):
+    exception = manifest["transition_exception"]
+    grants = [item for item in exception["amendments"] if item["task_id"] == "nimble-meadow-99"]
+    original, merged = grants
+    assert original["operator_decision_id"] == "c363ba40-0d03-4303-8667-e192e92091ad"
+    assert original["authorized_owned_delta"] == 144
+    assert original["decision_message_id"] in exception["decision_message_ids"]
+    assert merged["referenced_decision"] == "size-cap-delegation-2026-10-23"
+    assert merged["operator_decision"] == "6679052c"
+    assert merged["operator_task"] == "sharp-cascade-53"
+    assert merged["pull_request"] == "https://github.com/ElectricJack/agent-queue/pull/1802"
+    assert merged["measured_source_revision"] == "9b8ad6e58179dde7ac486d12d446e116e8120187"
+    assert (merged["previous_owned_total"] + merged["authorized_owned_delta"]
+            == merged["measured_owned_total"] == 161_342)
+    assert report["total"] <= exception["measured_owned_total"]
+    assert (merged["previous_engine_lines"] + merged["authorized_engine_delta"]
+            == merged["measured_engine_lines"] == exception["measured_engine_lines"]
+            == report["groups"]["engine"] == 85_010)
+    assert (merged["previous_table_count"] + merged["authorized_table_delta"]
+            == merged["measured_table_count"] == exception["measured_table_count"]
+            == len(report["tables"]) == 45)
+    recorded = json.loads((ROOT / "tests/integration_ownership_report.json").read_text())
+    assert recorded["workspace_ownership_merge_measurement"] == merged
