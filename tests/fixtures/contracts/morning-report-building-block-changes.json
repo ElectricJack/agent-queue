@@ -1,0 +1,10 @@
+{
+  "playbook_fixtures": {
+    "tests/fixtures/playbooks/v2/morning-report/artifact.json": {
+      "preserved_previous_path": "tests/fixtures/reports/morning/building-blocks/legacy-artifact.json",
+      "previous_sha256": "584735bfad6aa6df0da33f112e62e176b61e039c3071deca86aba6f1c2021195",
+      "sha256": "64f34f6ebaa0e12b70ee0ed2788bd3ab879cee208165d36a8f3c5e71598f0fde"
+    }
+  },
+  "reason": "The morning-report building-block port makes source policy explicit without changing the executable graph, command fingerprint or caller behavior. The original golden remains unchanged and its artifact is preserved byte-for-byte. tests/test_morning_reports.py checks graph/contract equivalence and runs both artifacts through the same representative scenarios. Only source locations, source hash and compilation metadata change."
+}

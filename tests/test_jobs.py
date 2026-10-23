@@ -19,7 +19,7 @@ from src.config import AppConfig
 from src.database import Database
 from src.database.tables import jobs, projects
 from src.git.manager import GitManager
-from src.integration.batches import Batch
+from src.integration.batches import Batch, BatchMember
 from src.integration.checks import (
     LOCAL_CHECKS_PRODUCER_ID,
     ChecksState,
@@ -515,7 +515,8 @@ async def test_local_pr_gate_checks_eligibility_and_approval_before_submitting_j
     resolver = AsyncMock(side_effect=lanes._pr_checks)
     gate = RootPullRequestGate(world.db,
         repository=AsyncMock(return_value=(binding, client)), checks=resolver)
-    member = SimpleNamespace(task_id="t1", source_sha=world.candidate)
+    member = BatchMember(task_id="t1", source_sha=world.candidate,
+                         source_base_sha=await run(world.git, world.store, "rev-parse", "main"))
     result = await gate(TARGET, member)
     assert result["code"] == code
     rows = await job_rows(world.db)

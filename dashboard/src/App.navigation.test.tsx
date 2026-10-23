@@ -80,6 +80,7 @@ vi.mock("./pages/system/Playbooks", () => ({ default: () => <h1>Settings playboo
 vi.mock("./pages/system/Profiles", () => ({ default: () => <h1>Settings profiles</h1> }));
 vi.mock("./pages/system/Config", () => ({ default: () => <h1>Settings config</h1> }));
 vi.mock("./pages/settings/IntelligenceClassesStub", () => ({ default: () => <h1>Settings intelligence classes</h1> }));
+vi.mock("./pages/PlanPage", () => ({ default: function PlanStub() { return <h1>Plan for {useParams().taskId}</h1>; } }));
 vi.mock("./pages/PlaybookDetail", () => ({ default: () => <h1>Playbook detail</h1> }));
 vi.mock("./pages/reports/MorningReportPage", () => ({ default: () => <h1>Morning report read page</h1> }));
 vi.mock("./pages/reviews/ReviewsInbox", () => ({ default: () => <h1>Reviews inbox</h1> }));
@@ -130,6 +131,12 @@ function renderApp(path: string) {
     </QueryClientProvider>,
   );
 }
+
+it("opens the plan deep link without redirecting into the command center", async () => {
+  renderApp("/plans/solid-grove.13");
+  expect(await screen.findByRole("heading", { name: "Plan for solid-grove.13" })).toBeInTheDocument();
+  expect(screen.getByLabelText("Current location")).toHaveTextContent("/plans/solid-grove.13");
+});
 
 beforeEach(() => {
   vi.clearAllMocks();

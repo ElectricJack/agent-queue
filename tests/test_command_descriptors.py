@@ -48,6 +48,7 @@ EPIC_CHANGES = ROOT / "tests/fixtures/contracts/epic-integration-contract-change
 EPIC_COMMANDS = ("integration_cutover_containment", "integration_reconcile_git_truth")
 WATCH_CHANGES = ROOT / "tests/fixtures/contracts/watch-contract-changes.json"
 INGEST_CHANGES = ROOT / "tests/fixtures/contracts/ingestion-replay-contract-changes.json"
+OBJECT_LOOP_PORT_CHANGES = ROOT / "tests/fixtures/contracts/object-loop-port-changes.json"
 PIPELINE_CHANGES = ROOT / "tests/fixtures/contracts/default-pipeline-building-blocks-changes.json"
 HIBERNATION_CHANGES = ROOT / "tests/fixtures/contracts/hibernation-contract-changes.json"
 DISPATCH_CHANGES = ROOT / "tests/fixtures/contracts/dispatch-wait-contract-changes.json"
@@ -60,8 +61,12 @@ BATCH_REPAIR_CHANGES = ROOT / "tests/fixtures/contracts/batch-repair-contract-ch
 DEV_HIBERNATION_CHANGES = ROOT / "tests/fixtures/contracts/hibernation-main-refresh-contract-changes.json"
 SUPERVISOR_HEALTH_CHANGES = ROOT / "tests/fixtures/contracts/supervisor-health-contract-changes.json"
 TARGET_REPAIR_CHANGES = ROOT / "tests/fixtures/contracts/target-repair-contract-changes.json"
+OBJECT_LOOP_CHANGES = ROOT / "tests/fixtures/contracts/object-loop-refactor-contract-changes.json"
 PR_REPAIR_CHANGES = ROOT / "tests/fixtures/contracts/pr-repair-publication-contract-changes.json"
 PROMOTION_REQUEST_PORT = ROOT / "tests/fixtures/contracts/promotion-request-port-changes.json"
+FAILOVER_CHANGES = ROOT / "tests/fixtures/contracts/provider-failover-playbook-changes.json"
+TRIAGE_CHANGES = ROOT / "tests/fixtures/contracts/supervisor-triage-artifact-changes.json"
+MORNING_CHANGES = ROOT / "tests/fixtures/contracts/morning-report-building-block-changes.json"
 WAIT_REQUEUE_CHANGES = ROOT / "tests/fixtures/contracts/wait-requeue-contract-changes.json"
 RESTART_HOLD_CHANGES = ROOT / "tests/fixtures/contracts/restart-hold-contract-changes.json"
 ROUTING_CHANGES = ROOT / "tests/fixtures/contracts/routing-building-blocks-artifact-changes.json"
@@ -114,6 +119,39 @@ def test_structure_catalogue_preserves_reviewed_delta():
     )
 
 
+UPDATER_CHANGES = ROOT / "tests/fixtures/contracts/updater-safety-contract-changes.json"
+
+
+def _updater_changes():
+    return json.loads(UPDATER_CHANGES.read_text())
+
+
+def _before_updater_catalogue(catalogue=None):
+    catalogue = json.loads(render_command_catalogue()) if catalogue is None else catalogue
+    for name, approved in _updater_changes()["transport_definitions"].items():
+        [definition] = [item for item in catalogue["explicit"] if item["name"] == name]
+        assert definition["description"] == approved["description"]
+        assert _digest(definition) == approved["sha256"]
+        definition["description"] = approved["previous_description"]
+        assert _digest(definition) == approved["previous_sha256"]
+    return catalogue
+
+
+def test_updater_catalogue_only_changes_guarded_update_description():
+    evidence = _updater_changes()
+    assert set(evidence["transport_definitions"]) == {"update_and_restart"}
+    catalogue = _before_wait_requeue_catalogue()
+    previous = json.dumps(catalogue, indent=2) + "\n"
+    assert hashlib.sha256(previous.encode()).hexdigest() == evidence["previous_cli_catalogue_sha256"]
+    assert evidence["previous_cli_catalogue_sha256"] == _pr_repair_changes()["cli_catalogue_sha256"]
+    for name, approved in evidence["transport_definitions"].items():
+        [definition] = [item for item in catalogue["explicit"] if item["name"] == name]
+        definition["description"] = approved["description"]
+        assert _digest(definition) == approved["sha256"]
+    original = json.dumps(catalogue, indent=2) + "\n"
+    assert hashlib.sha256(original.encode()).hexdigest() == evidence["cli_catalogue_sha256"]
+
+
 def _stuck_check_changes():
     return json.loads((ROOT / "tests/fixtures/contracts/stuck-check-contract-changes.json").read_text())
 
@@ -127,7 +165,7 @@ def _restart_hold_changes():
 
 
 def _before_restart_hold_catalogue():
-    catalogue = json.loads(render_command_catalogue())
+    catalogue = _before_parallel_catalogue()
     approved = _restart_hold_changes()["transport_definitions"]["restart_task"]
     [definition] = [item for item in catalogue["explicit"] if item["name"] == "restart_task"]
     assert definition == approved["definition"]
@@ -448,8 +486,15 @@ def test_legacy_execution_documents_and_fingerprints():
         if name in changes:
             assert expected["previous_fingerprint"] == old["fingerprint"]
             assert expected["fingerprint"] != old["fingerprint"]
-        for recording in (_hibernation_changes(), _dispatch_changes(), _merge_changes(),
-                          _leaf_changes(), _completion_changes(), _structure_changes()):
+        for recording in (
+            _hibernation_changes(),
+            _dispatch_changes(),
+            _merge_changes(),
+            _leaf_changes(),
+            _completion_changes(),
+            _restart_hold_changes(),
+            _updater_changes(),
+        ):
             later = recording["contracts"].get(name)
             if later:
                 assert later["previous_fingerprint"] == expected["fingerprint"]
@@ -491,7 +536,8 @@ def test_transport_views_and_cli_serialization_preserve_golden_evidence():
             assert approved["previous_sha256"] == digest
             digest = approved["sha256"]
         for recording in (_hibernation_changes(), _dispatch_changes(), _merge_changes(),
-                          _leaf_changes(), _completion_changes(), _restart_hold_changes()):
+                          _leaf_changes(), _completion_changes(), _restart_hold_changes(),
+                          _updater_changes()):
             if name in recording["transport_definitions"]:
                 approved = recording["transport_definitions"][name]
                 assert approved["previous_sha256"] == digest
@@ -608,6 +654,18 @@ def test_legacy_playbook_fixtures_are_unchanged():
     watch = _watch_changes()["playbook_fixtures"]
     ingest = json.loads(INGEST_CHANGES.read_text())["playbook_fixtures"]
     hibernation = _hibernation_changes()["playbook_fixtures"]
+    probe_port = json.loads((
+        ROOT / "tests/fixtures/contracts/provider-usage-probe-port-changes.json"
+    ).read_text())["playbook_fixtures"]
+    assert set(probe_port) == {"tests/fixtures/playbooks/v2/provider-usage-probe/artifact.json"}
+    object_loop_port = json.loads(OBJECT_LOOP_PORT_CHANGES.read_text())["playbook_fixtures"]
+    assert set(object_loop_port) == {"tests/fixtures/playbooks/v2/object-loop/artifact.json"}
+    object_loop = json.loads(OBJECT_LOOP_CHANGES.read_text())["playbook_fixtures"]
+    assert set(ingest) == {"tests/fixtures/playbooks/v2/default-pipeline/artifact.json"}
+    assert set(object_loop) == {
+        "tests/fixtures/playbooks/v2/object-loop/artifact.json",
+        "tests/fixtures/playbooks/v2/object-loop/traces.json",
+    }
     promotion_request = json.loads(PROMOTION_REQUEST_PORT.read_text())["playbook_fixtures"]
     assert set(promotion_request) == {"tests/fixtures/playbooks/v2/promotion-request/artifact.json"}
     routing = json.loads(ROUTING_CHANGES.read_text())["playbook_fixtures"]
@@ -615,6 +673,16 @@ def test_legacy_playbook_fixtures_are_unchanged():
     assert set(routing) == {"tests/fixtures/playbooks/v2/default-assignment-routing/artifact.json"}
     pipeline = json.loads(PIPELINE_CHANGES.read_text())["playbook_fixtures"]
     assert set(pipeline) == {"tests/fixtures/playbooks/v2/default-pipeline/artifact.json"}
+    failover = json.loads(FAILOVER_CHANGES.read_text())["playbook_fixtures"]
+    assert set(failover) == {"tests/fixtures/playbooks/v2/provider-failover/artifact.json"}
+    triage = json.loads(TRIAGE_CHANGES.read_text())["playbook_fixtures"]
+    assert set(triage) == {"tests/fixtures/playbooks/v2/supervisor-failure-triage/artifact.json"}
+    morning = json.loads(MORNING_CHANGES.read_text())["playbook_fixtures"]
+    assert set(morning) == {"tests/fixtures/playbooks/v2/morning-report/artifact.json"}
+    hourly = json.loads(
+        (ROOT / "tests/fixtures/contracts/discord-report-contract-changes.json").read_text()
+    )["playbook_fixtures"]
+    assert set(hourly) == {"tests/fixtures/playbooks/v2/supervisor-hourly-report/artifact.json"}
     for path, digest in json.loads(GOLDEN.read_text())["playbook_fixtures"].items():
         if path in changes:
             assert changes[path]["previous_sha256"] == digest
@@ -637,6 +705,47 @@ def test_legacy_playbook_fixtures_are_unchanged():
             assert hibernation[path]["previous_sha256"] == digest
             assert hibernation[path]["sha256"] != digest
             digest = hibernation[path]["sha256"]
+        if path in probe_port:
+            assert probe_port[path]["previous_sha256"] == digest
+            historical = ROOT / probe_port[path]["preserved_previous_path"]
+            assert hashlib.sha256(historical.read_bytes()).hexdigest() == digest
+            assert probe_port[path]["sha256"] != digest
+            digest = probe_port[path]["sha256"]
+        if path in object_loop_port:
+            change = object_loop_port[path]
+            assert change["previous_sha256"] == digest
+            historical = ROOT / change["preserved_previous_path"]
+            assert hashlib.sha256(historical.read_bytes()).hexdigest() == digest
+            ported = ROOT / "tests/fixtures/playbooks/object-loop-port/ported.artifact.json"
+            assert hashlib.sha256(ported.read_bytes()).hexdigest() == change["sha256"]
+            # The two reviewed recordings derive independently from this baseline.
+            # Keep the authoring port intact while the filter recording is current.
+        if path in object_loop:
+            assert object_loop[path]["previous_sha256"] == digest
+            assert object_loop[path]["sha256"] != digest
+            digest = object_loop[path]["sha256"]
+        if path in failover:
+            assert failover[path]["previous_sha256"] == digest
+            historical = ROOT / failover[path]["preserved_previous_path"]
+            assert hashlib.sha256(historical.read_bytes()).hexdigest() == digest
+            assert failover[path]["sha256"] != digest
+            digest = failover[path]["sha256"]
+        if path in triage:
+            assert triage[path]["previous_sha256"] == digest
+            historical = ROOT / triage[path]["preserved_previous_path"]
+            assert hashlib.sha256(historical.read_bytes()).hexdigest() == digest
+            assert triage[path]["sha256"] != digest
+            digest = triage[path]["sha256"]
+        if path in morning:
+            assert morning[path]["previous_sha256"] == digest
+            historical = ROOT / morning[path]["preserved_previous_path"]
+            assert hashlib.sha256(historical.read_bytes()).hexdigest() == digest
+            assert morning[path]["sha256"] != digest
+            digest = morning[path]["sha256"]
+        if path in hourly:
+            assert hourly[path]["previous_sha256"] == digest
+            assert hourly[path]["sha256"] != digest
+            digest = hourly[path]["sha256"]
         if path in promotion_request:
             change = promotion_request[path]
             assert change["previous_sha256"] == digest
@@ -1143,3 +1252,126 @@ def test_batch_repair_catalogue_only_adds_optional_assignment():
 
 def test_target_repair_catalogue_only_adds_reviewed_command():
     _revert_target_repair_catalogue(_dev_catalogue())
+
+
+CONTINUOUS_CHANGES = ROOT / "tests/fixtures/contracts/promotion-continuous-contract-changes.json"
+
+
+
+def test_original_pr_1842_legacy_playbook_fixtures_are_unchanged():
+    changes = _observation_changes()["playbook_fixtures"]
+    assert set(changes) == {
+        "tests/fixtures/playbooks/v2/stuck-task-watch/artifact.json",
+        "tests/fixtures/playbooks/v2/review-pipeline.artifact.json",
+        "tests/fixtures/playbooks/v2/review-pipeline.v6.artifact.json",
+    }
+    changes = {**changes, **_script_changes()["playbook_fixtures"]}
+    main = _main_changes()["playbook_fixtures"]
+    watch = _watch_changes()["playbook_fixtures"]
+    ingest = json.loads(INGEST_CHANGES.read_text())["playbook_fixtures"]
+    hibernation = _hibernation_changes()["playbook_fixtures"]
+    continuous = json.loads(CONTINUOUS_CHANGES.read_text())["playbook_fixtures"]
+    assert set(continuous) == {"tests/fixtures/playbooks/v2/promotion-continuous/artifact.json"}
+    promotion_request = json.loads(PROMOTION_REQUEST_PORT.read_text())["playbook_fixtures"]
+    assert set(promotion_request) == {"tests/fixtures/playbooks/v2/promotion-request/artifact.json"}
+    routing = json.loads(ROUTING_CHANGES.read_text())["playbook_fixtures"]
+    assert set(ingest) == {"tests/fixtures/playbooks/v2/default-pipeline/artifact.json"}
+    assert set(routing) == {"tests/fixtures/playbooks/v2/default-assignment-routing/artifact.json"}
+    pipeline = json.loads(PIPELINE_CHANGES.read_text())["playbook_fixtures"]
+    assert set(pipeline) == {"tests/fixtures/playbooks/v2/default-pipeline/artifact.json"}
+    for path, digest in json.loads(GOLDEN.read_text())["playbook_fixtures"].items():
+        if path in changes:
+            assert changes[path]["previous_sha256"] == digest
+            digest = changes[path]["sha256"]
+        if path in main:
+            assert main[path]["previous_sha256"] == digest
+            digest = main[path]["sha256"]
+            path = main[path]["path"]
+        if path in watch:
+            assert watch[path]["previous_sha256"] == digest
+            historical = ROOT / watch[path]["preserved_previous_path"]
+            assert hashlib.sha256(historical.read_bytes()).hexdigest() == digest
+            assert watch[path]["sha256"] != digest
+            digest = watch[path]["sha256"]
+        if path in ingest:
+            assert ingest[path]["previous_sha256"] == digest
+            assert ingest[path]["sha256"] != digest
+            digest = ingest[path]["sha256"]
+        if path in hibernation:
+            assert hibernation[path]["previous_sha256"] == digest
+            assert hibernation[path]["sha256"] != digest
+            digest = hibernation[path]["sha256"]
+        if path in continuous:
+            assert continuous[path]["previous_sha256"] == digest
+            historical = ROOT / continuous[path]["preserved_previous_path"]
+            assert hashlib.sha256(historical.read_bytes()).hexdigest() == digest
+            assert continuous[path]["sha256"] != digest
+            digest = continuous[path]["sha256"]
+        if path in promotion_request:
+            change = promotion_request[path]
+            assert change["previous_sha256"] == digest
+            historical = ROOT / change["preserved_previous_path"]
+            assert hashlib.sha256(historical.read_bytes()).hexdigest() == digest
+            assert change["sha256"] != digest
+            digest = change["sha256"]
+        if path in routing:
+            assert routing[path]["previous_sha256"] == digest
+            historical = ROOT / routing[path]["preserved_previous_path"]
+            assert hashlib.sha256(historical.read_bytes()).hexdigest() == digest
+            assert routing[path]["sha256"] != digest
+            digest = routing[path]["sha256"]
+        if path in pipeline:
+            assert pipeline[path]["previous_sha256"] == digest
+            historical = ROOT / pipeline[path]["preserved_previous_path"]
+            assert hashlib.sha256(historical.read_bytes()).hexdigest() == digest
+            assert pipeline[path]["sha256"] != digest
+            digest = pipeline[path]["sha256"]
+        assert hashlib.sha256((ROOT / path).read_bytes()).hexdigest() == digest, path
+
+
+POOL_DELETE_CHANGES = ROOT / "tests/fixtures/contracts/pool-delete-contract-changes.json"
+
+
+def _pool_delete_changes():
+    return json.loads(POOL_DELETE_CHANGES.read_text())
+
+
+def _before_pool_delete_catalogue(catalogue=None):
+    evidence = _pool_delete_changes()
+    catalogue = json.loads(render_command_catalogue()) if catalogue is None else catalogue
+    definitions = catalogue["explicit"]
+    index = next(i for i, row in enumerate(definitions) if row["name"] == evidence["command"])
+    assert definitions.pop(index) == evidence["transport_definition"]
+    assert catalogue["tool_categories"].pop(evidence["command"]) == evidence["category"]
+    return catalogue
+
+
+def test_pool_delete_catalogue_only_adds_reviewed_command():
+    evidence = _pool_delete_changes()
+    catalogue = _before_wait_requeue_catalogue()
+    previous = json.dumps(catalogue, indent=2) + "\n"
+    assert hashlib.sha256(previous.encode()).hexdigest() == (
+        evidence["previous_cli_catalogue_sha256"]
+    )
+
+
+def test_pool_delete_original_catalogue_evidence():
+    evidence = _pool_delete_changes()
+    catalogue = _before_wait_requeue_catalogue()
+    template = json.loads(render_command_catalogue())
+    explicit = {row["name"]: row for row in catalogue["explicit"]}
+    explicit[evidence["command"]] = evidence["transport_definition"]
+    catalogue["explicit"] = [explicit[row["name"]] for row in template["explicit"]
+                             if row["name"] in explicit]
+    categories = {**catalogue["tool_categories"], evidence["command"]: evidence["category"]}
+    catalogue["tool_categories"] = {name: categories[name] for name in template["tool_categories"]
+                                    if name in categories}
+    original = json.dumps(catalogue, indent=2) + "\n"
+    assert hashlib.sha256(original.encode()).hexdigest() == evidence["cli_catalogue_sha256"]
+
+
+def _before_parallel_catalogue():
+    catalogue = json.loads(render_command_catalogue())
+    catalogue = _before_updater_catalogue(catalogue)
+    catalogue = _before_pool_delete_catalogue(catalogue)
+    return catalogue

@@ -1,5 +1,5 @@
 import { PlusIcon, XMarkIcon } from "@heroicons/react/24/outline";
-import { useSearchParams } from "react-router-dom";
+import { useLocation, useSearchParams } from "react-router-dom";
 import { useAgentFlock } from "../../api/agents";
 import { selectionAddress, useAgentSelection } from "./useAgentSelection";
 import AgentWindow from "./AgentWindow";
@@ -41,6 +41,8 @@ function DirectoryTabs({ view, onChange }: { view: DirectoryView; onChange: (vie
 }
 
 export default function AgentWorkspace() {
+  const location = useLocation();
+  const deletionWarnings: string[] = location.state?.poolDeleteWarnings ?? [];
   const { data: agents = [], isLoading, error, refetch } = useAgentFlock();
   const { selectedIds, selections, select, close, setInstance, resetToken, focusSelection, adding, setAdding } = useAgentSelection();
   const { entries: pools } = usePoolFlock();
@@ -57,6 +59,9 @@ export default function AgentWorkspace() {
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-3 p-4">
+      {deletionWarnings.length > 0 && <div role="alert" className="rounded border border-amber-700 p-3 text-sm text-amber-200">
+        Pool deleted. {deletionWarnings.join(" ")}
+      </div>}
       {/* The header is empty-state chrome only: a selected agent gets the full height. */}
       {selectedIds.length === 0 && (
       <header className="flex shrink-0 items-start justify-between gap-4">

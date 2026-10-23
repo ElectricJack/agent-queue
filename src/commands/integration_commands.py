@@ -1067,6 +1067,97 @@ class IntegrationCommandsMixin:
                 evidence=record_delivery_evidence(current["evidence"], proof)))
         return None
 
+    async def refresh_integration_pair_conflict(self, batch_id, record) -> dict:
+        """Reopen the ejected source once, preserving its branch and PR.
+
+        This daemon-only adapter runs within integration_train_tick. The
+        batch-owned ejection is the durable request; feedback makes recovery
+        idempotent if the daemon stopped after reopening but before acknowledgement.
+        """
+        from sqlalchemy import insert, select
+        from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+        from src.database.tables import archived_tasks, messages, task_context, tasks
+        from src.integration.delivery_truth import load_delivery_requests
+
+        batch = await self.db.get_integration_batch(batch_id)
+        if (not batch or batch["intent"] != "aborted" or batch["ejection_record"] != record
+                or record.get("operator_id") != "service:integration-train"):
+            return _failure("stale", "conflict ejection changed")
+        conflict = record["pair_conflict"]
+        task_id = conflict["task_id"]
+        marker = f"Pair-conflict refresh: {batch_id}"
+        feedback = (
+            f"{marker}\nThe train ejected {task_id} at {conflict['sources'][task_id]} "
+            f"after a build conflict ({record['reason']}). Refresh the original branch "
+            f"by merging origin/{batch['target_ref'].removeprefix('refs/heads/')} "
+            f"(observed head {conflict['target_sha']}); resolve the conflicts in "
+            f"{', '.join(conflict['files']) or 'the batch merge'}, preserving history and "
+            "the existing PR. Run the focused checks, publish a new head and close. "
+            "The healthy remainder is being delivered separately."
+        )
+        try:
+            delivery = await self.db.observe_removal_delivery([task_id], for_mutation=True)
+        except (GitError, OSError):
+            return _failure("delivery_unknown", "source delivery could not be observed")
+        transition = None
+        refusal = None
+        try:
+            async with self.db.immediate() as conn:
+                await self.db.lock_hierarchy_project(conn, batch["project_id"])
+                if await conn.scalar(select(task_context.c.id).where(
+                    task_context.c.task_id == task_id, task_context.c.type == "reopen_feedback",
+                    task_context.c.content.contains(marker),
+                ).limit(1)):
+                    return {"success": True, "outcome": "already_requested", "task_id": task_id}
+                current = await load_delivery_requests(
+                    self.db, [task_id], repository_id=batch["repository_id"],
+                    target_ref=batch["target_ref"], reduced=True, conn=conn)
+                request = current.get(task_id)
+                task = (await conn.execute(select(tasks).where(
+                    tasks.c.id == task_id).with_for_update())).mappings().one_or_none()
+                if (not task or task["status"] != "COMPLETED" or not request
+                        or request.completion_id != conflict["completion_id"]):
+                    return {"success": True, "outcome": "source_changed", "task_id": task_id}
+                for table in (tasks, archived_tasks):
+                    if await conn.scalar(select(table.c.id).where(
+                        table.c.parent_task_id == task_id).limit(1)):
+                        refusal = "A container needs its existing owner to refresh its branch."
+                if refusal is None:
+                    transition = await self.db._apply_transition(
+                        conn, task_id, TaskStatus.READY, context="reopen_with_feedback",
+                        integration_delivery=delivery, retry_count=0, assigned_agent_id=None,
+                        description=task["description"] + "\n\n---\n**Reopen Feedback:**\n" + feedback,
+                    )
+                    await conn.execute(insert(task_context).values(
+                        id="pair-refresh-" + batch_id, task_id=task_id, type="reopen_feedback",
+                        label="Pair conflict refresh", content=feedback, created_at=time.time(),
+                    ))
+                    await self.db.add_task_comment(
+                        task_id, feedback, author_kind="agent",
+                        author_id="service:integration-train", conn=conn,
+                    )
+        except HierarchyError as exc:
+            refusal = str(exc)
+        if transition is not None:
+            await self.db.log_blocked_flips(transition.flipped)
+            await self.db._notify_settled(transition.settled)
+            await self.db._notify_ready(transition.ready)
+            return {"success": True, "outcome": "reopened", "task_id": task_id}
+        # A container or protected source needs its owner. A durable message is
+        # deduplicated by batch, never another fixer for the healthy remainder.
+        async with self.db.immediate() as conn:
+            await insert_message_with_source_event(conn, pg_insert(messages).values(
+                id="msg-pair-conflict-" + batch_id, project_id=batch["project_id"],
+                from_kind="system", from_id="integration-train", to_kind="session",
+                to_id=f"supervisor-{batch['project_id']}",
+                subject=f"Refresh ejected source {task_id}",
+                body=f"{feedback}\nAutomatic reopen refused: {refusal}",
+                created_at=time.time(), priority=50, archive_after_inject=1,
+                body_kind="integration_pair_conflict",
+            ).on_conflict_do_nothing(index_elements=[messages.c.id]))
+        return {"success": True, "outcome": "supervisor_notified", "task_id": task_id}
+
     async def repair_integration_source_ancestry(self, observation) -> dict:
         """Withdraw one exact source whose recorded base is not its ancestor.
 
