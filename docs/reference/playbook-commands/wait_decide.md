@@ -14,7 +14,7 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/wait_v2.py`](../../../src/commands/contracts/wait_v2.py) |
-| Contract fingerprint | `sha256:d0adcf2858f10983a428e7608f0d11f2e55160cd30ea9a2439288fb8d6312717` |
+| Contract fingerprint | `sha256:db3d6538532a23ac1b92892d72b76b39ba9f8fc25f79bfad921c6e6d9ddda2c2` |
 
 ## Parameters
 
@@ -22,11 +22,12 @@
 |---|---|---|---|---|
 | `project_id` | `string \| null` | no | `null` | — |
 | `wait_id` | `string` | yes | — | — |
-| `decision` | `"extend" \| "wake" \| "cancel" \| "reroute" \| "escalate_to_human"` | yes | — | — |
+| `decision` | `"extend" \| "wake" \| "cancel" \| "reroute" \| "escalate_to_human" \| "requeue"` | yes | — | — |
 | `note` | `string` | yes | — | — |
 | `extend_seconds` | `number \| null` | no | `null` | — |
 | `to` | `string \| null` | no | `null` | — |
 | `expected_generation` | `integer \| null` | no | `null` | — |
+| `continuation_id` | `string \| null` | no | `null` | — |
 
 ## Result
 
@@ -51,7 +52,7 @@ This command declares no effect clause, so the playbook graph falls back to its 
 
 | Effect | Subject | Condition |
 |---|---|---|
-| Resolve using project_id, wait_id, decision, note, extend_seconds, to, expected_generation | — | always |
+| Resolve using project_id, wait_id, decision, note, extend_seconds, to, expected_generation, continuation_id | — | always |
 
 <!-- aq:generated:end -->
 
