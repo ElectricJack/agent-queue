@@ -22,7 +22,7 @@ For task states and the meaning of `READY`, see the [task state machine](task-st
 Assume `demo.17` is `READY` but no work begins. Do not restart the daemon first: a dependency, profile mismatch, disabled pool, workspace shortage, or integration fence can all produce an idle-looking task with different remedies.
 
 ```bash
-aq task explain demo.17
+aq task explain --task-id demo.17
 aq pool status
 aq doctor --check pools.disabled --check pools.placement_starved \
   --check pools.preparing_stuck
@@ -52,13 +52,14 @@ Expected outcome: either the explanation identifies a task-level blocker, or the
 
 | Surface | Input | Output | Best use |
 |---|---|---|---|
-| `aq task explain TASK_ID` | one task id | readiness blockers, dependencies and gates | A task is not starting. |
+| `aq task explain --task-id TASK_ID` | one task id | readiness blockers, dependencies and gates | A task is not starting. |
 | `aq status` | none | system overview | First high-level orientation. |
 | `aq pool status` | optional project view | fleet-wide supply/demand/bounds plus project placement | Workers are idle, missing, or cannot start. |
 | `aq doctor [--check ID] [--fix]` | zero or more check ids | per-check severity, detail, duration and summary | Evidence-first diagnosis and narrowly advertised repair. |
 | `aq integration status PROJECT_ID` | project id | rollout, readiness, active work and cleanup | A delivered branch is not reaching its target. |
 | `GET /health`, `GET /ready` | HTTP probe | `healthy`/`degraded`, or readiness checks | Load balancers and dashboard connectivity diagnosis. |
-| `GET /api/metrics/series` and Metrics dashboard | range and resolution | stored history plus live `metrics.tick` frames | Trend analysis; not a task-control command. |
+| `GET /api/metrics/series` and Metrics dashboard | range and resolution | stored history plus live `metrics.tick` frames | Fleet and wait-accounting trends. |
+| `GET /api/metrics/delivery-latency` | `window=24h` or `7d`, optional `project_id` and `until` | generation-based delivery cohort, latency and blockers | Delivery trends and drill-down; telemetry never controls scheduling. |
 
 `aq doctor` exits `0` for only `ok`/`info`, `1` when the worst result is `warn`, `2` when any result is `error`, and `3` when the doctor command itself cannot run. This makes a focused check usable in an operator script, but it does not turn every non-zero exit into an automatic restart request.
 
@@ -146,9 +147,13 @@ For a fresh bootstrap, `AQ_REF=v0.2.0` selects a tag and `AQ_TAG_GLOB='v*'` sele
 newest matching stable version. `AQ_PROMOTION_TARGET` selects its reachability branch
 (default `main`). Without either selector the bootstrap installs `main`; an empty
 configured tag family falls back to `main` with an unreleased-install message.
-The daemon's `update_and_restart` command launches the same operator updater and reports
-its process and `~/.agent-queue/update.log`; that response indicates launch, and the log
-contains the eventual outcome.
+With `deploy.tag_glob` or `deploy.track_branch` configured, the daemon's
+`update_and_restart` command launches the operator updater and reports its process and
+`~/.agent-queue/update.log`; that response indicates launch, and the log contains the
+eventual outcome. Without either setting, that command still uses a legacy in-process
+pull/install/restart path without the updater's backup and rollback transaction. Use
+the local operator command `aq update` for the guarded update procedure. For automatic
+branch deployment and recovery holds, see [releases](releases.md#follow-an-installation-branch-automatically).
 
 `aq start` and `aq restart` do more than replace a process, and each step is a postcondition — a failure is reported, not a reason to claim a clean start and lose it:
 
@@ -159,7 +164,15 @@ contains the eventual outcome.
 - **Stale-worktree fix.** The daemon then runs `aq doctor --check pools.stale_worktree_checkouts --fix` to release any worktrees it now owns. A failure here is downgraded to a warning and never undoes a successful start.
 - **Start lock and stop marker.** `aq start` holds `~/.agent-queue/daemon.lock` (with its PID inside) from before the database wait to the end of these checks, and removes `~/.agent-queue/daemon.stopped`; every `aq stop` (also the stop inside `aq restart` and `aq update`) and the daemon's `shutdown` command write that marker. A stop recorded while a start is running wins: the start checks the marker again just before it spawns the daemon, and `aq stop` waits briefly for a start in progress to settle. A lock whose owner process is gone is abandoned and cleared by the next start. The auto-restart watchdog (`aq service`) reads both: it never races a start in progress and never starts a daemon that was stopped on purpose. A `daemon.pid` whose process is gone, or whose PID now belongs to another program (after a reboot), is treated as stale.
 
-All of the above is built into `aq start` and `aq restart`, so an operator update no longer needs a separate wrapper to scrub the environment, dump the database, and run the doctor step. To update, run `aq restart --no-dashboard`; do not run a plain `aq stop` then `aq start` — `aq stop` also tears down the agent tmux sessions, including the one performing the update. Verify daemon health and the supervisor's live terminal after the restart; a stored session status alone can be stale.
+All of the above is built into `aq start` and `aq restart`. To fetch and apply code,
+run `aq update`; `aq restart --no-dashboard` restarts the installed code without
+pulling changes. Updates normally back up before new migrations. A manual
+`--no-backup` skips the updater's backup, but automatic deployments refuse that flag
+and startup still performs its own schema check and backup. A failure after the new
+daemon may have migrated keeps the newer code and names the recovery backup; it does
+not roll code back. Do not use a plain `aq stop` then `aq start` for an update:
+`aq stop` also tears down agent tmux sessions. Verify health, readiness and the
+supervisor's live terminal afterwards; a stored session status alone can be stale.
 
 Disaster recovery is the separate operator command `aq db restore <backup.dump>`.
 Stop the daemon and end every agent session first. Preflight checks the dump's
@@ -180,18 +193,17 @@ compose-up PostgreSQL using an older checkout's volume layout.
 
 | Symptom | Read-only evidence first | Likely distinction | Safe next step and verification |
 |---|---|---|---|
-| A `READY` task is idle | `aq task explain TASK`; `aq pool status`; `aq doctor --check pools.disabled --check pools.placement_starved` | dependency/gate vs disabled pool vs no place to launch | Correct the named task or local pool policy. Re-run `task explain` and `pool status`; do not restart merely to clear `READY`. |
-| No compatible agent appears | `aq task explain TASK`; inspect the task profile and `aq pool status` | routing/profile availability vs a running pool shortage | Use the [agents and routing concept](../concepts/agents-and-routing.md) to correct the profile/provider policy. Confirm the task's actual compatibility reason before changing bounds. |
+| A `READY` task is idle | `aq task explain --task-id TASK`; `aq pool status`; `aq doctor --check pools.disabled --check pools.placement_starved` | dependency/gate vs disabled pool vs no place to launch | Correct the named task or local pool policy. Re-run `task explain` and `pool status`; do not restart merely to clear `READY`. |
+| No compatible agent appears | `aq task explain --task-id TASK`; inspect the task profile and `aq pool status` | routing/profile availability vs a running pool shortage | Use the [agents and routing concept](../concepts/agents-and-routing.md) to correct the profile/provider policy. Confirm the task's actual compatibility reason before changing bounds. |
 | A worker never finishes preparation | `aq doctor --check pools.preparing_stuck`; inspect the listed sessions and workspace capacity | a recent launch is normal; `claiming`/`preparing` beyond twice `prepare_timeout` is stale only when the daemon has no live preparation request | Record session ids. `--fix` releases a timed-out claim back to `READY` with a prepare backoff, or clears a taskless phase. Re-run the same check and `aq task explain`. |
 | A stale owner holds work | `aq doctor --check pools.stuck --check pools.orphan_agents --check pools.stale_worktree_checkouts` | stale claim/session, leaked lock, or an operator-owned busy orphan | `--fix` can release invalid pool claims, release leaked locks, and retire only unusable unowned agents; it explicitly leaves busy/task-holding orphan agents alone. Verify the check and preserve the listed identifiers. |
 | A worker received a nudge but does nothing | `aq doctor --check sessions.stuck_composer` | a confirmed daemon marker is still in a harness composer | `--fix` only resubmits a matching daemon-injected marker, never a human draft. Re-run the check; inspect the task before any broader restart. |
-| Work is completed but integration is stuck | `aq integration status PROJECT`; `aq doctor --check integration.operational --check integration.stranded_fences` | normal queued cleanup, a parked repair, or a writer-less branch fence | Preserve branch/ref, task and operation ids. `integration.stranded_fences` is deliberately report-only because recovery needs proof about the stopped writer, clean checkout and published work. Follow the guarded integration recovery path; do not delete refs. |
-| A train's `aq integration flush` answers `coalesced` every time and no sweep runs | `aq doctor --check integration.stale_schedule`; `aq integration clear-stale-request PROJECT` (dry run) | the outstanding request's batch ended (aborted, empty, gone, or promoted without its lease) vs. a live batch or an undelivered `sweep_due` | The scheduler frees a `stale` request on its next pass; `--fix` or `clear-stale-request --apply --request-id ID --reason ...` frees it now. A `blocked` verdict names unresolved write evidence to settle first. See [A train never sweeps](integration-troubleshooting.md#a-train-never-sweeps). |
-| A train root is `COMPLETED` but has no PR and never enters a batch | `aq integration redrive-root TASK` (dry run) | a childless or verified root whose PR was never opened vs. an unverified epic, a head already on `main`, or a moved branch | The daemon opens a missing root PR on its own within minutes; `redrive-root --apply --head SHA --reason ...` opens it now for the reported head. Report `blocked` and `nothing_to_redrive` verdicts. See [A completed root has no pull request](integration-troubleshooting.md#a-completed-root-has-no-pull-request). |
-| A train epic stalls: a child is `COMPLETED`, the parent stays `PAUSED`, siblings sit `READY` and are never claimed | `aq doctor --check integration.stuck_children`; `aq integration redrive-child TASK` (dry run) | a child whose published head the collector could not prove (moved or unpublished branch) vs. one held by a reviewer's rejection or open review, a no-code child, or a parent not collecting | The collector records completion evidence on its own for a child whose head proves out; `redrive-child --apply --head SHA --reason ...` records it now and queues the parent's collection. Report `blocked` verdicts. See [A completed child is never assembled](integration-troubleshooting.md#a-completed-child-is-never-assembled). |
-| A train epic's parent stays `PAUSED`; `redrive-child` says "no live collection operation" | `aq integration reopen-collection PARENT` (dry run) | the parent's collection operation was cancelled (`cancel-preserving`) vs. an unresolved push, a live or unsettled writer, a hold, or a moved branch | `reopen-collection --apply --head SHA --reason ...` reactivates the operation in its episode, reclaims the collector fence and opens a fresh repair stage for the one current conflict. Report `ambiguous`/`blocked` verdicts. See [A parent's collection was cancelled](integration-troubleshooting.md#a-parents-collection-was-cancelled). |
+| Work is completed but integration is stuck | `aq integration status PROJECT`; `aq doctor --check integration.delivery_engine --check integration.completed_undelivered --check integration.train_batches_stalled` | no active delivery engine, missing Git delivery proof, or a stalled batch | Preserve project, batch, task and ref identifiers. Follow the [current train runbook](git-first-train-runbook.md); use only a repair whose preview matches the finding. |
+| A train root is `COMPLETED` but has no PR and never enters a batch | `aq integration redrive-root TASK` (dry run) | a childless or verified root whose PR was never opened vs. an unverified epic, a head already on `main`, or a moved branch | The daemon opens a missing root PR on its own within minutes; `redrive-root --apply --head SHA --reason ...` opens it now for the reported head. Report `blocked` and `nothing_to_redrive` verdicts. See [passed-task delivery recovery](integration-troubleshooting.md#a-passed-task-blocked-at-delivery). |
+| A train epic stalls: a child is `COMPLETED`, the parent stays `PAUSED`, siblings sit `READY` and are never claimed | `aq doctor --check integration.completed_undelivered`; `aq integration redrive-child TASK` (dry run) | a child whose published head the collector could not prove (moved or unpublished branch) vs. one held by a reviewer's rejection or open review, a no-code child, or a parent not collecting | The collector records completion evidence on its own for a child whose head proves out; `redrive-child --apply --head SHA --reason ...` records it now and queues the parent's collection. Report `blocked` verdicts. See [passed-task delivery recovery](integration-troubleshooting.md#a-passed-task-blocked-at-delivery). |
+| A train epic's parent stays `PAUSED`; `redrive-child` says "no live collection operation" | `aq integration reopen-collection PARENT` (dry run) | the parent's collection operation was cancelled (`cancel-preserving`) vs. an unresolved push, a live or unsettled writer, a hold, or a moved branch | `reopen-collection --apply --head SHA --reason ...` reactivates the operation in its episode, reclaims the collector fence and opens a fresh repair stage for the one current conflict. Report `ambiguous`/`blocked` verdicts. See [repair and collection recovery](integration-troubleshooting.md#human-holds-and-repair-progress). |
 | A delivered branch is never cleaned up; cleanup names `integration owner … is reserved` | `aq doctor --check integration.finished_branch_owners` | an ownership row left behind for a task that finished, was archived or was deleted after the project left the hierarchy modes (nothing in development mode releases one) | Run it through the daemon: `--fix` releases only rows whose task is finished or gone, in a repository no hierarchy/train project integrates, with nothing live naming the task or branch and — for an attached writer — the session provider's stop proof. It changes the ownership row only and records an `integration.branch_owner_released` event per row. Re-run the check; kept rows name their blocker. |
-| A branch discard or cleanup is parked | `aq doctor --check integration.branch_discards`; `aq integration status PROJECT` | remote deletion failure vs active ownership | The check's `--fix` only re-arms its durable pending discard; the next drain re-derives head and ownership. Verify status; manually delete a remote ref only when the evidence says it is no longer owned. |
+| A branch cleanup is parked | `aq integration status PROJECT`; `aq doctor --check integration.finished_branch_owners` | remote deletion failure vs retained ownership | Preserve the ref and the reported blocker. Use the current train's guarded cleanup procedure; doctor has no `integration.branch_discards` check or discard re-arm fix. |
 | Dashboard says disconnected or charts stop | browser network/WebSocket diagnostics; `/health`; `/ready`; inspect the Metrics tab and `GET /api/metrics/series` | browser/WebSocket break, disabled sampler, daemon readiness failure, or absent retained history | Reconnect the browser after checking endpoint status. If history exists but live updates do not, investigate the connection. If the sampler is disabled by configuration, enable it through the approved configuration workflow and verify a new `metrics.tick`; do not invent missing historical points. |
 | The dashboard feels slow and I want to know since when and why | `aq doctor --check perf.sustained_loop_lag` | loop-lag p95 over the last 3 minutes: INFO with probes off or fewer than 120 usable samples, OK at ≤500 ms, WARN above 500 ms with since-time and ranked candidate causes (`db_pool_wait`, `db_query`, host pressure, the slowest route, or synchronous Python), not a diagnosis | Read-only, no `--fix`. Correlate with the Metrics tab's perf charts; the dashboard performance spec's §5 decision tree chooses the fix. |
 | Metrics have a gap after restart | Metrics history and daemon uptime/restart series | newest buffered seconds lost vs broader database failure | A short newest-history gap is an intentional batching tradeoff. Check `/health`, database diagnostics and subsequent samples; preserve the range when escalating. |
@@ -200,7 +212,7 @@ compose-up PostgreSQL using an older checkout's volume layout.
 
 ### 1. Restore work dispatch without losing a task
 
-1. Capture `aq task explain TASK_ID`, `aq pool status`, and the relevant focused doctor check.
+1. Capture `aq task explain --task-id TASK_ID`, `aq pool status`, and the relevant focused doctor check.
 2. If the check says `pools.disabled`, decide whether the local `swarm.enabled` policy is intentional. Enabling a pool is an operator policy decision, not a doctor fix.
 3. If `pools.preparing_stuck` lists a session beyond its threshold, run only:
 
@@ -208,7 +220,7 @@ compose-up PostgreSQL using an older checkout's volume layout.
    aq doctor --check pools.preparing_stuck --fix
    ```
 
-4. Verify with the same check and `aq task explain TASK_ID`.
+4. Verify with the same check and `aq task explain --task-id TASK_ID`.
 
 The repair returns task-backed stale preparations to `READY` and records a prepare backoff; it does not delete the task. If it repeats, preserve the session ids, profile, workspace information, and logs for a routing/workspace investigation instead of looping repairs.
 
@@ -228,21 +240,29 @@ The repair returns task-backed stale preparations to `READY` and records a prepa
 
 ### 3. Recover a stalled integration without rewriting delivery history
 
-1. Read `aq integration status PROJECT_ID` and record the project, operation/batch ids, task ids, target ref and heads it reports.
-2. Run `aq doctor --check integration.operational --check integration.stranded_fences --check integration.stranded_delegates --check integration.stale_schedule --check integration.branch_discards --check integration.finished_branch_owners`.
-3. For a safe human-required operation, use `aq integration resume OPERATION_ID`; use `aq integration retry-cleanup BATCH_ID` only for the exact safe cleanup reported by status.
-4. If an already-delivered task must be recorded without replaying old repair checkpoints, use `aq integration adopt` with the observed target ref/head, every affected task, an explicit reason, and `--accept-equivalent` only when accepting operator-edited or evidence-only delivery is intentional.
-5. Re-run `aq integration status PROJECT_ID`; verify the target ref independently in the repository before retiring evidence.
+1. Read `aq integration status PROJECT_ID` and record the project, batch ids,
+   task ids, target ref and heads it reports.
+2. Run `aq doctor --check integration.delivery_engine --check integration.completed_undelivered --check integration.train_batches_stalled --check integration.subjects_held --check integration.finished_branch_owners`.
+3. Match the finding to the [current train runbook](git-first-train-runbook.md).
+   Inspect `aq integration COMMAND --help` and its preview before applying a
+   batch repair, root redrive, collection recovery or owner release. Use the
+   exact head/version fences the preview returned.
+4. Re-run status and the relevant check; verify target containment before
+   retiring evidence.
 
-> **Note.** `integration.stranded_delegates` *does* have a fix, and it is safe to repeat: it settles a
-> ticket whose integration operation already ended, as a terminal non-success, and records the
-> operation and disposition in `integration_delegate_releases`. It never releases a branch owner, a
-> workspace lock or a live writer, and it never manufactures a pass. A delegate of an operation that
-> is still running is refused, not settled.
+The old `integration.operational`, `integration.stranded_fences`,
+`integration.stranded_delegates`, `integration.stale_schedule`,
+`integration.branch_discards` and `integration.stuck_children` doctor ids are
+removed. An unknown id returns an error; it does not inspect the current train.
+Legacy operation resume/adopt and discard re-arm procedures are not the current
+recovery path.
 
-> **Warning.** `integration.stranded_fences` has no doctor fix. It names a branch that looks held by a writer that disappeared, but only the guarded recovery workflow can establish that the checkout is clean and work is published. Keep refs and workspaces intact until that proof exists.
-
-> **Note.** `integration.finished_branch_owners` *does* have a fix, for the narrower case where that proof is not needed: the owning task is `COMPLETED`/`FAILED`, archived or deleted, and no hierarchy/train project integrates the repository, so no claim will ever take the branch again. It releases the ownership row only — never a checkout, workspace lock, session or task — and releases an attached writer only after the session provider confirms the process is gone, so run it through the daemon. Rows it keeps name their blocker.
+`integration.finished_branch_owners --fix` covers a narrow case: the owning task
+is finished or gone, no active hierarchy/train project integrates the repository,
+and nothing live names the task or branch. It releases the ownership row only;
+an attached writer also requires the session provider's stop proof. Kept rows
+name their blocker. For other owner releases, preserve worktrees and refs and
+use the guarded `aq integration release-owner` preview and its required proof.
 
 ### 4. Restore visibility, not just the page
 
@@ -260,12 +280,27 @@ The [Metrics dashboard API](../../src/api/metrics.py) uses history for its initi
 | Group | Measurements | Interpretation caveat |
 |---|---|---|
 | `agents` | total running sessions; state, harness, profile and lifecycle breakdowns | Counts describe current sessions, not task completion. |
-| `tasks` | `READY`, `IN_PROGRESS`, `ASSIGNED`, `PAUSED`, `BLOCKED`, `WAITING_INPUT`, and `other` | A rise in `READY` needs task/pool evidence before it means a fault. |
+| `tasks` | `READY`, `IN_PROGRESS`, `ASSIGNED`, `PAUSED`, `BLOCKED`, `WAITING_INPUT`, `WAITING`, `HIBERNATED`, `RESUME_PENDING`, and `other` | A rise in `READY` needs task/pool evidence before it means a fault. |
 | `machine` | 1/5/15-minute load, CPU count and available/free/total memory where the platform supplies them | Unsupported measurements are `null`, not zero. |
 | `daemon` | uptime and restart count | Bus-only rates reset at restart; read them with uptime. |
 | `stall` and merge rate | nudges/hour, killed sessions/hour, merges/hour | These are in-memory rolling windows and restart at zero by design. |
 | throughput and slow tier | completion/PR throughput, token, subagent, delegation and worktree-slot data | Expensive data is refreshed on the slower configured interval and carried between samples. |
+| `waits` | pending in-place/hibernated/human waits, slot-seconds, wakes, priority reservations, resume costs and overhead tokens | Missing observations remain `null`. Resume cost percentiles are seconds; configured `resume_cost_minutes` is minutes. Counterfactual token savings require an explicit baseline and are estimates. |
+| `perf` | event-loop drift, API latency/status, DB query/pool wait, host PSI/test pressure and dashboard relay | Histogram buckets merge by addition; unsupported host data carries a reason. `metrics.perf_enabled: false` disables probes. |
 | `sampler` | collection duration | Lets an operator see whether monitoring itself is expensive. |
+
+Token rates use a trailing 300-second window by default, scaled to tokens/minute;
+`*_per_min_1m` preserves the raw trailing-minute view. Subagent spawn rates use a
+3600-second window. Configure these with `metrics.token_window_seconds` and
+`metrics.subagent_window_seconds`; neither changes the sample cadence.
+
+The delivery panel reads a separate 24-hour or seven-day completion cohort from
+`delivery.observation` events. It reports approval-to-dev latency (falling back
+to task creation), subtracts linked human-wait time, and shows completion-to-dev
+latency alongside it. Median, p90, exclusions and unknown history are explicit.
+Its slot/CI/train/repair/author-merge segments can overlap and need not sum to the
+total. Missing Git observations are not zero latency. See
+[src/metrics/delivery_latency.py](../../src/metrics/delivery_latency.py).
 
 One-second samples are published before they are buffered to the database. The sampler batches disk flushes (default five seconds), then rolls completed seconds into minute rows and minutes into hour rows, and prunes each tier by its own retention. A brief gap in the newest durable history after an abrupt stop can therefore be expected; a live dashboard should not wait for that flush.
 
@@ -287,7 +322,20 @@ its wait or decision owns resumption. Disabling playbooks also pauses recovery.
 
 `aq doctor --fix` selects only checks that declared a fix and returned `warn` or `error`, then reruns them. It is not a general "repair the system" button. Prefer `--check ID --fix` during an incident so the intended mutation is obvious.
 
-Automated examples include releasing invalid stale pool claims, returning timed-out prepare claims to the frontier with backoff, detaching stale slot checkouts, re-arming parked branch discards, refreshing missing/stale shipped harness copies while leaving edited copies alone, and resubmitting a daemon-marked stuck composer. Some checks are report-only by design: a stranded integration fence, a busy orphan agent, an operator-edited configuration/profile problem, or a deletion that would require choosing a branch/ref owner needs human evidence and authority.
+Automated examples include releasing invalid stale pool claims, returning timed-out prepare claims to the frontier with backoff, detaching stale slot checkouts, refreshing missing/stale shipped harness copies while leaving edited copies alone, and resubmitting a daemon-marked stuck composer. Report-only checks such as `integration.completed_undelivered` and
+`integration.train_batches_stalled` identify work for a guarded recovery command.
+A busy orphan agent or a kept branch owner requires further evidence. Some
+advertised fixes do write vault files, release ownership, delete stale branches
+or repair rows; read the selected check's finding before applying it.
+
+Doctor runs through the daemon API; it cannot diagnose a daemon that will not
+start. Use `aq logs`, the daemon log, `aq service status` and local `aq db current`
+for that case. JSON results also separate severity from `execution_status`,
+`complete`, `coverage` and `reasons`: an unavailable or partial observation is
+not proof that no fault exists. Reserved unregistered checks report `info`.
+
+`waits.schema` reports schema/flag inventory and never migrates; `aq doctor --check waits.orphans --fix` repairs abandoned wait ownership while preserving summaries and saved
+heads. See [the wait cutover runbook](hibernation-cutover-runbook.md).
 
 Before and after every repair, save the finding and rerun its exact check. If the same failure recurs, stop repeating repair and escalate with the ids, branch/ref, task state, configuration generation and correlation-rich logs.
 
@@ -295,7 +343,7 @@ Before and after every repair, save the finding and rerun its exact check. If th
 
 * [Worker pools](worker-pools.md) explains the pull-worker lifecycle, global bounds and placement data used in pool incidents.
 * [Resource gating](resource-gating.md) distinguishes intentional test/CPU limits from a failing scheduler.
-* [Development integration](development-integration.md) explains the normal delivery path that integration recovery protects.
+* [Train runbook](git-first-train-runbook.md) explains current delivery and guarded recovery.
 * [Task state machine](task-state-machine.md) defines why a task is `READY`, blocked or waiting for input.
 * [CLI reference](../reference/cli/README.md) is the authoritative flag-by-flag command reference.
 
