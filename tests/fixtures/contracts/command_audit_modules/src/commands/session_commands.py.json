@@ -764,18 +764,23 @@
       },
       {
         "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"project '{session.project_id}' is paused; resume the project with `aq project resume {session.project_id}` to restart its supervisor\", 'session_id': session.id}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
         "return": "{'success': False, 'error': f\"project '{session.project_id}' has its supervisor disabled; enable it with `aq project set {session.project_id} supervisor-enabled true`\", 'session_id': session.id}"
       }
     ],
     "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. ",
     "schema_quality": "declared",
-    "source_digest": "sha256:07902fdaa6cdff0bee3a86ffe5cdf4845b35c2a2368954f58f788442d874e39e",
+    "source_digest": "sha256:0b1c6bf6cf411dd5a3b0279c369e05b10551221f9af09127cad71c27c51608f3",
     "tests": [
       "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
       "tests/test_generated_command_contracts.py::test_generic_result_protocol",
       "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
       "tests/test_agent_cron.py",
-      "tests/test_session_commands.py"
+      "tests/test_session_commands.py",
+      "tests/test_project_supervisors.py"
     ]
   },
   "supervisor_restart": {

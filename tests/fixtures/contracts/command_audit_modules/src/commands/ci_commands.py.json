@@ -31,7 +31,7 @@
       },
       {
         "protocol": "explicit_boolean: False",
-        "return": "{'success': False, 'error': 'max_attempts must be at least 1'}"
+        "return": "{'success': False, 'error': 'max_attempts must be non-negative'}"
       },
       {
         "protocol": "delegated_producer",
@@ -42,12 +42,14 @@
         "return": "result"
       }
     ],
+    "review_notes": "Zero max_attempts, including the omitted default, disables escalation; positive values retain the finite attempt cap. Negative values return explicit false with the non-negative validation error. Both successful observation branches retain the delegated result protocol.",
     "schema_quality": "typed",
-    "source_digest": "sha256:bca8a8faf81f0b503ac48dd5a47ea2c25d7d9969eaeff960fb6c6414f5ff1c65",
+    "source_digest": "sha256:e294e37df4421cb13e871a655221e72bdd3842cf51b95d8a21a95b0adffe8f44",
     "tests": [
       "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
       "tests/test_generated_command_contracts.py::test_generic_result_protocol",
-      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_ci_baseline_status.py"
     ]
   },
   "ci_completed_status": {

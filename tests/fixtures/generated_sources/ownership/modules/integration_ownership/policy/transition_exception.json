@@ -171,6 +171,65 @@
         "task_id": "sound-forge-62"
       },
       {
+        "authorized_engine_delta": 0,
+        "authorized_owned_delta": 50,
+        "decision_message_id": "msg-5c55b72faec1497391205876fc5dfeb9",
+        "grant_delivery_message_id": "msg-6cbd33a9db9846f29816f2fc0df8f8fd",
+        "implementation_revision": "70d79c47c561ee85ecd74080767bbc5cdf0e210c",
+        "merged_dev_revision": "4a0c4e38ab979a1664586d47d16404b48def4089",
+        "operator_decision": "6679052c",
+        "previous_engine_lines": 85517,
+        "previous_owned_total": 161111,
+        "pull_request": 1814,
+        "reason": "Bounded transient retry of resume workspace preparation and the fenced supervisor requeue of held continuations; supervisor approved exact footprint after trimming from +109.",
+        "referenced_decision": "size-cap-delegation-2026-10-23",
+        "request_message_id": "msg-f3ef547cbf48428abcab2266d7fe8df6",
+        "source_base": "1e3ac0b14608fd4a4b5a2c90a25cacb57f4bf511",
+        "task_id": "calm-rapids-50"
+      },
+      {
+        "authorized_engine_delta": 1,
+        "authorized_owned_delta": 1,
+        "authorized_table_delta": 0,
+        "decision_message_id": "msg-96fed6b8e86148f0bbf55ded244c9a0f",
+        "grant_delivery_message_id": "msg-3a0b0c6448ef44699f7a7d7c43777642",
+        "measured_engine_lines": 85518,
+        "measured_owned_total": 161112,
+        "measured_source_revision": "14828bb29104d825e9ba5a75aa44a3799dd48a48",
+        "measured_table_count": 45,
+        "operator_decision": "6679052c",
+        "operator_task": "sharp-cascade-53",
+        "previous_engine_lines": 85517,
+        "previous_owned_total": 161111,
+        "previous_source_revision": "4a0c4e38ab979a1664586d47d16404b48def4089",
+        "pull_request": "https://github.com/ElectricJack/agent-queue/pull/1890",
+        "reason": "Shared exact-commit check-run observations and one bounded recovery wait; plain dev merge retains dashboard badges, quota reserve and ETag behavior. Supervisor approved the exact merged +1 owned / +1 engine measurement under size-cap-delegation-2026-10-23.",
+        "referenced_decision": "size-cap-delegation-2026-10-23",
+        "task_id": "fair-harbor-71"
+      },
+      {
+        "authorized_engine_delta": 0,
+        "authorized_owned_delta": 19,
+        "authorized_shared_delta": 19,
+        "authorized_table_delta": 0,
+        "decision_message_id": "msg-76ff7843e72d451b9017a0b4db30c970",
+        "implementation_message_id": "msg-9a7a03cd",
+        "measured_engine_lines": 85543,
+        "measured_owned_total": 161181,
+        "measured_source_revision": "10af37472a90cd488707c483047c9c97e2f7a5db",
+        "measured_table_count": 45,
+        "previous_engine_lines": 85543,
+        "previous_measurement_revision": "73e99672d2447c44ef6a71d43a0187f2d16630af",
+        "previous_owned_total": 161162,
+        "previous_source_revision": "c177d24e86d25fde7804131c94bfd637b0eb540a",
+        "previous_table_count": 45,
+        "pull_request": "https://github.com/ElectricJack/agent-queue/pull/1759",
+        "reason": "Exact project supervisor grant for the PR1759 merge repair under size-cap-delegation-2026-10-23, with explicit delegation to record the approved grant. Preserve recovery holds through dev's manual-pause Resume path until the authorized restart READY transaction. Keep the historical frozen-batch measurements; engine and table counts remain unchanged.",
+        "referenced_decision": "size-cap-delegation-2026-10-23",
+        "root_task_id": "prime-crest-79",
+        "task_id": "fair-flare-10"
+      },
+      {
         "authorization": "Supervisor reopen instructions, 2026-10-23: record the exact measured amendment without asking.",
         "authorized_engine_delta": 352,
         "authorized_owned_delta": 352,
@@ -240,9 +299,28 @@
       "starting_revision": "bd8fcfe183d6a59ea90f4498cda2bee80a7222f4"
     },
     "batch_id": "train-745592300af5cef0338dec80ebabb465",
-    "batch_measured_delta": 2556,
+    "batch_measured_delta": 2255,
     "category_approval_message_id": "msg-90f9f1b1e0cd4e8e8d28071cffc927a6",
     "category_restore_task": "stark-willow-95.17",
+    "dashboard_pr_snapshot_merge_measurement": {
+      "authorized_engine_delta": 0,
+      "authorized_owned_delta": 0,
+      "dev_engine_lines": 85517,
+      "dev_owned_total": 161102,
+      "dev_table_count": 45,
+      "grant_id": "sharp-rapids-10-cap-epoch2-2026-10-23",
+      "measured_engine_lines": 85517,
+      "measured_owned_total": 161111,
+      "measured_table_count": 45,
+      "merged_dev_revision": "61869b7cdcf507b8e8acb596893bb63ac0794997",
+      "prerequisite_engine_delta": 0,
+      "prerequisite_owned_delta": 9,
+      "prerequisite_task_id": "sharp-rapids-10",
+      "reason": "Plain merge of origin/dev into accepted PR 1889. Compose the existing sharp-rapids-10 grant with dev; fair-crest-95 contributes zero owned or engine lines. Reopen instructions cite size-cap-delegation-2026-10-23.",
+      "referenced_decision": "size-cap-delegation-2026-10-23",
+      "source_revision": "3de48be2157c1b68414a77514c9250cb2b27d11d",
+      "task_id": "fair-crest-95"
+    },
     "decision_message_id": "msg-7ed85e78d1af4f3e85b485a57967e794",
     "decision_message_ids": [
       "msg-7ed85e78d1af4f3e85b485a57967e794",
@@ -258,11 +336,14 @@
       "msg-3f6311071a6647429059f3a990750597",
       "msg-99539879",
       "msg-68ccb1d50ee04851a7268dd58e9d4459",
-      "msg-9f16388d39524c8b9a33d6796b88d1fb"
+      "msg-9f16388d39524c8b9a33d6796b88d1fb",
+      "msg-5c55b72faec1497391205876fc5dfeb9",
+      "msg-96fed6b8e86148f0bbf55ded244c9a0f",
+      "msg-76ff7843e72d451b9017a0b4db30c970"
     ],
     "decision_record": "record:2720bdbe-7521-427e-8e72-1f40a3ff9818",
     "delivery_method": "operator direct integration; user request 2026-10-22",
-    "delta": 6015,
+    "delta": 5718,
     "expires_at": "s4_modules",
     "frozen_batch_composition": {
       "approved_deltas": {
@@ -291,9 +372,9 @@
       "source_revision": "73e99672d2447c44ef6a71d43a0187f2d16630af",
       "starting_revision": "48adaddad079a7adc2930e470590621c1575e674"
     },
-    "measured_engine_lines": 85895,
-    "measured_owned_total": 161514,
-    "measured_source_revision": "73e99672d2447c44ef6a71d43a0187f2d16630af",
+    "measured_engine_lines": 85010,
+    "measured_owned_total": 161217,
+    "measured_source_revision": "a36c389c39a33ff60bffa98cc019591298bdcfa9",
     "measured_table_count": 45,
     "merge_measurement": {
       "approval_message_id": "msg-a10c7ab8ff2946f8b1f27528a407524c",
@@ -344,6 +425,36 @@
       },
       "source_revision": "1f0633050802438db6ef954c43d6d0eb2ce0edf3"
     },
+    "post_release_structure_measurement": {
+      "authorized_engine_delta": -554,
+      "authorized_owned_delta": -38,
+      "authorized_table_delta": 0,
+      "dev_source_revision": "c177d24e86d25fde7804131c94bfd637b0eb540a",
+      "measured_engine_lines": 84989,
+      "measured_groups": {
+        "companions": 11168,
+        "engine": 84989,
+        "guards": 633,
+        "policy": 493,
+        "policy_sources": 1042,
+        "shared": 62537,
+        "ui": 262
+      },
+      "measured_owned_total": 161124,
+      "measured_source_revision": "063b7620f635b34aeb376d1d9d4280dd22273b7d",
+      "measured_table_count": 45,
+      "operator_decision": "6679052c",
+      "operator_task": "sharp-cascade-53",
+      "previous_engine_lines": 85543,
+      "previous_owned_total": 161162,
+      "previous_source_revision": "73e99672d2447c44ef6a71d43a0187f2d16630af",
+      "previous_table_count": 45,
+      "pull_request": "https://github.com/ElectricJack/agent-queue/pull/1775",
+      "reason": "Exact combined-tree remeasurement after merging PR #1775 head with dev. Approval pre-granted by size-cap-delegation-2026-10-23, operator decision 6679052c on sharp-cascade-53. Preserve ownership classifications and all historical grants; no production code moved or trimmed for the count.",
+      "referenced_decision": "size-cap-delegation-2026-10-23",
+      "required_pr_head": "14183dc9d82cdc4cb32610827e228b49b6e488d2",
+      "task_id": "swift-nexus-38"
+    },
     "predecessors": [
       {
         "batch_id": "train-77f0d8e451f6aed08d608e443031047a",
@@ -363,7 +474,74 @@
         "measured_source_revision": "cbfd455b0e9f053854a2c1becfa1efaeef231582"
       }
     ],
+    "restart_hold_repair_merge_measurement": {
+      "authorized_engine_delta": 0,
+      "authorized_owned_delta": 19,
+      "authorized_shared_delta": 19,
+      "authorized_table_delta": 0,
+      "decision_message_id": "msg-76ff7843e72d451b9017a0b4db30c970",
+      "measured_engine_lines": 85010,
+      "measured_owned_total": 161217,
+      "measured_source_revision": "a36c389c39a33ff60bffa98cc019591298bdcfa9",
+      "measured_table_count": 45,
+      "operator_decision": "6679052c",
+      "operator_task": "sharp-cascade-53",
+      "previous_engine_lines": 85010,
+      "previous_measurement_revision": "4bafa45f1ac0a466eab372c7b6b0b866f67bb832",
+      "previous_owned_total": 161198,
+      "previous_recorded_owned_cap": 161213,
+      "previous_source_revision": "d60c0f238c8205f495a384c0bd77c322a8fc89ac",
+      "previous_table_count": 45,
+      "pull_request": "https://github.com/ElectricJack/agent-queue/pull/1900",
+      "reason": "Compose the unchanged approved +19 restart hold repair grant on current dev for PR #1900. Preserve every historical grant and frozen batch measurement.",
+      "referenced_decision": "size-cap-delegation-2026-10-23",
+      "root_task_id": "prime-crest-79",
+      "task_id": "fair-flare-10"
+    },
     "restore_task": "azure-ridge-72",
+    "resume_batch_composition": {
+      "approved_deltas": {
+        "calm-rapids-50": {
+          "engine": 0,
+          "owned": 50,
+          "tables": 0
+        },
+        "fair-crest-95": {
+          "engine": 0,
+          "owned": 0,
+          "tables": 0
+        },
+        "fair-harbor-71": {
+          "engine": 1,
+          "owned": 1,
+          "tables": 0
+        },
+        "noble-apex-40": {
+          "engine": 0,
+          "owned": 0,
+          "tables": 0
+        },
+        "sharp-vault-27": {
+          "engine": 0,
+          "owned": 0,
+          "tables": 0
+        }
+      },
+      "base_engine_lines": 85543,
+      "base_owned_total": 161162,
+      "base_table_count": 45,
+      "batch_id": "train-9394fdec634bb068ee8e58c1008dd4b2-resume-1e142f1858d8",
+      "member_sources": {
+        "calm-rapids-50": "45626ba27ff1c7711f5aa17893f7ce997928da5f",
+        "fair-crest-95": "63163a7d4fd4aa5611c18ae139580902abf32770",
+        "fair-harbor-71": "4bb9221436187f5c9c747531109749b503600e65",
+        "noble-apex-40": "7f87074a2a463074595e0b71018fda7f33fecb47",
+        "sharp-vault-27": "c5e891f5ae3b2987977d0e2bb0268631154a8421"
+      },
+      "reason": "Compose the unchanged resume and shared-check grants on the retained starting head; the other members add no owned lines. Preserve every historical grant and batch measurement.",
+      "source_revision": "4bafa45f1ac0a466eab372c7b6b0b866f67bb832",
+      "starting_revision": "c177d24e86d25fde7804131c94bfd637b0eb540a"
+    },
     "storage_categories": [
       "integration_close_attempts"
     ],

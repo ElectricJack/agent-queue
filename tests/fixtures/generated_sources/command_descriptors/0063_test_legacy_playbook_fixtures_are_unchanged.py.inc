@@ -10,6 +10,8 @@ def test_legacy_playbook_fixtures_are_unchanged():
     watch = _watch_changes()["playbook_fixtures"]
     ingest = json.loads(INGEST_CHANGES.read_text())["playbook_fixtures"]
     hibernation = _hibernation_changes()["playbook_fixtures"]
+    promotion_request = json.loads(PROMOTION_REQUEST_PORT.read_text())["playbook_fixtures"]
+    assert set(promotion_request) == {"tests/fixtures/playbooks/v2/promotion-request/artifact.json"}
     routing = json.loads(ROUTING_CHANGES.read_text())["playbook_fixtures"]
     assert set(ingest) == {"tests/fixtures/playbooks/v2/default-pipeline/artifact.json"}
     assert set(routing) == {"tests/fixtures/playbooks/v2/default-assignment-routing/artifact.json"}
@@ -37,6 +39,13 @@ def test_legacy_playbook_fixtures_are_unchanged():
             assert hibernation[path]["previous_sha256"] == digest
             assert hibernation[path]["sha256"] != digest
             digest = hibernation[path]["sha256"]
+        if path in promotion_request:
+            change = promotion_request[path]
+            assert change["previous_sha256"] == digest
+            historical = ROOT / change["preserved_previous_path"]
+            assert hashlib.sha256(historical.read_bytes()).hexdigest() == digest
+            assert change["sha256"] != digest
+            digest = change["sha256"]
         if path in routing:
             assert routing[path]["previous_sha256"] == digest
             historical = ROOT / routing[path]["preserved_previous_path"]

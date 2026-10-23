@@ -12,7 +12,7 @@
     "effect": "destructive",
     "helper_producers": {
       "_route_actor": "sha256:d72bc9e262a2b706279943c25205f213b9b7fc0e413addbbd6aae633ba98c6ae",
-      "_route_state_refusal": "sha256:eeda1ce435abf9e3a6b66f93df26e9cc92ec2bcf0ad786c728076bdf7cc66693"
+      "_route_state_refusal": "sha256:00bd52b546fd1a919d1bc6e7051ce83d9bc511fb76bec87d11296e4757b14b94"
     },
     "input_schema_source": "explicit_tool",
     "mode": "json_object",
@@ -169,7 +169,7 @@
     "effect": "destructive",
     "helper_producers": {
       "_route_actor": "sha256:d72bc9e262a2b706279943c25205f213b9b7fc0e413addbbd6aae633ba98c6ae",
-      "_route_state_refusal": "sha256:eeda1ce435abf9e3a6b66f93df26e9cc92ec2bcf0ad786c728076bdf7cc66693"
+      "_route_state_refusal": "sha256:00bd52b546fd1a919d1bc6e7051ce83d9bc511fb76bec87d11296e4757b14b94"
     },
     "input_schema_source": "explicit_tool",
     "mode": "json_object",

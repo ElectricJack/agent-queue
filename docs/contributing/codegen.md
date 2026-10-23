@@ -5,9 +5,9 @@ what generates each one, and what fails if you edit it yourself.
 
 ## Why this page exists
 
-Roughly 1,450 of AQ's tracked files are generated. They are committed — so a
-fresh checkout builds without a code-generation step, and so a diff shows the
-consequence of an interface change — but they are **not source**. Hand-editing
+AQ commits generated contracts and the Python API client so diffs show the
+consequence of an interface change. The TypeScript client is regenerated
+locally before dashboard commands. Generated artifacts are **not source**. Hand-editing
 one produces a change that the next regeneration silently reverts, and several
 of them have drift guards that will fail your build first.
 
@@ -28,7 +28,7 @@ This page is the list, in the order a change is most likely to reach them.
 | Artefact | Generated from | Command | Committed? |
 |---|---|---|---|
 | [`openapi.json`](../../openapi.json) | The FastAPI app, built offline from the checkout | `./scripts/regenerate-api-client.sh --offline` | yes |
-| [`packages/aq-client/`](../../packages/aq-client/) (1,442 files) | `openapi.json` + a pinned `openapi-python-client` | the same command | yes |
+| [`packages/aq-client/`](../../packages/aq-client/) (generated tree) | `openapi.json` + a pinned `openapi-python-client` | the same command | yes |
 | `packages/aq-ts-client/src/` | `openapi.json` + `@hey-api/openapi-ts` | `./scripts/regenerate-ts-client.sh --from-file` | **no** — gitignored |
 | [`src/playbook_v2_schema.json`](../../src/playbook_v2_schema.json) | The Playbook V2 Pydantic model | `python scripts/generate-playbook-schema.py` | yes |
 | [`docs/reference/cli-command-inventory.json`](../reference/cli-command-inventory.json) | The live `aq` Click tree | `python scripts/generate-cli-command-inventory.py` | yes |
@@ -238,7 +238,8 @@ flowchart LR
     A[src/api/models<br/>codegen routers] --> B[openapi.json]
     B --> C[packages/aq-client/<br/>Python, committed]
     B --> D[packages/aq-ts-client/src/<br/>TypeScript, gitignored]
-    C --> E[aq CLI]
+    C --> E[Python consumers]
+    CLI[aq CLI] --> EXEC[POST /api/execute]
     D --> F[dashboard]
 ```
 
@@ -258,17 +259,17 @@ aq test tests/test_api_client_contract.py
 ```
 
 ```text
-======================== 9 passed, 8 warnings in 17.80s ========================
+======================== 9 passed, 8 warnings in 17.80s =================
 ```
 
 `--offline` is the canonical path: `create_app()` builds the whole route
 surface from the command registry, so the spec is a pure function of the
 checkout and cannot pick up another instance's state
 ([`src/api/spec.py`](../../src/api/spec.py)). The other two modes exist for
-completeness — no argument fetches from a running daemon at
-`AGENT_QUEUE_API_URL` (default `http://127.0.0.1:8081`), and `--from-file`
-reuses the saved spec. Both render through the same writer so the committed
-file stays indented and diffable; the daemon serves it minified, and writing
+completeness — no argument fetches from a running daemon (the Python script
+uses `AGENT_QUEUE_API_URL`, default `http://127.0.0.1:8081`; the TypeScript
+script uses `http://127.0.0.1:8081`), and `--from-file` reuses the saved spec.
+Both render through the same writer so the committed file stays indented and diffable; the daemon serves it minified, and writing
 that straight to disk produces an undiffable single line the drift guard
 rejects.
 
@@ -337,8 +338,10 @@ box that had never installed the client. So:
   shares the main checkout's venv but carries no `AQ_DB_SCOPE`. Both refusals
   happen before anything is regenerated. A missing or dangling install is
   installed; one that already points here is refreshed.
-* Detection and install use the same `python3` (`importlib` for one,
-  `-m pip` for the other), so they cannot be about two different environments.
+* Detection, offline spec generation and install use the same interpreter:
+  the checkout's `.venv/bin/python` when executable, otherwise `python3` on
+  `PATH`. Detection uses `importlib`; install uses `-m pip`. They cannot inspect
+  one environment and install into another.
 
 Nothing in a slot needs the reinstall: `tests/test_api_client_contract.py`
 imports the client from the checkout's `packages/aq-client/`, not from the
@@ -371,8 +374,10 @@ when you want the error rather than the surprise — for instance,
 [`scripts/e2e-dashboard.sh`](../../scripts/e2e-dashboard.sh) refuses to start
 if the directory is missing and tells you exactly this command.
 
-`packages/aq-ts-client/src/index.ts` is the one file in that directory that is
-*not* generated; `.gitignore` negates it explicitly.
+`packages/aq-ts-client/src/index.ts` is generated too. Only `package.json`
+and `tsconfig.json` are tracked in that package. The `.gitignore` negation for
+`src/index.ts` cannot re-include a file inside the excluded `src/` directory;
+generation supplies the entry point before dashboard commands run.
 
 ## The playbook JSON schema
 
@@ -409,7 +414,7 @@ CLI inventory current: 328 leaf commands
 Regenerate without `--check` when you add, rename or retire a command.
 [`tests/test_cli_inventory.py`](../../tests/test_cli_inventory.py) is the
 enforcing test, and CI runs it in its own suite arm
-([CI](ci.md#the-four-suite-arms)) so a CLI change cannot be lost in the noise
+([CI](ci.md#the-suite-arms)) so a CLI change cannot be lost in the noise
 of the default arm.
 
 ## The playbook command pages
@@ -485,6 +490,12 @@ and projected into `tests/fixtures/contracts/generated-command-audit.json`, keye
 by all built-in handlers. Adding a handler or changing its return branches requires
 reviewing and updating that evidence. Static argument reads are diagnostic;
 they never silently expand the public schema.
+
+The restart hold correction records `restart_task`'s optional `override_hold` and
+`reason` arguments in `restart-hold-contract-changes.json`. Removing exactly that
+transport delta restores the supervisor-health catalogue bytes. The producer audit
+pins the explicit refusal and delegated restart paths; recovery tests cover exact
+hold fencing, release authority and recorded provenance.
 
 After reviewing a handler's return branches and contract fields, refresh its
 source digest with `python scripts/refresh-command-audit-digest.py --command explain_task --write`
@@ -618,7 +629,7 @@ now reaches `main` only after CI has tested the combination ([CI](ci.md#concurre
 | Symptom | Cause | Recovery |
 |---|---|---|
 | `Error: openapi-python-client X is installed but packages/aq-client/ is generated by Y` | Wrong generator version. | `pip install 'openapi-python-client==Y'`. Deliberate upgrade? Bump `GENERATOR_VERSION` and commit the regenerated tree with it. |
-| `Error: ruff is not installed, and the generator's post hooks format the generated Python with it.` | No ruff on `PATH`. | `pip install -e '.[dev]'`. The generator only *warns* and exits 0 without it, which would record unformatted output as canonical. |
+| `Error: ruff is not installed, and the generator's post hooks format the generated Python with it.` | No ruff on `PATH`. | `pip install -e '.[dev]'`. The upstream generator only warns without it; this script fails before generation to avoid recording unformatted output as canonical. |
 | `Error: --install is refused in a worker session (AQ_DB_SCOPE=worker).` | A slot's `pip` is the environment the daemon and every other slot share. | Regenerate without `--install`; nothing in a slot needs it ([why](#the-script-leaves-the-environment-alone)). |
 | `Error: --install would re-point this environment's agent-queue-api-client` | The installed client imports from another tree — typically a worktree sharing the main checkout's venv. | Usually nothing: regenerate without `--install`. To move the install deliberately, run the `python3 -m pip install -e …` line the error prints. |
 | `import agent_queue_api_client` resolves into `.aq/worktrees/slot-N/` | A pre-2026-09-20 script ran in that slot and re-pointed the shared venv. | From the main checkout, outside a slot: `python3 -m pip install -e packages/aq-client`. |

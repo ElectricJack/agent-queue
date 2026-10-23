@@ -1,4 +1,7 @@
 {
+  "exclusions": {
+    "src/cli/daemon.py::_database_matches_compose": "PostgreSQL startup endpoint matching only: reads effective configuration and compose publication, with no Git delivery, integration lifecycle or integration storage. Shared configuration loading remains independently charged."
+  },
   "shared_definitions": {
     "src/cli/daemon.py::_backup_database": {
       "baseline_span": [

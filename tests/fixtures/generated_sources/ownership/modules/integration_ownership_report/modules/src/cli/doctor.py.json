@@ -1,6 +1,7 @@
 {
   "exclusions": {
     "src/cli/doctor.py::_SEVERITY_STYLE['ok']": "Generic same-shaped definition independently present at the pinned baseline/landing; new relocations are still charged.",
-    "src/cli/doctor.py::_SEVERITY_STYLE['warn']": "Generic same-shaped definition independently present at the pinned baseline/landing; new relocations are still charged."
+    "src/cli/doctor.py::_SEVERITY_STYLE['warn']": "Generic same-shaped definition independently present at the pinned baseline/landing; new relocations are still charged.",
+    "src/cli/doctor.py::_offline_doctor": "Local operator-only Alembic orphan recovery through the generic doctor runner; no Git delivery or integration lifecycle authority. Shared configuration and database primitives remain independently charged."
   }
 }

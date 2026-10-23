@@ -20,13 +20,18 @@ def test_transport_views_and_cli_serialization_preserve_golden_evidence():
             assert approved["previous_sha256"] == digest
             digest = approved["sha256"]
         for recording in (_hibernation_changes(), _dispatch_changes(), _merge_changes(),
-                          _leaf_changes(), _completion_changes()):
+                          _leaf_changes(), _completion_changes(), _restart_hold_changes()):
             if name in recording["transport_definitions"]:
                 approved = recording["transport_definitions"][name]
                 assert approved["previous_sha256"] == digest
                 digest = approved["sha256"]
+        if name in _structure_changes()["transport_definitions"]:
+            approved = _structure_changes()["transport_definitions"][name]
+            assert _digest(approved["previous"]) == digest
+            digest = _digest(approved["current"])
         assert _digest(snapshot.commands[name].tool_definition()) == digest, name
-    actual = hashlib.sha256(render_command_catalogue().encode()).hexdigest()
+    catalogue = _revert_structure_catalogue(_before_restart_hold_catalogue())
+    actual = hashlib.sha256((json.dumps(catalogue, indent=2) + "\n").encode()).hexdigest()
     assert changes["previous_cli_catalogue_sha256"] == fixture["cli_catalogue_sha256"]
     assert scripts["previous_cli_catalogue_sha256"] == changes["cli_catalogue_sha256"]
     assert main["previous_cli_catalogue_sha256"] == scripts["cli_catalogue_sha256"]
@@ -51,7 +56,9 @@ def test_transport_views_and_cli_serialization_preserve_golden_evidence():
     assert stuck_check["previous_cli_catalogue_sha256"] == completion["cli_catalogue_sha256"]
     pr_repair = _pr_repair_changes()
     assert pr_repair["previous_cli_catalogue_sha256"] == stuck_check["cli_catalogue_sha256"]
-    assert actual == pr_repair["cli_catalogue_sha256"]
+    wait_requeue = _wait_requeue_changes()
+    assert wait_requeue["previous_cli_catalogue_sha256"] == pr_repair["cli_catalogue_sha256"]
+    assert actual == wait_requeue["cli_catalogue_sha256"]
     previous = json.dumps(_before_batch_fix_catalogue(), indent=2) + "\n"
     assert hashlib.sha256(previous.encode()).hexdigest() == dispatch["cli_catalogue_sha256"]
     previous = json.dumps(_before_dispatch_catalogue(), indent=2) + "\n"
