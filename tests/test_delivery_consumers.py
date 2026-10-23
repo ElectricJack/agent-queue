@@ -302,6 +302,40 @@ async def test_hierarchy_prerequisites_consume_revalidated_git_view_without_rece
         assert await view.verified_on(conn, ["done"]) == {}
 
 
+async def test_scoped_prerequisite_view_does_not_write_locked_dependents(world, monkeypatch):
+    """A prerequisite read must not convoy behind scheduler-owned task locks."""
+    from sqlalchemy import select
+
+    db, _origin, observer, _service = world
+    for tid, source in (("selected", "done"), ("unrelated", "missing")):
+        await db.create_task(Task(id=tid, project_id="p", title=tid, description="",
+                                  status=TaskStatus.READY))
+        await db.add_dependency(tid, source)
+    # A delivery-of consumer is still graph-blocked in the historical
+    # projection; the ordinary observation hook would try to update its row.
+    await db.create_task(Task(id="delivery-waiter", project_id="p", title="waiter",
+                              description="", status=TaskStatus.READY))
+    await db.add_dependency("delivery-waiter", "done", "delivery-of")
+    async with db._engine.begin() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == "delivery-waiter")
+                           .values(is_blocked=1))
+    recompute = AsyncMock(wraps=db.recompute_delivery_dependents)
+    monkeypatch.setattr(db, "recompute_delivery_dependents", recompute)
+    async with db._engine.begin() as locked:
+        await locked.execute(select(tasks.c.id).where(tasks.c.id == "delivery-waiter")
+                             .with_for_update())
+        view = await asyncio.wait_for(
+            observer.prerequisite_view("p", task_ids={"selected"}), 10,
+        )
+        assert set(view.all_ids) == {"done"}
+        assert view.default.satisfied("done")
+        recompute.assert_not_awaited()
+    # Other observation consumers retain their blockedness refresh hook.
+    await observer.observe(["done"])
+    recompute.assert_awaited_once_with(["done"])
+    assert not (await db.get_task("delivery-waiter")).is_blocked
+
+
 async def test_status_and_explanations_agree_with_git(world):
     db, _origin, _observer, _service = world
     status = await IntegrationStatusService(db).status("p")

@@ -893,7 +893,7 @@ class HierarchyQueryMixin:
         if hierarchy_modes is None:
             from src.integration.delivery_observer import hierarchy_frontier_modes
 
-            hierarchy_modes = await hierarchy_frontier_modes(self)
+            hierarchy_modes = await hierarchy_frontier_modes(self, task_ids=task_ids)
         async with self._engine.connect() as conn:
             rows = (
                 (

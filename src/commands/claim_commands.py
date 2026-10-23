@@ -716,7 +716,8 @@ class ClaimCommandsMixin:
         return self._simple(ClaimResult.NO_READY_WORK, reason, None, cap)
 
     async def _attempt_claim_once(
-        self, session, want_id, cap, project, *, routing=None, repaired=False
+        self, session, want_id, cap, project, *, routing=None, repaired=False,
+        independent_first=True,
     ) -> dict:
         """Decide the outcome on one ``immediate()`` transaction, on *conn* only.
 
@@ -748,12 +749,22 @@ class ClaimCommandsMixin:
         # is never acted on from here.
         hierarchy_mode = ProjectIntegrationMode.of(project)
         admission = None
+        independent_pass = False
+        dependent_fallback = False
         withheld_source_repairs: dict = {}
-        from src.integration.admission import observe_admission, structural_candidates
+        from src.integration.admission import (
+            independent_candidates, observe_admission, structural_candidates,
+        )
 
         if (getattr(project, "_source_admission_required", True)
                 or hierarchy_mode and hierarchy_mode.hierarchical):
             ids = [want_id] if want_id else await structural_candidates(self.db, project.id)
+            if independent_first:
+                independent = await independent_candidates(self.db, ids)
+                if independent:
+                    dependent_fallback = bool(set(ids) - independent)
+                    ids = independent
+                    independent_pass = True
             try:
                 admission = await asyncio.wait_for(observe_admission(
                     self.db,
@@ -796,7 +807,8 @@ class ClaimCommandsMixin:
         if admission is not None:
             hierarchy_mode = admission.hierarchy_modes.get(project.id, hierarchy_mode)
             prerequisite_view, stack_view = admission.hierarchy_evidence(project.id)
-        if hierarchy_mode and hierarchy_mode.hierarchical and hierarchy_mode.stacked and observer:
+        if (hierarchy_mode and hierarchy_mode.hierarchical and hierarchy_mode.stacked
+                and observer and not independent_pass):
             from src.integration.stacked_branches import observe_stacks
 
             if stack_view is None:
@@ -1108,6 +1120,14 @@ class ClaimCommandsMixin:
                     ClaimResult.CLAIM_CONFLICT, "delivery_observation_timeout", row, cap
                 )
             return self._simple(ClaimResult.CLAIM_CONFLICT, "", row, cap)
+        if dependent_fallback and not want_id:
+            # Independent rows may belong to another profile, be held, or lose
+            # a race. They must not hide usable dependent work. The transaction
+            # above released this session's empty slot before the full pass.
+            return await self._attempt_claim_once(
+                session, want_id, cap, project, routing=routing, repaired=repaired,
+                independent_first=False,
+            )
         if withheld_source_repairs:
             # Nothing else was claimable and at least one candidate was withheld
             # by a fresh delivery proof, so say that rather than an empty reason.

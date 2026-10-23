@@ -156,7 +156,7 @@ def stacked_policy(project) -> bool:
     return choice in {None, "stacked"}
 
 
-async def _inputs(conn, project_id, task_id=None):
+async def _inputs(conn, project_id, task_id=None, *, task_ids=None):
     from src.database.queries.task_queries import (
         DEVELOPMENT_COMPLETION_ID_KEY, INTEGRATION_REWORK_AT_KEY,
     )
@@ -227,6 +227,8 @@ async def _inputs(conn, project_id, task_id=None):
     )
     if task_id is not None:
         query = query.where(dependent.c.id == task_id)
+    if task_ids is not None:
+        query = query.where(dependent.c.id.in_(task_ids))
     rows = tuple(dict(row) for row in (await conn.execute(query)).mappings())
     blocked = await _unauthorized_sources(conn, {row["task_id"] for row in rows})
     result = []
@@ -558,10 +560,10 @@ class StackView:
 
 
 async def observe_stacks(observer, project_id, *, task_id=None, max_age=0, snapshot=None,
-                         cached_only=False, require_snapshot=False):
+                         cached_only=False, require_snapshot=False, task_ids=None):
     """Observe prerequisites; preparation and refresh need Git even for an empty set."""
     async with observer.db._engine.connect() as conn:
-        rows = await _inputs(conn, project_id, task_id)
+        rows = await _inputs(conn, project_id, task_id, task_ids=task_ids)
         repository_query = select(repos).join(
             projects, projects.c.integration_repository_id == repos.c.id,
         ).where(projects.c.id == project_id)

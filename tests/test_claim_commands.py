@@ -6619,6 +6619,82 @@ async def test_slow_frontier_view_fails_closed_within_its_bound(
         assert mode.parent_contained_task_ids == frozenset()
 
 
+@pytest.mark.parametrize("mode", ["development", "hierarchy", "train"])
+@pytest.mark.parametrize("prerequisites", ["wait-for-parent", "stacked"])
+async def test_independent_claim_does_not_observe_unrelated_git_prerequisites(
+    handler, db, tmp_path, monkeypatch, development_admission, mode, prerequisites,
+):
+    """A hanging source view cannot starve an independent root in the same frontier."""
+    from src.integration.delivery_observer import DeliveryObserver
+    from src.integration.git_truth import GitTruth
+    from src.orchestrator.worktree_manager import WorktreeSlotManager
+
+    env = development_admission
+    await db.update_project(
+        PROJECT_ID, hierarchical_integration_mode=mode,
+        repo_url=str(development_admission.remote),
+        hierarchical_integration_policy={"prerequisite_branches": prerequisites},
+    )
+    await mktask(db, "independent", profile_id="worker", priority=200,
+                 repo_id="repo", branch_name="aq/independent")
+    env.git(env.source, "push", "origin", f"{env.base}:refs/heads/aq/independent")
+    async with db.immediate() as conn:
+        await conn.execute(task_branch_origins.insert().values(
+            id="origin-independent", task_id="independent", repository_id="repo",
+            branch_name="aq/independent", parent_repository_id="repo", parent_ref="main",
+            base_sha=env.base, creation_generation=1, reserved=True, materialized=True,
+            created_at=time.time(),
+        ))
+        await conn.execute(task_integration_checkpoints.insert().values(
+            task_id="independent", repository_id="repo", branch="aq/independent",
+            checkpoint_sha=env.base, updated_at=time.time(),
+        ))
+    await BranchOwnership(db).acquire(
+        BranchKey(repository_id="repo", branch="aq/independent"), "independent", "worker",
+    )
+    # The existing dependent has higher priority but requires Git proof. Fail
+    # immediately on observation: this verifies bypass, not a timeout fallback.
+    observer = DeliveryObserver(db, git=handler.orchestrator.git,
+                                truth=GitTruth(handler.orchestrator.git),
+                                data_dir=tmp_path / "prerequisites")
+    observer.prerequisite_view = AsyncMock(side_effect=AssertionError(
+        "independent work waited on unrelated Git"))
+    db.set_prerequisite_observer(observer)
+    snapshot = AsyncMock(side_effect=AssertionError("unrelated source fetched"))
+    monkeypatch.setattr(development_admission.service.delivery_observer, "snapshot", snapshot)
+    sid, work_dir = await _cloned_pool_session(db, tmp_path, env, "s1", "agent-1")
+    handler.orchestrator._worktree_slots = MagicMock(return_value=WorktreeSlotManager(
+        db=db, git=handler.orchestrator.git, bus=handler.orchestrator.bus,
+        config=handler.config.worktrees, git_mutex=handler.orchestrator._git_mutex,
+    ))
+    result = await settled_claim(scoped(handler, sid), {"next": True})
+    assert result["result"] == "claimed", result
+    assert result["task"]["id"] == "independent"
+    assert json.loads((work_dir / ".aq" / "claim.json").read_text())["task_id"] == "independent"
+    observer.prerequisite_view.assert_not_awaited()
+    snapshot.assert_not_awaited()
+    assert (await db.get_task("dependent")).status is TaskStatus.READY
+
+
+async def test_incompatible_independent_work_does_not_hide_delivered_dependent(
+    handler, db, tmp_path, development_admission,
+):
+    env = development_admission
+    await db.create_profile(
+        AgentProfile(id="another-worker", name="Another worker", lifecycle="pool")
+    )
+    await mktask(db, "wrong-profile", profile_id="another-worker")
+    sid, _ = await pool_session(db, tmp_path)
+    worker = scoped(handler, sid)
+    result = await settled_claim(worker, {"next": True})
+    assert result["result"] == "no_ready_work", result
+    assert (await db.get_task("dependent")).status is TaskStatus.READY
+    env.git(env.source, "push", "origin", f"{env.head}:refs/heads/main")
+    result = await settled_claim(worker, {"next": True})
+    assert result["result"] == "claimed", result
+    assert result["task"]["id"] == "dependent"
+
+
 def test_claim_request_limit_answers_inside_the_cli_read_timeout():
     from src.cli.client import _COMMAND_TIMEOUTS
     from src.commands import claim_commands
