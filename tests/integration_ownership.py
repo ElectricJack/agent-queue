@@ -30,12 +30,13 @@ TRANSITION_BATCH_EXCEPTION = {'batch_id': 'train-745592300af5cef0338dec80ebabb46
  'decision_message_ids': ['msg-7ed85e78d1af4f3e85b485a57967e794',
                           'msg-381054d695e64055979a687c4d811e7e',
                           'msg-ab86b9766c2f42b9ba4920aba585b577',
-                          'msg-21784b3e56aa4f54bf1042b7c9af4aaf'],
+                          'msg-21784b3e56aa4f54bf1042b7c9af4aaf',
+                          'msg-c80bde55a6d1442791a2ba4f9597d7a0'],
  'decision_record': 'record:2720bdbe-7521-427e-8e72-1f40a3ff9818',
- 'measured_source_revision': '15bc2ea12433ab88b9e915d52900de0123452fd4',
+ 'measured_source_revision': '4701b2e09b463d5c5e157a69620c3c08cf293227',
  'original_owned_total_cap': 155499,
- 'measured_owned_total': 160837,
- 'delta': 5338,
+ 'measured_owned_total': 160863,
+ 'delta': 5364,
  'predecessors': [{'batch_id': 'train-77f0d8e451f6aed08d608e443031047a',
                    'decision_message_id': 'msg-edb5f857de344716a38857406fa69958',
                    'decision_record': 'record:2720bdbe-7521-427e-8e72-1f40a3ff9818',
@@ -49,7 +50,7 @@ TRANSITION_BATCH_EXCEPTION = {'batch_id': 'train-745592300af5cef0338dec80ebabb46
                    'measured_source_revision': 'cbfd455b0e9f053854a2c1becfa1efaeef231582',
                    'authorized_delta': 2166,
                    'measured_owned_total': 158958}],
- 'batch_measured_delta': 1879,
+ 'batch_measured_delta': 1905,
  'restore_task': 'azure-ridge-72',
  'expires_at': 's4_modules',
  'category_approval_message_id': 'msg-90f9f1b1e0cd4e8e8d28071cffc927a6',
@@ -71,7 +72,22 @@ TRANSITION_BATCH_EXCEPTION = {'batch_id': 'train-745592300af5cef0338dec80ebabb46
                            'parent query.',
                  'global_request': 'msg-9f895e0d',
                  'global_grant': 'msg-7f2f68c1',
-                 'grant_delivery_message_id': 'msg-21784b3e56aa4f54bf1042b7c9af4aaf'}]}
+                 'grant_delivery_message_id': 'msg-21784b3e56aa4f54bf1042b7c9af4aaf'},
+                {'task_id': 'bright-impact-14',
+                 'decision_message_id': 'msg-c80bde55a6d1442791a2ba4f9597d7a0',
+                 'referenced_decision': 'size-cap-delegation-2026-10-23',
+                 'operator_decision': '6679052c',
+                 'pr_url': 'https://github.com/ElectricJack/agent-queue/pull/1861',
+                 'previous_owned_total': 160837,
+                 'previous_engine_lines': 85316,
+                 'authorized_owned_delta': 26,
+                 'authorized_engine_delta': 0,
+                 'measured_owned_total': 160863,
+                 'measured_engine_lines': 85316,
+                 'measured_table_count': 45,
+                 'reason': 'PR #1861 latency instrumentation and bounded background graph waits; '
+                           'project supervisor approved the exact footprint under '
+                           'size-cap-delegation-2026-10-23. Retain features and count equality.'}]}
 FINAL_ENGINE_CAP = 11_999
 FINAL_TOTAL_CAP = 19_999
 FINAL_TABLE_CAP = 10

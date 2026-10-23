@@ -11094,7 +11094,7 @@
   "list_agents": {
     "mode": "json_object",
     "producer": "src/commands/flock_commands.py:FlockCommandsMixin._cmd_list_agents",
-    "source_digest": "sha256:afe46ac41a7313c81143e9339d7b6dafbd66b6e34eb389d27600f3d5c8e4afba",
+    "source_digest": "sha256:e2276d1950a62ac2f95d1bd37aa8089843e815fc6a908007ba718a057e48d10b",
     "input_schema_source": "explicit_tool",
     "schema_quality": "declared",
     "argument_reads_diagnostic_only": [

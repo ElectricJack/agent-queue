@@ -176,3 +176,26 @@ Compare these metrics rather than extrapolating local microbenchmarks:
 
 No post-deployment improvement is claimed by this report. Production rollout
 and a comparable fleet-load window remain operator follow-through.
+
+## PR 1861 CI repair
+
+The three failed shards in run `39924739570` reported a stale `list_agents`
+producer digest and the two integration-size assertions. The command audit was
+reviewed against its unchanged success/error returns, read effect and resource
+gates, then refreshed with `scripts/refresh-command-audit-digest.py`.
+
+The footprint is 160,863 owned lines (+26), 85,316 engine lines (unchanged),
+and 45 tables (unchanged). The extra lines are the timing decorator helper
+(12), background graph context helper (10), and their caller changes (4).
+Supervisor grant `msg-c80bde55a6d1442791a2ba4f9597d7a0`, under
+`size-cap-delegation-2026-10-23` / operator decision `6679052c`, authorizes this
+exact PR #1861 amendment. The exception and canonical ownership report record
+that authority; generated copies come from `generate-recorded-artifacts.py`.
+Features, ownership exclusions, fixed historical baseline and measured-count
+equality assertions are preserved.
+
+Repair validation: `aq test tests/test_generated_command_contracts.py
+tests/test_integration_size.py tests/test_agent_flock.py` passed all 201 tests
+using the disposable PostgreSQL service. Recorded-artifact drift, the selected
+audit digest, Ruff for `tests/integration_ownership.py`, and `git diff --check`
+also passed. CI owns the broad sweep.
