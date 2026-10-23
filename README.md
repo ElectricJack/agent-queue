@@ -140,11 +140,12 @@ you type in an escalation thread is the only thing that travels back in.
 
 ## Where things live
 
-Operator-editable policy is markdown under `~/.agent-queue/vault/`, watched by the daemon:
-agent profiles, harness definitions, intelligence classes, workspace kinds, playbooks,
-formulas, and per-project overrides, specs, notes and memory. Markdown is the editable
-source; database rows and compiled artifacts are projections of it. Obsidian works on the
-vault, and nothing requires it.
+Operator-editable definitions are Markdown under `~/.agent-queue/vault/`. The daemon
+watches profiles, harnesses, intelligence classes, workspace kinds and formulas.
+Playbook import and activation are explicit; editing a source file does not activate
+it. Knowledge records are owned by PostgreSQL and exported to Markdown. Legacy facts
+and override indexing are inactive. See [configuration and the vault](docs/concepts/configuration-and-vault.md)
+for source ownership and refresh behavior. Obsidian works on the vault and is optional.
 
 Durable state — tasks, gates, sessions, claims, workspaces, delivery journals — is in
 PostgreSQL. The control path is deterministic on purpose: scheduling, dependency and gate
