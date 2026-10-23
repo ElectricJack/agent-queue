@@ -21,64 +21,51 @@ See [reviews and knowledge](docs/specs/systems/reviews-and-knowledge.md).
 
 ## Architecture
 
-Single Python asyncio process. Event-driven state machine. SQLAlchemy Core with Alembic migrations (PostgreSQL only). Discord bot + MCP server for control planes. All components communicate through an async EventBus.
+The daemon is a single Python asyncio process, composed in `src/main.py`.
+CLI, MCP, HTTP API and the bounded Discord adapter share `CommandHandler`.
+Discord supports notifications, canonical asks and opt-in supervisor conversations.
+SQLAlchemy Core
+and Alembic own PostgreSQL persistence; the in-process EventBus carries
+notifications, while durable services reconcile database records. The dashboard
+server is a separate process. See [Architecture](docs/concepts/architecture.md)
+and [daemon-core](docs/specs/systems/daemon-core.md) for current lifecycle details.
 
-```
-asyncio event loop
-├── Discord Bot / MCP Server     — control planes (human + machine)
-├── LLM direct path              — src/llm/: LLMClient.complete/run_tools, intelligence classes
-│   ├── PromptBuilder            — role, bounded knowledge context and tools
-│   └── ToolRegistry             — tiered tool loading (core + on-demand)
-├── Orchestrator                 — deterministic task lifecycle
-│   ├── Scheduler                — proportional deficit-based assignment
-│   ├── State Machine            — formal task state transitions + DAG validation
-│   ├── Smart Cascade            — promotion pipeline (approvals → resume → promote → monitor)
-│   ├── Plan Parser              — manual `process_plan` command → subtask chain creation (no auto-discovery)
-│   └── Playbook Engine          — compiled DAG workflows
-│       ├── Proposal + Validator — authored rules/steps → immutable typed artifact
-│       ├── PlaybookEngine       — durable step walk, receipts, waits and recovery
-│       └── V2PlaybookRuntime    — dispatch from deliberately activated hashes
-├── Workflow Coordination        — multi-agent pipeline orchestration
-│   ├── Stage Resume Handler     — auto-resume on workflow.stage.completed events
-│   ├── Orphan Recovery          — detect & recover stale/crashed workflows
-│   └── Pipeline View            — dashboard-ready visualization
-├── Plugin Registry              — modular extensibility (tools, events, cron)
-│   ├── aq-files                 — file read/write/glob/grep (internal)
-│   ├── aq-git                   — branch, commit, push, PR, merge (internal)
-│   ├── aq-notes                 — project notes management (internal)
-│   ├── aq-vibecop               — static analysis for code quality (internal)
-│   └── aq-memory                — semantic search, KV, temporal facts (external; install via `aq plugin install`)
-├── Reviews and Knowledge        — PostgreSQL revisions, decisions, records and links
-│   ├── Reviews                  — frozen decisions and owned feedback obligations
-│   ├── Spec ingestion           — implementation graphs held for fidelity review
-│   ├── Context                  — scoped, bounded and observed; explicitly enabled
-│   └── Generation               — optional unverified proposals; disabled by default
-├── EventBus                     — async pub/sub with wildcard + payload filtering
-├── File Watcher                 — mtime-based change detection
-├── Workspace Spec Watcher       — syncs project specs to vault
-└── Adapters                     — agent backends (Claude Code, extensible)
+```text
+src/main.py — composition root, health, supervised API/MCP
+├── CommandHandler — common command boundary for all supported surfaces
+├── Orchestrator — startup recovery, deterministic cycle, shutdown
+│   ├── Scheduler and pool reconciliation
+│   ├── Task graph — deterministic parsing, validation and atomic creation
+│   ├── Session cascade — each stage has a bounded timeout
+│   └── Domain services — integration and message delivery have independent loops
+├── Verified waits, review notifier and pool-progress watchdog
+├── Reviews and knowledge — PostgreSQL revisions, decisions, records and links
+│   ├── Context — scoped, bounded and explicitly enabled
+│   └── Generation — optional unverified proposals, disabled by default
+├── EventBus — sequential in-process notifications
+└── PostgreSQL — durable tasks, claims, sessions and service journals
+
+External coding CLIs run in tmux sessions through profile-selected harnesses.
 ```
 
 ### Task State Machine
 
-```
-DEFINED → READY → ASSIGNED → IN_PROGRESS → COMPLETED
-                                  │
-                        ┌─────────┼──────────┐
-                        ▼         ▼          ▼
-                     PAUSED   WAITING    FAILED
-                     (auto-   _INPUT     (retry →
-                     resume)  (Discord)   BLOCKED)
+Twelve stored states: `DEFINED`, `READY`, `ASSIGNED`, `IN_PROGRESS`, `WAITING`,
+`HIBERNATED`, `RESUME_PENDING`, `WAITING_INPUT`, `PAUSED`, `COMPLETED`, `FAILED`,
+`BLOCKED`. Push scheduling uses ASSIGNED; a pool claim goes READY → IN_PROGRESS.
+Durable waits use IN_PROGRESS → WAITING → HIBERNATED → RESUME_PENDING →
+IN_PROGRESS. WAITING_INPUT remains a separate input path. Manual pauses need not
+have a resume timer. Failed attempts retry within policy, then require intervention.
 
-AWAITING_APPROVAL  (post-work, pre-merge — requires manual approve)
-AWAITING_PLAN_APPROVAL  (reachable only via manual `process_plan` command, never auto-discovered;
-                         doctor check `tasks.awaiting_plan_approval` flags stranded rows)
-```
+`is_blocked` projects dependencies and gates; the shared admission view adds current
+integration evidence before a worker can claim. Approval is represented by gates,
+not the removed AWAITING_APPROVAL / AWAITING_PLAN_APPROVAL states. Plan ingestion
+uses explicit graph documents or reviewed change sets; `process_plan` is removed.
+See [Tasks](docs/concepts/tasks.md) and the [task-graph system map](docs/specs/systems/task-graph.md)
+for hierarchy, transitions, admission and completion guards.
 
-- DEFINED → READY: all dependencies COMPLETED
-- PAUSED tasks always have `resume_after` — never stall permanently
-- Failed tasks retry up to configurable limit, then BLOCKED
-- Plan-generated tasks: agent produces `.claude/plan.md`; a human (or the requester) runs the `process_plan` command to read and store it for approval — the orchestrator no longer auto-discovers plan files during task completion (see `docs/specs/orchestrator.md` §12)
+`transition_task` enforces suspended-state transitions; other invalid legacy
+transitions warn unless `state_machine.enforce` is enabled.
 
 ### Knowledge and legacy memory
 
@@ -102,8 +89,8 @@ and [knowledge context](docs/specs/knowledge-context.md).
 | File | Purpose |
 |------|---------|
 | `src/main.py` | Entry point — CLI args, starts async loop |
-| `src/orchestrator.py` | **Central brain** — task lifecycle, agent management, rate limit recovery |
-| `src/commands/` | **Unified command execution** — 150+ commands, single entry point for Discord + MCP + CLI |
+| `src/orchestrator/core.py` | **Central brain** — task lifecycle, agent management, rate limit recovery |
+| `src/commands/` | **Unified command execution** — common entry point for CLI, MCP, API, Discord and playbooks |
 | `src/database/` | SQLAlchemy Core persistence — `tables.py` (schema), `queries/` (mixins), Alembic migrations |
 | `src/models.py` | Dataclasses/enums — Task, Agent, Project, Workflow, AgentOutput |
 | `src/config.py` | YAML config with `${ENV_VAR}` substitution |
@@ -119,7 +106,7 @@ and [knowledge context](docs/specs/knowledge-context.md).
 | `src/prompt_builder.py` | Role, overrides, identity and tools; task launch supplies a bounded knowledge bundle in place of legacy L1/L2 memory |
 | `src/tools/` | Tiered tool loading — ~11 core tools always loaded, ~80 more on-demand in 11 categories |
 | `src/prompt_manager.py` | Manages prompt templates and variants from `src/prompts/` |
-| `src/llm_logger.py` | Logs all LLM API calls (`llm.jsonl`) — direct-path calls, agent sessions, prompt analytics |
+| `src/llm_logger.py` | Logs direct API attempts (`llm.jsonl`) and prompt analytics; session usage comes from transcripts |
 
 ### Playbook System
 
@@ -201,8 +188,8 @@ Core owns durable knowledge independently of optional providers.
 
 | Directory | Purpose |
 |-----------|---------|
-| `src/adapters/` | Agent adapter interface + Claude Code implementation |
-| `src/discord/` | Notification-only Discord adapter: hourly digest and escalation post/thread delivery out, escalation-thread replies in. One explicit `/delete-task` operator action; the six legacy slash commands and channel routing remain retired |
+| `src/sessions/` | Harness registry, session providers, launch and reconciliation |
+| `src/discord/` | Discord adapter: digests/reports, canonical asks and legacy escalation delivery; verified human intake and opt-in project/global supervisor conversations. Explicit `/delete-task` operator action; the six former slash commands remain retired |
 | `src/git/` | Clone, branch, worktree, push/pull, serialized shared-repo ops |
 | `src/tokens/` | Token budget calculation, usage ledger, rate limit tracking |
 | `src/llm/` | Direct LLM path — `LLMClient`, provider adapters (Anthropic, Google, OpenAI/Ollama), `LLMCallSpec` |
@@ -242,14 +229,20 @@ reviews, decisions and knowledge. A review file mirrors a database revision;
 a knowledge export projects a record revision. Neither is a file-watching
 import path. Back up the database and retained vault artifacts together.
 
+Policy Markdown stays browsable in Obsidian, editable by hand and diffable with
+git. PostgreSQL also owns tasks, claims, sessions and service journals.
+
 ### Why PostgreSQL only?
-Lightweight, zero-ops. Single process means no need for distributed locking. WAL mode gives concurrent reads. Survives restarts. Runs on a Raspberry Pi. SQLAlchemy Core provides dialect portability — PostgreSQL supported via asyncpg for production deployments.
+PostgreSQL provides the row locking, JSONB operations and database guards used
+by concurrent claims and durable service journals. SQLAlchemy Core uses asyncpg;
+there is no SQLite backend or file-based fallback. Alembic owns schema changes,
+and workers verify the operator database rather than migrating it.
 
 ### Why Discord is *not* the control plane
-It was one, and the surface grew faster than it could be trusted: 122 mirrored slash commands, task buttons and per-task streaming threads all mutating work from a chat client. The dashboard, CLI and MCP now own browsing, controls, gates and logs; Discord is primarily the phone-shaped notification surface — one shared channel carrying an hourly activity digest and one thread per human decision. A reply in that thread is evidence for the owning project supervisor, never a direct task mutation. See `docs/guides/discord-commands.md` and `docs/guides/discord-migration.md`.
+It was one, and the surface grew faster than it could be trusted: 122 mirrored slash commands, task buttons and per-task streaming threads all mutating work from a chat client. The dashboard, CLI and MCP now own browsing, controls, gates and logs; Discord carries summaries and human decisions in one shared channel. Canonical asks use channel posts and verified decision buttons; legacy escalation threads remain until destination transfer. Optional conversations reach the project/global supervisor, and `/delete-task` is an explicit operator action. Human prose is evidence, with decisions bound to current source context through CommandHandler. See `docs/guides/discord-commands.md` and `docs/guides/discord-migration.md`.
 
 ### Why the Command Pattern?
-`CommandHandler` is the single execution point for all operations. Playbook nodes, MCP tools, the dashboard API and the CLI all delegate here — ensures feature parity and consistent error handling across all interfaces. The Discord adapter follows the same rule: it calls `escalation_reply` and the explicit operator `delete_task` action; it never touches the database or a session directly. The deletion exception is specified in `docs/superpowers/specs/2026-10-11-unified-task-delete.md`.
+`CommandHandler` is the single execution point for all operations. Playbook nodes, MCP tools, the dashboard API and the CLI all delegate here — ensures feature parity and consistent error handling across all interfaces. The Discord adapter follows the same rule: it routes observed input and decision buttons through ask, escalation and supervisor-inbox commands, plus the explicit operator `delete_task` action; it never mutates a session directly. The deletion exception is specified in `docs/superpowers/specs/2026-10-11-unified-task-delete.md`.
 
 ### Why plugins?
 Internal functionality (file ops, git, notes, code quality) is implemented as plugins with the same API available to third parties. This enforces clean boundaries, enables selective loading, and stress-tests the plugin API with real complexity.
@@ -322,7 +315,7 @@ Key sections: `discord`, `scheduling`, `auto_task`, `pause_retry`, `hook_engine`
 - **Async-first I/O:** All production code uses non-blocking I/O. Git ops use `GitManager`'s async API (`a`-prefixed methods). No sync `subprocess.run()` in production.
 - Database operations return dicts or dataclass instances from `models.py`
 - Commands return structured dicts with `success` boolean and data/error fields
-- Notifications via `_notify_channel()` for project-aware Discord routing
+- Dashboard notifications use typed `notify.*` events; Discord delivery uses durable domain outboxes
 - Git operations wrapped in `GitManager` with `GitError` exceptions
 - **Linter:** ruff (line-length 100, target py312)
 - **Tests:** pytest with pytest-asyncio (`asyncio_mode = "auto"`)
@@ -331,8 +324,8 @@ Key sections: `discord`, `scheduling`, `auto_task`, `pause_retry`, `hook_engine`
 ## Infrastructure
 
 - **Daemon:** Runs as a background process via `run.sh` (single Python asyncio process)
-- **Discord bot:** Primary human interface, requires bot token + guild ID + channel config
-- **MCP server:** Embedded in daemon, auto-exposes ~150 CommandHandler commands via streamable-http transport
+- **Discord bot:** Optional summaries, human decisions and supervisor conversations; requires bot token + guild ID + channel config
+- **MCP server:** Embedded in daemon, exposes admitted commands via streamable-http transport
 - **GitHub integration:** Git operations for branching, PRs, worktrees per task
 - **Multi-provider:** Anthropic direct, AWS Bedrock, Google Vertex AI, Gemini, Ollama for LLM calls
 - **Plugin ecosystem:** Internal plugins + third-party plugins from git repos
@@ -340,7 +333,8 @@ Key sections: `discord`, `scheduling`, `auto_task`, `pause_retry`, `hook_engine`
 
 ## Known Architectural Notes
 
-- `state_machine.py` defines valid transitions but they're not enforced in production — all transitions use direct `db.update_task()`
+- `state_machine.py` enforces suspended-state transitions; other legacy moves
+  warn by default unless `state_machine.enforce` is enabled.
 - Plan-generated tasks can get stuck in DEFINED due to inherited approval settings blocking dependency chains
 - The system uses workspace isolation per task (git worktrees or separate clones)
 - Rules/hooks are deprecated; playbooks are the replacement (migration in progress)

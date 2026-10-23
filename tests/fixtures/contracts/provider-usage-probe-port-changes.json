@@ -1,0 +1,11 @@
+{
+  "playbook_fixtures": {
+    "tests/fixtures/playbooks/v2/provider-usage-probe/artifact.json": {
+      "previous_sha256": "bb0225c06d98c578213f46b8f3ffb0650e3910a8626fc0bde8f73eb643647ff7",
+      "preserved_previous_path": "tests/fixtures/playbooks/scenarios/provider-usage-probe/before.artifact.json",
+      "sha256": "d6e053da139bcc32cc3d463fbd39ac50d54088b86819a08c8edf5e8a713614f8",
+      "reason": "Declare the existing provider_usage_probe capability explicitly and document the reusable typed-command boundary; executable graph and command contracts are unchanged.",
+      "verification": "tests/test_provider_usage_probe.py::test_probe_port_preserves_graph_and_declares_only_its_command; tests/test_provider_usage_probe.py::test_probe_port_scenarios_use_real_command_and_engine"
+    }
+  }
+}

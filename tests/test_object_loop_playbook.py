@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import os
 import time
@@ -16,6 +17,7 @@ import pytest
 from sqlalchemy import insert, select, update
 
 from src.commands.contracts.registry import CONTRACTS, ContractRegistry
+from src.commands.contracts.models import CommandResult
 from src.commands.principal import (
     TRUSTED_LOCAL,
     ExecutionPrincipal,
@@ -46,15 +48,134 @@ from tests.test_review_commands import decide
 
 ROOT = Path(__file__).resolve().parents[1]
 BUNDLE = ROOT / "tests/fixtures/playbooks/v2/object-loop"
+REFACTOR_BASELINE = ROOT / "tests/fixtures/object-loop-refactor"
 PROJECT = "matter-engine-cpp"
 COMMANDS = (
     "object_loop_inputs", "object_loop_start", "object_loop_reconcile",
     "object_score_record", "object_checkpoint_read",
 )
+PORT_FIXTURES = ROOT / "tests/fixtures/playbooks/object-loop-port"
+PORT_SCENARIOS = json.loads((PORT_FIXTURES / "scenarios.json").read_text())
 
 
 def artifact():
     return load_definition_json((BUNDLE / "artifact.json").read_text())
+
+
+def test_port_preserves_installed_graph_and_authority():
+    raw = (PORT_FIXTURES / "installed.artifact.json").read_bytes()
+    assert hashlib.sha256(raw).hexdigest() == PORT_SCENARIOS["installed_artifact_sha256"]
+    # The exact pre-port repository bytes are also pinned by the legacy digest
+    # guard. The installed copy differs only in its compilation timestamp.
+    repository = json.loads((PORT_FIXTURES / "repository.artifact.json").read_text())
+    installed = json.loads(raw)
+    repository.pop("compiled_at")
+    installed.pop("compiled_at")
+    assert repository == installed
+    old = load_definition_json(raw.decode())
+    # Keep the independently recorded authoring port pinned after the filter refactor.
+    new = load_definition_json((PORT_FIXTURES / "ported.artifact.json").read_text())
+    # required_capabilities changes checkpoint authority (amber-crest-92).
+    # Retain legacy metadata until that compatibility work is reviewed.
+    assert new.trusted_execution is old.trusted_execution is None
+    assert new.compiled_against == old.compiled_against
+    assert new.scope == old.scope
+    # Source references move when authoring clauses are added. Executable rules,
+    # inputs, conditions, retries, limits and edges must otherwise stay identical.
+    for key in ("rules", "steps"):
+        before = old.model_dump(mode="json")[key]
+        after = new.model_dump(mode="json")[key]
+        for items in (before, after):
+            for item in (items.values() if isinstance(items, dict) else items):
+                item.pop("source", None)
+        assert before == after
+
+
+@pytest.mark.parametrize("rule", [
+    "on-formula", "on-completion", "on-failure", "on-review", "recover",
+])
+@pytest.mark.parametrize("scenario", PORT_SCENARIOS["scenarios"], ids=lambda s: s["name"])
+async def test_port_matches_installed_scenarios(scenario, rule):
+    """Run both frozen graphs through typed previews; no live handler is invoked.
+
+    Only the current-policy placeholder changes between graphs. This models
+    separately pinned attempts, never automatic adoption of an existing loop.
+    Compare all command arguments and node outcomes, including refusals.
+    """
+    old = load_definition_json((PORT_FIXTURES / "installed.artifact.json").read_text())
+    traces = []
+    ported = load_definition_json((PORT_FIXTURES / "ported.artifact.json").read_text())
+    for definition in (old, ported):
+        ref = artifact_ref_for(definition)
+
+        def bind_policy(value):
+            if isinstance(value, dict):
+                return {k: bind_policy(v) for k, v in value.items()}
+            if isinstance(value, list):
+                return [bind_policy(v) for v in value]
+            if value == "$POLICY":
+                return ref.artifact_sha256
+            if value == "$POLICY_HEX":
+                return ref.artifact_sha256.removeprefix("sha256:")
+            return value
+
+        remaining = bind_policy(scenario["calls"])
+        calls = []
+        registry = ContractRegistry()
+        for name in COMMANDS:
+            registration = CONTRACTS.require(name)
+
+            async def preview(args, _principal, name=name, registration=registration):
+                expected = remaining.pop(0)
+                assert name == expected["command"]
+                assert args.model_dump() == registration.contract.execution.args_model.model_validate(
+                    expected["args"],
+                ).model_dump()
+                calls.append((name, args.model_dump(), expected["outcome"]))
+                return CommandResult(
+                    outcome=expected["outcome"], summary=expected["outcome"],
+                    value=registration.contract.execution.result_model.model_validate(
+                        expected["value"],
+                    ),
+                )
+
+            async def forbidden_live(_args, _principal):
+                pytest.fail("Equivalence previews must never invoke a live command")
+
+            contract = registration.contract.model_copy(update={
+                "execution": registration.contract.execution.model_copy(
+                    update={"supports_preview": True},
+                ),
+            })
+            registry.register(replace(
+                registration, contract=contract, invoke=forbidden_live, preview=preview,
+            ))
+        store = InMemoryArtifactStore()
+        store.put(definition)
+        engine = PlaybookEngine(
+            services=EngineServices(contracts=registry, artifact_store=store, clock=lambda: 100),
+            runs=RecordingRunRepository(),
+        )
+        event_type = next(r.trigger.event_type for r in definition.rules if r.id == rule)
+        tree = await engine.dry_run(ref, {
+            "event_type": event_type, "project_id": PROJECT, "event_id": "port-equivalence",
+        }, TRUSTED_LOCAL)
+        assert not tree.truncated and len(tree.paths) == 1
+        path = tree.paths[0]
+        assert not remaining, (remaining, path)
+        assert len(calls) == len(scenario["calls"]), path
+        assert path.completed, path  # Traversal completion, not business success.
+        terminal = "done" if scenario["completed"] else "failed"
+        assert path.nodes[-1].step_id == f"{rule}--{terminal}", path
+        assert all(n.outcome != "runtime_error" for n in path.nodes), path
+        # Remove only the per-artifact identity from argument comparison.
+        normalized_calls = json.dumps(calls, sort_keys=True).replace(
+            ref.artifact_sha256.removeprefix("sha256:"), "$POLICY_HEX",
+        )
+        traces.append((normalized_calls, [
+            (n.step_id, n.target, n.outcome) for n in path.nodes
+        ]))
+    assert traces[0] == traces[1]
 
 
 @pytest.fixture(params=[False, True], ids=["legacy", "run-bound"])
@@ -173,6 +294,54 @@ async def sweep(handler, *, rule="recover"):
     result = await engine.run_rule(ref, rule, event, TRUSTED_LOCAL)
     assert result.outcome == "completed", (result, recordings)
 
+    tree = await replay(handler, definition, recordings, event)
+    baseline = load_definition_json((REFACTOR_BASELINE / "baseline.artifact.json").read_text())
+    await replay(handler, baseline, recordings, event, recorded_sha=ref.artifact_sha256)
+    if trace_dir := os.getenv("AQ_OBJECT_LOOP_TRACE_DIR"):
+        destination = Path(trace_dir)
+        destination.mkdir(parents=True, exist_ok=True)
+        reviews = await handler.db.list_reviews(project_id=PROJECT)
+        (destination / f"{uuid.uuid4().hex}.json").write_text(json.dumps({
+            "test": os.environ.get("PYTEST_CURRENT_TEST", "").split(" (", 1)[0],
+            "rule": rule, "artifact_sha256": ref.artifact_sha256,
+            "baseline_artifact_sha256": baseline.artifact_sha256(),
+            "baseline_dry_completed": True,
+            "live_outcome": result.outcome, "dry_completed": tree.paths[0].completed,
+            "commands": [{"name": name, "outcome": result.outcome}
+                         for name, _, result in recordings],
+            "dry_nodes": [{"step": n.step_id, "outcome": n.outcome, "target": n.target}
+                          for n in tree.paths[0].nodes],
+            "review_audiences": sorted(
+                [{"decider": r["decider"], "kind": r["kind"], "title": r["title"]}
+                 for r in reviews], key=lambda r: (r["decider"], r["kind"], r["title"]),
+            ),
+        }, indent=2) + "\n")
+    return recordings, tree
+
+
+async def replay(handler, definition, recordings, event, *, recorded_sha=None):
+    """Replay exact calls against either graph, changing only its own policy pin.
+
+    No invoke adapter or database command can run here. The historical artifact
+    must see its own hash in persisted inputs to exercise its eligibility checks.
+    All other arguments, results, order and number of calls must be identical.
+    """
+    ref = artifact_ref_for(definition)
+    store = InMemoryArtifactStore()
+    store.put(definition)
+
+    def repin(value):
+        if recorded_sha and isinstance(value, str):
+            if value == recorded_sha:
+                return ref.artifact_sha256
+            if value == recorded_sha.removeprefix("sha256:"):
+                return ref.artifact_sha256.removeprefix("sha256:")
+        if isinstance(value, dict):
+            return {key: repin(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [repin(item) for item in value]
+        return value
+
     remaining = list(recordings)
     previews = ContractRegistry()
     for name in COMMANDS:
@@ -180,8 +349,12 @@ async def sweep(handler, *, rule="recover"):
 
         async def preview(args, _principal, name=name):
             expected_name, expected_args, recorded = remaining.pop(0)
-            assert (name, args.model_dump()) == (expected_name, expected_args)
-            return recorded
+            assert (name, args.model_dump()) == (expected_name, repin(expected_args))
+            return recorded.model_copy(update={
+                "value": type(recorded.value).model_validate(
+                    repin(recorded.value.model_dump(mode="json"))
+                ),
+            })
 
         contract = registration.contract.model_copy(update={
             "execution": registration.contract.execution.model_copy(update={"supports_preview": True})
@@ -197,30 +370,14 @@ async def sweep(handler, *, rule="recover"):
     tree = await dry_engine.dry_run(ref, event, TRUSTED_LOCAL)
     assert not tree.truncated and len(tree.paths) == 1
     assert tree.paths[0].completed, tree
+    assert tree.paths[0].nodes[-1].outcome == "completed", tree
     assert not remaining, json.dumps({
         "remaining": [name for name, _, _ in remaining],
         "nodes": [(n.step_id, n.target, n.outcome) for n in tree.paths[0].nodes],
         "inputs": recordings[0][2].value.model_dump(),
         "artifact": definition.artifact_sha256(),
     }, default=str)
-    if trace_dir := os.getenv("AQ_OBJECT_LOOP_TRACE_DIR"):
-        destination = Path(trace_dir)
-        destination.mkdir(parents=True, exist_ok=True)
-        reviews = await handler.db.list_reviews(project_id=PROJECT)
-        (destination / f"{uuid.uuid4().hex}.json").write_text(json.dumps({
-            "test": os.environ.get("PYTEST_CURRENT_TEST", "").split(" (", 1)[0],
-            "rule": rule, "artifact_sha256": ref.artifact_sha256,
-            "live_outcome": result.outcome, "dry_completed": tree.paths[0].completed,
-            "commands": [{"name": name, "outcome": result.outcome}
-                         for name, _, result in recordings],
-            "dry_nodes": [{"step": n.step_id, "outcome": n.outcome, "target": n.target}
-                          for n in tree.paths[0].nodes],
-            "review_audiences": sorted(
-                [{"decider": r["decider"], "kind": r["kind"], "title": r["title"]}
-                 for r in reviews], key=lambda r: (r["decider"], r["kind"], r["title"]),
-            ),
-        }, indent=2) + "\n")
-    return recordings, tree
+    return tree
 
 
 async def state(handler):
@@ -427,6 +584,10 @@ async def test_scoring_live_and_dry_traces(setup, scenario, reference_kind):
     await score_packet(setup, current, invalid=scenario in {"invalid", "repair"},
                        next_variants=next_variants)
     trace, _ = await sweep(setup)
+    if scenario == "budget" and reference_kind == "calibrated":
+        past = json.loads((REFACTOR_BASELINE / "past-budget-trace.json").read_text())["trace"]
+        assert [{"name": name, "outcome": result.outcome}
+                for name, _, result in trace] == past["commands"]
     result = await state(setup)
     assert result["state"]["reference_kind"] == reference_kind
     assert any(name == "object_score_record" for name, _, _ in trace)
@@ -714,6 +875,69 @@ async def test_two_objects_recover_in_one_sweep(setup):
     assert sum(name == "object_loop_start" for name, _, _ in trace) == 2
     trace, _ = await sweep(setup)
     assert sum(name == "object_loop_reconcile" for name, _, _ in trace) == 2
+
+
+@pytest.mark.parametrize("held_by", ["proposal", "policy"])
+async def test_ineligible_starts_remain_held_after_filtering(setup, held_by):
+    values = variables()
+    if held_by == "policy":
+        packet = json.loads(values["start"])
+        packet["policy_sha256"] = C
+        values["start"] = json.dumps(packet)
+    cooked = await setup._cmd_formula_cook({
+        "name": "object", "project_id": PROJECT, "vars": values,
+    })
+    assert cooked["success"], cooked
+    if held_by == "proposal":
+        async with setup.db.immediate() as conn:
+            await conn.execute(update(doc_reviews).where(
+                doc_reviews.c.id == "rev-amber-zenith",
+            ).values(state="withdrawn"))
+    trace, _ = await sweep(setup, rule="on-formula")
+    assert [name for name, _, _ in trace] == ["object_loop_inputs"]
+    assert (await setup.db.get_task(cooked["task_ids"][0])).is_blocked
+    async with setup.db._engine.connect() as conn:
+        assert not (await conn.execute(select(object_loops))).first()
+
+
+async def test_foreign_policy_loop_is_not_reconciled(setup):
+    await boot(setup)
+    current = await state(setup)
+    foreign_state = {**current["state"], "policy_sha256": C}
+    async with setup.db.immediate() as conn:
+        await conn.execute(update(object_loops).values(state=foreign_state))
+    trace, _ = await sweep(setup)
+    assert [name for name, _, _ in trace] == ["object_loop_inputs"]
+    after = await state(setup)
+    assert after["version"] == current["version"]
+    assert after["state"] == foreign_state
+
+
+@pytest.mark.parametrize("bound", ["budget", "rounds"])
+async def test_hundred_dollar_three_round_packet_keeps_its_bounds(setup, bound):
+    values = variables()
+    packet = json.loads(values["start"])
+    packet["limits"]["usd"] = 100
+    packet["max_rounds"] = 3
+    values["start"] = json.dumps(packet)
+    cooked = await setup._cmd_formula_cook({
+        "name": "object", "project_id": PROJECT, "vars": values,
+    })
+    assert cooked["success"], cooked
+    await sweep(setup, rule="on-formula")
+    for _ in range(1 if bound == "budget" else 3):
+        current = await complete_wave(setup)
+        await score_packet(setup, current, next_variants=[
+            variant("next", usd=100 if bound == "budget" else 1).model_dump(),
+        ])
+        await sweep(setup)
+    after = await state(setup)
+    assert after["state"]["limits"]["usd"] == 100
+    assert after["state"]["max_rounds"] == 3
+    assert after["state"]["round_id"] == (0 if bound == "budget" else 2)
+    assert after["state"]["status"] == "stopped"
+    assert "continuation refused" in after["state"]["stop_reason"]
+    assert after["state"]["incumbent_sha256"] == B
 
 
 async def test_object_review_approval_stores_pinned_bytes_without_activation(setup):
