@@ -1043,7 +1043,7 @@
     "phase": "transition",
     "fixed_replacement_allowance": 15000,
     "engine_cap": 97627,
-    "owned_total_cap": 161217,
+    "owned_total_cap": 161647,
     "table_cap": 45,
     "expires_at": "s4_modules",
     "automatic_baseline_increase": false,
