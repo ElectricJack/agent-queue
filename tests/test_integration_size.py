@@ -566,7 +566,8 @@ def test_frozen_batch_composes_only_the_approved_member_deltas(report, manifest)
     batch = exception["frozen_batch_composition"]
     assert batch["batch_id"] == "train-5429c3c71859f327ff8b46dbf1edc557"
     assert batch["starting_revision"] == "48adaddad079a7adc2930e470590621c1575e674"
-    assert batch["source_revision"] == exception["measured_source_revision"]
+    measurement = exception["post_release_structure_measurement"]
+    assert batch["source_revision"] == measurement["previous_source_revision"]
     assert batch["member_sources"] == {
         "noble-flare-12": "f09829d145915bc7426d24f28623283f7319a7a2",
         "sound-forge-62": "15239e75971ae5ac39e6a7d0a5e467331ab58428",
@@ -587,13 +588,39 @@ def test_frozen_batch_composes_only_the_approved_member_deltas(report, manifest)
     assert batch["base_table_count"] == activation["measured_table_count"] == 45
     assert batch["base_owned_total"] + sum(
         delta["owned"] for delta in batch["approved_deltas"].values()
-    ) == exception["measured_owned_total"] == report["total"] == 161_162
+    ) == measurement["previous_owned_total"] == 161_162
     assert batch["base_engine_lines"] + sum(
         delta["engine"] for delta in batch["approved_deltas"].values()
-    ) == exception["measured_engine_lines"] == report["groups"]["engine"] == 85_543
+    ) == measurement["previous_engine_lines"] == 85_543
     assert batch["base_table_count"] + sum(
         delta["tables"] for delta in batch["approved_deltas"].values()
     ) == exception["measured_table_count"] == len(report["tables"]) == 45
+
+
+def test_post_release_structure_measurement_is_exact(report, manifest):
+    exception = manifest["transition_exception"]
+    measurement = exception["post_release_structure_measurement"]
+    assert measurement["task_id"] == "swift-nexus-38"
+    assert measurement["referenced_decision"] == "size-cap-delegation-2026-10-23"
+    assert measurement["operator_decision"] == "6679052c"
+    assert measurement["operator_task"] == "sharp-cascade-53"
+    assert measurement["pull_request"] == "https://github.com/ElectricJack/agent-queue/pull/1775"
+    assert measurement["required_pr_head"] == "14183dc9d82cdc4cb32610827e228b49b6e488d2"
+    assert measurement["dev_source_revision"] == "c177d24e86d25fde7804131c94bfd637b0eb540a"
+    assert measurement["measured_source_revision"] == exception["measured_source_revision"]
+    assert measurement["measured_groups"] == report["groups"]
+    assert (measurement["previous_owned_total"] + measurement["authorized_owned_delta"]
+            == measurement["measured_owned_total"] == exception["measured_owned_total"]
+            == report["total"] == 161_124)
+    assert measurement["authorized_owned_delta"] == -38
+    assert (measurement["previous_engine_lines"] + measurement["authorized_engine_delta"]
+            == measurement["measured_engine_lines"] == exception["measured_engine_lines"]
+            == report["groups"]["engine"] == 84_989)
+    assert measurement["authorized_engine_delta"] == -554
+    assert (measurement["previous_table_count"] + measurement["authorized_table_delta"]
+            == measurement["measured_table_count"] == len(report["tables"]) == 45)
+    recorded = json.loads((ROOT / "tests/integration_ownership_report.json").read_text())
+    assert recorded["post_release_structure_measurement"] == measurement
 
 
 @pytest.mark.parametrize("field,value", [
