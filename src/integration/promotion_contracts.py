@@ -6,7 +6,6 @@ execution services. Compatibility exports preserve exception and DTO identity.
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -69,6 +68,3 @@ class ResolvedRepository:
     repo: RepoConfig
     origin_url: str
     retained_git_dir: Path
-
-
-RepositoryResolver = Callable[[str], Awaitable[RepoConfig | None] | RepoConfig | None]

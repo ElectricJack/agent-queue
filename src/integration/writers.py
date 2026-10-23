@@ -30,6 +30,7 @@ from src.database.tables import (
     tasks,
     workspaces,
 )
+from src.integration.row_query import select_row
 from src.models import TaskStatus
 
 
@@ -55,27 +56,17 @@ class OperationSafety:
         """
         if operation["target_kind"] != "parent":
             return None, None
-        parent = (
-            await conn.execute(
-                select(tasks)
-                .where(tasks.c.id == operation["parent_task_id"])
-                .with_for_update()
-            )
-        ).mappings().one_or_none()
-        checkpoint = (
-            await conn.execute(
-                select(task_integration_checkpoints)
-                .where(task_integration_checkpoints.c.task_id == operation["parent_task_id"])
-                .with_for_update()
-            )
-        ).mappings().one_or_none()
-        episode = (
-            await conn.execute(
-                select(integration_parent_episodes)
-                .where(integration_parent_episodes.c.id == operation["episode_id"])
-                .with_for_update()
-            )
-        ).mappings().one_or_none()
+        parent = await select_row(conn, tasks, tasks.c.id == operation['parent_task_id'], lock=True)
+        checkpoint = await select_row(
+            conn, task_integration_checkpoints,
+            task_integration_checkpoints.c.task_id == operation['parent_task_id'],
+            lock=True,
+        )
+        episode = await select_row(
+            conn, integration_parent_episodes,
+            integration_parent_episodes.c.id == operation['episode_id'],
+            lock=True,
+        )
         if (
             parent is None
             or checkpoint is None

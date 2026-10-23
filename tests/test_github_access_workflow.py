@@ -107,7 +107,7 @@ else:
             status = 201
         elif endpoint.endswith("/pulls/7"):
             payload = state["pull"]
-        elif "/commits/" in endpoint and endpoint.endswith("/check-runs?per_page=100"):
+        elif "/commits/" in endpoint and endpoint.endswith("/check-runs?filter=all&per_page=100"):
             payload = {"check_runs": [{"name": "required", "conclusion": "success"}]}
         elif "/commits/" in endpoint:
             payload = {"sha": state["heads"]["main"]}

@@ -6,6 +6,21 @@ project. Every daemon read uses the same envelope, authorization and completenes
 checks. An authorization denial stops the sweep; failed or partial evidence never
 proves either an orphan or a healthy queue.
 
+Both `aq doctor --check stall.sweep` and the unscoped operator script report
+every non-ready playbook activation as `playbook_activation_unhealthy` and
+`PLAYBOOK-NOT-READY`, respectively, even with no queued tasks or pending events.
+Health is recomputed against live command and profile contracts on each sweep.
+Findings include playbook and scope identity, enabled state, artifact hash,
+health reasons naming offending commands/profiles, and elapsed time since
+activation (unknown when no activation timestamp exists). This age is not a
+claim about when drift began. Recompiling and reactivating through the existing
+reviewed path clears the finding once health is ready. The sweep never refreshes
+fingerprints, recompiles policy, or activates automatically: a changed contract
+does not by itself prove backward compatibility. Failed health reads remain
+incomplete evidence. The script skips this system-only read in `--project`
+patrols rather than widening their authority; the system doctor sweep covers all
+activation scopes, including paused projects.
+
 Paused train-mode projects are also checked through control-only integration
 status. A `project_paused` blocker produces a `PAUSED-PROJECT` line, including in
 scoped patrols where project enumeration is unavailable. The blocker names

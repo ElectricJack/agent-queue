@@ -9592,6 +9592,29 @@
         107
       ],
       "baseline_span": null
+    },
+    "src/wait_runtime/scheduler.py::import from src.integration.stacked_branches import shared_stack_inputs": {
+      "reason": "Scheduler-pass stack input scope; charged under the exact solid-impact-56 footprint amendment approved by msg-ab86b9766c2f42b9ba4920aba585b577.",
+      "landing_span": [
+        21,
+        21
+      ]
+    },
+    "src/git/github_activity.py::github_component": {
+      "reason": "GitHub caller diagnostics, shared background quota reserve and inventory reuse; exact supervisor grant under size-cap-delegation-2026-10-23.",
+      "landing_span": [
+        18,
+        28
+      ],
+      "baseline_span": null
+    },
+    "src/git/github_activity.py::check_background_budget": {
+      "reason": "GitHub caller diagnostics, shared background quota reserve and inventory reuse; exact supervisor grant under size-cap-delegation-2026-10-23.",
+      "landing_span": [
+        118,
+        124
+      ],
+      "baseline_span": null
     }
   },
   "exclusions": {
@@ -9608,6 +9631,8 @@
     "src/api/models/escalation.py::EscalationRecord.delivery_statuses": "Discord escalation transport receipts, unrelated to code delivery.",
     "src/api/terminal_stream.py::_ACTIVE_TASKS[TaskStatus.ASSIGNED]": "Generic same-shaped definition independently present at the pinned baseline/landing; new relocations are still charged.",
     "src/api/terminal_stream.py::_ACTIVE_TASKS[TaskStatus.IN_PROGRESS]": "Generic same-shaped definition independently present at the pinned baseline/landing; new relocations are still charged.",
+    "src/cli/daemon.py::_database_matches_compose": "PostgreSQL startup endpoint matching only: reads effective configuration and compose publication, with no Git delivery, integration lifecycle or integration storage. Shared configuration loading remains independently charged.",
+    "src/cli/doctor.py::_offline_doctor": "Local operator-only Alembic orphan recovery through the generic doctor runner; no Git delivery or integration lifecycle authority. Shared configuration and database primitives remain independently charged.",
     "src/cli/doctor.py::_SEVERITY_STYLE['ok']": "Generic same-shaped definition independently present at the pinned baseline/landing; new relocations are still charged.",
     "src/cli/doctor.py::_SEVERITY_STYLE['warn']": "Generic same-shaped definition independently present at the pinned baseline/landing; new relocations are still charged.",
     "src/cli/formatters.py::_DEP_LABELS['related']": "Generic same-shaped definition independently present at the pinned baseline/landing; new relocations are still charged.",
@@ -13685,7 +13710,9 @@
     "ffdc36d90f4f43094d53cf205cccbc03fbe913f70fa271be3daeecd15f3b31de",
     "ffe0128684373bc7ce70298b0809ff368b7381cca05a4485b68e0cbdc8d67b14",
     "fff14f8db26fe7d356fa54882f8b9fad11b3df0209c79521bd934fc3cd6e4962",
-    "fff6baa3262ea5a823c2f7329ef4894641c975c9ed0d2a4b14fa4f38327f4193"
+    "fff6baa3262ea5a823c2f7329ef4894641c975c9ed0d2a4b14fa4f38327f4193",
+    "91d830ebb32113375e4cd3b7e79d0b589fd75f445f0bd8283b6af12682d22755",
+    "c1899e54134cabaee04932162934c4e6473f4a0557c2301f2a201b03afd93649"
   ],
   "owned_file_fingerprints": [
     "020e0abc4dae8c8c3a3671fab609db3a5b1308dba6bd380a94fccfb591c63c4d",
@@ -17380,6 +17407,7 @@
     "src/git/identity.py::LEDGER_IDENTITY": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/git/identity.py::PublishPolicy": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/git/identity.py::resolve_git_identity": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/git/identity.py::task_publish_policy": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/git/manager.py::APP_AUTH_PUSH_CLEANUP_MARGIN_SECONDS": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/git/manager.py::APP_AUTH_PUSH_TIMEOUT_SECONDS": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/git/manager.py::GitError": "Generic dependency; integration-specific definitions in this file are charged independently.",

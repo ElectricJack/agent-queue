@@ -19,7 +19,7 @@ from src.commands.operator_authority import local_or_operator
 from src.commands.detached import detached_operations
 from src.commands.principal import PrincipalKind, TRUSTED_LOCAL, current_principal
 from src.commands.supervisor_authority import integration_operator
-from src.git.manager import GitError
+from src.git.manager import GitError, _validate_ref
 from src.git.manager import RemoteRefState
 from src.database.queries.hierarchy_queries import HierarchyError
 from src.integration.models import BranchKey, Fence
@@ -39,11 +39,14 @@ def _failure(outcome: str, error: str) -> dict[str, Any]:
     return {"success": False, "outcome": outcome, "error": error}
 
 
-#: Root-train subject commands an elevated live supervisor may re-drive.
+#: Root-train subject commands an elevated live supervisor may re-drive, plus
+#: the routine in-scope structure repair it keeps after release (ingestion
+#: design §7: ``integration_mutate_hierarchy``, behind ``reparent_task``).
 #: Sealing, scheduling and parent-delivery writers stay service/playbook-only.
 _SUPERVISOR_REDRIVE_CAPABILITIES = frozenset({
     "integration_ci_evidence",
     "integration_cleanup",
+    "integration_mutate_hierarchy",
     "integration_release",
     "integration_repair_close_current",
 })
@@ -649,8 +652,8 @@ class IntegrationCommandsMixin:
             return _failure("unavailable", "the integration train is not active")
         visit_now = args.get("now")
         now = time.time() if visit_now is None else visit_now
-        # The check reads durable batches even when every snapshot fails before
-        # selection. It is independent of lane errors and retry scheduling.
+        # Durable batches expose stalls even when snapshots fail before selection;
+        # this check runs independently of lane errors and retry scheduling.
         checked_at = getattr(self, "_train_stall_checked_at", None)
         if (getattr(self, "db", None) is not None
                 and (checked_at is None or now < checked_at or now - checked_at >= 60)):
@@ -663,9 +666,9 @@ class IntegrationCommandsMixin:
 
                 from src.integration.delivery_watchdog import scan_stuck_deliveries
 
-                # The watchdog only observes and hands over; it never holds the train.
                 try:
-                    await scan_stuck_deliveries(self.db, observer=observer, now=now)
+                    await scan_stuck_deliveries(self.db, observer=observer, now=now,
+                                              hierarchy=self._hierarchy_integration_service())
                 except Exception:
                     logging.getLogger(__name__).exception("delivery watchdog scan failed")
             self._train_stall_checked_at = now
@@ -847,19 +850,21 @@ class IntegrationCommandsMixin:
                 "source_head": source["head"], "generation": source["generation"],
                 "delivery": proof.as_evidence(),
             }
-        return await self._reopen_source_ci_once(observation, producer, conditions, proof)
+        return await self._reopen_source_ci(observation, producer, conditions, proof)
 
-    async def _reopen_source_ci_once(self, observation, producer, conditions, proof) -> dict:
-        """Reopen the original branch once; further failures notify its supervisor."""
+    async def _reopen_source_ci(self, observation, producer, conditions, proof) -> dict:
+        """Reopen each failed source head once, preserving its branch and PR."""
         import uuid
 
         from sqlalchemy import insert, select, update
         from sqlalchemy.dialects.postgresql import insert as pg_insert
 
         from src.database.tables import (
-            archived_tasks, integration_source_ci, messages, projects, task_context, tasks,
+            archived_tasks, integration_source_ci, messages, projects, task_context, task_metadata,
+            tasks,
         )
         from src.integration.models import HierarchicalIntegrationPolicy
+        from src.integration.root_pr_recovery import RECOVERY_KEY
         from src.integration.source_ci import repair_description
 
         source = observation.source
@@ -885,20 +890,18 @@ class IntegrationCommandsMixin:
                 return _failure("stale", "source policy, authorization or exact identity changed")
             task = (await conn.execute(select(tasks).where(
                 tasks.c.id == observation.task_id).with_for_update())).mappings().one()
-            previous = await conn.scalar(select(task_context.c.id).where(
-                task_context.c.task_id == observation.task_id,
-                task_context.c.type == "reopen_feedback",
-                task_context.c.label.in_(["Source CI Repair", "Root PR check failure"]),
-            ).limit(1))
-            legacy_delegate = await conn.scalar(select(integration_source_ci.c.task_id).where(
-                integration_source_ci.c.repair_task_id == observation.task_id,
-            ).limit(1))
             past_attempt = await conn.scalar(select(integration_source_ci.c.task_id).where(
                 integration_source_ci.c.task_id == observation.task_id,
+                integration_source_ci.c.repository_id == source["repository_id"],
+                integration_source_ci.c.source_head == source["head"],
                 integration_source_ci.c.repair_attempt > 0,
             ).limit(1))
-            exhausted = bool(previous or legacy_delegate or past_attempt
-                             or task["created_by_kind"] == SOURCE_CI_REPAIR_ORIGIN)
+            root_history = await conn.scalar(select(task_metadata.c.value).where(
+                task_metadata.c.task_id == observation.task_id,
+                task_metadata.c.key == RECOVERY_KEY,
+            ))
+            same_head = bool(past_attempt or source["head"] in (
+                json.loads(root_history).get("heads", ()) if root_history else ()))
             container = False
             for table in (tasks, archived_tasks):
                 if await conn.scalar(select(table.c.id).where(
@@ -906,15 +909,16 @@ class IntegrationCommandsMixin:
                 ).limit(1)):
                     container = True
                     break
-            if exhausted or container:
-                blocker = ("source_ci_repair_exhausted" if exhausted
+            if same_head or container:
+                blocker = ("source_ci_repair_unchanged" if same_head
                            else "source_ci_repair_needs_owner")
-                guidance = ("One automatic source-CI repair is the limit." if exhausted else
+                guidance = ("This exact source head was already reopened for repair."
+                            if same_head else
                             "A container cannot be claimed by a pool worker. Coordinate repair "
                             "of its original branch with the existing owner.")
                 # One notification per original task, across heads and restarts.
                 await conn.execute(pg_insert(messages).values(
-                    id=("msg-source-ci-budget-" if exhausted else "msg-source-ci-owner-")
+                    id=("msg-source-ci-unchanged-" if same_head else "msg-source-ci-owner-")
                        + observation.task_id,
                     project_id=source["project_id"], from_kind="system",
                     from_id="integration-source-ci", to_kind="session",
@@ -931,8 +935,8 @@ class IntegrationCommandsMixin:
                         "blocker": blocker, "task_id": observation.task_id,
                         "delivery": proof.as_evidence()}
             feedback = repair_description(observation)
-            # Feedback and budget commit with READY. A crash cannot spend the
-            # budget without reopening, or reopen twice without recording it.
+            # Feedback and the exact-head guard commit with READY. A crash
+            # cannot reopen twice without recording it.
             transition = await self.db._apply_transition(
                 conn, observation.task_id, TaskStatus.READY,
                 context="reopen_with_feedback", integration_delivery=delivery,
@@ -988,7 +992,7 @@ class IntegrationCommandsMixin:
                     infra_observations=0, infra_rerun_at=None, infra_reruns=0))
             return {"rerun": False, "infra_observations": 0}
         observations = int(record["infra_observations"]) + 1
-        if observations >= repair.source_ci_infra_attempts:
+        if repair.source_ci_infra_attempts and observations >= repair.source_ci_infra_attempts:
             # Bounded: stop asking and name the blocker instead of looping.
             await conn.execute(update(integration_source_ci).where(*conditions).values(
                 infra_observations=observations, infra_rerun_at=None))
@@ -1000,10 +1004,11 @@ class IntegrationCommandsMixin:
         due_at = record["infra_rerun_at"]
         rerun = due_at is None or now >= due_at
         if rerun:
-            delay = min(
-                repair.source_ci_infra_backoff_seconds * (2 ** reruns),
-                repair.source_ci_infra_backoff_max_seconds,
-            )
+            delay = repair.source_ci_infra_backoff_seconds
+            for _ in range(reruns):
+                delay = min(delay * 2, repair.source_ci_infra_backoff_max_seconds)
+                if delay >= repair.source_ci_infra_backoff_max_seconds:
+                    break
             await conn.execute(update(integration_source_ci).where(*conditions).values(
                 infra_observations=observations, infra_rerun_at=now + delay,
                 infra_reruns=reruns + 1))
@@ -2190,7 +2195,7 @@ class IntegrationCommandsMixin:
 
         from src.commands.contracts.integration import IntegrationCloseDeliveredPrArgs
         from src.integration.pr_delivery import DeliveredPullRequestClosure
-        from src.integration.pr_cleanup import SWEEP_PRINCIPAL
+        from src.integration.pr_cleanup import SWEEP_PRINCIPAL, SWEEP_PULL
 
         try:
             request = IntegrationCloseDeliveredPrArgs.model_validate(args)
@@ -2205,6 +2210,7 @@ class IntegrationCommandsMixin:
             principal, refusal = await integration_operator(self.db, request.project_id)
         if refusal is not None:
             return _failure("unauthorized", refusal)
+        inventory = SWEEP_PULL.get() if sweep and request.dry_run else None
         result = await DeliveredPullRequestClosure(
             self.db, self._integration_repository_git()
         ).run(
@@ -2215,9 +2221,41 @@ class IntegrationCommandsMixin:
             reason=request.reason,
             operator_id=principal,
             aq_only=sweep,
+            inventory_pull=(inventory[2] if inventory is not None
+                            and inventory[:2] == (request.project_id, request.pr_number) else None),
         )
         return {
             "success": result["outcome"] in {"would_close", "closed", "nothing_to_close"},
+            "dry_run": request.dry_run,
+            **result,
+        }
+
+    async def _cmd_integration_fast_forward_pr(self, args: dict) -> dict:
+        """Adopt a separately filed repair's published passing head into its root PR."""
+
+        from src.commands.contracts.integration import IntegrationFastForwardPrArgs
+        from src.integration.pr_repair_publication import PRRepairPublication
+
+        try:
+            request = IntegrationFastForwardPrArgs.model_validate(args)
+        except ValidationError as exc:
+            return _failure("invalid", f"invalid PR fast-forward request: {exc}")
+        task = await self.db.get_task(request.task_id)
+        principal, refusal = await integration_operator(
+            self.db, task.project_id if task is not None else None
+        )
+        if refusal is not None:
+            return _failure("unauthorized", refusal)
+        result = await PRRepairPublication(
+            self.db, self._integration_repository_git(), self.config,
+            event_bus=getattr(self.orchestrator, "bus", None),
+        ).run(
+            request.task_id, request.pr_number, dry_run=request.dry_run,
+            expected_head_sha=request.expected_head_sha, reason=request.reason,
+            operator_id=principal,
+        )
+        return {
+            "success": result["outcome"] in {"would_publish", "published", "already_published"},
             "dry_run": request.dry_run,
             **result,
         }
@@ -2545,6 +2583,27 @@ class IntegrationCommandsMixin:
                 raise GitError(f"repository branch {branch!r} does not exist")
             return head
 
+        async def filing_head(repo, branch):
+            # Filing only pins a starting commit. Reuse the retained Git evidence
+            # without asking GitHub for credentials while its API is in backoff.
+            # Live remote guards continue to use resolve_head/branch_head above.
+            branch = _validate_ref(branch.removeprefix("refs/heads/"))
+            promotion = origin_git(repo)
+            resolved = await promotion._resolve_repository(repo.id)
+            await promotion._ensure_retained_repository(resolved)
+            store = str(resolved.retained_git_dir)
+            tracking = f"refs/remotes/origin/{branch}^{{commit}}"
+            async with promotion.git.arepository_transaction(store):
+                for ref in (tracking, f"refs/heads/{branch}^{{commit}}"):
+                    head = await promotion.git.arev_parse(store, ref)
+                    if head is not None:
+                        return head
+                await promotion._fetch_all_heads(resolved.retained_git_dir, resolved.origin_url)
+                head = await promotion.git.arev_parse(store, tracking)
+                if head is None:
+                    raise GitError(f"repository branch {branch!r} does not exist")
+                return head
+
         async def branch_base(repo, head, parent_head):
             promotion = origin_git(repo)
             resolved = await promotion._resolve_repository(repo.id)
@@ -2578,6 +2637,7 @@ class IntegrationCommandsMixin:
         return HierarchyIntegration(
             self.db,
             default_head_resolver=resolve_head,
+            filing_head_resolver=filing_head,
             branch_head_resolver=branch_head,
             branch_base_resolver=branch_base,
             branch_materializer=materialize,
@@ -2796,8 +2856,17 @@ class IntegrationCommandsMixin:
                 "delivery_target_fixed",
                 "reopen_required",
                 "invalid",
+                "needs_quiescence",
+                "stale_parent",
+                "dependency_on_ancestor",
             } else "invalid"
-            return _failure(outcome, str(exc))
+            failure = _failure(outcome, str(exc))
+            if outcome == "needs_quiescence":
+                failure |= {
+                    "owner": exc.context.get("owner"),
+                    "safe_continuation": exc.context.get("safe_continuation"),
+                }
+            return failure
         return {"success": True, **result}
 
     async def _cmd_integration_delivery_readiness(self, args: dict) -> dict:

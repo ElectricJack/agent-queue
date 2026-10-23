@@ -16,11 +16,6 @@ logger = logging.getLogger(__name__)
 
 GREEN_EVENT_TYPE = "integration.candidate_green"
 CONTINUATION_PREFIX = "integration-green-continuation"
-#: First re-emission waits this long after the previous continuation; each
-#: further generation doubles it (60, 120, 240, ... seconds) up to the ceiling.
-RETRY_BASE_SECONDS = 60.0
-#: The longest wait between two continuations of one fingerprint.
-MAX_BACKOFF_SECONDS = 3600.0
 
 
 def promotion_fingerprint(
