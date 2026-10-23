@@ -746,7 +746,7 @@ describe("LayoutCanvas", () => {
       const view = render(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
       act(() => notify([{ contentRect: { width: 1200, height: 800 } }]));
       expect(tiles.paramsByProject).toHaveProperty("p1");
-      expect(tiles.rects.at(-1)).not.toBeNull();
+      expect(tiles.rects[tiles.rects.length - 1]).not.toBeNull();
       tiles.refetchVisible.mockClear();
       extents.loading = false;
       view.rerender(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
