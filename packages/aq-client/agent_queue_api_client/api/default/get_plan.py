@@ -7,6 +7,7 @@ import httpx
 from ... import errors
 from ...client import AuthenticatedClient, Client
 from ...models.http_validation_error import HTTPValidationError
+from ...models.plan_content_response import PlanContentResponse
 from ...types import Response
 
 
@@ -16,7 +17,7 @@ def _get_kwargs(
 
     _kwargs: dict[str, Any] = {
         "method": "get",
-        "url": "/plans/{task_id}".format(
+        "url": "/api/plans/{task_id}".format(
             task_id=quote(str(task_id), safe=""),
         ),
     }
@@ -26,9 +27,10 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> Any | HTTPValidationError | None:
+) -> HTTPValidationError | PlanContentResponse | None:
     if response.status_code == 200:
-        response_200 = response.json()
+        response_200 = PlanContentResponse.from_dict(response.json())
+
         return response_200
 
     if response.status_code == 422:
@@ -44,7 +46,7 @@ def _parse_response(
 
 def _build_response(
     *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> Response[Any | HTTPValidationError]:
+) -> Response[HTTPValidationError | PlanContentResponse]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -57,10 +59,10 @@ def sync_detailed(
     task_id: str,
     *,
     client: AuthenticatedClient | Client,
-) -> Response[Any | HTTPValidationError]:
-    """Plan Viewer
+) -> Response[HTTPValidationError | PlanContentResponse]:
+    """Plan Content
 
-     Serve plan content as an HTML page.
+     Return plan markdown as data for the standalone dashboard viewer.
 
     Args:
         task_id (str):
@@ -70,7 +72,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Any | HTTPValidationError]
+        Response[HTTPValidationError | PlanContentResponse]
     """
 
     kwargs = _get_kwargs(
@@ -88,10 +90,10 @@ def sync(
     task_id: str,
     *,
     client: AuthenticatedClient | Client,
-) -> Any | HTTPValidationError | None:
-    """Plan Viewer
+) -> HTTPValidationError | PlanContentResponse | None:
+    """Plan Content
 
-     Serve plan content as an HTML page.
+     Return plan markdown as data for the standalone dashboard viewer.
 
     Args:
         task_id (str):
@@ -101,7 +103,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Any | HTTPValidationError
+        HTTPValidationError | PlanContentResponse
     """
 
     return sync_detailed(
@@ -114,10 +116,10 @@ async def asyncio_detailed(
     task_id: str,
     *,
     client: AuthenticatedClient | Client,
-) -> Response[Any | HTTPValidationError]:
-    """Plan Viewer
+) -> Response[HTTPValidationError | PlanContentResponse]:
+    """Plan Content
 
-     Serve plan content as an HTML page.
+     Return plan markdown as data for the standalone dashboard viewer.
 
     Args:
         task_id (str):
@@ -127,7 +129,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Any | HTTPValidationError]
+        Response[HTTPValidationError | PlanContentResponse]
     """
 
     kwargs = _get_kwargs(
@@ -143,10 +145,10 @@ async def asyncio(
     task_id: str,
     *,
     client: AuthenticatedClient | Client,
-) -> Any | HTTPValidationError | None:
-    """Plan Viewer
+) -> HTTPValidationError | PlanContentResponse | None:
+    """Plan Content
 
-     Serve plan content as an HTML page.
+     Return plan markdown as data for the standalone dashboard viewer.
 
     Args:
         task_id (str):
@@ -156,7 +158,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Any | HTTPValidationError
+        HTTPValidationError | PlanContentResponse
     """
 
     return (
