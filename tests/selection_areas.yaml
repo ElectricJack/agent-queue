@@ -612,6 +612,7 @@ areas:
     match:
       - tests/test_provider_availability*.py
       - tests/test_provider_commands.py
+      - tests/test_provider_failover_playbook.py
       - tests/test_provider_escalation.py
       - tests/test_provider_evidence.py
       - tests/test_provider_inflight.py
