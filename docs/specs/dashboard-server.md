@@ -20,6 +20,26 @@ tags: [spec, dashboard, daemon, api, installer, security]
 nothing else, and the one-command install keeps ending at an open dashboard.
 This spec decides how; the implementation tasks follow it.
 
+## Plan viewer follow-up (2026-10-23)
+
+The plan viewer now follows the same process boundary as the dashboard. The
+standalone dashboard serves `/plans/{task_id}` through its SPA fallback, and the
+browser renders markdown with the bundled `MarkdownPreview` component. It reads
+`GET /api/plans/{task_id}` through the existing same-origin JSON relay; no renderer
+or CDN script belongs to the daemon. The response is
+`{"task_id": "<id>", "content": "<markdown>"}`. Hierarchical task IDs remain valid;
+malformed IDs return `400`, and missing plans or an unconfigured provider return
+`404`. Markdown is returned unchanged as data, including empty content.
+
+The daemon's old `/plans/{task_id}` HTML route and unused `get_plan_url` helper
+are removed. Direct requests to that daemon path return `404`; plan bookmarks
+must use the dashboard server's origin. `/plans` is no longer a reserved prefix
+at the dashboard server. All other reserved prefixes and import boundaries remain
+as specified below. The JSON endpoint is included in OpenAPI and both clients
+are regenerated. Tests guard the daemon's response declarations and live plan
+responses against `text/html`, and cover SPA plan deep links, JSON errors,
+hierarchical IDs, markdown rendering and failures to load a plan.
+
 ## 0. Summary
 
 Since 2026-09-16 the daemon mounts a verified dashboard bundle at `/dashboard`
@@ -132,7 +152,7 @@ the generated client's base URL.
 
 A prefix matches on a segment boundary (`/api` and `/api/…`, never `/apix`).
 Nothing else is forwarded. The daemon's non-dashboard prefixes and retired
-documentation paths — `/mcp`, `/docs`, `/redoc`, `/openapi.json`, `/plans` and
+documentation paths — `/mcp`, `/docs`, `/redoc`, `/openapi.json` and
 `/dashboard` — answer `404` at the dashboard server and never fall back to
 `index.html`, so a client pointed at the wrong port gets an error, not HTML; no
 SPA route uses them. A proxied path whose percent-decoded form contains a `.` or

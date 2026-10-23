@@ -9,6 +9,15 @@ entries are dated by the day the change reached `main` rather than numbered.
 A wheel installation gets the same change when it upgrades to a release built
 after that date.
 
+## 2026-10-23 — Plan pages move to the dashboard server
+
+Plan links now use `http://127.0.0.1:8082/plans/<task_id>` (or the configured
+dashboard origin). The dashboard renders markdown with its bundled renderer and
+loads content from the JSON endpoint `/api/plans/{task_id}`. The daemon no longer
+serves HTML at `/plans/{task_id}`; direct links to that old daemon URL return
+`404`. The unused `get_plan_url` helper has been removed. Hierarchical task IDs
+and missing-plan errors retain their behavior, and both API clients are refreshed.
+
 ## 2026-09-25 — Discord dashboard links name `dashboard.server.public_url`
 
 **What changed.** Escalation posts, the hourly digest, document-review posts
@@ -104,10 +113,10 @@ on port 8081 no longer serves it.
   ([src/api/app.py](../src/api/app.py)). It also no longer serves FastAPI's
   interactive API reference at `/docs` (Swagger UI) and `/redoc` (ReDoc), both
   of which loaded scripts from a CDN. The daemon answers `/api`, `/health`,
-  `/ready`, the `/ws` sockets and `/mcp`; the only HTML it returns is the plan
-  viewer at `/plans/<task_id>`, and `/openapi.json` still serves the schema as
-  JSON for generated clients. A request
-  for `/dashboard` or anything under it is redirected (`307`) to the same route
+  `/ready`, the `/ws` sockets and `/mcp`; `/openapi.json` serves the schema as
+  JSON for generated clients. Since 2026-10-23 the plan viewer also lives on the
+  dashboard server, and the daemon serves its content as JSON at
+  `/api/plans/{task_id}`. A request for `/dashboard` or anything under it is redirected (`307`) to the same route
   on the dashboard server — `/dashboard/tasks/abc` to
   `http://127.0.0.1:8082/tasks/abc` — with a pointer as the body instead of a
   page:
@@ -269,11 +278,6 @@ bind is not loopback. The full statement is in the
   `aq restart` instead: it stops the dashboard server first, then starts both.
   For the same reason, do not run `aq stop --no-dashboard-server` while the
   daemon is down — it stops the dashboard server.
-* **The daemon still serves one HTML page:** the plan viewer at
-  `/plans/<task_id>` ([src/api/health.py](../src/api/health.py)), which loads
-  its markdown renderer from a CDN. It is not the dashboard, and the dashboard
-  server does not relay it. FastAPI's Swagger UI at `/docs` and ReDoc at
-  `/redoc` are no longer served.
 * **With the daemon down, the dashboard does not say so.** The page loads, but
   shows *Preferences unavailable* and *Loading…* until the daemon answers
   again; `aq dashboard status` reports `the daemon is not answering it`.

@@ -1166,6 +1166,7 @@ from .phase_list_response_422 import PhaseListResponse422
 from .phase_ref import PhaseRef
 from .phase_summary import PhaseSummary
 from .placeholder import Placeholder
+from .plan_content_response import PlanContentResponse
 from .playbook_activate_request import PlaybookActivateRequest
 from .playbook_activate_response_422 import PlaybookActivateResponse422
 from .playbook_activation_health_request import PlaybookActivationHealthRequest
@@ -3372,6 +3373,7 @@ __all__ = (
     "PhaseRef",
     "PhaseSummary",
     "Placeholder",
+    "PlanContentResponse",
     "PlaybookActivateRequest",
     "PlaybookActivateResponse422",
     "PlaybookActivationHealthRequest",
