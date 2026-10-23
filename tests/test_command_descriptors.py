@@ -126,8 +126,8 @@ def _updater_changes():
     return json.loads(UPDATER_CHANGES.read_text())
 
 
-def _before_updater_catalogue():
-    catalogue = json.loads(render_command_catalogue())
+def _before_updater_catalogue(catalogue=None):
+    catalogue = json.loads(render_command_catalogue()) if catalogue is None else catalogue
     for name, approved in _updater_changes()["transport_definitions"].items():
         [definition] = [item for item in catalogue["explicit"] if item["name"] == name]
         assert definition["description"] == approved["description"]
@@ -165,7 +165,7 @@ def _restart_hold_changes():
 
 
 def _before_restart_hold_catalogue():
-    catalogue = _before_updater_catalogue()
+    catalogue = _before_parallel_catalogue()
     approved = _restart_hold_changes()["transport_definitions"]["restart_task"]
     [definition] = [item for item in catalogue["explicit"] if item["name"] == "restart_task"]
     assert definition == approved["definition"]
@@ -486,8 +486,15 @@ def test_legacy_execution_documents_and_fingerprints():
         if name in changes:
             assert expected["previous_fingerprint"] == old["fingerprint"]
             assert expected["fingerprint"] != old["fingerprint"]
-        for recording in (_hibernation_changes(), _dispatch_changes(), _merge_changes(),
-                          _leaf_changes(), _completion_changes(), _structure_changes()):
+        for recording in (
+            _hibernation_changes(),
+            _dispatch_changes(),
+            _merge_changes(),
+            _leaf_changes(),
+            _completion_changes(),
+            _restart_hold_changes(),
+            _updater_changes(),
+        ):
             later = recording["contracts"].get(name)
             if later:
                 assert later["previous_fingerprint"] == expected["fingerprint"]
@@ -1320,3 +1327,51 @@ def test_original_pr_1842_legacy_playbook_fixtures_are_unchanged():
             assert pipeline[path]["sha256"] != digest
             digest = pipeline[path]["sha256"]
         assert hashlib.sha256((ROOT / path).read_bytes()).hexdigest() == digest, path
+
+
+POOL_DELETE_CHANGES = ROOT / "tests/fixtures/contracts/pool-delete-contract-changes.json"
+
+
+def _pool_delete_changes():
+    return json.loads(POOL_DELETE_CHANGES.read_text())
+
+
+def _before_pool_delete_catalogue(catalogue=None):
+    evidence = _pool_delete_changes()
+    catalogue = json.loads(render_command_catalogue()) if catalogue is None else catalogue
+    definitions = catalogue["explicit"]
+    index = next(i for i, row in enumerate(definitions) if row["name"] == evidence["command"])
+    assert definitions.pop(index) == evidence["transport_definition"]
+    assert catalogue["tool_categories"].pop(evidence["command"]) == evidence["category"]
+    return catalogue
+
+
+def test_pool_delete_catalogue_only_adds_reviewed_command():
+    evidence = _pool_delete_changes()
+    catalogue = _before_wait_requeue_catalogue()
+    previous = json.dumps(catalogue, indent=2) + "\n"
+    assert hashlib.sha256(previous.encode()).hexdigest() == (
+        evidence["previous_cli_catalogue_sha256"]
+    )
+
+
+def test_pool_delete_original_catalogue_evidence():
+    evidence = _pool_delete_changes()
+    catalogue = _before_wait_requeue_catalogue()
+    template = json.loads(render_command_catalogue())
+    explicit = {row["name"]: row for row in catalogue["explicit"]}
+    explicit[evidence["command"]] = evidence["transport_definition"]
+    catalogue["explicit"] = [explicit[row["name"]] for row in template["explicit"]
+                             if row["name"] in explicit]
+    categories = {**catalogue["tool_categories"], evidence["command"]: evidence["category"]}
+    catalogue["tool_categories"] = {name: categories[name] for name in template["tool_categories"]
+                                    if name in categories}
+    original = json.dumps(catalogue, indent=2) + "\n"
+    assert hashlib.sha256(original.encode()).hexdigest() == evidence["cli_catalogue_sha256"]
+
+
+def _before_parallel_catalogue():
+    catalogue = json.loads(render_command_catalogue())
+    catalogue = _before_updater_catalogue(catalogue)
+    catalogue = _before_pool_delete_catalogue(catalogue)
+    return catalogue

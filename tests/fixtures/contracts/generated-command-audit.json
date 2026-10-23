@@ -11100,7 +11100,7 @@
   "list_agents": {
     "mode": "json_object",
     "producer": "src/commands/flock_commands.py:FlockCommandsMixin._cmd_list_agents",
-    "source_digest": "sha256:afe46ac41a7313c81143e9339d7b6dafbd66b6e34eb389d27600f3d5c8e4afba",
+    "source_digest": "sha256:e2276d1950a62ac2f95d1bd37aa8089843e815fc6a908007ba718a057e48d10b",
     "input_schema_source": "explicit_tool",
     "schema_quality": "declared",
     "argument_reads_diagnostic_only": [
@@ -15075,6 +15075,36 @@
       "_policy_authority": "sha256:368f9c5c03ed0a8ed96e59848bcd904f54904dc68738a77981a215c4b5427ea8"
     },
     "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys."
+  },
+  "pool_delete": {
+    "mode": "json_object",
+    "producer": "src/commands/ops_commands.py:OpsCommandsMixin._cmd_pool_delete",
+    "source_digest": "sha256:2e3abe3ec9858bd92fc02e1f90d0792b69f437ec826669a820ae5cbab1e2f077",
+    "input_schema_source": "explicit_tool",
+    "schema_quality": "declared",
+    "argument_reads_diagnostic_only": [],
+    "effect": "destructive",
+    "retry_safe": false,
+    "principal_requirement": "original_principal",
+    "resource_gates": [
+      "system_scope"
+    ],
+    "denial_reason": null,
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "return_branches": [
+      {
+        "return": "await delete_pool(self, args)",
+        "protocol": "delegated_producer"
+      }
+    ],
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_pool_admin.py::test_delete_pool_removes_configuration_and_respects_vault_depth",
+      "tests/test_pool_admin.py::test_delete_pool_warns_on_unconfirmed_stop_and_preserves_held_resources",
+      "tests/test_pool_admin.py::test_delete_pool_validates_global_id_before_side_effects"
+    ],
+    "helper_producers": {},
+    "review_notes": "The handler delegates to delete_pool, which returns explicit success=false for invalid IDs, depth and non-pool targets; successful retirement/deletion returns success=true with warnings for unconfirmed stops or file cleanup. Database failures propagate as command errors. Missing retired rows permit idempotent cleanup retries. No task completion is inferred from deletion."
   },
   "pool_rename": {
     "mode": "json_object",

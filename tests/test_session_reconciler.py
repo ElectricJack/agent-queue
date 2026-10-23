@@ -26,6 +26,7 @@ from src.integration.models import BranchKey, Fence
 from src.integration.ownership import BranchOwnership, StaleFence
 from src.models import (
     Agent,
+    AgentProfile,
     AgentState,
     Project,
     RepoConfig,
@@ -272,6 +273,12 @@ async def _session(
         state=overrides.pop("state", "running"),
         **overrides,
     )
+    # Model a launched pool, not a pool whose profile has been deleted.
+    # The reconciler deliberately stops the latter, even during a wait.
+    if row.lifecycle == "pool" and await db.get_profile(row.profile_id) is None:
+        await db.create_profile(AgentProfile(
+            id=row.profile_id, name=row.profile_id, harness=row.harness, lifecycle="pool",
+        ))
     await db.create_session(row)
     return row
 
