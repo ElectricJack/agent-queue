@@ -19543,7 +19543,7 @@
       "msg-76ff7843e72d451b9017a0b4db30c970"
     ],
     "decision_record": "record:2720bdbe-7521-427e-8e72-1f40a3ff9818",
-    "measured_source_revision": "ae110ecb68ad88138e43c96457e1feb9fc3ff5ef",
+    "measured_source_revision": "a36c389c39a33ff60bffa98cc019591298bdcfa9",
     "original_owned_total_cap": 155499,
     "measured_owned_total": 161217,
     "delta": 5718,
@@ -20047,7 +20047,7 @@
       "authorized_shared_delta": 19,
       "authorized_engine_delta": 0,
       "authorized_table_delta": 0,
-      "measured_source_revision": "ae110ecb68ad88138e43c96457e1feb9fc3ff5ef",
+      "measured_source_revision": "a36c389c39a33ff60bffa98cc019591298bdcfa9",
       "measured_owned_total": 161217,
       "measured_engine_lines": 85010,
       "measured_table_count": 45,

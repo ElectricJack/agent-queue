@@ -828,6 +828,6 @@ def test_restart_hold_repair_merge_preserves_exact_grant(report, manifest):
             == exception["measured_engine_lines"] == report["groups"]["engine"] == 85_010)
     assert merged["previous_table_count"] == merged["measured_table_count"] == 45
     assert (merged["measured_source_revision"] == exception["measured_source_revision"]
-            == "ae110ecb68ad88138e43c96457e1feb9fc3ff5ef")
+            == "a36c389c39a33ff60bffa98cc019591298bdcfa9")
     recorded = json.loads((ROOT / "tests/integration_ownership_report.json").read_text())
     assert recorded["restart_hold_repair_merge_measurement"] == merged
