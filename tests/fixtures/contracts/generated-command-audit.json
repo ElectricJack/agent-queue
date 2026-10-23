@@ -12380,7 +12380,7 @@
   "object_checkpoint_read": {
     "mode": "typed",
     "producer": "src/commands/object_loop_commands.py:ObjectLoopCommandsMixin._cmd_object_checkpoint_read",
-    "source_digest": "sha256:59bce4ce214e4061fc2703d4ecf093b29d73bbf65a444fb29d2cc3aac430f0c5",
+    "source_digest": "sha256:fe3d1ec9528edf65eb9cc39fb0c5ac0ccc40774a504a880ecc4ee12aeb25f004",
     "input_schema_source": "typed_contract",
     "schema_quality": "typed",
     "argument_reads_diagnostic_only": [],
@@ -12388,7 +12388,7 @@
     "retry_safe": true,
     "principal_requirement": "original_principal",
     "resource_gates": [
-      "held_session"
+      "held_session_or_project_playbook_invocation"
     ],
     "denial_reason": null,
     "result_policy": "retained typed adapter",
@@ -12413,7 +12413,11 @@
     "tests": [
       "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
       "tests/test_generated_command_contracts.py::test_generic_result_protocol",
-      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_object_loop_playbook.py::test_project_playbook_reads_only_its_project_checkpoint",
+      "tests/test_object_loop_playbook.py::test_playbook_checkpoint_read_refuses_unbound_or_borrowed_authority",
+      "tests/test_object_loop_playbook.py::test_checkpoint_exception_does_not_widen_other_held_commands",
+      "tests/test_object_loop.py::test_object_evidence_refuses_stale_or_unrelated_held_work"
     ]
   },
   "object_loop_inputs": {
