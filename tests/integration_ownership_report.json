@@ -1043,7 +1043,7 @@
     "phase": "transition",
     "fixed_replacement_allowance": 15000,
     "engine_cap": 97627,
-    "owned_total_cap": 160837,
+    "owned_total_cap": 160879,
     "table_cap": 45,
     "expires_at": "s4_modules",
     "automatic_baseline_increase": false,
@@ -1058,10 +1058,10 @@
         "msg-21784b3e56aa4f54bf1042b7c9af4aaf"
       ],
       "decision_record": "record:2720bdbe-7521-427e-8e72-1f40a3ff9818",
-      "measured_source_revision": "15bc2ea12433ab88b9e915d52900de0123452fd4",
+      "measured_source_revision": "b65c4f58866c1569e7ed73cb3a9d306f3060e1f0",
       "original_owned_total_cap": 155499,
-      "measured_owned_total": 160837,
-      "delta": 5338,
+      "measured_owned_total": 160879,
+      "delta": 5380,
       "predecessors": [
         {
           "batch_id": "train-77f0d8e451f6aed08d608e443031047a",
@@ -1081,7 +1081,7 @@
           "measured_owned_total": 158958
         }
       ],
-      "batch_measured_delta": 1879,
+      "batch_measured_delta": 1921,
       "restore_task": "azure-ridge-72",
       "expires_at": "s4_modules",
       "category_approval_message_id": "msg-90f9f1b1e0cd4e8e8d28071cffc927a6",
@@ -14149,8 +14149,8 @@
     }
   ],
   "scheduler_stack_inputs_measurement": {
-    "source_revision": "15bc2ea12433ab88b9e915d52900de0123452fd4",
-    "measured_owned_total": 160837,
+    "source_revision": "b65c4f58866c1569e7ed73cb3a9d306f3060e1f0",
+    "measured_owned_total": 160879,
     "measured_engine_lines": 85316,
     "measured_table_count": 45,
     "authority": "msg-ab86b9766c2f42b9ba4920aba585b577",

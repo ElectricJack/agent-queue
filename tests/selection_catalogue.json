@@ -5774,7 +5774,7 @@
         "development-delivery"
       ],
       "default_arm": true,
-      "digest": "sha256:06c7336f0935b37dc2215fb582639fa266ac83fb2b456be2b8b77c01a15577f7",
+      "digest": "sha256:b6ff414c00111bda9f2edd10c4127aa2c4cad159811f21165d871e91d6a35a4d",
       "imports": [
         "src.commands",
         "src.commands.principal",
@@ -5782,6 +5782,7 @@
         "src.database.queries.task_queries",
         "src.database.tables",
         "src.doctor.models",
+        "src.git",
         "src.git.manager",
         "src.integration.admission",
         "src.integration.batches",
