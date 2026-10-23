@@ -1043,7 +1043,7 @@
     "phase": "transition",
     "fixed_replacement_allowance": 15000,
     "engine_cap": 97627,
-    "owned_total_cap": 160949,
+    "owned_total_cap": 160950,
     "table_cap": 45,
     "expires_at": "s4_modules",
     "automatic_baseline_increase": false,
@@ -1057,13 +1057,14 @@
         "msg-ab86b9766c2f42b9ba4920aba585b577",
         "msg-21784b3e56aa4f54bf1042b7c9af4aaf",
         "msg-1984d09ec70e479c9d0cc14c57e828c3",
-        "msg-00b0e08117cc479c9a4a0b36fc5a30d0"
+        "msg-00b0e08117cc479c9a4a0b36fc5a30d0",
+        "msg-3bed5d5db4ed4c7fa1ef9150b1c3dd8c"
       ],
       "decision_record": "record:2720bdbe-7521-427e-8e72-1f40a3ff9818",
       "measured_source_revision": "b65c4f58866c1569e7ed73cb3a9d306f3060e1f0",
       "original_owned_total_cap": 155499,
-      "measured_owned_total": 160949,
-      "delta": 5450,
+      "measured_owned_total": 160950,
+      "delta": 5451,
       "predecessors": [
         {
           "batch_id": "train-77f0d8e451f6aed08d608e443031047a",
@@ -1083,7 +1084,7 @@
           "measured_owned_total": 158958
         }
       ],
-      "batch_measured_delta": 1991,
+      "batch_measured_delta": 1992,
       "restore_task": "azure-ridge-72",
       "expires_at": "s4_modules",
       "category_approval_message_id": "msg-90f9f1b1e0cd4e8e8d28071cffc927a6",
@@ -1123,6 +1124,17 @@
           "project_grant_message_id": "msg-00b0e08117cc479c9a4a0b36fc5a30d0",
           "operator_decision": "6679052c",
           "pull_request": "https://github.com/ElectricJack/agent-queue/pull/1820"
+        },
+        {
+          "task_id": "nimble-torrent-12",
+          "decision_message_id": "msg-3bed5d5db4ed4c7fa1ef9150b1c3dd8c",
+          "referenced_decision": "size-cap-delegation-2026-10-23",
+          "previous_owned_total": 160879,
+          "previous_shared_lines": 62006,
+          "authorized_owned_delta": 1,
+          "authorized_shared_delta": 1,
+          "authorized_engine_delta": 0,
+          "reason": "Accept repository mappings in the shared GitHub binding resolver for verified CI waits; supervisor approved the exact one-line shared footprint."
         }
       ],
       "supplemental_grants": [
@@ -1181,6 +1193,10 @@
           "agile-beacon-80": {
             "owned": 65,
             "engine": 65
+          },
+          "nimble-torrent-12": {
+            "owned": 1,
+            "engine": 0
           }
         },
         "reason": "Compose the existing exact grants on their common measured dev tree; preserve each historical measurement below."
@@ -14274,5 +14290,16 @@
       "authorized_engine_delta": 65,
       "reason": "Plain merge of PR1877 preparation diagnostics from dev; combined totals remain unchanged and this task retains its approved 65-line delta. Project grant requires re-recording against the combined total when dev advances."
     }
+  },
+  "ci_wait_repository_mapping_review": {
+    "task_id": "nimble-torrent-12",
+    "decision_message_id": "msg-3bed5d5db4ed4c7fa1ef9150b1c3dd8c",
+    "previous_owned_total": 160879,
+    "measured_owned_total": 160880,
+    "previous_shared_lines": 62006,
+    "measured_shared_lines": 62007,
+    "measured_engine_lines": 85316,
+    "measured_table_count": 45,
+    "authorized_owned_delta": 1
   }
 }

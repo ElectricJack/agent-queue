@@ -13064,7 +13064,7 @@
         "orchestrator"
       ],
       "default_arm": true,
-      "digest": "sha256:76ed5cd80c491220759122d65de452fdee5dbc61c082f93400046a861c47529c",
+      "digest": "sha256:86ba06f660411688076c131aa4c08f89a7d1e40108a422d9ccead98ba8ea1b8a",
       "imports": [
         "src.commands.contracts",
         "src.commands.contracts.builtin",
@@ -13075,6 +13075,7 @@
         "src.git.github_contracts",
         "src.git.manager",
         "src.integration.branch_materialization",
+        "src.integration.dispatch_waits",
         "src.integration.hierarchy",
         "src.integration.models",
         "src.integration.outbox",
@@ -13092,6 +13093,8 @@
         "src.runtimes.base",
         "src.scheduler",
         "src.sessions.harness_parser",
+        "src.waits.conditions",
+        "src.waits.watchers.ci",
         "src.workspace_spec_watcher"
       ],
       "markers": [
