@@ -23572,7 +23572,7 @@
   "update_and_restart": {
     "mode": "json_object",
     "producer": "src/commands/system_commands.py:SystemCommandsMixin._cmd_update_and_restart",
-    "source_digest": "sha256:5fa666c48c69ddb165f96d9eaadb28fc7dc5822c03df506b5712317da2fc8fc5",
+    "source_digest": "sha256:e92c640b839645c4fe1befc2b9ced546628a27c652020578dba4b995f30dd545",
     "input_schema_source": "explicit_tool",
     "schema_quality": "declared",
     "argument_reads_diagnostic_only": [
@@ -23594,8 +23594,8 @@
         "protocol": "explicit_boolean: False"
       },
       {
-        "return": "await self._update_and_restart_legacy(args)",
-        "protocol": "delegated_producer"
+        "return": "{'success': False, 'error': 'deployment_not_configured', 'remediation': 'Configure deploy.tag_glob and deploy.target for releases, or deploy.track_branch for branch tracking. Alternatively, run `aq update` as the operator from your own terminal for a guarded branch update.'}",
+        "protocol": "explicit_boolean: False"
       },
       {
         "return": "{'success': False, 'error': 'migration_recovery_required', 'remediation': 'Follow deployment history remediation, then run aq update --yes --resume-after-recovery as operator after restoring the installation.'}",
@@ -23632,10 +23632,7 @@
       "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
       "tests/test_system_commands.py"
     ],
-    "helper_producers": {
-      "_update_and_restart_legacy": "sha256:56dbd00e826e21d9152b16c760bafb7b6c41814ec2dbf5d4107fdbf1c1e99134"
-    },
-    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys."
+    "review_notes": "All return branches carry explicit boolean success. An unconfigured daemon update refuses with operator/configuration remediation before planning, subprocesses, scheduling changes or restart. Configured updates retain migration recovery and failed-target holds and launch the detached guarded updater. Removed the implicit legacy producer; standalone operator aq update remains guarded."
   },
   "update_config": {
     "mode": "json_object",
