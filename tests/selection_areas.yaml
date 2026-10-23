@@ -376,6 +376,7 @@ areas:
     description: "Shipped and reviewed playbooks: reviewed V2 artifact fixtures and their digests, prose-only playbook sources, the default pipeline intake, agent-type playbooks, the V1 removal ratchet and cron-to-playbook migration."
     match:
       - tests/test_default_playbook_v2_artifacts.py
+      - tests/test_project_defaults_playbook.py
       - tests/test_playbook_v2_fixtures.py
       - tests/test_shipped_playbook_sources.py
       - tests/test_default_agent_type_playbooks.py
