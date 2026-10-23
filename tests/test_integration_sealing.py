@@ -198,7 +198,7 @@ def _review_row(task_id: str, head: str, *, evidence_id: str, **overrides):
     return values
 
 
-async def test_keyset_pages_full_frontier_and_bulk_review_selects_latest_exact(db):
+async def test_keyset_pages_full_frontier(db):
     leaf_ids = [f"root-{index:03d}" for index in range(205)]
     heads = {task_id: f"{index + 1:040x}" for index, task_id in enumerate(leaf_ids)}
     async with db.immediate() as conn:
@@ -235,7 +235,6 @@ async def test_keyset_pages_full_frontier_and_bulk_review_selects_latest_exact(d
         await conn.execute(insert(integration_review_evidence), reviews)
 
         scanned = []
-        reviews_by_key = {}
         after = None
         while True:
             page = await db.eligible_root_page_on(
@@ -248,7 +247,6 @@ async def test_keyset_pages_full_frontier_and_bulk_review_selects_latest_exact(d
             if not page:
                 break
             scanned.extend(page)
-            reviews_by_key.update(await db.latest_exact_reviews_on(conn, page))
             after = (page[-1]["task_id"], page[-1]["source_head"])
 
     assert [(row["task_id"], row["source_head"]) for row in scanned] == [
@@ -256,13 +254,6 @@ async def test_keyset_pages_full_frontier_and_bulk_review_selects_latest_exact(d
     ]
     assert len({row["task_id"] for row in scanned}) == 205
     assert {row["source_kind"] for row in scanned} == {"leaf"}
-    rejected_key = ("root-050", "repo", BASE_SHA, heads["root-050"], 1)
-    assert reviews_by_key[rejected_key]["id"] == "review-root-050-latest-rejection"
-    assert reviews_by_key[rejected_key]["verdict"] == "rejected"
-    assert reviews_by_key[rejected_key]["evidence"] == {
-        "decision": "rejected",
-        "reason": "latest wins",
-    }
 
 
 async def test_root_projection_requires_leaf_or_exact_current_parent_identity(db):
@@ -374,7 +365,6 @@ async def test_root_projection_requires_leaf_or_exact_current_parent_identity(db
             after=None,
             limit=10,
         )
-        reviews = await db.latest_exact_reviews_on(conn, page)
 
     assert [(row["task_id"], row["source_kind"]) for row in page] == [
         ("leaf", "leaf"),
@@ -385,9 +375,6 @@ async def test_root_projection_requires_leaf_or_exact_current_parent_identity(db
     assert parent["source_head"] == parent_head
     assert parent["generation"] == 4
     assert parent["current_verification_id"] == "verification-parent"
-    parent_key = ("parent", "repo", BASE_SHA, parent_head, 4)
-    assert reviews[parent_key]["id"] == "review-parent"
-    assert reviews[parent_key]["evidence"]["verification_id"] == "verification-parent"
 
 
 @pytest.mark.parametrize("receipt_branch", ["main", "refs/heads/main", "refs/heads/other"])
@@ -517,13 +504,9 @@ async def test_root_projection_excludes_each_common_near_miss(db, receipt_branch
             after=None,
             limit=100,
         )
-        delivered = await db.delivered_root_task_ids_on(
-            conn, project_id="p", repository_id="repo"
-        )
 
     expected = ["already-delivered", "good"] if receipt_branch.endswith("/other") else ["good"]
     assert [row["task_id"] for row in page] == expected
-    assert delivered == (set() if receipt_branch.endswith("/other") else {"already-delivered"})
 
 
 async def test_public_review_append_requires_existing_source_task_project(db):

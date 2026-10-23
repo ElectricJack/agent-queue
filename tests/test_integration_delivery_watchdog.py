@@ -644,3 +644,12 @@ async def test_doctor_names_stuck_generation_reason_and_its_landing_task(watch, 
     (takeover,) = _takeovers(await watch.rows(tasks))
     assert finding["takeover_task_id"] == takeover["id"]
     assert await _delivery_stuck_findings(ctx, {"other"}) == []
+
+
+from src.integration.delivery_watchdog import (
+    CURSOR_KEY,
+    THRESHOLD_KEY,
+    derive_threshold,
+    measured_threshold_on,
+    scan_stuck_deliveries,
+)

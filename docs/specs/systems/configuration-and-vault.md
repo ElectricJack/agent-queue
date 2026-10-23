@@ -493,8 +493,8 @@ This system still owns three older template engines:
   It warns at twice a tier's budget and does lenient `{{var}}` substitution. Only
   `extract_section` is used in production, by
   [src/prime/sections.py](../../../src/prime/sections.py). The orchestrator's
-  `_build_task_context_with_prompt_builder` has had no caller since commit 533bda271
-  (2026-09-01).
+  `_build_task_context_with_prompt_builder` lost its last caller in commit 533bda271
+  (2026-09-01) and was removed with the retired integration adapters (azure-ridge-72).
 - **The prompt manager** ([src/prompt_manager.py](../../../src/prompt_manager.py))
   serves per-workspace templates from `<workspace>/prompts/`. It supports optional
   strict variables. Only the `list_prompts`, `read_prompt` and `render_prompt`

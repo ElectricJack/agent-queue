@@ -1302,14 +1302,10 @@ def inventory(root: Path, manifest: dict) -> dict:
 
 
 def transition_owned_cap(manifest: dict) -> int:
-    """Accept only the recorded batch decision; never derive a cap from counts."""
-    original = BASELINE_OWNED_LINES + REPLACEMENT_ALLOWANCE
-    exception = manifest.get("transition_exception")
-    if exception is None:
-        return original
-    if exception != TRANSITION_BATCH_EXCEPTION:
+    """The original cap; the batch exception is retired and never derived from counts."""
+    if manifest.get("transition_exception") is not None:
         raise ValueError("unapproved integration transition exception")
-    return original + TRANSITION_BATCH_EXCEPTION["delta"]
+    return BASELINE_OWNED_LINES + REPLACEMENT_ALLOWANCE
 
 
 def budget_errors(report: dict, manifest: dict) -> list[str]:

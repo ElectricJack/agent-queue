@@ -906,12 +906,68 @@
       ],
       "verification_task": "stark-willow-95.18"
     },
+    "batch_exception_retirement": {
+      "base_revision": "feeb89e65",
+      "decision_record": "record:2720bdbe-7521-427e-8e72-1f40a3ff9818",
+      "measured_engine_lines_after": 81861,
+      "measured_owned_total_after": 155342,
+      "measured_owned_total_before": 160874,
+      "measured_table_count_after": 45,
+      "reason": "Retired duplicated, replaced and uncalled integration code with the tests that only exercised it; removed the manifest opt-in. Fixed baseline, replacement allowance, final caps, history and retries unchanged.",
+      "reclaimed_owned_lines": 5532,
+      "restore_task": "azure-ridge-72",
+      "restored_owned_total_cap": 155499
+    },
     "engine_cap": 97627,
     "expires_at": "s4_modules",
     "fixed_replacement_allowance": 15000,
     "original_owned_total_cap": 155499,
     "owned_total_cap": 161647,
     "phase": "transition",
+    "retired_batch_exception": {
+      "batch_id": "train-745592300af5cef0338dec80ebabb465",
+      "batch_measured_delta": 1916,
+      "category_approval_message_id": "msg-90f9f1b1e0cd4e8e8d28071cffc927a6",
+      "category_restore_task": "stark-willow-95.17",
+      "decision_message_id": "msg-7ed85e78d1af4f3e85b485a57967e794",
+      "decision_message_ids": [
+        "msg-7ed85e78d1af4f3e85b485a57967e794",
+        "msg-381054d695e64055979a687c4d811e7e"
+      ],
+      "decision_record": "record:2720bdbe-7521-427e-8e72-1f40a3ff9818",
+      "delivery_method": "operator direct integration; user request 2026-10-22",
+      "delta": 5375,
+      "expires_at": "s4_modules",
+      "measured_engine_lines": 85331,
+      "measured_owned_total": 160874,
+      "measured_source_revision": "83ef85ec7226f2c0c7c8ef64504919086bc394ba",
+      "measured_table_count": 45,
+      "original_owned_total_cap": 155499,
+      "predecessors": [
+        {
+          "batch_id": "train-77f0d8e451f6aed08d608e443031047a",
+          "decision_message_id": "msg-edb5f857de344716a38857406fa69958",
+          "decision_record": "record:2720bdbe-7521-427e-8e72-1f40a3ff9818",
+          "delta": 1293,
+          "expires_at": "s4_modules",
+          "measured_owned_total": 156792,
+          "measured_source_revision": "d00e25221856145f24777f8b016a008b4e954bca",
+          "original_owned_total_cap": 155499,
+          "restore_task": "azure-ridge-72"
+        },
+        {
+          "authorized_delta": 2166,
+          "batch_id": "train-48d0a1c1f1f8292b2977546011609db6",
+          "measured_owned_total": 158958,
+          "measured_source_revision": "cbfd455b0e9f053854a2c1becfa1efaeef231582"
+        }
+      ],
+      "restore_task": "azure-ridge-72",
+      "storage_categories": [
+        "integration_close_attempts"
+      ],
+      "verification_task": "stark-willow-95.18"
+    },
     "table_cap": 45
   }
 }

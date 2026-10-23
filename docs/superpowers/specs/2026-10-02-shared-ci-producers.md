@@ -1,5 +1,9 @@
 # Shared CI producers and primitive adapters
 
+> **Adapters retired (2026-10-22, azure-ridge-72).** `CIAdapters` and
+> `bind_ci_adapters` were never wired into production and were removed. The shared
+> producers (`src/integration/ci_producers.py`) remain the live CI path.
+
 Implements `rev-agile-ridge` revision 2 §3.4 primitives 8–10 and §5.6 for
 task `agile-harbor-62.2`, against the `vivid-willow.1` subject contracts.
 
