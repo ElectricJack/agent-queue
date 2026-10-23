@@ -380,6 +380,7 @@ areas:
       - tests/test_shipped_playbook_sources.py
       - tests/test_default_agent_type_playbooks.py
       - tests/test_default_pipeline_intake.py
+      - tests/test_default_pipeline_equivalence.py
       - tests/test_default_assignment_routing_playbook.py
       - tests/test_plugin_cron_to_playbook_migration.py
       - tests/test_blocked_task_escalation.py
