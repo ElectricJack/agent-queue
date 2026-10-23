@@ -13,7 +13,7 @@ from __future__ import annotations
 import hashlib
 import json
 import time
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert
@@ -236,8 +236,7 @@ class BatchFixerService:
                     tasks.c.id == ordinary_repair_id(batch_id, batch["repair_attempt_count"]),
                 ))
                 legacy = status is not None and status not in {"COMPLETED", "FAILED", "BLOCKED"}
-            if legacy:
-                # Finish an already held ordinary repair; never allocate its successor.
+            if legacy:  # Finish an already held ordinary repair; never allocate its successor.
                 pass
             elif not state:
                 if existing_only:
@@ -247,7 +246,7 @@ class BatchFixerService:
                 members = (await conn.execute(select(integration_batch_members).where(
                     integration_batch_members.c.batch_id == batch_id,
                 ).order_by(integration_batch_members.c.ordinal))).mappings().all()
-                identity = uuid4().hex
+                identity = str(uuid4())  # Claude's --session-id needs the dashed form
                 now = self.clock()
                 state = {
                     "version": 1, "batch_id": batch_id, "project_id": batch["project_id"],
@@ -274,10 +273,11 @@ class BatchFixerService:
                 ).values(repair_attempt_count=integration_batches.c.repair_attempt_count + 1))
                 launch = state
             else:
-                if state["status"] == "waiting_capacity":
-                    state.update(status="launching", deadline=self.clock() + state["budget_seconds"],
+                if state["status"] == "waiting_capacity":  # Nothing binds the id: dash legacy hex.
+                    state.update(status="launching", session_id=str(UUID(state["session_id"])),
+                                 deadline=self.clock() + state["budget_seconds"], brief=brief,
                                  starting_sha=head_sha, head_sha=head_sha, red_heads=[head_sha],
-                                 red_keys=[evidence_key], failure_evidence=evidence, brief=brief)
+                                 red_keys=[evidence_key], failure_evidence=evidence)
                     launch = state
                 if state["target_ref"] != target_ref:
                     return await self._block(conn, batch, state, "repair branch changed")
