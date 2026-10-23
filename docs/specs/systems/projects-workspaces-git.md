@@ -2,13 +2,13 @@
 tags: [spec, system, projects-workspaces-git]
 system: 6
 status: current
-as_of: 2026-10-20 (dev 22cffd1b7)
+as_of: 2026-10-22 (dev 52d2efe4c)
 ---
 
 # System 6: projects-workspaces-git
 
 This is a **current** system spec, not a design record. It describes what the
-code at `dev` 22cffd1b7 does. Where it and the code disagree, the code is
+code at `dev` 52d2efe4c does. Where it and the code disagree, the code is
 right and this file should be fixed. The older specs it links to, such as
 [`../git.md`](../git.md) and [`../design/workspaces-v2.md`](../design/workspaces-v2.md),
 are kept for the reasoning behind the design, not as a description of what
@@ -79,29 +79,29 @@ follows the code.
 
 ### 2.1 Where the code lives
 
-| Area | Paths | Size |
-|---|---|---|
-| Projects and onboarding | `src/projects/` (`onboarding.py`, `github.py`, `paths.py`, `roots.py`, `events.py`, `storage.py`), `src/commands/project_commands.py`, `src/cli/projects.py` | ~2.7k lines in `src/projects/` |
-| Git and GitHub | `src/git/` (`manager.py` 6.4k, `github.py`, `github_cli.py`, `identity.py`, `github_app.py`, `ci_gate.py`, `askpass_broker.py`, `github_auth.py`, `locks.py`, `process.py`, `github_contracts.py`, `askpass_fd.py`) | ~11.5k lines |
-| Workspaces in the orchestrator | `src/orchestrator/workspace.py`, `worktree_manager.py`, `workspace_attachments.py`, `workspace_claim_recovery.py`, `base_workspace.py`, `retained_workspace.py`, `slot_restore.py`, `workspace_binding_audit.py`, `git_ops.py` (see §3.1) | ~10k lines |
-| Workspace kinds | `src/profiles/workspace_kind_parser.py`, `workspace_kind_registry.py` | ~440 lines |
-| Queries | `src/database/queries/workspace_queries.py`, `retained_workspace_queries.py`, project queries | |
-| Small helpers | `src/workspace_names.py` (`ws-{adj}-{noun}` ids), `src/workspace_spec_watcher.py` (§2.9) | |
+| Area | Paths |
+|---|---|
+| Projects and onboarding | `src/projects/` (including `onboarding.py`, `roots.py`, `relocation.py`, `storage_binding.py`), `src/commands/project_commands.py`, `project_relocation_commands.py`, `src/cli/projects.py` |
+| Git and GitHub | `src/git/` (`manager.py`, `github.py`, `github_cli.py`, `identity.py`, `github_app.py`, `ci_gate.py`, `askpass_broker.py`, `github_auth.py`, `locks.py`, `process.py`, `github_contracts.py`, `askpass_fd.py`) |
+| Workspaces in the orchestrator | `src/orchestrator/workspace.py`, `worktree_manager.py`, `workspace_attachments.py`, `workspace_claim_recovery.py`, `base_workspace.py`, `retained_workspace.py`, `slot_restore.py`, `workspace_binding_audit.py`, `git_ops.py` (see §3.1) |
+| Workspace kinds | `src/profiles/workspace_kind_parser.py`, `workspace_kind_registry.py` |
+| Queries | `src/database/queries/workspace_queries.py`, `retained_workspace_queries.py`, project queries |
+| Diagnostics and reuse | `src/workspace_listing.py`, `workspace_registration.py`, `workspace_disable.py`, `warm_workspaces.py`, `build_cache.py` |
+| Small helpers | `src/workspace_names.py` (`ws-{adj}-{noun}` ids), `src/workspace_spec_watcher.py` (§2.10) |
 
-`src/git/manager.py` is imported by about 107 source files, 65 of them in
-`src/integration/`. That fan-in is the point: there is exactly one place where
-a git subprocess is spawned.
+Runtime repository operations use `GitManager`; GitHub operations use the
+startup-owned `GitHubAccess` and its shared `GhRunner`.
 
 ### 2.2 Data model
 
 All tables are in `src/database/tables.py`. Persistence and migrations are
 owned by [daemon-core](daemon-core.md); this system owns what the rows mean.
 
-**`projects`** (`tables.py:46`). One row per project. Besides scheduling and
+**`projects`** (`tables.py`). One row per project. Besides scheduling and
 budget fields (`credit_weight`, `max_concurrent_agents` default 2, `status`
 ACTIVE / PAUSED / ARCHIVED, where PAUSED is skipped by the scheduler), it
 holds the repository binding (`repo_url`, `repo_default_branch`,
-`workspace_path`), delivery policy (`promotion_flow`,
+`workspace_path`, `storage_binding`), delivery policy (`promotion_flow`,
 `default_branch_cutover`, `integration_mode` and the
 `hierarchical_integration_*` fields, `integration_repository_id`), routing
 (`assignment_playbook_id`, NOT NULL, default `default-assignment-routing`),
@@ -109,17 +109,17 @@ Discord channel ids, and an optional git identity override
 (`git_identity_name` / `git_identity_email`, where the named constraint
 `ck_projects_git_identity_pair` requires both or neither).
 
-**`repos`** (`tables.py:176`). One project can have several repositories:
+**`repos`** (`tables.py`). One project can have several repositories:
 `url`, `default_branch`, `checkout_base_path`, and `source_type`
 (`RepoSourceType`: CLONE, LINK, INIT, WORKTREE) with `source_path`.
 
-**`project_onboarding_requests`** (`tables.py:1268`). The idempotency record
+**`project_onboarding_requests`** (`tables.py`). The idempotency record
 for onboarding: `request_id`, an `input_fingerprint`, `status`
 (pending / succeeded / failed), `phase`, `created_resources`, `result` and
 `error`. It holds no credentials and has no foreign key to `projects`, so a
 failed request survives without a project.
 
-**`workspaces`** (`tables.py:1355`). One row per directory an agent can be
+**`workspaces`** (`tables.py`). One row per directory an agent can be
 given. Identity: `id`, `project_id`, `workspace_path` (unique per project),
 `source_type`, `name`, `kind_id`. Lock state: `locked_by_agent_id`,
 `locked_by_task_id`, `locked_at`, `lock_mode`, and a `generation` counter that
@@ -129,7 +129,7 @@ also carries `slot_index` and `base_workspace_id`, a soft reference to its
 base; the partial unique index `uq_workspaces_base_slot` keeps slot numbers
 unique per base.
 
-**`workspace_kinds`** (`tables.py:1401`). The primary key is
+**`workspace_kinds`** (`tables.py`). The primary key is
 `(project_id, id)`, and the sentinel project `__system__` holds built-in
 kinds. A kind says whether a workspace is `writable`, `lockable`,
 `is_git_repo`, its `repo_url`, `default_lock_mode`, whether it is attached to
@@ -138,9 +138,9 @@ every task (`auto_attach`), its `mode` (`worktree`, `exclusive-clone` or
 
 Related rows elsewhere: `task_workspace_requirements` (which kinds a task
 needs, keyed `(task_id, kind_id, position)` with an alias),
-`job_workspace_pins` (`tables.py:5907`) and `jobs.workspace_id` /
+`job_workspace_pins` (`tables.py`) and `jobs.workspace_id` /
 `jobs.workspace_generation`, `merge_slots` (one per project, leased),
-`branch_retirements` (`tables.py:3238`), and task columns
+`branch_retirements` (`tables.py`), and task columns
 `preferred_workspace_id`, `attachments` and `workspace_mode`. Profiles carry
 `needs_workspace` and `allow_base_checkout`; sessions carry
 `claim_failure_count` and `quarantined_at`.
@@ -151,7 +151,7 @@ that raises `RuntimeError` if used.
 
 ### 2.3 Projects and onboarding
 
-`ProjectOnboardingService.onboard_project` (`src/projects/onboarding.py:146`)
+`ProjectOnboardingService.onboard_project` (`src/projects/onboarding.py`)
 is the one path that creates a project with a repository. It runs these steps
 in order:
 
@@ -173,15 +173,16 @@ in order:
 9. **Push** the initial branch, create project storage, and emit
    `project.created` on the first success only (`src/projects/events.py`; the
    event carries facts only, and a bus failure is swallowed).
-10. **On failure, compensate** (`_compensate`, `onboarding.py:996`): remove
+10. **On failure, compensate** (`_compensate`, `onboarding.py`): remove
     only the directories whose owner marker this request wrote, never delete
     a GitHub repository, and return a `recovery_command` for the operator.
 
 Paths are validated in `src/projects/paths.py`: every path is relative to a
 configured project root, symlinks may not escape it, and `.aq/worktrees` is
 refused both as written and after resolution. A `ProjectPathError` never
-reveals the resolved path. `src/projects/roots.py` classifies each root as
-OK, MISSING, UNREADABLE or UNUSABLE for `aq project list-roots`.
+reveals the resolved path. `src/projects/roots.py` assesses aggregate root
+readiness as OK, MISSING, UNREADABLE or UNUSABLE for doctor and installer
+surfaces; `aq project list-roots` lists the configured roots.
 
 The operator guide is [project onboarding](../../guides/project-onboarding.md),
 and the design record is
@@ -212,7 +213,7 @@ on the concept page describes the states. This is the code path through them.
 
 **Bases are registered, slots are grown.** An operator registers a base
 workspace (onboarding does it for the primary checkout). Slots are created
-lazily: `WorktreeSlotManager.create_slot` (`worktree_manager.py:531`) names
+lazily: `WorktreeSlotManager.create_slot` (`worktree_manager.py`) names
 the slot `{base_id}:slot-N`, provisions it (an exclude block written under a
 file lock, `worktree prune`, `fetch`, `worktree add --detach`, then the
 kind's `worktree_setup` commands), writes the `.aq-worktree.json` sentinel and
@@ -220,23 +221,28 @@ emits `worktree.created`. At most one slot is added per dispatch, up to
 `max(1, max_concurrent_agents)` and the kind's `max_slots`.
 
 **Acquire.** When the scheduler launches a task, it calls
-`_prepare_workspace` (`workspace.py:145`). Under the project lock,
+`_prepare_workspace` (`workspace.py`). Under the project lock,
 `_prepare_workspace_locked` prefers a slot already on the task's branch, then
 grows a slot if the cap allows, then acquires through
 `workspace_attachments.acquire_for_task`. If nothing is free it returns a wait
 reason (`slot_lost_race`, `slot_stalled`, `slot_warming` or `slots_full`) and
 the task stays in the frontier. The lock itself is one atomic `UPDATE … WHERE
 unlocked AND unpinned` in `acquire_one_unlocked`
-(`workspace_queries.py:421`), which also increments `generation`.
+(`workspace_queries.py`), which also increments `generation`.
 
-**Reset for the task.** `reset_slot_for_task` (`worktree_manager.py:1017`)
+**Reset for the task.** `reset_slot_for_task` (`worktree_manager.py`)
 first refuses a slot whose sentinel names another owner (`ForeignSlotClaim`).
-Then it salvages: unpushed commits and dirty work are captured as a binary
-patch into the task context (`worktree_salvage`) before anything is
-discarded. Only then does it `reset --hard`, `clean -fd -e .aq-worktree.json`
-(never `-x`, so ignored build output survives) and check out `aq/<task_id>`.
-Legacy full clones use the `.agent-queue-lock` sentinel and the older
-`workspace.py` path.
+With `worktrees.salvage_dirty: true` (the default), it attempts to capture
+unpushed commits and dirty work into task context (`worktree_salvage`) before
+reset. This is best effort: above `salvage_max_bytes` (default 5 MiB), the
+record contains a diff stat rather than file contents; capture failures are
+logged and return false. It then uses `reset --hard`, `clean -fd -e .aq-worktree.json`
+(never `-x`, so ignored build output survives) and checks out `aq/<task_id>`.
+A missing task branch can be recreated at the existing HEAD only when it
+exactly matches that task's recorded integration or pause checkpoint, with
+no divergent remote ref or conflicting retained binding. No files are reset
+by this recovery. Legacy full clones use the `.agent-queue-lock` sentinel
+and the older `workspace.py` path.
 
 **Hand off to the session.** The work directory and the claim file
 (`.aq/claim.json`, helpers in `src/claim_file.py`) go to
@@ -245,22 +251,22 @@ there.
 
 **Release.** A release is refused while a job pins the workspace (the
 `unpinned_workspace()` guard). After the task, slots go through
-`restore_slot_after_task` (`worktree_manager.py:1233`); legacy clones go
+`restore_slot_after_task` (`worktree_manager.py`); legacy clones go
 through a commit → stash → force-clean → checkout-default ladder.
 
-**Reap.** Slots are deleted only by `reap_slot` (`worktree_manager.py:1819`),
+**Reap.** Slots are deleted only by `reap_slot` (`worktree_manager.py`),
 and only above the cap. It needs an exact identity match under a row lock,
 an unlocked row with no live session, no integration owner and no claim file,
 a successful `/proc` scan showing no process inside the directory (it fails
 closed if the scan fails), and zero dirty paths. The scheduler's
-`_reap_worktree_slots` (`core.py:3988`) breaks expired merge-slot leases every
+`_reap_worktree_slots` (`core.py`) breaks expired merge-slot leases every
 cycle and, every five minutes, audits slot bindings
 (`workspace_binding_audit.py`), sweeps out-of-cap slots and runs
 `restore_disabled_slots`. `prune_branches` and `adopt_existing` (adoption
 never deletes) round out the manager.
 
 **Quarantine.** Three identical claim refusals in a row
-(`MAX_IDENTICAL_CLAIM_FAILURES = 3`, `src/pool_claims.py:8`) stop the session
+(`MAX_IDENTICAL_CLAIM_FAILURES = 3`, `src/pool_claims.py`) stop the session
 and disable its workspace with reason `claim_failures`. A foreign slot claim
 disables the slot at once. `slot_restore.py` is the reconciler that brings
 slots back: after a 15-minute cooldown it skips operator-disabled slots and
@@ -285,7 +291,7 @@ re-checks the workspace generation and lock owner, inserts a
 release all refuse while the count is non-zero.
 
 **The base checkout.** Agents work in slots, not in the base.
-`base_checkout_refusal` (`base_workspace.py:77`), added after the 2026-09-01
+`base_checkout_refusal` (`base_workspace.py`), added after the 2026-09-01
 incident, refuses a session in a base checkout unless its profile sets
 `allow_base_checkout`.
 
@@ -293,17 +299,27 @@ The rollout switch is `worktrees.enabled`. With it off, every git kind is
 treated as `exclusive-clone` and the legacy clone path runs. Pool routing by
 primary workspace kind is the
 [hybrid workspace pools](../design/hybrid-workspace-pools.md) design,
-implemented in commits 01089082b and 69a45b259.
+implemented in commits 01089082b and 69a45b259. The switch defaults to true;
+the kind's `mode` selects steady-state provisioning. Upgrade reconciliation
+preserves an existing `exclusive-clone` mode rather than silently converting
+it to slots.
+
+`aq project list-workspaces` adds bounded owner, presence and Git diagnostics.
+Its diagnostic deadline defaults to 10 seconds (clamped to 0.5–20 seconds);
+`--no-git` skips Git probes. Read `diagnostics.complete` and nullable fields:
+unknown or partial evidence does not establish that a workspace is free.
+`release-workspace` releases a database lock; claim retirement and terminal
+sentinel clearing are separate guarded recovery commands.
 
 ### 2.5 Workspace kinds and multi-kind attachments
 
 A task can need more than one workspace: its repository and, for example, the
-vault. `effective_requirements` (`workspace_attachments.py:1006`) builds the
+vault. `effective_requirements` (`workspace_attachments.py`) builds the
 list from the task's `task_workspace_requirements` rows, or synthesizes a
 single `project-repo` requirement when there are none, then appends every
 `auto_attach` kind at position 10000 and above and sorts the list into a
 canonical lock order so two tasks never deadlock. `acquire_for_task`
-(`workspace_attachments.py:1068`) is all-or-nothing: a missing auto-attach
+(`workspace_attachments.py`) is all-or-nothing: a missing auto-attach
 kind is skipped, a missing explicit kind raises `AcquisitionFailed`, and on
 any failure every lock taken so far is released.
 
@@ -311,11 +327,12 @@ Kinds are authored as markdown under
 `vault/[projects/<pid>/]workspace-kinds/<id>.md` and parsed by
 `workspace_kind_parser.py`; a kind file without `mode` keeps the database's
 value. `WorkspaceKindStore` scans, bootstraps the built-ins and prunes
-removed kinds once, at daemon start (`core.py:2111`).
+removed kinds once, at daemon start. There is no live watcher; a malformed
+present file preserves its last valid row during reconciliation.
 
 ### 2.6 GitManager: the one git wrapper
 
-`GitManager` (`src/git/manager.py:579`) is the only code that runs git. The
+`GitManager` (`src/git/manager.py`) wraps runtime repository operations. The
 `a`-prefixed async methods are the production API; the synchronous ones
 remain for back-compat and tests.
 
@@ -332,7 +349,7 @@ remain for back-compat and tests.
   `GIT_ASKPASS=/bin/false` and `GH_PROMPT_DISABLED=1`.
 - **Timeouts.** 120 seconds by default, 600 for PR diffs, 30 for `gh`.
 - **Locking.** `set_lock_provider` and `arepository_transaction`
-  (`manager.py:732`, `:909`) serialize work per repository in memory; the
+  (`manager.py`) serialize work per repository in memory; the
   provider lock is taken only for fetch, gc and pull. `src/git/locks.py`
   holds no asyncio locks: it recovers stale `index.lock` and similar files,
   conservatively, after proving no git process owns them.
@@ -384,8 +401,25 @@ Commits are authored as the project override, else the config
 integration ledger uses its own `LEDGER_IDENTITY` (`Agent Queue
 <aq@localhost>`). Identity is injected through `GIT_AUTHOR_*` and
 `GIT_COMMITTER_*` environment variables, never written into git config, so
-an agent's checkout cannot change it. `PublishPolicy` allows publishing only
-commits whose committer digest is on the allowed list.
+an agent's checkout cannot change it. `PublishPolicy` checks the committer
+digest on publishable commits against
+the allowed launch/config identities; author mismatches produce warnings.
+Already published, inherited, prerequisite and source-repair commits have
+specific exclusions. Changing identity retires idle pool sessions with stale
+identity before their next claim.
+
+The internal git plugin guards worker publication before obtaining credentials:
+the task must own the branch and repository (or have an explicit active batch
+repair delegation). Workers use `aq git push`, and the integration publisher
+owns the target branch. Force publication uses an explicit observed remote OID
+lease. The low-level `GitManager` is also used by trusted publishers, so this
+worker ownership boundary belongs to the command/plugin layer.
+
+PR creation binds to the published head. A matching open PR is reused; a
+matching closed, unmerged PR may be reopened and verified; a merged PR is
+reused only for the matching published commit. New commits on a reused branch
+name require a new PR. Delivery lookup similarly proves that a merged PR's
+head contains the current branch tip before treating it as delivered.
 
 **CI gate** (`src/git/ci_gate.py`). Pure logic, added after PR #341 was
 merged while red. Each check is classified PASS, FAIL, PENDING or
@@ -400,11 +434,13 @@ The integration service keeps retained clones that it merges and publishes
 from. A corrupt object there is invisible until a later fetch, merge or push
 fails, so this system checks before trusting the store.
 
-- **Detection.** `_averify_retained_objects` (`manager.py:2296`) runs a full
+- **Detection.** `_averify_retained_objects` (`manager.py`) runs a full
   `git fsck` before an object is lent to a workspace or a tip is advertised.
   A connectivity-only check is not enough. A clean result is cached in
   memory, per process, keyed by a fingerprint of the object store, for one
-  hour.
+  hour. Filesystem integrity walks run off the event loop. Retained fetches
+  use normal negotiated incremental transfers; full-pack retention is not
+  the default.
 - **No background maintenance.** Retained stores set `gc.auto=0`,
   `gc.autoDetach=false` and `maintenance.auto=false`, and maintenance runs in
   the foreground when it is asked for
@@ -429,9 +465,53 @@ The operator runbook is [retained git corruption](../../guides/retained-git-corr
 `src/workspace_spec_watcher.py` is unrelated to workspace kinds despite the
 name. It watches spec and documentation files in project checkouts (by mtime
 or `git diff`, polling every 60 seconds), writes reference stubs to
-`vault/projects/{id}/references/spec-{name}.md`, and emits
+`vault/projects/{id}/references/` (`spec-` or `doc-` names derived by
+`derive_stub_name`), and emits
 `workspace.spec.changed`. See
 [how workspace reference stubs fit in](../../concepts/projects-and-workspaces.md#how-workspace-reference-stubs-fit-in).
+
+### 2.11 Native storage relocation
+
+`aq project relocate` is a local/operator-only preview/apply command backed
+by `src/projects/relocation.py`. The project must be paused, its integration
+train disabled and drained, and its sessions, claims, workspace locks, jobs,
+pins and integration owners quiescent. The operator supplies an inventory of
+external services and proves they are stopped; an empty inventory must be
+explicit. Native destination validation rejects Windows-mounted storage and
+unsafe Git layouts.
+
+Preview inventories repository and workspace bytes, ignored files, Git refs,
+retained stores, recovery data and configured compiler caches, returning a
+plan digest and blockers. Apply requires that digest, makes independently
+verified copies and backups, runs the project's pinned required checks, then
+rechecks ownership, policy, content and process fences before atomically
+publishing a new `projects.storage_binding` generation and the associated
+repository/workspace paths. It does not edit daemon configuration or enable
+the train. Reverse relocation is another verified forward copy to a fresh
+destination, never a switch back to stale source bytes. See the
+[storage relocation runbook](../../guides/matter-engine-storage-relocation.md)
+for exact flags and receipt handling; the runbook records fixture validation,
+not a claim that the live project has moved.
+
+### 2.12 Warm workspaces and compiler caches
+
+`src/warm_workspaces.py` supplies reusable linked checkouts off the primary
+object store for integration close-merge, fixer and job snapshot callers.
+Owner manifests live outside the checkout. Callers serialize allocation and
+prove the previous writer stopped, pins were released and committed work was
+preserved before reuse. Same-owner replay preserves files for reconciliation;
+dirty, foreign or ambiguous preparations are retained. Reuse checks out the
+new commit with `--no-overwrite-ignore` and resets tracked files without
+`clean -fdx`, preserving ignored build output when it is safe.
+
+The optional `workspaces.build_cache` configuration selects `ccache` or
+`sccache` and an absolute native Linux `dir`; it is unset by default.
+`workspaces.projects.<project-id>` overrides it, including explicit null to
+disable it. `src/build_cache.py` resolves relocated cache paths and supplies
+`CCACHE_DIR` or `SCCACHE_DIR` to job and session environments. Bounded cache
+telemetry reports shared-cache counters; missing tools yield unknown
+measurements, not a build failure. Configuration examples are in
+[configuration](../../reference/configuration.md#warm-integration-checkouts-and-compiler-caches).
 
 ## 3. Boundaries and interactions
 
@@ -491,8 +571,9 @@ of record. This system owns `worktree_manager.py`, `workspace.py`,
 4. **Identity is injected, not configured.** Author and committer come from
    environment variables set per command, so nothing in a checkout can
    change who a commit is from.
-5. **Work is salvaged before it is discarded.** A slot reset captures
-   unpushed commits and dirty files first. Clean never uses `-x`.
+5. **Attempt configured salvage before reset.** Capture is best effort and
+   size-limited (§2.4); it is not a guarantee that every dirty byte survives.
+   Slot clean never uses `-x`.
 6. **Deletion needs proof.** A slot is reaped only above the cap, with an
    exact identity match under a row lock, no lock, session, integration
    owner, claim file, live process or dirty path. A failed proof keeps the
@@ -513,126 +594,74 @@ of record. This system owns `worktree_manager.py`, `workspace.py`,
 
 ## 5. Known gaps
 
-Each item was confirmed by reading the code at 22cffd1b7 unless it says
-otherwise.
+These observations were checked against 52d2efe4c during the 2026-10-22 audit.
+The first two are code defects to assess separately from this docs update.
 
-- **Lock-mode spelling mismatch (not reproduced).** The kind parser accepts
-  `branch_isolated` and `directory_isolated` with underscores
-  (`workspace_kind_parser.py:16-17`, commented "Match WorkspaceMode.value"),
-  but `WorkspaceMode` values use hyphens. `acquire_one_unlocked` calls
-  `WorkspaceMode(lock_mode_value)` after the row is locked
-  (`workspace_queries.py:612`), so a kind file with `default_lock_mode:
-  branch_isolated` would probably raise after taking the lock.
-- **`base_checkout_refusal` fails open.** On a database error it allows the
-  base checkout it exists to refuse.
-- **Legacy clones still use `git stash`** in their cleanup ladder
-  (`workspace.py:2936-2944`). Slots never do, and the stash stack is shared by
-  every worktree of a repository.
-- **Kind files are read only at daemon start.** There is no watcher, so an
-  edited `workspace-kinds/*.md` needs a restart.
-- **Schema leftovers.** `workspaces.kind_id` is still nullable (NOT NULL is
-  pending a follow-up), the `workspace_kinds.mode` default is `worktree`
-  while the migration backfilled `exclusive-clone`, `directory-isolated` is a
-  stub and `branch-isolated` is a deprecated alias.
-- **Onboarding locks are per process.** Two daemons, or a daemon and a
-  script, can race the same target. A GitHub repository created by a failed
-  onboarding is left for the operator to delete.
-- **Retained integrity limits.** Pack corruption is never recovered
-  automatically, the fsck cache lives in one process's memory, and no doctor
-  check reports a retained-store incident.
-- **No code guard against pushing the default branch** inside `src/git`.
-  Workers are kept off it by policy, branch protection and the integration
-  owner, not by `GitManager`.
-- **The subprocess environment inherits the daemon's.** A NOTE on
-  `_SUBPROCESS_ENV` in `manager.py` says so and defers the fix to "when
-  worktree-execution centralizes git invocation"
-  ([worktree execution](../design/worktree-execution.md)).
-- **Changing the GitHub credential mode needs a daemon restart.**
-- **Stale documents.** [GitHub access](../github-access.md) still reads
-  "draft" in its front matter and "staged implementation" in its body
-  although #615 is complete (see `docs/gates/github-access-615.md`); its last
-  epic, fair-bridge, closed with two non-code deliverables unmet (the docs
-  migration inventory and the architecture regression guard). The
-  `worktree_manager.py` module header (lines 26-27) says `adopt_existing`,
-  `reap_slot` and `prune_branches` are "not here yet (phase 4)"; all three
-  exist. `docs/analysis/framework-overhaul-todo.md` mentions an `aq workspace`
-  group that does not exist.
+- **Lock-mode spelling mismatch (locally reproduced).** The kind parser
+  accepts `branch_isolated` and `directory_isolated` with underscores, but
+  `WorkspaceMode` accepts hyphens. A temporary kind file parses successfully
+  and then raises `ValueError` when converted to the enum; the hyphenated
+  spellings are rejected by the parser. `acquire_one_unlocked` performs that
+  enum conversion after its update. This audit did not test transaction
+  persistence after that error.
+- **`base_checkout_refusal` fails open.** A simulated database read failure
+  returns `None` (launch allowed). This contradicts the isolation goal of
+  keeping ordinary agents out of the operator's base checkout. The fail-open
+  choice is explicit in the function's docstring; changing it needs a code
+  decision.
+- **Legacy clones still use `git stash`** in their cleanup ladder. Slots
+  never do; a repository's worktrees share its stash stack.
+- **Kind files are read only at daemon start.** An edited
+  `workspace-kinds/*.md` needs a restart.
+- **Schema leftovers.** `workspaces.kind_id` remains nullable;
+  `directory-isolated` is a stub and `branch-isolated` a deprecated alias.
+  The kind schema default `worktree` and upgrade backfill `exclusive-clone`
+  serve different purposes; the parser preserves the stored value when
+  `mode` is omitted.
+- **Onboarding locks are per process.** Separate processes can race the same
+  target. A GitHub repository created by failed onboarding is retained for
+  the operator to inspect.
+- **Retained integrity limits.** Pack corruption needs supervisor recovery;
+  the fsck cache is per process, and no doctor check reports a retained-store
+  incident.
+- **Trusted low-level callers can push target branches.** `GitManager` does
+  not apply worker ownership checks; the worker plugin does (§2.8).
+- **The subprocess environment inherits the daemon's.** Controlled credential
+  and identity overrides do not constitute a complete environment allowlist.
+- **Changing GitHub credential mode needs a daemon restart.**
+- **Historical code comments remain.** The `worktree_manager.py` module header
+  says `adopt_existing`, `reap_slot` and `prune_branches` are not implemented;
+  all three exist. That comment is not the current capability contract.
 
-## 6. Planned work
+## 6. Delivery and planning record
 
-Open tasks and reviews were re-queried on 2026-10-20 for this section; the
-inventory's epic column is a snapshot from the same day. No open epic is
-about this system alone. The items below change its files or invariants as
-part of other work.
+The original 2026-10-20 inventory and task/review statuses are historical
+snapshots. This audit checked shipped source and Git history rather than
+re-querying sibling tasks. In particular, two features previously listed here
+as pending have shipped:
 
-### 6.1 Fast and smooth integration: `stark-willow-95` (IN_PROGRESS)
+- Warm workspaces and shared compiler caches (§2.12), commit `56bde6dad`
+  (2026-10-21), from fast/smooth integration task `stark-willow-95.11`.
+- Native storage relocation (§2.11), commit `bbcbd5a61` (2026-10-21), from
+  `stark-willow-95.12`. Tooling and a fixture-validated operator runbook are
+  present; this is not evidence of a live Matter Engine migration.
 
-Design: `~/.agent-queue/vault/projects/agent-queue/specs/2026-10-12-fast-smooth-integration.md`,
-review `rev-fair-lantern`, *approved* at revision 2 (the file's front matter
-says revision 3). Three DEFINED tasks touch this system:
+The inventory also names retained prerequisite stacks (`stark-willow-95.14`)
+and a unified admission view (`.13`); their delivery policy belongs to
+[integration-and-delivery](integration-and-delivery.md) and
+[scheduling-and-claims](scheduling-and-claims.md). Consult those system specs
+for current behavior.
 
-- **`.11`: warm workspaces and a shared compiler cache** (spec §6.5). A
-  per-repository pool of candidate, close-merge and fixer workspaces that are
-  adopted rather than deleted, reset with checkout and `reset --hard` (never
-  `clean -fdx`), and created as git worktrees off the primary clone. A new
-  `workspaces.build_cache: {kind: ccache|sccache, dir}` setting exports
-  `CCACHE_DIR` into those workspaces; the spec notes that no build-cache
-  configuration exists today. Wait time is measured into
-  `wait_measurements`. Acceptance names `tests/test_workspace.py` and
-  `tests/test_integration_workspaces.py`. This extends §2.4's reset rules to
-  integration's own workspaces.
-- **`.12`: native-storage relocation tooling and a Matter Engine runbook**
-  (spec §12). It moves the Matter Engine project off `/mnt/d` to native Linux
-  storage (proposed `/home/jkern/dev/matter-engine-cpp`) through a relocation
-  preview and apply in `src/projects/relocation.py` and
-  `src/commands/project_relocation_commands.py`, "if no equivalent exists",
-  and must never move a live worktree. Acceptance names
-  `tests/test_project_relocation.py`. The existing `aq project
-  repair-repository-checkout`, `repair-workspace-checkout` and
-  `workspace-cutover` commands already cover part of this ground
-  ([project onboarding](../../guides/project-onboarding.md)); the task should
-  build on them rather than add a parallel path.
-- **`.14`: retained prerequisite stacks by default.** Owned by
-  integration-and-delivery, but it changes how a task's workspace is
-  prepared when its prerequisites are not yet on the default branch.
+Distributed worker nodes remain a design direction in the original inventory
+(`2026-10-06-distributed-worker-nodes.md`, review `rev-eager-quest`), not a
+capability established by this audit. Its proposed execution worker would
+move workspace and retained-store ownership behind a separate boundary.
+The related containerized/team-hosted design was recorded as withdrawn.
 
-`.13` (READY, one admission view) belongs to
-[scheduling-and-claims](scheduling-and-claims.md); it changes how
-`_prepare_workspace`'s wait reasons are reported, not how they are produced.
-
-### 6.2 Distributed worker nodes (in review, not filed)
-
-`~/.agent-queue/vault/projects/agent-queue/specs/2026-10-06-distributed-worker-nodes.md`,
-review `rev-eager-quest`, *in review* at revision 2 (tasks bold-harbor-17
-and steady-forge-17 wrote it). Its §4 would change this system the most of
-anything planned: one remote, with workspaces as replaceable realizations
-of it; git access through a central broker or short-lived tokens, with the
-App key staying at the control plane (the askpass broker is the precedent
-but cannot cross a network); and even on one machine, agents would run
-through a separate execution worker that owns the retained clones and
-workspaces. If approved, most of §2.4 and §2.9 moves behind that worker. The
-related containerized and team-hosted design
-(`2026-10-06-containerized-sandboxed-and-team-hosted-agent-queue.md`, review
-`rev-steady-ember`) is *withdrawn*.
-
-### 6.3 Completed design this spec relies on
-
-For orientation, not open work:
-`2026-10-14-retained-git-corruption-confirmed-detection-defects-and-fenc.md`
-(review `rev-swift-flare`, *approved* at revision 2, delivered by
-crisp-crest-36) is the source of §2.9's self-heal. [Branch-tracking
-deployment](../design/branch-tracking-deployment.md) (nimble-grove-32) and
-[git identity](../git-identity.md) (fresh-cascade-88) are complete.
-
-### 6.4 Tangential open tasks
-
-- `calm-grove-14` (READY): remove duplicate human publishers and reconcile
-  repository policy, from the one-place-to-ask-Jack work. It may touch
-  repository policy fields on `projects`.
-- `clear-impact-72.4` (READY): rewrite the GitHub issue triage playbook. It
-  uses the GitHub layers but changes none of them.
-- `eager-vault-55` (this epic): the 18 system specs. A later task rewrites
-  `docs/specs/systems/README.md` from all of them.
+Completed design records used here include retained Git corruption recovery
+(`2026-10-14-retained-git-corruption-confirmed-detection-defects-and-fenc.md`,
+review `rev-swift-flare`), [branch-tracking deployment](../design/branch-tracking-deployment.md),
+[git identity](../git-identity.md) and [GitHub access](../github-access.md).
 
 ## 7. Further reading
 

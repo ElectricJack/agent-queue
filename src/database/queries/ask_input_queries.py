@@ -177,9 +177,12 @@ class AskInputQueriesMixin:
             )
         )
 
-    async def ask_channel_enabled(self, *, channel_id, guild_id):
+    async def ask_channel_enabled(self, *, channel_id, guild_id, config_fingerprint, project_id=None):
         """H06 owns mode transitions; absence of its durable mode is disabled.
 
+        A configured project requires its own current ownership row. Without a
+        configured project this is only the shared-router dispatch check; intake
+        also checks the selected ask's project and fingerprint before routing it.
         Read the durable table, never a YAML flag or a caller-authored envelope.
         The optional-table guard allows H05 to ship before the outbox package.
         """
@@ -191,9 +194,13 @@ class AskInputQueriesMixin:
                 await conn.scalar(
                     text(
                         "SELECT EXISTS (SELECT 1 FROM human_communication_modes "
-                        "WHERE mode = 'channel' AND destination = 'discord:' || :guild || ':' || :channel)"
+                        "WHERE mode = 'channel' "
+                        "AND destination = 'discord:' || :guild || ':' || :channel "
+                        "AND config_fingerprint = :fingerprint "
+                        "AND (CAST(:project AS TEXT) IS NULL OR project_id = :project))"
                     ),
-                    {"channel": channel_id, "guild": guild_id},
+                    {"channel": channel_id, "guild": guild_id,
+                     "fingerprint": config_fingerprint, "project": project_id},
                 )
             )
 
