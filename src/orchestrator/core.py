@@ -4278,7 +4278,7 @@ class Orchestrator(
                                exc_info=True)
             reports: list[BranchSweepReport] = []
             failures: list[str] = []
-            skipped_detached: list[str] = []
+            skipped: list[str] = []
             unregistered: dict[str, list[str]] = {}
             retired: list[tuple[str, str | None]] = []
             migrations: list[dict] = []
@@ -4389,24 +4389,17 @@ class Orchestrator(
                 if kind is not None and not getattr(kind, "is_git_repo", True):
                     continue
                 try:
-                    common = await self.git._arun(
-                        ["rev-parse", "--git-common-dir"], cwd=checkout
-                    )
+                    common = await self.git._arun(["rev-parse", "--git-common-dir"], cwd=checkout)
                     common_path = str((Path(checkout) / common).resolve())
                 except Exception:
                     continue
                 if common_path in seen_common_dirs:
                     continue
                 try:
-                    if not workspace.is_slot:
-                        git_dir = await self.git._arun(["rev-parse", "--git-dir"], cwd=checkout)
-                        if str((Path(checkout) / git_dir).resolve()) != common_path:
-                            branch, dirty = await self.git.aread_status_summary(checkout)
-                            if branch == "HEAD" and not dirty:
-                                # Foreign linked worktrees need no push preparation.
-                                # Leave the common directory eligible for its base/slots.
-                                skipped_detached.append(checkout)
-                                continue
+                    # Foreign detached worktrees: no push prep; the common dir stays eligible.
+                    if not workspace.is_slot and await self.git.aclean_detached_worktree(checkout):
+                        skipped.append(checkout)
+                        continue
                     retained_origin = retained_origins.get(str(Path(checkout).resolve()))
                     if retained_origin:
                         await ensure_retained_origin(self.git, checkout, retained_origin)
@@ -4444,12 +4437,8 @@ class Orchestrator(
                 safety = SweepSafety(self.db, repository.id,
                                      default_branch=repository.default_branch,
                                      git=self.git, checkout=checkout)
-                backup = (
-                    Path(self.config.vault_projects)
-                    / str(project.id)
-                    / "notes"
-                    / f"git-branch-sweep-{date}.tsv"
-                )
+                backup = (Path(self.config.vault_projects) / str(project.id) / "notes"
+                          / f"git-branch-sweep-{date}.tsv")
                 audit = partial(_append_backup, backup, repository=repository_url)
 
                 def audit_migration(scope, branch, sha, proof):
@@ -4484,10 +4473,8 @@ class Orchestrator(
                             project.name, checkout, stash,
                         )
                 except Exception as exc:
-                    logger.warning(
-                        "Daily Git branch sweep skipped %s (%s): %s",
-                        project.name, checkout, exc,
-                    )
+                    logger.warning("Daily Git branch sweep skipped %s (%s): %s",
+                                   project.name, checkout, exc)
                     failures.append(f"{project.name} ({checkout}): {exc}")
 
             for paths in unregistered.values():
@@ -4517,11 +4504,9 @@ class Orchestrator(
             ]
             if failures:
                 lines.append(f"Failures ({len(failures)}): " + "; ".join(failures[:10]))
-            if skipped_detached:
-                lines.append(
-                    f"Skipped clean detached non-slot worktrees ({len(skipped_detached)}): "
-                    + "; ".join(skipped_detached[:10])
-                )
+            if skipped:
+                lines.append(f"Skipped clean detached non-slot worktrees ({len(skipped)}): "
+                             + "; ".join(skipped[:10]))
             new_notices = [detail for key, detail in missing_notices.items()
                            if key not in previous_notices]
             if new_notices:
