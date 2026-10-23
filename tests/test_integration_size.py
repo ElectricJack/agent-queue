@@ -563,6 +563,24 @@ def test_batch_exception_is_exact_and_has_no_remaining_headroom(report, manifest
     assert snapshot_merge["dev_table_count"] == snapshot_merge["measured_table_count"] == 45
     assert snapshot_merge["measured_owned_total"] == 161_111
     assert recorded["dashboard_pr_snapshot_merge_measurement"] == snapshot_merge
+    latency = amendments["bright-impact-14"]
+    assert latency["decision_message_id"] == "msg-c80bde55a6d1442791a2ba4f9597d7a0"
+    assert latency["decision_message_id"] in exception["decision_message_ids"]
+    assert latency["authorized_owned_delta"] == 26
+    assert latency["measured_owned_total"] == 160_863
+    latency_merge = exception["daemon_latency_merge_measurement"]
+    assert latency_merge["referenced_decision"] == "size-cap-delegation-2026-10-23"
+    assert latency_merge["operator_decision"] == "6679052c"
+    assert latency_merge["pr_url"] == latency["pr_url"]
+    assert latency_merge["previous_owned_total"] == 161_213
+    assert latency_merge["authorized_owned_delta"] == latency["authorized_owned_delta"]
+    assert latency_merge["measured_owned_total"] == measured == 161_239
+    assert latency_merge["previous_owned_total"] + 26 == measured
+    assert latency_merge["authorized_engine_delta"] == 0
+    assert latency_merge["measured_engine_lines"] == exception["measured_engine_lines"] == 85_544
+    assert latency_merge["measured_table_count"] == 45
+    assert latency_merge["measured_source_revision"] == exception["measured_source_revision"]
+    assert recorded["daemon_latency_merge_measurement"] == latency_merge
     assert ownership.transition_owned_cap(manifest) == measured
     too_large = {**report, "total": measured + 1}
     assert ownership.budget_errors(too_large, manifest) == [
@@ -713,7 +731,9 @@ def test_resume_batch_preserves_grants_and_composes_exact_inventory(report, mani
     batch = exception["resume_batch_composition"]
     assert batch["batch_id"] == "train-9394fdec634bb068ee8e58c1008dd4b2-resume-1e142f1858d8"
     assert batch["starting_revision"] == "c177d24e86d25fde7804131c94bfd637b0eb540a"
-    assert batch["source_revision"] == exception["measured_source_revision"]
+    assert batch["source_revision"] == "4bafa45f1ac0a466eab372c7b6b0b866f67bb832"
+    latency_merge = exception["daemon_latency_merge_measurement"]
+    assert latency_merge["measured_source_revision"] == exception["measured_source_revision"]
     assert batch["member_sources"] == {
         "calm-rapids-50": "45626ba27ff1c7711f5aa17893f7ce997928da5f",
         "fair-crest-95": "63163a7d4fd4aa5611c18ae139580902abf32770",
@@ -735,7 +755,10 @@ def test_resume_batch_preserves_grants_and_composes_exact_inventory(report, mani
     assert batch["base_table_count"] == 45
     assert batch["base_owned_total"] + sum(
         delta["owned"] for delta in batch["approved_deltas"].values()
-    ) == exception["measured_owned_total"] == report["total"] == 161_213
+    ) == latency_merge["previous_owned_total"] == 161_213
+    assert latency_merge["previous_owned_total"] + latency_merge["authorized_owned_delta"] == (
+        exception["measured_owned_total"]
+    ) == report["total"] == 161_239
     assert batch["base_engine_lines"] + sum(
         delta["engine"] for delta in batch["approved_deltas"].values()
     ) == exception["measured_engine_lines"] == report["groups"]["engine"] == 85_544

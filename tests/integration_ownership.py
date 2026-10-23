@@ -45,10 +45,10 @@ TRANSITION_BATCH_EXCEPTION = {'batch_id': 'train-745592300af5cef0338dec80ebabb46
                           'msg-96fed6b8e86148f0bbf55ded244c9a0f',
                           'msg-c80bde55a6d1442791a2ba4f9597d7a0'],
  'decision_record': 'record:2720bdbe-7521-427e-8e72-1f40a3ff9818',
- 'measured_source_revision': '4bafa45f1ac0a466eab372c7b6b0b866f67bb832',
+ 'measured_source_revision': 'ebc184bd0922e51438cb5a048324c0631df71a08',
  'original_owned_total_cap': 155499,
- 'measured_owned_total': 161213,
- 'delta': 5714,
+ 'measured_owned_total': 161239,
+ 'delta': 5740,
  'predecessors': [{'batch_id': 'train-77f0d8e451f6aed08d608e443031047a',
                    'decision_message_id': 'msg-edb5f857de344716a38857406fa69958',
                    'decision_record': 'record:2720bdbe-7521-427e-8e72-1f40a3ff9818',
@@ -62,7 +62,7 @@ TRANSITION_BATCH_EXCEPTION = {'batch_id': 'train-745592300af5cef0338dec80ebabb46
                    'measured_source_revision': 'cbfd455b0e9f053854a2c1becfa1efaeef231582',
                    'authorized_delta': 2166,
                    'measured_owned_total': 158958}],
- 'batch_measured_delta': 2255,
+ 'batch_measured_delta': 2281,
  'restore_task': 'azure-ridge-72',
  'expires_at': 's4_modules',
  'category_approval_message_id': 'msg-90f9f1b1e0cd4e8e8d28071cffc927a6',
@@ -439,7 +439,26 @@ TRANSITION_BATCH_EXCEPTION = {'batch_id': 'train-745592300af5cef0338dec80ebabb46
                               'reason': 'Compose the unchanged resume and shared-check grants on '
                                         'the retained starting head; the other members add no '
                                         'owned lines. Preserve every historical grant and batch '
-                                        'measurement.'}}
+                                        'measurement.'},
+ 'daemon_latency_merge_measurement': {'task_id': 'bright-impact-14',
+                                      'referenced_decision': 'size-cap-delegation-2026-10-23',
+                                      'operator_decision': '6679052c',
+                                      'operator_task': 'sharp-cascade-53',
+                                      'pr_url': 'https://github.com/ElectricJack/agent-queue/pull/1861',
+                                      'merged_dev_revision': 'dae4a86819d8c4ed6ec70d0d9349f3895f284c4d',
+                                      'measured_source_revision': 'ebc184bd0922e51438cb5a048324c0631df71a08',
+                                      'previous_owned_total': 161213,
+                                      'previous_engine_lines': 85544,
+                                      'authorized_owned_delta': 26,
+                                      'authorized_engine_delta': 0,
+                                      'measured_owned_total': 161239,
+                                      'measured_engine_lines': 85544,
+                                      'measured_table_count': 45,
+                                      'reason': 'PR #1861 merge refresh: retain all dev grants and '
+                                                'the historical latency grant; exact merged '
+                                                'footprint pre-approved in supervisor reopen '
+                                                'feedback under size-cap-delegation-2026-10-23. No '
+                                                'additional headroom.'}}
 FINAL_ENGINE_CAP = 11_999
 FINAL_TOTAL_CAP = 19_999
 FINAL_TABLE_CAP = 10
