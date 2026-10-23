@@ -34,7 +34,7 @@ flowchart LR
     O --> C[Scheduler cycle\nsrc/main.py]
     C --> R[Session reconciler + harness]
     R --> W[Worker CLI in tmux or another session provider]
-    W --> D
+    W --> H
     C --> I[Integration, delivery and other services]
     I --> D
 ```
@@ -134,8 +134,9 @@ that has already started.
 | Session | The session specification and its workspace attachment. | The session provider starts or observes a terminal process; the reconciler records liveness and terminal outcomes. | The worker edits its assigned workspace and reports/claims through AQ. |
 | Completion/integration | A terminal task outcome and the configured project integration policy. | Completion and integration evidence are durable. Services may materialize branches, publish a batch, or leave it awaiting a configured gate. | Later cycles recover pending work safely after interruption. |
 
-For example, after a pool worker claims `docs-42`, the durable claim gives it
-an epoch and a workspace. Its harness launches the configured coding CLI. The
+For example, a pool worker's harness launches the configured coding CLI before
+it claims work. When that worker claims `docs-42`, preparation and the durable
+claim establish its workspace and claim epoch. The
 worker's result is not trusted merely because text appeared in a terminal:
 the session reconciler and completion path record the outcome, while the
 project's integration configuration decides whether any branch publication is
@@ -186,8 +187,11 @@ is intentional:
    runtime registry and one `CommandHandler`. The handler is installed before
    initialization, so the embedded MCP/API and later services share the same
    command boundary.
-3. `Orchestrator.initialize()` opens its database-backed subsystems, creates
-   recovery/watch services and plugin-dependent components. Only after this
+3. `Orchestrator.initialize()` opens its database-backed subsystems, adopts
+   live sessions before stale-state recovery, and recovers interrupted jobs
+   before workspace cleanup. It creates recovery/watch services and
+   plugin-dependent components, then starts independent session-message
+   delivery last. Only after this
    does the daemon attach the tool registry and start the daemon-owned fleet
    metrics sampler.
 4. It creates the configured messaging adapter, installs signal handlers, and
@@ -196,13 +200,36 @@ is intentional:
    callbacks from the same daemon state.
 5. The scheduler waits up to 120 seconds for messaging readiness, but an
    authentication failure or timeout leaves command/API/MCP and scheduling
-   available in degraded messaging mode. A scheduler-cycle exception is
-   logged and the next cycle is attempted.
+   available in degraded messaging mode. It binds usable report delivery,
+   starts the review notifier and an independent verified-waits task, and runs
+   the scheduler beside a pool-progress watchdog. A scheduler-cycle exception
+   is logged and the next cycle is attempted.
 
 `run_one_cycle()` is deliberately owned by the `Orchestrator`; the thin loop
-in [`_run_scheduler_cycles()`](../../src/main.py) supplies cadence, failure
-containment and long-cycle diagnostics. See the cycle's numbered phases in
-[`src/orchestrator/core.py`](../../src/orchestrator/core.py).
+in [`_run_scheduler_cycles()`](../../src/main.py) supplies event wakeups,
+minimum cycle spacing, a periodic backstop and long-cycle diagnostics. Cycles
+never overlap. Session-cascade stages have individual 60-second timeouts;
+other cycle work has no whole-cycle deadline. Integration, session-message
+delivery and verified waits run independently on the same event loop. See
+[daemon-core](../specs/systems/daemon-core.md) for phase order, recovery and
+shutdown details.
+
+### Commands and events
+
+`CommandHandler.execute` strips caller-supplied identity fields, binds the
+execution principal and applies pause, pending-wait, capability, resource/scope,
+routing and operator-decision gates before dispatch. Nested calls restore the
+outer caller context. Commands return `{"success": bool, ...}`; unknown
+commands and runtime failures also use explicit failure envelopes. Typed
+contracts and admitted generated descriptors support shared discovery; they do
+not mean every handler has an individually authored typed adapter.
+
+The event bus is an in-process notification mechanism. It validates registered
+payloads, then delivers to specific and wildcard subscribers sequentially.
+Subscriber exceptions propagate to the emitter; events are not retained across
+restarts. Durable services reconcile database records, using events to reduce
+latency. [The current daemon-core spec](../specs/systems/daemon-core.md#26-the-event-bus)
+describes validation modes, payload mutation and event waits.
 
 ### Extension seams
 
@@ -229,7 +256,8 @@ The database owns durable facts: tasks, claims, outcomes, sessions,
 integration evidence and delivery outboxes. `Orchestrator` owns live
 coordination objects and in-memory caches for a running daemon. The daemon
 owns process-lifetime objects it composes itself, notably its metrics sampler,
-messaging task, scheduler task and optional MCP task. A worker owns only its
+messaging task, scheduler/watchdog tasks, review notifier, verified-waits task
+and optional MCP task. A worker owns only its
 active local work and proof-of-claim file; it does not own the global
 scheduler or operator database.
 

@@ -11,6 +11,8 @@ tags: [design, cli, mcp, api, auth, prime, surface]
 > Start at [the documentation home](../../README.md) for what AQ does today, and
 > see [historical material](../../history/README.md) for how this material is
 > organised.
+> Current command dispatch, discovery and authorization:
+> [daemon-core](../systems/daemon-core.md#24-the-command-handler).
 
 **Status:** Draft — approved direction (2026-08-19)
 **Principles:** [guiding-design-principles](guiding-design-principles.md) (#2 visible and editable, #7 events not coupling, #9 simple interfaces, #10 fewer moving parts)
