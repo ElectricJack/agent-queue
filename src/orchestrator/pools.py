@@ -81,6 +81,11 @@ LAUNCH_BACKOFF = 60.0
 POOL_WATCHDOG_INTERVAL = 30.0
 POOL_STALL_TICKS = 3
 POOL_RECONCILE_TIMEOUT = 30.0
+# Continuation funding runs first so a resume can claim its seat, but it is
+# wait reconciliation: it may block on the wait graph. It gets this head start,
+# then finishes off the pool budget under its own bound (2026-10-22 wedges).
+RESUME_HEAD_START = 5.0
+RESUME_PENDING_TIMEOUT = 60.0
 
 
 #: How much of a dead session's captured startup output to carry into the
@@ -514,6 +519,28 @@ class PoolsMixin:
                     POOL_RECONCILE_TIMEOUT,
                 )
 
+    async def _resume_pending_first(self, service) -> None:
+        """Fund continuations ahead of the pool, never at the pool's expense.
+
+        A still-running pass from an earlier tick is awaited, not duplicated,
+        and its failure is logged rather than aborting this tick's placement.
+        """
+        task = self.__dict__.get("_resume_pending_task")
+        if task is None or task.done():
+
+            async def bounded():
+                try:
+                    async with asyncio.timeout(RESUME_PENDING_TIMEOUT):
+                        await service.lifecycle.resume_pending()
+                except TimeoutError:
+                    logger.warning("Continuation resume pass exceeded %.0fs; retrying "
+                                   "on a later tick", RESUME_PENDING_TIMEOUT)
+                except Exception:
+                    logger.exception("Continuation resume pass failed")
+
+            task = self._resume_pending_task = asyncio.create_task(bounded())
+        await asyncio.wait({task}, timeout=RESUME_HEAD_START)
+
     def _pool_reconcile_lock(self) -> asyncio.Lock:
         return self.__dict__.setdefault("_pool_reconciliation_lock", asyncio.Lock())
 
@@ -622,7 +649,7 @@ class PoolsMixin:
         # pool, using the same admission reader and durable reservation fence.
         service = getattr(self, 'wait_service', None)
         if service and service.enabled:
-            await service.lifecycle.resume_pending()
+            await self._resume_pending_first(service)
 
         measurement = await self._measure_pools(hierarchy_modes=hierarchy_modes)
         # A drained holder's seat is counted from the next tick on.

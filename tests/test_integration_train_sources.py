@@ -4076,6 +4076,36 @@ async def test_active_control_status_reads_no_git_and_omits_epic_distance(world,
     assert control == {key: value for key, value in full.items() if key != "epics"}
 
 
+async def test_train_status_bounds_git_and_reuses_a_recent_fetch(world, monkeypatch):
+    """A status read never waits out a slow fetch: epic distance degrades to unknown."""
+    from src.integration import status as status_module
+    from src.integration import train_sources
+
+    await cross_epic_world(world)
+    service = IntegrationStatusService(world.db, git_first="active")
+    seen = []
+    real = train_sources.project_snapshot
+
+    async def recorded(db, target, **kwargs):
+        seen.append(kwargs)
+        return await real(db, target, **kwargs)
+
+    monkeypatch.setattr(train_sources, "project_snapshot", recorded)
+    await service.train_status("p")
+    assert seen and seen[0]["read"] is True
+
+    async def stalled(*args, **kwargs):
+        await asyncio.sleep(60)
+
+    monkeypatch.setattr(train_sources, "project_snapshot", stalled)
+    monkeypatch.setattr(status_module, "_TRAIN_GIT_BUDGET", 0.05)
+    started = time.monotonic()
+    result = await service.train_status("p")
+    assert time.monotonic() - started < 5
+    epic = next(item for item in result["epics"] if item["task_id"] == "epic")
+    assert epic == {"task_id": "epic", "behind": None, "state": "unknown"}
+
+
 async def test_epic_refresh_preview_apply_attestation_lease_and_origin(world):
     from src.integration.stacked_branches import EpicRefresh
 
@@ -5161,6 +5191,33 @@ async def test_slow_root_pr_recovery_does_not_hold_the_visit_or_other_roots(worl
     task = await world.db.get_task("red-root")
     assert task.status is TaskStatus.READY and "unit: failure" in task.description
     assert calls == ["red-root"]
+
+
+async def test_pending_root_recovery_spends_its_bounded_wait_only_once(monkeypatch):
+    import src.integration.github_review_poll as review_poll
+
+    release = asyncio.Event()
+
+    async def recover(_observation):
+        await release.wait()
+        return {"success": True}
+
+    gate = review_poll.RootPullRequestGate(None, repository=None, checks=None,
+                                          failure_handler=recover)
+    observation = SimpleNamespace(request=SimpleNamespace(task_id="root"))
+    wait = AsyncMock(wraps=asyncio.wait)
+    monkeypatch.setattr(review_poll, "ROOT_PR_RECOVERY_WAIT_SECONDS", 0)
+    monkeypatch.setattr(review_poll.asyncio, "wait", wait)
+    try:
+        assert (await gate._recover("identity", observation))["outcome"] == "pending"
+        assert (await gate._recover("identity", observation))["outcome"] == "pending"
+        wait.assert_awaited_once()
+        release.set()
+        await next(iter(gate._recoveries.values()))
+        assert await gate._recover("identity", observation) == {"success": True}
+    finally:
+        release.set()
+        await asyncio.gather(*gate._running)
 
 
 async def test_pending_root_pr_recovery_is_taken_by_a_later_visit(world, monkeypatch):

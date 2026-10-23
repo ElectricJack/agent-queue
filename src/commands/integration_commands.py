@@ -19,7 +19,7 @@ from src.commands.operator_authority import local_or_operator
 from src.commands.detached import detached_operations
 from src.commands.principal import PrincipalKind, TRUSTED_LOCAL, current_principal
 from src.commands.supervisor_authority import integration_operator
-from src.git.manager import GitError
+from src.git.manager import GitError, _validate_ref
 from src.git.manager import RemoteRefState
 from src.database.queries.hierarchy_queries import HierarchyError
 from src.integration.models import BranchKey, Fence
@@ -2220,7 +2220,7 @@ class IntegrationCommandsMixin:
 
         from src.commands.contracts.integration import IntegrationCloseDeliveredPrArgs
         from src.integration.pr_delivery import DeliveredPullRequestClosure
-        from src.integration.pr_cleanup import SWEEP_PRINCIPAL
+        from src.integration.pr_cleanup import SWEEP_PRINCIPAL, SWEEP_PULL
 
         try:
             request = IntegrationCloseDeliveredPrArgs.model_validate(args)
@@ -2235,6 +2235,7 @@ class IntegrationCommandsMixin:
             principal, refusal = await integration_operator(self.db, request.project_id)
         if refusal is not None:
             return _failure("unauthorized", refusal)
+        inventory = SWEEP_PULL.get() if sweep and request.dry_run else None
         result = await DeliveredPullRequestClosure(
             self.db, self._integration_repository_git()
         ).run(
@@ -2245,9 +2246,41 @@ class IntegrationCommandsMixin:
             reason=request.reason,
             operator_id=principal,
             aq_only=sweep,
+            inventory_pull=(inventory[2] if inventory is not None
+                            and inventory[:2] == (request.project_id, request.pr_number) else None),
         )
         return {
             "success": result["outcome"] in {"would_close", "closed", "nothing_to_close"},
+            "dry_run": request.dry_run,
+            **result,
+        }
+
+    async def _cmd_integration_fast_forward_pr(self, args: dict) -> dict:
+        """Adopt a separately filed repair's published passing head into its root PR."""
+
+        from src.commands.contracts.integration import IntegrationFastForwardPrArgs
+        from src.integration.pr_repair_publication import PRRepairPublication
+
+        try:
+            request = IntegrationFastForwardPrArgs.model_validate(args)
+        except ValidationError as exc:
+            return _failure("invalid", f"invalid PR fast-forward request: {exc}")
+        task = await self.db.get_task(request.task_id)
+        principal, refusal = await integration_operator(
+            self.db, task.project_id if task is not None else None
+        )
+        if refusal is not None:
+            return _failure("unauthorized", refusal)
+        result = await PRRepairPublication(
+            self.db, self._integration_repository_git(), self.config,
+            event_bus=getattr(self.orchestrator, "bus", None),
+        ).run(
+            request.task_id, request.pr_number, dry_run=request.dry_run,
+            expected_head_sha=request.expected_head_sha, reason=request.reason,
+            operator_id=principal,
+        )
+        return {
+            "success": result["outcome"] in {"would_publish", "published", "already_published"},
             "dry_run": request.dry_run,
             **result,
         }
@@ -2575,6 +2608,27 @@ class IntegrationCommandsMixin:
                 raise GitError(f"repository branch {branch!r} does not exist")
             return head
 
+        async def filing_head(repo, branch):
+            # Filing only pins a starting commit. Reuse the retained Git evidence
+            # without asking GitHub for credentials while its API is in backoff.
+            # Live remote guards continue to use resolve_head/branch_head above.
+            branch = _validate_ref(branch.removeprefix("refs/heads/"))
+            promotion = origin_git(repo)
+            resolved = await promotion._resolve_repository(repo.id)
+            await promotion._ensure_retained_repository(resolved)
+            store = str(resolved.retained_git_dir)
+            tracking = f"refs/remotes/origin/{branch}^{{commit}}"
+            async with promotion.git.arepository_transaction(store):
+                for ref in (tracking, f"refs/heads/{branch}^{{commit}}"):
+                    head = await promotion.git.arev_parse(store, ref)
+                    if head is not None:
+                        return head
+                await promotion._fetch_all_heads(resolved.retained_git_dir, resolved.origin_url)
+                head = await promotion.git.arev_parse(store, tracking)
+                if head is None:
+                    raise GitError(f"repository branch {branch!r} does not exist")
+                return head
+
         async def branch_base(repo, head, parent_head):
             promotion = origin_git(repo)
             resolved = await promotion._resolve_repository(repo.id)
@@ -2608,6 +2662,7 @@ class IntegrationCommandsMixin:
         return HierarchyIntegration(
             self.db,
             default_head_resolver=resolve_head,
+            filing_head_resolver=filing_head,
             branch_head_resolver=branch_head,
             branch_base_resolver=branch_base,
             branch_materializer=materialize,

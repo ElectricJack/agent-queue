@@ -72,6 +72,7 @@ import logging
 import os
 import time
 import uuid
+from collections.abc import Mapping
 from functools import cached_property
 from pathlib import Path
 from typing import Any
@@ -82,6 +83,7 @@ from src.database.queries.hierarchy_queries import HierarchyError
 from src.event_bus import EventBus
 from src.git.github import GitHubAccess, GitHubClient
 from src.git.manager import GitManager
+from src.jobs.policy import JobError
 from src.llm_logger import LLMLogger
 from src.messaging.types import (
     CreateThreadCallback as _CreateThreadCallbackType,
@@ -133,6 +135,26 @@ logger = logging.getLogger(__name__)
 PAUSE_CHECKPOINT_RETRY_META = "manual_pause_checkpoint_retry"
 PAUSE_CHECKPOINT_MAX_ATTEMPTS = 3
 PAUSE_CHECKPOINT_MAX_BACKOFF = 30.0
+# Bound on each _reconcile_sessions stage; see _bounded_stage.
+SESSION_STAGE_TIMEOUT = 60.0
+
+
+async def _bounded_stage(name: str, step) -> dict:
+    """Run one session-cascade stage under ``SESSION_STAGE_TIMEOUT``.
+
+    Each stage holds pooled connections and, for the wait stages, the
+    global wait-graph fence; unbounded, one slow stage delayed every later
+    pool and materialization pass (2026-10-22 wedges). A cancelled stage
+    rolls back its transaction and resumes from durable rows next cycle.
+    """
+    try:
+        async with asyncio.timeout(SESSION_STAGE_TIMEOUT):
+            return await step
+    except TimeoutError:
+        logger.warning("Session cascade stage '%s' exceeded %.0fs; cancelled, "
+                       "retrying next cycle", name, SESSION_STAGE_TIMEOUT)
+        return {"success": True, "timed_out": True, "stage": name}
+
 
 # File handlers run synchronously on the scheduler's event loop. Bound writes
 # even when a capacity change affects every READY task at once.
@@ -2292,7 +2314,8 @@ class Orchestrator(
             from src.projects.github import GitHubError, parse_github_repository
 
             try:
-                parsed = parse_github_repository(repository.url)
+                url = repository["url"] if isinstance(repository, Mapping) else repository.url
+                parsed = parse_github_repository(url)
             except GitHubError:
                 return None
             # Share onboarding's identity rules; authentication still goes
@@ -2986,6 +3009,10 @@ class Orchestrator(
         # slot->base mapping so the git mutex keeps serializing.
         # Full adoption (git worktree list cross-check, prune, repair) is
         # phase 4.
+        # Settle the previous run's jobs first: a launch it left ambiguous
+        # still pins its workspace, and the cleanup below refuses to mutate a
+        # pinned workspace (smart-lantern-91).
+        await self._recover_stale_jobs()
         all_workspaces = await self.db.list_workspaces()
         self._recover_worktree_base_paths(all_workspaces)
         for ws in all_workspaces:
@@ -3006,6 +3033,10 @@ class Orchestrator(
                     )
                     await self.db.release_workspace(ws.id)
                 continue
+            if ws.kind_id == "job-snapshot":
+                # Job snapshots are durable across restarts; only job
+                # retention (``JobService.sweep``) may remove one.
+                continue
             self._remove_sentinel(ws.workspace_path)
             if ws.source_type == RepoSourceType.WORKTREE:
                 logger.info(
@@ -3013,7 +3044,14 @@ class Orchestrator(
                     ws.id,
                     ws.workspace_path,
                 )
-                await self._cleanup_worktree_workspace(ws)
+                try:
+                    await self._cleanup_worktree_workspace(ws)
+                except JobError as exc:
+                    # A live job pin defers the cleanup to a later restart;
+                    # it never aborts startup.
+                    logger.warning(
+                        "Recovery: deferring cleanup of workspace '%s' (%s)", ws.id, exc
+                    )
             elif ws.locked_by_agent_id and ws.locked_by_agent_id not in protected_agents:
                 logger.info(
                     "Recovery: releasing workspace lock '%s' (was locked by %s)",
@@ -3070,6 +3108,20 @@ class Orchestrator(
             await self.db.transition_task(
                 t.id, TaskStatus.READY, context="recovery", assigned_agent_id=None
             )
+
+    async def _recover_stale_jobs(self) -> None:
+        """Run job startup recovery; a failure is logged, never fatal."""
+        if not hasattr(type(self.db), "reconcilable_jobs"):
+            return  # lightweight test doubles have no job storage
+        from src.jobs.service import JobService
+
+        service = getattr(self, "job_service", None)
+        if service is None:
+            service = self.job_service = JobService(self.db, self.config)
+        try:
+            await service.recover_on_startup()
+        except Exception:
+            logger.exception("Recovery: job startup reconciliation failed")
 
     async def _ensure_task_directories(self) -> None:
         """Create per-project task directories under ``{data_dir}/tasks/``.
@@ -4510,26 +4562,26 @@ class Orchestrator(
         # tolerant of missing transcripts and its own per-session failures,
         # so a wedged reader degrades one session rather than the cycle.
         try:
-            await self.transcript_watcher.tick()
+            await _bounded_stage("transcript watcher", self.transcript_watcher.tick())
         except Exception:
             logger.error("TranscriptWatcher tick failed", exc_info=True)
         try:
-            await self.agent_questions.tick()
+            await _bounded_stage("agent questions", self.agent_questions.tick())
         except Exception:
             logger.error("AgentQuestionService tick failed", exc_info=True)
         if self._command_handler is not None:
             try:
                 from src.commands.collaboration_lifecycle import CollaborationReconciler
-
-                result = await CollaborationReconciler(self._command_handler).tick()
+                result = await _bounded_stage(
+                    "collaboration", CollaborationReconciler(self._command_handler).tick())
                 if not result.get("success"):
                     logger.error("CollaborationReconciler tick refused: %s", result)
             except Exception:
                 logger.error("CollaborationReconciler tick failed", exc_info=True)
             try:
                 from src.agent_waits import AgentWaitReconciler
-
-                result = await AgentWaitReconciler(self._command_handler).tick()
+                result = await _bounded_stage(
+                    "agent waits", AgentWaitReconciler(self._command_handler).tick())
                 if not result.get("success"):
                     logger.error("AgentWaitReconciler tick refused: %s", result)
             except Exception:
@@ -4537,11 +4589,11 @@ class Orchestrator(
             try:
                 wait_service = getattr(self, "wait_service", None)
                 if wait_service is not None:
-                    await wait_service.tick()
+                    await _bounded_stage("wait service", wait_service.tick())
             except Exception:
                 logger.error("WaitService recovery tick failed", exc_info=True)
             try:
-                result = await self.agent_cron.tick()
+                result = await _bounded_stage("agent cron", self.agent_cron.tick())
                 if not result.get("success"):
                     logger.error("Agent cron tick refused: %s", result)
             except Exception:
@@ -4551,7 +4603,7 @@ class Orchestrator(
             # no durable wait can resolve, so say so rather than skip silently.
             logger.warning("AgentWaitReconciler skipped: no command handler installed")
             logger.warning("CollaborationReconciler skipped: no command handler installed")
-        await self.session_reconciler.tick()
+        await _bounded_stage("session reconciler", self.session_reconciler.tick())
         from src.integration.completion_recovery import schedule_ready_owner_recovery
 
         schedule_ready_owner_recovery(self)
