@@ -10,6 +10,7 @@ from sqlalchemy import func, select, update
 
 from src.commands.principal import ExecutionPrincipal
 from src.database.tables import integration_batches, messages, tasks
+from src.git.manager import _git_preparation_error
 from src.integration.batches import Batch, BatchMember, BatchStore, candidate_ref
 from src.integration.fixers import BatchFixerService, split_members
 from src.integration.models import RepairPolicy
@@ -126,9 +127,192 @@ async def test_stopped_fixer_is_preserved_not_replaced(db, fixer):
     runtime.start.assert_awaited_once()
 
 
+async def register(db, state, session_state):
+    from src.models import SessionRecord
+
+    await db.create_session(SessionRecord(
+        id=state["session_id"], project_id="p", profile_id="fixer", harness="claude",
+        provider="fake", name=state["session_name"], lifecycle="named", work_dir="/retained/x",
+        epoch="test", instance_token=state["instance_token"], started_at=1, task_id=None,
+        state=session_state, desired_state="stopped" if session_state == "stopped" else "running",
+    ))
+
+
+async def transfer(db, source, successor_id):
+    """What the due resume observer does with an unlaunched identity."""
+    store = BatchStore(db)
+    await store.freeze(Batch(successor_id, "p", "r", "refs/heads/dev"),
+                       await store.members(source), trees={"one": "e" * 40, "two": "f" * 40})
+    waiting = (await db.get_integration_batch(source))["fixer_state"]
+    async with db.immediate() as conn:
+        await conn.execute(update(integration_batches).where(integration_batches.c.id == source)
+                           .values(fixer_state=None))
+        await conn.execute(update(integration_batches).where(integration_batches.c.id == successor_id)
+                           .values(fixer_state={**waiting, "batch_id": successor_id,
+                                                "target_ref": candidate_ref(successor_id)},
+                                   fixer_queue={"family_id": "batch-fix"}))
+
+
+async def allocate_on(service, batch_id, head=NEXT):
+    return await service.allocate(batch_id, target_ref=candidate_ref(batch_id), head_sha=head,
+                                  authorize=AsyncMock(return_value=True))
+
+
+async def test_unregistered_launch_failure_retries_with_backoff_and_escalates_once(db, fixer):
+    service, runtime, now = fixer
+    # Push preparation fails before registration: no process, no session row.
+    runtime.start.side_effect = RuntimeError("authenticated Git push preparation failed")
+    first = await allocate(service)
+    assert first["outcome"] == "deferred"
+    batch_id, backoffs = "batch-fix", []
+    for attempt in range(1, 5):
+        row = await db.get_integration_batch(batch_id)
+        assert row["fixer_queue"]["reason"] == "launch_retry"
+        backoffs.append(row["fixer_queue"]["revisit_seconds"])
+        current = row["fixer_state"]
+        assert current["status"] == "waiting_capacity" and "blocker" not in current
+        assert current["launch_failures"] == attempt
+        assert current["session_id"] == first["session_id"]
+        assert len(await notices(db, supervisor=True)) == (0 if attempt < 3 else 1)
+        successor = f"retry-{attempt}"
+        await transfer(db, batch_id, successor)
+        now[0] += 5000
+        batch_id = successor
+        if attempt < 4:
+            assert (await allocate_on(service, batch_id))["outcome"] == "deferred"
+    assert backoffs == [300, 600, 1200, 2400]
+    runtime.start.side_effect = None
+    result = await allocate_on(service, batch_id)
+    assert result == {"success": True, "outcome": "filed", "session_id": first["session_id"]}
+    assert runtime.start.await_count == 5
+    assert (await db.get_integration_batch(batch_id))["fixer_state"]["status"] == "active"
+    assert len(await notices(db, supervisor=True)) == 1
+
+
+async def test_stopped_registered_launch_retries_under_a_fresh_identity(db, fixer):
+    from src.sessions.provider import SessionDiedDuringStartup
+
+    service, runtime, now = fixer
+
+    async def died(launch):
+        await register(db, launch, "stopped")  # launch cleanup confirmed the stop
+        raise SessionDiedDuringStartup("harness exited during startup")
+
+    runtime.start.side_effect = died
+    first = await allocate(service)
+    assert first["outcome"] == "deferred"
+    retry = await state(db)
+    assert retry["status"] == "waiting_capacity"
+    launched = runtime.start.await_args.args[0]
+    assert first["session_id"] == retry["session_id"] != launched["session_id"]
+    assert retry["instance_token"] != launched["instance_token"]
+    assert retry["session_name"] == launched["session_name"]
+    assert retry["session_id"] == str(UUID(retry["session_id"]))
+    await transfer(db, "batch-fix", "fresh-next")
+    now[0] += 5000
+    runtime.start.side_effect = None
+    result = await allocate_on(service, "fresh-next")
+    assert result["outcome"] == "filed"
+    assert result["session_id"] == retry["session_id"]
+    assert runtime.start.await_args.args[0]["session_id"] == str(UUID(retry["session_id"]))
+    assert not await notices(db, supervisor=True)
+
+
+async def test_launch_retry_dashes_a_legacy_unregistered_identity_before_relaunch(db, fixer):
+    service, runtime, now = fixer
+    runtime.start.side_effect = RuntimeError("authenticated Git push preparation failed")
+    assert (await allocate(service))["outcome"] == "deferred"
+    legacy = uuid4().hex
+    waiting = await state(db)
+    async with db.immediate() as conn:
+        await conn.execute(update(integration_batches).where(
+            integration_batches.c.id == "batch-fix",
+        ).values(fixer_state={**waiting, "session_id": legacy}))
+    await transfer(db, "batch-fix", "legacy-launch-retry")
+    now[0] += 5000
+    runtime.start.side_effect = None
+    result = await allocate_on(service, "legacy-launch-retry")
+    assert result["outcome"] == "filed"
+    assert result["session_id"] == str(UUID(legacy))
+    assert runtime.start.await_args.args[0]["session_id"] == str(UUID(legacy))
+    assert (await db.get_integration_batch("legacy-launch-retry"))["fixer_state"][
+        "session_id"
+    ] == str(UUID(legacy))
+
+
+@pytest.mark.parametrize("owner_status", ["active", "launching"])
+@pytest.mark.parametrize("session_state", [None, "stopped"])
+async def test_family_blocked_by_legacy_launch_failure_relaunches_on_successor(
+        db, fixer, session_state, owner_status):
+    from src.integration.fixer_batches import defer_on
+
+    service, runtime, now = fixer
+    await allocate(service)
+    owner = await state(db)
+    # The pre-retry shape: an expired root owner with a permanent launch blocker.
+    legacy = UUID(owner["session_id"]).hex
+    owner.update(status=owner_status, session_id=legacy,
+                 blocker="launch incomplete: push preparation failed")
+    async with db.immediate() as conn:
+        await conn.execute(update(integration_batches).where(
+            integration_batches.c.id == "batch-fix").values(fixer_state=owner))
+        await defer_on(conn, await db.get_integration_batch("batch-fix"), now=now[0],
+                       reason=owner["blocker"], head_sha=HEAD)
+    if session_state:
+        await register(db, owner, session_state)
+    successor = Batch("legacy-next", "p", "r", "refs/heads/dev")
+    store = BatchStore(db)
+    await store.freeze(successor, await store.members("batch-fix"),
+                       trees={"one": "e" * 40, "two": "f" * 40})
+    async with db.immediate() as conn:
+        await conn.execute(update(integration_batches).where(integration_batches.c.id == successor.id)
+                           .values(fixer_queue={"family_id": "batch-fix"}))
+    now[0] = owner["deadline"] + 5000
+    result = await allocate_on(service, successor.id)
+    assert result["outcome"] == "filed"
+    assert result["session_id"] == str(UUID(result["session_id"]))
+    assert (UUID(result["session_id"]) == UUID(legacy)) is (session_state is None)
+    assert (await state(db)) is None
+    moved = (await db.get_integration_batch(successor.id))["fixer_state"]
+    assert moved["batch_id"] == successor.id and moved["starting_sha"] == NEXT
+    assert moved["status"] == "active" and "blocker" not in moved
+    assert moved["family_id"] == "batch-fix"
+    assert moved["deadline"] > now[0]
+    assert runtime.start.await_args.args[0]["session_id"] == result["session_id"]
+    assert runtime.start.await_count == 2
+
+
+async def test_family_keeps_launch_blocker_while_its_process_may_exist(db, fixer):
+    service, runtime, _ = fixer
+
+    async def uncertain(launch):
+        await register(db, launch, "starting")  # stop could not be confirmed
+        raise RuntimeError("launch cleanup could not confirm stop")
+
+    runtime.start.side_effect = uncertain
+    assert (await allocate(service))["outcome"] == "deferred"
+    owner = await state(db)
+    assert owner["blocker"].startswith("launch incomplete")
+    successor = Batch("uncertain-next", "p", "r", "refs/heads/dev")
+    store = BatchStore(db)
+    await store.freeze(successor, await store.members("batch-fix"),
+                       trees={"one": "e" * 40, "two": "f" * 40})
+    async with db.immediate() as conn:
+        await conn.execute(update(integration_batches).where(integration_batches.c.id == successor.id)
+                           .values(fixer_queue={"family_id": "batch-fix"}))
+    assert (await allocate_on(service, successor.id))["outcome"] == "deferred"
+    runtime.start.assert_awaited_once()
+    assert (await state(db))["session_id"] == owner["session_id"]
+
+
 async def test_ambiguous_launch_is_retained_and_never_retried(db, fixer):
     service, runtime, now = fixer
-    runtime.start.side_effect = RuntimeError("process registration succeeded; provider unavailable")
+
+    async def uncertain(launch):
+        await register(db, launch, "starting")
+        raise RuntimeError("process registration succeeded; provider unavailable")
+
+    runtime.start.side_effect = uncertain
     assert (await allocate(service))["outcome"] == "deferred"
     now[0] += 2000
     await allocate(service)
@@ -136,6 +320,43 @@ async def test_ambiguous_launch_is_retained_and_never_retried(db, fixer):
     assert len(await notices(db, supervisor=True)) == 1
     await service.settle_green("batch-fix", HEAD)
     assert (await state(db))["status"] == "green"
+
+
+@pytest.mark.parametrize("reason", [
+    "lock_wait_timeout", "git_timeout", "git_exit", "import_mismatch",
+])
+async def test_preparation_reason_reaches_launch_retry_and_train_notice(db, fixer, reason):
+    service, runtime, _ = fixer
+    runtime.start.side_effect = _git_preparation_error(
+        reason, subcommand="fetch", elapsed=120, budget=120,
+        returncode=128 if reason == "git_exit" else None,
+        diagnostic_kind="fatal" if reason == "git_exit" else "none",
+    )
+    result = await allocate(service)
+    assert result["outcome"] == "deferred"
+    assert f"reason={reason}" in result["reason"]
+    batch_id = "batch-fix"
+    for attempt in range(1, 4):
+        row = await db.get_integration_batch(batch_id)
+        current = row["fixer_state"]
+        assert current["status"] == "waiting_capacity" and "blocker" not in current
+        assert row["fixer_queue"]["reason"] == "launch_retry"
+        assert f"reason={reason}" in current["launch_error"]
+        assert "subcommand=fetch" in current["launch_error"]
+        if attempt < 3:
+            assert not await notices(db, supervisor=True)
+            successor = f"preparation-retry-{attempt}"
+            await transfer(db, batch_id, successor)
+            batch_id = successor
+            result = await allocate_on(service, batch_id)
+            assert result["outcome"] == "deferred"
+            assert f"reason={reason}" in result["reason"]
+    notice, = await notices(db, supervisor=True)
+    assert notice["from_id"] == "integration-train"
+    assert f"reason={reason}" in notice["body"]
+    assert "subcommand=fetch" in notice["body"]
+    assert "retries with backoff" in notice["body"]
+    assert runtime.start.await_count == 3
 
 
 @pytest.mark.parametrize("intent", ["paused", "aborted"])
@@ -214,8 +435,17 @@ async def live_fixer(db, tmp_path, monkeypatch, request):
                        data_dir=str(tmp_path / "data"), workspace_dir=str(tmp_path / "work"))
     config.sessions.enabled, config.sessions.provider = True, "fake"
     registry = HarnessRegistry()
-    harness = Harness(**{"id": "codex", "command": "codex", "model_flag": "--model",
-                         **getattr(request, "param", {})})
+    overrides = getattr(request, "param", {})
+    harness_id = overrides.get("id", "codex")
+    permission_flag = ("--dangerously-bypass-approvals-and-sandbox" if harness_id == "codex"
+                       else "--dangerously-skip-permissions")
+    harness = Harness(**{
+        "id": harness_id, "command": harness_id, "model_flag": "--model",
+        "permission_flag": permission_flag, "supports_hooks": harness_id == "codex",
+        "hook_files": ((".codex/hooks.json", "hooks/codex.json"),) if harness_id == "codex" else (),
+        "hook_trust_flag": "--dangerously-bypass-hook-trust" if harness_id == "codex" else "",
+        **overrides,
+    })
     registry.upsert(harness)
     profile = AgentProfile(id="fixer-profile", name="Fixer", harness=harness.id,
                            model="test-model", lifecycle="pool")
@@ -260,11 +490,18 @@ def principal_for(row):
                               session_instance_token=row.instance_token, project_id=row.project_id)
 
 
+@pytest.mark.parametrize("live_fixer", [{}, {"id": "claude", "command": "claude"}],
+                         indirect=True)
 async def test_registered_named_launch_has_no_claim_and_preserves_checkout(db, live_fixer):
     service, runtime, orch, row, _, source, _ = live_fixer
     assert row.lifecycle == "named" and row.task_id is None and row.state == "running"
     provider = orch.session_providers.create("fake")
     spec = provider.sessions[row.name].spec
+    harness = orch.harness_registry.get(row.harness, project_id="p")
+    assert spec.command.count(harness.permission_flag) == 1
+    if row.harness == "codex":
+        assert "--dangerously-bypass-hook-trust" in spec.command
+        assert spec.hooks_provisioned
     assert "AQ_TASK_ID" not in spec.env and "AQ_CLAIM_EPOCH" not in spec.env
     assert spec.env["AQ_DB_SCOPE"] == "worker"
     assert spec.env["GIT_AUTHOR_EMAIL"]
@@ -276,6 +513,30 @@ async def test_registered_named_launch_has_no_claim_and_preserves_checkout(db, l
     assert not await db.get_task("real")
     async with db._engine.connect() as conn:
         assert await conn.scalar(select(func.count()).select_from(tasks)) == 0
+
+
+@pytest.mark.parametrize("checkout", ["unregistered", "primary"])
+async def test_fixer_refuses_checkout_without_linked_registration(db, live_fixer, monkeypatch,
+                                                                 checkout):
+    from pathlib import Path
+
+    _, runtime, orch, row, _, _, _ = live_fixer
+    state = (await db.get_integration_batch("real"))["fixer_state"]
+    path = Path(row.work_dir)
+    if checkout == "unregistered":
+        monkeypatch.setattr(runtime.git, "aworktree_list", AsyncMock(return_value=[]))
+    else:
+        path = runtime.git.remote_path.parent / "retained"
+    monkeypatch.setattr("src.warm_workspaces.WarmWorkspacePool.acquire",
+                        AsyncMock(return_value=path))
+    monkeypatch.setattr(db, "get_session", AsyncMock(return_value=None))
+    mint = AsyncMock()
+    monkeypatch.setattr(orch.token_store, "mint", mint)
+    starts = len(orch.session_providers.create("fake").starts)
+    with pytest.raises(ValueError, match="not a registered linked worktree"):
+        await runtime._start(state)
+    mint.assert_not_awaited()
+    assert len(orch.session_providers.create("fake").starts) == starts
 
 
 @pytest.mark.parametrize("live_fixer", [
@@ -653,6 +914,30 @@ async def test_deferred_successor_observes_late_fix_on_retained_writer(split_env
     fresh = await service.visit(following, members, await snapshot(following))
     assert fresh.state == "testing", fresh
     assert await ops.is_ancestor(repo, later, fresh.candidate_sha)
+
+
+@pytest.mark.parametrize("reason", ["launch_retry", "budget"])
+async def test_due_launch_retry_resumes_unchanged_head_with_its_identity(split_env, reason):
+    from src.integration.fixer_batches import defer_on
+    from src.integration.train import TrainTarget
+
+    (db, _ops, _repo, _, _store, batch, _members, _green, snapshot, service,
+     _runtime, splitter, _evidence, fixed) = split_env
+    waiting = {"status": "waiting_capacity", "session_id": "retry-me", "family_id": batch.id,
+               "batch_id": batch.id, "target_ref": candidate_ref(batch.id)}
+    async with db.immediate() as conn:
+        await conn.execute(update(integration_batches).where(integration_batches.c.id == batch.id)
+                           .values(fixer_state=waiting))
+        await defer_on(conn, await db.get_integration_batch(batch.id), now=0,
+                       reason=reason, head_sha=fixed, revisit_seconds=600)
+    resumed = await splitter.resume(TrainTarget("p", "r", batch.target_ref),
+                                    await snapshot(batch), service)
+    if reason == "budget":  # Unchanged exhausted work never re-admits.
+        assert resumed is None
+        return
+    moved = (await db.get_integration_batch(resumed.id))["fixer_state"]
+    assert moved["session_id"] == "retry-me" and moved["batch_id"] == resumed.id
+    assert (await db.get_integration_batch(batch.id))["fixer_state"] is None
 
 
 async def test_capacity_retry_dashes_a_legacy_hex_identity_before_launch(db, fixer):
