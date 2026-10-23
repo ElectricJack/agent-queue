@@ -389,6 +389,7 @@ def test_batch_exception_is_exact_and_has_no_remaining_headroom(report, manifest
         "sound-forge-62",
         "calm-rapids-50",
         "fair-harbor-71",
+        "smart-forge-49",
     }
     amendment = amendments["solid-impact-56"]
     assert amendment["task_id"] == "solid-impact-56"
@@ -712,7 +713,7 @@ def test_resume_batch_preserves_grants_and_composes_exact_inventory(report, mani
     batch = exception["resume_batch_composition"]
     assert batch["batch_id"] == "train-9394fdec634bb068ee8e58c1008dd4b2-resume-1e142f1858d8"
     assert batch["starting_revision"] == "c177d24e86d25fde7804131c94bfd637b0eb540a"
-    assert batch["source_revision"] == exception["measured_source_revision"]
+    assert batch["source_revision"] == "4bafa45f1ac0a466eab372c7b6b0b866f67bb832"
     assert batch["member_sources"] == {
         "calm-rapids-50": "45626ba27ff1c7711f5aa17893f7ce997928da5f",
         "fair-crest-95": "63163a7d4fd4aa5611c18ae139580902abf32770",
@@ -734,12 +735,45 @@ def test_resume_batch_preserves_grants_and_composes_exact_inventory(report, mani
     assert batch["base_table_count"] == 45
     assert batch["base_owned_total"] + sum(
         delta["owned"] for delta in batch["approved_deltas"].values()
-    ) == exception["measured_owned_total"] == report["total"] == 161_213
+    ) == 161_213
     assert batch["base_engine_lines"] + sum(
         delta["engine"] for delta in batch["approved_deltas"].values()
-    ) == exception["measured_engine_lines"] == report["groups"]["engine"] == 85_544
+    ) == 85_544
     assert batch["base_table_count"] + sum(
         delta["tables"] for delta in batch["approved_deltas"].values()
     ) == exception["measured_table_count"] == len(report["tables"]) == 45
     recorded = json.loads((ROOT / "tests/integration_ownership_report.json").read_text())
     assert recorded["resume_recovery_measurement"] == amendments["calm-rapids-50"]
+
+
+def test_root_pr_gate_cache_grant_is_exact_and_preserves_resume_measurement(report, manifest):
+    exception = manifest["transition_exception"]
+    grant = next(item for item in exception["amendments"] if item["task_id"] == "smart-forge-49")
+    assert grant["decision_message_id"] == "msg-c45ccf8341f946819758858c7bff488d"
+    assert grant["decision_message_id"] in exception["decision_message_ids"]
+    assert grant["referenced_decision"] == "size-cap-delegation-2026-10-23"
+    assert grant["operator_decision"] == "6679052c"
+    assert grant["operator_task"] == "sharp-cascade-53"
+    assert grant["pull_request"] == "https://github.com/ElectricJack/agent-queue/pull/1907"
+    batch = exception["resume_batch_composition"]
+    for category in ("owned", "engine"):
+        previous = (batch[f"base_{category}_total"] if category == "owned"
+                    else batch["base_engine_lines"])
+        previous += sum(delta[category] for delta in batch["approved_deltas"].values())
+        key = "owned_total" if category == "owned" else "engine_lines"
+        assert grant[f"previous_{key}"] == previous
+        assert grant[f"authorized_{category}_delta"] == 55
+        assert previous + 55 == grant[f"measured_{key}"] == exception[f"measured_{key}"]
+    assert grant["authorized_shared_delta"] == grant["authorized_table_delta"] == 0
+    assert grant["previous_table_count"] == grant["measured_table_count"] == 45
+    assert grant["measured_owned_total"] == report["total"] == 161_268
+    assert grant["measured_engine_lines"] == report["groups"]["engine"] == 85_599
+    assert grant["measured_table_count"] == len(report["tables"])
+    assert grant["measured_source_revision"] == "ddf86c8595adb25c7361740bf680b2273f88c90a"
+    assert grant["measured_source_revision"] == exception["measured_source_revision"]
+    recorded = json.loads((ROOT / "tests/integration_ownership_report.json").read_text())
+    assert recorded["root_pr_gate_cache_measurement"] == grant
+    assert ownership.budget_errors(report, manifest) == []
+    assert ownership.budget_errors({**report, "total": report["total"] + 1}, manifest) == [
+        "owned total: 161,269 exceeds 161,268 in transition",
+    ]
