@@ -615,6 +615,7 @@
         "tests/test_promotion_flow.py",
         "tests/test_promotion_notes_input.py",
         "tests/test_promotion_policy.py",
+        "tests/test_promotion_request_playbook.py",
         "tests/test_promotion_rulesets.py",
         "tests/test_promotion_steps.py",
         "tests/test_repair_checkout_refs.py"
@@ -15136,6 +15137,27 @@
         "parametrize"
       ],
       "summary": "Reviewed promotion policies on real Git/PostgreSQL release and hotfix lanes."
+    },
+    "tests/test_promotion_request_playbook.py": {
+      "areas": [
+        "integration-promotion"
+      ],
+      "default_arm": true,
+      "digest": "sha256:a3b60c9ccf2a85029c34360e53f538d551deb1fabbf5abf8581210eaf2de5eea",
+      "imports": [
+        "src.commands.contracts",
+        "src.commands.contracts.models",
+        "src.commands.contracts.registry",
+        "src.commands.principal",
+        "src.playbooks.definition",
+        "src.playbooks.engine",
+        "src.playbooks.executors.base",
+        "src.profiles.capabilities"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Execute the request policy against the frozen pre-port shipped graph."
     },
     "tests/test_promotion_rulesets.py": {
       "areas": [

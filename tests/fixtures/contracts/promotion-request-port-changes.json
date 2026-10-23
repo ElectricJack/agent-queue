@@ -1,0 +1,10 @@
+{
+  "reason": "promotion-request source declares the existing capabilities and exact typed result/notification policy; executable graph and command pins unchanged. No installation or activation.",
+  "playbook_fixtures": {
+    "tests/fixtures/playbooks/v2/promotion-request/artifact.json": {
+      "previous_sha256": "e23b9ec529926ed9c6207b9f5843d77942bb9690bc9694d8c4b19938f1445a85",
+      "sha256": "389999dfca3102fd3df88169fff23c2f872deb35ddd790a1589639bc25aae81a",
+      "preserved_previous_path": "tests/fixtures/playbooks/scenarios/promotion-request/shipped-before.artifact.json"
+    }
+  }
+}

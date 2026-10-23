@@ -60,6 +60,7 @@ DEV_HIBERNATION_CHANGES = ROOT / "tests/fixtures/contracts/hibernation-main-refr
 SUPERVISOR_HEALTH_CHANGES = ROOT / "tests/fixtures/contracts/supervisor-health-contract-changes.json"
 TARGET_REPAIR_CHANGES = ROOT / "tests/fixtures/contracts/target-repair-contract-changes.json"
 PR_REPAIR_CHANGES = ROOT / "tests/fixtures/contracts/pr-repair-publication-contract-changes.json"
+PROMOTION_REQUEST_PORT = ROOT / "tests/fixtures/contracts/promotion-request-port-changes.json"
 
 
 def _stuck_check_changes():
@@ -493,6 +494,8 @@ def test_legacy_playbook_fixtures_are_unchanged():
     watch = _watch_changes()["playbook_fixtures"]
     ingest = json.loads(INGEST_CHANGES.read_text())["playbook_fixtures"]
     hibernation = _hibernation_changes()["playbook_fixtures"]
+    promotion_request = json.loads(PROMOTION_REQUEST_PORT.read_text())["playbook_fixtures"]
+    assert set(promotion_request) == {"tests/fixtures/playbooks/v2/promotion-request/artifact.json"}
     assert set(ingest) == {"tests/fixtures/playbooks/v2/default-pipeline/artifact.json"}
     for path, digest in json.loads(GOLDEN.read_text())["playbook_fixtures"].items():
         if path in changes:
@@ -516,6 +519,13 @@ def test_legacy_playbook_fixtures_are_unchanged():
             assert hibernation[path]["previous_sha256"] == digest
             assert hibernation[path]["sha256"] != digest
             digest = hibernation[path]["sha256"]
+        if path in promotion_request:
+            change = promotion_request[path]
+            assert change["previous_sha256"] == digest
+            historical = ROOT / change["preserved_previous_path"]
+            assert hashlib.sha256(historical.read_bytes()).hexdigest() == digest
+            assert change["sha256"] != digest
+            digest = change["sha256"]
         assert hashlib.sha256((ROOT / path).read_bytes()).hexdigest() == digest, path
 
 
