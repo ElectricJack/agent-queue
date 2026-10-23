@@ -60,6 +60,13 @@ def artifact():
 def test_port_preserves_installed_graph_and_authority():
     raw = (PORT_FIXTURES / "installed.artifact.json").read_bytes()
     assert hashlib.sha256(raw).hexdigest() == PORT_SCENARIOS["installed_artifact_sha256"]
+    # The exact pre-port repository bytes are also pinned by the legacy digest
+    # guard. The installed copy differs only in its compilation timestamp.
+    repository = json.loads((PORT_FIXTURES / "repository.artifact.json").read_text())
+    installed = json.loads(raw)
+    repository.pop("compiled_at")
+    installed.pop("compiled_at")
+    assert repository == installed
     old = load_definition_json(raw.decode())
     new = artifact()
     # required_capabilities changes checkpoint authority (amber-crest-92).
