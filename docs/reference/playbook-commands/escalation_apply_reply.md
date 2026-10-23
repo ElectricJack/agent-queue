@@ -79,10 +79,10 @@ Three properties are worth stating plainly, because they are what the design buy
 ## When a playbook uses it
 
 Only from the owning supervisor, and only after [`escalation_get`](escalation_get.md)
-(or the queued notice) has shown a reply to apply. The supervisor's own system
-prompt names this command as the path through which question and claim fences,
-gate provenance and recovery decisions are honoured
-([`src/prompts/supervisor_system.md:43`](../../../src/prompts/supervisor_system.md)).
+(or the queued notice) has shown a reply to apply. The live
+[supervisor profile](../../../src/profiles/defaults/supervisor/profile.md)
+requires `aq escalation apply-reply` for an exact human reply, preserving the
+question and claim fences, gate provenance and recovery decisions.
 
 The step must supply an `idempotency_key` it can regenerate — deriving it from the
 reply id is the usual choice — because that key, not the attempt, is the action's

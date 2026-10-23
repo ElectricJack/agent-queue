@@ -188,8 +188,11 @@ Code: `src/cli/daemon.py`; the daemon side is `src/main.py`,
 
 **`aq start`** (`daemon.py:629-788`):
 1. Clear the stopped marker. Config must exist.
-2. Take the lock and check the database. If the database is down and a compose
-   file is present, it starts the development container on 5533 (§5).
+2. Take the lock and check the database. If the database is down, start the
+   development container only when the effective configuration's host, port
+   and database match the compose `postgres` service's published endpoint.
+   Unknown or unresolved compose definitions require manual startup. Otherwise
+   report that no PostgreSQL server is answering at the configured endpoint.
 3. If the schema is behind head, take a `pre-deploy-<UTC>.dump` backup first.
    A failed backup exits with 12 to 15 and does not start the daemon.
 4. Check the marker again, then spawn the daemon.
@@ -445,8 +448,13 @@ handler `_cmd_doctor` in `src/commands/ops_commands.py:63-109`; CLI
   itself failed (no registry, runner crash or transport error).
 
 **Where it runs.**
-- Doctor runs only inside the daemon. `aq doctor` (and the generated
-  `aq system doctor`) is a REST client with a 330 s timeout.
+- Normally `aq doctor` (and the generated `aq system doctor`) is a REST client
+  with a 330 s timeout. `aq doctor --offline --check db.alembic_orphan` is a
+  local operator exception for a daemon that cannot start. It opens an engine
+  without schema initialization and runs the existing orphan check and fix.
+  It supports no other checks and refuses worker or agent sessions. `--fix`
+  preserves the borrowed-revision downgrade, explicit stamp opt-in and retained
+  migration restrictions of the online check.
 - `--json` emits `{checks, summary, exit_code}`.
 - Worker tokens get "out of scope". Operators and supervisors may run it.
 - The automatic runs are the post-start step in §2.3, and the integration
@@ -804,13 +812,6 @@ These hold today, and changes to this system must keep them.
   `update.py`, then `aq start` backs up again because the schema is behind.
 - **Backups never expire.** Nothing prunes `backups/` or the pre-deploy
   dumps, and no doctor check watches backup age or disk use.
-- **`aq start` can start the dev container.** When the database is down and a
-  compose file is present, it starts the development PostgreSQL on 5533. That
-  is wrong for a native install whose checkout includes `docker-compose.yml`.
-- **`db.alembic_orphan` cannot run when it is needed.** An orphan stamp stops
-  the daemon starting, and doctor runs only inside the daemon. AGENTS.md
-  still recommends `aq doctor --check db.alembic_orphan --fix`; no offline
-  path exists.
 - **Some doctor ids are placeholders.** Three reserved ids (`sessions.stale`,
   `tmux.server`, `leases.stale`) are never registered and always show INFO.
   The comment in `models.py:115-116` says registering a reserved id replaces
