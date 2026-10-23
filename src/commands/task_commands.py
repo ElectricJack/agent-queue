@@ -6164,7 +6164,7 @@ class TaskCommandsMixin:
 
         integration = await IntegrationStatusService(
             self.db,
-            git_first=getattr(self.config.integration, "git_first", "shadow"),
+            git_first=getattr(self.config.integration, "git_first", "active"),
             train=getattr(self.orchestrator, "integration_train", None),
             cached_only=True,
         ).task_blockers(str(task_id))

@@ -442,9 +442,9 @@ _PLAIN_BRANCH = re.compile(r"refs/heads/(?!.*(?:\.\.|//|/\.|\.lock(?:/|$)))[\w-]
 
 
 def prerequisite_observer(db):
-    """Truth-bearing prerequisite observer, or None in shadow mode.
+    """Truth-bearing prerequisite observer, or None before initialization.
 
-    Active mode registers a separate GitTruth observer; tests and embedders may
+    The daemon registers a separate GitTruth observer; tests and embedders may
     instead supply a general delivery observer that already carries truth.
     """
     observer = getattr(db, "_prerequisite_observer", None)

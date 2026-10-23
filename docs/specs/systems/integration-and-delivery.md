@@ -103,16 +103,11 @@ To read the code, you need to know that two integration designs are in `src/inte
    publishers and runtimes (`docs/reports/2026-10-12-legacy-consumer-retirement.md`). Its
    tables, recovery commands and many helpers remain, and some still run in maintenance.
 
-A daemon-wide setting chooses between them: `integration.git_first` in
-`src/config.py:2647`. It is restart-required.
-
-| `git_first` | What runs |
-|---|---|
-| `active` | `train_for()` (`train_sources.py:3026`) builds an `IntegrationTrain`. This is the operator's setting on this box. |
-| `shadow` (**the code default**) | `train_for()` returns `None`, and `core.py` sets every subject runtime to `None`. **Nothing delivers.** The `integration.delivery_engine` doctor check and `delivery_engine.py:engine_refusal` report "no engine". |
-
-Several documents still say that `shadow` "keeps the subject runtimes authoritative".
-That stopped being true on 2026-10-12 (section 6).
+The Git-first train is always constructed by `train_for()`. The compatibility
+setting `integration.git_first` defaults to `active` and accepts only `active`.
+Old `shadow` configurations fail validation with a migration message: remove the
+key or set it to `active` before restarting. Legacy subjects are retained
+historical evidence, never an alternate delivery engine.
 
 Every project also has a **rollout mode** in `projects.hierarchical_integration_mode`
 (`ck_projects_hierarchical_integration_mode`):
@@ -487,7 +482,7 @@ The train holds one live batch per target with a `pg_advisory_xact_lock` in
 
 - `IntegrationConfig` (`src/config.py`, about lines 2577–2735; restart-required).
   `git_first`, `default_mode` and `merge_*` are covered above.
-  - `reconciler_active` (default `True`) matters only when `git_first` is not `active`.
+  - `reconciler_active` (default `True`) is retained for historical ownership guards; it does not select a delivery engine.
   - `reconciler_shadow` and `publisher_stall_after` have no remaining effect.
 - Per-project policy is `projects.hierarchical_integration_policy`, validated by
   `models.py:HierarchicalIntegrationPolicy` (line 384). Its parts are:
@@ -560,17 +555,10 @@ This table covers the inventory's other 17 systems and where the line falls with
 
 All of these were verified in the code on 2026-10-20 unless marked otherwise.
 
-1. **A default config delivers nothing.** `integration.git_first` defaults to `"shadow"`.
-   Under shadow, `train_for()` returns `None` and no subject runtime is built. Several
-   docs still describe shadow as a working fallback that keeps the subject runtimes
-   authoritative or reactivates legacy writers:
-   - [concepts/integration.md](../../concepts/integration.md)
-   - [git-first-train-runbook.md](../../guides/git-first-train-runbook.md)
-   - the framing of [hierarchical-integration-trains.md](../../guides/hierarchical-integration-trains.md)
-     and [integration-troubleshooting.md](../../guides/integration-troubleshooting.md)
-
-   The [git-first cutover runbook](../../guides/git-first-cutover-runbook.md) and
-   [design/promotion-flow.md](../design/promotion-flow.md) state the true position.
+1. **Resolved 2026-10-23: default delivery.** The Git-first train is always
+   constructed; trial mode and its diagnostic adapter are removed. Fresh config,
+   installation tuning and status all default to the active train. Offline
+   delivery diagnostics reject obsolete settings instead of reporting false OK.
 2. **`delivery-of` uses current Git admission.** Source completion releases its
    structural SQL projection. `AdmissionView` then requires current default-target
    containment, so the train can satisfy the edge without writing a receipt and a
@@ -600,7 +588,6 @@ All of these were verified in the code on 2026-10-20 unless marked otherwise.
    restoration of 155,499 after this batch is delivered. This decision does not
    change retry history, integration authority, required CI or cutover holds.
 4. **Dead or never-wired code:**
-   - `shadow.py` is imported only by tests.
    - `GENERATED_MERGE_CONFIG` has no caller.
    - `reconciler_shadow` and `publisher_stall_after` have no effect.
    - `core.py:_dispatch_integration_repair_stage` is dead.

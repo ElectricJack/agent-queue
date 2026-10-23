@@ -1,5 +1,10 @@
 # Module catalog — integration
 
+The subject-runtime entries below are historical. The Git-first train is always
+active; trial mode and the legacy subject publishers are removed. Use the
+[current train runbook](../../guides/git-first-train-runbook.md) for setup and
+recovery; the old modules do not provide a fallback engine.
+
 Subject reconciliation and shared delivery primitives
 that decide whether a finished task branch reaches your default branch,
 and what is recorded about it.

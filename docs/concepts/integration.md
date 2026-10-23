@@ -55,9 +55,9 @@ is distinct from the task's direct or pull-request delivery preference.
 
 ## Git-first train
 
-The daemon-wide `integration.git_first` selector chooses the protocol. `shadow`,
-the default, runs the Subject runtimes above and logs Git-first comparisons
-beside them. `active` replaces every Subject runtime with one train: each target
+The Git-first train runs on every install. The compatibility key
+`integration.git_first` defaults to `active` and accepts only that value; remove
+an old `shadow` value or set `active` before restarting. Each target
 branch (a project default branch, a parent branch, or an open batch's target) is
 visited by its own bounded task. A visit fetches once, freezes completed sources
 that Git does not yet contain into a batch, merges them onto the target, pushes

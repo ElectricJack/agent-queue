@@ -48,10 +48,9 @@ def legacy_batch_row():
     A non-null ``target_ref`` is the Git-first train's additive input/intent
     shape (see ``tables.py``); the legacy rows are the ones
     ``uq_integration_batches_active_project`` makes mutually exclusive per
-    project.  The train alone advances its own rows, so after a rollback to
-    ``integration.git_first: shadow`` nothing visits them again: a leftover
-    train batch must neither read as busy to the legacy engine nor hold its
-    members out of the legacy frontier.
+    project. The train alone advances its own rows; historical maintenance
+    must not treat them as legacy subjects or hold their members out of the
+    current frontier.
     """
     return integration_batches.c.target_ref.is_(None)
 

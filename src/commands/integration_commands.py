@@ -1462,7 +1462,7 @@ class IntegrationCommandsMixin:
 
         service = IntegrationStatusService(
             self.db,
-            git_first=getattr(self.config.integration, "git_first", "shadow"),
+            git_first=getattr(self.config.integration, "git_first", "active"),
             train=getattr(self.orchestrator, "integration_train", None),
             flow_problems=getattr(self.orchestrator, "promotion_flow_problems", None),
         )

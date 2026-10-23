@@ -4678,13 +4678,51 @@ async def test_leased_publish_never_pushes_a_ref_someone_else_holds(world):
     assert transport.pushes == 0
 
 
-async def test_train_runs_only_when_git_first_is_active(world):
-    def orchestrator(mode):
-        return SimpleNamespace(db=world.db, git=GitManager(),
-                               config=SimpleNamespace(integration=SimpleNamespace(git_first=mode)))
+async def test_default_config_constructs_the_train(world):
+    from src.config import AppConfig
 
-    assert train_for(orchestrator("shadow")) is None
-    assert isinstance(train_for(orchestrator("active")), IntegrationTrain)
+    orchestrator = SimpleNamespace(db=world.db, git=GitManager(), config=AppConfig())
+    assert orchestrator.config.integration.git_first == "active"
+    assert isinstance(train_for(orchestrator), IntegrationTrain)
+    # A minimal integration config also constructs the same train.
+    orchestrator.config = SimpleNamespace(integration=SimpleNamespace())
+    assert isinstance(train_for(orchestrator), IntegrationTrain)
+
+
+async def test_default_config_train_delivers_to_git(world, monkeypatch):
+    """The daemon factory delivers with untouched integration defaults.
+
+    Supply local Git/check lanes at the external-service boundary; targets,
+    selection, batching, candidate merges and publication use the real train.
+    """
+    from src.config import AppConfig
+
+    now = [1000.0]
+    config = AppConfig()
+    # This fixture has no daemon wait command handler.
+    config.wait_policy.v2_enabled = False
+    orchestrator = SimpleNamespace(db=world.db, git=GitManager(), config=config)
+    fixture_train, checks, _ = lane(world, LocalGit(Path(world.origin.url)),
+                                    clock=lambda: now[0])
+
+    def local_lanes(orch, *, batches, clock):
+        assert orch is orchestrator
+        batches.pr_gate = green_pr
+        return fixture_train.lane_for
+
+    monkeypatch.setattr("src.integration.train_sources.DaemonLanes", local_lanes)
+    source = await completed(world, "default-delivery")
+    train = train_for(orchestrator, clock=lambda: now[0])
+    assert config.integration.git_first == "active"
+    # The production batch source gives roots a settling window.
+    visit = await train.visit(MAIN)
+    now[0] += 60
+    visit = await train.visit(MAIN)
+    assert visit.state == "testing"
+    checks.green.add(visit.candidate_sha)
+    assert (await train.visit(MAIN)).state == "delivered"
+    assert git(world.origin.url, "rev-parse", "refs/heads/main") == visit.candidate_sha
+    git(world.origin.url, "merge-base", "--is-ancestor", source, "refs/heads/main")
 
 
 async def test_active_status_projects_the_train_not_subjects(world):
@@ -4771,10 +4809,12 @@ async def test_missing_completion_provenance_reports_blocked_target_and_task(wor
     assert {m["task_id"] for m in project["batches"][0]["members"]} == set(heads)
 
 
-async def test_shadow_status_keeps_the_subject_projection(world):
+async def test_default_status_projects_the_train_and_rejects_the_removed_trial_mode(world):
     await completed(world, "a")
     project = await IntegrationStatusService(world.db).control_status("p")
-    assert project.get("projection_kind") != "train"
+    assert project["projection_kind"] == "train"
+    with pytest.raises(ValueError, match="trial mode has been removed"):
+        IntegrationStatusService(world.db, git_first="shadow")
     assert await IntegrationStatusService(world.db, git_first="active").control_status(
         "missing") is None
 
@@ -7259,11 +7299,11 @@ async def test_train_status_still_publishes_the_configuration_generation(world):
     """
     await completed(world, "a")
     active = await IntegrationStatusService(world.db, git_first="active").control_status("p")
-    shadow = await IntegrationStatusService(world.db).control_status("p")
+    default = await IntegrationStatusService(world.db).control_status("p")
     assert active["projection_kind"] == "train"
-    assert active["generation"] == shadow["generation"]
-    assert active["effective_mode"] == shadow["effective_mode"]
-    assert active["desired_mode"] == shadow["desired_mode"]
+    assert active["generation"] == default["generation"]
+    assert active["effective_mode"] == default["effective_mode"]
+    assert active["desired_mode"] == default["desired_mode"]
 
 
 @pytest.mark.parametrize("condition,code", [

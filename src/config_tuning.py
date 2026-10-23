@@ -244,6 +244,7 @@ def recommended_tuning(machine: MachineResources | None = None) -> dict[str, Any
             "retention_days": _by_size(machine, 7, 14, 30),
         },
         "integration": {
+            "git_first": "active",
             "default_mode": "pull_request",
             "merge_ci_policy": "warn",
             "merge_required_checks": [],
@@ -630,6 +631,11 @@ def tuning_notes(machine: MachineResources | None = None) -> tuple[TuningNote, .
             f"{tuned['llm_logging']['retention_days']} days, scaled down on a "
             "small box: these files are the fastest-growing thing AQ writes.",
             "Raise when debugging model behaviour over a long window.",
+        ),
+        TuningNote(
+            "integration.git_first",
+            "active: the Git-first train is the delivery engine on every install.",
+            "Trial mode has been removed; remove an old shadow value or set active.",
         ),
         TuningNote(
             "integration.default_mode",

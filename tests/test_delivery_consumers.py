@@ -302,28 +302,16 @@ async def test_hierarchy_prerequisites_consume_revalidated_git_view_without_rece
         assert await view.verified_on(conn, ["done"]) == {}
 
 
-async def test_status_and_explanations_agree_with_git(world):
+async def test_default_status_uses_train_projection_without_retired_subject_audit(world):
     db, _origin, _observer, _service = world
     status = await IntegrationStatusService(db).status("p")
-    delivery = status["delivery"]
-    assert delivery["available"] and delivery["evaluated"] == 4
-    assert delivery["pending"] == ["reopened"]
-    assert {item["task_id"]: item["reason"] for item in delivery["unknown"]} == {
-        "wrong": "scope_mismatch", "missing": "missing_git_provenance",
-    }
-    assert {
-        (item["ref"], item["cause"]) for item in status["blockers"]
-        if item["code"] == "delivery_unknown"
-    } == {("wrong", "scope_mismatch"), ("missing", "missing_git_provenance")}
-    assert status["projection_kind"] == "subjects"
-
+    assert status["projection_kind"] == "train"
+    assert "delivery" not in status and "subjects" not in status
+    assert status["batches"] == []
     for tid in CHILDREN:
         projection = await IntegrationStatusService(db).task_blockers(tid)
-        delivery_blockers = [
-            (item["code"], item.get("cause")) for item in projection["blockers"]
-            if item["code"] in {"delivery_unknown", "development_delivery_pending"}
-        ]
-        assert delivery_blockers == ([UNDELIVERED[tid]] if tid in UNDELIVERED else [])
+        assert projection["projection_kind"] == "train"
+        assert "parent_readiness" not in projection
 
 
 @pytest.mark.parametrize("cache_state", ["cold", "warm", "expired", "stale"])
@@ -567,9 +555,9 @@ async def test_every_surface_follows_git_once_the_work_lands(world):
         await conn.execute(update(tasks).where(tasks.c.id == "wrong").values(repo_id="r"))
     origin.land("reopened")
 
-    status = await IntegrationStatusService(db).status("p")
-    assert status["delivery"]["pending"] == []
-    assert [item["task_id"] for item in status["delivery"]["unknown"]] == ["missing"]
+    delivery = await observer.observe(["wrong", "reopened", "missing"])
+    assert delivery.satisfied("wrong") and delivery.satisfied("reopened")
+    assert delivery.get("missing").state is DeliveryState.UNKNOWN
     holds = await service.branch_holds(["aq/wrong", "aq/reopened", "aq/missing"])
     assert set(holds) & {"aq/wrong", "aq/reopened"} == set()
     assert "aq/missing" in holds
@@ -611,10 +599,6 @@ async def test_a_retired_manifest_source_keeps_a_branchless_close_unknown(world)
     evidence = view.get("legacy-artifact")
     assert (evidence.state, evidence.reason) == (DeliveryState.UNKNOWN, "missing_git_provenance")
     assert view.get("organizational").state is DeliveryState.NO_ARTIFACT
-    blockers = (await IntegrationStatusService(db).task_blockers("legacy-artifact"))["blockers"]
-    assert ("delivery_unknown", "missing_git_provenance") in {
-        (item["code"], item.get("cause")) for item in blockers
-    }
 
     # A later (code-free, branchless) generation replaces the fenced marker.
     await db.save_task_completion(TaskCompletion(

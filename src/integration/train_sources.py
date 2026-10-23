@@ -3461,11 +3461,8 @@ class TrainCommandDriver:
         await self.train.stop()
 
 
-def train_for(orchestrator, *, clock: Callable[[], float] = time.time) -> IntegrationTrain | None:
-    """The train when ``integration.git_first`` is ``active``; otherwise None."""
-    config = orchestrator.config.integration
-    if getattr(config, "git_first", "shadow") != "active":
-        return None
+def train_for(orchestrator, *, clock: Callable[[], float] = time.time) -> IntegrationTrain:
+    """Construct the Git-first train, the delivery engine on every install."""
     from src.integration.fixers import BatchFixerService
     from src.integration.fixer_runtime import DaemonFixerRuntime
     from src.integration.dispatch_waits import DispatchWaits

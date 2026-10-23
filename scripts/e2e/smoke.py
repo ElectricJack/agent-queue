@@ -2644,8 +2644,7 @@ def s20_train_delivery(state: dict) -> str:
               for record in records), f"S20 provenance does not bind the immutable close: {records}")
     status = aq("integration", "status", project_id)
     check(status["effective_mode"] == "train", f"S20 project is not in train mode: {status}")
-    if status.get("projection_kind") != "train":
-        return "train-mode close retained its source; delivery explicitly untested (git_first needs active)"
+    check(status.get("projection_kind") == "train", f"S20 default engine is not the train: {status}")
 
     def delivered():
         current = aq("integration", "status", project_id, "--control-only")

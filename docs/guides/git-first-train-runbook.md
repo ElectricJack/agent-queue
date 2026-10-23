@@ -1,10 +1,12 @@
 # Git-first integration train: activation runbook
 
-`integration.git_first` selects the protocol the reconciler-owned integration loop
-runs. `shadow` (the default) keeps the subject runtimes authoritative and only logs
-Git-first comparisons. `active` replaces the root, parent and development subject
-runtimes with one train ([`src/integration/train.py`](../../src/integration/train.py)).
-This page is the operator procedure for switching between them. Spec:
+The Git-first train is the delivery engine on every install
+([`src/integration/train.py`](../../src/integration/train.py)). The compatibility
+key `integration.git_first` defaults to `active` and accepts only `active`.
+Trial mode has been removed. If an old config contains `git_first: shadow`,
+remove the key or set it to `active` before restarting; validation explains this
+migration. The retired subject runtimes are never restored by configuration.
+This page covers train setup and recovery. Spec:
 `projects/agent-queue/specs/2026-10-04-git-first-integration-train.md` (vault).
 
 Only an operator changes the daemon's configuration or restarts it. A worker
@@ -86,7 +88,7 @@ The restored process is specified by the operator-vault document
 For the branch-chain release path, see [promotion flows](promotion-flow.md)
 and [releases](releases.md); their pending sections describe work awaiting delivery.
 
-## What `active` changes
+## How the train delivers
 
 - **One loop.** The integration service constructs no subject runtime and no second
   reconciler. Every five seconds it runs `integration_train_tick` through
@@ -247,7 +249,7 @@ and [releases](releases.md); their pending sections describe work awaiting deliv
   Progress comes from Git, cached check evidence, review evidence and batch intent
   at visit time, so a restart or missed notification is repaired by the next visit.
   Pending legacy `integration_outbox` rows are left undelivered and are never handed
-  to the old writers while `active` is set. Promotion policy events are dispatched
+  to the old writers. Promotion policy events are dispatched
   through a filtered outbox page, so activated continuous flows can author train intents.
 
 ## Restored PR gate, cadence and cleanup
@@ -320,7 +322,8 @@ Sources: [cleanup.py](../../src/integration/cleanup.py) and
 
 ## Activate
 
-1. Set the selector in `~/.agent-queue/config.yaml`:
+1. New installs already use the train. On an older install, remove the obsolete
+   trial setting from `~/.agent-queue/config.yaml`, or set the compatibility key:
 
    ```yaml
    integration:
@@ -448,9 +451,8 @@ An operator or authorized project supervisor can:
   batch ID. The ejected member returns to pending with its PR and approval intact.
 
 Every action records the principal and reason. No command edits frozen
-membership or forces a target ref. A switch to `git_first: shadow` reactivates
-legacy writers and pending outbox delivery; it cannot undo a fast-forward
-already proved by Git and is not the fidelity recovery procedure. See
+membership or forces a target ref. Trial mode has been removed; recovery uses
+these batch controls and preserves the published Git history. See
 [Controls](#controls) and
 [Recovery after fidelity cutover](#recovery-after-fidelity-cutover).
 
@@ -610,7 +612,5 @@ The fidelity rollout is roll-forward only. Pause or abort an affected unpromoted
 batch, preserve its evidence and file the fix through the configured owner.
 Never force-move a target or edit a batch record to simulate rollback.
 
-`git_first: shadow` remains an optional compatibility selector in code; it
-reactivates legacy writers and pending outbox delivery. It is not the restored
-train's recovery procedure. A protocol switch also cannot undo a fast-forward
+Trial mode has been removed. A protocol setting cannot undo a fast-forward
 already proved by Git. See the [policy entry](../specs/design/promotion-flow.md).

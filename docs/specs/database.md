@@ -2577,9 +2577,9 @@ non-terminal batch per project over `target_ref IS NULL` rows only. A row with a
 `target_ref` is the Git-first train's additive input/intent shape, advanced
 solely by that train: it is never mutually exclusive with a legacy batch, never
 reads as busy to the legacy scheduler, and never holds its members out of the
-legacy frontier — so a rollback to `integration.git_first: shadow` leaves it
-inert rather than blocking. See
-[the cutover runbook](../guides/git-first-cutover-runbook.md#rollback).
+legacy frontier. These predicates isolate historical rows; trial mode has been
+removed and the train is always active. See
+[the current train runbook](../guides/git-first-train-runbook.md).
 
 A red Git-first candidate is repaired only where the target commit it was built
 on does not also fail the same required check. An epic whose only failures are

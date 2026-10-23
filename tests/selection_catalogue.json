@@ -5774,7 +5774,7 @@
         "development-delivery"
       ],
       "default_arm": true,
-      "digest": "sha256:06c7336f0935b37dc2215fb582639fa266ac83fb2b456be2b8b77c01a15577f7",
+      "digest": "sha256:133f3aa6b05a6c55cb6ec66349b88db6fef77c42fd82334c640129a9e7a8f3fd",
       "imports": [
         "src.commands",
         "src.commands.principal",
@@ -5793,7 +5793,6 @@
         "src.integration.provenance",
         "src.integration.repository_git",
         "src.integration.repository_incidents",
-        "src.integration.status",
         "src.models",
         "src.prime.sections",
         "src.profiles.capabilities"
@@ -8935,7 +8934,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:f5d435cb73c5c3384ea038f3d280b4825aa1b489b2598d1ab1df7370e99f7088",
+      "digest": "sha256:8479641d98e5f29f07f4629a97de9c94a81d065d55f07020c63bc600dfbf8558",
       "imports": [
         "src.commands.integration_commands",
         "src.commands.principal",
@@ -8954,7 +8953,6 @@
         "src.integration.records",
         "src.integration.removal_guard",
         "src.integration.service",
-        "src.integration.shadow",
         "src.integration.train",
         "src.integration.train_sources",
         "src.integration.trust_manifest",
