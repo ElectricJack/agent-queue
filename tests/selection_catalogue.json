@@ -19617,7 +19617,7 @@
         "agent-waits"
       ],
       "default_arm": true,
-      "digest": "sha256:b9049d49f60a96ec33779e81d0f2aaaa12f3e0599196cac3bd7a2ca2008411af",
+      "digest": "sha256:e9798c5cd32894323f806ceb215be4c8061ab351f6aa68b23242648d7221e74d",
       "imports": [
         "src.commands.principal",
         "src.config",
@@ -19628,6 +19628,7 @@
         "src.database.tables",
         "src.event_bus",
         "src.integration.admission",
+        "src.integration.stacked_branches",
         "src.models",
         "src.scheduler",
         "src.wait_runtime.scheduler",
