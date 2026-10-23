@@ -1,5 +1,6 @@
 """Reserve common capacity and launch a fresh continuation through task execution."""
 
+import errno
 import json
 import time
 import uuid
@@ -21,6 +22,19 @@ from src.wait_runtime.hibernate import locked_suspension
 from src.waits.mail import held_messages
 from src.waits.sources import insert_message_with_source_event
 from src.wait_runtime.legacy_parking import parked
+
+
+WORKSPACE_ATTEMPTS = 3
+
+
+def retryable_workspace_error(exc):
+    """Retry contention and interrupted transport, never checkout identity failures."""
+    if isinstance(exc, WaitError):
+        return exc.code == 'wait.graph_busy'
+    return (isinstance(exc, (TimeoutError, ConnectionError))
+            or isinstance(exc, OSError) and exc.errno in {
+                errno.EAGAIN, errno.EBUSY, errno.ETIMEDOUT, errno.ECONNRESET,
+            })
 
 
 async def verify_saved_branch(orch, task, path):
@@ -279,14 +293,64 @@ class ResumeTransaction:
                         continuations.c.id == current['id'],
                     ).values(facts=facts))
             except Exception as exc:
-                await self.failed(action, task, f'workspace preparation: {exc}', handler=handler,
-                                  hold_reason='resume_workspace_failed')
-                return {'success': True, 'held': True}
+                if retry_at := await self.workspace_retry(action, intent['wait_id'], exc):
+                    return {'success': True, 'retry_queued': True, 'retry_at': retry_at}
+                return await self.failed(action, task, f'workspace preparation: {exc}',
+                                         handler=handler, hold_reason='resume_workspace_failed')
             try:
                 await self.orch._launch_session_for_task_locked(action, task, None, workspace)
             except Exception as exc:
                 return await self.failed(action, task, str(exc), handler=handler)
             return {'success': True, 'dispatched': True}
+
+    async def workspace_retry(self, action, wait_id, exc):
+        """Keep the reservation and checkout for a backoff; None means hold instead."""
+        async with self.db._engine.begin() as conn:
+            task, _, intent = await locked_suspension(conn, wait_id)
+            if (intent['id'], intent['suspension_generation'], intent['resume_state']) != (
+                    action.continuation_id, action.generation, 'reserved'):
+                return None
+            failures = intent['facts'].get('workspace_retry', {}).get('failures', 0) + 1
+            retry_at = self.clock() + 5 * 2 ** (failures - 1)
+            await conn.execute(update(continuations).where(continuations.c.id == intent['id']).values(
+                facts={**intent['facts'], 'workspace_retry': {
+                    'failures': failures, 'due_at': retry_at, 'error': str(exc)}}))
+        if task['status'] != 'PAUSED' and failures < WORKSPACE_ATTEMPTS and retryable_workspace_error(exc):
+            return retry_at
+
+    async def requeue(self, args, *, principal, scope, handler):
+        """Supervisor repair of a resolved wait's held resume, fenced by generation."""
+        async with self.db._engine.begin() as conn:
+            task, wait, intent = await locked_suspension(conn, args['wait_id'])
+            if scope.get('project_id') not in (None, task['project_id']):
+                raise WaitError('wait.out_of_scope', 'continuation is outside supervisor scope')
+            await self.service.decisions.authorize(conn, principal, task['project_id'])
+            if (intent['id'], intent['suspension_generation']) != (
+                    args['continuation_id'], args['expected_generation']):
+                raise WaitError('continuation.stale_generation', 'held resume generation changed')
+            if (intent['resume_state'] != 'held' or task['status'] != 'RESUME_PENDING'
+                    or intent['hold_reason'] not in {'resume_workspace_failed', 'resume_launch_failed'}
+                    or wait['outcome'] == 'pending' or wait['cleared_at'] is not None):
+                raise WaitError('wait.unavailable', 'continuation has no repairable resume hold')
+            if await conn.scalar(select(sessions.c.id).where(sessions.c.task_id == task['id'],
+                                 sessions.c.state.not_in(('stopped', 'failed'))).limit(1)):
+                raise WaitError('continuation.stop_uncertain', 'task still has a live process')
+            audit = {'wait_id': wait['id'], 'continuation_id': intent['id'],
+                     'generation': intent['suspension_generation'], 'at': self.clock(),
+                     'note': args['note'], 'principal_kind': principal.kind,
+                     'session_id': principal.session_id, 'hold_reason': intent['hold_reason']}
+            # A workspace hold keeps its reserved agent and grant; a launch hold released both.
+            kept = task['assigned_agent_id'] is not None
+            await conn.execute(update(continuations).where(continuations.c.id == intent['id']).values(
+                resume_state='reserved' if kept else 'queued', hold_reason=None,
+                launch_attempts=intent['launch_attempts'] if kept else 0, new_session_id=None,
+                envelope_id=None, version=intent['version'] + 1,
+                facts={**intent['facts'], 'workspace_retry': {}, 'resume_requeue': audit}))
+            await conn.execute(insert(events).values(
+                event_type='wait.resume_requeued', project_id=task['project_id'],
+                task_id=task['id'], timestamp=audit['at'], payload=json.dumps(audit)))
+            return {'success': True, 'wait_id': wait['id'], 'decision': 'requeue',
+                    'generation': intent['suspension_generation'], 'next_step': 'end_turn'}
 
     async def bind_launch(self, action, record):
         """Commit the next process identity and immutable envelope before spawn."""

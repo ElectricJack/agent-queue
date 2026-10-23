@@ -105,13 +105,13 @@ class WaitDecisions:
         if not incident or incident["source_kind"] != expected_kind:
             return {"success": False}
         if continuation_id:
-            bound = await conn.scalar(select(continuations.c.id).where(
+            generation = await conn.scalar(select(continuations.c.suspension_generation).where(
                 continuations.c.id == continuation_id,
                 continuations.c.wait_id == escalation["wait_id"],
                 continuations.c.task_id == incident["task_id"],
             ))
-            if not bound or not incident["source_identity"].startswith(
-                f"continuation:{continuation_id}:",
+            if not generation or not incident["source_identity"].startswith(
+                f"continuation:{continuation_id}:{generation}:",
             ):
                 return {"success": False}
         if incident["state"] in {"resolved", "cancelled", "stale"}:
@@ -143,6 +143,10 @@ class WaitDecisions:
 
     @admission_pass("service.scheduler.reader")
     async def decide(self, args, *, principal, scope, handler):
+        if args['decision'] == 'requeue':
+            return await self.service.lifecycle.resume.requeue(
+                args, principal=principal, scope=scope, handler=handler,
+            )
         now = self.clock()
         routing = None
         async with self.service.orch.db._engine.begin() as conn:

@@ -99,6 +99,10 @@ frozen sources and candidate, and schedules a finite re-observation (default
 300 seconds). Unchanged exhausted evidence does not re-admit work or notify an
 agent. A changed saved head or exact current-policy green can resume delivery.
 Capacity waits retry the same unlaunched identity without spending code rounds.
+An interrupted launch still awaiting registration after 120 seconds enters the
+same bounded retry path when no session was registered or its process is confirmed
+stopped. Each retry gets its own grace period; a possibly live registration stays
+retained for reconciliation.
 Only an explicit operator decision creates an indefinite hold.
 When every conclusive red group identifies a strict subset, the repair policy's
 `split_attributed` decision (default true) removes that subset and its transitive
