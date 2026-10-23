@@ -1293,6 +1293,36 @@ class TaskQueryMixin:
                     "reason": "Checkpoint or preparation child termination is unproved",
                 }, conn=conn)
 
+    async def record_task_pause_cleanup_retained(
+        self, task_id: str, snapshot: dict, reason: str,
+    ) -> bool:
+        """Record one fence refusal without validating or releasing changed resources."""
+        async with self.immediate() as conn:
+            row = (await conn.execute(select(tasks.c.id).where(
+                tasks.c.id == task_id,
+            ).with_for_update())).first()
+            encoded = await self._read_manual_pause(conn, task_id)
+            if row is None or encoded is None or json.loads(encoded) != snapshot:
+                return False  # Never suppress cleanup of a newer pause.
+            raw = await conn.scalar(select(task_metadata.c.value).where(
+                task_metadata.c.task_id == task_id,
+                task_metadata.c.key == "manual_pause_cleanup_retained",
+            ))
+            if raw is not None and json.loads(raw).get("snapshot") == snapshot:
+                return False
+            await self._upsert_meta(task_id, "manual_pause_cleanup_retained", {
+                "snapshot": snapshot, "reason": reason, "recorded_at": time.time(),
+            }, conn=conn)
+            await self.add_task_comment(
+                task_id,
+                f"Pause cleanup retained for recovery: {reason}. "
+                "Automatic cleanup is suspended for this pause snapshot; resources and "
+                "the manual hold remain intact. Review ownership before repeating Pause "
+                "or using guarded Resume recovery.",
+                author_kind="supervisor", author_id="pause-cleanup", conn=conn,
+            )
+            return True
+
     async def finish_task_pause(self, task_id: str, snapshot: dict, *, before_release=None) -> None:
         """Release only this stopped claim's resources, never a reused worker's."""
         async with self.immediate() as conn:
@@ -1348,6 +1378,10 @@ class TaskQueryMixin:
             ).values(assigned_agent_id=None))
             saved = {**snapshot, "cleanup_pending": False}
             await self._upsert_meta(task_id, "manual_pause", saved, conn=conn)
+            await conn.execute(delete(task_metadata).where(
+                task_metadata.c.task_id == task_id,
+                task_metadata.c.key == "manual_pause_cleanup_retained",
+            ))
 
     async def _slot_reset_claim_sessions(self, conn, task_id: str, *, lock: bool) -> list[dict]:
         record_query = select(task_metadata.c.value).where(

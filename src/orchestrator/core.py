@@ -1222,12 +1222,22 @@ class Orchestrator(
 
         Distinct from :meth:`pause_task` so the retry can back off between
         attempts: an operator asking for the pause (or the resume) again is
-        an explicit request and never defers.
+        an explicit request and never defers. A fence refusal retains the
+        exact snapshot for recovery instead of retrying it after every scan.
         """
+        from src.database.queries.task_queries import PauseFenceError
+
         async with self._task_control_lock(task_id):
             snapshot = await self.db.get_task_meta(task_id, "manual_pause")
             if isinstance(snapshot, dict) and snapshot.get("cleanup_pending"):
-                await self._finish_manual_pause(task_id, snapshot, deferrable=True)
+                retained = await self.db.get_task_meta(task_id, "manual_pause_cleanup_retained")
+                if isinstance(retained, dict) and retained.get("snapshot") == snapshot:
+                    return
+                try:
+                    await self._finish_manual_pause(task_id, snapshot, deferrable=True)
+                except PauseFenceError as exc:
+                    if await self.db.record_task_pause_cleanup_retained(task_id, snapshot, str(exc)):
+                        logger.warning("Task %s pause cleanup retained for recovery: %s", task_id, exc)
 
     async def _finish_manual_pause(
         self, task_id: str, snapshot: dict, *, deferrable: bool = False

@@ -2917,6 +2917,94 @@ async def test_pause_cleanup_cascade_backs_off_then_stops_retrying(env, tmp_path
     assert (await env.db.get_task("t")).status == TaskStatus.PAUSED
 
 
+async def test_pause_cleanup_owner_change_is_retained_once_across_reload(
+    env, tmp_path, monkeypatch, caplog
+):
+    from unittest.mock import AsyncMock
+
+    repo, _ = make_git_repo(tmp_path, "retained-owner")
+    provider, _ = await running_session(env, repo)
+    snapshot = await env.db.pause_task("t")
+    await env.db.update_workspace("workspace", locked_by_task_id="peer")
+    finish = AsyncMock(wraps=env.orch._finish_manual_pause)
+    monkeypatch.setattr(env.orch, "_finish_manual_pause", finish)
+
+    for _ in range(3):
+        await env.orch._resume_paused_tasks()
+    finish.assert_awaited_once()
+    receipt = await env.db.get_task_meta("t", "manual_pause_cleanup_retained")
+    assert receipt["snapshot"] == snapshot
+    assert "workspace or owner changed" in receipt["reason"]
+    comments = await env.db.list_task_comments("t")
+    assert comments["total"] == 1
+    assert "retained for recovery" in comments["comments"][0]["body"]
+    assert "workspace or owner changed" in comments["comments"][0]["body"]
+    warnings = [r for r in caplog.records if "pause cleanup retained" in r.message]
+    assert len(warnings) == 1
+    assert warnings[0].exc_info is None
+    assert not [r for r in caplog.records if "stop cleanup will retry" in r.message]
+
+    reloaded = Orchestrator(env.config)
+    reloaded.db = env.db
+    blocked_finish = AsyncMock(side_effect=AssertionError("unchanged fence must not retry"))
+    monkeypatch.setattr(reloaded, "_finish_manual_pause", blocked_finish)
+    await reloaded._resume_paused_tasks()
+    blocked_finish.assert_not_awaited()
+    assert (await env.db.list_task_comments("t"))["total"] == 1
+    assert await env.db.get_task_meta("t", "manual_pause") == snapshot
+    assert (await env.db.get_workspace("workspace")).locked_by_task_id == "peer"
+    assert (await env.db.get_session("s")).task_id == "t"
+    assert "task-session" in provider.running
+    assert (await env.db.get_task("t")).status == TaskStatus.PAUSED
+
+    # An explicit operator retry is allowed after ownership has been repaired.
+    await env.db.update_workspace("workspace", locked_by_task_id="t")
+    assert "error" not in await command(env, "pause_task")
+    assert (await env.db.get_task_meta("t", "manual_pause"))["cleanup_pending"] is False
+    assert await env.db.get_task_meta("t", "manual_pause_cleanup_retained") is None
+
+
+async def test_pause_cleanup_changed_snapshot_allows_a_fresh_attempt(env, tmp_path, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    await running_session(env, tmp_path)
+    snapshot = await env.db.pause_task("t")
+    await env.db.update_workspace("workspace", locked_by_task_id="peer")
+    await env.orch._resume_paused_tasks()
+    changed = {**snapshot, "owners": [{"id": "changed-owner"}]}
+    await env.db.set_task_meta("t", "manual_pause", changed)
+    finish = AsyncMock(wraps=env.orch._finish_manual_pause)
+    monkeypatch.setattr(env.orch, "_finish_manual_pause", finish)
+
+    await env.orch._resume_paused_tasks()
+    await env.orch._resume_paused_tasks()
+
+    finish.assert_awaited_once()
+    receipt = await env.db.get_task_meta("t", "manual_pause_cleanup_retained")
+    assert receipt["snapshot"] == changed
+    assert (await env.db.list_task_comments("t"))["total"] == 2
+    # A late refusal from the old attempt cannot overwrite the new receipt.
+    assert not await env.db.record_task_pause_cleanup_retained("t", snapshot, "stale")
+    assert await env.db.get_task_meta("t", "manual_pause_cleanup_retained") == receipt
+
+
+async def test_pause_cleanup_transient_stop_failure_keeps_retrying(env, tmp_path, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    await running_session(env, tmp_path)
+    await env.db.pause_task("t")
+    finish = AsyncMock(side_effect=ValueError("session stop temporarily unavailable"))
+    monkeypatch.setattr(env.orch, "_finish_manual_pause", finish)
+
+    for _ in range(3):
+        await env.orch._resume_paused_tasks()
+
+    assert finish.await_count == 3
+    assert env.orch._pause_cleanup_retries()["t"] == 3
+    assert await env.db.get_task_meta("t", "manual_pause_cleanup_retained") is None
+    assert (await env.db.list_task_comments("t"))["total"] == 0
+
+
 async def test_backoff_resume_clears_needs_attention(env):
     """A backoff resume puts the task back in flight, so the flag must go.
 
