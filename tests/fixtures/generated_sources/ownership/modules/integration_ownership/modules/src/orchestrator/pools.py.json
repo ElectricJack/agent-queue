@@ -1,0 +1,89 @@
+{
+  "generic_dependencies": {
+    "src/orchestrator/pools.py::PoolsMixin._check_pool_progress": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/orchestrator/pools.py::PoolsMixin._reconcile_pools_inner": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/orchestrator/pools.py::PoolsMixin._size_pool_actions": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/orchestrator/pools.py::import from src.scheduler import PlacementCandidate, PoolKey, PoolProjectSupply, PoolSupply, place_pool_actions, rebalance_idle_pools, size_pools": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged."
+  },
+  "shared": {
+    "src/orchestrator/pools.py::PoolsMixin._delivery_admission": {
+      "baseline_span": [
+        212,
+        220
+      ],
+      "landing_span": [
+        212,
+        220
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/orchestrator/pools.py::PoolsMixin._measure_pools": {
+      "baseline_span": [
+        221,
+        423
+      ],
+      "landing_span": [
+        221,
+        423
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/orchestrator/pools.py::PoolsMixin._reconcile_pools_inner": {
+      "landing_span": [
+        611,
+        661
+      ],
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget."
+    },
+    "src/orchestrator/pools.py::import from src.database.queries.hierarchy_queries import ProjectIntegrationMode": {
+      "reason": "Carries the project integration mode and verified prerequisite set into pool demand measurement."
+    }
+  },
+  "storage_sinks": {
+    "src/orchestrator/pools.py::PoolsMixin._announce_bounds_rescoped::30ccb572a88df0c8d0c16cb1d2a8b816c2d3ce79f5363763ece7f2e57e0afd45": {
+      "call": "log_event",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 890,
+      "owner": "PoolsMixin._announce_bounds_rescoped",
+      "owner_fingerprint": "c4eefa53f53dda8a350b9ec2a268ccc259d9eff76f1bf81094870e8045cdb910",
+      "reason": "Audits recalculated pool concurrency bounds as pool.bounds_rescoped; it records scheduling capacity and contains no integration ref intent."
+    },
+    "src/orchestrator/pools.py::PoolsMixin._check_pool_progress::f6acd075b5bd9a6a9104d37e66f4885432fd8fd46ebb5c13cd8902504da0de5e": {
+      "call": "log_event",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 576,
+      "owner": "PoolsMixin._check_pool_progress",
+      "owner_fingerprint": "7c5e454a03686c889ef9e27c96ba852c703e42829c7ad847fd720c9b9066982a",
+      "reason": "Audits pool.scaler_stalled with progress diagnostics; the event does not alter admission, reservations or delivery state."
+    },
+    "src/orchestrator/pools.py::PoolsMixin._emit_placement_starved::f2bc83f54522a114c6e29938e4315b96f4b29bdf4e269cbbbe2af02824951adb": {
+      "call": "log_event",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 879,
+      "owner": "PoolsMixin._emit_placement_starved",
+      "owner_fingerprint": "f0569610c68fa2db6dfb68b2ec3b626e83af26504c4dbdaa91d7d6c09d3d33b4",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+    },
+    "src/orchestrator/pools.py::PoolsMixin._emit_pool_scaled::c9221773bd5af291a008dce3478eaf21fcfbfc1f29dbbf363b18df8d2447b2b9": {
+      "call": "log_event",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 958,
+      "owner": "PoolsMixin._emit_pool_scaled",
+      "owner_fingerprint": "9a0198f9ad5d35b6af8b2d7adf67b918e753fad7650665e1a496ea1adb435f53",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+    },
+    "src/orchestrator/pools.py::PoolsMixin._release_container_claims::455dfd0642cbbd011fed166aee953c41f586725b6941d5357c7faadf39649d63": {
+      "call": "log_event",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 727,
+      "owner": "PoolsMixin._release_container_claims",
+      "owner_fingerprint": "db79a6b164403e94a1a0179c50ed33f8b91f35977a46feb5e959473fed7c5b4f",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+    }
+  }
+}

@@ -1,0 +1,36 @@
+{
+  "generic_dependencies": {
+    "src/commands/gate_commands.py::GateCommandsMixin": "Generic dependency; integration-specific definitions in this file are charged independently."
+  },
+  "shared": {
+    "src/commands/gate_commands.py::GateCommandsMixin._cmd_gate_resolve": {
+      "baseline_span": [
+        164,
+        255
+      ],
+      "landing_span": [
+        164,
+        255
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/commands/gate_commands.py::GateCommandsMixin._gate_ask_source": {
+      "landing_span": [
+        19,
+        30
+      ],
+      "reason": "Maps integration subject gates to their exact human source identity."
+    }
+  },
+  "storage_sinks": {
+    "src/commands/gate_commands.py::GateCommandsMixin._emit_gate_created::b9dd628a85ca787d93ed91b8c8b97a1df23136c169841ebabf973928569b434c": {
+      "call": "log_event",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 176,
+      "owner": "GateCommandsMixin._emit_gate_created",
+      "owner_fingerprint": "e9fdf6ffaa66bd43455e427689dbf523a9539e890f55c934433a1c066c65f091",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+    }
+  }
+}

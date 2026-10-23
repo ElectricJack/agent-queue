@@ -1,0 +1,5 @@
+{
+  "generic_dependencies": {
+    "src/commands/contracts/knowledge.py::register_knowledge_contracts": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "generic_dependencies": {
+    "src/waits/__init__.py::__all__['build_registry']": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/waits/__init__.py::import from src.waits.registry import ConditionRegistry, build_registry": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged."
+  }
+}

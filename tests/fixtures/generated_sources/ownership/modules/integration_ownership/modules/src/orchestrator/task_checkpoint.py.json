@@ -1,0 +1,30 @@
+{
+  "generic_dependencies": {
+    "src/orchestrator/task_checkpoint.py::CHECKPOINT_META": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/orchestrator/task_checkpoint.py::_lock_sentinel_ignored": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/orchestrator/task_checkpoint.py::prepare_checkpoint": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/orchestrator/task_checkpoint.py::restore_checkpoint": "Generic dependency; integration-specific definitions in this file are charged independently."
+  },
+  "shared": {
+    "src/orchestrator/task_checkpoint.py::capture_checkpoint": {
+      "reason": "Captures full retained source using isolated index; may store preparation cleanup uncertainty, never remote-ref replay authority."
+    },
+    "src/orchestrator/task_checkpoint.py::salvage_checkpoint": {
+      "reason": "Preserves best-effort patch using an isolated index with fresh repository/branch validation; explicit partial evidence grants no restoration or ref publication authority."
+    },
+    "src/orchestrator/task_checkpoint.py::validate_checkpoint_branch": {
+      "reason": "Source identity gate rejects foreign attached branches and preserves detached identity without inferring a restorable branch."
+    }
+  },
+  "storage_sinks": {
+    "src/orchestrator/task_checkpoint.py::capture_checkpoint::8e044d0f2e71617726b80ce70cfd0a2f3e2443a520fe7fafb7c1deba317b5496": {
+      "call": "set_task_meta",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 123,
+      "owner": "capture_checkpoint",
+      "owner_fingerprint": "bb5ddc25cf589cb7f05d3706467d264f2165ef4ec89fa75bbd4f1a475b27c440",
+      "reason": "Stores a worker recovery checkpoint snapshot for subsequent context/handoff; the snapshot is historical source evidence and cannot authorize integration publication."
+    }
+  }
+}

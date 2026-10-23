@@ -1,0 +1,59 @@
+{
+  "generic_dependencies": {
+    "src/mcp_registration.py::get_effective_exclusions": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/mcp_registration.py::register_command_tools": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/mcp_registration.py::register_prompts": "Generic dependency; integration-specific definitions in this file are charged independently."
+  },
+  "shared": {
+    "src/mcp_registration.py::DEFAULT_EXCLUDED_COMMANDS['integration_parent_action']": {
+      "baseline_span": [
+        54,
+        60
+      ],
+      "landing_span": [
+        54,
+        60
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/mcp_registration.py::DEFAULT_EXCLUDED_COMMANDS['integration_reconcile_git_truth']": {
+      "reason": "Daemon-only Git-truth reconciliation command registration or transport exclusion."
+    },
+    "src/mcp_registration.py::DEFAULT_EXCLUDED_COMMANDS['integration_train_tick']": {
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/mcp_registration.py::DEFAULT_EXCLUDED_COMMANDS['observe_integration_source_ci']": {
+      "baseline_span": [
+        52,
+        53
+      ],
+      "landing_span": [
+        52,
+        53
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/mcp_registration.py::import from src.mcp_interfaces import agent_to_dict, profile_to_dict, project_to_dict, task_to_dict, workspace_to_dict": {
+      "baseline_span": [
+        32,
+        38
+      ],
+      "landing_span": [
+        32,
+        38
+      ],
+      "reason": "Imports or references an explicitly owned integration primitive."
+    },
+    "src/mcp_registration.py::register_resources": {
+      "baseline_span": [
+        467,
+        613
+      ],
+      "landing_span": [
+        467,
+        613
+      ],
+      "reason": "Imports or references an explicitly owned integration primitive."
+    }
+  }
+}

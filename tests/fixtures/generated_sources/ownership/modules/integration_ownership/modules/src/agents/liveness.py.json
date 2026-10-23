@@ -1,0 +1,5 @@
+{
+  "generic_dependencies": {
+    "src/agents/liveness.py::liveness_by_agent": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "generic_dependencies": {
+    "src/api/models/agent.py::AgentSettings": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/api/models/agent.py::AgentSummary": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}

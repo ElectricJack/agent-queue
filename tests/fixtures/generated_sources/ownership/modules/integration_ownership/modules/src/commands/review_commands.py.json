@@ -1,0 +1,51 @@
+{
+  "generic_dependencies": {
+    "src/commands/review_commands.py::ReviewCommandsMixin": "Generic dependency; integration-specific definitions in this file are charged independently."
+  },
+  "shared": {
+    "src/commands/review_commands.py::ReviewCommandsMixin._cmd_approve_pull_request": {
+      "baseline_span": [
+        87,
+        158
+      ],
+      "landing_span": [
+        87,
+        158
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/commands/review_commands.py::ReviewCommandsMixin._review_playbook_pin": {
+      "baseline_span": [
+        487,
+        626
+      ],
+      "landing_span": [
+        487,
+        625
+      ],
+      "reason": "Imports or references an explicitly owned integration primitive."
+    },
+    "src/commands/review_commands.py::import from src.database.queries.pull_request_queries import list_known_pull_requests, read_pull_request_snapshot": {
+      "baseline_span": [
+        26,
+        28
+      ],
+      "landing_span": [
+        26,
+        28
+      ],
+      "reason": "Imports or references an explicitly owned integration primitive."
+    }
+  },
+  "storage_sinks": {
+    "src/commands/review_commands.py::ReviewCommandsMixin._emit_review_event::00bd3420fbf534f25383b58e3246d1f7d65ec54ef6d25bfc785f28441d2a20ac": {
+      "call": "log_event",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 307,
+      "owner": "ReviewCommandsMixin._emit_review_event",
+      "owner_fingerprint": "60aedef93480e030b55249c51a1ab9ef47a70e0aa3e22384344a85b1a1e1909c",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+    }
+  }
+}

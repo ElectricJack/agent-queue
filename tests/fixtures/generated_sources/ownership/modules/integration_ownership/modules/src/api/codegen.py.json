@@ -1,0 +1,35 @@
+{
+  "generic_dependencies": {
+    "src/api/codegen.py::API_EXCLUDED": "Generic dependency; integration-specific definitions in this file are charged independently."
+  },
+  "shared": {
+    "src/api/codegen.py::API_EXCLUDED['integration_reconcile_git_truth']": {
+      "reason": "Daemon-only Git-truth reconciliation command registration or transport exclusion."
+    },
+    "src/api/codegen.py::API_EXCLUDED['integration_train_tick']": {
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/api/codegen.py::_make_route_handler": {
+      "baseline_span": [
+        372,
+        497
+      ],
+      "landing_span": [
+        367,
+        492
+      ],
+      "reason": "Imports or references an explicitly owned integration primitive."
+    },
+    "src/api/codegen.py::import from src.api.scope import check_request_scope": {
+      "baseline_span": [
+        40,
+        40
+      ],
+      "landing_span": [
+        40,
+        40
+      ],
+      "reason": "Imports or references an explicitly owned integration primitive."
+    }
+  }
+}

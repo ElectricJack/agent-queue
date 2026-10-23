@@ -1,0 +1,26 @@
+{
+  "shared": {
+    "dashboard/src/panes/task-detail/TaskDetailBody.tsx::export default function TaskDetailBody({ taskId, onOpenTask, onClose, onLeave = onClose, fromTaskPane = false, host }: TaskDetailBodyProps) {": {
+      "baseline_span": [
+        92,
+        672
+      ],
+      "landing_span": [
+        92,
+        672
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "dashboard/src/panes/task-detail/TaskDetailBody.tsx::import { EpicDeliveryPanel, EpicStatus } from \"../../components/EpicDelivery\";": {
+      "baseline_span": [
+        29,
+        29
+      ],
+      "landing_span": [
+        29,
+        29
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    }
+  }
+}

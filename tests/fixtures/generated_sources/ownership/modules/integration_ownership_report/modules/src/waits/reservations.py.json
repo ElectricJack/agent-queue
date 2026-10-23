@@ -1,0 +1,5 @@
+{
+  "shared_definitions": {
+    "src/waits/reservations.py::reserved_statement": "Admission reads current integration branch, batch, repository and route constraints; charged to integration ownership."
+  }
+}

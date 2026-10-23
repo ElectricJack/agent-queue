@@ -1,0 +1,5 @@
+{
+  "exclusions": {
+    "src/task_graph/layout/constants.py::VARIANTS['active']": "Generic same-shaped definition independently present at the pinned baseline/landing; new relocations are still charged."
+  }
+}
