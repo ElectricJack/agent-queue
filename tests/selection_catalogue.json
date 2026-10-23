@@ -19431,7 +19431,7 @@
         "install"
       ],
       "default_arm": true,
-      "digest": "sha256:bf5b0c9b48e84a229832d166c2225c3a99a2f9db5b2e8a339e10b2cebdd6be77",
+      "digest": "sha256:c49a97de926ae8213537a2cdddf918ae82cd2037ba54acbbbe66eedde1798f25",
       "imports": [
         "src.cli",
         "src.cli.app",
@@ -19439,6 +19439,7 @@
         "src.config",
         "src.dashboard_server.app",
         "src.dashboard_server.settings",
+        "src.database.backup",
         "src.install",
         "src.install.command",
         "src.install.dashboard",
