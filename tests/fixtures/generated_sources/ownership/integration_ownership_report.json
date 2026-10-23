@@ -1043,7 +1043,7 @@
     "phase": "transition",
     "fixed_replacement_allowance": 15000,
     "engine_cap": 97627,
-    "owned_total_cap": 161162,
+    "owned_total_cap": 161174,
     "table_cap": 45,
     "expires_at": "s4_modules",
     "automatic_baseline_increase": false,
@@ -1065,13 +1065,14 @@
         "msg-3f6311071a6647429059f3a990750597",
         "msg-99539879",
         "msg-68ccb1d50ee04851a7268dd58e9d4459",
-        "msg-9f16388d39524c8b9a33d6796b88d1fb"
+        "msg-9f16388d39524c8b9a33d6796b88d1fb",
+        "msg-c47a1a9a635a465b8a0cb286f93cb0b0"
       ],
       "decision_record": "record:2720bdbe-7521-427e-8e72-1f40a3ff9818",
-      "measured_source_revision": "73e99672d2447c44ef6a71d43a0187f2d16630af",
+      "measured_source_revision": "925ee7bf7fbeffacf5db9fb2b4c41420f67d7be3",
       "original_owned_total_cap": 155499,
-      "measured_owned_total": 161162,
-      "delta": 5663,
+      "measured_owned_total": 161174,
+      "delta": 5675,
       "predecessors": [
         {
           "batch_id": "train-77f0d8e451f6aed08d608e443031047a",
@@ -1091,7 +1092,7 @@
           "measured_owned_total": 158958
         }
       ],
-      "batch_measured_delta": 2204,
+      "batch_measured_delta": 2216,
       "restore_task": "azure-ridge-72",
       "expires_at": "s4_modules",
       "category_approval_message_id": "msg-90f9f1b1e0cd4e8e8d28071cffc927a6",
@@ -1100,7 +1101,7 @@
       ],
       "category_restore_task": "stark-willow-95.17",
       "verification_task": "stark-willow-95.18",
-      "measured_engine_lines": 85543,
+      "measured_engine_lines": 85551,
       "measured_table_count": 45,
       "delivery_method": "operator direct integration; user request 2026-10-22",
       "amendments": [
@@ -1272,6 +1273,33 @@
           "original_task_base_owned_total": 161053,
           "original_task_base_engine_lines": 85468,
           "reason": "Explicit supervisor approval of the exact retained Git filing resolver footprint; compose the unchanged +26 owned/+4 engine grant on dev, preserving historical grants."
+        },
+        {
+          "task_id": "calm-lantern-21",
+          "decision_message_id": "msg-c47a1a9a635a465b8a0cb286f93cb0b0",
+          "referenced_decision": "size-cap-delegation-2026-10-23",
+          "operator_decision": "6679052c",
+          "operator_task": "sharp-cascade-53",
+          "pull_request": "https://github.com/ElectricJack/agent-queue/pull/1902",
+          "previous_source_revision": "c177d24e86d25fde7804131c94bfd637b0eb540a",
+          "previous_owned_total": 161162,
+          "previous_engine_lines": 85543,
+          "previous_shared_lines": 62037,
+          "previous_table_count": 45,
+          "authorized_owned_delta": 12,
+          "authorized_engine_delta": 8,
+          "authorized_shared_delta": 4,
+          "authorized_table_delta": 0,
+          "measured_source_revision": "925ee7bf7fbeffacf5db9fb2b4c41420f67d7be3",
+          "measured_owned_total": 161174,
+          "measured_engine_lines": 85551,
+          "measured_shared_lines": 62041,
+          "measured_table_count": 45,
+          "charged_definitions": [
+            "src/integration/pr_repair_publication.py::PRRepairPublication",
+            "src/cli/client.py::_COMMAND_TIMEOUTS"
+          ],
+          "reason": "Authenticated current remote PR base history and repair/root-redrive CLI timeout budgets. Project supervisor approved the exact +12 owned (+8 engine, +4 shared) footprint for PR1902 under size-cap-delegation-2026-10-23; preserve historical frozen-batch measurements and classifications."
         }
       ],
       "supplemental_grants": [
@@ -14657,5 +14685,32 @@
     "original_task_base_owned_total": 161053,
     "original_task_base_engine_lines": 85468,
     "reason": "Explicit supervisor approval of the exact retained Git filing resolver footprint; compose the unchanged +26 owned/+4 engine grant on dev, preserving historical grants."
+  },
+  "remote_pr_base_measurement": {
+    "task_id": "calm-lantern-21",
+    "decision_message_id": "msg-c47a1a9a635a465b8a0cb286f93cb0b0",
+    "referenced_decision": "size-cap-delegation-2026-10-23",
+    "operator_decision": "6679052c",
+    "operator_task": "sharp-cascade-53",
+    "pull_request": "https://github.com/ElectricJack/agent-queue/pull/1902",
+    "previous_source_revision": "c177d24e86d25fde7804131c94bfd637b0eb540a",
+    "previous_owned_total": 161162,
+    "previous_engine_lines": 85543,
+    "previous_shared_lines": 62037,
+    "previous_table_count": 45,
+    "authorized_owned_delta": 12,
+    "authorized_engine_delta": 8,
+    "authorized_shared_delta": 4,
+    "authorized_table_delta": 0,
+    "measured_source_revision": "925ee7bf7fbeffacf5db9fb2b4c41420f67d7be3",
+    "measured_owned_total": 161174,
+    "measured_engine_lines": 85551,
+    "measured_shared_lines": 62041,
+    "measured_table_count": 45,
+    "charged_definitions": [
+      "src/integration/pr_repair_publication.py::PRRepairPublication",
+      "src/cli/client.py::_COMMAND_TIMEOUTS"
+    ],
+    "reason": "Authenticated current remote PR base history and repair/root-redrive CLI timeout budgets. Project supervisor approved the exact +12 owned (+8 engine, +4 shared) footprint for PR1902 under size-cap-delegation-2026-10-23; preserve historical frozen-batch measurements and classifications."
   }
 }
