@@ -599,6 +599,15 @@ All of these were verified in the code on 2026-10-20 unless marked otherwise.
    `final` ignore this exception; `azure-ridge-72` owns its earlier removal and
    restoration of 155,499 after this batch is delivered. This decision does not
    change retry history, integration authority, required CI or cutover holds.
+
+   For PR [#1858](https://github.com/ElectricJack/agent-queue/pull/1858), supervisor
+   decision `msg-08efc39cceeb430cafb8636f1acb85f1` under
+   `size-cap-delegation-2026-10-23` (operator decision `6679052c`) amends the
+   recorded transition exception to exactly **161,023 owned lines**, **85,320
+   engine lines** and **45 tables** at source
+   `a68665e4afde3be9a0aba0d9dec50e61e632be84`. This adds 186 owned lines and four
+   engine lines to the previous exact measurement. The ownership records retain
+   the earlier decisions and the measurement-equality assertion remains enforced.
 4. **Dead or never-wired code:**
    - `shadow.py` is imported only by tests.
    - `GENERATED_MERGE_CONFIG` has no caller.

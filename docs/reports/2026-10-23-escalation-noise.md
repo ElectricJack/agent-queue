@@ -65,6 +65,27 @@ checks, the delivery watchdog and the selection catalogue. The `aq test` run
 used the disposable PostgreSQL service on port 5534 and the default marker arm.
 Changed Python files pass `ruff check`; `git diff --check` is clean.
 
+## PR #1858 CI repair
+
+The reopened task exposed an import cycle through escalation rendering and the
+database conversation queries. Database imports in `operational_source` now load
+when recovery executes, allowing CLI discovery and explanation imports to remain
+independent of the daemon runtime. Commit
+`a68665e4afde3be9a0aba0d9dec50e61e632be84` fixes that cycle.
+
+The focused CLI discovery, command contracts, payload generation and escalation
+state checks pass: **127 passed**. Generated-artifact checks also pass; their
+combined run with the ownership ratchet had **67 passed**, with only the two
+unamended size assertions failing.
+
+Supervisor decision `msg-08efc39cceeb430cafb8636f1acb85f1`, under
+`size-cap-delegation-2026-10-23` (operator decision `6679052c`), authorizes the
+exact [PR #1858](https://github.com/ElectricJack/agent-queue/pull/1858) footprint:
+**161,023 owned lines**, **85,320 engine lines**, **45 tables**. Relative to the
+prior measurement this is +186 owned and +4 engine lines. The canonical ownership
+records and regenerated copies record the amendment and its authority; the test
+continues to require equality with the measured source inventory.
+
 ## Post-delivery observation
 
 The project supervisor owns the after snapshot and will attach it as a task

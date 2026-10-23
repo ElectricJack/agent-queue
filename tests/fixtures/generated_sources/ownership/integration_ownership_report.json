@@ -1043,7 +1043,7 @@
     "phase": "transition",
     "fixed_replacement_allowance": 15000,
     "engine_cap": 97627,
-    "owned_total_cap": 160837,
+    "owned_total_cap": 161023,
     "table_cap": 45,
     "expires_at": "s4_modules",
     "automatic_baseline_increase": false,
@@ -1055,13 +1055,14 @@
         "msg-7ed85e78d1af4f3e85b485a57967e794",
         "msg-381054d695e64055979a687c4d811e7e",
         "msg-ab86b9766c2f42b9ba4920aba585b577",
-        "msg-21784b3e56aa4f54bf1042b7c9af4aaf"
+        "msg-21784b3e56aa4f54bf1042b7c9af4aaf",
+        "msg-08efc39cceeb430cafb8636f1acb85f1"
       ],
       "decision_record": "record:2720bdbe-7521-427e-8e72-1f40a3ff9818",
       "measured_source_revision": "15bc2ea12433ab88b9e915d52900de0123452fd4",
       "original_owned_total_cap": 155499,
-      "measured_owned_total": 160837,
-      "delta": 5338,
+      "measured_owned_total": 161023,
+      "delta": 5524,
       "predecessors": [
         {
           "batch_id": "train-77f0d8e451f6aed08d608e443031047a",
@@ -1081,7 +1082,7 @@
           "measured_owned_total": 158958
         }
       ],
-      "batch_measured_delta": 1879,
+      "batch_measured_delta": 2065,
       "restore_task": "azure-ridge-72",
       "expires_at": "s4_modules",
       "category_approval_message_id": "msg-90f9f1b1e0cd4e8e8d28071cffc927a6",
@@ -1090,7 +1091,7 @@
       ],
       "category_restore_task": "stark-willow-95.17",
       "verification_task": "stark-willow-95.18",
-      "measured_engine_lines": 85316,
+      "measured_engine_lines": 85320,
       "measured_table_count": 45,
       "delivery_method": "operator direct integration; user request 2026-10-22",
       "amendments": [
@@ -1106,6 +1107,19 @@
           "global_request": "msg-9f895e0d",
           "global_grant": "msg-7f2f68c1",
           "grant_delivery_message_id": "msg-21784b3e56aa4f54bf1042b7c9af4aaf"
+        },
+        {
+          "task_id": "keen-forge-77",
+          "decision_message_id": "msg-08efc39cceeb430cafb8636f1acb85f1",
+          "referenced_decision": "size-cap-delegation-2026-10-23",
+          "operator_decision": "6679052c",
+          "pull_request": "https://github.com/ElectricJack/agent-queue/pull/1858",
+          "measured_source_revision": "a68665e4afde3be9a0aba0d9dec50e61e632be84",
+          "previous_owned_total": 160837,
+          "previous_engine_lines": 85316,
+          "authorized_owned_delta": 186,
+          "authorized_engine_delta": 4,
+          "reason": "Escalation source recovery and supervisor routing, including the deferred database imports required by CLI discovery; supervisor approved the exact PR #1858 footprint under size-cap-delegation-2026-10-23."
         }
       ]
     }
@@ -14158,5 +14172,16 @@
     "grant_delivery_message_id": "msg-21784b3e56aa4f54bf1042b7c9af4aaf",
     "global_request": "msg-9f895e0d",
     "global_grant": "msg-7f2f68c1"
+  },
+  "escalation_noise_measurement": {
+    "source_revision": "a68665e4afde3be9a0aba0d9dec50e61e632be84",
+    "measured_owned_total": 161023,
+    "measured_engine_lines": 85320,
+    "measured_table_count": 45,
+    "authority": "msg-08efc39cceeb430cafb8636f1acb85f1",
+    "task_id": "keen-forge-77",
+    "delegation": "size-cap-delegation-2026-10-23",
+    "operator_decision": "6679052c",
+    "pull_request": "https://github.com/ElectricJack/agent-queue/pull/1858"
   }
 }
