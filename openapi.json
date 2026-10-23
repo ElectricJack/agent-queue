@@ -46350,7 +46350,8 @@
               "disabled",
               "observe",
               "hierarchy",
-              "train"
+              "train",
+              "development"
             ],
             "title": "Hierarchical Integration Mode"
           },

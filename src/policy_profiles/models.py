@@ -84,7 +84,9 @@ class IntegrationSettings(Strict):
     version: Literal[1] = 1
     engine: Literal["shadow", "active"]
     integration_mode: Literal["pull_request"] = "pull_request"
-    hierarchical_integration_mode: Literal["disabled", "observe", "hierarchy", "train"]
+    hierarchical_integration_mode: Literal[
+        "disabled", "observe", "hierarchy", "train", "development"
+    ]
     integration_repository_id: str | None = None
     default_branch: str
     # Placeholders may stand for check-name arrays until materialization. The
