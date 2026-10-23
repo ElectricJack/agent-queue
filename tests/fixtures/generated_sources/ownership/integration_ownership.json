@@ -19532,13 +19532,14 @@
       "msg-00b0e08117cc479c9a4a0b36fc5a30d0",
       "msg-3bed5d5db4ed4c7fa1ef9150b1c3dd8c",
       "msg-a337e2c905ce4f5c8a236344a4e25211",
-      "msg-330ea2478c724381acbb5512fc99e4b5"
+      "msg-330ea2478c724381acbb5512fc99e4b5",
+      "msg-3f6311071a6647429059f3a990750597"
     ],
     "decision_record": "record:2720bdbe-7521-427e-8e72-1f40a3ff9818",
-    "measured_source_revision": "438aa36cc93945305ea291622009f6b34d4ee733",
+    "measured_source_revision": "43b3e220a2a1ac6e8d5b7543d3f83063c7c747f6",
     "original_owned_total_cap": 155499,
-    "measured_owned_total": 161053,
-    "delta": 5554,
+    "measured_owned_total": 161062,
+    "delta": 5563,
     "predecessors": [
       {
         "batch_id": "train-77f0d8e451f6aed08d608e443031047a",
@@ -19558,7 +19559,7 @@
         "measured_owned_total": 158958
       }
     ],
-    "batch_measured_delta": 2095,
+    "batch_measured_delta": 2104,
     "restore_task": "azure-ridge-72",
     "expires_at": "s4_modules",
     "category_approval_message_id": "msg-90f9f1b1e0cd4e8e8d28071cffc927a6",
@@ -19621,6 +19622,24 @@
         "reason": "GitHub caller diagnostics, shared background quota reserve and inventory reuse; exact supervisor grant under size-cap-delegation-2026-10-23.",
         "supersedes_message_id": "msg-ac47a08407a6462bb411326ecefeab44",
         "grant_source_message_id": "msg-330ea2478c724381acbb5512fc99e4b5"
+      },
+      {
+        "task_id": "sharp-rapids-10",
+        "decision_message_id": "msg-3f6311071a6647429059f3a990750597",
+        "referenced_decision": "size-cap-delegation-2026-10-23",
+        "operator_decision": "6679052c",
+        "grant_id": "sharp-rapids-10-cap-epoch2-2026-10-23",
+        "pull_request": "https://github.com/ElectricJack/agent-queue/pull/1885",
+        "previous_source_revision": "438aa36cc93945305ea291622009f6b34d4ee733",
+        "previous_owned_total": 161053,
+        "previous_engine_lines": 85468,
+        "authorized_owned_delta": 9,
+        "authorized_engine_delta": 0,
+        "measured_source_revision": "43b3e220a2a1ac6e8d5b7543d3f83063c7c747f6",
+        "measured_owned_total": 161062,
+        "measured_engine_lines": 85468,
+        "measured_table_count": 45,
+        "reason": "Dashboard PR snapshot quota fix; exact project supervisor amendment under size-cap-delegation-2026-10-23. No automatic ceiling increase or source relocation."
       }
     ],
     "supplemental_grants": [
