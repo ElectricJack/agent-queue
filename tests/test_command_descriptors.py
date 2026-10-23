@@ -49,6 +49,7 @@ EPIC_COMMANDS = ("integration_cutover_containment", "integration_reconcile_git_t
 WATCH_CHANGES = ROOT / "tests/fixtures/contracts/watch-contract-changes.json"
 INGEST_CHANGES = ROOT / "tests/fixtures/contracts/ingestion-replay-contract-changes.json"
 OBJECT_LOOP_CHANGES = ROOT / "tests/fixtures/contracts/object-loop-port-changes.json"
+PIPELINE_CHANGES = ROOT / "tests/fixtures/contracts/default-pipeline-building-blocks-changes.json"
 HIBERNATION_CHANGES = ROOT / "tests/fixtures/contracts/hibernation-contract-changes.json"
 DISPATCH_CHANGES = ROOT / "tests/fixtures/contracts/dispatch-wait-contract-changes.json"
 BATCH_FIX_CHANGES = ROOT / "tests/fixtures/contracts/batch-fix-contract-changes.json"
@@ -61,6 +62,8 @@ DEV_HIBERNATION_CHANGES = ROOT / "tests/fixtures/contracts/hibernation-main-refr
 SUPERVISOR_HEALTH_CHANGES = ROOT / "tests/fixtures/contracts/supervisor-health-contract-changes.json"
 TARGET_REPAIR_CHANGES = ROOT / "tests/fixtures/contracts/target-repair-contract-changes.json"
 PR_REPAIR_CHANGES = ROOT / "tests/fixtures/contracts/pr-repair-publication-contract-changes.json"
+WAIT_REQUEUE_CHANGES = ROOT / "tests/fixtures/contracts/wait-requeue-contract-changes.json"
+ROUTING_CHANGES = ROOT / "tests/fixtures/contracts/routing-building-blocks-artifact-changes.json"
 
 
 def _stuck_check_changes():
@@ -71,9 +74,33 @@ def _pr_repair_changes():
     return json.loads(PR_REPAIR_CHANGES.read_text())
 
 
+def _wait_requeue_changes():
+    return json.loads(WAIT_REQUEUE_CHANGES.read_text())
+
+
+def _before_wait_requeue_catalogue():
+    return _revert_catalogue(json.loads(render_command_catalogue()), _wait_requeue_changes())
+
+
+def test_wait_requeue_catalogue_only_changes_reviewed_command():
+    evidence = _wait_requeue_changes()
+    assert CONTRACTS.require(evidence["command"]).contract.fingerprint() == (
+        evidence["contract_fingerprint"]
+    )
+    assert {name for section in evidence["catalogue_sections"].values()
+            for name in section["entries"]} == {evidence["command"]}
+    previous = json.dumps(_before_wait_requeue_catalogue(), indent=2) + "\n"
+    assert hashlib.sha256(previous.encode()).hexdigest() == (
+        evidence["previous_cli_catalogue_sha256"]
+    )
+    assert evidence["previous_cli_catalogue_sha256"] == _pr_repair_changes()[
+        "cli_catalogue_sha256"
+    ]
+
+
 def _before_pr_repair_catalogue():
     evidence = _pr_repair_changes()
-    catalogue = json.loads(render_command_catalogue())
+    catalogue = _before_wait_requeue_catalogue()
     assert catalogue["fallback"].pop(evidence["command"]) == evidence["transport_definition"]
     return catalogue
 
@@ -415,7 +442,9 @@ def test_transport_views_and_cli_serialization_preserve_golden_evidence():
     assert stuck_check["previous_cli_catalogue_sha256"] == completion["cli_catalogue_sha256"]
     pr_repair = _pr_repair_changes()
     assert pr_repair["previous_cli_catalogue_sha256"] == stuck_check["cli_catalogue_sha256"]
-    assert actual == pr_repair["cli_catalogue_sha256"]
+    wait_requeue = _wait_requeue_changes()
+    assert wait_requeue["previous_cli_catalogue_sha256"] == pr_repair["cli_catalogue_sha256"]
+    assert actual == wait_requeue["cli_catalogue_sha256"]
     previous = json.dumps(_before_batch_fix_catalogue(), indent=2) + "\n"
     assert hashlib.sha256(previous.encode()).hexdigest() == dispatch["cli_catalogue_sha256"]
     previous = json.dumps(_before_dispatch_catalogue(), indent=2) + "\n"
@@ -497,6 +526,11 @@ def test_legacy_playbook_fixtures_are_unchanged():
     object_loop = json.loads(OBJECT_LOOP_CHANGES.read_text())["playbook_fixtures"]
     assert set(ingest) == {"tests/fixtures/playbooks/v2/default-pipeline/artifact.json"}
     assert set(object_loop) == {"tests/fixtures/playbooks/v2/object-loop/artifact.json"}
+    routing = json.loads(ROUTING_CHANGES.read_text())["playbook_fixtures"]
+    assert set(ingest) == {"tests/fixtures/playbooks/v2/default-pipeline/artifact.json"}
+    assert set(routing) == {"tests/fixtures/playbooks/v2/default-assignment-routing/artifact.json"}
+    pipeline = json.loads(PIPELINE_CHANGES.read_text())["playbook_fixtures"]
+    assert set(pipeline) == {"tests/fixtures/playbooks/v2/default-pipeline/artifact.json"}
     for path, digest in json.loads(GOLDEN.read_text())["playbook_fixtures"].items():
         if path in changes:
             assert changes[path]["previous_sha256"] == digest
@@ -525,6 +559,18 @@ def test_legacy_playbook_fixtures_are_unchanged():
             assert hashlib.sha256(historical.read_bytes()).hexdigest() == digest
             assert object_loop[path]["sha256"] != digest
             digest = object_loop[path]["sha256"]
+        if path in routing:
+            assert routing[path]["previous_sha256"] == digest
+            historical = ROOT / routing[path]["preserved_previous_path"]
+            assert hashlib.sha256(historical.read_bytes()).hexdigest() == digest
+            assert routing[path]["sha256"] != digest
+            digest = routing[path]["sha256"]
+        if path in pipeline:
+            assert pipeline[path]["previous_sha256"] == digest
+            historical = ROOT / pipeline[path]["preserved_previous_path"]
+            assert hashlib.sha256(historical.read_bytes()).hexdigest() == digest
+            assert pipeline[path]["sha256"] != digest
+            digest = pipeline[path]["sha256"]
         assert hashlib.sha256((ROOT / path).read_bytes()).hexdigest() == digest, path
 
 
