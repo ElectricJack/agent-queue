@@ -1,6 +1,6 @@
 import TaskKnowledgeSection from "./knowledge/TaskKnowledgeSection";
 import { useState } from "react";
-import { useParams, Link, useLocation } from "react-router-dom";
+import { useParams, Link, useLocation, useSearchParams } from "react-router-dom";
 import { ArrowLeftIcon, ArrowTopRightOnSquareIcon } from "@heroicons/react/24/outline";
 import { useTask, type TaskRef } from "../api/hooks";
 import StatusBadge from "../components/StatusBadge";
@@ -28,7 +28,11 @@ function TaskDetailContent({ taskId }: { taskId: string }) {
   const location = useLocation();
   const { data: task, isLoading } = useTask(taskId ?? "");
 
-  const [activeTab, setActiveTab] = useState<"details" | "explain" | "graph">("details");
+  const [searchParams] = useSearchParams();
+  const requestedTab = searchParams.get("tab");
+  const [activeTab, setActiveTab] = useState<"details" | "explain" | "graph">(
+    requestedTab === "explain" || requestedTab === "graph" ? requestedTab : "details",
+  );
 
   if (isLoading) return <p className="p-6 text-sm text-gray-500">Loading...</p>;
   if (!task) return <p className="p-6 text-sm text-gray-500">Task not found.</p>;

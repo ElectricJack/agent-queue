@@ -1305,6 +1305,78 @@
         }
       }
     },
+    "/api/metrics/delivery-latency": {
+      "get": {
+        "summary": "Get Delivery Latency",
+        "operationId": "get_delivery_latency_api_metrics_delivery_latency_get",
+        "parameters": [
+          {
+            "name": "window",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "24h",
+              "title": "Window"
+            }
+          },
+          {
+            "name": "project_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Project Id"
+            }
+          },
+          {
+            "name": "until",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Until"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeliveryLatencyResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/providers/usage": {
       "get": {
         "summary": "Get Provider Usage",
@@ -6867,6 +6939,100 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/GraphLayoutResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/integration/batch-fix": {
+      "post": {
+        "tags": [
+          "integration"
+        ],
+        "summary": "Inspect or push the batch branch bound to this task-free fixer session.",
+        "description": "Inspect or push the batch branch bound to this task-free fixer session.",
+        "operationId": "integration_batch_fix",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IntegrationBatchFixRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IntegrationBatchFixResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/integration/continue-close": {
+      "post": {
+        "tags": [
+          "integration"
+        ],
+        "summary": "Continue the parent merge belonging to your held task and session.",
+        "description": "Continue the parent merge belonging to your held task and session.",
+        "operationId": "integration_continue_close",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IntegrationContinueCloseRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IntegrationContinueCloseResponse"
                 }
               }
             }
@@ -12651,6 +12817,53 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ProjectReadyResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/project/relocate": {
+      "post": {
+        "tags": [
+          "project"
+        ],
+        "summary": "Preview or apply an atomic project storage relocation. Requires paused admission, disabled/drained train, stopped writers and current required CI. Reverse relocation uses a fresh destination containing current work. Local operator only.",
+        "description": "Preview or apply an atomic project storage relocation. Requires paused admission, disabled/drained train, stopped writers and current required CI. Reverse relocation uses a fresh destination containing current work. Local operator only.",
+        "operationId": "project_relocate",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProjectRelocateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectRelocateResponse"
                 }
               }
             }
@@ -33289,6 +33502,910 @@
         ],
         "title": "DeleteWorktree"
       },
+      "DeliveryLatencyBatchDay": {
+        "properties": {
+          "day": {
+            "type": "number",
+            "title": "Day"
+          },
+          "batches": {
+            "type": "integer",
+            "title": "Batches",
+            "default": 0
+          },
+          "members": {
+            "type": "integer",
+            "title": "Members",
+            "default": 0
+          },
+          "red_rounds": {
+            "type": "integer",
+            "title": "Red Rounds",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "required": [
+          "day"
+        ],
+        "title": "DeliveryLatencyBatchDay",
+        "description": "Integration batches created on one UTC day (``day`` is its epoch start)."
+      },
+      "DeliveryLatencyExcluded": {
+        "properties": {
+          "reason": {
+            "type": "string",
+            "title": "Reason"
+          },
+          "count": {
+            "type": "integer",
+            "title": "Count",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "required": [
+          "reason"
+        ],
+        "title": "DeliveryLatencyExcluded",
+        "description": "Completions that are not samples, counted by reason."
+      },
+      "DeliveryLatencyGeneration": {
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "title": "Task Id"
+          },
+          "generation_id": {
+            "type": "string",
+            "title": "Generation Id"
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "exclusion": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Exclusion"
+          },
+          "completed_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completed At"
+          },
+          "anchor_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Anchor At"
+          },
+          "anchor_kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Anchor Kind"
+          },
+          "on_dev_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "On Dev At"
+          },
+          "parent_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent At"
+          },
+          "parent_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Ref"
+          },
+          "dev_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dev Ref"
+          },
+          "source_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Ref"
+          },
+          "source_oid": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Oid"
+          },
+          "target_oid": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Oid"
+          },
+          "observed_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Observed At"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "latest_state": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Latest State"
+          },
+          "approval_to_dev_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Approval To Dev Seconds"
+          },
+          "completion_to_dev_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completion To Dev Seconds"
+          },
+          "age_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Age Seconds"
+          },
+          "watchdog": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Watchdog"
+          },
+          "human_wait_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Human Wait Seconds"
+          },
+          "segments": {
+            "additionalProperties": {
+              "type": "number"
+            },
+            "type": "object",
+            "title": "Segments",
+            "default": {}
+          },
+          "residual_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Residual Seconds"
+          },
+          "rebuild_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rebuild Seconds"
+          },
+          "setup_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Setup Seconds"
+          },
+          "cache_hit_rate": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cache Hit Rate"
+          },
+          "clock_skew": {
+            "type": "boolean",
+            "title": "Clock Skew",
+            "default": false
+          },
+          "late": {
+            "type": "boolean",
+            "title": "Late",
+            "default": false
+          },
+          "current_blocker": {
+            "type": "boolean",
+            "title": "Current Blocker",
+            "default": false
+          },
+          "waits": {
+            "items": {
+              "$ref": "#/components/schemas/DeliveryLatencyWait"
+            },
+            "type": "array",
+            "title": "Waits",
+            "default": []
+          }
+        },
+        "type": "object",
+        "required": [
+          "task_id",
+          "generation_id",
+          "status"
+        ],
+        "title": "DeliveryLatencyGeneration",
+        "description": "One completed generation in drill-down.\n\n``status`` is ``sample``, ``pending``, ``unknown``, ``historical_unknown``,\n``left_censored`` or ``excluded``. ``current_blocker`` marks a sample whose\ndev ref no longer contains it (a rewrite after the timing was taken).\n``observed_at``, ``reason`` and the OIDs come from the latest recorded\ncontainment transition (on dev when there is one); transitions are written\nonly when the state changes, so ``observed_at`` is not a freshness probe."
+      },
+      "DeliveryLatencyHistogramBucket": {
+        "properties": {
+          "bucket": {
+            "type": "string",
+            "title": "Bucket"
+          },
+          "count": {
+            "type": "integer",
+            "title": "Count",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "required": [
+          "bucket"
+        ],
+        "title": "DeliveryLatencyHistogramBucket"
+      },
+      "DeliveryLatencyResponse": {
+        "properties": {
+          "observed_at": {
+            "type": "number",
+            "title": "Observed At"
+          },
+          "window": {
+            "type": "string",
+            "title": "Window"
+          },
+          "since": {
+            "type": "number",
+            "title": "Since"
+          },
+          "until": {
+            "type": "number",
+            "title": "Until"
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id"
+          },
+          "metric": {
+            "type": "string",
+            "title": "Metric",
+            "default": "approval_to_dev"
+          },
+          "percentiles_exclude_pending": {
+            "type": "boolean",
+            "title": "Percentiles Exclude Pending",
+            "default": true
+          },
+          "median_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Median Seconds"
+          },
+          "p90_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "P90 Seconds"
+          },
+          "completion_to_dev_median_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completion To Dev Median Seconds"
+          },
+          "completion_to_dev_p90_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completion To Dev P90 Seconds"
+          },
+          "sample_count": {
+            "type": "integer",
+            "title": "Sample Count",
+            "default": 0
+          },
+          "eligible_count": {
+            "type": "integer",
+            "title": "Eligible Count",
+            "default": 0
+          },
+          "pending_count": {
+            "type": "integer",
+            "title": "Pending Count",
+            "default": 0
+          },
+          "unknown_count": {
+            "type": "integer",
+            "title": "Unknown Count",
+            "default": 0
+          },
+          "historical_unknown_count": {
+            "type": "integer",
+            "title": "Historical Unknown Count",
+            "default": 0
+          },
+          "left_censored_count": {
+            "type": "integer",
+            "title": "Left Censored Count",
+            "default": 0
+          },
+          "slow_count": {
+            "type": "integer",
+            "title": "Slow Count",
+            "default": 0
+          },
+          "stuck_count": {
+            "type": "integer",
+            "title": "Stuck Count",
+            "default": 0
+          },
+          "late_sample_count": {
+            "type": "integer",
+            "title": "Late Sample Count",
+            "default": 0
+          },
+          "clock_skew_count": {
+            "type": "integer",
+            "title": "Clock Skew Count",
+            "default": 0
+          },
+          "current_blocker_count": {
+            "type": "integer",
+            "title": "Current Blocker Count",
+            "default": 0
+          },
+          "excluded": {
+            "items": {
+              "$ref": "#/components/schemas/DeliveryLatencyExcluded"
+            },
+            "type": "array",
+            "title": "Excluded",
+            "default": []
+          },
+          "oldest_pending_age_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Oldest Pending Age Seconds"
+          },
+          "within_target_fraction": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Within Target Fraction"
+          },
+          "coverage": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Coverage"
+          },
+          "unknown_fraction": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unknown Fraction"
+          },
+          "target": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DeliveryLatencyTarget"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "targets": {
+            "items": {
+              "$ref": "#/components/schemas/DeliveryLatencyTarget"
+            },
+            "type": "array",
+            "title": "Targets",
+            "default": []
+          },
+          "segments": {
+            "items": {
+              "$ref": "#/components/schemas/DeliveryLatencySegment"
+            },
+            "type": "array",
+            "title": "Segments",
+            "default": []
+          },
+          "residual_median_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Residual Median Seconds"
+          },
+          "rebuild_seconds_total": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rebuild Seconds Total"
+          },
+          "cache_hit_rate": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cache Hit Rate"
+          },
+          "cache_hit_rate_derived": {
+            "type": "boolean",
+            "title": "Cache Hit Rate Derived",
+            "default": true
+          },
+          "parent_delay_median_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Delay Median Seconds"
+          },
+          "author_merge_median_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Author Merge Median Seconds"
+          },
+          "historical_age_histogram": {
+            "items": {
+              "$ref": "#/components/schemas/DeliveryLatencyHistogramBucket"
+            },
+            "type": "array",
+            "title": "Historical Age Histogram",
+            "default": []
+          },
+          "batches_per_day": {
+            "items": {
+              "$ref": "#/components/schemas/DeliveryLatencyBatchDay"
+            },
+            "type": "array",
+            "title": "Batches Per Day",
+            "default": []
+          },
+          "generations": {
+            "items": {
+              "$ref": "#/components/schemas/DeliveryLatencyGeneration"
+            },
+            "type": "array",
+            "title": "Generations",
+            "default": []
+          }
+        },
+        "type": "object",
+        "required": [
+          "observed_at",
+          "window",
+          "since",
+          "until"
+        ],
+        "title": "DeliveryLatencyResponse",
+        "description": "``GET /api/metrics/delivery-latency`` \u2014 one completion cohort.\n\nThe headline (``metric``) is approval to first sight on dev, minus linked\nhuman-wait time; the completion-to-dev figures sit beside it. Percentiles\ncover delivered samples only (``percentiles_exclude_pending``), so read\nthem with the pending, unknown and excluded counts. Null means no data,\nnever zero. ``cache_hit_rate`` is derived from ``rebuild_seconds == 0``.\nNo field declares the SLO met."
+      },
+      "DeliveryLatencySegment": {
+        "properties": {
+          "segment": {
+            "type": "string",
+            "title": "Segment"
+          },
+          "median_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Median Seconds"
+          },
+          "generations": {
+            "type": "integer",
+            "title": "Generations",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "required": [
+          "segment"
+        ],
+        "title": "DeliveryLatencySegment",
+        "description": "Median of one segment over the cohort's samples; segments overlap."
+      },
+      "DeliveryLatencyTarget": {
+        "properties": {
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id"
+          },
+          "target_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Seconds"
+          },
+          "min_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Min Seconds"
+          },
+          "ci_multiplier": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ci Multiplier"
+          },
+          "p90_batch_ci_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "P90 Batch Ci Seconds"
+          },
+          "batch_ci_samples": {
+            "type": "integer",
+            "title": "Batch Ci Samples",
+            "default": 0
+          },
+          "source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source"
+          }
+        },
+        "type": "object",
+        "title": "DeliveryLatencyTarget",
+        "description": "Section 9.2's per-project threshold, which is also the SLO target.\n\n``source`` is ``floor`` until integration CI has been measured."
+      },
+      "DeliveryLatencyWait": {
+        "properties": {
+          "wait_id": {
+            "type": "string",
+            "title": "Wait Id"
+          },
+          "origin": {
+            "type": "string",
+            "title": "Origin"
+          },
+          "condition_kind": {
+            "type": "string",
+            "title": "Condition Kind"
+          },
+          "segment": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Segment"
+          },
+          "outcome": {
+            "type": "string",
+            "title": "Outcome"
+          },
+          "created_at": {
+            "type": "number",
+            "title": "Created At"
+          },
+          "resolved_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resolved At"
+          },
+          "evidence_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evidence Ref"
+          },
+          "result_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Result Ref"
+          },
+          "decision_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decision Reason"
+          },
+          "ci_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ci Url"
+          }
+        },
+        "type": "object",
+        "required": [
+          "wait_id",
+          "origin",
+          "condition_kind",
+          "outcome",
+          "created_at"
+        ],
+        "title": "DeliveryLatencyWait",
+        "description": "A wait record linked to a generation (its task, batch or repair).\n\n``segment`` names the breakdown segment an ``integration`` wait counts\ntoward; ``ci_url`` is the exact CI run, set only for an http(s) result."
+      },
       "DeploymentEvent": {
         "properties": {
           "timestamp": {
@@ -45093,6 +46210,158 @@
           "profile_id"
         ],
         "title": "InstallProfileResponse"
+      },
+      "IntegrationBatchFixRequest": {
+        "properties": {
+          "action": {
+            "type": "string",
+            "title": "Action",
+            "description": "",
+            "default": "status"
+          }
+        },
+        "type": "object",
+        "title": "IntegrationBatchFixRequest"
+      },
+      "IntegrationBatchFixResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success"
+          },
+          "outcome": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Outcome"
+          },
+          "fixer": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fixer"
+          },
+          "head_sha": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Head Sha"
+          },
+          "branch": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Branch"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          }
+        },
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "title": "IntegrationBatchFixResponse"
+      },
+      "IntegrationContinueCloseRequest": {
+        "properties": {
+          "operation_id": {
+            "type": "string",
+            "title": "Operation Id",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "operation_id"
+        ],
+        "title": "IntegrationContinueCloseRequest"
+      },
+      "IntegrationContinueCloseResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success"
+          },
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "completed",
+              "pending",
+              "refused"
+            ],
+            "title": "Outcome"
+          },
+          "operation_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Operation Id"
+          },
+          "close": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Close"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          }
+        },
+        "type": "object",
+        "required": [
+          "success",
+          "outcome"
+        ],
+        "title": "IntegrationContinueCloseResponse"
       },
       "IntegrationSettings": {
         "properties": {
@@ -62376,6 +63645,167 @@
         },
         "type": "object",
         "title": "ProjectReadyResponse"
+      },
+      "ProjectRelocateRequest": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "title": "Project Id",
+            "description": ""
+          },
+          "destination": {
+            "type": "string",
+            "title": "Destination",
+            "description": ""
+          },
+          "owner_inventory": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Owner Inventory",
+            "description": ""
+          },
+          "expected_digest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Digest",
+            "description": ""
+          },
+          "apply": {
+            "type": "boolean",
+            "title": "Apply",
+            "description": "",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "project_id",
+          "destination",
+          "owner_inventory"
+        ],
+        "title": "ProjectRelocateRequest"
+      },
+      "ProjectRelocateResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success"
+          },
+          "preview": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Preview"
+          },
+          "digest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Digest"
+          },
+          "plan": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Plan"
+          },
+          "blockers": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Blockers",
+            "default": []
+          },
+          "already_applied": {
+            "type": "boolean",
+            "title": "Already Applied",
+            "default": false
+          },
+          "binding": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Binding"
+          },
+          "recovery_manifest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Recovery Manifest"
+          },
+          "rollback": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rollback"
+          },
+          "error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Code"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          }
+        },
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "title": "ProjectRelocateResponse"
       },
       "ProjectRootInfo": {
         "properties": {
@@ -84121,6 +85551,33 @@
               }
             ],
             "title": "Claim Epoch"
+          },
+          "owner_kind": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "scheduler",
+                  "integration",
+                  "playbook"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Owner Kind"
+          },
+          "owner_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Owner Id"
           }
         },
         "additionalProperties": false,
@@ -86320,6 +87777,17 @@
               }
             ],
             "title": "Next Step"
+          },
+          "changed": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Changed"
           }
         },
         "additionalProperties": false,

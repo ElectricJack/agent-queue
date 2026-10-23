@@ -42,6 +42,7 @@ from tests.test_integration_train_sources import (  # noqa: F401 - pytest fixtur
     MAIN,
     completed,
     hosted_train,
+    require_stored_epic_checks,
     review_epic,
     world,
 )
@@ -151,7 +152,7 @@ async def rows(case):
         return result
 
 
-async def test_preview_apply_audit_repeat_and_normal_admission(case):
+async def test_preview_apply_audit_repeat_and_normal_admission(case, tmp_path):
     before = await rows(case)
     plan = await preview(case)
     assert await rows(case) == before
@@ -188,10 +189,18 @@ async def test_preview_apply_audit_repeat_and_normal_admission(case):
     )["epic"]
     assert delivery.reported_source == checkpoint["checkpoint_sha"] == case.head
     # Real normal admission: each exact-source gate binds independently after repair.
+    # Stored parent checks are advisory unless the project's playbook requires them.
+    await require_stored_epic_checks(case, tmp_path)
     waiting = await case.train.visit(EPIC)
     assert waiting.state == "blocked", waiting
     case.github.runs[case.head] = "success"
-    assert (await case.train.visit(EPIC)).state == "blocked"
+    # A missing review row is bookkeeping, so exact green readiness completes.
+    assert (await case.train.visit(EPIC)).state == "idle"
+    # An actual human rejection still binds this exact tree after recovery.
+    await review_epic(case, verdict="rejected", decision="recovery-review-hold")
+    rejected = await case.train.visit(EPIC)
+    assert rejected.state == "blocked", rejected
+    assert "review_rejected" in {item["code"] for item in rejected.detail["blockers"]}
     del case.github.runs[case.head]
     await review_epic(case)
     assert (await case.train.visit(EPIC)).state == "blocked"

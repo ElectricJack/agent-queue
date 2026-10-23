@@ -398,8 +398,10 @@ async def test_active_integration_batch_requires_quiescence(started):
 async def test_split_root_admitted_only_after_observed_default_landing(started, tmp_path):
     """Exercise the integrated L1.5 SQL projection and observer against real Git."""
     from src.git.manager import GitManager
-    from src.integration.delivery_observer import DeliveryObserver
-    from src.integration.delivery_truth import DeliveryState
+    from src.integration.admission import observe_admission
+    from src.integration.delivery_observer import DeliveryObserver, delivery_targets
+    from src.integration.git_truth import GitTruth
+    from src.integration.delivery_truth import CONTAINMENT_CONTRACT_VERSION, DeliveryState
     from src.integration.provenance import CompletedSource, CompletionIdentity, GitProvenance
     from src.models import TaskCompletion
     from tests.test_delivery_consumers import Origin, git
@@ -439,6 +441,13 @@ async def test_split_root_admitted_only_after_observed_default_landing(started, 
     assert other.get("success"), other
     other_root = other["moved_task_id"]
     for tid in (root_id, other_root):
+        # Prepare the new roots as the normal branch-materialization pass does.
+        root_base = git(origin.clone, "rev-parse", "HEAD")
+        git(origin.clone, "push", "-q", "origin", f"HEAD:refs/heads/aq/{tid}")
+        async with db.immediate() as conn:
+            await conn.execute(update(task_branch_origins).where(
+                task_branch_origins.c.task_id == tid,
+            ).values(materialized=True, base_sha=root_base))
         async with db._engine.connect() as conn:
             gate_id = await conn.scalar(
                 select(task_gates.c.gate_id).where(task_gates.c.task_id == tid)
@@ -460,11 +469,19 @@ async def test_split_root_admitted_only_after_observed_default_landing(started, 
         )
     )
     await db.transition_task(source_id, TaskStatus.COMPLETED)
-    observer = DeliveryObserver(db, git=GitManager(), data_dir=tmp_path / "observer-data")
+    git_manager = GitManager()
+    observer = DeliveryObserver(
+        db, git=git_manager, data_dir=tmp_path / "observer-data",
+        truth=GitTruth(git_manager, contract_version=CONTAINMENT_CONTRACT_VERSION),
+    )
     db.set_delivery_observer(observer)
-    unproven = await observer.observe([source_id])
+
+    async def admission():
+        return await observe_admission(db, [root_id, other_root], None)
+
+    unproven = await observer.observe([source_id], target_loader=delivery_targets)
     assert unproven.get(source_id).state is DeliveryState.UNKNOWN
-    assert (await db.get_task(root_id)).is_blocked
+    assert root_id not in (await admission()).allowed
 
     async def receipt(name, **changes):
         async with db.immediate() as conn:
@@ -486,39 +503,40 @@ async def test_split_root_admitted_only_after_observed_default_landing(started, 
 
     await receipt("failed", disposition="failed", resolution_evidence={"reason": "failed check"})
     await db.recompute_delivery_dependents([source_id])
-    assert (await db.get_task(root_id)).is_blocked
+    assert root_id not in (await admission()).allowed
     await GitProvenance(
         GitManager(), str(origin.clone), repository_url=origin.url
     ).write_completion(
         CompletedSource(CompletionIdentity("p", "repo", source_id, "split-source-close"), head)
     )
-    pending = await observer.observe([source_id])
+    pending = await observer.observe([source_id], target_loader=delivery_targets)
     assert not pending.satisfied(source_id)
-    assert (await db.get_task(root_id)).is_blocked
+    assert root_id not in (await admission()).allowed
 
-    origin.land(source_id)
-    landed = await observer.observe([source_id])
-    assert landed.get(source_id).state is DeliveryState.CONTAINED
-    assert await landed.fresh()
-    # Git containment alone, a stale receipt, and an epic-branch receipt are
-    # each insufficient for the persisted delivery-of projection.
-    assert (await db.get_task(root_id)).is_blocked
+    # Historical receipts cannot release the operational remainder before
+    # the exact retained completion source reaches the default branch.
     for name, changes in (
         ("old-generation", {"created_at": completed_at - 1}),
         ("epic-only", {"target_task_id": "epic"}),
         ("wrong-default", {"target_branch": "refs/heads/release"}),
     ):
         await receipt(name, **changes)
-        await observer.observe([source_id])
-        assert (await db.get_task(root_id)).is_blocked
+        await observer.observe([source_id], target_loader=delivery_targets)
+        assert root_id not in (await admission()).allowed
     await receipt(
         "verified-default",
         reviewed_head_sha=head,
         after_sha=git(origin.url, "rev-parse", "main"),
         verification_evidence={"default_containment": "verified"},
     )
-    verified = await observer.observe([source_id])
+    assert root_id not in (await admission()).allowed
+    origin.land(source_id)
+    verified = await observer.observe([source_id], target_loader=delivery_targets)
+    assert verified.get(source_id).state is DeliveryState.CONTAINED
     assert verified.satisfied(source_id) and await verified.fresh()
+    admitted = await admission()
+    assert root_id in admitted.allowed and other_root not in admitted.allowed, admitted.reasons
+    assert await admitted.is_fresh(root_id)
     assert not (await db.get_task(root_id)).is_blocked
     assert (await db.get_task(other_root)).is_blocked
     frontier = {t.id for t in await db.get_ready_frontier("p")}
