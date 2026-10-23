@@ -18319,7 +18319,7 @@
   "resume_project": {
     "mode": "json_object",
     "producer": "src/commands/project_commands.py:ProjectCommandsMixin._cmd_resume_project",
-    "source_digest": "sha256:1c49fc28c3b932af31c3455452e027b83cff2614caa0d59b834265f1201f2b5e",
+    "source_digest": "sha256:07a8f0b57c1d309434296d08027062cba6c1ea5a95cc1bdd37bb219a0dc0ae3f",
     "input_schema_source": "explicit_tool",
     "schema_quality": "declared",
     "argument_reads_diagnostic_only": [
@@ -18348,7 +18348,8 @@
       "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
       "tests/test_generated_command_contracts.py::test_generic_result_protocol",
       "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
-      "tests/test_project_constraint_enforcement.py"
+      "tests/test_project_constraint_enforcement.py",
+      "tests/test_project_supervisors.py"
     ],
     "helper_producers": {},
     "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys."
@@ -20231,7 +20232,7 @@
   "session_wake": {
     "mode": "json_object",
     "producer": "src/commands/session_commands.py:SessionCommandsMixin._cmd_session_wake",
-    "source_digest": "sha256:07902fdaa6cdff0bee3a86ffe5cdf4845b35c2a2368954f58f788442d874e39e",
+    "source_digest": "sha256:0b1c6bf6cf411dd5a3b0279c369e05b10551221f9af09127cad71c27c51608f3",
     "input_schema_source": "fallback",
     "schema_quality": "declared",
     "argument_reads_diagnostic_only": [],
@@ -20258,6 +20259,10 @@
         "protocol": "explicit_boolean: False"
       },
       {
+        "return": "{'success': False, 'error': f\"project '{session.project_id}' is paused; resume the project with `aq project resume {session.project_id}` to restart its supervisor\", 'session_id': session.id}",
+        "protocol": "explicit_boolean: False"
+      },
+      {
         "return": "{'success': False, 'error': f\"project '{session.project_id}' has its supervisor disabled; enable it with `aq project set {session.project_id} supervisor-enabled true`\", 'session_id': session.id}",
         "protocol": "explicit_boolean: False"
       }
@@ -20267,7 +20272,8 @@
       "tests/test_generated_command_contracts.py::test_generic_result_protocol",
       "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
       "tests/test_agent_cron.py",
-      "tests/test_session_commands.py"
+      "tests/test_session_commands.py",
+      "tests/test_project_supervisors.py"
     ],
     "helper_producers": {
       "_resolve_session": "sha256:680ef5578fe5fba2666df09bbcb55f68a5d482aa048ba42728b2bed6d697462e"
