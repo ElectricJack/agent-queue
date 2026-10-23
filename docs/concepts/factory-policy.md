@@ -59,7 +59,11 @@ Conflicting instructions are bugs; historical reports, reviews and superseded sp
   reconciliation preserve it; reopening then failing replaces it. Current `FAILED` incidents,
   including aborted daemon-authored promotions, can be held with a recorded diagnosis without changing
   status or counters. Retry requires a stopped attempt on a `BLOCKED` task and all recovery guards.
-- An accepted explicit task restart, reopen or resume supersedes its previous recovery incident in
+- An explicit task restart refuses a decided recovery hold unless the caller supplies
+  `--override-hold --reason`. This override requires local operator or live global-supervisor
+  authority, fences the exact incident and hold timestamp, and records the releasing actor and
+  reason while preserving the prior decision. `aq task explain` displays the hold owner and reason.
+  An accepted explicit task restart, reopen or resume supersedes its previous recovery incident in
   the status-write transaction, including already-READY tasks; preserve diagnosis, history and
   recovery budget, and archive the notification. Projection of the same stopped failure, manual
   pauses and refused controls retain holds. Recovery scans supersede holds when the failure or
