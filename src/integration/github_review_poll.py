@@ -318,7 +318,8 @@ class RootPullRequestGate:
             self._recoveries[key] = task
             self._running.add(task)
             task.add_done_callback(self._settled)
-        if not task.done():
+            # Spend the bounded wait once. Later visits consult the same task
+            # without blocking every healthy root behind another 30-second wait.
             await asyncio.wait({task}, timeout=ROOT_PR_RECOVERY_WAIT_SECONDS)
         if not task.done():
             logger.info("root %s PR check recovery still running after %.0fs; deferring",
