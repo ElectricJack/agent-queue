@@ -19898,6 +19898,19 @@
         "reason": "Fail closed on unported reviewed legacy bookkeeping deltas before train regeneration, Git generated merges and regeneration checks. Exact scoped guard footprint; preserve all frozen batch grants and original baselines.",
         "referenced_decision": "size-cap-delegation-2026-10-23",
         "task_id": "prime-vault-39"
+      },
+      {
+        "authorized_engine_delta": 4,
+        "authorized_owned_delta": 186,
+        "decision_message_id": "msg-08efc39cceeb430cafb8636f1acb85f1",
+        "measured_source_revision": "a68665e4afde3be9a0aba0d9dec50e61e632be84",
+        "operator_decision": "6679052c",
+        "previous_engine_lines": 85316,
+        "previous_owned_total": 160837,
+        "pull_request": "https://github.com/ElectricJack/agent-queue/pull/1858",
+        "reason": "Escalation source recovery and supervisor routing, including the deferred database imports required by CLI discovery; supervisor approved the exact PR #1858 footprint under size-cap-delegation-2026-10-23.",
+        "referenced_decision": "size-cap-delegation-2026-10-23",
+        "task_id": "keen-forge-77"
       }
     ],
     "authenticated_push_measurement": {
@@ -20074,7 +20087,8 @@
       "msg-625e460c4a7c456983e5eb114ea22446",
       "msg-c80bde55a6d1442791a2ba4f9597d7a0",
       "msg-49a7a4f4f8a5420eb80abf1d4d8b4a12",
-      "msg-2a11607018264013b97698493f53906e"
+      "msg-2a11607018264013b97698493f53906e",
+      "msg-08efc39cceeb430cafb8636f1acb85f1"
     ],
     "decision_record": "record:2720bdbe-7521-427e-8e72-1f40a3ff9818",
     "delivery_method": "operator direct integration; user request 2026-10-22",

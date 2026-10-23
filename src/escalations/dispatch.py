@@ -503,7 +503,10 @@ class EscalationDeliveryService:
             return
         facts = EscalationFacts.from_row(incident)
         await self._ensure_project_active(row)
-        if not facts.wants_human_delivery:
+        if not facts.wants_human_delivery and not (
+            facts.is_terminal and row["kind"] in ROOT_EDIT_KINDS
+            and facts.source_kind != "supervisor_delivery"
+        ):
             # Also fences rows queued by an older daemon, including retries
             # and follow-ups on a root that was posted before the cutover.
             await self._finish(

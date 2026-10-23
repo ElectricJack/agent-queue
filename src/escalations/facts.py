@@ -81,6 +81,8 @@ class EscalationFacts:
     choices: Sequence[str] = field(default_factory=tuple)
     terminal_outcome: str | None = None
     source_kind: str = ""
+    #: Derived from a bound wait's explicit human conversion, never a queued retry.
+    human_requested: bool = False
     #: Derived from the committed wait decision, never from a transport event.
     human_delivery_authorized: bool = False
     #: Which §5.5 rule closed the incident (``human`` for one a person closed).
@@ -102,7 +104,9 @@ class EscalationFacts:
     def wants_human_delivery(self) -> bool:
         if self.source_kind in {"supervisor_delivery", "continuation"}:
             return False
-        return self.source_kind != "wait" or self.human_delivery_authorized
+        return self.human_delivery_authorized or self.source_kind not in {
+            "wait", "integration_train_stall", "integration_delivery_stuck",
+        }
 
     @property
     def needs_human_answer(self) -> bool:
@@ -126,6 +130,7 @@ class EscalationFacts:
         else:
             choices = tuple(str(value) for value in raw_choices)
         return cls(
+            human_requested=bool(row.get("human_requested")),
             id=str(row["id"]),
             project_id=str(row["project_id"]),
             state=str(row["state"]),

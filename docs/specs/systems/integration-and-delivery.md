@@ -682,3 +682,16 @@ Historical records (the code wins where they disagree):
 - About 50 dated point-fix specs in `docs/superpowers/specs/` (2026-09-15 to 2026-10-13)
   record individual repair, recovery and subject-reconciler fixes. Most belong to the
   retired subject and publisher era.
+
+### Historical PR #1858 ownership authorization
+
+The following records the original reviewed footprint, rather than a new merged ceiling.
+
+For PR [#1858](https://github.com/ElectricJack/agent-queue/pull/1858), supervisor
+decision `msg-08efc39cceeb430cafb8636f1acb85f1` under
+`size-cap-delegation-2026-10-23` (operator decision `6679052c`) amends the
+recorded transition exception to exactly **161,023 owned lines**, **85,320
+engine lines** and **45 tables** at source
+`a68665e4afde3be9a0aba0d9dec50e61e632be84`. This adds 186 owned lines and four
+engine lines to the previous exact measurement. The ownership records retain
+the earlier decisions and the measurement-equality assertion remains enforced.
