@@ -1,0 +1,70 @@
+{
+  "shared": {
+    "src/orchestrator/provider_failover.py::ProviderFailoverMixin._failover_checkpoint": {
+      "baseline_span": [
+        72,
+        109
+      ],
+      "landing_span": [
+        72,
+        109
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/orchestrator/provider_failover.py::ProviderFailoverMixin._integration_wip_checkpoint": {
+      "reason": "Saves a stopped hierarchy/train writer's checkout as a 'WIP saved by AQ' commit fast-forwarded onto its own task branch, confined to the project's integration repository, then records the resume point. A non-fast-forward branch, another owner or another repository is left integration_managed for owner recovery; the release still goes through arelease_integration_writer_for_retry. Creates no aq/preserved ref, lifecycle journal or delivery claim."
+    },
+    "src/orchestrator/provider_failover.py::ProviderFailoverMixin._is_task_writer_owner": {
+      "reason": "Reads the branch ownership row so only the stopped task's own worker/repair writer has its checkout saved; a verifier or any other owner keeps owner recovery. Read-only: no storage, fence change or publication authority."
+    },
+    "src/orchestrator/provider_failover.py::_INTEGRATION_MANAGED_MODES": {
+      "baseline_span": [
+        32,
+        35
+      ],
+      "landing_span": [
+        32,
+        35
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    }
+  },
+  "storage_sinks": {
+    "src/orchestrator/provider_failover.py::ProviderFailoverMixin._failover_checkpoint::713028401618ab2c2f7f76e041399199b6df5e6f0ba300c6ae98644c6fb93952": {
+      "call": "set_task_meta",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 100,
+      "owner": "ProviderFailoverMixin._failover_checkpoint",
+      "owner_fingerprint": "57dcf15cedbd1018d4d584d390809ed0a06a9c47f1f6a3ad824a7258d0f9d6a3",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: UNMERGED_BRANCH_META"
+    },
+    "src/orchestrator/provider_failover.py::ProviderFailoverMixin._failover_checkpoint::810ed2b1389333bde41953c10bcf7e8f7dd3d4610c3fcf37f23bc796fe8143bf": {
+      "call": "set_task_meta",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 102,
+      "owner": "ProviderFailoverMixin._failover_checkpoint",
+      "owner_fingerprint": "57dcf15cedbd1018d4d584d390809ed0a06a9c47f1f6a3ad824a7258d0f9d6a3",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: UNMERGED_COMMIT_META"
+    },
+    "src/orchestrator/provider_failover.py::ProviderFailoverMixin.provider_failover_handoff::823c7e7f13ed7ac2b0b3fd2b3746c824cd2b5d2f90e5260c7087a984a4ece4cd": {
+      "call": "set_task_meta",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 235,
+      "owner": "ProviderFailoverMixin.provider_failover_handoff",
+      "owner_fingerprint": "bdef87ee4d0e467c93b5c9f7a2cfe6fdceec3e927eaec2a25ebedc6a3498476f",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: inflight.HANDOFF_META"
+    },
+    "src/orchestrator/provider_failover.py::ProviderFailoverMixin.provider_failover_hold::e28dbe2cefe0d666f2fd5b9d60f9ca4b676775de757bf61913eb5099f562da68": {
+      "call": "set_task_meta",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 304,
+      "owner": "ProviderFailoverMixin.provider_failover_hold",
+      "owner_fingerprint": "cfdd5e07cdf06f6f8046ebfd1b96ba61363784ae92e2c06ac935da5c2b00fcdc",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'needs_attention'"
+    }
+  }
+}

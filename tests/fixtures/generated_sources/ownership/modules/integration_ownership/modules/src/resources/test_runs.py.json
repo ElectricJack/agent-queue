@@ -1,0 +1,31 @@
+{
+  "shared": {
+    "src/resources/test_runs.py::ORPHANED": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/resources/test_runs.py::_belongs_to_run": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/resources/test_runs.py::_classify": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/resources/test_runs.py::_reap_one": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/resources/test_runs.py::_session_top": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/resources/test_runs.py::held_slots": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/resources/test_runs.py::holder_identity": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/resources/test_runs.py::import from src.sessions.proctable import ProcEntry, file_holders_sync, is_alive_sync, kill_marked_sync, marked_root_sync, read_entry_sync, read_environ_sync": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/resources/test_runs.py::reap_orphans": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    }
+  }
+}

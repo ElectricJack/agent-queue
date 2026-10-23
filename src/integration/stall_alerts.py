@@ -23,7 +23,8 @@ async def alert_stalled_batches(handler, *, now):
         summary = finding["detail"]
         decision = (f"Inspect aq integration status {project_id}; restore repository health or "
                     "choose a batch repair, resume or abort after checking its frozen inputs. "
-                    "The alert does not pause delivery; cancel it if the train has recovered.")
+                    "The incident closes automatically when its batch settles. Ask the human "
+                    "only if recovery requires a decision the supervisor cannot make.")
         # Incident, Discord outbox and inbox notice are one transaction. The
         # source/incident key survives restarts and changing error strings.
         async with handler.db.immediate() as conn:

@@ -1,0 +1,7 @@
+{
+  "generic_dependencies": {
+    "src/agents/configuration.py::apply_agent_overrides": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/agents/configuration.py::ensure_supervisor_agent": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/agents/configuration.py::resolve_launch_settings": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}

@@ -1,0 +1,48 @@
+{
+  "shared_definitions": {
+    "src/orchestrator/monitoring.py::MonitoringMixin._check_stuck_defined_tasks": {
+      "baseline_span": [
+        526,
+        608
+      ],
+      "landing_span": [
+        529,
+        611
+      ],
+      "reason": "Imports or references an explicitly owned integration primitive."
+    },
+    "src/orchestrator/monitoring.py::MonitoringMixin._notify_stuck_chain": {
+      "baseline_span": [
+        919,
+        947
+      ],
+      "landing_span": [
+        912,
+        940
+      ],
+      "reason": "Imports or references an explicitly owned integration primitive."
+    },
+    "src/orchestrator/monitoring.py::MonitoringMixin.delivery_observer": {
+      "baseline_span": [
+        455,
+        465
+      ],
+      "landing_span": [
+        458,
+        468
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/orchestrator/monitoring.py::import from src.notifications.builder import build_task_detail": {
+      "baseline_span": [
+        7,
+        8
+      ],
+      "landing_span": [
+        12,
+        12
+      ],
+      "reason": "Imports or references an explicitly owned integration primitive."
+    }
+  }
+}

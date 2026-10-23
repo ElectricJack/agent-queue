@@ -1,0 +1,5 @@
+{
+  "exclusions": {
+    "src/knowledge/imports/apply.py::OUTCOMES['failed']": "Generic same-shaped definition independently present at the pinned baseline/landing; new relocations are still charged."
+  }
+}

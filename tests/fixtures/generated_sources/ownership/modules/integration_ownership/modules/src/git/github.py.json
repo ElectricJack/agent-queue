@@ -1,0 +1,19 @@
+{
+  "generic_dependencies": {
+    "src/git/github.py::GitHubAccess": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/git/github.py::GitHubClient": "Generic dependency; integration-specific definitions in this file are charged independently."
+  },
+  "shared": {
+    "src/git/github.py::GitHubClient._audit_pull_request": {
+      "baseline_span": [
+        1643,
+        1693
+      ],
+      "landing_span": [
+        1643,
+        1693
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    }
+  }
+}

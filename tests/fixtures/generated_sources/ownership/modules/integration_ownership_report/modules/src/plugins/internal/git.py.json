@@ -1,0 +1,32 @@
+{
+  "shared_definitions": {
+    "src/plugins/internal/git.py::GitPlugin._push": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/plugins/internal/git.py::GitPlugin._push_authorized": {
+      "reason": "Existing guarded task publication body extracted from _push so authorization is resolved inside the first-repository binding fence. Retains delivery validation, repair publication exclusion and exact inherited source-head checks."
+    },
+    "src/plugins/internal/git.py::GitPlugin._source_ci_inherited_oids": {
+      "baseline_span": [
+        840,
+        856
+      ],
+      "landing_span": [
+        840,
+        856
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/plugins/internal/git.py::GitPlugin._task_commit_message": {
+      "baseline_span": [
+        1382,
+        1392
+      ],
+      "landing_span": [
+        1382,
+        1392
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    }
+  }
+}

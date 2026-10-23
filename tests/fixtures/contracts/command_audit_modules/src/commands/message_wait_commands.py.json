@@ -1,0 +1,46 @@
+{
+  "message_wait": {
+    "argument_reads_diagnostic_only": [],
+    "denial_reason": null,
+    "effect": "destructive",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/message_wait_commands.py:MessageWaitCommandsMixin._cmd_message_wait",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "disabled"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'state': reason if reason in WAIT_REASONS else row['state'], 'wait': row, **page}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'state': 'waiting', 'wait': row, 'cursor': values.after_seq, 'next_step': f'End this turn. Resume with `aq wait show {row['id']} --consume --json`, or rerun `aq message wait --thread {values.thread_id} --after {values.after_seq}`.'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error_code': exc.code, 'error': str(exc)}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error_code': 'collaboration.invalid', 'error': str(exc)}"
+      }
+    ],
+    "schema_quality": "typed",
+    "source_digest": "sha256:2039651460dbbae3ced89ff32593991dd76fab1f12ee41bd51ce2915d42b9ae0",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  }
+}

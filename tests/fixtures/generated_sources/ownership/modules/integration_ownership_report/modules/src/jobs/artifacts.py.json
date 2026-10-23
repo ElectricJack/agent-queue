@@ -1,0 +1,13 @@
+{
+  "shared_definitions": {
+    "src/jobs/artifacts.py::atomic_json": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/jobs/artifacts.py::open_artifact": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/jobs/artifacts.py::read_json": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    }
+  }
+}

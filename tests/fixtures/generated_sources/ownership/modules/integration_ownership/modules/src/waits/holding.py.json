@@ -1,0 +1,6 @@
+{
+  "generic_dependencies": {
+    "src/waits/holding.py::addressed_to_wait": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/waits/holding.py::execution_waits": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged."
+  }
+}

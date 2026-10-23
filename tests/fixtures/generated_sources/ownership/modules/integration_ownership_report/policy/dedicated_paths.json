@@ -1,0 +1,35 @@
+{
+  "dedicated_paths": {
+    "companions": [
+      "src/commands/integration_commands.py",
+      "src/commands/ci_commands.py",
+      "src/commands/contracts/integration.py",
+      "src/cli/integration.py",
+      "src/doctor/integration_checks.py",
+      "src/database/queries/integration_*.py"
+    ],
+    "engine": [
+      "src/integration/*.py",
+      "src/integration/**/*.py"
+    ],
+    "guards": [
+      "migrations/integration_guards.py"
+    ],
+    "policy": [
+      "src/playbooks/integration_policy.py"
+    ],
+    "policy_sources": [
+      "src/integration/development_policy_template.md",
+      "src/prompts/integration_playbooks/*.md",
+      "src/prompts/project_playbooks/agent-queue/*integration*.md",
+      "src/prompts/project_playbooks/agent-queue/*root-train.md",
+      "src/prompts/reviewed_playbooks/*integration*/source.md",
+      "src/prompts/reviewed_playbooks/*root-train/source.md"
+    ],
+    "ui": [
+      "dashboard/src/components/EpicDelivery.tsx",
+      "dashboard/src/components/epicDeliveryFormat.ts",
+      "dashboard/src/api/deleteRefusals.ts"
+    ]
+  }
+}

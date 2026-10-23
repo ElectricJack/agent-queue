@@ -6398,7 +6398,7 @@
         "integration-controls"
       ],
       "default_arm": true,
-      "digest": "sha256:aaea82853da0fb516667deb640f13d4415b8dd3dc4747bb7daa18f52fcde66f0",
+      "digest": "sha256:639e6bcde17abbdeee478ce48d6880e26d9de485b6fc5c0b81d5f59a3e2b6251",
       "imports": [
         "src.commands.integration_commands",
         "src.commands.principal",
@@ -6408,6 +6408,8 @@
         "src.doctor",
         "src.doctor.integration_checks",
         "src.doctor.models",
+        "src.escalations.autoresolve",
+        "src.escalations.sweep",
         "src.integration.batches",
         "src.integration.delivery_engine",
         "src.integration.records",
@@ -7407,11 +7409,14 @@
         "generated-artifacts"
       ],
       "default_arm": true,
-      "digest": "sha256:6e99ed692dfe25c3cbfeeacfcdda3e0f7010bb882d1bbde533e01719bdd6992e",
+      "digest": "sha256:4ecaf7ef37fa6585db32ded1f5dbf2e81432e06b2959c5918cf67d5637a54866",
       "imports": [
         "src.git.manager",
+        "src.integration.bookkeeping_guard",
         "src.integration.development",
+        "src.integration.gitops",
         "src.integration.regeneration",
+        "src.integration.runtime_contracts",
         "src.test_selection",
         "src.test_selection.catalogue"
       ],
@@ -20001,12 +20006,13 @@
         "agent-waits"
       ],
       "default_arm": true,
-      "digest": "sha256:d9dfe6cdb76ac788ca7457ba236f24bc1ef7d78f24e26f173a1f92eb69f1202a",
+      "digest": "sha256:9ebea3f49e46a476e04c6a48daaa6c2e452d134eb3b79af528cc79baf17b41fa",
       "imports": [
         "src.config",
         "src.database.queries.continuation_queries",
         "src.database.tables",
         "src.escalations",
+        "src.escalations.facts",
         "src.event_schemas",
         "src.handoffs",
         "src.messages.delivery",

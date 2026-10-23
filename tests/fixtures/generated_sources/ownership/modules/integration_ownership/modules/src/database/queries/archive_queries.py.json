@@ -1,0 +1,153 @@
+{
+  "generic_dependencies": {
+    "src/database/queries/archive_queries.py::ArchiveQueryMixin": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/queries/archive_queries.py::DEVELOPMENT_REPAIR_SOURCES_KEY": "Generic dependency; integration-specific definitions in this file are charged independently."
+  },
+  "shared": {
+    "src/database/queries/archive_queries.py::ArchiveQueryMixin._archive_one": {
+      "baseline_span": [
+        409,
+        514
+      ],
+      "landing_span": [
+        409,
+        514
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/queries/archive_queries.py::ArchiveQueryMixin._archive_task_on": {
+      "reason": "Transaction-local subtree archive enforces integration ownership and delivery guards, retires branch origins and preserves audit identity before deleting active rows."
+    },
+    "src/database/queries/archive_queries.py::ArchiveQueryMixin._development_integration_hold": {
+      "baseline_span": [
+        333,
+        391
+      ],
+      "landing_span": [
+        333,
+        391
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/queries/archive_queries.py::ArchiveQueryMixin._record_archive_refusal": {
+      "baseline_span": [
+        688,
+        721
+      ],
+      "landing_span": [
+        688,
+        721
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/queries/archive_queries.py::ArchiveQueryMixin._row_to_archived_task": {
+      "baseline_span": [
+        935,
+        974
+      ],
+      "landing_span": [
+        935,
+        974
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/queries/archive_queries.py::ArchiveQueryMixin.archive_old_terminal_tasks": {
+      "baseline_span": [
+        557,
+        640
+      ],
+      "landing_span": [
+        557,
+        640
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/queries/archive_queries.py::ArchiveQueryMixin.archive_task": {
+      "baseline_span": [
+        151,
+        332
+      ],
+      "landing_span": [
+        151,
+        332
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/queries/archive_queries.py::ArchiveQueryMixin.delete_archived_task": {
+      "baseline_span": [
+        863,
+        921
+      ],
+      "landing_span": [
+        863,
+        921
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/queries/archive_queries.py::ArchiveQueryMixin.list_archive_blocked_roots": {
+      "baseline_span": [
+        765,
+        820
+      ],
+      "landing_span": [
+        765,
+        820
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/queries/archive_queries.py::ArchiveQueryMixin.observe_removal_delivery": {
+      "baseline_span": [
+        127,
+        150
+      ],
+      "landing_span": [
+        127,
+        150
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/queries/archive_queries.py::ArchiveQueryMixin.set_delivery_observer": {
+      "baseline_span": [
+        123,
+        126
+      ],
+      "landing_span": [
+        123,
+        126
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/queries/archive_queries.py::ArchiveQueryMixin.undelivered_holders": {
+      "reason": "Read-only list of a subtree's tasks whose integration state still holds undelivered work, from the same removal-guard query archive already enforces; no storage, fence or publication authority."
+    }
+  },
+  "storage_sinks": {
+    "src/database/queries/archive_queries.py::ArchiveQueryMixin._archive_task_on::6ee0195b41e365a4f138cbf111c69b21f7782f9b3bc5c059df2281abfd263cfe": {
+      "call": "log_event",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 447,
+      "owner": "ArchiveQueryMixin._archive_task_on",
+      "owner_fingerprint": "8ed7de11b46e6f1fe22e1a230b1aafa61d9e2b7d4553a2f2595c13ba10044a4f",
+      "reason": "Audits task.delivery_abandoned with the explicit archive disposition; the event reports accepted abandonment and never asserts successful delivery."
+    },
+    "src/database/queries/archive_queries.py::ArchiveQueryMixin._clear_archive_refusal::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
+      "call": "delete",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 826,
+      "owner": "ArchiveQueryMixin._clear_archive_refusal",
+      "owner_fingerprint": "f0b7666173618383c27d962a08c9a146cb572efac28384611b8d004bd15eb3d4",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+    },
+    "src/database/queries/archive_queries.py::ArchiveQueryMixin._clear_ineligible_archive_refusals::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
+      "call": "delete",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 745,
+      "owner": "ArchiveQueryMixin._clear_ineligible_archive_refusals",
+      "owner_fingerprint": "038171a0cf52b086ce37a20e4473ebdafcb259ba60b55e04836f809053d06de2",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+    }
+  }
+}

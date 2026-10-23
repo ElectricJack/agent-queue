@@ -1,0 +1,15 @@
+{
+  "shared_definitions": {
+    "src/embedded_mcp.py::run_mcp_server": {
+      "baseline_span": [
+        33,
+        220
+      ],
+      "landing_span": [
+        33,
+        220
+      ],
+      "reason": "Imports or references an explicitly owned integration primitive."
+    }
+  }
+}

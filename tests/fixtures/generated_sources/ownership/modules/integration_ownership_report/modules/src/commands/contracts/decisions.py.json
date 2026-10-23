@@ -1,0 +1,10 @@
+{
+  "shared_definitions": {
+    "src/commands/contracts/decisions.py::import from src.commands.contracts.records import _record_invoke": {
+      "reason": "Imports the shared typed invocation adapter for integration operator decisions."
+    },
+    "src/commands/contracts/decisions.py::register_decision_contracts": {
+      "reason": "Registers typed shared operator decision commands governing integration holds and releases."
+    }
+  }
+}
