@@ -1,0 +1,307 @@
+{
+  "supervisor_inbox_history": {
+    "argument_reads_diagnostic_only": [
+      "before",
+      "before_id",
+      "conversation_id",
+      "limit",
+      "states"
+    ],
+    "denial_reason": null,
+    "effect": "read",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/conversation_commands.py:ConversationCommandsMixin._cmd_supervisor_inbox_history",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('out_of_scope', 'conversation reads require local or global supervisor')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('invalid_request', 'invalid history filter or pagination arguments')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('conversation_not_found', 'conversation does not exist')"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'conversations': history, 'next_before': next_before, 'next_before_id': next_before_id}"
+      }
+    ],
+    "schema_quality": "typed",
+    "source_digest": "sha256:b6f67f9c0f688c0c82e6bec4ad9964ce41d6a5c5e51fa49b2be4c978bbd87c29",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "supervisor_inbox_post": {
+    "argument_reads_diagnostic_only": [
+      "conversation_id",
+      "envelope",
+      "provenance",
+      "source"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/conversation_commands.py:ConversationCommandsMixin._cmd_supervisor_inbox_post",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "posted"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('spoofed_identity', 'caller identity is server-derived; forbidden fields: ' + ', '.join(bad))"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('preconditions_unmet', 'conversation preconditions unmet', unmet=list(preconditions.unmet))"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('author_not_allowlisted', 'author is not on the conversation allowlist')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('invalid_envelope', 'conversation_id must be a non-empty string')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('empty_text', 'message has no text')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('oversize', 'message exceeds the conversation input limit')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "await self._conversation_post_result(item=replay, conversation=stored, created=False, source=source, outbox=outbox)"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "render_brief(conversation_id=conv_id, input_id=input_id, verified_actor=verified_actor, text=text, follow_up=conversation_id is not None)"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('invalid_envelope', 'gateway source must be gateway or backfill')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('out_of_scope', 'conversation intake requires discord-gateway or local test/replay')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('invalid_envelope', 'invalid gateway conversation envelope')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('dm', 'direct messages are not admitted')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('foreign_destination', 'message is not in the configured guild/channel')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('invalid_envelope', 'a direct message names no conversation')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('foreign_destination', 'conversation disagrees with the observed destination')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('author_not_allowlisted', 'author is not in the conversation audience')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('invalid_envelope', 'top-level intake requires the message to be its own root')"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error_code': 'ask.input_owned', 'error': 'Shared intake owns this input', 'receipt': replay['receipt']}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('foreign_destination', 'replay disagrees with accepted provenance')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('rate_limited', 'conversation rate limit reached', scope=exc.scope)"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('conversation_closed', 'conversation is closed; start a new mention')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('conversation_not_found', 'conversation does not exist')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('conversation_not_found', 'conversation is not bound to a known thread')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('no_bot_mention', 'top-level message does not mention the bot')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('invalid_envelope', 'a follow-up must name the channel conversation or its observed thread')"
+      }
+    ],
+    "review_notes": " Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. ",
+    "schema_quality": "typed",
+    "source_digest": "sha256:01c742ff4e41328de9bc690f038f6531c19d1dc953f1719987de5e893648bb63",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "supervisor_inbox_reply": {
+    "argument_reads_diagnostic_only": [
+      "conversation_id",
+      "idempotency_key",
+      "input_id",
+      "text"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/conversation_commands.py:ConversationCommandsMixin._cmd_supervisor_inbox_reply",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('spoofed_identity', 'caller identity and destination are server-derived')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('out_of_scope', 'reply requires the live addressed supervisor launch')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('invalid_request', 'conversation_id, input_id, text and key are required')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('invalid_request', 'reply text or idempotency key exceeds its limit')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('conversation_not_found', 'conversation does not exist')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('input_not_in_conversation', 'input does not belong to this conversation')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('out_of_scope', 'input is addressed to another supervisor')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('conversation_closed', 'conversation is closed')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('input_revoked', 'conversation input is revoked')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('preconditions_unmet', 'conversation outbox unbound', unmet=['outbox_unbound'])"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('conversation_not_found', 'conversation or input no longer exists')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('input_not_in_conversation', 'input or idempotency key belongs elsewhere')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('conversation_closed', 'conversation is closed')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('input_already_answered', 'conversation input already has an answer')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('input_revoked', 'conversation input is revoked')"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'created': recorded['created'], 'reply_message_id': reply_message_id, 'delivery_dedup_key': dedup_key, 'discord_text_chars': len(discord_text), 'truncated': discord_text != f'{sanitise_reply(text, base_url=base_url)}{conversation_marker(dedup_key)}'}"
+      }
+    ],
+    "schema_quality": "typed",
+    "source_digest": "sha256:931c04add5fe4b4452fc3ad2ad445c281b2233fcabb6af4c7afb9822708bf469",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "supervisor_inbox_status": {
+    "argument_reads_diagnostic_only": [],
+    "denial_reason": null,
+    "effect": "read",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/conversation_commands.py:ConversationCommandsMixin._cmd_supervisor_inbox_status",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('out_of_scope', 'conversation reads require local or global supervisor')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('invalid_request', 'status takes no arguments')"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'enabled': self.config.discord.conversation.enabled, 'preconditions': {'ok': preconditions.ok, 'unmet': list(preconditions.unmet)}, 'diagnostics': {**diagnostics, 'outbox_bound': outbox.bound}, 'limits': {'max_input_chars': MAX_INPUT_CHARS, 'author_window_limit': AUTHOR_WINDOW_LIMIT, 'channel_window_limit': CHANNEL_WINDOW_LIMIT, 'window_seconds': WINDOW_SECONDS, 'max_reply_chars': MAX_REPLY_CHARS}, 'counts': await self.db.conversation_counts(), 'backfill': {'cursors': await self.db.list_backfill_cursors(), 'gaps': await self.db.list_intake_gaps()}, 'intake': counter.snapshot() if counter is not None else empty_snapshot()}"
+      }
+    ],
+    "schema_quality": "typed",
+    "source_digest": "sha256:5e80f79691ab4b238d1067515b489b91f1ce20cc219ef41c26159b66ca7e625c",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  }
+}

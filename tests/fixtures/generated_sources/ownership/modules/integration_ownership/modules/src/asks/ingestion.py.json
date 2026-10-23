@@ -1,0 +1,16 @@
+{
+  "generic_dependencies": {
+    "src/asks/ingestion.py::approved_packet": "Generic immutable specification/plan approval validation and feedback evidence, shared by ingestion dispatch and replay. It grants no integration branch, code publication or ref replay authority; release and publication callers remain independently charged."
+  },
+  "storage_sinks": {
+    "src/asks/ingestion.py::dispatch::a4bd4fa14cba00a4c04093b1d29646ee56e0b4a57163e7b4979ac91c97e90ab9": {
+      "call": "log_event",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 147,
+      "owner": "dispatch",
+      "owner_fingerprint": "0b1686bbf15c56d7d17df49e7f3c3c333bb4dbd0dba0cccf09cefda0c825e027",
+      "reason": "Approved-document dispatch audit records the immutable decision identity and event sequence in its source-owned ingestion operation. Retries cannot authorize work without the approved application receipt; no Git ref replay or integration delivery lifecycle state."
+    }
+  }
+}

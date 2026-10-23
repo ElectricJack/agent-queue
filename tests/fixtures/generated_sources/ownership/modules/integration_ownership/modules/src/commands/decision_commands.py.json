@@ -1,0 +1,10 @@
+{
+  "shared": {
+    "src/commands/decision_commands.py::DecisionCommandsMixin._decision_access": {
+      "reason": "Enforces project-scoped authority for decisions on integration batches and operations."
+    },
+    "src/commands/decision_commands.py::import from src.operator_decisions import OperatorDecisions, object_project_on": {
+      "reason": "Imports shared integration decision storage and its object scope resolver."
+    }
+  }
+}

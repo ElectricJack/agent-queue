@@ -1,0 +1,7 @@
+{
+  "shared_definitions": {
+    "src/database/queries/dependency_queries.py::DependencyQueryMixin._guard_dependency_target": {
+      "reason": "Worker dependency admission locks the hierarchy and uses the integration-owned container predicate to reject scheduling edges onto containers before writing an edge."
+    }
+  }
+}

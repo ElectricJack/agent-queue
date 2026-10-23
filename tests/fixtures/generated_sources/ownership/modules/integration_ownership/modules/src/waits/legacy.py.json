@@ -1,0 +1,5 @@
+{
+  "generic_dependencies": {
+    "src/waits/legacy.py::translate_registration": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged."
+  }
+}

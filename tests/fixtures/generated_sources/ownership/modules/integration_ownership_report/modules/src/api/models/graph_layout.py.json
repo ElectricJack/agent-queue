@@ -1,0 +1,26 @@
+{
+  "shared_definitions": {
+    "src/api/models/graph_layout.py::LayoutNode.delivery": {
+      "baseline_span": [
+        163,
+        164
+      ],
+      "landing_span": [
+        163,
+        164
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/api/models/graph_layout.py::import from src.api.models.task import EpicDeliveryStatus, PhaseHoldDetail": {
+      "baseline_span": [
+        17,
+        17
+      ],
+      "landing_span": [
+        17,
+        17
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    }
+  }
+}

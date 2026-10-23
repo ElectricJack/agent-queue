@@ -1,0 +1,31 @@
+{
+  "generic_dependencies": {
+    "src/sessions/proctable.py::workspace_quiescent": "Generic read-only process liveness proof; caller owns integration/workspace release decisions."
+  },
+  "shared": {
+    "src/sessions/proctable.py::file_holders_sync": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/sessions/proctable.py::is_alive_sync": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/sessions/proctable.py::kill_marked_sync": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/sessions/proctable.py::marked_root_sync": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/sessions/proctable.py::read_entry_sync": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/sessions/proctable.py::read_environ_sync": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/sessions/proctable.py::read_start_ticks": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/sessions/proctable.py::scan_by_env_marker": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    }
+  }
+}

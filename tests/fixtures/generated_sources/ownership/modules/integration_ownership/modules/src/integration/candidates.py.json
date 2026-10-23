@@ -1,0 +1,13 @@
+{
+  "storage_sinks": {
+    "src/integration/candidates.py::CandidateService._withdraw_invalid_sources::9fd3cd5749985a465426b26c4a6c3263f2cb8a3d97c3a583a8a3b5ab9f108bee": {
+      "call": "log_event",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 533,
+      "owner": "CandidateService._withdraw_invalid_sources",
+      "owner_fingerprint": "1fdb3cde45c9d2ab1791df83dd4f51e6db393a3578ea7f2d1ff500797a7a6808",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+    }
+  }
+}

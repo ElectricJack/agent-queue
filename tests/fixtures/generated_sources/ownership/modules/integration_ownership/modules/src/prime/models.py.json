@@ -1,0 +1,7 @@
+{
+  "generic_dependencies": {
+    "src/prime/models.py::PrimeDocument": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/prime/models.py::PrimeSection": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/prime/models.py::SECTION_TITLES": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}

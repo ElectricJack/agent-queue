@@ -1,0 +1,25 @@
+{
+  "shared_definitions": {
+    "src/policy_profiles/models.py::IntegrationSettings": {
+      "reason": "Defines portable integration engine, mode, repository, parent/root policy and promotion-flow inputs without source activation identities."
+    },
+    "src/policy_profiles/models.py::IntegrationSettings.hierarchical_integration_mode": {
+      "reason": "Enumerates the disabled/observe/hierarchy/train integration configuration states for portable payload validation."
+    },
+    "src/policy_profiles/models.py::IntegrationSettings.integration_mode": {
+      "reason": "Restricts the portable integration mode field to pull_request, an integration-specific schema constraint."
+    },
+    "src/policy_profiles/models.py::IntegrationSettings.integration_repository_id": {
+      "reason": "Declares the optional integration repository identity that must be rebound when transporting settings."
+    },
+    "src/policy_profiles/models.py::IntegrationSettings.type": {
+      "reason": "Declares the integration_settings discriminator for portable integration configuration payloads."
+    },
+    "src/policy_profiles/models.py::Payload": {
+      "reason": "Adds IntegrationSettings to the tagged policy payload union; the whole shared union declaration remains charged."
+    },
+    "src/policy_profiles/models.py::PolicyType": {
+      "reason": "Includes integration_settings in the policy payload discriminator vocabulary; charges the complete shared literal declaration."
+    }
+  }
+}

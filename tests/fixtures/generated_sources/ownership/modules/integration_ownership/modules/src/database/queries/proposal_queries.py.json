@@ -1,0 +1,6 @@
+{
+  "generic_dependencies": {
+    "src/database/queries/proposal_queries.py::detect_cycles": "Runs iterative Tarjan strongly connected components over task dependency endpoints; it is a general graph algorithm without integration state.",
+    "src/database/queries/proposal_queries.py::get_proposal": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}
