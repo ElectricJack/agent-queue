@@ -384,7 +384,8 @@ def test_batch_exception_is_exact_and_has_no_remaining_headroom(report, manifest
     assert grant["measured_owned_total"] + amendment["authorized_owned_delta"] == 160_842
     merged = exception["merge_measurement"]
     assert merged["task_id"] == "fresh-apex-30"
-    assert merged["approval_message_id"] == grant["approval_message_id"]
+    assert merged["approval_message_id"] == "msg-a10c7ab8ff2946f8b1f27528a407524c"
+    assert merged["decision_id"] == "size-cap-delegation-2026-10-23"
     assert merged["authorized_owned_delta"] == grant["authorized_delta"] == 5
     assert merged["dev_owned_total"] + merged["authorized_owned_delta"] == measured
     assert (merged["dev_engine_lines"] + merged["authorized_engine_delta"]

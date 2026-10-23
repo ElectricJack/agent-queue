@@ -87,9 +87,10 @@ TRANSITION_BATCH_EXCEPTION = {'batch_id': 'train-745592300af5cef0338dec80ebabb46
                        'dev_engine_lines': 85316,
                        'authorized_owned_delta': 5,
                        'authorized_engine_delta': 5,
-                       'approval_message_id': 'msg-4e25c0d3',
+                       'approval_message_id': 'msg-a10c7ab8ff2946f8b1f27528a407524c',
                        'reason': 'Carry forward the unchanged approved fixer delta onto the '
-                                 'measured dev tree.'}}
+                                 'measured dev tree.',
+                       'decision_id': 'size-cap-delegation-2026-10-23'}}
 FINAL_ENGINE_CAP = 11_999
 FINAL_TOTAL_CAP = 19_999
 FINAL_TABLE_CAP = 10
