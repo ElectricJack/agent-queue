@@ -18,6 +18,13 @@ tags: [design, work-graph, dependencies, gates, labels, state-machine, explain, 
 
 ---
 
+> **Current task-graph contract (2026-10-22).** This design includes unimplemented
+> status-collapse proposals and superseded removal rules. Current AQ has twelve
+> task states, shared integration admission, managed-parent settlement gates and
+> unified deletion. Start with [Tasks](../../concepts/tasks.md) and the
+> [system map](../systems/task-graph.md); the historical sections below are not
+> an operational command reference.
+
 ## 1. Problem
 
 The task graph is the substrate everything else in the overhaul (sessions, worktrees, the supervisor agent) stands on, and today it is too thin:
@@ -558,6 +565,8 @@ filing rather than substituting another branch. This base selection does not
 replace live remote observations used by adoption, reparenting or completion.
 
 ### Operator removal (2026-10-06)
+
+> **Superseded:** use the [unified delete contract](../../superpowers/specs/2026-10-11-unified-task-delete.md). `remove` is a deprecated alias; deletion can explicitly delete branches, and task-only deletion reparents surviving children. The former always-subtree/no-branch-removal policy below is historical.
 
 `remove_task` (`aq task remove TASK --reason "..."`, dashboard **Remove**) is
 available to a local human or live project/global supervisor. A worker cannot
