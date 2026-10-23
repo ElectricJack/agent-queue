@@ -1,30 +1,30 @@
-# Hierarchical integration trains: reconciler operation
+# Hierarchical integration trains: operation and recovery
 
 <!-- aq:optional-mode -->
-> Hierarchical and strict train modes are per-project choices. The reconciler
-> owns delivery in every enabled mode. See [integration modes](../concepts/integration.md)
-> for the different review and verification requirements.
+> Hierarchical and strict train modes are per-project choices. The Git-first
+> train owns enabled delivery. Start with the [train runbook](git-first-train-runbook.md)
+> for activation, current status and batch controls.
 
-The autonomous legacy engine and its rollout, adoption and rollback controls
-were removed on 2026-10-04. New subjects start under the reconciler. Disabling
-`integration.reconciler_active` pauses visits while preserving subject ownership.
-It does not select another engine. Existing subjects keep the repository and
-reviewed policy artifact they were created with.
+The Subject publishers and runtimes were retired on 2026-10-12. Retained Subject
+rows, gates and ownership records support historical recovery; they do not run
+an alternative delivery engine. Set `integration.git_first: active` to construct
+the train. The default `shadow` selects no writer, and changing
+`integration.reconciler_active` does not pause the active train. Use the project's
+train playbook activation or the batch controls to pause current delivery.
 
-Inspect recorded state before changing configuration:
+Inspect current state before changing configuration:
 
 ```bash
 aq integration status PROJECT_ID
 aq task show TASK_ID
-aq doctor --check integration.subjects_overdue
-aq doctor --check integration.subjects_held
+aq doctor --check integration.delivery_engine
 aq doctor --check integration.train_batches_stalled
 ```
 
-Status projects each live subject's phase, last journal record, policy pin and
-next visit. Doctor reports overdue visits and human holds. Neither advances a
-subject or writes Git. Fix a held subject's named gate through the gate workflow;
-a reviewed gate release requires that subject's exact version:
+Train status reports targets, batch intent, exact candidate checks, repair state
+and blockers. Historical Subject holds remain binding where they apply to source
+admission. Only for such a retained hold, resolve its named gate and use the
+exact Subject version:
 
 ```bash
 aq integration release-held-gate SUBJECT_ID GATE_ID --apply --expected-version VERSION --reason REASON
@@ -79,6 +79,10 @@ unreadable or unhealthy bound artifact causes a finite retry, never legacy
 publication. Existing projects without this activation or binding keep their
 pre-install behavior until their operator installs it. The shipped template is
 available on installation but is not automatically activated on existing projects.
+
+Epic checks are advisory by default. An enabled, ready project playbook can opt
+into a gate through `tables.parent_episode.required_checks`. Stored parent check
+settings alone do not gate epic settlement; root and promotion gates still apply.
 
 A red batch starts one task-free fixer session on its existing candidate branch.
 The session uses a retained checkout outside task slots; subsequent red results
@@ -173,10 +177,9 @@ rebuilds normally. Speculative work runs separately; an unfinished build never
 holds up the predecessor's publication. Restart can lose speculative scheduling
 hints; Git parentage, durable predecessor state and current checks still govern reuse.
 
-The `IntegrationTrain.visit(target, seal_now=True)` and
-`DatabaseBatches.open_batch(..., seal_now=True)` hooks bypass the timing
-window for one call. They preserve all admission and publication checks;
-an empty or blocked call does not arm a bypass for future work. The supervisor
+The `seal_now=True` hooks remain accepted by train visits and batch selection.
+Idle lanes already dispatch immediately; these hooks preserve all admission and
+publication checks and do not arm future work. The supervisor
 can use `aq integration seal-now --project PROJECT_ID --apply` to freeze the
 currently eligible members immediately. It leaves building, checks, reviews
 and publication to the train. If a batch already owns the target, the command
@@ -197,7 +200,7 @@ Pausing a paused batch or resuming an open batch refuses with `refused`.
 atomically aborts the old batch and freezes its remaining exact sources under
 a new identity. A paused batch produces a paused replacement. The original
 membership stays intact, and the removed task keeps its PR and approval,
-returns to pending, and can enter a new batch at the next cadence. An ordinary
+returns to pending, and can enter a new batch on a later eligible visit. An ordinary
 abort continues to withhold its frozen sources. Ejection refuses removal of an
 undelivered prerequisite that the remaining members need.
 
@@ -229,9 +232,9 @@ These four supervisor controls default to preview; `--dry-run` explicitly
 requests it. Applying an ejection requires a nonblank reason. Paused batches
 can resume; aborted or promoted batches cannot.
 
-The git-first path still rebuilds on target movement. It does not implement
-`on_main_moved: wait` or a `max_wait_seconds` limit on candidate rebuilds;
-these policy gaps are tracked separately.
+The Git-first path rebuilds on target movement. Historical `on_main_moved`
+settings do not change that behavior. The train playbook supplies finite policy
+waits; these are distinct from the legacy candidate-rebuild settings.
 
 The project policy `hierarchical_integration_policy.prerequisite_branches` accepts
 `stacked` or `wait-for-parent`. Every project defaults to `stacked`; an explicitly
@@ -455,7 +458,7 @@ used 961 Git commands in 2.864 seconds; the warm pass used zero commands with
 
 ## Controls quick reference
 
-- `aq integration seal-now --project PROJECT_ID --apply` freezes eligible root inputs immediately, bypassing cadence once.
+- `aq integration seal-now --project PROJECT_ID --apply` requests an immediate visit to freeze eligible root inputs when the target is idle.
 - `aq integration pause-batch BATCH_ID --apply` pauses publication for an unpromoted Git-first batch.
 - `aq integration resume-batch BATCH_ID --apply` resumes a paused Git-first batch.
 - `aq integration abort-batch BATCH_ID --apply --reason REASON` aborts an unpromoted Git-first batch.
@@ -486,7 +489,8 @@ workspace or unexpired lease. Preview leaves it intact; live writers, other
 owners, attached rows and open batches still block the request.
 
 A target visit first settles an ordinary batch whose complete frozen inputs are
-already delivered. Otherwise, removing a required check from project policy causes
+already delivered. Current bound playbook checks overlay a pending candidate as
+described above. On the retained stored-policy path, removing a required check causes
 the next root or epic target visit to supersede an open, unpromoted batch that froze that check. Its
 sources can seal under the updated policy; the original snapshot and sources
 remain in the audit history. Special epic sync and refresh batches retain their
@@ -637,9 +641,10 @@ To disable future admission, use the project configuration CAS:
 aq project set PROJECT_ID integration-mode disabled --expected-integration-generation GENERATION --reason REASON
 ```
 
-Existing Subjects retain their identity, pins and scheduling. Pausing all visits
-uses `integration.reconciler_active: false`; re-enabling resumes those same
-Subjects. There is no engine rollback or automatic drain that restores old policy.
+Historical Subject rows retain their identity and pins; no Subject runtime is
+started by the current daemon. `integration.reconciler_active: false` does not pause
+the train. Use the bound project train activation to stop train work, or pause the
+specific batch. Neither operation revokes a live writer or restores old policy.
 
 ## No-code root completions
 
