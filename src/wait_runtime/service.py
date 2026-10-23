@@ -245,6 +245,13 @@ class WaitService:
         from src.waits.decision import project_policy
 
         async with self._bridge_lock:
+            # Held migrations used to rerun their complete project scan every
+            # scheduler cycle. Retry once a minute; explicit operator bridge
+            # commands still run immediately, and completed receipts stay durable.
+            now = time.monotonic()
+            if now - getattr(self, "_last_bridge_attempt", float("-inf")) < 60:
+                return
+            self._last_bridge_attempt = now
             async with self.orch.db._engine.connect() as conn:
                 pids = list((await conn.execute(select(projects.c.id).where(~exists(
                     select(wait_bridge_progress.c.identity).where(

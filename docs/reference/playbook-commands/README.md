@@ -377,6 +377,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`observation_snapshot_cleanup`](observation_snapshot_cleanup.md) | Observation Snapshot Cleanup | Collect at most 100 expired snapshots; daemon/operator maintenance only. |
 | [`observe_integration_source_ci`](observe_integration_source_ci.md) | Observe Integration Source Ci | Daemon-only adapter for trusted CI observations, never a raw tool input. |
 | [`onboard_project`](onboard_project.md) | Onboard Project | Link, initialise or clone a repository beneath a configured root and register it. |
+| [`operational_retention`](operational_retention.md) | Operational Retention | Run one archive-first batch on a private worker loop and DB pool. |
 | [`operator_execute`](operator_execute.md) | Operator Execute | Execute the operator_execute command. |
 | [`operator_preflight`](operator_preflight.md) | Operator Preflight | Execute the operator_preflight command. |
 | [`orchestrator_control`](orchestrator_control.md) | Orchestrator Control | Execute the orchestrator_control command. |

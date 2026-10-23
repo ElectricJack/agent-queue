@@ -340,3 +340,55 @@ class TestRunCommand:
     async def test_missing_both_returns_error(self, handler):
         result = await handler.execute("run_command", {})
         assert result == {"success": False, "error": "command is required"}
+
+
+async def test_operational_retention_uses_private_worker_pool(handler):
+    from src.api.models.system import OperationalRetentionResponse
+    from src.commands.principal import ExecutionPrincipal, principal_context
+
+    with principal_context(ExecutionPrincipal.service("retention-test")):
+        result = await handler.execute("operational_retention", {"dry_run": True, "batch_size": 1})
+    assert result["success"], result
+    assert result["dry_run"]
+    assert "token_ledger" in result["counts"]
+    assert "transcript_usage_calls" not in result["counts"]
+    assert not (Path(handler.config.data_dir) / "backups").exists()
+    assert OperationalRetentionResponse.model_validate(result).model_dump(exclude_none=True) == result
+
+
+@pytest.mark.parametrize("batch_size", [True, 0, 1001, "1", 1.5])
+async def test_operational_retention_rejects_invalid_batch_size(handler, batch_size):
+    from src.api.models.system import OperationalRetentionResponse
+
+    result = await handler._cmd_operational_retention({"batch_size": batch_size})
+    assert result == {"success": False, "error": "batch_size must be between 1 and 1000"}
+    assert OperationalRetentionResponse.model_validate(result).model_dump(exclude_none=True) == result
+
+
+async def test_retention_request_cancel_does_not_overlap_worker(handler, monkeypatch):
+    import threading
+    from src.api.models.system import OperationalRetentionResponse
+    from src.database import operational_retention
+
+    entered, release = threading.Event(), threading.Event()
+
+    def worker(*args, **kwargs):
+        entered.set()
+        release.wait(10)
+        return {"events": 0}
+
+    monkeypatch.setattr(operational_retention, "run_worker", worker)
+    request = asyncio.create_task(handler._cmd_operational_retention({}))
+    try:
+        assert await asyncio.to_thread(entered.wait, 5)
+        request.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await request
+        result = await handler._cmd_operational_retention({})
+        assert result == {"success": True, "outcome": "already_running"}
+        assert OperationalRetentionResponse.model_validate(result).model_dump(
+            exclude_none=True
+        ) == result
+    finally:
+        release.set()
+        await handler.orchestrator._operational_retention_task

@@ -746,6 +746,7 @@ areas:
     description: "The PostgreSQL database layer: adapter CRUD and channels, engine startup safeguards, backend selection, immediate transactions, metadata-cast safety, model round trips and the SQLite removal ratchet."
     match:
       - tests/test_database*.py
+      - tests/test_operational_retention.py
       - tests/test_db_immediate.py
       - tests/test_metadata_cast_safety.py
       - tests/test_sqlite_removal.py

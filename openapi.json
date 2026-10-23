@@ -17228,6 +17228,53 @@
         }
       }
     },
+    "/api/system/operational-retention": {
+      "post": {
+        "tags": [
+          "system"
+        ],
+        "summary": "Archive and collect one bounded batch of old operational records.",
+        "description": "Archive and collect one bounded batch of old operational records.",
+        "operationId": "operational_retention",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OperationalRetentionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperationalRetentionResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/system/orchestrator-control": {
       "post": {
         "tags": [
@@ -56702,6 +56749,86 @@
           "error"
         ],
         "title": "OnboardingErrorInfo"
+      },
+      "OperationalRetentionRequest": {
+        "properties": {
+          "dry_run": {
+            "type": "boolean",
+            "title": "Dry Run",
+            "description": "Count eligible records without archiving or deletion.",
+            "default": false
+          },
+          "batch_size": {
+            "type": "integer",
+            "title": "Batch Size",
+            "description": "",
+            "default": 1000
+          }
+        },
+        "type": "object",
+        "title": "OperationalRetentionRequest"
+      },
+      "OperationalRetentionResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success"
+          },
+          "counts": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "integer"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Counts"
+          },
+          "dry_run": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dry Run"
+          },
+          "outcome": {
+            "anyOf": [
+              {
+                "type": "string",
+                "const": "already_running"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Outcome"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          }
+        },
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "title": "OperationalRetentionResponse",
+        "description": "A completed bounded retention pass, overlap acknowledgement, or refusal."
       },
       "OperatorDecisionDTO": {
         "properties": {

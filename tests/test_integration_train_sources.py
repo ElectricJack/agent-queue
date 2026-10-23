@@ -9875,6 +9875,22 @@ async def test_frozen_epic_uses_fresh_readiness_when_origin_graph_projection_is_
         assert git(case.origin.url, "rev-parse", "main") == testing.candidate_sha
 
 
+async def test_target_discovery_cache_invalidates_and_expires(world):
+    source = DatabaseTargets(world.db, refresh_seconds=30)
+    original = source._project_targets
+    source._project_targets = AsyncMock(wraps=original)
+    first = await source.targets(100)
+    calls = source._project_targets.await_count
+    assert calls > 0
+    assert await source.targets(101) == first
+    assert source._project_targets.await_count == calls
+    source.invalidate()
+    await source.targets(102)
+    assert source._project_targets.await_count == calls * 2
+    await source.targets(132)
+    assert source._project_targets.await_count == calls * 3
+    await source.targets(133, project_id="p")
+    assert source._project_targets.await_count == calls * 4
 async def test_unlimited_root_pr_recovery_reopens_after_many_changed_heads(world):
     from src.integration.root_pr_recovery import RECOVERY_KEY
 

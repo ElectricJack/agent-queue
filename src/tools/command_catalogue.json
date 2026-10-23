@@ -3434,6 +3434,26 @@
       }
     },
     {
+      "name": "operational_retention",
+      "description": "Archive and collect one bounded batch of old operational records.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "dry_run": {
+            "type": "boolean",
+            "default": false,
+            "description": "Count eligible records without archiving or deletion."
+          },
+          "batch_size": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000,
+            "default": 1000
+          }
+        }
+      }
+    },
+    {
       "name": "reload_config",
       "description": "Manually trigger a config hot-reload from disk. Returns a summary of which sections changed, which were applied, and which require a daemon restart.",
       "input_schema": {
@@ -21086,6 +21106,7 @@
     "claude_usage": "system",
     "get_chat_analyzer_metrics": "system",
     "reload_config": "system",
+    "operational_retention": "system",
     "get_config": "system",
     "get_config_schema": "system",
     "update_config": "system",

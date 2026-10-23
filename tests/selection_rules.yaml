@@ -122,7 +122,7 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["scripts/build_release_artifact.py"], areas: ["packaging", "dashboard-server", "install"] }
   - { paths: ["scripts/check-merge-conflicts.sh"], areas: ["git-manager"] }
   - { paths: ["scripts/operator-checks/**"], areas: ["supervisor"] }
-  - { paths: ["scripts/migrate_task_records.py"], areas: ["database"] }
+  - { paths: ["scripts/migrate_task_records.py", "src/database/operational_retention.py", "docs/specs/operational-retention.md"], areas: ["database"] }
   - { paths: ["scripts/check_additive_migrations.py", "scripts/rollback_drill.py"], areas: ["database", "install"] }
   - { paths: ["scripts/migrate-legacy-playbook-worker-routes.py"], areas: ["playbook-authoring", "task-routing"] }
   - { paths: ["scripts/reap_test_databases.py"], areas: ["test-substrate"] }

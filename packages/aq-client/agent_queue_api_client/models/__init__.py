@@ -1116,6 +1116,10 @@ from .onboard_project_response_source_type import OnboardProjectResponseSourceTy
 from .onboarding_error_info import OnboardingErrorInfo
 from .onboarding_error_info_details import OnboardingErrorInfoDetails
 from .onboarding_error_info_field_errors_item import OnboardingErrorInfoFieldErrorsItem
+from .operational_retention_request import OperationalRetentionRequest
+from .operational_retention_response import OperationalRetentionResponse
+from .operational_retention_response_422 import OperationalRetentionResponse422
+from .operational_retention_response_counts_type_0 import OperationalRetentionResponseCountsType0
 from .operator_decision_dto import OperatorDecisionDTO
 from .operator_decision_dto_options_item import OperatorDecisionDTOOptionsItem
 from .operator_decision_record import OperatorDecisionRecord
@@ -3328,6 +3332,10 @@ __all__ = (
     "OnboardProjectResponse",
     "OnboardProjectResponse422",
     "OnboardProjectResponseSourceType",
+    "OperationalRetentionRequest",
+    "OperationalRetentionResponse",
+    "OperationalRetentionResponse422",
+    "OperationalRetentionResponseCountsType0",
     "OperatorDecisionDTO",
     "OperatorDecisionDTOOptionsItem",
     "OperatorDecisionRecord",
