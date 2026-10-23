@@ -34,8 +34,8 @@ TRANSITION_BATCH_EXCEPTION = {'batch_id': 'train-745592300af5cef0338dec80ebabb46
  'decision_record': 'record:2720bdbe-7521-427e-8e72-1f40a3ff9818',
  'measured_source_revision': 'b65c4f58866c1569e7ed73cb3a9d306f3060e1f0',
  'original_owned_total_cap': 155499,
- 'measured_owned_total': 160879,
- 'delta': 5380,
+ 'measured_owned_total': 160884,
+ 'delta': 5385,
  'predecessors': [{'batch_id': 'train-77f0d8e451f6aed08d608e443031047a',
                    'decision_message_id': 'msg-edb5f857de344716a38857406fa69958',
                    'decision_record': 'record:2720bdbe-7521-427e-8e72-1f40a3ff9818',
@@ -49,14 +49,14 @@ TRANSITION_BATCH_EXCEPTION = {'batch_id': 'train-745592300af5cef0338dec80ebabb46
                    'measured_source_revision': 'cbfd455b0e9f053854a2c1becfa1efaeef231582',
                    'authorized_delta': 2166,
                    'measured_owned_total': 158958}],
- 'batch_measured_delta': 1921,
+ 'batch_measured_delta': 1926,
  'restore_task': 'azure-ridge-72',
  'expires_at': 's4_modules',
  'category_approval_message_id': 'msg-90f9f1b1e0cd4e8e8d28071cffc927a6',
  'storage_categories': ['integration_close_attempts'],
  'category_restore_task': 'stark-willow-95.17',
  'verification_task': 'stark-willow-95.18',
- 'measured_engine_lines': 85316,
+ 'measured_engine_lines': 85321,
  'measured_table_count': 45,
  'delivery_method': 'operator direct integration; user request 2026-10-22',
  'amendments': [{'task_id': 'solid-impact-56',
@@ -66,12 +66,31 @@ TRANSITION_BATCH_EXCEPTION = {'batch_id': 'train-745592300af5cef0338dec80ebabb46
                  'previous_engine_lines': 85301,
                  'authorized_owned_delta': 17,
                  'authorized_engine_delta': 15,
-                 'reason': 'Memoize stack authorization inputs within one scheduler sync pass; '
-                           'supervisor approved exact net footprint after removing an unused '
-                           'parent query.',
+                 'reason': 'Memoize stack authorization inputs within one scheduler sync '
+                           'pass; supervisor approved exact net footprint after removing an '
+                           'unused parent query.',
                  'global_request': 'msg-9f895e0d',
                  'global_grant': 'msg-7f2f68c1',
-                 'grant_delivery_message_id': 'msg-21784b3e56aa4f54bf1042b7c9af4aaf'}]}
+                 'grant_delivery_message_id': 'msg-21784b3e56aa4f54bf1042b7c9af4aaf'}],
+ 'supplemental_grants': [{'task_id': 'fresh-apex-30',
+                          'approval_message_id': 'msg-4e25c0d3',
+                          'relay_message_id': 'msg-bd98955a2fa443cc920ce725e42a5c3f',
+                          'measured_source_revision': 'd9c50555a1d87beaefbfc8de3b13229a6ab9f061',
+                          'prior_owned_total_cap': 160820,
+                          'authorized_delta': 5,
+                          'measured_owned_total': 160825,
+                          'reason': 'Verify registered linked fixer worktrees before '
+                                    'permission bypass.'}],
+ 'merge_measurement': {'task_id': 'fresh-apex-30',
+                       'dev_source_revision': '4e50c276fca68cbe92ba4fc704363ec6026db7dc',
+                       'dev_owned_total': 160879,
+                       'dev_engine_lines': 85316,
+                       'authorized_owned_delta': 5,
+                       'authorized_engine_delta': 5,
+                       'approval_message_id': 'msg-a10c7ab8ff2946f8b1f27528a407524c',
+                       'reason': 'Carry forward the unchanged approved fixer delta onto the '
+                                 'measured dev tree.',
+                       'decision_id': 'size-cap-delegation-2026-10-23'}}
 FINAL_ENGINE_CAP = 11_999
 FINAL_TOTAL_CAP = 19_999
 FINAL_TABLE_CAP = 10

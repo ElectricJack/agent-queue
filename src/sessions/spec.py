@@ -458,6 +458,7 @@ class SessionSpecBuilder:
         wake: str = "fresh",
         resume_key: str | None = None,
         prompt: str | None = None,
+        workspace_source_type=None,
         knowledge=None,
     ) -> SessionSpec:
         """Spec for a persistent session (``lifecycle="named"``).
@@ -469,6 +470,9 @@ class SessionSpecBuilder:
         A *knowledge* selection prepared before this launch is wrapped for the
         harness and recorded on the spec; the bundle's delivery acknowledgment
         still requires the persisted live session row.
+
+        Callers with a verified isolated worktree may pass *workspace_source_type*;
+        otherwise permission bypass requires the profile's explicit opt-in.
         """
         profile_id = getattr(profile, "id", "") or ""
         # Keep the established global runtime name for restart adoption; the
@@ -517,9 +521,9 @@ class SessionSpecBuilder:
             resume_key=effective_resume,
             bootstrap=bootstrap,
             lifecycle="named",
-            # Named sessions have no workspace, so only the profile's
-            # explicit permission opt-in can grant the skip-permissions flag.
-            allow_skip_permissions=skip_permissions_allowed(profile, None, harness=harness),
+            allow_skip_permissions=skip_permissions_allowed(
+                profile, workspace_source_type, harness=harness
+            ),
             knowledge=knowledge,
         )
 

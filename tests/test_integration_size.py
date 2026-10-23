@@ -372,6 +372,24 @@ def test_batch_exception_is_exact_and_has_no_remaining_headroom(report, manifest
         1_293, 2_166,
     ]
     assert exception["batch_measured_delta"] == measured - 158_958
+    grant, = exception["supplemental_grants"]
+    assert grant["task_id"] == "fresh-apex-30"
+    assert grant["approval_message_id"] == "msg-4e25c0d3"
+    assert grant["authorized_delta"] == 5
+    assert grant["prior_owned_total_cap"] + grant["authorized_delta"] == 160_825
+    assert grant["measured_owned_total"] == 160_825
+    amendment, = exception["amendments"]
+    assert amendment["task_id"] == "solid-impact-56"
+    assert amendment["authorized_owned_delta"] == 17
+    assert grant["measured_owned_total"] + amendment["authorized_owned_delta"] == 160_842
+    merged = exception["merge_measurement"]
+    assert merged["task_id"] == "fresh-apex-30"
+    assert merged["approval_message_id"] == "msg-a10c7ab8ff2946f8b1f27528a407524c"
+    assert merged["decision_id"] == "size-cap-delegation-2026-10-23"
+    assert merged["authorized_owned_delta"] == grant["authorized_delta"] == 5
+    assert merged["dev_owned_total"] + merged["authorized_owned_delta"] == measured
+    assert (merged["dev_engine_lines"] + merged["authorized_engine_delta"]
+            == exception["measured_engine_lines"])
     assert ownership.transition_owned_cap(manifest) == measured
     too_large = {**report, "total": measured + 1}
     assert ownership.budget_errors(too_large, manifest) == [
