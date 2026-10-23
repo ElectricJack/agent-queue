@@ -21,6 +21,8 @@ from src.database.tables import (
 )
 from src.waits.listener import LeaseLost, ListenerUnavailable
 from src.waits.sources import insert_message_with_source_event
+from src.waits.admission import admission_pass
+from src.waits.graph import lock_graph
 
 logger = logging.getLogger(__name__)
 
@@ -126,6 +128,7 @@ class WaitTimerDriver:
             except TimeoutError:
                 pass
 
+    @admission_pass("service.scheduler.reader")
     async def fire(self, args, *, principal, scope, handler):
         """Transactional command callback; all five deadline types share this CAS.
 
@@ -143,7 +146,7 @@ class WaitTimerDriver:
         async with db._engine.begin() as conn:
             # Match source dispatch: graph before lease, so a busy graph never
             # fences out lease renewal and timer/source writers cannot deadlock.
-            await conn.execute(select(func.pg_advisory_xact_lock(REGISTRATION_LOCK)))
+            await lock_graph(conn)
             try:
                 cursor = await self.service.listener.locked_lease(conn)
             except LeaseLost:

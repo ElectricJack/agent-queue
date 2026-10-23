@@ -140,6 +140,7 @@ async def validate_route_preference(
     *,
     keep_target: str | None = None,
     keep_mode: str | None = None,
+    conn=None,
 ) -> tuple[tuple[str | None, str | None], str | None]:
     """Resolve ``--prefer``/``--prefer-mode`` into the pair the task stores.
 
@@ -169,7 +170,7 @@ async def validate_route_preference(
         name = "" if target is not None else str(keep_target or "").strip()
     if not name:
         return (None, None), None
-    profiles = await handler.db.list_profiles()
+    profiles = await handler.db.list_profiles(**({"conn": conn} if conn is not None else {}))
     profile = next((p for p in profiles if p.id == name), None)
     if profile is not None:
         if not bool(getattr(profile, "enabled", True)):

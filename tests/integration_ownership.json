@@ -9599,6 +9599,9 @@
         21,
         21
       ]
+    },
+    "src/wait_runtime/scheduler.py::SchedulerWaitService._sync_owner": {
+      "reason": "Per-owner reconciliation extracted from the charged scheduler sync; retains integration admission and branch-owner authority, so remains charged without changing the cap."
     }
   },
   "exclusions": {

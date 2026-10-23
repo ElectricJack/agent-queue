@@ -16,6 +16,7 @@ from src.database.tables import (
 from src.models import Agent, AgentState
 from src.scheduler import AssignAction
 from src.waits.conditions import WaitError
+from src.waits.admission import admission_pass
 from src.wait_runtime.hibernate import locked_suspension
 from src.waits.mail import held_messages
 from src.waits.sources import insert_message_with_source_event
@@ -68,6 +69,7 @@ class ResumeTransaction:
         self.db = self.orch.db
         self.clock = clock
 
+    @admission_pass("service.scheduler.reader")
     async def reserve(self, continuation_id, generation):
         from src.integration.delivery_observer import hierarchy_frontier_modes
 

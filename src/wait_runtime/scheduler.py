@@ -19,7 +19,7 @@ from src.database.tables import (
     admission_reservations, tasks, wait_deadlines, wait_escalations, wait_records,
 )
 from src.integration.stacked_branches import shared_stack_inputs
-from src.waits.admission import AdmissionReader, branch_holders
+from src.waits.admission import AdmissionReader, admission_pass, branch_holders
 from src.waits.conditions import Condition, NodeKey, Scope, SleepDecision, WaitError, canonical
 from src.waits.graph import add_edges, clear_edges, lock_graph, recompute_from
 from src.waits.registry import build_registry
@@ -52,6 +52,7 @@ class SchedulerWaitService:
             raise WaitError("wait.out_of_scope", "scheduler waits require a service principal")
 
     @shared_stack_inputs()
+    @admission_pass("reader")
     async def sync(self, args, *, principal, scope=None, handler=None):
         self.authorize(principal)
         now = self.clock() if args.get("now") is None else args["now"]
@@ -59,14 +60,42 @@ class SchedulerWaitService:
         # The contract carries a candidate list, never authoritative verdicts.
         # A fresh project scan also retracts stale rows after a missed cycle.
         watermark = await self.db.wait_source_watermark()
+        # Discover work without the global fence. Each owner is re-read and
+        # committed separately so a project scan cannot monopolize dispatch.
+        async with self.db._engine.connect() as conn:
+            candidates = (await conn.execute(select(tasks.c.id).where(
+                tasks.c.project_id == project_id,
+                or_(tasks.c.status.in_(("READY", "DEFINED", "PAUSED"))
+                    if args.get("initial_audit") else tasks.c.status == "READY", exists(select(wait_records.c.id).where(
+                    wait_records.c.origin == "scheduler",
+                    wait_records.c.owner_kind == "scheduler", wait_records.c.owner_id == tasks.c.id,
+                    wait_records.c.outcome == "pending",
+                )), exists(select(admission_reservations.c.id).where(
+                    admission_reservations.c.task_id == tasks.c.id,
+                    admission_reservations.c.state.in_(("pending", "overdue", "granted")),
+                ))),
+            ).order_by(tasks.c.id))).mappings().all()
+            pending_owners = (await conn.execute(select(wait_records.c.owner_id).where(
+                wait_records.c.project_id == project_id, wait_records.c.origin == "scheduler",
+                wait_records.c.owner_kind == "scheduler",
+                wait_records.c.outcome == "pending",
+            ))).scalars().all()
+        changed = set()
+        for task_id in sorted({r.id for r in candidates} | set(pending_owners)):
+            changed.update(await self._sync_owner(args, task_id, now=now, watermark=watermark))
+        return {"success": True, "changed": len(changed), "cycle_id": args["cycle_id"]}
+
+    async def _sync_owner(self, args, task_id, *, now, watermark):
+        project_id = args["project_id"]
         changed = set()
         async with self.db._engine.begin() as conn:
             await lock_graph(conn)
             candidates = (await conn.execute(select(tasks).where(
-                tasks.c.project_id == project_id,
+                tasks.c.project_id == project_id, tasks.c.id == task_id,
                 or_(tasks.c.status.in_(("READY", "DEFINED", "PAUSED"))
                     if args.get("initial_audit") else tasks.c.status == "READY", exists(select(wait_records.c.id).where(
-                    wait_records.c.origin == "scheduler", wait_records.c.owner_id == tasks.c.id,
+                    wait_records.c.origin == "scheduler",
+                    wait_records.c.owner_kind == "scheduler", wait_records.c.owner_id == tasks.c.id,
                     wait_records.c.outcome == "pending",
                 )), exists(select(admission_reservations.c.id).where(
                     admission_reservations.c.task_id == tasks.c.id,
@@ -75,12 +104,14 @@ class SchedulerWaitService:
             ).order_by(tasks.c.id).with_for_update())).mappings().all()
             previous = [dict(r) for r in (await conn.execute(select(wait_records).where(
                 wait_records.c.project_id == project_id, wait_records.c.origin == "scheduler",
+                wait_records.c.owner_kind == "scheduler",
+                wait_records.c.owner_id == task_id,
             ).order_by(wait_records.c.id).with_for_update())).mappings()]
             by_key = {(r["owner_id"], r["source_key"]): dict(r) for r in previous}
             reservations = {r["task_id"]: dict(r) for r in (await conn.execute(
                 select(admission_reservations).where(
                     admission_reservations.c.project_id == project_id,
-                    admission_reservations.c.task_id.is_not(None),
+                    admission_reservations.c.task_id == task_id,
                     admission_reservations.c.state.in_(("pending", "overdue", "granted")),
                 ).order_by(admission_reservations.c.id).with_for_update()
             )).mappings()}
@@ -197,18 +228,20 @@ class SchedulerWaitService:
             if args.get("initial_audit"):
                 from src.wait_runtime.legacy_audit import audit_scheduler_age
 
-                await audit_scheduler_age(conn, project_id, now=now,
+                await audit_scheduler_age(conn, project_id, task_id=task_id, now=now,
                     deadline_seconds=self.orchestrator.config.wait_policy.branch_admission_deadline_seconds)
             if changed:
                 await recompute_from(conn, changed, now=now)
-        return {"success": True, "changed": len(changed), "cycle_id": args["cycle_id"]}
+        return changed
 
+    @admission_pass("reader")
     async def deadline(self, args, *, principal, scope=None, handler=None):
         self.authorize(principal)
         now = self.clock() if args.get("now") is None else args["now"]
         async with self.db._engine.begin() as conn:
             initial = (await conn.execute(select(wait_records).where(
                 wait_records.c.id == args["wait_id"], wait_records.c.origin == "scheduler",
+                wait_records.c.owner_kind == "scheduler",
             ))).mappings().first()
             if not initial:
                 return {"success": False, "error_code": "wait.unavailable"}
