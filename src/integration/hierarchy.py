@@ -377,6 +377,7 @@ class HierarchyIntegration:
         db,
         *,
         default_head_resolver: DefaultHeadResolver | None = None,
+        filing_head_resolver: DefaultHeadResolver | None = None,
         branch_materializer: BranchMaterializer | None = None,
         checkpoint_verifier: CheckpointVerifier | None = None,
         ancestry_verifier: AncestryVerifier | None = None,
@@ -390,6 +391,7 @@ class HierarchyIntegration:
         self.db = db
         self.subject_policy_loader = subject_policy_loader
         self.default_head_resolver = default_head_resolver
+        self.filing_head_resolver = filing_head_resolver
         self.branch_materializer = branch_materializer
         self.checkpoint_verifier = checkpoint_verifier
         self.ancestry_verifier = ancestry_verifier
@@ -1691,7 +1693,8 @@ class HierarchyIntegration:
             branch = row["branch_name"] or f"aq/{row['id']}"
             if parent_checkpoint is None:
                 base_sha = await self._resolve_head(
-                    repo, root_branch or row["branch_name"] or repo.default_branch
+                    repo, root_branch or row["branch_name"] or repo.default_branch,
+                    filing=root_branch is not None,
                 )
                 parent_ref = root_parent_ref or repo.default_branch
             else:
@@ -1726,10 +1729,11 @@ class HierarchyIntegration:
                 "checkpoint_sha": base_sha,
             }
 
-    async def _resolve_head(self, repo: RepoConfig, branch: str) -> str:
-        if self.default_head_resolver is None:
+    async def _resolve_head(self, repo: RepoConfig, branch: str, *, filing: bool = False) -> str:
+        resolver = (self.filing_head_resolver if filing else None) or self.default_head_resolver
+        if resolver is None:
             raise HierarchyError("invalid", "repository head resolver is unavailable")
-        value = self.default_head_resolver(repo, branch)
+        value = resolver(repo, branch)
         if inspect.isawaitable(value):
             value = await value
         if not isinstance(value, str) or not _OID.fullmatch(value):

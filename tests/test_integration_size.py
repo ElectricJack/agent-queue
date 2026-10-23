@@ -386,6 +386,9 @@ def test_batch_exception_is_exact_and_has_no_remaining_headroom(report, manifest
         "quick-pinnacle-97",
         "stark-beacon-94",
         "sharp-rapids-10",
+        "fair-dune-41",
+        "noble-flare-12",
+        "sound-forge-62",
     }
     amendment = amendments["solid-impact-56"]
     assert amendment["task_id"] == "solid-impact-56"
@@ -413,14 +416,60 @@ def test_batch_exception_is_exact_and_has_no_remaining_headroom(report, manifest
     assert snapshot["previous_owned_total"] == 161_102
     assert snapshot["authorized_owned_delta"] == 9
     assert snapshot["authorized_engine_delta"] == 0
-    assert snapshot["previous_owned_total"] + snapshot["authorized_owned_delta"] == measured
-    assert snapshot["measured_owned_total"] == measured == 161_111
+    assert snapshot["previous_owned_total"] + snapshot["authorized_owned_delta"] == 161_111
+    assert snapshot["measured_owned_total"] == 161_111
     assert snapshot["previous_engine_lines"] == snapshot["measured_engine_lines"] == 85_517
-    assert snapshot["measured_engine_lines"] == exception["measured_engine_lines"]
     assert snapshot["measured_table_count"] == 45
-    assert snapshot["measured_source_revision"] == exception["measured_source_revision"]
+    assert snapshot["measured_source_revision"] == "43b3e220a2a1ac6e8d5b7543d3f83063c7c747f6"
     recorded = json.loads((ROOT / "tests/integration_ownership_report.json").read_text())
     assert recorded["dashboard_pr_snapshot_measurement"] == snapshot
+    viewport = amendments["noble-flare-12"]
+    assert viewport["decision_message_id"] == "msg-68ccb1d50ee04851a7268dd58e9d4459"
+    assert viewport["decision_message_id"] in exception["decision_message_ids"]
+    assert viewport["referenced_decision"] == "size-cap-delegation-2026-10-23"
+    assert viewport["operator_decision"] == "6679052c"
+    assert viewport["operator_task"] == "sharp-cascade-53"
+    assert viewport["pull_request"] == "https://github.com/ElectricJack/agent-queue/pull/1892"
+    assert viewport["previous_source_revision"] == "4a0c4e38ab979a1664586d47d16404b48def4089"
+    assert viewport["previous_owned_total"] == snapshot["measured_owned_total"]
+    assert viewport["previous_engine_lines"] == snapshot["measured_engine_lines"]
+    assert viewport["authorized_owned_delta"] == 23
+    assert viewport["authorized_engine_delta"] == 22
+    assert viewport["authorized_shared_delta"] == 1
+    assert (viewport["previous_owned_total"] + viewport["authorized_owned_delta"]
+            == viewport["measured_owned_total"])
+    assert viewport["measured_owned_total"] == 161_134
+    assert (viewport["previous_engine_lines"] + viewport["authorized_engine_delta"]
+            == viewport["measured_engine_lines"] == 85_539)
+    assert viewport["measured_table_count"] == exception["measured_table_count"] == 45
+    assert viewport["measured_source_revision"] == "b194122701a0130039230dea4c8caa93c70f60e1"
+    assert recorded["graph_viewport_readiness_measurement"] == viewport
+    filing = amendments["sound-forge-62"]
+    assert filing["decision_message_id"] == "msg-9f16388d39524c8b9a33d6796b88d1fb"
+    assert filing["decision_message_id"] in exception["decision_message_ids"]
+    assert filing["referenced_decision"] == "size-cap-delegation-2026-10-23"
+    assert filing["operator_decision"] == "6679052c"
+    assert filing["operator_task"] == "sharp-cascade-53"
+    assert filing["pull_request"] == "https://github.com/ElectricJack/agent-queue/pull/1891"
+    assert filing["previous_owned_total"] == snapshot["measured_owned_total"]
+    assert filing["previous_engine_lines"] == snapshot["measured_engine_lines"]
+    assert filing["authorized_owned_delta"] == 26
+    assert filing["authorized_engine_delta"] == 4
+    assert filing["authorized_shared_delta"] == 22
+    assert filing["authorized_table_delta"] == 0
+    assert filing["previous_owned_total"] + 26 == filing["measured_owned_total"] == 161_137
+    assert filing["previous_engine_lines"] + 4 == filing["measured_engine_lines"] == 85_521
+    assert filing["measured_source_revision"] == "1f0633050802438db6ef954c43d6d0eb2ce0edf3"
+    assert filing["measured_table_count"] == filing["previous_table_count"] == 45
+    assert recorded["task_create_retained_base_measurement"] == filing
+    post = exception["post_batch_composition"]
+    assert post["base_revision"] == filing["previous_source_revision"]
+    assert post["source_revision"] == filing["measured_source_revision"]
+    assert post["approved_deltas"] == {
+        "sound-forge-62": {"owned": 26, "engine": 4, "shared": 22, "tables": 0},
+    }
+    assert post["base_owned_total"] + 26 == filing["measured_owned_total"]
+    assert post["base_engine_lines"] + 4 == filing["measured_engine_lines"]
     assert set(composition["member_sources"]) == {
         "agile-beacon-80", "grand-quest-20", "nimble-torrent-12", "prime-impact-40",
         "quick-pinnacle-97",
@@ -456,7 +505,7 @@ def test_batch_exception_is_exact_and_has_no_remaining_headroom(report, manifest
     ) == snapshot["previous_owned_total"]
     assert composition["base_engine_lines"] + sum(
         delta["engine"] for delta in composition["approved_deltas"].values()
-    ) == exception["measured_engine_lines"]
+    ) == snapshot["measured_engine_lines"]
     repair = amendments["stark-beacon-94"]
     assert repair["decision_id"] == "size-cap-delegation-2026-10-23"
     assert repair["operator_decision"] == "6679052c"
@@ -483,6 +532,68 @@ def test_batch_exception_is_exact_and_has_no_remaining_headroom(report, manifest
     ]
     # The exception is an upper bound: later genuine reductions still pass.
     assert ownership.budget_errors({**report, "total": measured - 1}, manifest) == []
+
+
+def test_activation_health_grant_carries_only_two_owned_lines(report, manifest):
+    exception = manifest["transition_exception"]
+    grant = next(item for item in exception["amendments"] if item["task_id"] == "fair-dune-41")
+    assert grant["decision_message_id"] == "msg-99539879"
+    assert grant["decision_message_id"] in exception["decision_message_ids"]
+    assert grant["referenced_decision"] == "size-cap-delegation-2026-10-23"
+    assert grant["charged_definition"] == "src/doctor/stall_checks.py::_check_sweep"
+    assert grant["previous_source_revision"] == "4a0c4e38ab979a1664586d47d16404b48def4089"
+    assert grant["original_approved_owned_total"] == 161_053
+    assert grant["original_measured_owned_total"] == 161_055
+    assert grant["authorized_owned_delta"] == 2
+    assert grant["authorized_engine_delta"] == grant["authorized_table_delta"] == 0
+    assert grant["previous_owned_total"] == 161_111
+    assert (grant["previous_owned_total"] + grant["authorized_owned_delta"]
+            == grant["measured_owned_total"])
+    assert grant["measured_owned_total"] == 161_113
+    assert grant["previous_engine_lines"] == grant["measured_engine_lines"] == 85_517
+    assert grant["previous_table_count"] == grant["measured_table_count"] == len(report["tables"])
+    assert grant["measured_source_revision"] == "ca7a4377c532d723b0ab9c3bb5f833707a317cf5"
+    recorded = json.loads((ROOT / "tests/integration_ownership_report.json").read_text())
+    assert recorded["playbook_activation_health_measurement"] == grant
+    assert ownership.budget_errors(report, manifest) == []
+    assert ownership.budget_errors({**report, "total": report["total"] + 1}, manifest) == [
+        f"owned total: {report['total'] + 1:,} exceeds {report['total']:,} in transition",
+    ]
+
+
+def test_frozen_batch_composes_only_the_approved_member_deltas(report, manifest):
+    exception = manifest["transition_exception"]
+    batch = exception["frozen_batch_composition"]
+    assert batch["batch_id"] == "train-5429c3c71859f327ff8b46dbf1edc557"
+    assert batch["starting_revision"] == "48adaddad079a7adc2930e470590621c1575e674"
+    assert batch["source_revision"] == exception["measured_source_revision"]
+    assert batch["member_sources"] == {
+        "noble-flare-12": "f09829d145915bc7426d24f28623283f7319a7a2",
+        "sound-forge-62": "15239e75971ae5ac39e6a7d0a5e467331ab58428",
+    }
+    assert batch["approved_deltas"] == {
+        "noble-flare-12": {"owned": 23, "engine": 22, "shared": 1, "tables": 0},
+        "sound-forge-62": {"owned": 26, "engine": 4, "shared": 22, "tables": 0},
+    }
+    amendments = {item["task_id"]: item for item in exception["amendments"]}
+    for task_id, delta in batch["approved_deltas"].items():
+        grant = amendments[task_id]
+        for category in ("owned", "engine", "shared"):
+            assert delta[category] == grant[f"authorized_{category}_delta"]
+        assert delta["tables"] == grant.get("authorized_table_delta", 0)
+    activation = amendments["fair-dune-41"]
+    assert batch["base_owned_total"] == activation["measured_owned_total"] == 161_113
+    assert batch["base_engine_lines"] == activation["measured_engine_lines"] == 85_517
+    assert batch["base_table_count"] == activation["measured_table_count"] == 45
+    assert batch["base_owned_total"] + sum(
+        delta["owned"] for delta in batch["approved_deltas"].values()
+    ) == exception["measured_owned_total"] == report["total"] == 161_162
+    assert batch["base_engine_lines"] + sum(
+        delta["engine"] for delta in batch["approved_deltas"].values()
+    ) == exception["measured_engine_lines"] == report["groups"]["engine"] == 85_543
+    assert batch["base_table_count"] + sum(
+        delta["tables"] for delta in batch["approved_deltas"].values()
+    ) == exception["measured_table_count"] == len(report["tables"]) == 45
 
 
 @pytest.mark.parametrize("field,value", [

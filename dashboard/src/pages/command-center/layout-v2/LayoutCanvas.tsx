@@ -317,12 +317,12 @@ function Inner(props: LayoutCanvasProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectIds, heightsKey]);
 
-  // A layout that was still building answered 202 for its tiles too, and
-  // nothing re-fires when the job finishes: ask the layers to load once the
-  // extent arrives.
+  // Extent and initial tiles load concurrently. Only an explicit 202 means
+  // the layout is building: the first extent response must not abort and
+  // restart the independent tiles request.
   const pendingExtents = projectIds.map((_, i) => {
     const extent = extents[i];
-    return !extent || "pending" in extent;
+    return !extent ? "loading" : "pending" in extent ? "pending" : "ready";
   }).join(",");
   const previousPendingRef = useRef<string | null>(null);
   useEffect(() => {
@@ -331,7 +331,7 @@ function Inner(props: LayoutCanvasProps) {
     if (!previous) return;
     pendingExtents.split(",").forEach((value, i) => {
       const pid = projectIds[i];
-      if (pid && previous[i] === "true" && value === "false") refetchLayout(pid);
+      if (pid && previous[i] === "pending" && value === "ready") refetchLayout(pid);
     });
     // projectIds is covered by pendingExtents' positional identity.
     // eslint-disable-next-line react-hooks/exhaustive-deps
