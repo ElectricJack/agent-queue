@@ -169,6 +169,29 @@ def aq(*args, timeout=60, missing_ok=False):
         rows = data.get("pools")
         if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
             return failed("malformed pool data")
+    if args[:2] == ("playbook", "activation-health"):
+        rows = data.get("activations") if isinstance(data, dict) else None
+        if (not isinstance(rows, list) or type(data.get("count")) is not int
+                or data["count"] != len(rows) or data.get("truncated") or data.get("has_more")
+                or "pagination" in body):
+            return failed("incomplete or malformed activation inventory")
+        for row in rows:
+            if (not isinstance(row, dict)
+                    or any(not isinstance(row.get(key), str) for key in (
+                        "playbook_id", "scope", "scope_identifier", "health"))
+                    or row["health"] not in {
+                        "ready", "question_required", "invalid", "disabled",
+                        "stale_contract", "unavailable"}
+                    or type(row.get("enabled")) is not bool
+                    or not isinstance(row.get("reasons"), list)
+                    or any(not isinstance(reason, dict)
+                           or not isinstance(reason.get("code"), str)
+                           or not isinstance(reason.get("message"), str)
+                           for reason in row["reasons"])):
+                return failed("malformed activation health row")
+            stamp = row.get("activated_at")
+            if stamp is not None and (type(stamp) not in (int, float) or not math.isfinite(stamp)):
+                return failed("malformed activation timestamp")
     if args[:2] == ("task", "explain"):
         reasons = data.get("reasons")
         if not isinstance(reasons, list) or any(
@@ -311,6 +334,27 @@ DEV_PROJECT = "agent-queue"
 # project-owned target and is refused for a project-scoped token. With
 # --project there is nothing to enumerate, so sweep just that project.
 projects = [{"id": ONLY, "status": "ACTIVE"}] if ONLY else (aq("project", "list") or [])
+# Activation health is system-only. Never broaden a scoped patrol's reads.
+if not ONLY:
+    health = aq("playbook", "activation-health")
+    for row in health["activations"] if health is not None else []:
+        if row["health"] == "ready":
+            continue
+        elapsed = (
+            f"activated {age(row['activated_at'])} ago"
+            if row.get("activated_at") is not None else "activation age unknown"
+        )
+        reasons = "; ".join(
+            f"{reason['code']}: {reason.get('subject') or reason['message']}"
+            for reason in row["reasons"]
+        ) or "no health reasons"
+        findings.append(
+            f"PLAYBOOK-NOT-READY {row['playbook_id']} "
+            f"({row['scope']}:{row['scope_identifier'] or '-'}) "
+            f"[{row['health']}, enabled={row['enabled']}, {elapsed}, "
+            f"artifact={row.get('active_artifact_sha256') or '-'}]: {reasons} "
+            "-> inspect activation-health; recompile and reactivate through the reviewed path"
+        )
 # Scoped patrols cannot enumerate projects. Integration status resolves the real
 # pause state, and keeps the same authorization/completeness checks as other reads.
 for project in projects:

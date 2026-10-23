@@ -1187,6 +1187,40 @@ def test_reselection_drops_unlaunchable_candidates_and_returns_none_when_empty()
     assert reselect(candidates, _snapshot(out={"codex", "claude"}), POLICY.balance) is None
 
 
+@pytest.mark.parametrize("changes", [
+    {"enabled": False}, {"slots": 0}, {"quarantined": True},
+])
+@pytest.mark.parametrize("preference", [
+    {}, {"tier": PREFERRED}, {"tier": PREFERRED, "hold": True},
+    {"prefer_target": True}, {"preferred_hosted": True},
+])
+def test_reselection_never_uses_unavailable_spare_capacity(changes, preference):
+    snapshot = _snapshot([
+        _rung("standard-high", "codex"), _rung("standard-high", "claude"),
+    ])
+    plan = _planned(_task(task_type="research"), snapshot)
+    candidates = [replace(Candidate.from_dict(c), **preference)
+                  if c["harness"] == "claude" else Candidate.from_dict(c)
+                  for c in plan["candidates"]]
+    snapshot = replace(snapshot, profiles=tuple(
+        replace(p, **changes) if p.harness == "claude" else p for p in snapshot.profiles
+    ), busy={"standard-high-codex": 4}, headroom={"standard-high-codex": 0})
+    selected = reselect(candidates, snapshot, POLICY.balance)
+    assert selected is not None and selected.chosen.harness == "codex"
+    assert {s.profile_id for s in selected.scores} == {"standard-high-codex"}
+
+
+def test_pressure_fallback_keeps_least_pressured_enabled_full_pool():
+    snapshot = _snapshot([
+        _rung("standard-high", "codex"), _rung("standard-high", "claude"),
+    ], busy={"standard-high-codex": 5, "standard-high-claude": 3})
+    plan = _planned(_task(task_type="research"), snapshot)
+    assert plan["profile_id"] == "standard-high-claude"
+    assert {s["profile_id"] for s in plan["scores"]} == {
+        "standard-high-codex", "standard-high-claude",
+    }
+
+
 @pytest.mark.parametrize("change", [{"provider": "other"}, {"lifecycle": "task"}])
 def test_candidate_eligibility_rejects_changed_provider_or_lifecycle(change):
     snapshot = _snapshot()
@@ -1426,6 +1460,23 @@ def test_replay_routes_a_projected_repair_on_its_routed_origin():
     ]
     report = replay_routes(records, policy, digest)
     assert report["after"] == {"claude": 3} and report["changed"] == 0, report
+
+
+def test_replay_respects_recorded_quarantine_even_when_alternative_is_full():
+    from src.routing.replay import replay_routes
+
+    snapshot = _snapshot([
+        _rung("standard-high", "codex"), _rung("standard-high", "claude"),
+    ], busy={"standard-high-claude": 4})
+    route = _planned(_task(task_type="research"), snapshot)
+    route["live_context"] = {"profiles": [
+        {"profile_id": p.id, "limit": p.slots, "enabled": True,
+         "effective_headroom": 0, "quarantine_until": 123 if p.harness == "codex" else None}
+        for p in snapshot.profiles
+    ]}
+    report = replay_routes([{"task_id": "old-pressure-fallback", "route": route}], POLICY, DIGEST)
+    assert report["before"] == {"codex": 1}
+    assert report["after"] == {"claude": 1}
 
 
 # -- the per-task preference (mandatory routing §4) -------------------------------

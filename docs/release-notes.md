@@ -271,18 +271,16 @@ bind is not loopback. The full statement is in the
 
 ### Known issues
 
-* **After a daemon crash, `aq start` does not restart the daemon while the
-  dashboard server is running** (`smart-meadow.7`). It answers `Daemon is
-  already running (PID …)` with the *dashboard server's* PID, because its
-  fallback process search matches the dashboard server's command line. Run
-  `aq restart` instead: it stops the dashboard server first, then starts both.
-  For the same reason, do not run `aq stop --no-dashboard-server` while the
-  daemon is down — it stops the dashboard server.
+* **Resolved: daemon PID discovery** (`smart-meadow.7`). The fallback in
+  [src/daemon_state.py](../src/daemon_state.py) matches the daemon invocation and no
+  longer mistakes the dashboard server for the daemon. The old restart workaround
+  is unnecessary.
+
 * **With the daemon down, the dashboard does not say so.** The page loads, but
   shows *Preferences unavailable* and *Loading…* until the daemon answers
   again; `aq dashboard status` reports `the daemon is not answering it`.
-* **Discord escalation and digest links point at the daemon.** Their dashboard
-  link is built from `health_check.base_url`, else the daemon's own
-  `health_check.port` ([src/main.py](../src/main.py)), which serves no dashboard.
-  Until that follows the dashboard server, set `health_check.base_url` to the
-  URL your Discord readers can open the dashboard at.
+* **Resolved: remote dashboard links.** Escalations, digests and review posts use
+  `dashboard.server.public_url` (alias `dashboard.public_url`), or a verified local
+  Tailscale bind; otherwise they explain that a remote link is unavailable. Configure
+  that origin instead of `health_check.base_url`; see the
+  [dashboard guide](guides/dashboard.md#dashboard-links-in-discord-posts).

@@ -102,5 +102,3 @@ class CandidateAuthorizationError(ValueError):
 
 class CandidateStaleAuthority(RuntimeError):
     """The snapshotted hierarchy, lease, revision, or branch fence changed."""
-
-

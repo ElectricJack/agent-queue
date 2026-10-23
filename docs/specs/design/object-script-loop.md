@@ -1,9 +1,10 @@
 # Object-script loop contracts (AQ-2)
 
 AQ coordinates bounded evaluation rounds for an external object generator and
-scorer. Matter owns rendering and image metrics. A reviewed V2 playbook (AQ-3)
-will call these commands; this change does not activate a playbook or run a
-capture. The approved source is Matter review `rev-amber-zenith`, revision 2.
+scorer. Matter owns rendering and image metrics. The optional reviewed V2
+`object-loop` playbook calls these commands; its presence does not activate policy
+or run a capture. See the [review and activation handoff](../../guides/object-loop.md).
+The approved source is Matter review `rev-amber-zenith`, revision 2.
 
 ## Commands
 
@@ -190,6 +191,15 @@ loop checkpoint exists; the stored job origin and live task ownership supply
 that authority.
 Supervisors may read checkpoints and evidence in their project; the global
 supervisor may read all projects. Both commands require explicit profile grants.
+`object_checkpoint_read` also admits a live PLAYBOOK invocation whose run and
+step match its server-derived principal, with an explicit project restriction
+and the command granted by both principal and artifact. It may read only the
+named object-loop row in that project. Unscoped runs, mismatched invocation pins,
+session-origin runs and authored task/session selectors are refused. Session-origin
+runs use the direct session read instead: switching principal kind must never
+bypass a worker's claim, epoch, instance-token or object-provenance fences.
+This exception applies only to checkpoint reads; every other held-work command,
+including `artifact_verify`, remains unavailable to PLAYBOOK callers.
 Existing worker templates need an operator grants-only reseed; the supervisor
 receives these grants through its existing additive capability sync.
 

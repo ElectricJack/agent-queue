@@ -199,6 +199,15 @@ aq task close --outcome pass|fail --summary "..." --claim-next --wait 60
 | `stale_claim` | a mutator's `claim_epoch` no longer matches the task's current one |
 | `out_of_scope` | the caller isn't allowed to claim (not a pool session) |
 
+On `claim_in_progress`, continue `aq task claim --next --wait 60` in the same
+session to observe the existing preparation job. Do not run `aq prime` or begin
+task work until `claimed`; a progress result is not a preparation refusal or an
+instruction to await inbox delivery. `claim_timing` reports the current phase
+and elapsed durations, also visible through `aq task show <task-id>`. A
+`no_ready_work` reason of `delivery_observation_timeout` or
+`claim_deadline_exceeded` means observation ran out of time, not proof that the
+queue is empty; continue the normal loop.
+
 `prepare_failed` and `not_admissible` carry `retry_after` (seconds),
 `refusal_count`, and `instructions`. Respect the cooldown before another attempt.
 The daemon persists the same-session result/reason streak across restarts; cooldown
@@ -239,7 +248,8 @@ claim. The same goes for `aq task heartbeat`.
 Three identical preparation refusals in one session persist across daemon
 restarts and return `drain_requested`; the daemon disables that workspace
 and stops the worker through guarded pool teardown. On `prepare_failed`,
-retry the claim. On `drain_requested` or `session_exhausted`, run
+follow the cooldown and refusal protocol above. On `drain_requested` or
+`session_exhausted`, run
 `aq session drain-ack` and exit 0. A quarantined workspace keeps its checkout
 and any branch attachment for operator recovery; never delete its Git locks.
 
@@ -417,6 +427,12 @@ A successful `reparent` emits **`task.reparented`** on the bus, carrying
 `task_id`, `project_id`, `title`, `old_parent` and `new_parent` (either parent
 is `null` at the root). Playbooks can trigger on it.
 
+In a hierarchical or train project a reparent also checks ownership: a task
+with a claim, a live session or workspace, an active integration batch, a
+branch carrying commits, or landed or completed work answers
+`needs_quiescence` with the `owner` and the `safe_continuation` to follow
+instead of rewriting it.
+
 Failures come back as `hierarchy.<code>`. The full list (also in `aq schema`'s
 `hierarchy_error` enum):
 
@@ -433,6 +449,7 @@ Failures come back as `hierarchy.<code>`. The full list (also in `aq schema`'s
 | `has_children` | delete refused: the task is a container (use `--cascade`) |
 | `live_descendants` | abandon/cascade refused: a descendant has a live session |
 | `manually_paused_descendants` | abandon refused: resume hand-paused descendants first |
+| `dependency_on_ancestor` | reparent refused: the moved subtree has a blocking edge onto its new parent chain — drop the edge first (returned bare, not `hierarchy.`-prefixed) |
 | `cycle_check_skipped` | internal: the bulk graph-creation path was handed a task that is not a fresh leaf |
 | `parent_conflict` | `parent_key` was combined with `parent_id` or `root` — pass exactly one |
 | `parent_key_not_for_sessions` | `parent_key` is for automated creators; a worker files under the task it holds |
