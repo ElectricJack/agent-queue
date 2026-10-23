@@ -1,0 +1,242 @@
+[
+  {
+    "id": "provider.state_changed-rerouted",
+    "event": {
+      "_event_type": "provider.state_changed",
+      "event_id": "provider.state_changed-rerouted",
+      "provider": "codex",
+      "generation": 7
+    },
+    "reroute": "rerouted",
+    "notify": "already_notified",
+    "terminal": "completed"
+  },
+  {
+    "id": "timer.5m-rerouted",
+    "event": {
+      "_event_type": "timer.5m",
+      "event_id": "timer.5m-rerouted",
+      "provider": "codex",
+      "generation": 7
+    },
+    "reroute": "rerouted",
+    "notify": null,
+    "terminal": "completed"
+  },
+  {
+    "id": "provider.state_changed-held",
+    "event": {
+      "_event_type": "provider.state_changed",
+      "event_id": "provider.state_changed-held",
+      "provider": "codex",
+      "generation": 7
+    },
+    "reroute": "held",
+    "notify": "already_notified",
+    "terminal": "completed"
+  },
+  {
+    "id": "timer.5m-held",
+    "event": {
+      "_event_type": "timer.5m",
+      "event_id": "timer.5m-held",
+      "provider": "codex",
+      "generation": 7
+    },
+    "reroute": "held",
+    "notify": null,
+    "terminal": "completed"
+  },
+  {
+    "id": "provider.state_changed-idle",
+    "event": {
+      "_event_type": "provider.state_changed",
+      "event_id": "provider.state_changed-idle",
+      "provider": "codex",
+      "generation": 7
+    },
+    "reroute": "idle",
+    "notify": "already_notified",
+    "terminal": "completed"
+  },
+  {
+    "id": "timer.5m-idle",
+    "event": {
+      "_event_type": "timer.5m",
+      "event_id": "timer.5m-idle",
+      "provider": "codex",
+      "generation": 7
+    },
+    "reroute": "idle",
+    "notify": null,
+    "terminal": "completed"
+  },
+  {
+    "id": "provider.state_changed-disabled",
+    "event": {
+      "_event_type": "provider.state_changed",
+      "event_id": "provider.state_changed-disabled",
+      "provider": "codex",
+      "generation": 7
+    },
+    "reroute": "disabled",
+    "notify": "already_notified",
+    "terminal": "completed"
+  },
+  {
+    "id": "timer.5m-disabled",
+    "event": {
+      "_event_type": "timer.5m",
+      "event_id": "timer.5m-disabled",
+      "provider": "codex",
+      "generation": 7
+    },
+    "reroute": "disabled",
+    "notify": null,
+    "terminal": "completed"
+  },
+  {
+    "id": "provider.state_changed-rejected",
+    "event": {
+      "_event_type": "provider.state_changed",
+      "event_id": "provider.state_changed-rejected",
+      "provider": "codex",
+      "generation": 7
+    },
+    "reroute": "rejected",
+    "notify": null,
+    "terminal": "failed"
+  },
+  {
+    "id": "timer.5m-rejected",
+    "event": {
+      "_event_type": "timer.5m",
+      "event_id": "timer.5m-rejected",
+      "provider": "codex",
+      "generation": 7
+    },
+    "reroute": "rejected",
+    "notify": null,
+    "terminal": "failed"
+  },
+  {
+    "id": "provider.state_changed-runtime_error",
+    "event": {
+      "_event_type": "provider.state_changed",
+      "event_id": "provider.state_changed-runtime_error",
+      "provider": "codex",
+      "generation": 7
+    },
+    "reroute": "runtime_error",
+    "notify": null,
+    "terminal": "failed"
+  },
+  {
+    "id": "timer.5m-runtime_error",
+    "event": {
+      "_event_type": "timer.5m",
+      "event_id": "timer.5m-runtime_error",
+      "provider": "codex",
+      "generation": 7
+    },
+    "reroute": "runtime_error",
+    "notify": null,
+    "terminal": "failed"
+  },
+  {
+    "id": "notification-notified",
+    "event": {
+      "_event_type": "provider.state_changed",
+      "event_id": "notification-notified",
+      "provider": "claude",
+      "generation": 8
+    },
+    "reroute": "idle",
+    "notify": "notified",
+    "terminal": "completed"
+  },
+  {
+    "id": "notification-flapping",
+    "event": {
+      "_event_type": "provider.state_changed",
+      "event_id": "notification-flapping",
+      "provider": "claude",
+      "generation": 8
+    },
+    "reroute": "idle",
+    "notify": "flapping",
+    "terminal": "completed"
+  },
+  {
+    "id": "notification-flap_damped",
+    "event": {
+      "_event_type": "provider.state_changed",
+      "event_id": "notification-flap_damped",
+      "provider": "claude",
+      "generation": 8
+    },
+    "reroute": "idle",
+    "notify": "flap_damped",
+    "terminal": "completed"
+  },
+  {
+    "id": "notification-not_a_half_change",
+    "event": {
+      "_event_type": "provider.state_changed",
+      "event_id": "notification-not_a_half_change",
+      "provider": "claude",
+      "generation": 8
+    },
+    "reroute": "idle",
+    "notify": "not_a_half_change",
+    "terminal": "completed"
+  },
+  {
+    "id": "notification-disabled",
+    "event": {
+      "_event_type": "provider.state_changed",
+      "event_id": "notification-disabled",
+      "provider": "claude",
+      "generation": 8
+    },
+    "reroute": "idle",
+    "notify": "disabled",
+    "terminal": "completed"
+  },
+  {
+    "id": "notification-messages_disabled",
+    "event": {
+      "_event_type": "provider.state_changed",
+      "event_id": "notification-messages_disabled",
+      "provider": "claude",
+      "generation": 8
+    },
+    "reroute": "idle",
+    "notify": "messages_disabled",
+    "terminal": "completed"
+  },
+  {
+    "id": "notification-rejected",
+    "event": {
+      "_event_type": "provider.state_changed",
+      "event_id": "notification-rejected",
+      "provider": "claude",
+      "generation": 8
+    },
+    "reroute": "idle",
+    "notify": "rejected",
+    "terminal": "failed"
+  },
+  {
+    "id": "notification-runtime_error",
+    "event": {
+      "_event_type": "provider.state_changed",
+      "event_id": "notification-runtime_error",
+      "provider": "claude",
+      "generation": 8
+    },
+    "reroute": "idle",
+    "notify": "runtime_error",
+    "terminal": "failed"
+  }
+]

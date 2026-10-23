@@ -1135,6 +1135,7 @@
         "tests/test_provider_commands.py",
         "tests/test_provider_escalation.py",
         "tests/test_provider_evidence.py",
+        "tests/test_provider_failover_playbook.py",
         "tests/test_provider_inflight.py",
         "tests/test_provider_intent.py",
         "tests/test_provider_reroute.py",
@@ -15426,6 +15427,25 @@
         "parametrize"
       ],
       "summary": "Provider availability collectors and the service around the reducer."
+    },
+    "tests/test_provider_failover_playbook.py": {
+      "areas": [
+        "provider-failover"
+      ],
+      "default_arm": true,
+      "digest": "sha256:2033b32c922977ff6320d3ba14a6cd23acbc0075614bdac34c973a14217d36c3",
+      "imports": [
+        "src.commands.contracts",
+        "src.commands.contracts.models",
+        "src.commands.principal",
+        "src.playbooks.definition",
+        "src.playbooks.engine",
+        "src.playbooks.executors.base"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "The building-block port preserves the recorded provider-failover policy."
     },
     "tests/test_provider_inflight.py": {
       "areas": [

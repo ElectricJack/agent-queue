@@ -4,6 +4,9 @@ name: Provider failover
 version: 1
 scope: system
 enabled: true
+required_capabilities:
+  - provider_reroute
+  - provider_availability_notify
 triggers:
   - provider.state_changed
   - timer.5m
@@ -41,8 +44,10 @@ received may now stop. The rule performs two steps and then ends.
    the event. Bind the result as `notice`. It tells the global supervisor and
    the human once per change of availability; the daemon sends the same
    notice when the change happens, so this step normally reports
-   `already_notified`. Every outcome other than `rejected` and
-   `runtime_error` ends the rule successfully; those two fail it.
+   `already_notified`. The typed outcomes `notified`, `flapping`,
+   `already_notified`, `flap_damped`, `not_a_half_change`, `disabled` and
+   `messages_disabled` end the rule successfully. A `rejected` or
+   `runtime_error` outcome fails it.
 
 ## Rule: reroute-sweep
 
@@ -63,3 +68,21 @@ retry than any the run could schedule. A sweep that failed part-way has
 moved some tasks and not others; every move it made is recorded on its task
 and in `task_reroutes`, and the next sweep simply carries on from the queue
 as it finds it.
+
+## Building-block boundaries
+
+Both steps use the catalogue's typed command results and their declared
+outcomes. The required capabilities above document those commands for
+review; they do not grant additional authority. Bind `sweep` and `notice`
+directly to the typed results, without a generic success flag or wrapper.
+
+Keep the provider-specific commands: the reroute command owns guarded moves,
+capacity limits and per-project batch notices. The notification command
+shares the daemon's provider-generation deduplication, flap damping and
+escalation reconciliation. A separate playbook-state notification episode
+would not share that history and could announce the same outage twice.
+
+There is no playbook-owned state, collection scan, doctor observation or
+external process to replace. No state schema, snapshot paging, foreach or
+script declaration is needed. The two rules, event inputs and failure
+handling remain the same; no legacy agent step or hand-rolled loop remains.
