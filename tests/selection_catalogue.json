@@ -19602,7 +19602,7 @@
         "agent-waits"
       ],
       "default_arm": true,
-      "digest": "sha256:b6460a8d4756eeec50c482025cfc68b669833ff2325a3f29be58b3de16ef83be",
+      "digest": "sha256:531087a8a5372d956cc8eee3d9aabb06f4754e754eef5654a128f63da31400f9",
       "imports": [
         "src.commands.principal",
         "src.config",
@@ -19612,6 +19612,7 @@
         "src.database.queries.wait_queries",
         "src.database.tables",
         "src.integration.admission",
+        "src.integration.stacked_branches",
         "src.models",
         "src.scheduler",
         "src.wait_runtime.scheduler",
