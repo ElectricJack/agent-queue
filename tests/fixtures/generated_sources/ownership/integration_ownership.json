@@ -19535,7 +19535,7 @@
       "msg-330ea2478c724381acbb5512fc99e4b5"
     ],
     "decision_record": "record:2720bdbe-7521-427e-8e72-1f40a3ff9818",
-    "measured_source_revision": "b65c4f58866c1569e7ed73cb3a9d306f3060e1f0",
+    "measured_source_revision": "438aa36cc93945305ea291622009f6b34d4ee733",
     "original_owned_total_cap": 155499,
     "measured_owned_total": 161053,
     "delta": 5554,
@@ -19689,7 +19689,14 @@
           "engine": 82
         }
       },
-      "reason": "Compose the existing exact grants on their common measured dev tree; preserve each historical measurement below."
+      "reason": "Compose the existing exact grants on their common measured dev tree; preserve each historical measurement below.",
+      "source_revision": "438aa36cc93945305ea291622009f6b34d4ee733",
+      "member_sources": {
+        "agile-beacon-80": "6ba25e2472d4a8c6bb145d6f9bc2e067c8ebad61",
+        "grand-quest-20": "d60c599767a340d3e3fd6dba2eff8451d349d7e7",
+        "nimble-torrent-12": "9f2dd1988046baa0e40681c4457f4729b55e80c6",
+        "prime-impact-40": "0b090fb969c46143f8cce7a55dd21f7d8bf1b1d8"
+      }
     }
   },
   "storage_dispositions": {
