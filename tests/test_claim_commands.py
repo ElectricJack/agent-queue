@@ -7084,7 +7084,10 @@ async def test_suspended_held_claim_is_preserved_and_requires_ack_before_close(
     await mktask(db, "held", profile_id="worker")
     sid, work_dir = await pool_session(db, tmp_path)
     worker = scoped(handler, sid)
-    claim = await worker._cmd_task_claim({"next": True})
+    # Exercise the progress response without depending on preparation speed.
+    with patch("src.commands.claim_commands._PREPARATION_RESPONSE_SECONDS", 0):
+        claim = await settled_claim(worker, {"next": True})
+    assert claim["result"] == "claimed", claim
     before = (work_dir / ".aq" / "claim.json").read_bytes()
     await db.transition_task("held", status, force=True)
     refused = await worker._cmd_task_claim({"next": True})
