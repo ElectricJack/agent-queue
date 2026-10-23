@@ -604,8 +604,9 @@ def test_activation_health_grant_carries_only_two_owned_lines(report, manifest):
     recorded = json.loads((ROOT / "tests/integration_ownership_report.json").read_text())
     assert recorded["playbook_activation_health_measurement"] == grant
     assert ownership.budget_errors(report, manifest) == []
-    assert ownership.budget_errors({**report, "total": report["total"] + 1}, manifest) == [
-        f"owned total: {report['total'] + 1:,} exceeds {report['total']:,} in transition",
+    cap = ownership.transition_owned_cap(manifest)
+    assert ownership.budget_errors({**report, "total": cap + 1}, manifest) == [
+        f"owned total: {cap + 1:,} exceeds {cap:,} in transition",
     ]
 
 
