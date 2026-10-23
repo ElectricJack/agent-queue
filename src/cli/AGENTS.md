@@ -16,6 +16,8 @@ agent_messages.py  `aq agent message` — live-worker guidance with delivery sta
 agent_surface.py   Agent-facing surface: `aq schema`, `aq prime`, `aq handoff`
 claim_epoch.py     Shared --claim-epoch resolution for pool-session mutators
                    (reads <work_dir>/.aq/claim.json, falls back to $AQ_CLAIM_EPOCH)
+                   Knowledge auto-injection currently covers propose only; other worker
+                   knowledge writes need explicit --claim-epoch (knowledge-records guide)
 client.py          CLIClient — async REST client for CLI operations (see Transport below)
 collaboration.py   `aq collaboration {create,accept,show,list,close}` — bounded task threads
 cron.py            `aq cron {register,show,list,cancel}` — session-owned recurring prompts

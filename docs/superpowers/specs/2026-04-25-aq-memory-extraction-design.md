@@ -12,9 +12,14 @@ topic: aq-memory plugin extraction
 > home](../../README.md) for current behaviour; see [historical
 > material](../../history/README.md).
 
+> **Current boundary (2026-10-22).** The extraction below is historical, not an installation recipe. Core now
+> owns durable knowledge and refuses legacy `aq-memory` / `memory` plugin loads.
+> No external distribution or adapter is installed by this repository. See
+> [knowledge records](../../guides/knowledge-records.md).
+
 ## 1. Goal
 
-Move the memory plugin (currently `src/plugins/internal/memory_v2/`) out of agent-queue2 and into a standalone repository at `/mnt/d/Dev/aq/aq-memory`, dropping the vestigial `V2`/`v2` suffix from all names along the way (V1 was deleted in roadmap 8.6 — there is no V1 to disambiguate from). After extraction:
+Move the memory plugin (currently `src/plugins/internal/memory_v2/`) out of agent-queue2 and into a standalone repository at `<external aq-memory checkout>`, dropping the vestigial `V2`/`v2` suffix from all names along the way (V1 was deleted in roadmap 8.6 — there is no V1 to disambiguate from). After extraction:
 
 - `agent-queue2` runs end-to-end with **no memory plugin installed**. Long-term memory features simply do not exist; everything else works.
 - `aq-memory` is installed via the standard external plugin pathway (`aq plugin install <path>` or git URL).
@@ -192,7 +197,7 @@ Add an interactive prompt to `setup.sh`:
 ```bash
 read -p "Install aq-memory plugin? (y/N) " yn
 if [[ $yn =~ ^[Yy]$ ]]; then
-    aq plugin install /mnt/d/Dev/aq/aq-memory
+    aq plugin install <external aq-memory checkout>
 fi
 ```
 
@@ -303,13 +308,13 @@ The acceptance test for the entire extraction:
 3. `./run.sh start` boots successfully with no errors about missing memory.
 4. Agents run tasks; `memory_*` tools simply do not appear in the tool list.
 5. Vault `facts.md` edits are detected by the watcher; no errors, just no KV sync.
-6. Now `aq plugin install /mnt/d/Dev/aq/aq-memory` and restart — memory tools appear, L1 facts inject, watcher syncs facts to Milvus.
+6. Now `aq plugin install <external aq-memory checkout>` and restart — memory tools appear, L1 facts inject, watcher syncs facts to Milvus.
 
 ## 9. Migration Plan (Order)
 
 1. **Branch in agent-queue2.** Create `extract-memory-plugin` branch.
 2. **§5.0 V2 rename pass.** Mechanical rename across all 42 files in agent-queue2. Lands as its own commit (or its own PR) — purely a rename, no behavior change. Tests pass before and after.
-3. **Build new repo skeleton.** `/mnt/d/Dev/aq/aq-memory` with pyproject, package dir, empty plugin file.
+3. **Build new repo skeleton.** `<external aq-memory checkout>` with pyproject, package dir, empty plugin file.
 4. **Add `register_service` / `get_service`.** Core changes (§5.1, §5.2) — purely additive.
 5. **Loosen `PluginContext.get_service` for external** with allowlist; add `vault_watcher` service (§6.3). Still no behavior change for callers.
 6. **Switch call sites to `registry.get_service("memory")`.** Five sites in §5.3. Internal plugin still in place; switching is a no-op behaviorally.

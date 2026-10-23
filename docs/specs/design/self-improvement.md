@@ -18,6 +18,12 @@ tags: [design, self-improvement, memory, orchestrator, observability]
 
 ---
 
+> **Current boundary (2026-10-22).** There is no shipped periodic reflection playbook or active consolidation
+> schedule implementing this loop. The old in-process reflection engine was
+> deleted. Current knowledge generation can only propose unverified findings,
+> behind separate flags and operator gates; see
+> [knowledge records](../../guides/knowledge-records.md).
+
 ## 1. Overview
 
 The system improves over time through a closed loop: agents reflect on their work,
