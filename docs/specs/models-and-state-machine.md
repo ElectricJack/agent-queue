@@ -12,6 +12,14 @@ tags: [spec, models, state-machine, core]
 > see [historical material](../history/README.md) for how this material is
 > organised.
 
+> **Task lifecycle update (2026-10-22).** The historical tables below predate
+> `WAITING`, `HIBERNATED` and `RESUME_PENDING`: there are now twelve stored task
+> states. Durable-wait transitions are enforced independently of the legacy
+> warn-only setting. Manual PAUSED tasks need no resume timer, pool claims move
+> READY directly to IN_PROGRESS, and completion is distinct from delivery.
+> Read the [current lifecycle table](../concepts/tasks.md#statuses-and-phases)
+> and [system map](systems/task-graph.md) alongside `src/state_machine.py`.
+
 ## 1. Overview
 
 This document specifies the core domain models and task state machine for Agent Queue. Together they define every entity the system tracks (tasks, agents, projects, repos, hooks) and the rules governing how a task moves through its lifecycle from initial definition to completion or permanent failure.

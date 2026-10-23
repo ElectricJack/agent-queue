@@ -18,6 +18,13 @@ tags: [design, work-graph, dependencies, gates, labels, state-machine, explain, 
 
 ---
 
+> **Current task-graph contract (2026-10-22).** This design includes unimplemented
+> status-collapse proposals and superseded removal rules. Current AQ has twelve
+> task states, shared integration admission, managed-parent settlement gates and
+> unified deletion. Start with [Tasks](../../concepts/tasks.md) and the
+> [system map](../systems/task-graph.md); the historical sections below are not
+> an operational command reference.
+
 ## 1. Problem
 
 The task graph is the substrate everything else in the overhaul (sessions, worktrees, the supervisor agent) stands on, and today it is too thin:
@@ -549,6 +556,8 @@ Containers are marked explicitly: `task_metadata.container = true`, set on a tas
 **Hierarchical child ids:** children created under a parent (supervisor graphs, plan subtasks, `--parent`) get `<parent_id>.1`, `<parent_id>.1.2` — ordinal per parent via `next_child_ordinal`, depth ≤ 3 — while root ids stay adjective-noun slugs. Ids never change after assignment. A name is never minted while anything still keys it: a live or archived task, or the integration identity a deleted task leaves behind (a `task_integration_checkpoints` row, a `task_branch_origins` row, live or retired, or an `integration_branch_owners` row it owns) — a new task minted onto that name would inherit the predecessor's checkpoint and branch fence (`_task_identity_exists` in `src/task_names.py`). The id itself now carries structure a human can read in Discord, a branch name (`aq/swift-falcon.2`), or a log line, and sorting groups a family together everywhere.
 
 ### Operator removal (2026-10-06)
+
+> **Superseded:** use the [unified delete contract](../../superpowers/specs/2026-10-11-unified-task-delete.md). `remove` is a deprecated alias; deletion can explicitly delete branches, and task-only deletion reparents surviving children. The former always-subtree/no-branch-removal policy below is historical.
 
 `remove_task` (`aq task remove TASK --reason "..."`, dashboard **Remove**) is
 available to a local human or live project/global supervisor. A worker cannot

@@ -20,7 +20,7 @@ vault (playbooks, profiles, memory — all markdown) is `~/.agent-queue/vault/`.
 |---|---|---|
 | Orchestrator cycle, workspaces, pools | `orchestrator.py`, `src/orchestrator/` | `docs/specs/design/agent-coordination.md`, `docs/guides/worker-pools.md` |
 | Commands (the single entry point) | `src/commands/` (handler + mixins, `contracts/builtin.py`) | `docs/specs/design/aq-surface.md` |
-| Task graph: hierarchy, phases, subtasks, formulas | `src/database/queries/hierarchy_queries.py`, `src/task_graph/`, `src/commands/phase_commands.py`, `task_subtask_commands.py` | `docs/specs/design/work-graph.md` |
+| Task graph: hierarchy, phases, subtasks, formulas | `src/database/queries/hierarchy_queries.py`, `src/task_graph/`, `src/commands/phase_commands.py`, `task_subtask_commands.py` | [current task-graph system map](docs/specs/systems/task-graph.md), `docs/specs/design/work-graph.md` |
 | Claims and the frontier | `src/database/queries/claim_queries.py`, `src/orchestrator/pools.py`, `src/claim_file.py` | `docs/guides/worker-pools.md`, `docs/guides/e2e-swarm.md` |
 | Playbooks (V2 only) | `src/playbooks/`; shipped markdown and reviewed bundles in `src/prompts/` | `docs/specs/design/playbooks.md` |
 | Profiles, intelligence classes, MCP registry | `src/profiles/`, `src/intelligence_classes/`, `src/prompts/default_intelligence_classes/` | `docs/specs/design/profiles.md`, `docs/guides/worker-pools.md` §7b |

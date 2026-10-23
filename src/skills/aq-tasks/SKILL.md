@@ -92,7 +92,8 @@ context to finish, say so in `--summary` and close `--outcome fail`. Two
 common shapes:
 
 ```bash
-# Passed — commit + push happened, PR opened, summary explains what changed.
+# Passed — changes published, required checks recorded, summary explains what changed.
+# Open a PR only when the task/project requires one.
 aq task close <id> \
   --outcome pass \
   --summary "Refactored X to use Y. Tests: 42/42. Commits: abc123, def456."
@@ -320,6 +321,8 @@ task it holds. A document-level `parent:` block creates the graph's own containe
 in the same transaction: under the held task by default, or at the project root
 with `--root`, where the container carries the routing gate a root filing gets
 and its children wait behind it. A root graph must declare that `parent:` block.
+In hierarchical/train projects, a worker graph cannot declare its own document
+parent (`hierarchy.parent_out_of_scope`).
 `--after-review <review-id>` gates every node of the graph on that document
 review until it is approved; an unknown or withdrawn review creates nothing.
 Never file an epic as a plain task: a pool worker can claim it before its
@@ -350,13 +353,13 @@ aq task create --project <pid> --title "..." --description "..." \
   --type bugfix --priority 50 --reason "why this exists"
 
 # From a spec (preferred for multi-task graphs)
-aq task create --from-spec vault/projects/<pid>/specs/<slug>.md
-aq task create --from-spec <path> --dry-run   # validate first, always
-aq task create --from-spec <path> --after-review <review-id>  # every node waits on the review
+aq task create --project <pid> --from-spec projects/<pid>/specs/<slug>.md --reason "why"
+aq task create --project <pid> --from-spec <path> --reason "why" --dry-run
+aq task create --project <pid> --from-spec <path> --reason "why" --after-review <review-id>
 
 # Create under an existing container (single task or a --from-spec graph)
 aq task create --project <pid> --title "..." --description "..." \
-  --type feature --intelligence-class deep-high --parent <container_task_id>
+  --type feature --intelligence-class deep-high --parent <container_task_id> --reason "why"
 
 # Explicitly at project level — the opt-out for cross-cutting work filed from
 # inside an epic's child task.  Mutually exclusive with --parent.
@@ -364,8 +367,8 @@ aq task create --project <pid> --title "..." --description "..." \
   --root --reason "why this exists"
 ```
 
-Always pass at least `--project` and `--title` from a worker session: with
-neither, `aq task create` drops into its interactive wizard, whose first step
+For single-task creation, pass at least `--project` and `--title` from a worker
+session: with neither, `aq task create` drops into its interactive wizard, whose first step
 calls `list_projects` — a command a worker token refuses with
 `out of scope: list_projects`.
 
@@ -375,8 +378,8 @@ A formula is a reusable, parameterised task-graph template in the vault
 (`vault/[projects/<pid>/]formulas/<name>.md` — see
 `docs/specs/design/formulas.md`). `formula_list` and `formula_show` are
 read-only and available to any session; `formula_cook` **creates** the
-graph and is **not** agent-scoped — it is elevated/supervisor-only, same
-restriction as `create_task_graph`:
+graph and requires elevated/operator or supervisor authority. Ordinary workers
+may use graph creation when their profile grants it, but cannot cook formulas:
 
 ```bash
 aq formula list --project-id <pid>                # what's available
@@ -401,24 +404,32 @@ aq task reparent --task-id <task_id> --root           # detach to root (clears p
 # you hold, to the parents you could have filed under (your task, a descendant,
 # its immediate parent, or --root, which attaches the routing gate). Use it only
 # when a filing was misplaced — never to move a child aside so your task can close.
-aq task delete --task-id <task_id> --cascade          # delete a container + its whole subtree
+# Operator/supervisor deletion: preview before confirming.
+aq task delete --task-id <task_id> --recursive --preview
+aq task delete --task-id <task_id> --recursive --branches keep --yes
+# --task-only instead reparents surviving children without renaming their ids.
 aq task close <id> --abandon-children \
   --outcome pass|fail --summary "..."                 # close a container, abandoning
                                                         # any still-open descendants
 ```
 
-Rules the daemon enforces: a container with open children refuses a plain
-`close`/`delete` — and so does *any* transition to COMPLETED (merge, approval,
-session close), unless it is an administrative forced close;
-`--abandon-children` and `--cascade` are refused while any descendant has a
-live session; adding a child under a COMPLETED container is refused.
+A container with open children refuses a plain passing close and unforced
+transition to COMPLETED. `--abandon-children` refuses live or manually paused
+descendants. Adding a child under a COMPLETED container is refused. Ordinary
+container settlement requires every child COMPLETED; managed integration parents
+also require the train's completion proof.
+
+Unified deletion is operator/supervisor-only. It stops selected running work
+before deleting; `--stop-running` acknowledges the warning, rather than enabling
+the stop. `--branches keep` is the default; `delete` requests guarded branch
+cleanup. `--cascade` is a deprecated alias for `--recursive`. These deletion
+semantics supersede the older refuse-on-live-descendants/branch-exists contract.
 
 A successful `reparent` emits **`task.reparented`** on the bus, carrying
 `task_id`, `project_id`, `title`, `old_parent` and `new_parent` (either parent
 is `null` at the root). Playbooks can trigger on it.
 
-Failures come back as `hierarchy.<code>`. The full list (also in `aq schema`'s
-`hierarchy_error` enum):
+Failures come back as `hierarchy.<code>`. Common codes (the complete enum is in `aq schema`):
 
 | Code | Meaning |
 |---|---|
@@ -430,8 +441,8 @@ Failures come back as `hierarchy.<code>`. The full list (also in `aq schema`'s
 | `depth` | structural or naming depth would exceed 3 |
 | `open_children` | close/complete refused: a direct child is non-terminal |
 | `open_descendants` | archive refused: a *deeper* descendant is non-terminal |
-| `has_children` | delete refused: the task is a container (use `--cascade`) |
-| `live_descendants` | abandon/cascade refused: a descendant has a live session |
+| `has_children` | legacy hierarchy writer requires explicit subtree handling; unified delete uses `--recursive` / `--task-only` |
+| `live_descendants` | abandon refused: a descendant has a live session |
 | `manually_paused_descendants` | abandon refused: resume hand-paused descendants first |
 | `cycle_check_skipped` | internal: the bulk graph-creation path was handed a task that is not a fresh leaf |
 | `parent_conflict` | `parent_key` was combined with `parent_id` or `root` — pass exactly one |
@@ -505,15 +516,15 @@ CLI owns root-level phased planning: it may create a phase and place work in
 it with `aq task create --parent <phase-id>`, or create a root graph that
 declares `phases:`. That is the supported path for a phase → task plan.
 
-**Planner workflow.** A planner has `create_task_graph`, but its graph is
-fenced to the planning task it holds. Use `aq task create --from-spec <path>
---dry-run --reason "..."` and then the same command without `--dry-run` to
-create ordinary direct children with local `needs` edges. Do not request a
-root or another parent, declare a document `parent:`, `phases:`, external
-task-id dependencies, `cross_project`, or authored `parent-child` edges.
-`phases:` needs a root graph and is refused beneath the held task as
-`graph.phases_need_root`; a planner cannot use phase creation to gain an
-arbitrary container into which to file work.
+**Planner workflow.** A planner granted `create_task_graph` files a graph with
+`aq task create --project <pid> --from-spec <path> --dry-run --reason "..."`,
+then repeats without `--dry-run`. With no document parent it creates direct children
+under its held task. A document `parent:` creates the graph's own container under
+the held task; `--root` places that container at project root and is required for
+a phased graph. Root graphs require a document parent. Hierarchical/train worker
+graphs cannot declare a document parent, and those projects reject phases entirely.
+External task-id dependencies, `cross_project`, and authored `parent-child` edges
+remain outside scoped worker graph filing; use local `needs` to order its nodes.
 
 Never make a node `need` the planning task you hold, or any task above it, not
 even as a barrier that holds children back while you arrange them. The plan
@@ -532,9 +543,9 @@ schedule. The planner supplies the initial, concrete checklist; the worker
 works the received rows and records progress with the subtask commands.
 A phase settles like any container — all children COMPLETED — so a failed
 child holds the gate on purpose. A childless phase is never claimable and is
-held open (never auto-settled); if it turns out to be unneeded, delete it
-(`aq task delete --task-id <phase-id>`) rather than leaving it empty — that
-releases the next phase.
+held open (never auto-settled); if it turns out to be unneeded, ask the
+supervisor/operator to delete it rather than leaving it empty; that releases the
+next phase.
 
 ## Dependencies
 
@@ -544,8 +555,11 @@ aq task remove-dependency --task-id <task_id> --depends-on <upstream_id>
 ```
 
 Dependency types: `blocks`, `parent-child`, `waits-for`,
-`conditional-blocks`, `discovered-from`, `related`, `duplicates`,
-`supersedes`. Only the first four gate readiness.
+`conditional-blocks`, `delivery-of`, `discovered-from`, `related`, `duplicates`,
+`supersedes`. The first five gate readiness. `delivery-of` requires source
+completion and current default-target Git containment; a receipt alone is not
+admission authority. `is_blocked` covers graph/gates, while the shared admission
+view adds current preparation/delivery evidence. See `docs/concepts/tasks.md`.
 
 ## Superseded and stale work
 

@@ -23,7 +23,7 @@ tasks:
   - tempId: prerequisite
     title: Implement shared schema
     description: Add the schema before either API starts.
-    intelligence_class: high
+    intelligence_class: standard-high
     parent_id: existing-container
 edits:
   - task_id: existing-api
@@ -49,7 +49,9 @@ comments:
 `title` and `description` (which may be empty). Edges, comments and `parent_id`
 can reference temporary ids or existing task ids in the same project. Edits
 require an existing `task_id` and accept `title`, `description`, `priority`,
-`intelligence_class` and `task_type` hints, `parent_id`, and a lifecycle `action`.
+`intelligence_class` and `task_type` hints, `parent_id`, and a lifecycle `action`
+or an allowed `status` transition (not both). Direct execution, suspended-state
+and completion status writes are refused; use the owning lifecycle protocol.
 Use `parent_id: null` to detach to the root. The action can be `pause`, `resume`,
 `block` or `archive`; `reason` documents an archive. Archiving requires a terminal
 subtree, includes descendants, and retains existing integration and live-session
