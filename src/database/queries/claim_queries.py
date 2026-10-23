@@ -743,6 +743,7 @@ class ClaimQueryMixin:
         modes = hierarchy_modes if hierarchy_modes is not None else await hierarchy_frontier_modes(
             self, project_ids=project_ids, task_id=single_task_id, cached_only=cached_only,
             **({"display_unavailable": unavailable} if cached_only else {}),
+            **({"task_ids": task_ids} if cached_only else {}),
         )
         predicates = claim_frontier_predicates(modes)
         if router_ready_projects is not None:

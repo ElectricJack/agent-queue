@@ -1,0 +1,129 @@
+[
+  {
+    "name": "onboarding-repository",
+    "event": {
+      "event_type": "project.created",
+      "project_id": "p",
+      "source": "onboarding",
+      "workspace_in_vault": false,
+      "event_id": "onboarding-repository"
+    },
+    "selected": true,
+    "fault": null,
+    "outcome": "created",
+    "lifecycle": "completed"
+  },
+  {
+    "name": "vault-workspace",
+    "event": {
+      "event_type": "project.created",
+      "project_id": "p",
+      "source": "onboarding",
+      "workspace_in_vault": true,
+      "event_id": "vault-workspace"
+    },
+    "selected": false,
+    "fault": null,
+    "outcome": "created",
+    "lifecycle": "completed"
+  },
+  {
+    "name": "command-without-workspace",
+    "event": {
+      "event_type": "project.created",
+      "project_id": "p",
+      "source": "command",
+      "event_id": "command-without-workspace"
+    },
+    "selected": false,
+    "fault": null,
+    "outcome": "created",
+    "lifecycle": "completed"
+  },
+  {
+    "name": "null-workspace-flag",
+    "event": {
+      "event_type": "project.created",
+      "project_id": "p",
+      "source": "onboarding",
+      "workspace_in_vault": null,
+      "event_id": "null-workspace-flag"
+    },
+    "selected": false,
+    "fault": null,
+    "outcome": "created",
+    "lifecycle": "completed"
+  },
+  {
+    "name": "different-event",
+    "event": {
+      "event_type": "project.resumed",
+      "project_id": "p",
+      "source": "onboarding",
+      "workspace_in_vault": false,
+      "event_id": "different-event"
+    },
+    "selected": false,
+    "fault": null,
+    "outcome": "created",
+    "lifecycle": "completed"
+  },
+  {
+    "name": "rejected-command",
+    "event": {
+      "event_type": "project.created",
+      "project_id": "p",
+      "source": "onboarding",
+      "workspace_in_vault": false,
+      "event_id": "rejected-command"
+    },
+    "selected": true,
+    "fault": "rejected",
+    "outcome": "contract_violation",
+    "lifecycle": "failed",
+    "baseline_note": "The existing typed adapter constructs a rejected value without required task_id/created; the executor refuses that value. Both graphs fail without retry."
+  },
+  {
+    "name": "runtime-error",
+    "event": {
+      "event_type": "project.created",
+      "project_id": "p",
+      "source": "onboarding",
+      "workspace_in_vault": false,
+      "event_id": "runtime-error"
+    },
+    "selected": true,
+    "fault": "runtime_error",
+    "outcome": "runtime_error",
+    "lifecycle": "failed"
+  },
+  {
+    "name": "handler-exception",
+    "event": {
+      "event_type": "project.created",
+      "project_id": "p",
+      "source": "onboarding",
+      "workspace_in_vault": false,
+      "event_id": "handler-exception"
+    },
+    "selected": true,
+    "fault": "handler_error",
+    "outcome": "contract_violation",
+    "lifecycle": "failed",
+    "baseline_note": "The existing typed adapter constructs a rejected value without required task_id/created; the executor refuses that value. Both graphs fail without retry."
+  },
+  {
+    "name": "typed-rejected-command",
+    "event": {
+      "event_type": "project.created",
+      "project_id": "p",
+      "source": "onboarding",
+      "workspace_in_vault": false,
+      "event_id": "typed-rejected-command"
+    },
+    "selected": true,
+    "fault": "typed_rejected",
+    "outcome": "rejected",
+    "lifecycle": "failed"
+  }
+]

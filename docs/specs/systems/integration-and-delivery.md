@@ -325,6 +325,24 @@ exception. Root pre-existing failures receive bounded rechecks; a red promotion
 is held. With a bound train policy, a missing push run is a finite wait rather
 than a code repair (the unbound compatibility path can allocate a repair).
 
+  Zero in `primary_seconds`, `debug_seconds`, `primary_attempts`, or
+  `debug_attempts` disables that limit. Unlimited durations store a null stage
+  deadline, including in resolution reservations; they never expire or refuse
+  publication because of elapsed time. An unlimited primary attempt budget
+  stays primary; an unlimited debug budget stays debug after a finite primary
+  budget is spent. `source_ci_infra_attempts: 0` keeps retrying cancellation-only
+  observations with the configured bounded backoff. Positive limits in frozen
+  snapshots keep their existing behavior.
+
+  Task-free batch fixers use the complete configured primary attempt budget
+  for distinct red observations. Without a repair policy they have no time or
+  round limit. Successive failed source heads can reopen the original branch
+  without a lineage cap; exact-head and concurrent-writer guards still apply.
+  The main CI sentinel also defaults to unlimited attempts; its
+  optional `max_attempts` argument can set a positive limit, and zero disables it.
+
+
+
 Source movement, ejection, withheld sources, pause/resume and abort remain fenced
 `TrainControls` operations. Existing ordinary repair tasks can still close through
 compatibility adapters; their staged primary/debug lifecycle is not the live

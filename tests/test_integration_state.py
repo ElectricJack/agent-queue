@@ -1211,3 +1211,91 @@ def test_integration_value_types_are_immutable_and_validated():
         BranchKey(repository_id="repo", branch="parent", extra="forbidden")
     with pytest.raises(ValidationError):
         RequiredCheckSet(version="v1", names=(), producer_id="github")
+
+
+@pytest.mark.parametrize("field", [
+    "primary_seconds", "debug_seconds", "primary_attempts", "debug_attempts",
+    "source_ci_infra_attempts",
+])
+def test_repair_limit_accepts_unlimited_and_rejects_negative(field):
+    policy = RepairPolicy(debug_intelligence_class="deep-high", **{field: 0})
+    assert policy.model_dump()[field] == 0
+    assert RepairPolicy.model_validate(policy.model_dump()) == policy
+    with pytest.raises(ValidationError):
+        RepairPolicy(debug_intelligence_class="deep-high", **{field: -1})
+
+
+@pytest.mark.parametrize("primary,debug,expected", [(0, 3, "primary"), (2, 0, "debug")])
+def test_unlimited_repair_allocation_never_exhausts(primary, debug, expected):
+    policy = RepairPolicy(primary_attempts=primary, debug_attempts=debug,
+                          debug_intelligence_class="deep-high")
+    assert policy.allocation_stage(100_000) == expected
+
+
+async def test_large_legacy_repair_policy_names_deprecated_fields_and_accepts_unlimited(db):
+    from src.integration.records import PolicyActivation
+
+    # The failed Moss edit retained these profile fields from a stored policy.
+    boundary = {
+        "primary_profile_id": "standard-medium-claude",
+        "verifier_profile_id": "standard-medium-claude",
+        "primary_intelligence_class": "standard-medium",
+        "verifier_intelligence_class": "standard-medium",
+        "required_checks": {
+            "version": "checks-v1", "names": ["Build & test"], "producer_id": "15368",
+        },
+        "repair": {
+            "primary_seconds": 31536000, "debug_seconds": 31536000,
+            "primary_attempts": 1000000, "debug_attempts": 1000000,
+            "debug_profile_id": "deep-high-claude", "debug_intelligence_class": "deep-high",
+            "on_exhausted": "continue",
+        },
+    }
+    policy = {"version": 1, "branchless_parent": "verifier", "on_failed_child": "block",
+              "parent": boundary, "root": {
+        **boundary, "repair": {**boundary["repair"], "source_ci_infra_attempts": 1000000},
+    }}
+    activation = PolicyActivation(db)
+    fence = {"expected_generation": 0, "reason": "remove repair caps", "operator_id": "test"}
+    result = await activation.configure(
+        "p", updates={"hierarchical_integration_policy": policy}, **fence,
+    )
+    assert result["error_code"] == "deprecated_integration_route_fields"
+    assert set(result["fields"]) == {
+        f"{level}.{field}" for level in ("parent", "root") for field in (
+            "primary_profile_id", "verifier_profile_id", "repair.debug_profile_id",
+        )
+    }
+    project = await db.get_project("p")
+    assert project.hierarchical_integration_generation == 0
+    assert project.hierarchical_integration_policy is None
+    for level in ("parent", "root"):
+        policy[level].pop("primary_profile_id", None)
+        policy[level].pop("verifier_profile_id", None)
+        policy[level]["repair"].pop("debug_profile_id", None)
+        policy[level]["repair"].update(
+            primary_seconds=0, debug_seconds=0, primary_attempts=0, debug_attempts=0,
+            source_ci_infra_attempts=0,
+        )
+    result = await activation.configure(
+        "p", updates={"hierarchical_integration_policy": policy}, **fence,
+    )
+    assert result["outcome"] == "configured"
+    stored = (await db.get_project("p")).hierarchical_integration_policy
+    assert stored["root"]["repair"]["primary_attempts"] == 0
+    assert stored["parent"]["repair"]["source_ci_infra_attempts"] == 0
+
+
+@pytest.mark.parametrize("ordinal", [0, 1])
+def test_unlimited_repair_status_does_not_report_exhausted_budget(ordinal):
+    from src.integration.status import IntegrationStatusService
+
+    policy = RepairPolicy(
+        primary_attempts=0, debug_attempts=0, debug_intelligence_class="deep-high",
+    )
+    operation = {
+        "id": "operation", "target_kind": "batch", "active_stage": ordinal,
+        "stages": [{"ordinal": ordinal, "state": "active", "attempts": 1000,
+                    "deadline_at": None, "policy": policy.model_dump(mode="json")}],
+    }
+    assert IntegrationStatusService._repair_blockers([operation], now=1_000_000) == []
