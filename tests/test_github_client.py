@@ -418,6 +418,7 @@ async def test_integration_status_exposes_rolling_github_endpoint_counts(tmp_pat
         "component_window_seconds": 3600,
         "api_calls_per_hour": {"unattributed": 3},
         "gh_commands_per_hour": {"unattributed": 0},
+        "not_modified_per_hour": {},
         "primary_quota": None,
         "scope": "daemon", "window_seconds": 60, "retry_at": None,
         "api_calls_per_minute": {"GET repos/acme/widgets": 2, "GET user": 1},
@@ -485,6 +486,223 @@ def _response(
     header_lines.extend(f"{name}: {value}" for name, value in (headers or {}).items())
     framed = "\r\n".join(header_lines).encode() + b"\r\n\r\n" + body
     return FakeResult(returncode, framed, stderr)
+
+
+def _conditional_access(tmp_path, identity, responses, now=None):
+    """Run real shared transport code against a deterministic gh executable."""
+    executable = tmp_path / "gh"
+    replies = [(result.returncode, result.stdout, result.stderr) for result in responses]
+    executable.write_text(
+        "#!/usr/bin/python3\nimport json, pathlib, sys\n"
+        "path = pathlib.Path('requests.json')\n"
+        "requests = json.loads(path.read_text()) if path.exists() else []\n"
+        f"code, output, diagnostic = {replies!r}[len(requests)]\n"
+        "requests.append(sys.argv[1:])\n"
+        "path.write_text(json.dumps(requests))\n"
+        "sys.stdout.buffer.write(output)\n"
+        "sys.stderr.write(diagnostic)\n"
+        "sys.exit(code)\n"
+    )
+    executable.chmod(0o700)
+    app = identity.mode.value == "app"
+    auth = GitHubAuth(
+        GitHubAppConfig("Iv1.client", 101, 202, "/daemon/key.pem") if app else None,
+        app_provider=FakeTokenProvider() if app else None,
+        clock=lambda: 1_800_000_000.0,
+    )
+    runner = GhRunner(auth, executable=str(executable), env={}, cwd=tmp_path,
+                      clock=lambda: now[0] if now else 1000.0)
+    return GitHubAccess(auth, runner)
+
+
+async def test_conditional_get_restores_body_and_refreshes_validators_and_accounting(
+    tmp_path, credential_identity,
+):
+    now = [1000.0]
+    access = _conditional_access(tmp_path, credential_identity, [
+        _response(200, {"id": 7}, headers={"ETag": 'W/"v1"',
+                                         "Last-Modified": "Wed, 21 Oct 2015 07:28:00 GMT"}),
+        _response(304, headers={"ETag": 'W/"v2"', "X-RateLimit-Limit": "5000",
+                                "X-RateLimit-Remaining": "4999", "X-RateLimit-Reset": "2000"},
+                  returncode=1, stderr="Not Modified (HTTP 304)"),
+        _response(200, {"id": 8}, headers={"ETag": '"v3"'}),
+        _response(304),
+    ], now)
+    with github_component("review_poll"):
+        for expected in (7, 7, 8, 8):
+            # A fresh client must reuse the startup-owned runner's cache.
+            client = GitHubClient(REPOSITORY, access=access)
+            result = await client.request("GET", "/repositories/303/issues/7")
+            assert result.status == 200
+            assert json.loads(result.body) == {"id": expected}
+    requests = json.loads((tmp_path / "requests.json").read_text())
+    assert not any("If-" in arg for arg in requests[0])
+    assert 'If-None-Match: W/"v1"' in requests[1]
+    assert 'If-None-Match: W/"v2"' in requests[2]
+    assert 'If-None-Match: "v3"' in requests[3]
+    assert not any("If-Modified-Since" in arg for args in requests for arg in args)
+    activity = access.runner.activity()
+    assert activity["not_modified_per_hour"] == {"review_poll": 2}
+    assert activity["api_calls_per_hour"] == {"review_poll": 4}
+    assert activity["primary_quota"]["remaining"] == 4999
+    now[0] += 3600
+    assert access.runner.activity()["not_modified_per_hour"] == {}
+
+
+@pytest.mark.parametrize("kind", ["list", "items"])
+async def test_conditional_pagination_reuses_each_page_and_preserves_link_headers(
+    tmp_path, credential_identity, kind,
+):
+    first, second = [{"id": 1}], [{"id": 2}]
+    def payload(items):
+        return items if kind == "list" else {"items": items}
+    access = _conditional_access(tmp_path, credential_identity, [
+        _response(200, payload(first), headers={"ETag": '"page1"', "Link":
+                  '<https://api.github.com/repositories/303/issues?page=2>; rel="next"'}),
+        _response(200, payload(second), headers={"ETag": '"page2"'}),
+        _response(304), _response(304),
+    ])
+    client = GitHubClient(REPOSITORY, access=access)
+    for _ in range(2):
+        if kind == "list":
+            assert await client.paged_list("/repositories/303/issues") == first + second
+        else:
+            assert await client.paged_items("/repositories/303/issues", key="items") == first + second
+    requests = json.loads((tmp_path / "requests.json").read_text())
+    assert 'If-None-Match: "page1"' in requests[2]
+    assert 'If-None-Match: "page2"' in requests[3]
+
+
+async def test_last_modified_fallback_is_shared_with_plain_binding_reads(tmp_path, credential_identity):
+    modified = "Wed, 21 Oct 2015 07:28:00 GMT"
+    access = _conditional_access(tmp_path, credential_identity, [
+        _response(200, {"id": 303}, headers={"Last-Modified": modified}), _response(304),
+    ])
+    for _ in range(2):
+        result = await access.run_read(["api", "repos/acme/widgets"], repository=REPOSITORY)
+        assert json.loads(result.stdout) == {"id": 303}
+    requests = json.loads((tmp_path / "requests.json").read_text())
+    assert f"If-Modified-Since: {modified}" in requests[1]
+
+
+async def test_conditional_cache_isolates_repository_query_and_selected_credentials(
+    tmp_path, credential_identity,
+):
+    access = _conditional_access(tmp_path, credential_identity, [
+        _response(200, {"id": index}, headers={"ETag": f'"v{index}"'}) for index in range(7)
+    ])
+    runner = access.runner
+    other = GitHubRepositoryBinding(404, "acme/other")
+    args = ["api", "repos/acme/widgets"]
+    await runner.run(args, repository=REPOSITORY)
+    await runner.run(args, repository=other)
+    await runner.run(["api", "repos/acme/widgets?page=2"], repository=REPOSITORY)
+    await runner.run([*args, "--header", "Accept: application/vnd.github.raw"],
+                     repository=REPOSITORY)
+    if credential_identity.mode.value == "app":
+        await access.auth.invalidate(REPOSITORY, generation=1)
+    else:
+        runner._base_env["GH_TOKEN"] = "new-fake-token"
+    await runner.run(args, repository=REPOSITORY)
+    # A different App identity must not see the old authority's validator.
+    runner.credentials = SimpleNamespace(
+        credential_identity=GitHubCredentialIdentity.app(111, 222),
+        token_for=AsyncMock(return_value="another-fake-token"),
+    )
+    await runner.run(args, repository=REPOSITORY)
+    await runner.run(args, repository=REPOSITORY)
+    requests = json.loads((tmp_path / "requests.json").read_text())
+    assert all(not any("If-" in arg for arg in request) for request in requests[:6])
+    assert 'If-None-Match: "v5"' in requests[6]
+
+
+@pytest.mark.parametrize("bound", ["entries", "bytes"])
+async def test_conditional_cache_evicts_least_recently_used_responses(
+    tmp_path, monkeypatch, credential_identity, bound,
+):
+    monkeypatch.setattr("src.git.github_cache.MAX_CACHE_ENTRIES", 2 if bound == "entries" else 256)
+    monkeypatch.setattr("src.git.github_cache.MAX_CACHE_BYTES", 600 if bound == "bytes" else 10000)
+    access = _conditional_access(tmp_path, credential_identity, [
+        _response(200, {"value": "x" * 120}, headers={"ETag": '"v1"'}) for _ in range(6)
+    ])
+    for endpoint in ("1", "2", "1", "3", "1", "2"):
+        await access.runner.run(["api", f"repositories/303/issues/{endpoint}"], repository=REPOSITORY)
+    requests = json.loads((tmp_path / "requests.json").read_text())
+    for index in (2, 4):
+        assert 'If-None-Match: "v1"' in requests[index]
+    assert not any("If-" in arg for arg in requests[5])
+
+
+async def test_conditional_cache_honours_current_response_limit(tmp_path, credential_identity):
+    access = _conditional_access(tmp_path, credential_identity, [
+        _response(200, {"value": "x" * 120}, headers={"ETag": '"v1"'}),
+        _response(200, {"value": "x" * 120}, headers={"ETag": '"v1"'}),
+    ])
+    client = GitHubClient(REPOSITORY, access=access)
+    await client.request_json("GET", "/repositories/303")
+    with pytest.raises(GitHubAccessError, match="size limit"):
+        await client.request("GET", "/repositories/303", max_response_bytes=10)
+
+
+@pytest.mark.parametrize("headers", [{}, {"Cache-Control": "no-store", "ETag": '"v1"'}])
+async def test_conditional_cache_skips_missing_validators_and_no_store(
+    tmp_path, credential_identity, headers,
+):
+    access = _conditional_access(tmp_path, credential_identity,
+                                 [_response(200, {}, headers=headers)] * 2)
+    client = GitHubClient(REPOSITORY, access=access)
+    for _ in range(2):
+        await client.request_json("GET", "/repositories/303")
+    requests = json.loads((tmp_path / "requests.json").read_text())
+    assert not any("If-" in arg for args in requests for arg in args)
+
+
+async def test_conditional_cache_never_serves_a_body_after_an_http_failure(
+    tmp_path, credential_identity,
+):
+    access = _conditional_access(tmp_path, credential_identity, [
+        _response(200, {}, headers={"ETag": '"v1"'}),
+        _response(404, returncode=1), _response(304),
+    ])
+    client = GitHubClient(REPOSITORY, access=access)
+    await client.request_json("GET", "/repositories/303")
+    for status in (404, 304):
+        with pytest.raises(GitHubAccessError) as caught:
+            await client.request_json("GET", "/repositories/303")
+        assert caught.value.http_status == status
+
+
+@pytest.mark.parametrize("options", [
+    ["--method", "POST"], ["--method", "PATCH"], ["--method", "DELETE"],
+    ["--header", 'If-None-Match: "caller"'], ["--header", "Range: bytes=0-10"],
+    ["--jq", ".id"], ["--paginate"],
+])
+async def test_conditional_cache_bypasses_writes_and_caller_controlled_output(
+    tmp_path, credential_identity, options,
+):
+    access = _conditional_access(tmp_path, credential_identity, [
+        _response(200, {}, headers={"ETag": '"automatic"'}) for _ in range(3)
+    ])
+    args = ["api", "repositories/303/issues/7"]
+    await access.runner.run(args, repository=REPOSITORY)
+    for _ in range(2):
+        await access.runner.run([*args, *options], repository=REPOSITORY)
+    requests = json.loads((tmp_path / "requests.json").read_text())
+    assert not any('If-None-Match: "automatic"' in arg for args in requests for arg in args)
+
+
+async def test_conditional_cache_does_not_retain_oversized_entries(
+    tmp_path, monkeypatch, credential_identity,
+):
+    monkeypatch.setattr("src.git.github_cache.MAX_CACHE_BYTES", 100)
+    access = _conditional_access(tmp_path, credential_identity, [
+        _response(200, {"value": "x" * 120}, headers={"ETag": '"v1"'}) for _ in range(2)
+    ])
+    client = GitHubClient(REPOSITORY, access=access)
+    for _ in range(2):
+        await client.request_json("GET", "/repositories/303")
+    requests = json.loads((tmp_path / "requests.json").read_text())
+    assert not any("If-" in arg for args in requests for arg in args)
 
 
 def _audit_pull(
@@ -1903,3 +2121,24 @@ async def test_authenticated_user_requires_human_credentials_and_fixed_endpoint(
     with pytest.raises(ValueError, match="existing-login"):
         await GitHubClient(REPOSITORY, runner=app_runner).authenticated_user()
     assert not app_runner.calls
+
+
+async def test_gather_inherits_component_and_does_not_attribute_loop_host(tmp_path):
+    access = _rate_limit_access(tmp_path, GitHubCredentialIdentity.existing_login(),
+                              _response(200, {}), [1000.0])
+    runner = access.runner
+
+    async def child():
+        await runner.run(["api", "repos/acme/widgets/pulls/7"], repository=REPOSITORY)
+
+    # Model the daemon event-loop frame beneath an otherwise unattributed task.
+    namespace = {"__name__": "src.main", "asyncio": asyncio}
+    exec("async def host(child):\n    await child()\n    await asyncio.gather(child())", namespace)
+    await namespace["host"](child)
+    assert runner.activity()["api_calls_per_hour"] == {"unattributed": 2}
+    assert runner.activity()["api_calls_per_minute"] == {"GET repos/acme/widgets/pulls/7": 2}
+    with github_component("dashboard_pr_snapshot", background=True):
+        await namespace["host"](child)
+    assert runner.activity()["api_calls_per_hour"] == {
+        "unattributed": 2, "dashboard_pr_snapshot": 2,
+    }

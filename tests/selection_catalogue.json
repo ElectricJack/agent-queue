@@ -1220,6 +1220,7 @@
         "tests/test_ci_main_sentinel.py",
         "tests/test_default_agent_type_playbooks.py",
         "tests/test_default_assignment_routing_playbook.py",
+        "tests/test_default_pipeline_equivalence.py",
         "tests/test_default_pipeline_intake.py",
         "tests/test_default_playbook_v2_artifacts.py",
         "tests/test_hierarchical_delivery_playbook.py",
@@ -2853,7 +2854,7 @@
         "github"
       ],
       "default_arm": true,
-      "digest": "sha256:a5e659ca3fa97c7883ea042cc5aca62830fac3c8114f2cc3a2c7eeb70df26a3c",
+      "digest": "sha256:0fdbcc6f9e29f90c4bfcea72fcae2f6b3ae7dbf38f1fd2eb03393a7147159f4b",
       "imports": [
         "src.api",
         "src.api.auth",
@@ -2864,6 +2865,7 @@
         "src.database.queries.pull_request_queries",
         "src.database.tables",
         "src.git.github",
+        "src.git.github_activity",
         "src.git.github_auth",
         "src.git.github_contracts",
         "src.integration.ci"
@@ -5558,6 +5560,26 @@
         "parametrize"
       ],
       "summary": "The shipped router runs as an ordinary pipeline over the router commands."
+    },
+    "tests/test_default_pipeline_equivalence.py": {
+      "areas": [
+        "shipped-playbooks"
+      ],
+      "default_arm": true,
+      "digest": "sha256:c6e314968fa56cfa5afca411b633576783141507f8c18899f61aded3a4a45eeb",
+      "imports": [
+        "src.commands.contracts",
+        "src.commands.contracts.builtin",
+        "src.commands.contracts.registry",
+        "src.commands.principal",
+        "src.playbooks.definition",
+        "src.playbooks.engine",
+        "src.playbooks.executors.base"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Compare the building-block declaration with the captured shipped pipeline."
     },
     "tests/test_default_pipeline_intake.py": {
       "areas": [

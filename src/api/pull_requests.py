@@ -21,10 +21,11 @@ from src.database.queries.pull_request_queries import (
     replace_pull_request_snapshot_row, train_states_for_tasks, write_pull_request_snapshot,
 )
 from src.git.github import GitHubAccess, GitHubClient
+from src.git.github_activity import github_component
 from src.projects.github import GitHubError, parse_github_repository
 
 log = logging.getLogger(__name__)
-REFRESH_SECONDS = 60
+REFRESH_SECONDS = 300
 
 
 class PendingPullRequest(BaseModel):
@@ -149,6 +150,7 @@ class PendingPullRequestInbox:
         self.client_factory = client_factory
         self._task: asyncio.Task | None = None
         self._lock = asyncio.Lock()
+        self._badges: dict[tuple[str, int], tuple[str, str, str, str]] = {}
 
     async def list(self, *, can_approve: bool = False) -> PendingPullRequestsResponse:
         items, updated_at = await read_pull_request_snapshot(self.db)
@@ -159,8 +161,13 @@ class PendingPullRequestInbox:
             can_approve=can_approve,
         )
 
-    async def refresh_row(self, task_id: str) -> None:
-        """Re-read the approved PR and its badges without rescanning other PRs."""
+    async def refresh_row(self, task_id: str, *, approved_head_sha: str | None = None) -> None:
+        """Force a foreground refresh of one PR, serialized with full refreshes."""
+        with github_component("dashboard_pr_snapshot"):
+            async with self._lock:
+                await self._refresh_row(task_id, approved_head_sha=approved_head_sha)
+
+    async def _refresh_row(self, task_id: str, *, approved_head_sha: str | None) -> None:
         rows = [row for row in await list_known_pull_requests(self.db)
                 if row["task_id"] == task_id]
         if len(rows) != 1:
@@ -170,6 +177,7 @@ class PendingPullRequestInbox:
         client = self.client_factory(binding, access=self.access)
         pull = await client.pull_request(row["pr_url"])
         if pull.get("state") != "open":
+            self._badges.pop(_pr_key(row["pr_url"]), None)
             await replace_pull_request_snapshot_row(self.db, task_id, None)
             return
         head = pull.get("head")
@@ -177,14 +185,8 @@ class PendingPullRequestInbox:
         if not isinstance(sha, str) or re.fullmatch(r"[a-fA-F0-9]{40}", sha) is None:
             raise ValueError("GitHub PR had no valid head SHA")
         number = GitHubAccess.validate_pr_url(binding, row["pr_url"])
-        reviews, checks = await asyncio.gather(
-            client.paged_list(
-                f"repos/{binding.full_name}/pulls/{number}/reviews?per_page=100", max_pages=20,
-            ),
-            client.paged_items(
-                f"repos/{binding.full_name}/commits/{sha}/check-runs?filter=all&per_page=100",
-                key="check_runs", max_pages=20,
-            ),
+        review_decision, ci_status = await self._read_badges(
+            client, pull, sha, number, force=True, confirmed_approval=approved_head_sha == sha,
         )
         states = await train_states_for_tasks(self.db, {task_id})
         item = PendingPullRequest(
@@ -192,13 +194,46 @@ class PendingPullRequestInbox:
             repository=_repository_name(row["pr_url"]) or "", project_id=row["project_id"],
             project_name=row["project_name"], task_id=task_id,
             opened_at=_opened_at(pull.get("created_at")), head_sha=sha,
-            review_decision=_review_decision(reviews, sha), ci_status=_ci_status(checks),
+            review_decision=review_decision, ci_status=ci_status,
             train_state=(states.get(task_id, "awaiting review")
                          if row["integration_mode"] == "train" else None),
         )
         await replace_pull_request_snapshot_row(self.db, task_id, item.model_dump())
 
+    async def _read_badges(self, client: Any, pull: dict, sha: str, number: int,
+                           *, force: bool = False,
+                           confirmed_approval: bool = False) -> tuple[str, str]:
+        key = (client.repository.full_name.lower(), number)
+        updated_at = pull.get("updated_at")
+        cached = self._badges.get(key)
+        if (not force and isinstance(updated_at, str) and cached is not None
+                and cached[:2] == (sha, updated_at)):
+            return cached[2], cached[3]
+        # Invalidate before a forced read so a failed refresh is retried later.
+        self._badges.pop(key, None)
+        reviews, checks = await asyncio.gather(
+            client.paged_list(
+                f"repos/{client.repository.full_name}/pulls/{number}/reviews?per_page=100",
+                max_pages=20,
+            ),
+            client.paged_items(
+                f"repos/{client.repository.full_name}/commits/{sha}/check-runs?filter=all&per_page=100",
+                key="check_runs", max_pages=20,
+            ),
+        )
+        # GitHub's review list can lag the successful approval POST. Keep its
+        # confirmed exact-head decision in the cache as well as the snapshot.
+        badges = ("approved" if confirmed_approval else _review_decision(reviews, sha),
+                  _ci_status(checks))
+        if isinstance(updated_at, str):
+            self._badges[key] = (sha, updated_at, *badges)
+        return badges
+
     async def refresh(self) -> None:
+        with github_component("dashboard_pr_snapshot", background=True):
+            await self._refresh()
+
+    async def _refresh(self) -> None:
         async with self._lock:
             links = await list_known_pull_requests(self.db)
             by_repo: dict[str, list[dict]] = {}
@@ -243,29 +278,32 @@ class PendingPullRequestInbox:
                     raise ValueError(f"GitHub PR {row['pr_url']} had no valid head SHA")
                 number = int(row["pr_url"].rsplit("/", 1)[-1])
                 async with limit:
-                    reviews, checks = await asyncio.gather(
-                        client.paged_list(
-                            f"repos/{client.repository.full_name}/pulls/{number}/reviews?per_page=100",
-                            max_pages=20,
-                        ),
-                        client.paged_items(
-                            f"repos/{client.repository.full_name}/commits/{sha}/check-runs"
-                            "?filter=all&per_page=100",
-                            key="check_runs", max_pages=20,
-                        ),
+                    review_decision, ci_status = await self._read_badges(
+                        client, pull, sha, number,
                     )
                 return PendingPullRequest(
                     title=pull.get("title") or row["task_title"],
                     url=row["pr_url"], repository=_repository_name(row["pr_url"]) or "",
                     project_id=row["project_id"], project_name=row["project_name"],
                     task_id=row["task_id"], opened_at=_opened_at(pull.get("created_at")),
-                    head_sha=sha, review_decision=_review_decision(reviews, sha),
-                    ci_status=_ci_status(checks),
+                    head_sha=sha, review_decision=review_decision, ci_status=ci_status,
                     train_state=(train_states.get(row["task_id"], "awaiting review")
                                  if row["integration_mode"] == "train" else None),
                 )
 
-            items = await asyncio.gather(*(project(*entry) for entry in matched))
+            # Join all projections before releasing the lock even if one fails;
+            # no old pass may mutate the cache during a later row refresh.
+            results = await asyncio.gather(
+                *(project(*entry) for entry in matched), return_exceptions=True,
+            )
+            items = []
+            for result in results:
+                if isinstance(result, BaseException):
+                    raise result
+                items.append(result)
+            active_keys = {_pr_key(item.url) for item in items}
+            self._badges = {key: value for key, value in self._badges.items()
+                            if key in active_keys}
             items.sort(key=lambda item: item.opened_at or 0, reverse=True)
             await write_pull_request_snapshot(
                 self.db, [item.model_dump() for item in items],
@@ -360,7 +398,7 @@ def build_pull_requests_router(*, db, github_access=None, command_handler=None,
             raise HTTPException(status_code=status, detail=result.get("error", "Approval failed"))
         try:
             await mark_pull_request_approved(db, result["url"], body.head_sha)
-            await inbox.refresh_row(task_id)
+            await inbox.refresh_row(task_id, approved_head_sha=body.head_sha)
             # A just-created GitHub review can lag its list endpoint briefly.
             # The POST response already confirmed this exact human approval.
             await mark_pull_request_approved(db, result["url"], body.head_sha)
