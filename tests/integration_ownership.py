@@ -30,12 +30,13 @@ TRANSITION_BATCH_EXCEPTION = {'batch_id': 'train-745592300af5cef0338dec80ebabb46
  'decision_message_ids': ['msg-7ed85e78d1af4f3e85b485a57967e794',
                           'msg-381054d695e64055979a687c4d811e7e',
                           'msg-ab86b9766c2f42b9ba4920aba585b577',
-                          'msg-21784b3e56aa4f54bf1042b7c9af4aaf'],
+                          'msg-21784b3e56aa4f54bf1042b7c9af4aaf',
+                          'msg-3bed5d5db4ed4c7fa1ef9150b1c3dd8c'],
  'decision_record': 'record:2720bdbe-7521-427e-8e72-1f40a3ff9818',
  'measured_source_revision': 'b65c4f58866c1569e7ed73cb3a9d306f3060e1f0',
  'original_owned_total_cap': 155499,
- 'measured_owned_total': 160879,
- 'delta': 5380,
+ 'measured_owned_total': 160880,
+ 'delta': 5381,
  'predecessors': [{'batch_id': 'train-77f0d8e451f6aed08d608e443031047a',
                    'decision_message_id': 'msg-edb5f857de344716a38857406fa69958',
                    'decision_record': 'record:2720bdbe-7521-427e-8e72-1f40a3ff9818',
@@ -49,7 +50,7 @@ TRANSITION_BATCH_EXCEPTION = {'batch_id': 'train-745592300af5cef0338dec80ebabb46
                    'measured_source_revision': 'cbfd455b0e9f053854a2c1becfa1efaeef231582',
                    'authorized_delta': 2166,
                    'measured_owned_total': 158958}],
- 'batch_measured_delta': 1921,
+ 'batch_measured_delta': 1922,
  'restore_task': 'azure-ridge-72',
  'expires_at': 's4_modules',
  'category_approval_message_id': 'msg-90f9f1b1e0cd4e8e8d28071cffc927a6',
@@ -71,7 +72,18 @@ TRANSITION_BATCH_EXCEPTION = {'batch_id': 'train-745592300af5cef0338dec80ebabb46
                            'parent query.',
                  'global_request': 'msg-9f895e0d',
                  'global_grant': 'msg-7f2f68c1',
-                 'grant_delivery_message_id': 'msg-21784b3e56aa4f54bf1042b7c9af4aaf'}]}
+                 'grant_delivery_message_id': 'msg-21784b3e56aa4f54bf1042b7c9af4aaf'},
+                {'task_id': 'nimble-torrent-12',
+                 'decision_message_id': 'msg-3bed5d5db4ed4c7fa1ef9150b1c3dd8c',
+                 'referenced_decision': 'size-cap-delegation-2026-10-23',
+                 'previous_owned_total': 160879,
+                 'previous_shared_lines': 62006,
+                 'authorized_owned_delta': 1,
+                 'authorized_shared_delta': 1,
+                 'authorized_engine_delta': 0,
+                 'reason': 'Accept repository mappings in the shared GitHub binding resolver for '
+                           'verified CI waits; supervisor approved the exact one-line shared '
+                           'footprint.'}]}
 FINAL_ENGINE_CAP = 11_999
 FINAL_TOTAL_CAP = 19_999
 FINAL_TABLE_CAP = 10
