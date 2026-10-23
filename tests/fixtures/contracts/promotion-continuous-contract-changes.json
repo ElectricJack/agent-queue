@@ -1,0 +1,11 @@
+{
+  "playbook_fixtures": {
+    "tests/fixtures/playbooks/v2/promotion-continuous/artifact.json": {
+      "previous_sha256": "5d1b280c3c398315a49e6dfe5bdb2ef260c44abb9ba3e83694c42940547d4b00",
+      "preserved_previous_path": "tests/fixtures/playbooks/promotion-continuous-equivalence/shipped-before.artifact.json",
+      "sha256": "bbe82bef84f8179678ff55032136a5432abe24eeaeae9042a56b5cefc30ad969"
+    }
+  },
+  "reason": "bold-harbor-26 declares the six existing typed commands as required capabilities and states exact result paths and notification semantics. Only source identity, source spans, compilation time and capability metadata change. tests/test_promotion_continuous_equivalence.py checks the unchanged executable graph, command fingerprints and 42 differential engine scenarios. Chain this intentional source port after the frozen main-refresh evidence; retain every historical golden and the byte-identical pre-port artifact.",
+  "source_base": "52d2efe4cb5380e6c1889b80f2bf2cce04af9473"
+}
