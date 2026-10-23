@@ -732,6 +732,7 @@ class ClaimQueryMixin:
     async def claim_frontier_exclusions_many(
         self, task_ids, *, router_ready=None, cached_only=False,
         hierarchy_modes=None, project_ids=None, single_task_id=None, router_ready_projects=None,
+        display_unavailable=None,
     ) -> dict[str, list[dict]]:
         """Batch the same predicate evaluation used by explain; never fetch Git for display.
 
@@ -742,8 +743,11 @@ class ClaimQueryMixin:
             return {}
         from src.integration.delivery_observer import hierarchy_frontier_modes
 
+        unavailable = display_unavailable if display_unavailable is not None else {}
         modes = hierarchy_modes if hierarchy_modes is not None else await hierarchy_frontier_modes(
             self, project_ids=project_ids, task_id=single_task_id, cached_only=cached_only,
+            **({"display_unavailable": unavailable} if cached_only else {}),
+            **({"task_ids": task_ids} if cached_only else {}),
         )
         predicates = claim_frontier_predicates(modes)
         if router_ready_projects is not None:

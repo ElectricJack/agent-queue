@@ -1084,17 +1084,26 @@ def _build_default_router() -> APIRouter:
     from src.api import dependencies as deps
 
     router = APIRouter()
+    binding = None
+    bound_router = None
 
     def _inner() -> APIRouter:
+        nonlocal binding, bound_router
         orch = deps._orchestrator
         if orch is None:
             raise HTTPException(status_code=503, detail="orchestrator not ready")
         # The orchestrator keeps its handler private and lets the messaging
         # adapter swap it after startup, so read the live one the same way
         # ``deps.get_command_handler`` does.
-        return build_graph_layout_router(
-            db=orch.db, command_handler=getattr(orch, "_command_handler", None)
-        )
+        handler = getattr(orch, "_command_handler", None)
+        current = (orch, orch.db, handler)
+        if binding is None or any(a is not b for a, b in zip(binding, current)):
+            # Route construction is synchronous and owns the geometry cache.
+            # Rebuilding here on every read both blocks the event loop and
+            # throws away all layout_version-scoped geometry between pans.
+            bound_router = build_graph_layout_router(db=orch.db, command_handler=handler)
+            binding = current
+        return bound_router
 
     async def _call(path: str, method: str, **kwargs):
         for route in _inner().routes:

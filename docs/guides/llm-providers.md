@@ -148,10 +148,13 @@ pip install -e ".[anthropic]"     # or [google], [openai], or [llm] for all thre
 ## Choose which model each tier means
 
 You rarely name a model directly. Callers name an **intelligence class**, and
-the class maps to one model per provider. The twelve shipped classes are seeded
+the class maps to one model per provider. The seven shipped classes are seeded
 into `vault/intelligence-classes/` on first start
 ([`src/prompts/default_intelligence_classes/`](../../src/prompts/default_intelligence_classes/));
-the vault copy wins from then on, and your edits survive restarts.
+edited slices survive restarts. Uncustomized slices matching historical bundled
+defaults can refresh in memory; set `customized: true` to opt the whole file out.
+See [profiles and classes](../reference/profiles-and-classes.md#shipped-classes)
+for the current class list and refresh rules.
 
 To point a tier at a different model, edit its file:
 

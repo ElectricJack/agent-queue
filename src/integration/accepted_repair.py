@@ -22,6 +22,7 @@ from src.database.tables import (
     tasks,
     workspaces,
 )
+from src.integration.row_query import select_row
 from src.models import TaskCompletion, TaskStatus
 
 
@@ -49,36 +50,22 @@ async def accepted_candidate_on(conn, operation, stage, *, completing=False):
         or stage["writer_kind"] != "repair_delegate"
     ):
         return None
-    batch = (
-        (
-            await conn.execute(
-                select(integration_batches)
-                .where(
-                    integration_batches.c.id == operation["batch_id"],
-                )
-                .with_for_update()
-            )
-        )
-        .mappings()
-        .one_or_none()
+    batch = await select_row(
+        conn,
+        integration_batches,
+        integration_batches.c.id == operation['batch_id'],
+        lock=True,
     )
     if batch is None or batch["lifecycle"] not in (
         {"building", "testing", "promoting", "promoted"} if completing else {"building", "testing"}
     ):
         return None
-    revision = (
-        (
-            await conn.execute(
-                select(integration_candidate_revisions)
-                .where(
-                    integration_candidate_revisions.c.batch_id == batch["id"],
-                    integration_candidate_revisions.c.revision == batch["current_revision"],
-                )
-                .with_for_update()
-            )
-        )
-        .mappings()
-        .one_or_none()
+    revision = await select_row(
+        conn,
+        integration_candidate_revisions,
+        integration_candidate_revisions.c.batch_id == batch['id'],
+        integration_candidate_revisions.c.revision == batch['current_revision'],
+        lock=True,
     )
     if (
         revision is None
@@ -131,33 +118,19 @@ async def accepted_candidate_on(conn, operation, stage, *, completing=False):
         or (proof["push_evidence"] or {}).get("target_branch") != proof["target_branch"]
     ):
         return None
-    member = (
-        (
-            await conn.execute(
-                select(integration_candidate_member_results).where(
-                    integration_candidate_member_results.c.batch_id == proof["batch_id"],
-                    integration_candidate_member_results.c.revision == proof["revision"],
-                    integration_candidate_member_results.c.member_ordinal
-                    == proof["member_ordinal"],
-                )
-            )
-        )
-        .mappings()
-        .one_or_none()
+    member = await select_row(
+        conn,
+        integration_candidate_member_results,
+        integration_candidate_member_results.c.batch_id == proof['batch_id'],
+        integration_candidate_member_results.c.revision == proof['revision'],
+        integration_candidate_member_results.c.member_ordinal == proof['member_ordinal'],
     )
-    owner = (
-        (
-            await conn.execute(
-                select(integration_branch_owners)
-                .where(
-                    integration_branch_owners.c.repository_id == proof["repository_id"],
-                    integration_branch_owners.c.ref == proof["branch"],
-                )
-                .with_for_update()
-            )
-        )
-        .mappings()
-        .one_or_none()
+    owner = await select_row(
+        conn,
+        integration_branch_owners,
+        integration_branch_owners.c.repository_id == proof['repository_id'],
+        integration_branch_owners.c.ref == proof['branch'],
+        lock=True,
     )
     collector = bool(
         owner is not None
@@ -170,21 +143,13 @@ async def accepted_candidate_on(conn, operation, stage, *, completing=False):
     )
     successor = None
     if completing and operation["active_stage"] > stage["ordinal"] and owner is not None:
-        successor = (
-            (
-                await conn.execute(
-                    select(integration_repair_stages).where(
-                        integration_repair_stages.c.operation_id == operation["id"],
-                        integration_repair_stages.c.ordinal == operation["active_stage"],
-                        integration_repair_stages.c.writer_kind == "repair_delegate",
-                        integration_repair_stages.c.state.in_(
-                            ("active", "awaiting_completion", "passed")
-                        ),
-                    )
-                )
-            )
-            .mappings()
-            .one_or_none()
+        successor = await select_row(
+            conn,
+            integration_repair_stages,
+            integration_repair_stages.c.operation_id == operation['id'],
+            integration_repair_stages.c.ordinal == operation['active_stage'],
+            integration_repair_stages.c.writer_kind == 'repair_delegate',
+            integration_repair_stages.c.state.in_(('active', 'awaiting_completion', 'passed')),
         )
     successor_matches = bool(
         successor is not None
@@ -211,17 +176,7 @@ async def accepted_candidate_on(conn, operation, stage, *, completing=False):
         and revision["head_sha"] == batch["tested_candidate_sha"]
         and revision["state"] in {"green", "promoted"}
     ):
-        successor_task = (
-            (
-                await conn.execute(
-                    select(tasks).where(
-                        tasks.c.id == successor["repair_task_id"],
-                    )
-                )
-            )
-            .mappings()
-            .one_or_none()
-        )
+        successor_task = await select_row(conn, tasks, tasks.c.id == successor['repair_task_id'])
         returned = bool(
             successor_task is not None
             and successor_task["status"] == TaskStatus.COMPLETED.value
@@ -434,19 +389,7 @@ async def complete_accepted_delegate(
             .mappings()
             .one()
         )
-        session = (
-            (
-                await conn.execute(
-                    select(sessions)
-                    .where(
-                        sessions.c.id == session_id,
-                    )
-                    .with_for_update()
-                )
-            )
-            .mappings()
-            .one_or_none()
-        )
+        session = await select_row(conn, sessions, sessions.c.id == session_id, lock=True)
         proof = await accepted_candidate_on(conn, operation, stage, completing=True)
         if proof is None:
             return None
@@ -463,18 +406,11 @@ async def complete_accepted_delegate(
             .mappings()
             .one()
         )
-        workspace = (
-            (
-                await conn.execute(
-                    select(workspaces)
-                    .where(
-                        workspaces.c.id == proof["repair_workspace_id"],
-                    )
-                    .with_for_update()
-                )
-            )
-            .mappings()
-            .one_or_none()
+        workspace = await select_row(
+            conn,
+            workspaces,
+            workspaces.c.id == proof['repair_workspace_id'],
+            lock=True,
         )
         if (
             session is None
