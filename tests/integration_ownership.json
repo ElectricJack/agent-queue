@@ -17380,6 +17380,7 @@
     "src/git/identity.py::LEDGER_IDENTITY": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/git/identity.py::PublishPolicy": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/git/identity.py::resolve_git_identity": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/git/identity.py::task_publish_policy": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/git/manager.py::APP_AUTH_PUSH_CLEANUP_MARGIN_SECONDS": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/git/manager.py::APP_AUTH_PUSH_TIMEOUT_SECONDS": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/git/manager.py::GitError": "Generic dependency; integration-specific definitions in this file are charged independently.",
@@ -19502,10 +19503,10 @@
       "msg-381054d695e64055979a687c4d811e7e"
     ],
     "decision_record": "record:2720bdbe-7521-427e-8e72-1f40a3ff9818",
-    "measured_source_revision": "83ef85ec7226f2c0c7c8ef64504919086bc394ba",
+    "measured_source_revision": "bf0314f79433b66c2f60cdd377a77c2e9996278a",
     "original_owned_total_cap": 155499,
-    "measured_owned_total": 160874,
-    "delta": 5375,
+    "measured_owned_total": 160820,
+    "delta": 5321,
     "predecessors": [
       {
         "batch_id": "train-77f0d8e451f6aed08d608e443031047a",
@@ -19525,7 +19526,7 @@
         "measured_owned_total": 158958
       }
     ],
-    "batch_measured_delta": 1916,
+    "batch_measured_delta": 1862,
     "restore_task": "azure-ridge-72",
     "expires_at": "s4_modules",
     "category_approval_message_id": "msg-90f9f1b1e0cd4e8e8d28071cffc927a6",
@@ -19534,7 +19535,7 @@
     ],
     "category_restore_task": "stark-willow-95.17",
     "verification_task": "stark-willow-95.18",
-    "measured_engine_lines": 85331,
+    "measured_engine_lines": 85301,
     "measured_table_count": 45,
     "delivery_method": "operator direct integration; user request 2026-10-22"
   },

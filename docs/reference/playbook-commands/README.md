@@ -97,6 +97,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`integration_delivery_readiness`](integration_delivery_readiness.md) | Integration Delivery Readiness | Read whether every child of one parent has delivered, changing nothing. |
 | [`integration_eject`](integration_eject.md) | Integration Eject | Authenticated hierarchical integration operational control. |
 | [`integration_engine_transfer`](integration_engine_transfer.md) | Integration Engine Transfer | Authenticated hierarchical integration operational control. |
+| [`integration_fast_forward_pr`](integration_fast_forward_pr.md) | Integration Fast Forward Pr | Authenticated hierarchical integration operational control. |
 | [`integration_file_children`](integration_file_children.md) | File isolated child tasks | Reserve child origins and advance the parent integration generation atomically. |
 | [`integration_migrate_provenance_refs`](integration_migrate_provenance_refs.md) | Move Git provenance out of branches | Local operator copies and verifies immutable provenance refs before deleting legacy heads. |
 | [`integration_mutate_hierarchy`](integration_mutate_hierarchy.md) | Mutate integration hierarchy | Apply a guarded hierarchy change and invalidate affected parent generations. |
