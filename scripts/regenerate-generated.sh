@@ -72,7 +72,7 @@ else
     exit 1
 fi
 
-# Source recordings own the policy; only their projections join this registry.
+# Source recordings and module shards own policy; their projections join this registry.
 RECORDED_PATHS="$("$PYTHON" "$ROOT_DIR/scripts/generate-recorded-artifacts.py" --list)"
 mapfile -t RECORDED <<< "$RECORDED_PATHS"
 GENERATED+=("${RECORDED[@]}")

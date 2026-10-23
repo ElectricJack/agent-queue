@@ -9,6 +9,8 @@
 
 # Task-template fragments retain separators from composed prompts verbatim.
 src/prompts/task_templates/*.md whitespace=-blank-at-eol,-blank-at-eof
+# Descriptor source fragments retain the original separators when concatenated.
+tests/fixtures/generated_sources/command_descriptors/*.py.inc whitespace=-blank-at-eof
 
 # Generated artifacts: pure functions of the source, rebuilt by
 # scripts/regenerate-generated.sh (keep its GENERATED list in step; see
@@ -30,8 +32,12 @@ packages/aq-client/** merge=aq-generated linguist-generated
 scripts/aq-client-boilerplate.sha256 merge=aq-generated linguist-generated
 tests/integration_ownership.json merge=aq-generated linguist-generated
 tests/integration_ownership_report.json merge=aq-generated linguist-generated
-# Approved policy and provenance live in tests/fixtures/generated_sources.
-# Only their deterministic projections are disposable during assembly.
+tests/fixtures/generated_sources/ownership/integration_ownership.json merge=aq-generated linguist-generated
+tests/fixtures/generated_sources/ownership/integration_ownership_report.json merge=aq-generated linguist-generated
+tests/fixtures/contracts/generated-command-audit.json merge=aq-generated linguist-generated
+tests/test_command_descriptors.py merge=aq-generated linguist-generated
+# Approved policy and provenance live in the authored module shards and
+# playbook recordings. Only their deterministic projections are disposable.
 tests/fixtures/playbooks/v2/*/artifact.json merge=aq-generated linguist-generated
 tests/fixtures/playbooks/v2/*/artifact.sha256 merge=aq-generated linguist-generated
 tests/fixtures/playbooks/v2/*/source.md merge=aq-generated linguist-generated

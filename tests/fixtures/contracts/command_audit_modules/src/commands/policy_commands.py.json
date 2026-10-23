@@ -1,0 +1,142 @@
+{
+  "policy_apply": {
+    "argument_reads_diagnostic_only": [],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {
+      "_policy_authority": "sha256:368f9c5c03ed0a8ed96e59848bcd904f54904dc68738a77981a215c4b5427ea8"
+    },
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/policy_commands.py:PolicyCommandsMixin._cmd_policy_apply",
+    "resource_gates": [
+      "system_scope"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "refusal"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'applied': list(planned), 'reviews': reviews, 'pending_configuration': pending, 'activated': False, 'configured_integration': configured, 'items': [row.model_dump(mode='json') for row in rows]}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': str(exc), 'configured_integration': configured}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "parse_profile(text) if text is not None else None"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': result.get('error') or 'Integration configuration refused', 'integration': result, 'applied': []}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'Imported profile draft retained; profile sync failed: ' + '; '.join(synced.errors), 'applied': list(planned), 'items': [row.model_dump(mode='json') for row in rows], 'configured_integration': configured}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f'Imported files are retained; playbook review failed: {result.get('error')}', 'applied': list(planned), 'reviews': reviews, 'pending_configuration': pending, 'items': [item.model_dump(mode='json') for item in rows], 'configured_integration': configured}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. ",
+    "schema_quality": "declared",
+    "source_digest": "sha256:2b01f1d19711904f0f6729fc8d80793eaf306e98e65a688a0a4f9d7fc55ec343",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_policy_profiles.py"
+    ]
+  },
+  "policy_diff": {
+    "argument_reads_diagnostic_only": [],
+    "denial_reason": null,
+    "effect": "read",
+    "helper_producers": {
+      "_policy_authority": "sha256:368f9c5c03ed0a8ed96e59848bcd904f54904dc68738a77981a215c4b5427ea8"
+    },
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/policy_commands.py:PolicyCommandsMixin._cmd_policy_diff",
+    "resource_gates": [
+      "system_scope"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "refusal"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'name': bundle.name, 'project_id': request.project_id, 'items': [row.model_dump(mode='json') for row in rows], 'placeholders': [p.model_dump() for p in bundle.placeholders if p.name in needed], 'values': {key: request.values.get(key, adapter.defaults().get(key, '')) for key in (p.name for p in bundle.placeholders)}}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': str(exc)}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. ",
+    "schema_quality": "declared",
+    "source_digest": "sha256:4c7770c36c7cae11cab1f51602f54e56bca29858b55ff33991531185a23e9b5c",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_policy_profiles.py"
+    ]
+  },
+  "policy_export": {
+    "argument_reads_diagnostic_only": [],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {
+      "_policy_authority": "sha256:368f9c5c03ed0a8ed96e59848bcd904f54904dc68738a77981a215c4b5427ea8"
+    },
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/policy_commands.py:PolicyCommandsMixin._cmd_policy_export",
+    "resource_gates": [
+      "system_scope"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "refusal"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'bundle': bundle.model_dump(mode='json'), 'checksum': digest, 'files': [{'path': path, 'content': data.decode()} for path, data in sorted(preview_files.items())], 'archive': base64.b64encode(await asyncio.to_thread(pack, bundle)).decode(), 'written': written, 'warnings': sorted(warnings, key=lambda warning: warning['item_id'])}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'Policy export input is unavailable; restore the missing policy file and preview again'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': str(exc)}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:3ef44c54b1cf61bcc892d87b784a369cd780634b4295c72cb7ee9910a8668015",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_policy_profiles.py"
+    ]
+  }
+}

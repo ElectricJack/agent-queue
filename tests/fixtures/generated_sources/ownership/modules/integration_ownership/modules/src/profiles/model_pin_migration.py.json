@@ -1,0 +1,5 @@
+{
+  "generic_dependencies": {
+    "src/profiles/model_pin_migration.py::migrate_vault_profile_model_pins": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}

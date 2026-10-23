@@ -1,0 +1,37 @@
+{
+  "shared": {
+    "src/cli/daemon.py::_backup_database": {
+      "baseline_span": [
+        522,
+        596
+      ],
+      "landing_span": [
+        522,
+        596
+      ],
+      "reason": "Imports or references an explicitly owned integration primitive."
+    },
+    "src/cli/daemon.py::_database_is_at_head": {
+      "baseline_span": [
+        490,
+        521
+      ],
+      "landing_span": [
+        490,
+        521
+      ],
+      "reason": "Imports or references an explicitly owned integration primitive."
+    },
+    "src/cli/daemon.py::_tmux_socket": {
+      "baseline_span": [
+        821,
+        836
+      ],
+      "landing_span": [
+        821,
+        836
+      ],
+      "reason": "Imports or references an explicitly owned integration primitive."
+    }
+  }
+}

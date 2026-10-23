@@ -1,0 +1,184 @@
+{
+  "generic_dependencies": {
+    "src/orchestrator/git_ops.py::GitOpsMixin._workspace_is_worktree_mode": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged."
+  },
+  "shared": {
+    "src/orchestrator/git_ops.py::GitOpsMixin._create_pr_for_task": {
+      "baseline_span": [
+        594,
+        670
+      ],
+      "landing_span": [
+        594,
+        670
+      ],
+      "reason": "Imports or references an explicitly owned integration primitive."
+    },
+    "src/orchestrator/git_ops.py::GitOpsMixin._effective_integration_mode": {
+      "baseline_span": [
+        1087,
+        1106
+      ],
+      "landing_span": [
+        1087,
+        1106
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/orchestrator/git_ops.py::GitOpsMixin._merge_and_push": {
+      "baseline_span": [
+        467,
+        593
+      ],
+      "landing_span": [
+        467,
+        593
+      ],
+      "reason": "Imports or references an explicitly owned integration primitive."
+    },
+    "src/orchestrator/git_ops.py::GitOpsMixin._phase_integrate": {
+      "baseline_span": [
+        2208,
+        2619
+      ],
+      "landing_span": [
+        2208,
+        2619
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/orchestrator/git_ops.py::GitOpsMixin._phase_verify": {
+      "baseline_span": [
+        1197,
+        1864
+      ],
+      "landing_span": [
+        1197,
+        1864
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/orchestrator/git_ops.py::GitOpsMixin._phase_verify_aggregate_verifier": {
+      "baseline_span": [
+        246,
+        375
+      ],
+      "landing_span": [
+        246,
+        375
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/orchestrator/git_ops.py::GitOpsMixin._phase_verify_hierarchy_producer": {
+      "baseline_span": [
+        376,
+        444
+      ],
+      "landing_span": [
+        376,
+        444
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/orchestrator/git_ops.py::GitOpsMixin._run_completion_phases": {
+      "baseline_span": [
+        1120,
+        1196
+      ],
+      "landing_span": [
+        1120,
+        1196
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/orchestrator/git_ops.py::TRUSTED_EVIDENCE_WAIT_KEY": {
+      "baseline_span": [
+        44,
+        48
+      ],
+      "landing_span": [
+        44,
+        48
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/orchestrator/git_ops.py::import from src.models import INTEGRATION_MODE_PULL_REQUEST, PhaseResult, PipelineContext, RepoConfig, Task, TaskStatus": {
+      "baseline_span": [
+        17,
+        24
+      ],
+      "landing_span": [
+        17,
+        24
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/orchestrator/git_ops.py::import from src.notifications.builder import build_task_detail": {
+      "baseline_span": [
+        12,
+        12
+      ],
+      "landing_span": [
+        12,
+        12
+      ],
+      "reason": "Imports or references an explicitly owned integration primitive."
+    }
+  },
+  "storage_sinks": {
+    "src/orchestrator/git_ops.py::GitOpsMixin._development_delivery_refusal::f6e82c5ba5a00c9a16d315b9a83003f11729854025568b1c03b801bb1df7e5fe": {
+      "call": "set_task_meta",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 100,
+      "owner": "GitOpsMixin._development_delivery_refusal",
+      "owner_fingerprint": "22a7c9a6a29044a408b22bd83344dd50b0b6e828b88b9b6032c74eae31fd4a2a",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'needs_attention'"
+    },
+    "src/orchestrator/git_ops.py::GitOpsMixin._phase_integrate::495bbe9c82278c9b769089debd6c7bb39af3eb428ec3191cbd7fa594c59c482f": {
+      "call": "set_task_meta",
+      "disposition": "retire",
+      "integration_signal": true,
+      "line": 2654,
+      "owner": "GitOpsMixin._phase_integrate",
+      "owner_fingerprint": "abf13963e62d97cfd9db43fd92355af6aa37bab98902563ebe3c52e462346dd9",
+      "reason": "Legacy duplicate delivery/repair-evidence metadata: 'merged_at'"
+    },
+    "src/orchestrator/git_ops.py::GitOpsMixin._phase_integrate::810fddcd7abaf20075e2ce078dbedcdffa01aac33e516416396b8c679a58ef12": {
+      "call": "set_task_meta",
+      "disposition": "intent",
+      "integration_signal": true,
+      "line": 2627,
+      "owner": "GitOpsMixin._phase_integrate",
+      "owner_fingerprint": "abf13963e62d97cfd9db43fd92355af6aa37bab98902563ebe3c52e462346dd9",
+      "reason": "Ordinary task refusal/repair input, not a durable assertion of ref state: 'rejection_reason'"
+    },
+    "src/orchestrator/git_ops.py::GitOpsMixin._phase_integrate::cadc8b4909bb616fff83735a568315e7c6afc0e905628675aa37bfc47505963d": {
+      "call": "set_task_meta",
+      "disposition": "intent",
+      "integration_signal": true,
+      "line": 2452,
+      "owner": "GitOpsMixin._phase_integrate",
+      "owner_fingerprint": "abf13963e62d97cfd9db43fd92355af6aa37bab98902563ebe3c52e462346dd9",
+      "reason": "Ordinary task refusal/repair input, not a durable assertion of ref state: 'conflict_files'"
+    },
+    "src/orchestrator/git_ops.py::GitOpsMixin._trusted_evidence_refusal::4792c5e25d062ee820d04a7884c8733ea5bce4d723945df59bd152584ea31539": {
+      "call": "set_task_meta",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 220,
+      "owner": "GitOpsMixin._trusted_evidence_refusal",
+      "owner_fingerprint": "16ab431350a72da7c3313bfa4f7089669fda5f2035002c269a3019d5b0ce8013",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'needs_attention'"
+    },
+    "src/orchestrator/git_ops.py::GitOpsMixin._trusted_evidence_refusal::77722704d939f3aa1904334d1844b8d329d7a59861d800c90a1ee56c3502cb83": {
+      "call": "set_task_meta",
+      "disposition": "retire",
+      "integration_signal": false,
+      "line": 231,
+      "owner": "GitOpsMixin._trusted_evidence_refusal",
+      "owner_fingerprint": "16ab431350a72da7c3313bfa4f7089669fda5f2035002c269a3019d5b0ce8013",
+      "reason": "Legacy duplicate delivery/repair-evidence metadata: TRUSTED_EVIDENCE_WAIT_KEY"
+    }
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "shared_definitions": {
+    "src/playbooks/definition.py::PlaybookDefinition.integration_policy": {
+      "baseline_span": [
+        703,
+        703
+      ],
+      "landing_span": [
+        703,
+        703
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/playbooks/definition.py::import from src.playbooks.integration_policy import IntegrationPolicy": {
+      "baseline_span": [
+        41,
+        41
+      ],
+      "landing_span": [
+        41,
+        41
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    }
+  }
+}

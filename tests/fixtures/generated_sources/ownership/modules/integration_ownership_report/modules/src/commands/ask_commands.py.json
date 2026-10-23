@@ -1,0 +1,11 @@
+{
+  "shared_definitions": {
+    "src/commands/ask_commands.py::AskCommandsMixin._ask_transaction": {
+      "landing_span": [
+        187,
+        198
+      ],
+      "reason": "Source decision transaction boundary used by the integration adapter alongside other human sources."
+    }
+  }
+}

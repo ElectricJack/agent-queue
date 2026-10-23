@@ -36,7 +36,9 @@ This page is the list, in the order a change is most likely to reach them.
 | [`docs/reference/playbook-commands/`](../reference/playbook-commands/README.md) (one page per registered command, plus the index) | The command contract registry — the generated block only | `python scripts/gen-command-docs.py` | yes |
 | [`docs/reference/configuration-schema.json`](../reference/configuration-schema.json) | `AppConfig` | `python scripts/generate-config-schema-inventory.py` | yes |
 | [`tests/selection_catalogue.json`](../../tests/selection_catalogue.json) | `tests/selection_areas.yaml` + the test modules on disk | `python scripts/generate-selection-catalogue.py` | yes |
-| `tests/integration_ownership*.json` | Authored policy and fixed historical inputs in `tests/fixtures/generated_sources/ownership/` | `python scripts/generate-recorded-artifacts.py` | yes |
+| `tests/integration_ownership*.json`, `tests/fixtures/generated_sources/ownership/*.json` | Authored module rows, policy sections and fixed historical inputs in `tests/fixtures/generated_sources/ownership/modules/` | `python scripts/generate-recorded-artifacts.py` | yes |
+| `tests/fixtures/contracts/generated-command-audit.json` | Reviewed producer evidence in `tests/fixtures/contracts/command_audit_modules/`, one file per producer module | `python scripts/generate-recorded-artifacts.py` | yes |
+| `tests/test_command_descriptors.py` | Authored Python definitions in `tests/fixtures/generated_sources/command_descriptors/` | `python scripts/generate-recorded-artifacts.py` | yes |
 | [`src/prompts/reviewed_playbooks/`](../../src/prompts/reviewed_playbooks/) | Shipped playbook markdown, through a human review step | `python scripts/rebuild-reviewed-playbook-artifacts.py` | yes |
 | [`module-inventory.json`](../plans/documentation-overhaul/module-inventory.json), [`module-ownership.json`](../plans/documentation-overhaul/module-ownership.json) | `git ls-files` + ownership rules | `python3 docs/plans/documentation-overhaul/refresh_inventory.py` — **owning shard only**, see [below](#the-documentation-coverage-manifest) | yes |
 
@@ -93,8 +95,29 @@ normal publication authority and verification.
 
 Ownership policy and historical measurements are authored inputs, not new
 measurements at assembly time. Their canonical copies live in
-`tests/fixtures/generated_sources/ownership/`; generation reproduces the existing
-manifest and historical report without changing ceilings, revisions or fingerprints.
+`tests/fixtures/generated_sources/ownership/modules/<artifact>/`: `modules/`
+groups keyed evidence by source module, `policy/` holds individual reviewed
+policy sections and historical measurements, and `fingerprints/` holds existing
+fingerprint buckets. Edit the relevant shard after review. Generation combines
+the shards without measuring new ceilings, revisions or fingerprints. The two
+former canonical JSON files under `ownership/` are now generated compatibility
+projections, as are the copies under `tests/`.
+
+The producer audit likewise lives in
+`tests/fixtures/contracts/command_audit_modules/<producer-path>.json`; add or
+edit the reviewed command row in its producer module, then regenerate. The
+descriptor tests are assembled verbatim from numbered `.py.inc` definitions under
+`tests/fixtures/generated_sources/command_descriptors/`. Edit the definition's
+fragment; new definitions can use a new filename without editing an index or
+renumbering existing fragments. Their executable assertions remain authored.
+Both aggregate files use the generated merge path. Independent module or
+definition edits combine; conflicting edits to the same reviewed source shard
+remain source conflicts requiring resolution. Duplicate evidence is refused.
+
+`python scripts/bookkeeping_sources.py [--check]` rebuilds or checks only these
+bookkeeping projections. It never refreshes a command digest or invents review
+evidence. The full regeneration command includes the same step through
+`generate-recorded-artifacts.py`.
 
 Reviewed playbooks similarly have explicit canonical inputs under
 `tests/fixtures/generated_sources/playbooks/`: a readable `definition.json`, the
@@ -390,8 +413,9 @@ as `hibernation-main-refresh-contract-changes.json`.
 
 **Generated invocation remains disabled pending private-value storage and safe
 inspection (A3).** There is no runtime bypass flag. The A2 producer audit is
-pinned in `tests/fixtures/contracts/generated-command-audit.json`, keyed by all
-built-in handlers. Adding a handler or changing its return branches requires
+pinned in the authored `tests/fixtures/contracts/command_audit_modules/` shards
+and projected into `tests/fixtures/contracts/generated-command-audit.json`, keyed
+by all built-in handlers. Adding a handler or changing its return branches requires
 reviewing and updating that evidence. Static argument reads are diagnostic;
 they never silently expand the public schema.
 
@@ -399,7 +423,8 @@ After reviewing a handler's return branches and contract fields, refresh its
 source digest with `python scripts/refresh-command-audit-digest.py --command explain_task --write`
 (repeat `--command` for each reviewed handler). The default mode, also available
 as `--check`, reports digest drift without writing. This command updates only
-the selected handler digests; return
+the selected handler digests in their owning module shards and refreshes the
+aggregate projection; return
 branches and other audit evidence stay authored. A reviewed helper requires
 `--helper <existing-helper-name>` with exactly one `--command`; this updates only
 that command's existing helper pin, preserving the handler and other helper

@@ -1,0 +1,29 @@
+{
+  "shared_definitions": {
+    "src/orchestrator/events.py::EventsMixin._emit_task_event": {
+      "reason": "Persists a hotfix-completed promotion policy event before volatile task event fanout; identifies the daemon-owned hotfix task, without carrying publication authority."
+    },
+    "src/orchestrator/events.py::EventsMixin._notify_agent_question": {
+      "baseline_span": [
+        142,
+        177
+      ],
+      "landing_span": [
+        142,
+        177
+      ],
+      "reason": "Imports or references an explicitly owned integration primitive."
+    },
+    "src/orchestrator/events.py::import from src.notifications.builder import build_agent_summary, build_task_detail": {
+      "baseline_span": [
+        8,
+        9
+      ],
+      "landing_span": [
+        8,
+        9
+      ],
+      "reason": "Imports or references an explicitly owned integration primitive."
+    }
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "generic_dependencies": {
+    "src/profiles/parser.py::parse_frontmatter": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/profiles/parser.py::parse_profile": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}

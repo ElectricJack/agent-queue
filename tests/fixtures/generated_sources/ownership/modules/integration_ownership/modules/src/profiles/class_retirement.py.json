@@ -1,0 +1,5 @@
+{
+  "generic_dependencies": {
+    "src/profiles/class_retirement.py::retire_vault_intelligence_classes": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}

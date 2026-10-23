@@ -1,0 +1,8 @@
+{
+  "exclusions": {
+    "src/commands/contracts/wait_v2.py::register_wait_v2_contracts": "Generic verified-wait lifecycle/configuration or ordinary routing helper; no integration ref mutation or duplicate lifecycle storage."
+  },
+  "generic_dependencies": {
+    "src/commands/contracts/wait_v2.py::register_wait_v2_contracts": "Generic verified-wait lifecycle/configuration or ordinary routing helper; no integration ref mutation or duplicate lifecycle storage."
+  }
+}

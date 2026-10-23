@@ -1,0 +1,31 @@
+{
+  "shared_definitions": {
+    "src/policy_profiles/service.py::PolicyFiles.__init__": {
+      "reason": "Retains the live IntegrationSettings adapter alongside project/vault/workspace context for later integration export and diff operations."
+    },
+    "src/policy_profiles/service.py::PolicyFiles.defaults": {
+      "reason": "Merges integration-specific template defaults into the shared policy context; the whole defaults method is charged."
+    },
+    "src/policy_profiles/service.py::PolicyFiles.diff": {
+      "reason": "Diffs integration settings against the live project and generation, preserves existing policy when omitted and labels configuration changes explicitly."
+    },
+    "src/policy_profiles/service.py::PolicyFiles.materialize": {
+      "reason": "Decodes integration CI-command arrays and boundary check-name arrays from placeholders before validating materialized payloads."
+    },
+    "src/policy_profiles/service.py::PolicyFiles.portable": {
+      "reason": "Special-cases integration settings, flow refs and embedded policy strings when replacing installation identities with portable placeholders."
+    },
+    "src/policy_profiles/service.py::PolicyFiles.read_local": {
+      "reason": "Portable policy export reads the workspace .github/agent-queue-integration.json CI trust projection and the copied ci-checks policy as typed settings beside other vault policy files. Read-only; never writes integration state, publishes refs or changes trust."
+    },
+    "src/policy_profiles/service.py::_validate_promotion_payload": {
+      "reason": "Promotion draft validator extracted from validate_payload; retains read-only FlowSchema validation without storage, activation or trust authority."
+    },
+    "src/policy_profiles/service.py::import from src.policy_profiles.models import PAYLOAD, AgentConfig, PolicyAgentSettings, Bundle, Capabilities, CIPolicy, CITestPolicy, DiffItem, Item, IntegrationSettings, Placeholder, PlaybookPolicy, PromotionPolicy, RoutingPreferences, Selection, SelectionAreas, SelectionPolicy, SelectionRules, TemplatePolicy, IntelligenceClassPolicy, PoolPolicy, ProjectPolicy, checksum, encoded": {
+      "reason": "Imports IntegrationSettings with the other payload types so policy materialization and diff can handle live integration configuration explicitly."
+    },
+    "src/policy_profiles/service.py::validate_payload": {
+      "reason": "Portable policy validation adapter: checks a promotion-flow draft against the existing src.integration.promotion_steps FlowSchema with a read-only JSON Schema pass, beside profile, playbook, routing and formula validation. Adds no storage, delivery, promotion or trust authority."
+    }
+  }
+}

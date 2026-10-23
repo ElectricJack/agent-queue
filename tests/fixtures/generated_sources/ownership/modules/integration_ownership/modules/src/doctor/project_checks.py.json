@@ -1,0 +1,5 @@
+{
+  "generic_dependencies": {
+    "src/doctor/project_checks.py::project_checks": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}

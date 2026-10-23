@@ -83,8 +83,10 @@ def test_builtin_audit_is_complete():
             assert digest == expected, (name, helper)
 
 
-@pytest.fixture
-def audit_refresh(tmp_path, monkeypatch):
+@pytest.fixture(params=["standalone", "module-shards"])
+def audit_refresh(tmp_path, monkeypatch, request):
+    from scripts.bookkeeping_sources import AUDIT_MODULES, audit_module, load_shards, render
+
     spec = importlib.util.spec_from_file_location(
         "audit_refresh", ROOT / "scripts/refresh-command-audit-digest.py",
     )
@@ -98,13 +100,27 @@ def audit_refresh(tmp_path, monkeypatch):
         row["source_digest"] = "sha256:stale"
         for helper in row.get("helper_producers", {}):
             row["helper_producers"][helper] = "sha256:stale-helper"
-    audit = tmp_path / "audit.json"
+    sharded = request.param == "module-shards"
+    audit = tmp_path / "tests/fixtures/contracts/generated-command-audit.json" if sharded else (
+        tmp_path / "audit.json"
+    )
+    audit.parent.mkdir(parents=True, exist_ok=True)
     audit.write_text(json.dumps(selected, indent=2) + "\n")
     monkeypatch.setattr(module, "AUDIT", audit)
+    if sharded:
+        monkeypatch.setattr(module, "ROOT", tmp_path)
+        for name, row in selected.items():
+            path = tmp_path / AUDIT_MODULES / audit_module(row)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            existing = json.loads(path.read_text()) if path.exists() else {}
+            path.write_bytes(render({**existing, name: row}))
 
     def run(*args):
         monkeypatch.setattr("sys.argv", [str(module.__file__), *args])
-        return module.main()
+        result = module.main()
+        if sharded:
+            assert load_shards(tmp_path / AUDIT_MODULES) == json.loads(audit.read_text())
+        return result
 
     return audit, run
 

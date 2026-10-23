@@ -1,0 +1,10 @@
+{
+  "maintenance": {
+    "anti_relocation": "Complete AST identities include short definitions; dedicated-file identities preserve all newline bytes on a whole-file move. Imported aliases discover new callers and helpers.",
+    "cutover": "s4_modules must set phase to s4_modules. That expires the 15000 overlap immediately and rejects all legacy journal/duplicate-metadata writers. final uses the same caps.",
+    "measure": "python -m tests.integration_ownership",
+    "ownership": "Review new unknown definitions/imports and storage writers explicitly; add ownership or a precise generic exclusion. Never refresh the baseline from HEAD.",
+    "snapshots": "baseline and landing files/spans record immutable source revisions, not rolling measurements.",
+    "storage": "A writer key includes path, enclosing definition and call AST; enclosing AST changes require another classification review. Ordinary audits are not ref-replay authority."
+  }
+}

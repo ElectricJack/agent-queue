@@ -1,0 +1,19 @@
+{
+  "shared": {
+    "src/object_loop/evidence.py::artifact_digests": {
+      "reason": "Derives authorized retained-artifact identities from object state and verified baseline evidence for the shared verification command."
+    },
+    "src/object_loop/evidence.py::baseline_images": {
+      "reason": "Reads verified baseline captures through the shared artifact store to resolve durable evidence pointers."
+    },
+    "src/object_loop/evidence.py::final_evidence": {
+      "reason": "Builds the final Before/After evidence packet by resolving and verifying retained artifacts through the shared store."
+    },
+    "src/object_loop/evidence.py::import from src.jobs.artifacts import open_artifact": {
+      "reason": "Imports the shared job artifact reader for retained baseline evidence."
+    },
+    "src/object_loop/evidence.py::import from src.object_loop.artifacts import ArtifactError, artifact_uri, resolve, verify": {
+      "reason": "Imports shared retained-artifact resolution and verification primitives for object evidence packets."
+    }
+  }
+}

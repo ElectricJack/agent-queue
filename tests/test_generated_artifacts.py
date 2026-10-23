@@ -97,6 +97,8 @@ def test_recorded_artifacts_preserve_approved_bytes_and_historical_policy(tmp_pa
     expected = {name: (ROOT / name).read_bytes() for name in listed}
     shutil.copytree(ROOT / "tests/fixtures/generated_sources",
                     tmp_path / "tests/fixtures/generated_sources")
+    shutil.copytree(ROOT / "tests/fixtures/contracts/command_audit_modules",
+                    tmp_path / "tests/fixtures/contracts/command_audit_modules")
     for _ in range(2):
         subprocess.run([sys.executable, str(script), "--root", str(tmp_path)], check=True)
         assert {name: (tmp_path / name).read_bytes() for name in listed} == expected
@@ -109,6 +111,8 @@ def test_recorded_artifacts_preserve_approved_bytes_and_historical_policy(tmp_pa
 def test_recorded_artifacts_refuse_missing_or_unapproved_inputs(tmp_path, failure):
     shutil.copytree(ROOT / "tests/fixtures/generated_sources",
                     tmp_path / "tests/fixtures/generated_sources")
+    shutil.copytree(ROOT / "tests/fixtures/contracts/command_audit_modules",
+                    tmp_path / "tests/fixtures/contracts/command_audit_modules")
     source = tmp_path / "tests/fixtures/generated_sources/playbooks/default-pipeline/definition.json"
     if failure == "missing_input":
         source.unlink()
@@ -155,6 +159,93 @@ async def test_recorded_input_conflict_is_a_source_conflict(tmp_path):
         )
     assert source in raised.value.stdout
     assert not list(tmp_path.glob("aq-regen-*"))
+
+
+@pytest.mark.parametrize("same_module", [False, True], ids=["independent", "same-evidence"])
+@pytest.mark.parametrize("stale_outputs", [False, True], ids=["current", "stale-conflicts"])
+async def test_hot_bookkeeping_merge_preserves_authored_evidence(
+    tmp_path, same_module, stale_outputs,
+):
+    """Real branch merges rebuild aggregates, but never choose reviewed inputs."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q", "--initial-branch=main")
+    shutil.copyfile(ROOT / ".gitattributes", repo / ".gitattributes")
+    scripts = repo / "scripts"
+    scripts.mkdir()
+    shutil.copyfile(ROOT / "scripts/bookkeeping_sources.py", scripts / "bookkeeping_sources.py")
+    generator = scripts / "regenerate-generated.sh"
+    generator.write_text("#!/bin/sh\nexec python3 scripts/bookkeeping_sources.py\n")
+    generator.chmod(0o755)
+
+    def write_json(path, value):
+        target = repo / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps(value, indent=2) + "\n")
+
+    source = "tests/fixtures/generated_sources"
+    for name in ("integration_ownership", "integration_ownership_report"):
+        write_json(f"{source}/ownership/modules/{name}/policy/version.json", {"version": 1})
+    descriptors = repo / source / "command_descriptors"
+    descriptors.mkdir()
+    for module in ("alpha", "beta"):
+        for name in ("integration_ownership", "integration_ownership_report"):
+            write_json(f"{source}/ownership/modules/{name}/modules/{module}.json",
+                       {"shared": {f"src/{module}.py::owned": {"reason": "reviewed base"}}})
+        write_json(f"tests/fixtures/contracts/command_audit_modules/src/{module}.py.json",
+                   {module: {"producer": f"src/{module}.py:Handler._cmd_{module}",
+                             "source_digest": "reviewed base", "review_notes": "keep approval"}})
+        (descriptors / f"{module}.py.inc").write_text(f"def test_{module}():\n    assert 1\n\n")
+
+    def regenerate():
+        subprocess.run([str(generator)], cwd=repo, capture_output=True, text=True, check=True)
+
+    regenerate()
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "base")
+    base = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    heads = []
+    for side, module in (("left", "alpha"), ("right", "alpha" if same_module else "beta")):
+        _git(repo, "checkout", "--detach", base)
+        for name in ("integration_ownership", "integration_ownership_report"):
+            write_json(f"{source}/ownership/modules/{name}/modules/{module}.json",
+                       {"shared": {f"src/{module}.py::owned": {"reason": side}}})
+        write_json(f"tests/fixtures/contracts/command_audit_modules/src/{module}.py.json",
+                   {module: {"producer": f"src/{module}.py:Handler._cmd_{module}",
+                             "source_digest": side, "review_notes": "keep approval"}})
+        (descriptors / f"{module}.py.inc").write_text(f"def test_{module}():\n    assert {side!r}\n\n")
+        regenerate()
+        if stale_outputs:
+            # A stale aggregate is disposable, including an overlapping change
+            # whose old text cannot be parsed. Only the reviewed shards matter.
+            (repo / "tests/test_command_descriptors.py").write_text(f"stale {side}\n")
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-qm", side)
+        heads.append(_git(repo, "rev-parse", "HEAD").stdout.strip())
+    args = ["merge-tree", "--write-tree", f"--merge-base={base}", *heads]
+    if same_module or stale_outputs:
+        assert _git(repo, *args, check=False).returncode == 1
+    if same_module:
+        with pytest.raises(GeneratedMergeConflict):
+            await merge_generated_tree(GitManager(), repo, args)
+        return
+    tree = await merge_generated_tree(GitManager(), repo, args)
+    for name in ("integration_ownership", "integration_ownership_report"):
+        for path in (f"tests/{name}.json", f"{source}/ownership/{name}.json"):
+            result = json.loads(_git(repo, "show", f"{tree}:{path}").stdout)
+            assert result["shared"] == {
+                "src/alpha.py::owned": {"reason": "left"},
+                "src/beta.py::owned": {"reason": "right"},
+            }
+    audit = json.loads(_git(repo, "show", f"{tree}:tests/fixtures/contracts/"
+                            "generated-command-audit.json").stdout)
+    assert audit["alpha"]["source_digest"] == "left"
+    assert audit["beta"]["source_digest"] == "right"
+    assert all(row["review_notes"] == "keep approval" for row in audit.values())
+    tests = _git(repo, "show", f"{tree}:tests/test_command_descriptors.py").stdout
+    assert "assert 'left'" in tests and "assert 'right'" in tests
+    assert await merge_generated_tree(GitManager(), repo, args) == tree
+    assert _git(repo, "status", "--porcelain").stdout == ""
 
 
 def test_real_generated_paths_merge_without_conflicting(tmp_path):

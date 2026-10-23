@@ -1,0 +1,6 @@
+{
+  "exclusions": {
+    "src/wait_runtime/legacy_human.py::adopt_waiting_input": "Verified-wait migration provenance and read-only source projections. Owns no integration delivery lifecycle or Git ref mutation; canonical integration sources remain independently charged.",
+    "src/wait_runtime/legacy_human.py::import from src.wait_runtime.hibernate import begin_suspension": "Verified-wait migration provenance and read-only source projections. Owns no integration delivery lifecycle or Git ref mutation; canonical integration sources remain independently charged."
+  }
+}
