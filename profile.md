@@ -16,11 +16,11 @@ Agent Queue is a self-improving orchestration platform for AI coding agents. It 
 
 ## Architecture
 
-Single Python asyncio process. Event-driven state machine. SQLAlchemy Core with Alembic migrations (PostgreSQL only). Discord bot + MCP server for control planes. All components communicate through an async EventBus.
+Single Python asyncio process. Event-driven state machine. SQLAlchemy Core with Alembic migrations (PostgreSQL only). Dashboard, CLI and MCP command surfaces plus a bounded Discord adapter. All components communicate through an async EventBus.
 
 ```
 asyncio event loop
-├── Discord Bot / MCP Server     — control planes (human + machine)
+├── Dashboard / CLI / MCP        — commands; Discord adapter for chat and decisions
 ├── LLM direct path              — src/llm/: LLMClient.complete/run_tools, intelligence classes
 │   ├── PromptBuilder            — 5-layer context assembly (L0-L3 + tools)
 │   └── ToolRegistry             — tiered tool loading (core + on-demand)
@@ -195,7 +195,7 @@ Memory is provided by the **external `aq-memory` plugin** (install via `aq plugi
 | Directory | Purpose |
 |-----------|---------|
 | `src/adapters/` | Agent adapter interface + Claude Code implementation |
-| `src/discord/` | Notification-only Discord adapter: hourly digest and escalation post/thread delivery out, escalation-thread replies in. One explicit `/delete-task` operator action; the six legacy slash commands and channel routing remain retired |
+| `src/discord/` | Discord adapter: digests/reports, canonical asks and legacy escalation delivery; verified human intake and opt-in project/global supervisor conversations. Explicit `/delete-task` operator action; the six former slash commands remain retired |
 | `src/git/` | Clone, branch, worktree, push/pull, serialized shared-repo ops |
 | `src/tokens/` | Token budget calculation, usage ledger, rate limit tracking |
 | `src/llm/` | Direct LLM path — `LLMClient`, provider adapters (Anthropic, Google, OpenAI/Ollama), `LLMCallSpec` |
@@ -225,10 +225,10 @@ Playbooks, profiles, facts, and knowledge are all markdown files in `~/.agent-qu
 Lightweight, zero-ops. Single process means no need for distributed locking. WAL mode gives concurrent reads. Survives restarts. Runs on a Raspberry Pi. SQLAlchemy Core provides dialect portability — PostgreSQL supported via asyncpg for production deployments.
 
 ### Why Discord is *not* the control plane
-It was one, and the surface grew faster than it could be trusted: 122 mirrored slash commands, task buttons and per-task streaming threads all mutating work from a chat client. The dashboard, CLI and MCP now own browsing, controls, gates and logs; Discord is primarily the phone-shaped notification surface — one shared channel carrying an hourly activity digest and one thread per human decision. A reply in that thread is evidence for the owning project supervisor, never a direct task mutation. See `docs/guides/discord-commands.md` and `docs/guides/discord-migration.md`.
+It was one, and the surface grew faster than it could be trusted: 122 mirrored slash commands, task buttons and per-task streaming threads all mutating work from a chat client. The dashboard, CLI and MCP now own browsing, controls, gates and logs; Discord carries summaries and human decisions in one shared channel. Canonical asks use channel posts and verified decision buttons; legacy escalation threads remain until destination transfer. Optional conversations reach the project/global supervisor, and `/delete-task` is an explicit operator action. Human prose is evidence, with decisions bound to current source context through CommandHandler. See `docs/guides/discord-commands.md` and `docs/guides/discord-migration.md`.
 
 ### Why the Command Pattern?
-`CommandHandler` is the single execution point for all operations. Playbook nodes, MCP tools, the dashboard API and the CLI all delegate here — ensures feature parity and consistent error handling across all interfaces. The Discord adapter follows the same rule: it calls `escalation_reply` and the explicit operator `delete_task` action; it never touches the database or a session directly. The deletion exception is specified in `docs/superpowers/specs/2026-10-11-unified-task-delete.md`.
+`CommandHandler` is the single execution point for all operations. Playbook nodes, MCP tools, the dashboard API and the CLI all delegate here — ensures feature parity and consistent error handling across all interfaces. The Discord adapter follows the same rule: it routes observed input and decision buttons through ask, escalation and supervisor-inbox commands, plus the explicit operator `delete_task` action; it never mutates a session directly. The deletion exception is specified in `docs/superpowers/specs/2026-10-11-unified-task-delete.md`.
 
 ### Why plugins?
 Internal functionality (file ops, git, memory, code quality) is implemented as plugins with the same API available to third parties. This enforces clean boundaries, enables selective loading, and stress-tests the plugin API with real complexity.
@@ -300,7 +300,7 @@ Key sections: `discord`, `scheduling`, `auto_task`, `pause_retry`, `hook_engine`
 - **Async-first I/O:** All production code uses non-blocking I/O. Git ops use `GitManager`'s async API (`a`-prefixed methods). No sync `subprocess.run()` in production.
 - Database operations return dicts or dataclass instances from `models.py`
 - Commands return structured dicts with `success` boolean and data/error fields
-- Notifications via `_notify_channel()` for project-aware Discord routing
+- Dashboard notifications use typed `notify.*` events; Discord delivery uses durable domain outboxes
 - Git operations wrapped in `GitManager` with `GitError` exceptions
 - **Linter:** ruff (line-length 100, target py312)
 - **Tests:** pytest with pytest-asyncio (`asyncio_mode = "auto"`)
@@ -309,7 +309,7 @@ Key sections: `discord`, `scheduling`, `auto_task`, `pause_retry`, `hook_engine`
 ## Infrastructure
 
 - **Daemon:** Runs as a background process via `run.sh` (single Python asyncio process)
-- **Discord bot:** Primary human interface, requires bot token + guild ID + channel config
+- **Discord bot:** Optional summaries, human decisions and supervisor conversations; requires bot token + guild ID + channel config
 - **MCP server:** Embedded in daemon, auto-exposes ~150 CommandHandler commands via streamable-http transport
 - **GitHub integration:** Git operations for branching, PRs, worktrees per task
 - **Multi-provider:** Anthropic direct, AWS Bedrock, Google Vertex AI, Gemini, Ollama for LLM calls
