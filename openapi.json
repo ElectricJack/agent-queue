@@ -111,11 +111,11 @@
         }
       }
     },
-    "/plans/{task_id}": {
+    "/api/plans/{task_id}": {
       "get": {
-        "summary": "Plan Viewer",
-        "description": "Serve plan content as an HTML page.",
-        "operationId": "plan_viewer_plans__task_id__get",
+        "summary": "Plan Content",
+        "description": "Return plan markdown as data for the standalone dashboard viewer.",
+        "operationId": "getPlan",
         "parameters": [
           {
             "name": "task_id",
@@ -132,7 +132,9 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/PlanContentResponse"
+                }
               }
             }
           },
@@ -58148,6 +58150,24 @@
           "description"
         ],
         "title": "Placeholder"
+      },
+      "PlanContentResponse": {
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "title": "Task Id"
+          },
+          "content": {
+            "type": "string",
+            "title": "Content"
+          }
+        },
+        "type": "object",
+        "required": [
+          "task_id",
+          "content"
+        ],
+        "title": "PlanContentResponse"
       },
       "PlaybookActivateRequest": {
         "properties": {

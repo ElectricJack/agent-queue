@@ -1,6 +1,6 @@
 # System spec: providers
 
-Status: describes the system as of 2026-10-20 (base `22cffd1b7`). This is system 12 of the
+Status: audited against code on 2026-10-22 (base `52d2efe4c`). This is system 12 of the
 eighteen in the agent-queue system inventory (vault
 `projects/agent-queue/specs/2026-10-20-agent-queue-system-inventory.md`, review
 `rev-bright-rapids`, approved at revision 1 when this was written). It explains what the
@@ -96,11 +96,14 @@ plus a grace period, an unavailable provider enters probation: the next launch i
 canary. A canary that authenticates closes the breaker; one that dies reopens it with
 doubled backoff, capped at `backoff_max_seconds` (3600). An `unauthenticated` provider
 recovers through the auth probe instead, every 120 seconds. Repeated trips inside
-`flap_window_seconds` count as flapping, which the notifier escalates.
+`flap_window_seconds` count as flapping. Notifications are damped while flapping;
+flapping alone does not open a human escalation. A canary slot is released when its
+session ends, or after the timeout if no terminal session record is available.
 
 **Operator override.** `aq provider set-state` pins a state with an expiry (default four
-hours, at most seven days, `provider_failover.override`). `aq provider recheck` clears
-evidence and re-probes now.
+hours, at most seven days, `provider_failover.override`). A disabled override may be
+indefinite; `auto` removes an override and resets failure counters.
+`aq provider recheck` runs a fresh auth probe and folds its answer into availability.
 
 **The service.** `ProviderAvailabilityService` (`src/providers/availability_service.py`,
 reached as `Orchestrator.provider_availability`) wraps the pure machine:
@@ -113,8 +116,9 @@ reached as `Orchestrator.provider_availability`) wraps the pure machine:
   the background auth probe (`src/providers/probe.py`, every 600 seconds while launchable);
 - `admit_launch` is the scheduler's question. It answers yes for a launchable provider,
   yes-once for a probation canary, and no otherwise;
-- every transition emits `provider.state_changed` (which triggers the failover playbook)
-  and `notify.provider_state`, and may open a provider escalation.
+- every transition emits `provider.state_changed` (which triggers the failover playbook);
+  crossing between launchable and unavailable also emits `notify.provider_state` and
+  invokes the half-change notifier. Notification tasks are tracked through shutdown.
 
 The mode switch is `provider_failover.mode`: `enforce` (default) refuses launches;
 `observe` tracks state, emits events and serves every surface but refuses nothing; `off`
@@ -122,8 +126,7 @@ collects no evidence. The service reads config through a getter on every piece o
 evidence, so the mode and every threshold are hot-reloadable.
 
 The operator guide is [provider outage](../../guides/provider-outage.md). The design
-record, with decisions D1 to D24, is [provider failover](../provider-failover.md); §5
-explains why that document reads as unshipped.
+record, with decisions D1 to D24, is [provider failover](../provider-failover.md).
 
 ### 2.3 Failover of queued work
 
@@ -142,22 +145,26 @@ policy. The split:
   `provider.state_changed` and every five minutes, then `provider_availability_notify`.
   It holds no state and decides nothing itself.
 
-A sweep considers READY tasks whose provider is unavailable. For each:
+A sweep considers unheld READY, DEFINED and BLOCKED tasks whose provider is unavailable,
+plus tracked provider-paused tasks. Explicit operator pauses stay paused; moving a BLOCKED
+task does not clear its dependency block. For each:
 
 1. A `pinned` task holds with a visible reason. The router writes `pinned` for a hold
    lane; an operator override writes it too.
 2. A task the router routed moves only among its recorded `tasks.route.candidates`, to the
-   first one whose provider is launchable. The routing decision already said which
-   alternatives were acceptable; failover does not invent new ones.
-3. Otherwise the task moves to the same intelligence class on the next provider in
-   `provider_failover.order` (empty means `WORKER_PROVIDERS` order), unless its class's
-   policy is `hold` (`provider_failover.classes`, e.g. `deep-high: hold`).
+   first acceptable target, normally an `available` provider. Candidates may name different
+   classes for a narrow lane. The routing decision already said which alternatives were
+   acceptable; failover does not invent new ones.
+3. The legacy unrouted planner can choose an equivalent class using
+   `provider_failover.order` and `.classes` (for example `deep-high: hold`). Current
+   mandatory routing holds unrouted tasks for the router; there is no project-default
+   route to fall back to.
 4. If no target exists, the task holds.
 
 Moves trickle: at most `reroute.max_per_sweep` (10) per sweep, bounded by the target's
 backlog, never onto a `degraded` target unless allowed, at most `max_auto_per_task` (2)
 automatic moves per task, and a 30-minute per-task cooldown. A moved task records
-`rerouted_from`, so recovery can move it back.
+`rerouted_from` for explicit undo; recovery does not automatically move it back.
 
 **Capacity spill** (`src/providers/spill.py`, D24) is the sweep's second pass. A READY
 task that has waited `spill.after_seconds` (300) on a pool at its concurrency limit moves
@@ -165,7 +172,8 @@ to a same-class pool with headroom, at most five per sweep. Spill counts against
 per-task limits as failover moves, and runs only when failover would (`mode: enforce` and
 `reroute.enabled`).
 
-If the playbook is not active, tasks on an unavailable provider hold with a reason and
+The daemon reconciles the required system activation on startup. If an operator opts out
+or the activation is unhealthy, tasks on an unavailable provider hold with a reason and
 nothing moves. That is the safe failure; `aq doctor --check providers.failover_playbook`
 reports it.
 
@@ -181,7 +189,11 @@ to blame. The verdict is one of:
 `ProviderFailoverMixin` (`src/orchestrator/provider_failover.py`) acts on it. For a tripped
 or suspect exit it commits the worktree as `aq-wip: provider failover checkpoint`, pushes
 it, and writes a handoff note to `task_metadata['provider_failover_handoff']` so the next
-agent, on whatever provider, starts from the checkpoint and knows why. An attributed
+agent, on whatever provider, starts from the checkpoint and knows why. On a train or
+hierarchy, it instead checkpoints only the task's own worker/repair writer branch with
+`WIP saved by AQ: …`, fast-forwards it and records a resume point. A branch owned by
+another writer is preserved for integration recovery. The handoff also goes in a task
+comment and includes at most 80 pane lines / 8192 bytes (2048 bytes in prime). An attributed
 failure spends no retry. In `enforce` mode the first suspect exit pauses the task for
 `launch.suspect_backoff_seconds` (30) as `provider_suspect`, so a burst of failures trips
 the provider before the task is relaunched into it. If the checkpoint push fails, the task
@@ -217,7 +229,8 @@ Each provider reports its own usage differently, so there is one reader per prov
   `provider-usage-probe` playbook calls the `provider_usage_probe` command every ten
   minutes. The command runs `claude -p "/usage" --output-format json` with a 20-second
   ceiling (never `--bare`, which drops the login) and parses the text with
-  `src/providers/claude_usage.py`. The probe is free: the CLI reports `num_turns: 0` and
+  `src/providers/claude_usage.py`. Its system activation is required and reconciled at
+  startup unless explicitly opted out. The probe is free: the CLI reports `num_turns: 0` and
   `total_cost_usd: 0`. Its last verdict is kept in system config
   `providers.claude_usage.last_probe`.
 - **Gemini** has no reader, so it has no usage data (§5).
@@ -239,10 +252,11 @@ are [provider usage](../../superpowers/specs/2026-09-07-provider-usage-design.md
 
 The reference is [usage accounting](../../reference/usage-accounting.md). The essentials:
 
-- **The ledger.** `token_ledger` is written only by the transcript watcher
+- **The ledger.** `token_ledger` is normally written by the transcript watcher
   (`src/sessions/transcripts/watcher.py`), which reads each session's transcript
   (`claude.py`, `codex.py` beside it) and records per-call usage, with call detail in
-  `transcript_usage_calls`. Queries are in `src/database/queries/token_queries.py`.
+  `transcript_usage_calls`. The legacy synchronous workflow also records total-only
+  output usage. Queries are in `src/database/queries/token_queries.py`.
 - **Three qualities.** A count is `observed` (the provider reported it), `estimated`
   (characters divided by four; only ever in `llm.jsonl` as `*_est` fields), or
   `unavailable`. `TokenUsage.reported` (`src/llm/types.py`) says which. A hard budget
@@ -283,12 +297,19 @@ They use `LLMClient` (`src/llm/client.py`), with `complete()` for one completion
 An adapter's `reports_usage` defaults to false, so its counts are `unavailable` unless it
 says otherwise. Model resolution (`src/llm/spec.py`) is `spec.model`, then the step's
 intelligence class, then `llm.model`, then the adapter default. On this path the provider
-is always `llm.provider`; `llm.fallback` names a second one. `src/llm/fake.py` is the test
+for API playbook steps is `llm.provider`; other callers can set `spec.provider`.
+`llm.fallback` supplies a second credential block when the primary gate is unavailable.
+An incompatible class slice or explicit model refuses fallback; successful fallback
+calls do not prove primary recovery. Adapter caches distinguish primary and fallback
+credentials even for the same vendor/model/endpoint. `src/llm/fake.py` is the test
 double.
 
 `src/llm/cli.py` (`ask_cli`) is a newer one-shot path: a tool-free call through a
 logged-in agent CLI, in an empty temporary directory, with no task and no session. It lets
-a playbook step use a subscription login instead of an API key.
+a playbook step use a subscription login instead of an API key with `transport: cli`.
+The profile must select a harness and class and must not enable tools. This path uses
+neither the direct API availability gate nor `llm.fallback`, `llm.jsonl` or the ledger.
+It does enforce the step budget and fails closed when reported token usage is missing.
 
 The design is [LLM direct path](../../superpowers/specs/2026-08-30-llm-direct-path-design.md);
 the operator guide is [LLM providers](../../guides/llm-providers.md).
@@ -301,7 +322,7 @@ the operator guide is [LLM providers](../../guides/llm-providers.md).
 | `provider_availability_transitions` | append-only history of state changes | availability service only |
 | `provider_usage_snapshots` | append-only usage readings, deduplicated, with `last_seen_at` | transcript reader, usage probe |
 | `task_reroutes` | one row per failover or spill move, for history and undo | reroute engine |
-| `token_ledger`, `transcript_usage_calls` | tokens spent per session call | transcript watcher only |
+| `token_ledger`, `transcript_usage_calls` | tokens spent per session call | transcript watcher; legacy sync workflow also writes total-only ledger rows |
 | `tasks.provider_intent`, `tasks.rerouted_from`, `tasks.route` | how firmly a task is tied to its provider, and where it came from | router, override, reroute engine |
 
 The table definitions are in `src/database/tables.py`; `archived_tasks` mirrors the task
@@ -313,10 +334,11 @@ columns.
   `aq pool provider status|preview|apply`, `aq costs`.
 - **Commands:** `src/commands/provider_commands.py`,
   `src/commands/provider_allocation_commands.py`, `src/commands/ops_commands.py`.
-- **API:** `src/api/providers.py` (availability, usage), `src/api/metrics.py` (tokens).
+- **API:** `src/api/providers.py` (availability, usage, allocation preview/apply), `src/api/metrics.py` (tokens).
 - **Doctor:** `providers.availability`, `providers.recovery_stuck`,
   `providers.failover_playbook`, `providers.held_tasks` (warns after
-  `doctor.held_warn_seconds`, four hours), `providers.claude_usage`.
+  `doctor.held_warn_seconds`, four hours), `providers.claude_usage`,
+  `providers.usage_activity_gap` (active provider without readings for 30 minutes).
 - **Config:** `providers:` (usage probe and staleness), `provider_failover:` (§2.2–2.4),
   `llm:` and `llm.fallback`, `pricing:`, `llm_logging:`. All are in `src/config.py`; the
   reference is [config](../config.md).
@@ -352,8 +374,9 @@ What this system does not own: which profile a task gets (routing), how many ses
   mechanism and happens without any playbook. Moving work is policy and happens only
   through the `provider_reroute` command called by a playbook. A missing playbook leaves
   work held and visible, never moved by hidden code.
-- **One writer per table.** Only the availability service writes availability state; only
-  the transcript watcher writes the ledger; only the reroute engine writes `task_reroutes`.
+- **One writer per table.** Only the availability service writes availability state; the
+  transcript watcher owns per-call ledger ingestion (the legacy sync path can record
+  totals); only the reroute engine writes `task_reroutes`.
 - **The state machine is pure.** `availability.py`, `reroute.plan_sweep`, `inflight.py`
   and the spill planner take state in and return decisions out, with no I/O.
 - **Evidence, not guesses.** State changes come from typed evidence and named trip rules,
@@ -372,24 +395,17 @@ What this system does not own: which profile a task gets (routing), how many ses
 
 ## 5. Known gaps
 
-**Documentation drift.**
-
-- [provider failover](../provider-failover.md) still opens with "nothing here has
-  shipped". Epic `bold-rapids` implemented it and is complete. It should be relabelled a
-  historical design record, partly superseded by the vault spec
-  `specs/2026-09-28-mandatory-task-routing.md` for how routing writes intent. The
-  inventory lists it as in flight; it is not.
-- The [providers concept page](../../concepts/providers.md) says twelve intelligence
-  classes ship across four reasoning levels. Seven ship: `fast-low`, `fast-high`,
-  `standard-high`, `deep-low`, `deep-high`, `astra-low`, `astra-high`.
-- The [module catalogue](../../reference/modules/providers.md) omits `allocation.py` and
-  `reroute_args.py`.
-
 **Behaviour.**
 
-- **Direct-path tokens are not ledgered.** `token_ledger` covers sessions only. A playbook
+- **Anthropic `xhigh` is not mapped on the API path.** Shipped high classes request
+  `thinking: xhigh`, but `_anthropic_budget` maps only `off`, `low`, `medium` and
+  `high`; an unknown value resolves to zero. API calls therefore disable thinking for
+  those classes. The CLI path forwards the effort setting. This is a suspected code bug,
+  not an intended class policy.
+
+- **Direct-path tokens are not ledgered.** `token_ledger` covers sessions only. An API playbook
   `llm` step or `invoke_llm` call is logged to `llm.jsonl` but counts toward no daily or
-  project budget.
+  project budget. Headless CLI steps enter neither the log nor the ledger.
 - **Gemini has no usage reader and no transcript reader.** It gets availability state from
   startup evidence but no snapshots, no ledger rows and no worker rungs.
 - **Exhaustion detection leans on pane text.** `usage_limit_screen.py` matches the CLIs'
@@ -411,11 +427,12 @@ What this system does not own: which profile a task gets (routing), how many ses
 
 ## 6. Planned work
 
-Open tasks were re-queried on 2026-10-20. No open epic is about providers directly; the
+This is a historical planning snapshot from 2026-10-20, not a current task-status query.
+At that time, no open epic was about providers directly; the
 system's own epics (`bold-rapids` failover, `nimble-bridge` allocation, `fresh-rapids-73`
 handoff on exhaustion, `grand-ember-77` headroom routing, `vivid-stone-92` pane
 detection, `steady-horizon-12` recovery flapping, `bright-ridge-85` expired runtime login)
-are complete. What is open:
+were complete. The recorded open work was:
 
 - **`clear-impact-72.9` (READY): evaluate and plan a rewrite of `provider-failover`** onto
   the reusable playbook building blocks. It is part of `clear-impact-72` (IN_PROGRESS),
@@ -438,8 +455,9 @@ are complete. What is open:
   (playbook scripts refused by default) affect how the two policy playbooks are activated
   and what they may run.
 
-Nothing open addresses the gaps in §5. The candidates for filing are ledgering direct-path
-calls, a Gemini usage reader, and the three documentation fixes.
+The snapshot identified ledgering direct-path calls and a Gemini usage reader as
+candidates for filing. The documentation gaps recorded then were corrected in the
+2026-10-22 audit; the behavioural gaps in §5 remain.
 
 ## 7. Related documents and source
 

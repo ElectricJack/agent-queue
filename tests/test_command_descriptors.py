@@ -48,7 +48,7 @@ EPIC_CHANGES = ROOT / "tests/fixtures/contracts/epic-integration-contract-change
 EPIC_COMMANDS = ("integration_cutover_containment", "integration_reconcile_git_truth")
 WATCH_CHANGES = ROOT / "tests/fixtures/contracts/watch-contract-changes.json"
 INGEST_CHANGES = ROOT / "tests/fixtures/contracts/ingestion-replay-contract-changes.json"
-OBJECT_LOOP_CHANGES = ROOT / "tests/fixtures/contracts/object-loop-port-changes.json"
+OBJECT_LOOP_PORT_CHANGES = ROOT / "tests/fixtures/contracts/object-loop-port-changes.json"
 PIPELINE_CHANGES = ROOT / "tests/fixtures/contracts/default-pipeline-building-blocks-changes.json"
 HIBERNATION_CHANGES = ROOT / "tests/fixtures/contracts/hibernation-contract-changes.json"
 DISPATCH_CHANGES = ROOT / "tests/fixtures/contracts/dispatch-wait-contract-changes.json"
@@ -61,6 +61,7 @@ BATCH_REPAIR_CHANGES = ROOT / "tests/fixtures/contracts/batch-repair-contract-ch
 DEV_HIBERNATION_CHANGES = ROOT / "tests/fixtures/contracts/hibernation-main-refresh-contract-changes.json"
 SUPERVISOR_HEALTH_CHANGES = ROOT / "tests/fixtures/contracts/supervisor-health-contract-changes.json"
 TARGET_REPAIR_CHANGES = ROOT / "tests/fixtures/contracts/target-repair-contract-changes.json"
+OBJECT_LOOP_CHANGES = ROOT / "tests/fixtures/contracts/object-loop-refactor-contract-changes.json"
 PR_REPAIR_CHANGES = ROOT / "tests/fixtures/contracts/pr-repair-publication-contract-changes.json"
 PROMOTION_REQUEST_PORT = ROOT / "tests/fixtures/contracts/promotion-request-port-changes.json"
 WAIT_REQUEUE_CHANGES = ROOT / "tests/fixtures/contracts/wait-requeue-contract-changes.json"
@@ -643,11 +644,18 @@ def test_legacy_playbook_fixtures_are_unchanged():
     watch = _watch_changes()["playbook_fixtures"]
     ingest = json.loads(INGEST_CHANGES.read_text())["playbook_fixtures"]
     hibernation = _hibernation_changes()["playbook_fixtures"]
+    probe_port = json.loads((
+        ROOT / "tests/fixtures/contracts/provider-usage-probe-port-changes.json"
+    ).read_text())["playbook_fixtures"]
+    assert set(probe_port) == {"tests/fixtures/playbooks/v2/provider-usage-probe/artifact.json"}
+    object_loop_port = json.loads(OBJECT_LOOP_PORT_CHANGES.read_text())["playbook_fixtures"]
+    assert set(object_loop_port) == {"tests/fixtures/playbooks/v2/object-loop/artifact.json"}
     object_loop = json.loads(OBJECT_LOOP_CHANGES.read_text())["playbook_fixtures"]
     assert set(ingest) == {"tests/fixtures/playbooks/v2/default-pipeline/artifact.json"}
-    assert set(object_loop) == {"tests/fixtures/playbooks/v2/object-loop/artifact.json"}
-
-
+    assert set(object_loop) == {
+        "tests/fixtures/playbooks/v2/object-loop/artifact.json",
+        "tests/fixtures/playbooks/v2/object-loop/traces.json",
+    }
     promotion_request = json.loads(PROMOTION_REQUEST_PORT.read_text())["playbook_fixtures"]
     assert set(promotion_request) == {"tests/fixtures/playbooks/v2/promotion-request/artifact.json"}
     routing = json.loads(ROUTING_CHANGES.read_text())["playbook_fixtures"]
@@ -677,14 +685,25 @@ def test_legacy_playbook_fixtures_are_unchanged():
             assert hibernation[path]["previous_sha256"] == digest
             assert hibernation[path]["sha256"] != digest
             digest = hibernation[path]["sha256"]
+        if path in probe_port:
+            assert probe_port[path]["previous_sha256"] == digest
+            historical = ROOT / probe_port[path]["preserved_previous_path"]
+            assert hashlib.sha256(historical.read_bytes()).hexdigest() == digest
+            assert probe_port[path]["sha256"] != digest
+            digest = probe_port[path]["sha256"]
+        if path in object_loop_port:
+            change = object_loop_port[path]
+            assert change["previous_sha256"] == digest
+            historical = ROOT / change["preserved_previous_path"]
+            assert hashlib.sha256(historical.read_bytes()).hexdigest() == digest
+            ported = ROOT / "tests/fixtures/playbooks/object-loop-port/ported.artifact.json"
+            assert hashlib.sha256(ported.read_bytes()).hexdigest() == change["sha256"]
+            # The two reviewed recordings derive independently from this baseline.
+            # Keep the authoring port intact while the filter recording is current.
         if path in object_loop:
             assert object_loop[path]["previous_sha256"] == digest
-            historical = ROOT / object_loop[path]["preserved_previous_path"]
-            assert hashlib.sha256(historical.read_bytes()).hexdigest() == digest
             assert object_loop[path]["sha256"] != digest
             digest = object_loop[path]["sha256"]
-
-
         if path in promotion_request:
             change = promotion_request[path]
             assert change["previous_sha256"] == digest

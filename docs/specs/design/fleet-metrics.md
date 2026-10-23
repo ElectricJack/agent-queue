@@ -8,6 +8,12 @@
 > see [historical material](../../history/README.md) for how this material is
 > organised.
 
+Current behavior, including PostgreSQL storage, wait accounting, performance
+probes and delivery latency, is documented in the
+[operations guide](../../guides/operations.md#metrics-reference) and
+[current system spec](../systems/operations-and-recovery.md#29-fleet-metrics-and-performance-telemetry).
+The SQLite details below describe the original design.
+
 **Status:** implemented (task `wise-grove-39`)
 **Surfaces:** `metrics_samples` table · `MetricsSampler` · `metrics.tick` bus event ·
 `GET /api/metrics/series` · dashboard `/metrics`

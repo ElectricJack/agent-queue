@@ -1556,6 +1556,15 @@ class PoolsMixin:
             await self.db.update_session(
                 session.id, state="stopped", desired_state="stopped", end_reason=reason,
             )
+        if not other_live and still_owned:
+            slot = await self._slot_workspace_at(session.work_dir)
+            if slot is not None:
+                try:
+                    await self._worktree_slots().detach_idle_slot_branch(slot)
+                except Exception:
+                    logger.warning(
+                        "pool session %s: branch release deferred", session.id, exc_info=True,
+                    )
         if session.agent_id and not other_live and still_owned:
             await self.db.update_agent(session.agent_id, state=AgentState.IDLE, current_task_id=None)
         await self.bus.emit(
