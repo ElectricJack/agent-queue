@@ -1215,6 +1215,7 @@
     "shipped-playbooks": {
       "description": "Shipped and reviewed playbooks: reviewed V2 artifact fixtures and their digests, prose-only playbook sources, the default pipeline intake, agent-type playbooks, the V1 removal ratchet and cron-to-playbook migration.",
       "modules": [
+        "tests/test_assignment_routing_building_blocks.py",
         "tests/test_blocked_task_escalation.py",
         "tests/test_ci_main_sentinel.py",
         "tests/test_default_agent_type_playbooks.py",
@@ -1353,6 +1354,7 @@
       "modules": [
         "tests/test_agent_task_routing.py",
         "tests/test_assignment_routing.py",
+        "tests/test_assignment_routing_building_blocks.py",
         "tests/test_cross_project_routing.py",
         "tests/test_default_assignment_routing_playbook.py",
         "tests/test_pool_agent_routing.py",
@@ -3179,6 +3181,27 @@
         "parametrize"
       ],
       "summary": "Assignment routing after the playbook cutover: the task row is the route."
+    },
+    "tests/test_assignment_routing_building_blocks.py": {
+      "areas": [
+        "shipped-playbooks",
+        "task-routing"
+      ],
+      "default_arm": true,
+      "digest": "sha256:54cf3c793b9c1d459035a164d9149162ae75296075ac9a2efcddd349c5b7f8ea",
+      "imports": [
+        "src.commands.contracts",
+        "src.commands.contracts.builtin",
+        "src.commands.contracts.models",
+        "src.playbooks.definition",
+        "src.playbooks.engine",
+        "src.playbooks.executors",
+        "src.playbooks.executors.base"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Installed and shipped routers retain their own policy and command traces."
     },
     "tests/test_attestation_check_run_id.py": {
       "areas": [
