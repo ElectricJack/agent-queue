@@ -26,6 +26,14 @@ Workstream P), [self-improvement](self-improvement.md), [playbooks](playbooks.md
 
 ---
 
+> **Current boundary (2026-10-22).** The pause/re-enable plan below is
+> historical. `memory.enabled` now gates legacy commands and optional knowledge
+> context/provider paths, but a config flip does not supply a memory backend.
+> Core fences legacy plugin loads, legacy L1/L2 slots are empty, and reflection
+> was deleted. No periodic reflection or old consolidation schedule ships.
+> See [knowledge records](../../guides/knowledge-records.md) for independent
+> storage/provider gates and [knowledge context](../knowledge-context.md).
+
 ## 1. Problem & Direction
 
 The framework overhaul (todo v3, decisions D3/D4) retunes the core of agent-queue — session

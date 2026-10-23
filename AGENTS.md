@@ -32,7 +32,7 @@ vault (playbooks, profiles, memory — all markdown) is `~/.agent-queue/vault/`.
 | Graph layout | `src/task_graph/layout/`, `src/api/graph_layout.py`, `dashboard/src/pages/command-center/layout-v2/` | `docs/superpowers/specs/2026-09-01-task-graph-spatial-layout-design.md` |
 | API, generated clients, dashboard server | `src/api/` (`spec.py`), `packages/`, `src/dashboard_server/` | `docs/contributing/codegen.md`, `docs/specs/dashboard-server.md` |
 | Config, secrets, tuning | `src/config.py`, `config_editor.py`, `config_secrets.py`, `config_tuning.py` | `docs/specs/config.md`, `docs/guides/default-tuning.md` |
-| Plugins (internal: files, git, inbox, notes, vibecop; external `aq-memory`) | `src/plugins/` | `docs/specs/plugin-system.md`, `docs/specs/design/memory-plugin.md` |
+| Plugins (internal: files, git, inbox, notes, vibecop; legacy `aq-memory` loads fenced) | `src/plugins/` | `docs/specs/plugin-system.md`, `docs/specs/design/memory-plugin.md` |
 
 ## Invariants and gotchas
 

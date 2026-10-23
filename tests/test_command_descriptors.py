@@ -64,6 +64,7 @@ TARGET_REPAIR_CHANGES = ROOT / "tests/fixtures/contracts/target-repair-contract-
 OBJECT_LOOP_CHANGES = ROOT / "tests/fixtures/contracts/object-loop-refactor-contract-changes.json"
 PR_REPAIR_CHANGES = ROOT / "tests/fixtures/contracts/pr-repair-publication-contract-changes.json"
 PROMOTION_REQUEST_PORT = ROOT / "tests/fixtures/contracts/promotion-request-port-changes.json"
+FAILOVER_CHANGES = ROOT / "tests/fixtures/contracts/provider-failover-playbook-changes.json"
 WAIT_REQUEUE_CHANGES = ROOT / "tests/fixtures/contracts/wait-requeue-contract-changes.json"
 RESTART_HOLD_CHANGES = ROOT / "tests/fixtures/contracts/restart-hold-contract-changes.json"
 ROUTING_CHANGES = ROOT / "tests/fixtures/contracts/routing-building-blocks-artifact-changes.json"
@@ -670,6 +671,8 @@ def test_legacy_playbook_fixtures_are_unchanged():
     assert set(routing) == {"tests/fixtures/playbooks/v2/default-assignment-routing/artifact.json"}
     pipeline = json.loads(PIPELINE_CHANGES.read_text())["playbook_fixtures"]
     assert set(pipeline) == {"tests/fixtures/playbooks/v2/default-pipeline/artifact.json"}
+    failover = json.loads(FAILOVER_CHANGES.read_text())["playbook_fixtures"]
+    assert set(failover) == {"tests/fixtures/playbooks/v2/provider-failover/artifact.json"}
     for path, digest in json.loads(GOLDEN.read_text())["playbook_fixtures"].items():
         if path in changes:
             assert changes[path]["previous_sha256"] == digest
@@ -711,6 +714,12 @@ def test_legacy_playbook_fixtures_are_unchanged():
             assert object_loop[path]["previous_sha256"] == digest
             assert object_loop[path]["sha256"] != digest
             digest = object_loop[path]["sha256"]
+        if path in failover:
+            assert failover[path]["previous_sha256"] == digest
+            historical = ROOT / failover[path]["preserved_previous_path"]
+            assert hashlib.sha256(historical.read_bytes()).hexdigest() == digest
+            assert failover[path]["sha256"] != digest
+            digest = failover[path]["sha256"]
         if path in promotion_request:
             change = promotion_request[path]
             assert change["previous_sha256"] == digest
@@ -1340,4 +1349,3 @@ def _before_parallel_catalogue():
     catalogue = _before_updater_catalogue(catalogue)
     catalogue = _before_pool_delete_catalogue(catalogue)
     return catalogue
-

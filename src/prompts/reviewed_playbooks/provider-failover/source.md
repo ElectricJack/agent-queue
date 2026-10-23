@@ -4,6 +4,9 @@ name: Provider failover
 version: 1
 scope: system
 enabled: true
+required_capabilities:
+  - provider_reroute
+  - provider_availability_notify
 triggers:
   - provider.state_changed
   - timer.5m
@@ -41,8 +44,10 @@ received may now stop. The rule performs two steps and then ends.
    the event. Bind the result as `notice`. It tells the global supervisor and
    the human once per change of availability; the daemon sends the same
    notice when the change happens, so this step normally reports
-   `already_notified`. Every outcome other than `rejected` and
-   `runtime_error` ends the rule successfully; those two fail it.
+   `already_notified`. The typed outcomes `notified`, `flapping`,
+   `already_notified`, `flap_damped`, `not_a_half_change`, `disabled` and
+   `messages_disabled` end the rule successfully. A `rejected` or
+   `runtime_error` outcome fails it.
 
 ## Rule: reroute-sweep
 
@@ -63,3 +68,23 @@ retry than any the run could schedule. A sweep that failed part-way has
 moved some tasks and not others; every move it made is recorded on its task
 and in `task_reroutes`, and the next sweep simply carries on from the queue
 as it finds it.
+
+## Building-block boundaries
+
+Both rules use typed command results with explicit outcome transitions. The
+`required_capabilities` declaration pins the two commands for review; it does
+not grant authority to a caller. Neither command needs an agent or script step.
+
+Keep `provider_reroute` as the bounded sweep: it already owns eligibility,
+same-class moves, pool-width limits and durable move records. A collection or
+snapshot loop over tasks would duplicate that logic and change its concurrency
+boundary. Doctor checks remain operator diagnostics, outside these event rules.
+
+Keep `provider_availability_notify` as the notification boundary. Its
+`(provider, generation)` deduplication is shared with the daemon; it also owns
+half-change detection, flap damping and escalation lifecycle. Playbook-local
+state and `playbook_state_notify` would create a separate notification history
+and could repeat the daemon's notice. No playbook state, `state_schema_version`,
+observation snapshot or script manifest is needed. These domain commands are
+deliberately retained; the port adds explicit source requirements and typed
+outcome documentation without changing the two rules' operational behavior.

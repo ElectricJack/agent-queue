@@ -2,23 +2,29 @@
 
 ## Overview
 
-Agent Queue is a self-improving orchestration platform for AI coding agents. It manages task queues across multiple projects, coordinates multi-agent workflows through playbooks, accumulates knowledge via a 4-tier memory system, and provides policy and knowledge tools for continuous improvement. Automatic reflection is an operator policy choice; no reflection playbook ships by default.
+Agent Queue orchestrates AI coding agents across project task queues and
+playbook-driven workflows. Reviewed documents gate executable work. Durable
+knowledge uses versioned PostgreSQL records with explicit scope and authority;
+optional context and generation require their own flags and operator gates.
+The former four-tier memory and automatic reflection loop are historical.
+See [reviews and knowledge](docs/specs/systems/reviews-and-knowledge.md).
 
 **Core design principles:**
-1. Human-readable files as source of truth (vault, playbooks, profiles)
+1. Vault Markdown owns editable policy; PostgreSQL owns tasks, reviews and knowledge
 2. Zero LLM calls for orchestration — all scheduling and state management is deterministic
 3. Structure guides intelligence — playbooks encode process knowledge, LLMs provide judgment
-4. The system improves with use — every task leaves the system better prepared for the next one
+4. Knowledge retains sources and history; generation proposes corrections for review
 5. Communicate through events, not coupling — EventBus for all inter-component coordination
-6. Specificity wins — project → agent-type → system hierarchy; local knowledge overrides global
-7. Plugins own their dependencies — memory plugin brings its own Milvus backend
-8. Simple interfaces, smart routing — `memory_get()` auto-routes KV vs semantic search
+6. Knowledge scope and authority are checked explicitly; retrieval grants no new authority
+7. Optional providers own their dependencies; core knowledge needs no memory plugin
+8. Use `aq knowledge` for durable records and `aq record search` for scoped discovery
 
 ## Architecture
 
 The daemon is a single Python asyncio process, composed in `src/main.py`.
 CLI, MCP, HTTP API and the bounded Discord adapter share `CommandHandler`.
-Discord supports notifications, canonical asks and opt-in supervisor conversations. SQLAlchemy Core
+Discord supports notifications, canonical asks and opt-in supervisor conversations.
+SQLAlchemy Core
 and Alembic own PostgreSQL persistence; the in-process EventBus carries
 notifications, while durable services reconcile database records. The dashboard
 server is a separate process. See [Architecture](docs/concepts/architecture.md)
@@ -33,6 +39,9 @@ src/main.py — composition root, health, supervised API/MCP
 │   ├── Session cascade — each stage has a bounded timeout
 │   └── Domain services — integration and message delivery have independent loops
 ├── Verified waits, review notifier and pool-progress watchdog
+├── Reviews and knowledge — PostgreSQL revisions, decisions, records and links
+│   ├── Context — scoped, bounded and explicitly enabled
+│   └── Generation — optional unverified proposals, disabled by default
 ├── EventBus — sequential in-process notifications
 └── PostgreSQL — durable tasks, claims, sessions and service journals
 
@@ -58,23 +67,20 @@ for hierarchy, transitions, admission and completion guards.
 `transition_task` enforces suspended-state transitions; other invalid legacy
 transitions warn unless `state_machine.enforce` is enabled.
 
-### Memory Tiers
+### Knowledge and legacy memory
 
-| Tier | Name | Budget | When Loaded | Contains |
-|------|------|--------|-------------|----------|
-| L0 | Identity | ~50 tokens | Always | Agent type profile `## Role` section |
-| L1 | Critical Facts | ~200 tokens | Task start | Project + agent-type `facts.md` KV entries |
-| L2 | Topic Context | ~500 tokens | On-demand | Memories matching task topic (pre-filtered) |
-| L3 | Deep Search | Variable | Explicit query | Full semantic search across all scopes |
+Core records work with `memory.enabled: false`; knowledge activation flags
+ship disabled and the project allowlist is empty. Context, semantic retrieval
+and generation additionally require the memory master and their own gates.
+Legacy L1/L2 prompt slots are empty. There is no active four-tier service,
+reflection engine or periodic consolidation schedule. The legacy `aq-memory`
+and `memory` plugin names are fenced even if installed.
 
-### Memory Scopes
-
-| Scope | Collection | Vault Path |
-|-------|-----------|------------|
-| System | `aq_system` | `vault/system/memory/`, `vault/system/facts.md` |
-| Orchestrator | `aq_orchestrator` | `vault/orchestrator/memory/` |
-| Agent Type | `aq_agenttype_{type}` | `vault/agent-types/{type}/memory/` |
-| Project | `aq_project_{id}` | `vault/projects/{id}/memory/`, `vault/projects/{id}/notes/` |
+PostgreSQL owns records, revisions, payloads, links and authority. Vault
+knowledge exports are derived views; edits mark them diverged rather than
+updating the canonical record. Project and global scope are explicit and do
+not fall back to each other. See [knowledge records](docs/guides/knowledge-records.md)
+and [knowledge context](docs/specs/knowledge-context.md).
 
 ## Codebase Map
 
@@ -97,7 +103,7 @@ transitions warn unless `state_machine.enforce` is enabled.
 | File | Purpose |
 |------|---------|
 | `src/llm/client.py` | `LLMClient.complete`/`run_tools` — the direct LLM path, no in-process Supervisor |
-| `src/prompt_builder.py` | 5-layer prompt assembly: L0 role → override → L1 facts → L2 context → identity → tools |
+| `src/prompt_builder.py` | Role, overrides, identity and tools; task launch supplies a bounded knowledge bundle in place of legacy L1/L2 memory |
 | `src/tools/` | Tiered tool loading — ~11 core tools always loaded, ~80 more on-demand in 11 categories |
 | `src/prompt_manager.py` | Manages prompt templates and variants from `src/prompts/` |
 | `src/llm_logger.py` | Logs direct API attempts (`llm.jsonl`) and prompt analytics; session usage comes from transcripts |
@@ -157,12 +163,17 @@ Design: `docs/specs/design/formulas.md`; crosswalk row: swarm-work-model design 
 
 ### Memory & Knowledge
 
-Memory is provided by the **external `aq-memory` plugin** (install via `aq plugin install`). The plugin owns its memsearch/Milvus backend, the auto-extractor, and all `memory_*` tool/command handlers. Only the in-tree parsers below remain in core.
+Core owns durable knowledge independently of optional providers.
 
 | File | Purpose |
 |------|---------|
-| `src/facts_parser.py` | Deterministic `facts.md` parser — KV pairs with namespace support |
-| `src/profile_parser.py` | Parses hybrid markdown profiles (English + JSON blocks) |
+| `src/reviews/`, `src/asks/` | Review revisions, frozen decision packets and feedback application |
+| `src/records/` | Shared record identities, authorization, search, links and exports |
+| `src/knowledge/` | Knowledge history, protection, import, context and optional generation |
+| `src/commands/knowledge_commands.py` | Knowledge and records command surface |
+| `src/knowledge/legacy.py` | Refuses legacy memory plugin loads |
+| `src/facts_parser.py` | Legacy deterministic facts parser; not a knowledge store |
+| `src/profile_parser.py` | Profile parser; not a memory backend |
 
 ### Plugin System
 
@@ -171,7 +182,7 @@ Memory is provided by the **external `aq-memory` plugin** (install via `aq plugi
 | `src/plugins/base.py` | Plugin base class, PluginContext API, TrustLevel, @cron decorator |
 | `src/plugins/registry.py` | Central coordinator — discovery, loading, lifecycle, circuit breaker |
 | `src/plugins/loader.py` | Plugin install/update/load mechanics |
-| `src/plugins/internal/` | Shipped internal plugins: aq-files, aq-git, aq-notes, aq-vibecop (aq-memory is external) |
+| `src/plugins/internal/` | Shipped internal plugins: aq-files, aq-git, aq-notes, aq-vibecop (legacy aq-memory loads are fenced) |
 
 ### Subsystems
 
@@ -193,7 +204,9 @@ Memory is provided by the **external `aq-memory` plugin** (install via `aq plugi
 ## Design Decisions
 
 ### Why zero LLM for orchestration?
-Every token is precious. Scheduling, dependency resolution, state transitions — all deterministic. The only LLM calls are: (1) agent task execution (every agent runs as a tmux session, selected by `harness`), (2) explicit playbook LLM steps (direct API or tool-free headless CLI); proposal construction and validation are deterministic, (3) memory revision/merging, (4) operator-authored reflection policy, if installed (no automatic reflection bundle ships), (5) knowledge extraction.
+Every token is precious. Scheduling, dependency resolution, state transitions — all deterministic. Models execute agent tasks and explicitly configured playbook/generation work.
+Optional knowledge extraction and consolidation produce proposals; no reflection
+engine runs on every completed task.
 
 ### Why playbooks over hooks/rules?
 Playbooks make event policy inspectable as typed rules and steps. Command outcomes
@@ -203,12 +216,21 @@ immutable artifact controls execution. Source edits do not enqueue compilation o
 replace that artifact, except the legacy pipeline `update-source` path described in
 the [operating guide](docs/concepts/playbooks.md#author-validate-import-and-activate).
 
-### Why a 4-tier memory architecture?
-Not all knowledge is needed at all times. L0/L1 are cheap (always loaded, ~250 tokens). L2 activates on-demand when the task topic is detected. L3 requires explicit search. This keeps prompt size small while ensuring critical context is always available.
+### Why bounded knowledge context?
 
-### Why files as source of truth?
-Playbooks, profiles, facts, and knowledge are all markdown files in `~/.agent-queue/vault/`. This makes them browsable in Obsidian, editable by hand, diffable with git, and transparent. PostgreSQL is canonical for durable operational state (tasks, claims, sessions
-and service journals). Milvus is a search index owned by the memory plugin.
+One scoped bundle serves prime and launch paths with a shared token budget and
+observed delivery. It replaces the old L1/L2 memory slots. Storage, context,
+semantic providers and generation have independent enablement controls.
+
+### Which state is canonical?
+
+Vault Markdown owns editable playbooks and profiles. PostgreSQL owns durable
+reviews, decisions and knowledge. A review file mirrors a database revision;
+a knowledge export projects a record revision. Neither is a file-watching
+import path. Back up the database and retained vault artifacts together.
+
+Policy Markdown stays browsable in Obsidian, editable by hand and diffable with
+git. PostgreSQL also owns tasks, claims, sessions and service journals.
 
 ### Why PostgreSQL only?
 PostgreSQL provides the row locking, JSONB operations and database guards used
@@ -223,10 +245,14 @@ It was one, and the surface grew faster than it could be trusted: 122 mirrored s
 `CommandHandler` is the single execution point for all operations. Playbook nodes, MCP tools, the dashboard API and the CLI all delegate here — ensures feature parity and consistent error handling across all interfaces. The Discord adapter follows the same rule: it routes observed input and decision buttons through ask, escalation and supervisor-inbox commands, plus the explicit operator `delete_task` action; it never mutates a session directly. The deletion exception is specified in `docs/superpowers/specs/2026-10-11-unified-task-delete.md`.
 
 ### Why plugins?
-Internal functionality (file ops, git, memory, code quality) is implemented as plugins with the same API available to third parties. This enforces clean boundaries, enables selective loading, and stress-tests the plugin API with real complexity.
+Internal functionality (file ops, git, notes, code quality) is implemented as plugins with the same API available to third parties. This enforces clean boundaries, enables selective loading, and stress-tests the plugin API with real complexity.
 
-### Why the self-improvement loop?
-The core value proposition: the system gets better with use. Reflection extracts insights from completed tasks. Memory extraction captures patterns from events. Knowledge consolidation organizes them. Memory tiers deliver them at the right time. Playbooks can automate a consolidation cycle when an operator supplies and activates policy. No automatic reflection playbook ships today; this is a design goal, not a default running loop.
+### How does knowledge improve?
+
+Agents can save sourced, unverified findings. Optional extraction and
+consolidation propose revisions; authorized decisions confer verification or
+policy authority. No autonomous reflection loop or scheduled consolidation
+policy is shipped. See [knowledge records](docs/guides/knowledge-records.md).
 
 ### Why workflow coordination via playbooks?
 V2 playbooks can delegate tasks and wait for declared outcomes. The shipped pipeline does not add automatic per-task or final-branch reviewers; integration owns validation and delivery. Legacy workflow rows and stage-resume bridges remain compatibility surfaces, while V2 run recovery uses durable snapshots and receipts.
@@ -255,16 +281,16 @@ Key sections: `discord`, `scheduling`, `auto_task`, `pause_retry`, `hook_engine`
 ~/.agent-queue/vault/
 ├── system/
 │   ├── playbooks/          # System-wide policy sources (e.g., default-pipeline.md)
-│   ├── memory/             # System-wide knowledge
+│   ├── memory/             # Retained legacy memory sources
 │   └── facts.md            # System-level KV facts
 ├── orchestrator/
-│   ├── memory/             # Orchestrator operational knowledge
+│   ├── memory/             # Retained legacy memory sources
 │   └── facts.md
 ├── agent-types/
 │   └── {type}/
 │       ├── profile.md      # Role, capabilities, allowed_tools (bare names), mcp_servers (list of registry names)
 │       ├── playbooks/      # Agent-type automation
-│       ├── memory/         # Cross-project agent wisdom
+│       ├── memory/         # Retained legacy memory sources
 │       └── facts.md
 ├── mcp-servers/            # System-scope MCP server registry (one file per server)
 └── projects/
@@ -274,14 +300,11 @@ Key sections: `discord`, `scheduling`, `auto_task`, `pause_retry`, `hook_engine`
         ├── mcp-servers/    # Project-scope MCP registry (shadows system by name)
         ├── facts.md        # Project KV facts (tech stack, conventions, etc.)
         ├── playbooks/      # Project-specific automation
-        ├── memory/         # Project memories and insights
+        ├── memory/         # Retained legacy memory sources
         ├── notes/          # Auto-generated notes
         ├── references/     # Synced workspace docs
-        ├── knowledge/      # Organized topic-based knowledge
-        │   ├── architecture.md
-        │   ├── deployment.md
-        │   ├── gotchas.md
-        │   └── ...
+        ├── knowledge/      # Derived exports; PostgreSQL is canonical
+        │   └── records/<kn-alias>.md
         └── overrides/
             └── {agent_type}.md  # Project-specific agent guidance
 ```
@@ -296,7 +319,7 @@ Key sections: `discord`, `scheduling`, `auto_task`, `pause_retry`, `hook_engine`
 - Git operations wrapped in `GitManager` with `GitError` exceptions
 - **Linter:** ruff (line-length 100, target py312)
 - **Tests:** pytest with pytest-asyncio (`asyncio_mode = "auto"`)
-- **Dependencies:** sqlalchemy[asyncio], asyncpg, alembic, discord.py, claude-agent-sdk, pyyaml (memsearch ships with the external `aq-memory` plugin)
+- **Dependencies:** sqlalchemy[asyncio], asyncpg, alembic, discord.py, claude-agent-sdk, pyyaml (legacy memsearch is not a core dependency)
 
 ## Infrastructure
 
@@ -315,4 +338,4 @@ Key sections: `discord`, `scheduling`, `auto_task`, `pause_retry`, `hook_engine`
 - Plan-generated tasks can get stuck in DEFINED due to inherited approval settings blocking dependency chains
 - The system uses workspace isolation per task (git worktrees or separate clones)
 - Rules/hooks are deprecated; playbooks are the replacement (migration in progress)
-- Memory is provided by the external `aq-memory` plugin (separate repo; install via `aq plugin install`)
+- Durable knowledge is core-owned; legacy `aq-memory` / `memory` plugin loads are fenced

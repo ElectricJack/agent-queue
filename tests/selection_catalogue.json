@@ -1137,6 +1137,7 @@
         "tests/test_provider_commands.py",
         "tests/test_provider_escalation.py",
         "tests/test_provider_evidence.py",
+        "tests/test_provider_failover_playbook.py",
         "tests/test_provider_inflight.py",
         "tests/test_provider_intent.py",
         "tests/test_provider_reroute.py",
@@ -15616,6 +15617,26 @@
         "parametrize"
       ],
       "summary": "Provider availability collectors and the service around the reducer."
+    },
+    "tests/test_provider_failover_playbook.py": {
+      "areas": [
+        "provider-failover"
+      ],
+      "default_arm": true,
+      "digest": "sha256:d8408926f7c680c81a0f5dc8aee9af02bc785c8e3d6c7997a00a9c1c1006ceec",
+      "imports": [
+        "src.commands.contracts",
+        "src.commands.contracts.builtin",
+        "src.commands.principal",
+        "src.playbooks.definition",
+        "src.playbooks.engine",
+        "src.playbooks.executors.base",
+        "src.providers.availability"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Recorded old/new provider-failover scenarios through the V2 command executor."
     },
     "tests/test_provider_inflight.py": {
       "areas": [
