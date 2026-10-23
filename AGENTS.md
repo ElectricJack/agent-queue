@@ -187,7 +187,7 @@ only. In a worktree slot never run `alembic upgrade`, `alembic stamp` or `aq sta
   guard working (`src/database/migration_guard.py`): report it, do not upgrade around it.
   `aq db current` is the read-only answer; only an operator runs `aq db upgrade`.
 - A database stamped with a revision this checkout lacks:
-  `aq doctor --check db.alembic_orphan [--fix]`.
+  `aq doctor --offline --check db.alembic_orphan [--fix]` (operator only).
 
 ## Restarting after an update
 
