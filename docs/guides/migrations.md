@@ -174,9 +174,14 @@ including when the proof fails. The repair procedure below applies only when
 retained migrations are not configured.
 
 ```bash
-aq doctor --check db.alembic_orphan          # which branch/file defines it
-aq doctor --check db.alembic_orphan --fix    # run that revision's own downgrade()
+aq doctor --offline --check db.alembic_orphan        # which branch/file defines it
+aq doctor --offline --check db.alembic_orphan --fix  # run its own downgrade()
 ```
+
+Run these locally as the operator, outside a worker session. `--offline` needs
+no daemon and opens the configured database without schema initialization or
+upgrade. Only `db.alembic_orphan` is supported offline; the usual doctor output,
+JSON envelope and exit codes apply. Omit `--offline` when using the daemon.
 
 The check searches every `refs/remotes` and `refs/heads` for the migration
 file that declares the unknown revision, so the answer is a branch name and a

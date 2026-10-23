@@ -2,7 +2,7 @@
 
 ## Overview
 
-Agent Queue is a self-improving orchestration platform for AI coding agents. It manages task queues across multiple projects, coordinates multi-agent workflows through playbooks, accumulates knowledge via a 4-tier memory system, and continuously improves through automated reflection. The core value proposition: the system gets better with use — every task feeds the reflection engine, insights accumulate in scoped memory, and future agents benefit automatically.
+Agent Queue is a self-improving orchestration platform for AI coding agents. It manages task queues across multiple projects, coordinates multi-agent workflows through playbooks, accumulates knowledge via a 4-tier memory system, and provides policy and knowledge tools for continuous improvement. Automatic reflection is an operator policy choice; no reflection playbook ships by default.
 
 **Core design principles:**
 1. Human-readable files as source of truth (vault, playbooks, profiles)
@@ -30,9 +30,9 @@ asyncio event loop
 │   ├── Smart Cascade            — promotion pipeline (approvals → resume → promote → monitor)
 │   ├── Plan Parser              — manual `process_plan` command → subtask chain creation (no auto-discovery)
 │   └── Playbook Engine          — compiled DAG workflows
-│       ├── PlaybookCompiler     — markdown → JSON graph (LLM-powered, one-shot)
-│       ├── PlaybookRunner       — graph walker with conversation history
-│       └── PlaybookManager      — lifecycle, triggers, cooldown, concurrency
+│       ├── Proposal + Validator — authored rules/steps → immutable typed artifact
+│       ├── PlaybookEngine       — durable step walk, receipts, waits and recovery
+│       └── V2PlaybookRuntime    — dispatch from deliberately activated hashes
 ├── Workflow Coordination        — multi-agent pipeline orchestration
 │   ├── Stage Resume Handler     — auto-resume on workflow.stage.completed events
 │   ├── Orphan Recovery          — detect & recover stale/crashed workflows
@@ -121,26 +121,26 @@ AWAITING_PLAN_APPROVAL  (reachable only via manual `process_plan` command, never
 
 ### Playbook System
 
-| File | Purpose |
-|------|---------|
-| `src/playbooks/models.py` | Data models: CompiledPlaybook, PlaybookNode, PlaybookTransition, PlaybookRun |
-| `src/playbooks/compiler.py` | LLM-powered markdown → JSON graph compiler with retry/validation |
-| `src/playbooks/runner.py` | Graph walker — steps through nodes maintaining conversation history |
-| `src/playbooks/manager.py` | Lifecycle: compilation, versioning, trigger mapping, cooldown, concurrency |
-| `src/playbooks/store.py` | Disk storage with scope-mirrored directory structure |
-| `src/playbooks/handler.py` | Vault watcher — detects `.md` changes, dispatches to compiler |
-| `src/playbooks/state_machine.py` | Formal state machine for run lifecycle |
-| `src/playbooks/resume_handler.py` | Human-in-the-loop resume logic |
-| `src/playbooks/health.py` | Metrics computation for run analysis |
-| `src/playbooks/graph.py` | Graph rendering (ASCII + Mermaid visualization) |
-
-### Workflow Coordination
+Playbooks are V2 only. Read [the concepts](docs/concepts/playbooks.md),
+[system map](docs/specs/systems/playbooks.md) and [module catalog](docs/reference/modules/playbooks.md).
 
 | File | Purpose |
 |------|---------|
-| `src/workflow_stage_resume_handler.py` | Auto-resume paused playbooks on `workflow.stage.completed` events |
-| `src/orphan_workflow_recovery.py` | Detect & recover workflows whose coordination playbook died (startup + periodic) |
-| `src/workflow_pipeline_view.py` | Dashboard-ready pipeline visualization (stages, tasks, agents, progress) |
+| `src/playbooks/definition.py`, `validation.py`, `proposal.py` | Strict typed rules/steps, validation and server-derived artifact identity |
+| `src/playbooks/artifact_store.py`, `activation.py`, `required.py` | Immutable bytes, activation health, deliberate initial installation and explicit repair |
+| `src/playbooks/engine.py`, `runtime.py`, `services.py` | Event dispatch, step walking, waits, durable receipts and engine wiring |
+| `src/playbooks/run_state.py`, `recovery.py`, `authority.py` | Versioned run lifecycle, safe restart reconciliation and run-bound caller authority |
+| `src/playbooks/state.py`, `state_notify.py`, `private_values.py` | Persistent local state, notification episodes and encrypted execution data |
+| `src/playbooks/executors/` | Command, LLM, agent-task, script, decision, foreach, wait and terminal steps |
+| `src/playbooks/graph_projection.py`, `run_overlay.py` | Semantic graph and redacted run inspection pinned to the executed artifact |
+
+### Workflow Compatibility
+
+| File | Purpose |
+|------|---------|
+| `src/workflow_stage_resume_handler.py` | Bridges `workflow.stage.completed` to V2 runs referenced by legacy workflows |
+| `src/orphan_workflow_recovery.py` | Legacy V1 recovery class, not constructed by the orchestrator; current V2 recovery is `RestartReconciler` |
+| `src/workflow_pipeline_view.py` | Dashboard pipeline projection; does not execute policy |
 
 ### Hierarchy, Claims & Pools (Swarm Work Model)
 
@@ -210,10 +210,15 @@ Memory is provided by the **external `aq-memory` plugin** (install via `aq plugi
 ## Design Decisions
 
 ### Why zero LLM for orchestration?
-Every token is precious. Scheduling, dependency resolution, state transitions — all deterministic. The only LLM calls are: (1) agent task execution (every agent runs as a tmux session, selected by `harness`), (2) playbook node/transition execution and compilation via the direct LLM path (`src/llm/`), (3) memory revision/merging, (4) reflection (a playbook, not a module), (5) knowledge extraction.
+Every token is precious. Scheduling, dependency resolution, state transitions — all deterministic. The only LLM calls are: (1) agent task execution (every agent runs as a tmux session, selected by `harness`), (2) explicit playbook LLM steps (direct API or tool-free headless CLI); proposal construction and validation are deterministic, (3) memory revision/merging, (4) operator-authored reflection policy, if installed (no automatic reflection bundle ships), (5) knowledge extraction.
 
 ### Why playbooks over hooks/rules?
-Hooks were single-shot LLM calls with no context accumulation or multi-step reasoning. Playbooks model workflows as directed graphs: each node is a focused LLM decision point, transitions carry context forward, and human checkpoints enable oversight. Markdown authoring keeps them human-readable; LLM compilation makes them executable.
+Playbooks make event policy inspectable as typed rules and steps. Command outcomes
+and schema-checked model results select declared edges; human waits provide explicit
+checkpoints. Markdown remains the reviewed source, while a deliberately activated
+immutable artifact controls execution. Source edits do not enqueue compilation or
+replace that artifact, except the legacy pipeline `update-source` path described in
+the [operating guide](docs/concepts/playbooks.md#author-validate-import-and-activate).
 
 ### Why a 4-tier memory architecture?
 Not all knowledge is needed at all times. L0/L1 are cheap (always loaded, ~250 tokens). L2 activates on-demand when the task topic is detected. L3 requires explicit search. This keeps prompt size small while ensuring critical context is always available.
@@ -234,10 +239,10 @@ It was one, and the surface grew faster than it could be trusted: 122 mirrored s
 Internal functionality (file ops, git, memory, code quality) is implemented as plugins with the same API available to third parties. This enforces clean boundaries, enables selective loading, and stress-tests the plugin API with real complexity.
 
 ### Why the self-improvement loop?
-The core value proposition: the system gets better with use. Reflection extracts insights from completed tasks. Memory extraction captures patterns from events. Knowledge consolidation organizes them. Memory tiers deliver them at the right time. Playbooks automate the consolidation cycle. No manual intervention needed — the loop is autonomous.
+The core value proposition: the system gets better with use. Reflection extracts insights from completed tasks. Memory extraction captures patterns from events. Knowledge consolidation organizes them. Memory tiers deliver them at the right time. Playbooks can automate a consolidation cycle when an operator supplies and activates policy. No automatic reflection playbook ships today; this is a design goal, not a default running loop.
 
 ### Why workflow coordination via playbooks?
-Multi-agent workflows (code → review → QA) are just playbooks with stage gates and agent affinity. The same execution model, same event system, same human-in-the-loop checkpoints. Workflows track stage progress and task assignments; orphan recovery handles daemon restarts and stale state. No separate workflow engine needed.
+V2 playbooks can delegate tasks and wait for declared outcomes. The shipped pipeline does not add automatic per-task or final-branch reviewers; integration owns validation and delivery. Legacy workflow rows and stage-resume bridges remain compatibility surfaces, while V2 run recovery uses durable snapshots and receipts.
 
 ### Why spec-driven development?
 Specs in `docs/specs/` are the source of truth. Flow: specs → implementation → tests → docs. When spec and code disagree, the spec is correct.
@@ -248,7 +253,7 @@ Specs in `docs/specs/` are the source of truth. Flow: specs → implementation �
 
 **Core:** `projects`, `repos`, `tasks`, `task_dependencies`, `agents`, `token_ledger`, `events`, `rate_limits`
 **Workflows:** `workflows` (multi-agent pipeline state, stages, task assignments, agent affinity)
-**Playbooks:** `playbook_runs`, `compiled_playbooks` (run state, node traces, compiled graphs)
+**Playbooks:** `playbook_artifacts`, `playbook_activations`, `playbook_v2_runs`, `playbook_step_receipts`, `playbook_waits`, `playbook_pending_events`, `playbook_private_values`, `playbook_state_*` (immutable policy, activation, runs, waits and protected state)
 **Supporting:** `task_criteria`, `task_context`, `task_tools`, `task_results`, `system_config`, `workspaces`, `agent_profiles`, `archived_tasks`, `chat_analyzer_suggestions`, `plugins`, `plugin_data`
 
 ## Configuration
@@ -262,7 +267,7 @@ Key sections: `discord`, `scheduling`, `auto_task`, `pause_retry`, `hook_engine`
 ```
 ~/.agent-queue/vault/
 ├── system/
-│   ├── playbooks/          # System-wide automation (e.g., task-outcome.md)
+│   ├── playbooks/          # System-wide policy sources (e.g., default-pipeline.md)
 │   ├── memory/             # System-wide knowledge
 │   └── facts.md            # System-level KV facts
 ├── orchestrator/
