@@ -398,8 +398,6 @@ class PrerequisiteView:
         return await self.siblings.verified_on(conn, ids)
 
     async def mode(self, mode, *, conn=None):
-        from dataclasses import replace
-
         siblings, default = self.siblings.evidence, self.default.evidence
         if conn is not None:
             siblings = await self.siblings.verified_on(conn, self.all_ids)
@@ -473,8 +471,6 @@ async def hierarchy_frontier_modes(
     freshness. Claims take fresh views under task locks. cached_only diagnostics never
     fetch remote refs. Missing observations allow preparation; missing ancestry withholds.
     """
-    from dataclasses import replace
-
     from src.database.queries.hierarchy_queries import ProjectIntegrationMode
 
     observer = prerequisite_observer(db)
@@ -515,9 +511,7 @@ async def hierarchy_frontier_modes(
                 "hierarchy frontier for %s%s exceeded %.0fs; allowing Git preparation",
                 project.id, f" task {task_id}" if task_id else "", timeout,
             )
-            modes[project.id] = replace(
-                mode, delivered_prerequisite_ids=frozenset(), observation_unavailable=True,
-            )
+            modes[project.id] = mode
     return modes
 
 
@@ -533,8 +527,6 @@ async def _project_frontier_mode(
     db, observer, project, mode, *, task_id, cached_only,
     views=None, stack_views=None, max_age=None, conn=None,
 ):
-    from dataclasses import replace
-
     view = await observer.prerequisite_view(
         project.id, task_id=task_id,
         max_age=observer.READ_MAX_AGE if max_age is None else max_age,
@@ -931,8 +923,6 @@ class DeliveryObserver:
         unrelated open batch on that epic cannot withhold it. Anything not
         proven here stays unknown; only a successful negative keeps the refresh rule.
         """
-        from src.integration.delivery_truth import DeliveryState
-
         result: dict[str, dict[str, bool | None]] = {}
         parents: dict[tuple[str, str, str], DeliverySnapshot] = {}
         if self.truth is None:
