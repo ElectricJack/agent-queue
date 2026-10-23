@@ -492,6 +492,7 @@ areas:
       - tests/test_integration_properties.py
       - tests/test_promotion_backmerge.py
       - tests/test_promotion_policy.py
+      - tests/test_promotion_request_playbook.py
       - tests/test_promote_commands.py
       - tests/test_promotion_notes_input.py
       - tests/test_integration_train_promotion.py
