@@ -14,6 +14,7 @@ from dataclasses import asdict, dataclass
 from typing import Any
 
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from src.database.tables import wait_measurements, wait_records
 
@@ -368,8 +369,6 @@ async def _raise_incident_on(db, conn, *, key: str, entry: Mapping[str, Any],
                              inputs: Mapping[str, Any], now: float) -> str:
     import json
 
-    from sqlalchemy.dialects.postgresql import insert as pg_insert
-
     from src.database.tables import messages
 
     project_id, task_id = entry["project_id"], entry["task_id"]
@@ -402,8 +401,6 @@ async def _watch_entry(db, entry: Mapping[str, Any], request: Any, previous: Any
                        threshold: DeliveryThreshold, repository_id: str, target_ref: str,
                        now: float) -> dict[str, Any]:
     """Classify one owed generation and write its projection; at most one handover."""
-    from sqlalchemy.dialects.postgresql import insert as pg_insert
-
     from src.metrics.delivery_latency import generation_of
 
     task_id, project_id = entry["task_id"], entry["project_id"]
@@ -411,8 +408,7 @@ async def _watch_entry(db, entry: Mapping[str, Any], request: Any, previous: Any
         "head:" + entry["head"])
     key = f"{repository_id}:{task_id}:{generation}:{target_ref}"
     source_key = "delivery-watchdog:" + key
-    completed_at = (request.completed_at if request is not None and request.completed_at
-                    else None)
+    completed_at = request.completed_at if request is not None else None
     state, reason = _WATCHED[entry["rule"]]
     if (entry["rule"] == "unreconciled" and request is not None
             and not request.has_recorded_source):
@@ -420,12 +416,9 @@ async def _watch_entry(db, entry: Mapping[str, Any], request: Any, previous: Any
     async with db.immediate() as conn:
         # The pending snapshot omits settled generations. Re-observation must
         # reuse their identity and history rather than insert the same ID again.
-        row = (await conn.execute(select(wait_records).where(
-            wait_records.c.project_id == project_id,
-            wait_records.c.owner_kind == "scheduler",
-            wait_records.c.owner_id == task_id,
-            wait_records.c.origin == "integration",
-            wait_records.c.source_key == source_key,
+        row = (await conn.execute(select(wait_records).filter_by(
+            project_id=project_id, owner_kind="scheduler", owner_id=task_id,
+            origin="integration", source_key=source_key,
         ).with_for_update())).mappings().one_or_none()
         if previous is not None and previous["source_key"] != source_key:
             await _settle_on(db, conn, previous, now=now, outcome="superseded by a newer "
