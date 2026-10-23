@@ -1,0 +1,251 @@
+---
+id: object-loop
+kind: pipeline
+scope: project:matter-engine-cpp
+enabled: false
+triggers:
+  - formula.cooked
+  - task.completed
+  - task.failed
+  - review.decided
+  - timer.5m
+---
+# Bounded object experiments
+
+This opt-in policy implements approved proposal rev-amber-zenith revision 2.
+Import/review stores this artifact; activation requires a separate recorded
+operator decision naming its exact hash. Require the Matter adapter, durable
+artifact retention, approved brief, calibrated reference manifests or an explicit
+supervisor reference_kind=self start packet, finite job/GPU lease and budget
+reserves before activation. Self-reference results are indicative and prove
+plumbing only; all loop bounds and publication refusals still apply.
+Every start requires incumbent_capture_sha256 from the retained baseline capture
+receipt. For reference_kind=self, reference_sha256 must equal that capture hash;
+for calibrated references it remains independent. incumbent_sha256 continues
+to identify the candidate manifest.
+This bundle never activates itself,
+approves a review, chooses a provider or publishes a generator.
+
+Every rule performs the same bounded sweep for matter-engine-cpp. Events are
+wake hints only; object_loop_inputs reads persisted formula, task, score and
+review data. The timer recovers missed events and restarts. At most 32 pending
+or active objects are read; exceeding this bound fails visibly. Operate the
+pilot with at most two object epics and one GPU lease. A loop is processed only
+when its policy hash equals this running artifact's hash. An operator must
+explicitly migrate a loop to a different reviewed policy; drift cannot adopt it.
+
+One attempt, one editor build. Render the baseline capture and every later
+capture of the attempt with `aq job submit --attempt-id ATTEMPT`, the same
+attempt id the start packet carries. AQ copies that editor build once and
+launches the pinned copy for every capture of the attempt, so rebuilding the
+shared build cannot move the preset under a running attempt; a different
+attempt id is how the build is allowed to move, and a start packet's
+render_profile_sha256 is only valid for the attempt that pinned it.
+
+## Rule: on-formula
+
+On formula.cooked, perform the sweep below.
+
+## Rule: on-completion
+
+On task.completed, perform the sweep below.
+
+## Rule: on-failure
+
+On task.failed, perform the sweep below.
+
+## Rule: on-review
+
+On review.decided, perform the sweep below. The event's verdict never grants approval.
+
+## Rule: recover
+
+On timer.5m, perform the sweep below, including after restart.
+
+## Sweep
+
+1. Call object_loop_inputs for matter-engine-cpp with limit 32. For each
+   pending start, require its exact proposal revision/hash still approved and
+   its policy_artifact equal to the running artifact hash. Call object_loop_start
+   with the typed request, then object_loop_reconcile with the returned object
+   identity. The gated bootstrap leaf is released only after the finalizer hold
+   commits. A missing or withdrawn approval leaves the start held.
+2. For each registered loop bound to this policy, a stopped loop calls
+   object_loop_reconcile to finish settlement and gate release. An active loop
+   older than 86400 seconds calls object_loop_reconcile with its current version
+   and stop_reason `object wall deadline reached`.
+3. An exhausted FAILED or BLOCKED scorer calls object_score_record with the
+   exact current version/scorer, no receipts, action stop and stop_reason
+   `scorer exhausted; retained incumbent; quality unavailable`. Reconcile next.
+   Unsettled work, including provider outages and retries remaining, only
+   reconciles. No model calls, provider substitutions or retry tasks are made
+   by this policy; each task's retries consume its original reservation.
+4. At a checkpoint call object_checkpoint_read. Rejected, withdrawn or
+   changes_requested reviews stop with `checkpoint not accepted; evidence retained`,
+   without resolving the review gate or adopting a revision as approved. An
+   exact approved checkpoint with a finite predeclared next_variants packet
+   calls object_loop_reconcile with that packet and the freshly read version.
+   A refused continuation records `checkpoint continuation refused by limits`.
+   Otherwise leave the checkpoint held for a supervisor variation-suite cook or
+   a new evidence revision. Internal review consumes no worker seat.
+5. For a completed scorer, read its latest task note beginning the exact prefix
+   `object-score:1` followed by a newline and a JSON ObjectScoreRecordArgs object.
+   The whole packet is typed and scope-checked; no free-text extraction is used.
+   Call object_score_record with those fields. It validates all receipts, ranks
+   eligible captures, keeps the incumbent on a tie, counts invalid-capture repair
+   rounds and reserves a finite next wave atomically. If a continue request is
+   refused (including plateau, repair, round-cap or aggregate budget limits),
+   retry the same score once with action stop and stop_reason
+   `continuation refused by score or budget contract; retained verified result`.
+   This fallback still validates the evidence, so invalid scores fail closed.
+   All other refusals fail the run. Reconcile a successful score or stop.
+6. With no score/checkpoint action, call object_loop_reconcile and finish this
+   item. Waiting outcomes create no duplicate tasks. The next event/timer reads
+   the state again. Command runtime errors retry at most twice with one-second
+   backoff; rejected operations are never blindly retried.
+
+## Bindings and command inputs
+
+The sweep binds `inputs`, `start`, `started`, `object` and `checkpoint`.
+Command names are `object_loop_inputs`, `object_loop_start`,
+`object_loop_reconcile`, `object_checkpoint_read` and `object_score_record`.
+The read uses `project_id` and `limit`. Start forwards `epic_task_id`,
+`object_id`, `attempt_id`, `incumbent_sha256`, `incumbent_artifact`,
+`incumbent_capture_sha256`,
+`reference_kind`, `reference_sha256`, `rig_sha256`, `scorer_sha256`, `render_profile_sha256`,
+`policy_sha256`, `brief_review_id`, `brief_review_revision`,
+`brief_review_sha256`, `mandatory_views`, `limits`, `final_reserve`,
+`score_reservation`, `noise_band`, `max_rounds`, `max_repair_rounds`,
+`max_plateau_rounds` and `variants`. Score forwards `expected_version`, `score_task_id`,
+`receipts`, `spent`, `action`, `next_variants`, `stop_reason`, `review_id`,
+`review_revision` and `review_sha256` plus project/object identity.
+All commands route `completed`, `rejected` and `runtime_error` explicitly;
+foreach collection failures end `failed`.
+
+## Reusable building blocks and retained ownership
+
+The graph uses the reusable bounded `foreach` step for `inputs.starts` and
+`inputs.loops`, with `max_iterations` = `32` and failure policy `halt`.
+The `object_loop_inputs` read uses `limit` = `32`; overflow is a refusal, not
+a partial successful scan. These finite domain inputs need no snapshot pages
+or diagnostic observations. Generic doctor checks cannot replace the exact
+approved brief, policy, scorer and checkpoint reads.
+
+All five commands use typed command results directly, without a generic
+`payload` wrapper. They preserve the existing `completed`, `rejected` and
+`runtime_error` transitions. The compiled command pins and bundle manifest
+record the command surface for review.
+
+The `required_capabilities` declaration is deliberately deferred under
+`amber-crest-92`. Adding it selects trusted execution with a PLAYBOOK principal,
+which currently refuses `object_checkpoint_read` as a held-worker command.
+This port retains the installed artifact's legacy authority metadata until
+that compatibility issue is resolved and reviewed. It changes no authority
+checks and grants no additional permission.
+
+Durable object versions, reservations, receipts, checkpoint approvals and
+bootstrap failure notifications remain command-owned. Their writes must stay
+atomic with task and gate changes. A second playbook-state namespace or
+`playbook_state_notify` episode would duplicate that domain state and change
+its recovery behavior. Therefore no `state_schema_version` is needed. The
+graph already has no ad-hoc agent, shell or script steps to replace, so it
+declares no `scripts`. The retained `kind: pipeline` source is compiled to the
+existing V2 graph, not executed by a legacy runtime.
+
+### Exact result paths and predicates
+
+The read returns `starts` and `loops`. Each start tests `proposal_approved`
+for truth and compares `policy_artifact` to the running `artifact_sha256`.
+Each registered object uses that same policy comparison before any mutation.
+The returned `started.object_id` identifies a newly started object.
+
+Within each matching object, evaluate these cases in order:
+
+- `state.status` `eq` `stopped`: reconcile settlement first.
+- `elapsed_seconds` `gte` `86400`: stop at the wall deadline, including equality.
+- `scorer_failed`: stop the exhausted scorer named by `state.score_task_id`.
+- `state.checkpoint`: read the current checkpoint.
+- `score`: consume the typed score packet; otherwise reconcile only.
+
+The checkpoint rejection predicate is `review_state` `in` `["rejected", "withdrawn", "changes_requested"]`.
+Continuation requires truthy `checkpoint.approved` and `next_variants`, using
+the freshly read `checkpoint.version`; ordinary stops use the object's `version`.
+The score refusal fallback applies only when `score.action` `eq` `continue`.
+
+Forward the start packet's exact paths:
+`request.project_id`, `request.epic_task_id`, `request.object_id`, `request.attempt_id`,
+`request.incumbent_sha256`, `request.incumbent_artifact`, `request.incumbent_capture_sha256`,
+`request.reference_kind`, `request.reference_sha256`, `request.rig_sha256`,
+`request.scorer_sha256`, `request.render_profile_sha256`, `request.policy_sha256`,
+`request.brief_review_id`, `request.brief_review_revision`, `request.brief_review_sha256`,
+`request.mandatory_views`, `request.limits`, `request.final_reserve`,
+`request.score_reservation`, `request.noise_band`, `request.max_rounds`,
+`request.max_repair_rounds`, `request.max_plateau_rounds`, `request.variants`.
+
+Forward the score packet's exact paths:
+`score.object_id`, `score.project_id`, `score.expected_version`, `score.score_task_id`,
+`score.receipts`, `score.spent`, `score.action`, `score.next_variants`, `score.stop_reason`,
+`score.review_id`, `score.review_revision`, `score.review_sha256`.
+The stop fallback preserves the packet's evidence and spend, replaces the action,
+clears next variants and omits review fields as specified in the sweep above.
+
+## Formula and worker handoff
+
+Jack sees two documents per attempt. Before cooking, submit one brief in plain
+English: the object being built, the maximum number of rounds and the budget.
+At the end, the held finalizer submits one result with before/after images per
+view, whether the object improved and by how much in ordinary words, and what
+would help the next run. Use the object's ordinary name. Do not put attempt IDs,
+round IDs, receipts, incumbent or plateau in either document.
+
+Every per-round score, probe, capture, variation and continuation decision is
+internal. The loop decides continue/stop within the approved bounds; a
+checkpoint review must have decider supervisor. Marked experiment tasks and
+their probe children have no implicit human-review deliverable. Any explicit
+internal review routes to the supervisor and stays out of Jack's Reviews,
+Discord notifications and digest requests. Only the finalizer's result routes
+to user, and repeat submission reuses its document. Do not submit a separate
+human score, probe, capture or plateau review.
+
+Blocked work sends detailed evidence to the project supervisor through task
+notes and the normal recovery incident. The supervisor handles recovery. Send
+Jack one plain-English sentence only when he must act, naming what he needs to
+do; ordinary capture failures and limit stops need no human decision.
+
+Cook the packaged object formula once at the root with immutable inputs and the
+approved brief. Its bootstrap has an event gate installed inside graph creation.
+Candidate workers use immutable input artifacts and write only generators,
+materials and presets in their own workspace. They publish evaluation bundles
+to the artifact store, not the product branch. Every candidate and scoring
+packet carries a round_handoff block: the incumbent bundle artifact, each
+earlier round's branch and commit with the bundle it retained, and the frozen
+comparison inputs. Reading those retained artifacts and those earlier round
+branches is in scope for a round worker; a worker that starts from the
+reference instead of from the incumbent cannot be scored against it, because
+the attempt's render profile and rig are fixed. Every capture of the attempt is
+submitted under the same attempt id, so the pinned editor build is the one the
+profile names. Scoring workers independently validate complete mandatory views,
+score every wave member against that same frozen profile so candidate and
+reference are comparable, and record the strict score packet with
+`aq task set HELD_TASK --note PACKET` before closing. Include next_variants in a
+checkpoint packet only for an approved continuation; every variant reservation
+includes its allowed retries. Missing or unknown costs charge the full reserve.
+
+For variation, create a suite container directly under the epic, then cook
+variation with that suite as --parent. The transaction checks the exact current
+approved candidate, marks every task artifact-only, attaches the checkpoint gate
+and refuses duplicate suite cooking. It creates ten-seed and boundary/reload
+leaves, never a fourth hierarchy level or ancestor dependency. The existing
+final-suite reserve covers these checks. Install the suite before recording stop.
+The finalizer waits for candidate/scorer/variation settlement and verifies retained
+artifacts, review state, failures and the stop reason. Task completion never
+authorizes product integration: a separate code task imports only an accepted
+generator through the project's integration owner.
+
+## Failure handling, uniformly
+
+Each sweep and foreach body terminates completed or failed. There is no
+unbounded loop, AI step or human-decision command. One item's failure ends the sweep visibly; the next event or timer retries
+from persisted state.
+Failed children retain their status. Finalization can report defects after a
+rejection, but neither it nor this policy can force a passing epic.
