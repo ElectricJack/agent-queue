@@ -830,9 +830,9 @@ class ClaimCommandsMixin:
                 out["stack_evidence"] = stack_state.evidence()
                 return out
             if not stack_state.current:
-                # Git gave no answer, which proves no stacked prerequisite: select
-                # as the scheduler does, with no stack proofs, so stacked dependents
-                # stay withheld while roots and delivered-prerequisite work claim.
+                # Git gave no answer, which proves no stacked prerequisite. Select
+                # as the scheduler does without stack proofs; unknown delivery may
+                # proceed through normal preparation for the agent to merge in Git.
                 stack_unavailable = stack_state
                 if stack_view is not None:
                     stack_view = stack_view.without_proofs()
