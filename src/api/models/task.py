@@ -1419,6 +1419,17 @@ class PoolRenameResponse(BaseModel):
     error: str | None = None
 
 
+class PoolDeleteResponse(BaseModel):
+    success: bool
+    profile_id: str | None = None
+    deleted: str | None = None
+    retired: bool = False
+    depth: str | None = None
+    sessions: list[str] = []
+    warnings: list[str] = []
+    error: str | None = None
+
+
 class PoolSetEnabledResponse(BaseModel):
     success: bool
     profile_id: str | None = None
@@ -1503,6 +1514,7 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "task_claim": TaskClaimResponse,
     "pool_status": PoolStatusResponse,
     "pool_rename": PoolRenameResponse,
+    "pool_delete": PoolDeleteResponse,
     "pool_scale": PoolScaleResponse,
     "pool_set_lifecycle": PoolSetLifecycleResponse,
     "pool_set_enabled": PoolSetEnabledResponse,

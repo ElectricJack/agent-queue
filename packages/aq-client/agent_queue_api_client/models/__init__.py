@@ -1306,6 +1306,9 @@ from .policy_export_response_422 import PolicyExportResponse422
 from .policy_export_warning import PolicyExportWarning
 from .policy_file_preview import PolicyFilePreview
 from .policy_review_receipt import PolicyReviewReceipt
+from .pool_delete_request import PoolDeleteRequest
+from .pool_delete_response import PoolDeleteResponse
+from .pool_delete_response_422 import PoolDeleteResponse422
 from .pool_gauges import PoolGauges
 from .pool_instance_status import PoolInstanceStatus
 from .pool_policy import PoolPolicy
@@ -3512,6 +3515,9 @@ __all__ = (
     "PolicyExportWarning",
     "PolicyFilePreview",
     "PolicyReviewReceipt",
+    "PoolDeleteRequest",
+    "PoolDeleteResponse",
+    "PoolDeleteResponse422",
     "PoolGauges",
     "PoolInstanceStatus",
     "PoolPolicy",

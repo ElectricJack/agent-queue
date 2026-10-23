@@ -8356,11 +8356,12 @@
         "worker-pools"
       ],
       "default_arm": true,
-      "digest": "sha256:7cc8ed3d7a5ab2077a2c178fb21ed03c1ff9c830777b18f9e4195f1cabe036fd",
+      "digest": "sha256:b12d119266a758e6cc262b3b228500b9db5d5598272715bb300b7815416aaf22",
       "imports": [
         "src.install.pools",
         "src.profiles.catalog",
-        "src.profiles.parser"
+        "src.profiles.parser",
+        "src.profiles.retired_defaults"
       ],
       "markers": [],
       "summary": "Default worker pools: a fresh install's first tasks need something to claim them."
