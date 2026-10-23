@@ -70,7 +70,7 @@ class Repo:
         for path, text in {
             "pyproject.toml": "[project]\nname = 'agent-queue'\n",
             "README.md": "AQ\n",
-            "migrations/versions/a0001.py": "revision = 'a0001'\n",
+            "migrations/versions/a0001.py": "revision = 'a0001'\ndown_revision = None\n",
             "dashboard/src/app.ts": "export const x = 1\n",
         }.items():
             (self.seed / path).parent.mkdir(parents=True, exist_ok=True)
@@ -241,7 +241,6 @@ class FakeHost:
             system="darwin",
             arch="arm64",
             state_dir=self.state_dir,
-            pg_dump="/opt/homebrew/bin/pg_dump",
             build=self.build,
             extras=["cli"],
             sleep=lambda seconds: None,
@@ -450,7 +449,7 @@ def test_migrations_are_backed_up_before_the_daemon_stops(repo, fake, monkeypatc
     repo.push("migrations/versions/a0002.py", "revision = 'a0002'\n")
     order: list[str] = []
 
-    def backup(config_path, destination, *, execute, pg_dump):
+    def backup(config_path, destination):
         order.append(f"backup running={fake.running}")
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_bytes(b"dump")
@@ -1069,34 +1068,146 @@ def test_a_timed_out_command_keeps_what_it_had_printed():
 # -- pieces -----------------------------------------------------------------
 
 
-def test_the_backup_password_never_reaches_the_command_line(tmp_path, monkeypatch):
+@pytest.fixture
+def updater_backup(tmp_path, monkeypatch):
     import src.config
+    import src.database.backup as shared_backup
 
     monkeypatch.setattr(
-        src.config,
-        "load_config",
-        lambda path: SimpleNamespace(
-            database=SimpleNamespace(url="postgresql+asyncpg://aq:s3cret@db.local:6543/agent_queue")
-        ),
+        src.config, "load_config",
+        lambda path: SimpleNamespace(database=SimpleNamespace(
+            url="postgresql+asyncpg://aq:s3cret@127.0.0.1:6543/agent_queue"
+        )),
     )
-    seen = {}
+    calls = []
 
-    def execute(argv, **kwargs):
-        seen["argv"] = list(argv)
-        seen["env"] = kwargs["env"]
-        Path(argv[argv.index("--file") + 1]).write_bytes(b"dump")
-        return CommandOutput(argv=tuple(argv), returncode=0)
+    async def run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        if argv[1] == "ps":
+            return b"postgres-container\n"
+        if argv[1] == "inspect":
+            return b'{"5432/tcp":[{"HostPort":"6543"}]}'
+        if "--format=custom" in argv:
+            kwargs["destination"].write_bytes(b"PGDMParchive")
+            return b""
+        if "--list" in argv:
+            return b"; Archive created at 2026-10-23 12:00:00 UTC\n"
+        if "--table=alembic_version" in argv:
+            return b"COPY public.alembic_version (version_num) FROM stdin;\na0001\n\\.\n"
+        raise AssertionError(f"unexpected command: {argv}")
 
+    monkeypatch.setattr(shared_backup, "_run", run)
+    return shared_backup, calls
+
+
+@pytest.mark.parametrize("transport", ["local", "docker"])
+def test_updater_backup_uses_shared_clients_and_validates_archive(
+    tmp_path, monkeypatch, updater_backup, transport
+):
+    shared_backup, calls = updater_backup
+    tools = tmp_path / "clients"
+    tools.mkdir()
+    (tools / "pg_restore").touch()
+    (tools / "psql").touch()
+    monkeypatch.setattr(update_module, "find_pg_dump", lambda: (
+        str(tools / "pg_dump") if transport == "local" else None
+    ))
+    monkeypatch.setattr(shared_backup.shutil, "which", lambda _: (
+        "/usr/bin/docker" if transport == "docker" else None
+    ))
     destination = tmp_path / "backups" / "b.dump"
-    ok, where = backup_database(
-        tmp_path / "config.yaml", destination, execute=execute, pg_dump="/usr/bin/pg_dump"
-    )
+
+    ok, where = backup_database(tmp_path / "config.yaml", destination)
 
     assert ok and where == str(destination)
-    assert "s3cret" not in " ".join(seen["argv"])
-    assert seen["env"]["PGPASSWORD"] == "s3cret"
-    assert seen["argv"][seen["argv"].index("--port") + 1] == "6543"
-    assert oct(destination.stat().st_mode & 0o777) == "0o600"
+    assert destination.read_bytes() == b"PGDMParchive"
+    assert destination.stat().st_mode & 0o777 == 0o600
+    assert all("s3cret" not in " ".join(argv) for argv, _ in calls)
+    dump, kwargs = next(call for call in calls if "--format=custom" in call[0])
+    assert kwargs["env"]["PGPASSWORD"] == "s3cret"
+    assert "--no-owner" in dump and "--no-acl" in dump
+    assert any("--list" in argv for argv, _ in calls)
+    assert any("--table=alembic_version" in argv for argv, _ in calls)
+    if transport == "docker":
+        assert "publish=6543" in calls[0][0]
+        assert dump[:3] == ["docker", "exec", "-i"]
+        assert "postgres-container" in dump
+        assert dump[dump.index("--port") + 1] == "5432"
+    else:
+        assert dump[0] == str(tools / "pg_dump")
+        assert dump[dump.index("--dbname") + 1] == "postgresql://aq@127.0.0.1:6543/agent_queue"
+
+
+@pytest.mark.parametrize("failure", ["dump", "header", "listing", "timestamp", "stamp", "timeout"])
+def test_updater_backup_refuses_failed_or_invalid_archives_and_removes_partial_file(
+    tmp_path, monkeypatch, updater_backup, failure
+):
+    shared_backup, calls = updater_backup
+    monkeypatch.setattr(update_module, "find_pg_dump", lambda: None)
+    monkeypatch.setattr(shared_backup.shutil, "which", lambda _: "/usr/bin/docker")
+    run = shared_backup._run
+
+    async def broken(argv, **kwargs):
+        if "--format=custom" in argv:
+            if failure == "dump":
+                kwargs["destination"].write_bytes(b"partial")
+                raise shared_backup.BackupError("backup_client_failed: fixture dump failed")
+            if failure == "timeout":
+                raise TimeoutError
+            if failure == "header":
+                kwargs["destination"].write_bytes(b"invalid")
+                return b""
+        if "--list" in argv:
+            if failure == "listing":
+                raise shared_backup.BackupError("backup_client_failed: fixture archive corrupt")
+            if failure == "timestamp":
+                return b"; no archive timestamp\n"
+        if "--table=alembic_version" in argv and failure == "stamp":
+            return b"COPY public.alembic_version (version_num) FROM stdin;\nbad stamp\n\\.\n"
+        return await run(argv, **kwargs)
+
+    monkeypatch.setattr(shared_backup, "_run", broken)
+    destination = tmp_path / "bad.dump"
+    ok, message = backup_database(tmp_path / "config.yaml", destination)
+    assert not ok and message
+    assert not destination.exists()
+
+
+def test_updater_backup_preserves_existing_archive(tmp_path, monkeypatch, updater_backup):
+    shared_backup, calls = updater_backup
+    monkeypatch.setattr(update_module, "find_pg_dump", lambda: None)
+    monkeypatch.setattr(shared_backup.shutil, "which", lambda _: "/usr/bin/docker")
+    destination = tmp_path / "keep.dump"
+    destination.write_bytes(b"keep")
+    ok, message = backup_database(tmp_path / "config.yaml", destination)
+    assert not ok and "File exists" in message
+    assert destination.read_bytes() == b"keep"
+    assert not any("--format=custom" in argv for argv, _ in calls)
+
+
+def test_invalid_updater_archive_refuses_before_service_shutdown(
+    repo, fake, monkeypatch, updater_backup
+):
+    _no_worker_scope(monkeypatch)
+    shared_backup, calls = updater_backup
+    monkeypatch.setattr(update_module, "find_pg_dump", lambda: None)
+    monkeypatch.setattr(shared_backup.shutil, "which", lambda _: "/usr/bin/docker")
+    run = shared_backup._run
+
+    async def corrupt(argv, **kwargs):
+        if "--format=custom" in argv:
+            kwargs["destination"].write_bytes(b"invalid archive")
+            return b""
+        return await run(argv, **kwargs)
+
+    monkeypatch.setattr(shared_backup, "_run", corrupt)
+    repo.push("migrations/versions/b.py", "revision = 'b'\ndown_revision = 'a0001'\n")
+    previous = repo.head()
+    with pytest.raises(UpdateRefused, match="backup failed.*restore_format_unsupported"):
+        apply_update(plan_update(repo.checkout), fake.host())
+    assert repo.head() == previous
+    assert fake.calls == [] and fake.running
+    assert not list((fake.state_dir / "backups").glob("*.dump"))
 
 
 def test_the_reinstall_keeps_the_extras_this_environment_has():
@@ -1202,12 +1313,46 @@ def test_invalid_migration_annotation_refuses_before_update(repo, fake, monkeypa
     assert fake.calls == [] and repo.head() == old
 
 
+@pytest.mark.parametrize("selector", ["glob", "ref", "record"])
+@pytest.mark.parametrize("graph", ["multiple_heads", "missing_parent", "invalid_python"])
+def test_release_planning_validates_pinned_migrations_before_mutation(
+    repo, fake, monkeypatch, selector, graph
+):
+    _no_worker_scope(monkeypatch)
+    previous = repo.head()
+    if graph == "multiple_heads":
+        repo.push("migrations/versions/b.py", "revision = 'b'\ndown_revision = 'a0001'\n")
+        repo.push("migrations/versions/c.py", "revision = 'c'\ndown_revision = 'a0001'\n")
+    elif graph == "missing_parent":
+        repo.push("migrations/versions/b.py", "revision = 'b'\ndown_revision = 'missing'\n")
+    else:
+        repo.push("migrations/versions/b.py", "invalid Python!\n")
+    _release(repo, "v0.2.0")
+    kwargs = {"tag_glob": "v*"} if selector == "glob" else {"ref": "v0.2.0"}
+    if selector == "record":
+        # An existing tag installation also validates when selecting its current ref.
+        from src.install.deploy import DeploySelection, write_record
+
+        _git(repo.checkout, "fetch", "origin", "tag", "v0.2.0")
+        commit = _git(repo.seed, "rev-parse", "HEAD")
+        _git(repo.checkout, "checkout", "--detach", commit)
+        write_record(fake.state_dir, DeploySelection(
+            "v0.2.0", commit, tag_oid=_git(repo.seed, "rev-parse", "v0.2.0"), kind="release",
+        ), previous)
+        previous = repo.head()
+        kwargs = {}
+    with pytest.raises(UpdateRefused, match="target Alembic preflight failed"):
+        plan_update(repo.checkout, state_dir=fake.state_dir, **kwargs)
+    assert repo.head() == previous
+    assert fake.calls == []
+
+
 def test_release_selection_uses_semver_and_pins_the_peeled_commit(repo, fake, monkeypatch):
     _no_worker_scope(monkeypatch)
     _release(repo, "v0.9.0")
     expected = repo.push("README.md", "released\n")
     _release(repo, "v0.10.0")
-    repo.push("README.md", "not released\n")
+    repo.push("migrations/versions/unreleased.py", "invalid Python!\n")
     plan = plan_update(repo.checkout, state_dir=fake.state_dir, tag_glob="v*")
     assert plan.target == expected
     assert plan.selection.selector == "v0.10.0"
@@ -1429,12 +1574,6 @@ def test_tag_preflight_cli_displays_breaking_override_even_when_installed(
 # -- automatic branch tracking ---------------------------------------------
 
 
-def _tracked_repo(repo):
-    # Unlike the older updater fixture, this is a complete Alembic graph.
-    repo.push("migrations/versions/a0001.py", "revision = 'a0001'\ndown_revision = None\n")
-    repo.pull()
-
-
 def test_tracked_branch_fast_forwards_and_records_cli_outcome(repo, fake, monkeypatch):
     from click.testing import CliRunner
     from src.cli import update as update_cli
@@ -1442,7 +1581,6 @@ def test_tracked_branch_fast_forwards_and_records_cli_outcome(repo, fake, monkey
     from src.install.deploy_history import read_history
 
     _no_worker_scope(monkeypatch)
-    _tracked_repo(repo)
     previous = repo.head()
     target = repo.push("dashboard/src/app.ts", "export const x = 2\n")
     # Installed bundle makes the selective rebuild path observable.
@@ -1481,7 +1619,6 @@ def test_tracking_refuses_wrong_upstream_even_on_matching_branch(repo, monkeypat
 
 def test_tracking_refuses_multiple_target_migration_heads_without_stopping(repo, fake, monkeypatch):
     _no_worker_scope(monkeypatch)
-    _tracked_repo(repo)
     previous = repo.head()
     repo.push("migrations/versions/b.py", "revision = 'b'\ndown_revision = 'a0001'\n")
     repo.push("migrations/versions/c.py", "revision = 'c'\ndown_revision = 'a0001'\n")
@@ -1494,7 +1631,6 @@ def test_tracking_refuses_multiple_target_migration_heads_without_stopping(repo,
 def test_tracking_expands_shallow_history_instead_of_discarding_local_commits(tmp_path, monkeypatch):
     _no_worker_scope(monkeypatch)
     repo = Repo(tmp_path, shallow=True)
-    _tracked_repo(repo)
     _git(repo.checkout, "commit", "--quiet", "--allow-empty", "-m", "local")
     repo.push("README.md", "remote\n")
     with pytest.raises(UpdateRefused, match="has commits"):
@@ -1521,7 +1657,6 @@ def test_failed_automatic_restart_rolls_back_and_holds_target_until_manual_retry
     from src.install.deploy_history import failed_target, read_history
 
     _no_worker_scope(monkeypatch)
-    _tracked_repo(repo)
     previous = repo.head()
     target = repo.push("README.md", "bad version\n")
     (fake.state_dir / "config.yaml").write_text(
@@ -1590,7 +1725,6 @@ def test_migration_failure_holds_all_targets_until_verified_operator_recovery(re
     from src.install.deploy_history import read_history, record_deploy, recovery_pending
 
     _no_worker_scope(monkeypatch)
-    _tracked_repo(repo)
     target = repo.push(
         "migrations/versions/a0002.py", "revision = 'a0002'\ndown_revision = 'a0001'\n"
     )
