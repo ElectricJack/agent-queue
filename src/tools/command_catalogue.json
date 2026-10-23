@@ -15913,6 +15913,35 @@
             "title": "Adopt Source",
             "type": "boolean"
           },
+          "dispose_obsolete": {
+            "default": false,
+            "title": "Dispose Obsolete",
+            "type": "boolean"
+          },
+          "superseded_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Superseded By"
+          },
+          "expected_parent_head_sha": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Expected Parent Head Sha"
+          },
           "dry_run": {
             "default": true,
             "title": "Dry Run",
