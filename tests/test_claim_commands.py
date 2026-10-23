@@ -312,9 +312,16 @@ async def test_ordinary_preparation_preserves_activation_loss(handler, db, tmp_p
 
 
 @pytest.mark.parametrize("change", ["hold", "development"])
-async def test_ordinary_preparation_rechecks_policy_and_holds(handler, db, tmp_path, change):
+@pytest.mark.parametrize("response_seconds", [60.0, 0.0], ids=["in_window", "outlived"])
+async def test_ordinary_preparation_rechecks_policy_and_holds(
+    handler, db, tmp_path, monkeypatch, change, response_seconds,
+):
+    """A changed policy rejects the old epoch on either side of the HTTP response."""
+    monkeypatch.setattr(
+        "src.commands.claim_commands._PREPARATION_RESPONSE_SECONDS", response_seconds,
+    )
     await mktask(db, "dependent", profile_id="worker")
-    sid, _ = await pool_session(db, tmp_path)
+    sid, work_dir = await pool_session(db, tmp_path)
     resets = 0
 
     async def reset(*args, **kwargs):
@@ -328,15 +335,31 @@ async def test_ordinary_preparation_rechecks_policy_and_holds(handler, db, tmp_p
         return "aq/dependent"
 
     handler.orchestrator._worktree_slots.return_value.reset_slot_for_task = reset
-    result = await settled_claim(scoped(handler, sid), {"next": True})
+    worker = scoped(handler, sid)
+    result = await settled_claim(worker, {"next": True})
+    if change == "development" and response_seconds == 0.0:
+        # settled_claim observes the first preparation, not the worker's next
+        # request. A moved policy finishing after the response needs that
+        # request to re-enter admission, as in the real pool claim loop.
+        assert result["result"] == "no_ready_work", result
+        assert result["reason"] == "delivery_snapshot_changed"
+        assert resets == 1
+        assert (await db.get_session(sid)).claims == 0
+        assert (await db.get_session(sid)).claim_phase is None
+        assert (await db.get_task("dependent")).status is TaskStatus.READY
+        assert not (work_dir / ".aq" / "claim.json").exists()
+        result = await settled_claim(worker, {"next": True})
     if change == "hold":
         assert result["result"] == "no_ready_work", result
         assert (await db.get_session(sid)).claims == 0
+        assert resets == 1
+        assert not (work_dir / ".aq" / "claim.json").exists()
     else:
         # Re-enter admission for the new policy before activating a new epoch.
         assert result["result"] == "claimed", result
         assert result["claim_epoch"] == 2
         assert resets == 2
+        assert (await db.get_session(sid)).claims == 1
 
 
 async def stopped_slot_reset_claim(handler, db, tmp_path, *, detached=False, stopped=True):
