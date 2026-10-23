@@ -182,7 +182,7 @@ class PendingPullRequestInbox:
                 f"repos/{binding.full_name}/pulls/{number}/reviews?per_page=100", max_pages=20,
             ),
             client.paged_items(
-                f"repos/{binding.full_name}/commits/{sha}/check-runs?per_page=100",
+                f"repos/{binding.full_name}/commits/{sha}/check-runs?filter=all&per_page=100",
                 key="check_runs", max_pages=20,
             ),
         )
@@ -249,7 +249,8 @@ class PendingPullRequestInbox:
                             max_pages=20,
                         ),
                         client.paged_items(
-                            f"repos/{client.repository.full_name}/commits/{sha}/check-runs?per_page=100",
+                            f"repos/{client.repository.full_name}/commits/{sha}/check-runs"
+                            "?filter=all&per_page=100",
                             key="check_runs", max_pages=20,
                         ),
                     )

@@ -2853,7 +2853,7 @@
         "github"
       ],
       "default_arm": true,
-      "digest": "sha256:d90bab6905d95f9ff7c05b58d6618eed30f80936ef427d54440aa3e31c75956d",
+      "digest": "sha256:a5e659ca3fa97c7883ea042cc5aca62830fac3c8114f2cc3a2c7eeb70df26a3c",
       "imports": [
         "src.api",
         "src.api.auth",
@@ -2863,7 +2863,10 @@
         "src.commands.review_commands",
         "src.database.queries.pull_request_queries",
         "src.database.tables",
-        "src.git.github_contracts"
+        "src.git.github",
+        "src.git.github_auth",
+        "src.git.github_contracts",
+        "src.integration.ci"
       ],
       "markers": [
         "parametrize"
@@ -7653,10 +7656,11 @@
         "github"
       ],
       "default_arm": true,
-      "digest": "sha256:48a32ea41ee6d33a55779ffbda7b7de6176cea890ecf5b8c2191d153957225c7",
+      "digest": "sha256:e495615671ccd9357a45aaf8dda08035c06ce3558fe983e524dbf850d64ec519",
       "imports": [
         "src.commands.integration_commands",
         "src.config",
+        "src.git.check_runs",
         "src.git.github",
         "src.git.github_activity",
         "src.git.github_app",
