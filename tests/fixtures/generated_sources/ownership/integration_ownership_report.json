@@ -1043,7 +1043,7 @@
     "phase": "transition",
     "fixed_replacement_allowance": 15000,
     "engine_cap": 97627,
-    "owned_total_cap": 160879,
+    "owned_total_cap": 160900,
     "table_cap": 45,
     "expires_at": "s4_modules",
     "automatic_baseline_increase": false,
@@ -1058,10 +1058,10 @@
         "msg-21784b3e56aa4f54bf1042b7c9af4aaf"
       ],
       "decision_record": "record:2720bdbe-7521-427e-8e72-1f40a3ff9818",
-      "measured_source_revision": "b65c4f58866c1569e7ed73cb3a9d306f3060e1f0",
+      "measured_source_revision": "f2879c35e91e51e0b350cae09477d8faf39784f5",
       "original_owned_total_cap": 155499,
-      "measured_owned_total": 160879,
-      "delta": 5380,
+      "measured_owned_total": 160900,
+      "delta": 5401,
       "predecessors": [
         {
           "batch_id": "train-77f0d8e451f6aed08d608e443031047a",
@@ -1081,7 +1081,7 @@
           "measured_owned_total": 158958
         }
       ],
-      "batch_measured_delta": 1921,
+      "batch_measured_delta": 1942,
       "restore_task": "azure-ridge-72",
       "expires_at": "s4_modules",
       "category_approval_message_id": "msg-90f9f1b1e0cd4e8e8d28071cffc927a6",
@@ -1090,7 +1090,7 @@
       ],
       "category_restore_task": "stark-willow-95.17",
       "verification_task": "stark-willow-95.18",
-      "measured_engine_lines": 85316,
+      "measured_engine_lines": 85337,
       "measured_table_count": 45,
       "delivery_method": "operator direct integration; user request 2026-10-22",
       "amendments": [
@@ -1106,6 +1106,22 @@
           "global_request": "msg-9f895e0d",
           "global_grant": "msg-7f2f68c1",
           "grant_delivery_message_id": "msg-21784b3e56aa4f54bf1042b7c9af4aaf"
+        },
+        {
+          "task_id": "stark-beacon-94",
+          "decision_id": "size-cap-delegation-2026-10-23",
+          "operator_decision": "6679052c",
+          "operator_task": "sharp-cascade-53",
+          "pr_url": "https://github.com/ElectricJack/agent-queue/pull/1817",
+          "measured_source_revision": "f2879c35e91e51e0b350cae09477d8faf39784f5",
+          "previous_owned_total": 160879,
+          "previous_engine_lines": 85316,
+          "previous_table_count": 45,
+          "authorized_owned_delta": 21,
+          "authorized_engine_delta": 21,
+          "authorized_table_delta": 0,
+          "reason": "Exclude published base history from repair identity checks; supervisor granted the exact measured footprint for PR #1817 under the delegated operator decision.",
+          "base_revision": "e7989d1aa62381a607aab67d8ce245a955ed904e"
         }
       ]
     }
@@ -14158,5 +14174,15 @@
     "grant_delivery_message_id": "msg-21784b3e56aa4f54bf1042b7c9af4aaf",
     "global_request": "msg-9f895e0d",
     "global_grant": "msg-7f2f68c1"
+  },
+  "repair_identity_measurement": {
+    "source_revision": "f2879c35e91e51e0b350cae09477d8faf39784f5",
+    "base_revision": "e7989d1aa62381a607aab67d8ce245a955ed904e",
+    "measured_owned_total": 160900,
+    "measured_engine_lines": 85337,
+    "measured_table_count": 45,
+    "authority": "size-cap-delegation-2026-10-23; operator decision 6679052c on sharp-cascade-53",
+    "task_id": "stark-beacon-94",
+    "pr_url": "https://github.com/ElectricJack/agent-queue/pull/1817"
   }
 }
