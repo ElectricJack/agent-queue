@@ -5282,8 +5282,7 @@ async def test_root_pr_recovery_escalates_once_after_restart(world, unchanged):
 
 
 @pytest.mark.parametrize("earlier", ["source_ci", "legacy_delegate", "root_pr"])
-async def test_root_pr_recovery_cannot_restart_a_source_ci_repair_chain(world, earlier):
-    from src.database.tables import messages
+async def test_root_pr_recovery_allows_changed_head_after_source_ci_repair(world, earlier):
     from src.integration.root_pr_recovery import RECOVERY_KEY
 
     train, github, _ = await hosted_train(world, failure_handler=root_pr_recovery(world))
@@ -5296,22 +5295,15 @@ async def test_root_pr_recovery_cannot_restart_a_source_ci_repair_chain(world, e
         await world.db.update_task("root", created_by_kind="source_ci_repair")
     else:
         await world.db.set_task_meta("root", RECOVERY_KEY, {"heads": ["f" * 40]})
-        async with world.db._engine.begin() as conn:
-            policy = await conn.scalar(select(projects.c.hierarchical_integration_policy))
-            policy["root"]["repair"] = {"source_ci": True, "on_exhausted": "continue",
-                                       "debug_intelligence_class": "standard-high"}
-            await conn.execute(update(projects).values(hierarchical_integration_policy=policy))
+        policy = (await world.db.get_project("p")).hierarchical_integration_policy
+        policy["root"]["repair"] = {"source_ci": True, "on_exhausted": "continue",
+                                   "debug_intelligence_class": "standard-high"}
+        await world.db.update_project("p", hierarchical_integration_policy=policy)
     github.pr_runs[source] = "failure"
-    for _ in range(2):
-        blocked = await train.visit(MAIN, seal_now=True)
-        assert blocked.detail["blockers"][0]["code"] == "source_ci_repair_exhausted"
+    await train.visit(MAIN, seal_now=True)
     task = await world.db.get_task("root")
-    assert task.status is TaskStatus.COMPLETED
+    assert task.status is TaskStatus.READY
     assert task.pr_url == original.pr_url and task.branch_name == original.branch_name
-    async with world.db._engine.connect() as conn:
-        notices = (await conn.execute(select(messages).where(
-            messages.c.id == "msg-source-ci-budget-root"))).mappings().all()
-    assert len(notices) == 1
 
 
 async def test_root_pr_recovery_preserves_existing_bound_source_repair(world):
@@ -5605,6 +5597,92 @@ async def test_collected_epic_automatically_refreshes_before_aggregate_checks(
     assert (await case.db.get_task("epic")).pr_url
     assert (await case.train.visit(case.target)).batch_id is None
     assert (await case.db.get_task_completion("epic")).id == completion.id
+
+
+@pytest.mark.parametrize("entry", ["automatic", "apply", "aggregate", "merge-only"])
+async def test_delivered_epic_skips_empty_refresh(collected_epic, entry):
+    from src.integration.stacked_branches import EpicRefresh
+
+    case = collected_epic
+    head = await collect_epic(case)
+    case.origin.land("epic")
+    default = case.origin.work("default-move")
+    git(case.origin.clone, "push", "origin", f"{default}:main")
+    if entry == "merge-only":
+        # A private no-op commit need not be an ancestor of the delivery target.
+        head = git(case.origin.clone, "commit-tree", f"{head}^{{tree}}", "-p", head,
+                   "-m", "no content change")
+        git(case.origin.clone, "push", "origin", f"{head}:aq/epic")
+    assert not git(case.origin.url, "diff", f"main...{head}")
+    refresh = EpicRefresh(case.db, case.train)
+    if entry == "aggregate":
+        visit = await case.train.visit(case.target)
+        assert visit.batch_id is None
+        assert "epic_refresh_pending" not in {b["code"] for b in visit.detail.get("blockers", ())}
+    else:
+        result = (await refresh.start("epic") if entry in {"automatic", "merge-only"} else
+                  await refresh.refresh("epic", dry_run=False))
+        assert (result["outcome"], result["reason"]) == ("skipped", "delivered")
+    assert await DatabaseBatches(case.db).current(case.target) is None
+    assert git(case.origin.url, "rev-parse", "aq/epic") == head
+    async with case.db._engine.connect() as conn:
+        observations = list((await conn.execute(select(events.c.payload).where(
+            events.c.event_type == "integration.epic_refresh"))).scalars())
+    [observation] = [json.loads(payload) for payload in observations
+                     if json.loads(payload).get("reason") == "delivered"]
+    assert observation["detail"] == "refresh skipped: delivered"
+    assert observation["target_sha"] == head and observation["delivery_sha"] == default
+
+
+@pytest.mark.parametrize("pending", ["content", "open-epic", "open-child", "undelivered-child"])
+async def test_delivered_epic_refresh_preserves_pending_work(collected_epic, pending):
+    from src.integration.stacked_branches import EpicRefresh
+
+    case = collected_epic
+    head = await collect_epic(case)
+    case.origin.land("epic")
+    default = case.origin.work("default-move")
+    git(case.origin.clone, "push", "origin", f"{default}:main")
+    if pending == "content":
+        case.origin.work("epic", "undelivered")
+    elif pending == "open-epic":
+        async with case.db._engine.begin() as conn:
+            await conn.execute(
+                update(tasks).where(tasks.c.id == "epic").values(status="IN_PROGRESS"))
+    else:
+        await completed(case.world, "new-child", parent="epic",
+                        done=pending == "undelivered-child")
+    if pending != "content":
+        assert not git(case.origin.url, "diff", f"main...{head}")
+    started = await EpicRefresh(case.db).start("epic")
+    assert started["outcome"] == "started"
+    current = await DatabaseBatches(case.db).current(case.target)
+    assert current.epic_refresh and current.id == started["batch_id"]
+
+
+async def test_delivered_epic_refresh_after_abort_does_not_refreeze(collected_epic):
+    from src.integration.stacked_branches import EpicRefresh
+
+    case = collected_epic
+    await collect_epic(case)
+    default = case.origin.work("default-move")
+    git(case.origin.clone, "push", "origin", f"{default}:main")
+    refresh = EpicRefresh(case.db)
+    started = await refresh.start("epic")
+    assert started["outcome"] == "started"
+    await TrainControls(case.db).abort_batch(started["batch_id"], dry_run=False,
+                                           operator_id="operator", reason="already delivered")
+    case.origin.land("epic")
+    for index in range(2):
+        # Different default heads would produce different deterministic batch IDs.
+        default = case.origin.work(f"default-after-delivery-{index}")
+        git(case.origin.clone, "push", "origin", f"{default}:main")
+        result = await EpicRefresh(case.db).start("epic")
+        assert result["outcome"] == "skipped" and result["reason"] == "delivered"
+    async with case.db._engine.connect() as conn:
+        batches = (await conn.execute(select(integration_batches.c.id).where(
+            integration_batches.c.id.like("train-epic-refresh-%")))).scalars().all()
+    assert batches == [started["batch_id"]]
 
 
 @pytest.mark.parametrize("collected_epic", ["controlled_clock"], indirect=True)
@@ -9795,3 +9873,51 @@ async def test_frozen_epic_uses_fresh_readiness_when_origin_graph_projection_is_
     else:
         assert result.state == "delivered", result
         assert git(case.origin.url, "rev-parse", "main") == testing.candidate_sha
+
+
+async def test_unlimited_root_pr_recovery_reopens_after_many_changed_heads(world):
+    from src.integration.root_pr_recovery import RECOVERY_KEY
+
+    train, github, _ = await hosted_train(world, failure_handler=root_pr_recovery(world))
+    project = await world.db.get_project("p")
+    policy = project.hierarchical_integration_policy
+    policy["root"]["repair"] = {
+        "primary_attempts": 0, "debug_intelligence_class": "standard-high",
+    }
+    await world.db.update_project("p", hierarchical_integration_policy=policy)
+    source = await completed(world, "root")
+    await world.db.set_task_meta("root", RECOVERY_KEY, {"heads": [str(n) * 40 for n in range(6)]})
+    github.pr_runs[source] = "failure"
+    await train.visit(MAIN, seal_now=True)
+    assert (await world.db.get_task("root")).status is TaskStatus.READY
+    assert (await world.db.get_task_meta("root", RECOVERY_KEY))["attempts"] == 7
+
+
+@pytest.mark.parametrize("unlimited", ["primary_attempts", "debug_attempts"])
+async def test_unlimited_budget_allows_withheld_source_release(world, unlimited):
+    await world.db.update_project(
+        "p", hierarchical_integration_policy={"root": {"repair": {unlimited: 0}}},
+    )
+    train, batch_id, _ = await _withheld(world, "a", repair_attempts=1000)
+    controls = TrainControls(world.db, train=train)
+    preview = await _release(controls, batch_id, "a", human=False)
+    assert preview["outcome"] == "preview" and preview["repair_attempt_count"] == 1000
+    assert (await _release(controls, batch_id, "a", preview, human=False,
+                          operator_id="supervisor session:s"))["outcome"] == "released"
+
+
+async def test_root_pr_recovery_refuses_same_head_already_reopened_by_source_ci(world):
+    from src.database.tables import integration_source_ci
+
+    train, github, _ = await hosted_train(world, failure_handler=root_pr_recovery(world))
+    source = await completed(world, "root")
+    async with world.db.immediate() as conn:
+        await conn.execute(insert(integration_source_ci).values(
+            task_id="root", repository_id="r", source_base="a" * 40, source_head=source,
+            generation=1, policy_generation=0, state="red", evidence={}, repair_attempt=1,
+            observed_at=1000.0,
+        ))
+    github.pr_runs[source] = "failure"
+    result = await train.visit(MAIN, seal_now=True)
+    assert result.detail["blockers"][0]["code"] == "root_pr_checks_unchanged"
+    assert (await world.db.get_task("root")).status is TaskStatus.COMPLETED

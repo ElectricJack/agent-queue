@@ -12,6 +12,10 @@ and live/dry traces are in `src/prompts/reviewed_playbooks/object-loop/`.
 The byte-identical test recording is in `tests/fixtures/playbooks/v2/object-loop/`.
 `traces.json` records real AQ commands against disposable PostgreSQL, followed
 by write-free preview replay with identical command arguments and results.
+The prior budget trace is retained separately as historical evidence in
+`tests/fixtures/object-loop-refactor/past-budget-trace.json`. Neither recording
+constitutes artifact approval or activation.
+
 Capture measurements are synthetic fixtures, not renderer or visual-quality
 evidence. The tests cover improvement, ties, invalid captures, scorer exhaustion,
 provider pause/deadline, review rejection/withdrawal/revision, budget/round/plateau
@@ -147,16 +151,19 @@ job's editor cannot move under it, but they have no cross-job continuity.
 ### Operator-only steps, and who runs them
 
 `aq formula cook`, `object_loop_start` and `object_loop_inputs` are refused to
-worker sessions. The refusal names the step that supersedes it: the **project
-supervisor** runs `aq object_loop inputs` and cooks the `object` formula, because
+worker sessions. The **project supervisor** runs
+`aq task object-loop-inputs --project-id matter-engine-cpp` and cooks the `object`
+formula, because
 formula cooking and loop mutation stay out of worker scope. Everything above —
 retention, verification, and assembling the start packet — is worker-safe.
 
 ## Review without activation
 
-After delivery, the operator must run a daemon containing the new
-`object_loop_inputs` contract. Normal vault initialization seeds the bundle at
-`reviewed-playbooks/object-loop/`, and seeds formulas write-if-absent at
+The operator runs a daemon containing the `object_loop_inputs` contract and
+copies the reviewed `object-loop` bundle from the shipped resources into the
+vault at `reviewed-playbooks/object-loop/` before importing. It is optional and
+is not seeded by the six-bundle initial installation. Vault initialization seeds
+formulas write-if-absent at
 `formulas/object.md` and `formulas/variation.md`. Existing formula edits survive;
 compare them with `src/prompts/formulas/` before the pilot.
 
