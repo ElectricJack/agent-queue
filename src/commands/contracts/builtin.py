@@ -1526,7 +1526,7 @@ PRESENTATIONS: dict[str, CommandPresentation] = {
         arg_labels={
             "project_id": "Project",
             "ref": "Branch or commit",
-            "max_attempts": "Repair attempts before escalating",
+            "max_attempts": "Repair attempts before escalating (0 = unlimited; default)",
         },
         outcome_labels={
             "green": "Green",

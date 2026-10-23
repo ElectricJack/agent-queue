@@ -5255,8 +5255,7 @@ async def test_root_pr_recovery_escalates_once_after_restart(world, unchanged):
 
 
 @pytest.mark.parametrize("earlier", ["source_ci", "legacy_delegate", "root_pr"])
-async def test_root_pr_recovery_cannot_restart_a_source_ci_repair_chain(world, earlier):
-    from src.database.tables import messages
+async def test_root_pr_recovery_allows_changed_head_after_source_ci_repair(world, earlier):
     from src.integration.root_pr_recovery import RECOVERY_KEY
 
     train, github, _ = await hosted_train(world, failure_handler=root_pr_recovery(world))
@@ -5269,22 +5268,15 @@ async def test_root_pr_recovery_cannot_restart_a_source_ci_repair_chain(world, e
         await world.db.update_task("root", created_by_kind="source_ci_repair")
     else:
         await world.db.set_task_meta("root", RECOVERY_KEY, {"heads": ["f" * 40]})
-        async with world.db._engine.begin() as conn:
-            policy = await conn.scalar(select(projects.c.hierarchical_integration_policy))
-            policy["root"]["repair"] = {"source_ci": True, "on_exhausted": "continue",
-                                       "debug_intelligence_class": "standard-high"}
-            await conn.execute(update(projects).values(hierarchical_integration_policy=policy))
+        policy = (await world.db.get_project("p")).hierarchical_integration_policy
+        policy["root"]["repair"] = {"source_ci": True, "on_exhausted": "continue",
+                                   "debug_intelligence_class": "standard-high"}
+        await world.db.update_project("p", hierarchical_integration_policy=policy)
     github.pr_runs[source] = "failure"
-    for _ in range(2):
-        blocked = await train.visit(MAIN, seal_now=True)
-        assert blocked.detail["blockers"][0]["code"] == "source_ci_repair_exhausted"
+    await train.visit(MAIN, seal_now=True)
     task = await world.db.get_task("root")
-    assert task.status is TaskStatus.COMPLETED
+    assert task.status is TaskStatus.READY
     assert task.pr_url == original.pr_url and task.branch_name == original.branch_name
-    async with world.db._engine.connect() as conn:
-        notices = (await conn.execute(select(messages).where(
-            messages.c.id == "msg-source-ci-budget-root"))).mappings().all()
-    assert len(notices) == 1
 
 
 async def test_root_pr_recovery_preserves_existing_bound_source_repair(world):
@@ -9768,3 +9760,51 @@ async def test_frozen_epic_uses_fresh_readiness_when_origin_graph_projection_is_
     else:
         assert result.state == "delivered", result
         assert git(case.origin.url, "rev-parse", "main") == testing.candidate_sha
+
+
+async def test_unlimited_root_pr_recovery_reopens_after_many_changed_heads(world):
+    from src.integration.root_pr_recovery import RECOVERY_KEY
+
+    train, github, _ = await hosted_train(world, failure_handler=root_pr_recovery(world))
+    project = await world.db.get_project("p")
+    policy = project.hierarchical_integration_policy
+    policy["root"]["repair"] = {
+        "primary_attempts": 0, "debug_intelligence_class": "standard-high",
+    }
+    await world.db.update_project("p", hierarchical_integration_policy=policy)
+    source = await completed(world, "root")
+    await world.db.set_task_meta("root", RECOVERY_KEY, {"heads": [str(n) * 40 for n in range(6)]})
+    github.pr_runs[source] = "failure"
+    await train.visit(MAIN, seal_now=True)
+    assert (await world.db.get_task("root")).status is TaskStatus.READY
+    assert (await world.db.get_task_meta("root", RECOVERY_KEY))["attempts"] == 7
+
+
+@pytest.mark.parametrize("unlimited", ["primary_attempts", "debug_attempts"])
+async def test_unlimited_budget_allows_withheld_source_release(world, unlimited):
+    await world.db.update_project(
+        "p", hierarchical_integration_policy={"root": {"repair": {unlimited: 0}}},
+    )
+    train, batch_id, _ = await _withheld(world, "a", repair_attempts=1000)
+    controls = TrainControls(world.db, train=train)
+    preview = await _release(controls, batch_id, "a", human=False)
+    assert preview["outcome"] == "preview" and preview["repair_attempt_count"] == 1000
+    assert (await _release(controls, batch_id, "a", preview, human=False,
+                          operator_id="supervisor session:s"))["outcome"] == "released"
+
+
+async def test_root_pr_recovery_refuses_same_head_already_reopened_by_source_ci(world):
+    from src.database.tables import integration_source_ci
+
+    train, github, _ = await hosted_train(world, failure_handler=root_pr_recovery(world))
+    source = await completed(world, "root")
+    async with world.db.immediate() as conn:
+        await conn.execute(insert(integration_source_ci).values(
+            task_id="root", repository_id="r", source_base="a" * 40, source_head=source,
+            generation=1, policy_generation=0, state="red", evidence={}, repair_attempt=1,
+            observed_at=1000.0,
+        ))
+    github.pr_runs[source] = "failure"
+    result = await train.visit(MAIN, seal_now=True)
+    assert result.detail["blockers"][0]["code"] == "root_pr_checks_unchanged"
+    assert (await world.db.get_task("root")).status is TaskStatus.COMPLETED

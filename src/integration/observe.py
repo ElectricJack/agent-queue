@@ -690,14 +690,14 @@ def _writer(
     budget = subject.budget
     if budget is None and stage and stage.get("started_at") is not None:
         data = (stage.get("dossier") or {}).get("budget", {})
-        if stage.get("intelligence_class") and stage.get("deadline_at") is not None:
+        if stage.get("intelligence_class"):
             budget = WriterBudget(
                 ordinal=stage["ordinal"],
                 intelligence_class=stage["intelligence_class"],
                 started_at=stage["started_at"],
                 deadline_at=stage["deadline_at"],
                 attempts=stage["attempts"],
-                attempt_limit=data.get("attempt_limit"),
+                attempt_limit=data.get("attempt_limit") or None,
             )
     if task_id is None:
         return WriterLease(), budget

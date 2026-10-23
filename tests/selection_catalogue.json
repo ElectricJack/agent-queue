@@ -3564,7 +3564,7 @@
         "ci-sentinel"
       ],
       "default_arm": true,
-      "digest": "sha256:7f889a7670b9a140192e6903f1fe6c327e62440ced52f45f0eef2970b8d2ce2a",
+      "digest": "sha256:507b7b7c1f7db4b9990121e74ebb6ac35d2c37360bba17c0ceeeafc67cef10ee",
       "imports": [
         "src.commands.ci_commands",
         "src.commands.contracts",
@@ -3576,7 +3576,9 @@
         "src.models",
         "src.orchestrator"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "``ci_baseline_status`` — the observation half of the ci-main-sentinel."
     },
     "tests/test_ci_completion.py": {
@@ -6759,7 +6761,7 @@
         "epic-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:7626d9c926eff3dd256c4022503675d57c9f40ab555def265f3790f0cfdc0fc7",
+      "digest": "sha256:5229b178b452dbc5465214e930a414347758063964fca9bc7dd598eefc6823cb",
       "imports": [
         "src.commands.handler",
         "src.config",
@@ -6775,6 +6777,7 @@
         "src.integration.provenance",
         "src.integration.repository_git",
         "src.integration.reviews",
+        "src.integration.root_pr_recovery",
         "src.integration.source_ci",
         "src.integration.source_repairs",
         "src.integration.train_sources",
@@ -10126,14 +10129,18 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:ef2beafdc82bea01839ff8fa0100523f09b55b3519f557eedc6f5c76c3e1c8f6",
+      "digest": "sha256:867524cd949af212da57cb6b62904af077afd161a2e610c6a8d7a96b382c4e87",
       "imports": [
         "src.database",
         "src.database.tables",
         "src.integration.models",
+        "src.integration.records",
+        "src.integration.status",
         "src.models"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "Durable hierarchical-integration persistence contracts."
     },
     "tests/test_integration_stranded_children.py": {
