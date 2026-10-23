@@ -1043,7 +1043,7 @@
     "phase": "transition",
     "fixed_replacement_allowance": 15000,
     "engine_cap": 97627,
-    "owned_total_cap": 161113,
+    "owned_total_cap": 161136,
     "table_cap": 45,
     "expires_at": "s4_modules",
     "automatic_baseline_increase": false,
@@ -1063,13 +1063,14 @@
         "msg-330ea2478c724381acbb5512fc99e4b5",
         "msg-e2dd5a423516458eb564e745a12ab30e",
         "msg-3f6311071a6647429059f3a990750597",
-        "msg-99539879"
+        "msg-99539879",
+        "msg-68ccb1d50ee04851a7268dd58e9d4459"
       ],
       "decision_record": "record:2720bdbe-7521-427e-8e72-1f40a3ff9818",
-      "measured_source_revision": "ca7a4377c532d723b0ab9c3bb5f833707a317cf5",
+      "measured_source_revision": "f09829d145915bc7426d24f28623283f7319a7a2",
       "original_owned_total_cap": 155499,
-      "measured_owned_total": 161113,
-      "delta": 5614,
+      "measured_owned_total": 161136,
+      "delta": 5637,
       "predecessors": [
         {
           "batch_id": "train-77f0d8e451f6aed08d608e443031047a",
@@ -1089,7 +1090,7 @@
           "measured_owned_total": 158958
         }
       ],
-      "batch_measured_delta": 2155,
+      "batch_measured_delta": 2178,
       "restore_task": "azure-ridge-72",
       "expires_at": "s4_modules",
       "category_approval_message_id": "msg-90f9f1b1e0cd4e8e8d28071cffc927a6",
@@ -1098,7 +1099,7 @@
       ],
       "category_restore_task": "stark-willow-95.17",
       "verification_task": "stark-willow-95.18",
-      "measured_engine_lines": 85517,
+      "measured_engine_lines": 85539,
       "measured_table_count": 45,
       "delivery_method": "operator direct integration; user request 2026-10-22",
       "amendments": [
@@ -1225,6 +1226,25 @@
           "pull_request": "https://github.com/ElectricJack/agent-queue/pull/1886",
           "charged_definition": "src/doctor/stall_checks.py::_check_sweep",
           "reason": "Stall-sweep alert for non-ready playbook activations. Global supervisor approved the exact +2 owned lines under size-cap-delegation-2026-10-23; project supervisor directed carrying that unchanged delta onto current dev after PR1885. Engine lines and table count remain unchanged."
+        },
+        {
+          "task_id": "noble-flare-12",
+          "decision_message_id": "msg-68ccb1d50ee04851a7268dd58e9d4459",
+          "operator_decision": "6679052c",
+          "operator_task": "sharp-cascade-53",
+          "referenced_decision": "size-cap-delegation-2026-10-23",
+          "pull_request": "https://github.com/ElectricJack/agent-queue/pull/1892",
+          "previous_source_revision": "4a0c4e38ab979a1664586d47d16404b48def4089",
+          "previous_owned_total": 161111,
+          "previous_engine_lines": 85517,
+          "authorized_owned_delta": 23,
+          "authorized_engine_delta": 22,
+          "authorized_shared_delta": 1,
+          "measured_source_revision": "b194122701a0130039230dea4c8caa93c70f60e1",
+          "measured_owned_total": 161134,
+          "measured_engine_lines": 85539,
+          "measured_table_count": 45,
+          "reason": "Bound cached tile readiness to visible candidates and stack proof sources; exact project supervisor approval under size-cap-delegation-2026-10-23. Preserve scheduler shared inputs and fail-closed authorization. No new storage or automatic cap increase."
         }
       ],
       "supplemental_grants": [
@@ -14520,5 +14540,24 @@
     "pull_request": "https://github.com/ElectricJack/agent-queue/pull/1886",
     "charged_definition": "src/doctor/stall_checks.py::_check_sweep",
     "reason": "Stall-sweep alert for non-ready playbook activations. Global supervisor approved the exact +2 owned lines under size-cap-delegation-2026-10-23; project supervisor directed carrying that unchanged delta onto current dev after PR1885. Engine lines and table count remain unchanged."
+  },
+  "graph_viewport_readiness_measurement": {
+    "task_id": "noble-flare-12",
+    "decision_message_id": "msg-68ccb1d50ee04851a7268dd58e9d4459",
+    "operator_decision": "6679052c",
+    "operator_task": "sharp-cascade-53",
+    "referenced_decision": "size-cap-delegation-2026-10-23",
+    "pull_request": "https://github.com/ElectricJack/agent-queue/pull/1892",
+    "previous_source_revision": "4a0c4e38ab979a1664586d47d16404b48def4089",
+    "previous_owned_total": 161111,
+    "previous_engine_lines": 85517,
+    "authorized_owned_delta": 23,
+    "authorized_engine_delta": 22,
+    "authorized_shared_delta": 1,
+    "measured_source_revision": "b194122701a0130039230dea4c8caa93c70f60e1",
+    "measured_owned_total": 161134,
+    "measured_engine_lines": 85539,
+    "measured_table_count": 45,
+    "reason": "Bound cached tile readiness to visible candidates and stack proof sources; exact project supervisor approval under size-cap-delegation-2026-10-23. Preserve scheduler shared inputs and fail-closed authorization. No new storage or automatic cap increase."
   }
 }
