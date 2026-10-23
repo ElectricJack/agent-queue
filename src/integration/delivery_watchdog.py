@@ -310,8 +310,11 @@ async def _settle_on(db, conn, row: Mapping[str, Any], *, now: float, outcome: s
             escalations.c.state.in_(tuple(OPEN_ESCALATION_STATES)),
         ).values(
             state="resolved", revision=escalations.c.revision + 1, updated_at=now,
-            terminal_at=now, terminal_outcome=outcome,
-            terminal_evidence={"task_id": row["owner_id"], "head": inputs.get("head")},
+            terminal_at=now, terminal_outcome=outcome, outcome="sweep",
+            terminal_evidence={"task_id": row["owner_id"], "head": inputs.get("head"),
+                               "target_ref": inputs.get("target_ref"),
+                               "source_generation": row["source_generation"],
+                               "automatic_rule": "delivery_contained"},
         ))
     if inputs.get("redrive"):
         import json
@@ -380,7 +383,7 @@ async def _raise_incident_on(db, conn, *, key: str, entry: Mapping[str, Any],
                 "landing task, land the branch by hand, or abandon the generation. The "
                 "incident resolves itself once the work is on the default branch.")
     incident, created = await db.create_escalation(
-        conn=conn, id=incident_id, project_id=project_id,
+        conn=conn, id=incident_id, project_id=project_id, task_id=task_id,
         source_kind=INCIDENT_SOURCE_KIND, source_identity=key,
         incident_key="delivery-stuck:" + key, supervisor_owner=f"supervisor-{project_id}",
         task_title=f"Land stuck delivery of {task_id}", summary=summary,

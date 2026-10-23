@@ -938,3 +938,25 @@ Other open work was checked and does not change this system.
   [`../design/messaging-rework.md`](../design/messaging-rework.md),
   [`../implementation/messaging-rework.md`](../implementation/messaging-rework.md),
   [`../../superpowers/specs/2026-09-08-discord-simplification-implementation.md`](../../superpowers/specs/2026-09-08-discord-simplification-implementation.md).
+
+## Operational escalation lifecycle
+
+Operational wait, continuation, train-stall and delivery-watchdog incidents notify
+the project supervisor first. Reconciliation must not turn them into human-channel
+requests. A supervisor's explicit `escalate_to_human` wait decision authorizes human
+delivery; other unresolved operational incidents can be escalated through the
+supervisor's normal human-question command.
+
+Every periodic auto-resolution pass inspects the complete open set, including old
+incidents. Cancelled gates, terminal/removed batches, settled waits, released
+continuations and completed source tasks retire their incidents with durable source
+evidence and a non-null automatic outcome. Completed tasks alone do not prove that
+delivery reached its target: delivery incidents require their bound containment
+projection to settle. The explicit sweep uses the same source rules and revalidates
+them before applying a saved plan.
+
+Train and admission alarms measure lack of progress, rather than total queue age.
+Active repairs, bounded running visits, deferred retries and recent admissions defer
+alarms. Measured visit duration can increase the train threshold above its floor.
+One batch or active admission-capacity episode produces one supervisor incident,
+regardless of the number of members or waits observing it.

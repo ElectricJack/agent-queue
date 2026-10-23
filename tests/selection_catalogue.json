@@ -6326,7 +6326,7 @@
         "integration-controls"
       ],
       "default_arm": true,
-      "digest": "sha256:aaea82853da0fb516667deb640f13d4415b8dd3dc4747bb7daa18f52fcde66f0",
+      "digest": "sha256:639e6bcde17abbdeee478ce48d6880e26d9de485b6fc5c0b81d5f59a3e2b6251",
       "imports": [
         "src.commands.integration_commands",
         "src.commands.principal",
@@ -6336,6 +6336,8 @@
         "src.doctor",
         "src.doctor.integration_checks",
         "src.doctor.models",
+        "src.escalations.autoresolve",
+        "src.escalations.sweep",
         "src.integration.batches",
         "src.integration.delivery_engine",
         "src.integration.records",
@@ -19695,11 +19697,12 @@
         "agent-waits"
       ],
       "default_arm": true,
-      "digest": "sha256:dc5accba4cdb745e213ea3054efc2532b25de09c89374388435b161dffafcbe9",
+      "digest": "sha256:2665c4e2e709ce7d89dc7bd088810bfe84889bdec7576cda3dc0460858fe0710",
       "imports": [
         "src.config",
         "src.database.queries.continuation_queries",
         "src.database.tables",
+        "src.escalations.facts",
         "src.event_schemas",
         "src.handoffs",
         "src.messages.delivery",

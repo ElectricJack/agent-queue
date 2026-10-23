@@ -350,6 +350,8 @@ async def test_stuck_generation_gets_one_takeover_and_one_incident_across_restar
     assert row["outcome"] == "satisfied"
     (incident,) = await watch.rows(escalations)
     assert incident["state"] == "resolved"
+    assert incident["outcome"] == "sweep"
+    assert incident["terminal_evidence"]["automatic_rule"] == "delivery_contained"
     assert len(await watch.rows(events, events.c.event_type == "delivery.recovered")) == 1
 
 
