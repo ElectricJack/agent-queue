@@ -3,7 +3,9 @@
 The batch branch is the workspace and publication boundary. A red observation
 changes the input of the same session, never files another task or consumes a
 claim. Session launch is registered before process creation; an uncertain launch
-is retained for inspection rather than retried as a second agent.
+is retained for inspection rather than retried as a second agent. A launch that
+provably left no process (never registered, or registered and confirmed stopped)
+waits with backoff and relaunches like a capacity wait.
 """
 
 from __future__ import annotations
@@ -22,6 +24,9 @@ from src.integration.batches import candidate_ref
 from src.integration.lock import BranchLock
 from src.integration.repair import OrdinaryRepairService, ordinary_repair_id
 from src.waits.sources import execute_batch_mutation, insert_message_with_source_event
+
+_LAUNCH_RETRY_MAX_SECONDS = 3600
+_LAUNCH_ESCALATE_AFTER = 3
 
 
 class BatchFixerService:
@@ -78,6 +83,47 @@ class BatchFixerService:
                        revisit_seconds=state.get("revisit_seconds", 300))
         return {"success": True, "outcome": "deferred", "reason": state["blocker"],
                 "session_id": state["session_id"]}
+
+    @staticmethod
+    async def _relaunchable(conn, state):
+        """The identity to relaunch with, or None while a process may exist.
+
+        An unregistered identity is reused with its checkout. A registered one
+        that launch cleanup confirmed stopped cannot register again, so it gets
+        a fresh identity under the same session name.
+        """
+        row = (await conn.execute(select(sessions.c.state).where(
+            sessions.c.id == state["session_id"],
+        ))).one_or_none()
+        if row is None:
+            return dict(state)
+        if row.state != "stopped":
+            return None
+        return {**state, "session_id": str(uuid4()), "instance_token": uuid4().hex[:12]}
+
+    async def _retry_launch(self, conn, batch, state, reason):
+        from src.integration.fixer_batches import defer_on
+
+        fresh = await self._relaunchable(conn, state)
+        if fresh is None:
+            return None
+        failures = fresh.get("launch_failures", 0) + 1
+        backoff = min(fresh["revisit_seconds"] * 2 ** (failures - 1), _LAUNCH_RETRY_MAX_SECONDS)
+        fresh.pop("blocker", None)
+        # The unlaunched status: resume transfers it and allocate relaunches it.
+        fresh.update(status="waiting_capacity", launch_failures=failures, launch_error=reason)
+        if failures >= _LAUNCH_ESCALATE_AFTER and not fresh.get("launch_escalated"):
+            fresh["launch_escalated"] = True
+            await self._message(conn, batch, fresh, "launch-retry", (
+                f"Batch {batch['id']} fixer failed to launch {failures} times: {reason}. "
+                f"No process was left running; the train retries with backoff "
+                f"(next in {backoff}s) and will not report again for this batch family."
+            ), supervisor=True)
+        await self._write(conn, batch["id"], fresh)
+        await defer_on(conn, batch, now=self.clock(), reason="launch_retry",
+                       head_sha=fresh["head_sha"], revisit_seconds=backoff)
+        return {"success": True, "outcome": "deferred", "reason": reason,
+                "session_id": fresh["session_id"]}
 
     async def allocate(
         self, batch_id, *, target_ref, head_sha, authorize=None, held=False,
@@ -137,6 +183,20 @@ class BatchFixerService:
                     integration_batches.c.fixer_state["family_id"].astext == family,
                     integration_batches.c.fixer_state["session_id"].astext.is_not(None),
                 ).with_for_update())).mappings().one_or_none()
+                # Before launch retries, a failed launch blocked its family
+                # forever. A successor takes over an identity that left no process.
+                fresh = (await self._relaunchable(conn, owner["fixer_state"])
+                         if owner and not existing_only
+                         and str(owner["fixer_state"].get("blocker", "")).startswith(
+                             "launch incomplete") else None)
+                if fresh is not None:
+                    if authorize is None or not await authorize():
+                        return {"success": True, "outcome": "withdrawn"}
+                    fresh.pop("blocker", None)
+                    state = {**fresh, "batch_id": batch_id, "target_ref": target_ref,
+                             "status": "waiting_capacity", "launch_escalated": True}
+                    await self._write(conn, owner["id"], None)
+                    owner = None
                 if owner:
                     if existing_only:
                         return {"success": True, "outcome": "exists",
@@ -269,6 +329,11 @@ class BatchFixerService:
                                        revisit_seconds=current["revisit_seconds"])
                         return {"success": True, "outcome": "deferred", "reason": str(exc),
                                 "session_id": current["session_id"]}
+                    # _start commits "active" before the process starts.
+                    if row["intent"] == "open" and current["status"] in {"launching", "active"}:
+                        retried = await self._retry_launch(conn, row, current, str(exc))
+                        if retried:
+                            return retried
                     return await self._block(conn, row, current, f"launch incomplete: {exc}")
             async with self.db.immediate() as conn:
                 row = (await conn.execute(select(integration_batches).where(
