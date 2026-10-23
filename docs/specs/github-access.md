@@ -1,6 +1,6 @@
 ---
 project: agent-queue
-status: draft
+status: implemented
 source_repository_path: docs/specs/github-access.md
 issue: https://github.com/ElectricJack/agent-queue/issues/615
 ---
@@ -11,11 +11,16 @@ issue: https://github.com/ElectricJack/agent-queue/issues/615
 
 Date: 2026-09-22
 
-Status: staged implementation. Shared credential selection, `gh` runner,
-repository operations and AQ Git delivery are present in the source tree;
-App-backed onboarding clone and the final compatibility-path removal remain
-open. The disposable private-repository App-only acceptance run in §11 has
-not been recorded. The inventory in §1 describes the original baseline.
+Status: implemented; historical design and acceptance record. The shared
+credential service, `gh` runner, repository operations, authenticated clone and
+AQ Git delivery are shipped. The old `GitHubAppClient` / `GitHubCLIClient`
+repository constructors are removed. Issue #615's completed disposition and
+the live App-only clone → push → PR → CI → merge → close run are recorded in
+[the gate record](../gates/github-access-615.md#final-app-only-acceptance-and-615-disposition-2026-09-23-utc)
+and [App-only rerun](../gates/github-access-615-app-only-2026-09-23.md).
+Those records distinguish mock coverage from live coverage and name paths not
+exercised by the final fixture; completion does not imply all of §11 was run live.
+The inventory in §1 describes the original baseline.
 
 Issue: [#615 — GitHub App credentials do not cover gh-based PR operations](https://github.com/ElectricJack/agent-queue/issues/615)
 
@@ -26,7 +31,7 @@ the daemon user's existing `gh` credentials, including a personal access token
 (PAT). An existing repository's supported AQ workflow must work with either
 credential source, without requiring both.
 
-This is the design and remaining acceptance record. See
+This is the historical design and acceptance contract. See
 [Integration](../concepts/integration.md) and
 [Project onboarding](../guides/project-onboarding.md) for current behavior.
 
@@ -545,7 +550,8 @@ CI/merge and Git-containment suites; replacing transport must not weaken them.
 
 Existing focused suites include
 [tests/test_github_app.py](../../tests/test_github_app.py),
-[tests/test_github_cli.py](../../tests/test_github_cli.py),
+[tests/test_github_runner.py](../../tests/test_github_runner.py),
+[tests/test_github_client.py](../../tests/test_github_client.py),
 [tests/test_git_app_auth.py](../../tests/test_git_app_auth.py),
 [tests/test_git_manager_async.py](../../tests/test_git_manager_async.py),
 [tests/test_project_github.py](../../tests/test_project_github.py),
@@ -578,7 +584,9 @@ used when the configured App is denied. Record live smoke-test evidence only
 when run against a disposable fixture; label mock-only evidence as such. No
 live workflow was run while writing this specification.
 
-The issue is complete only when the supported App-only workflow succeeds and
-the duplicated execution paths have been removed. Merely authenticating
+The original acceptance contract required the supported App-only workflow to succeed
+and the duplicated execution paths to be removed. Merely authenticating
 `gh pr create`, or retaining an untested alternate backend behind the common
-interface, does not meet this specification.
+interface, does not meet this specification. See the linked gate records for what
+was actually verified and the final issue disposition; this section does not
+replace that evidence.
