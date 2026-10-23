@@ -189,7 +189,10 @@ TRANSITION_BATCH_EXCEPTION = {'batch_id': 'train-745592300af5cef0338dec80ebabb46
                  'reason': 'Shared exact-commit check-run observations and one bounded recovery '
                            'wait; plain dev merge retains dashboard badges, quota reserve and ETag '
                            'behavior. Supervisor approved the exact merged +1 owned / +1 engine '
-                           'measurement under size-cap-delegation-2026-10-23.'}],
+                           'measurement under size-cap-delegation-2026-10-23.',
+                 'operator_decision': '6679052c',
+                 'operator_task': 'sharp-cascade-53',
+                 'grant_delivery_message_id': 'msg-3a0b0c6448ef44699f7a7d7c43777642'}],
  'supplemental_grants': [{'task_id': 'fresh-apex-30',
                           'approval_message_id': 'msg-4e25c0d3',
                           'relay_message_id': 'msg-bd98955a2fa443cc920ce725e42a5c3f',
