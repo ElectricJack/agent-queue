@@ -11040,3 +11040,374 @@ async def test_original_pr_1910_root_pr_gate_requires_exact_open_same_repository
     github.pr_runs[head] = "success"
     now[0] += 61
     assert (await train.visit(MAIN)).state == "testing"
+
+
+async def test_one_repair_keeps_every_conflicting_source_until_combined_candidate_passes(world):
+    """Three completed branches conflict with main and each other, including
+    generated artifacts. Partial repair, trailers and green partial CI cannot
+    deliver; one worker retains the whole frozen batch through final checks."""
+    origin = world.origin
+    catalogue_repository(origin)
+    base = git(origin.url, "rev-parse", "main")
+    sources = []
+    for tid, module in (("a", "alpha"), ("b", "beta"), ("c", "gamma")):
+        catalogue_branch(origin, tid, module)
+        (origin.clone / "base.txt").write_text(f"{tid} edit\n")
+        git(origin.clone, "commit", "-qam", f"{tid} conflicts")
+        git(origin.clone, "push", "-q", "origin", f"aq/{tid}")
+        head = git(origin.clone, "rev-parse", "HEAD")
+        await completed(world, tid, head=head, source_base=base)
+        sources.append(head)
+    git(origin.clone, "checkout", "-q", "-B", "main", "origin/main")
+    (origin.clone / "base.txt").write_text("main edit\n")
+    git(origin.clone, "commit", "-qam", "main conflicts with all sources")
+    git(origin.clone, "push", "-q", "origin", "main")
+    target = git(origin.clone, "rev-parse", "HEAD")
+    train, github, _ = await hosted_train(world)
+    policy = (await world.db.get_project("p")).hierarchical_integration_policy
+    policy["root"]["admission"] = "reviewed"
+    await world.db.update_project("p", hierarchical_integration_policy=policy)
+    github.pr_runs.clear()
+    for index, (tid, head) in enumerate(zip(("a", "b", "c"), sources, strict=True)):
+        url = (await world.db.get_task(tid)).pr_url
+        github.mergeability[url] = "dirty"
+        github.reviews.append({"id": index + 1, "commit_id": head, "state": "APPROVED",
+                               "user": {"login": ("alice", "bob", "jack")[index],
+                                        "type": "User"}})
+    first = await train.visit(MAIN)
+    assert first.state == "repair", first
+    frozen = await BatchStore(world.db).members(first.batch_id)
+    assert [(m.task_id, m.source_sha) for m in frozen] == list(zip(("a", "b", "c"), sources))
+    repair = await world.db.get_task(first.repair["task_id"])
+    assert all(head in repair.description for head in sources)
+    assert "once" in repair.description and "ancestor" in repair.description
+    ref = candidate_ref(first.batch_id)
+    fence = Fence.model_validate(first.repair["fence"])
+    locks = BranchLock(world.db)
+    git(origin.clone, "fetch", "-q", "origin")
+    git(origin.clone, "checkout", "-q", "--detach", first.candidate_sha)
+
+    async def merge_source(index):
+        result = subprocess.run(
+            ["git", "merge", "--no-ff", "--no-commit", sources[index]],
+            cwd=origin.clone, capture_output=True, text=True, check=False,
+        )
+        assert result.returncode == 1, result.stdout + result.stderr
+        conflicts = git(origin.clone, "diff", "--name-only", "--diff-filter=U").splitlines()
+        assert "base.txt" in conflicts
+        if Catalogue.CATALOGUE_PATH in conflicts:
+            git(origin.clone, "checkout", "--ours", Catalogue.CATALOGUE_PATH)
+        (origin.clone / "base.txt").write_text(
+            "main edit\n" + "".join(f"{tid} edit\n" for tid in ("a", "b", "c")[:index + 1]),
+        )
+        git(origin.clone, "add", "base.txt", Catalogue.CATALOGUE_PATH)
+        # A trailer claiming unmerged sources is deliberately not sufficient.
+        message = "repair source conflict"
+        if index == 0:
+            message += "\n\n" + "\n".join(
+                f"AQ-Source: {tid}@{head}" for tid, head in zip(("b", "c"), sources[1:])
+            )
+        git(origin.clone, "commit", "-qm", message)
+        candidate = git(origin.clone, "rev-parse", "HEAD")
+        old = git(origin.url, "rev-parse", ref)
+        await locks.fenced_push(
+            fence, git=train.lane_for.git, checkout_path=str(origin.clone),
+            repository=GitHubRepositoryBinding(123, github.full_name),
+            tip_oid=candidate, expected_old_oid=old,
+        )
+        return candidate
+
+    partial = await merge_source(0)
+    github.runs[partial] = "success"
+    train = IntegrationTrain(
+        targets=DatabaseTargets(world.db), batches=train.batches, lane_for=train.lane_for,
+        repair=OrdinaryRepairService(world.db),
+    )
+    partial_visit = await train.visit(MAIN)
+    assert partial_visit.state == "repair", partial_visit
+    assert partial_visit.repair["task_id"] == repair.id
+    assert partial_visit.repair["attempt_count"] == 1
+    assert git(origin.url, "rev-parse", "main") == target
+    assert git(origin.url, "rev-parse", ref) == partial
+    for index in (1, 2):
+        await merge_source(index)
+    subprocess.run([sys.executable, "scripts/generate-selection-catalogue.py"],
+                   cwd=origin.clone, check=True, capture_output=True)
+    git(origin.clone, "add", Catalogue.CATALOGUE_PATH)
+    git(origin.clone, "commit", "-qm", "regenerate after every source is merged")
+    repaired = git(origin.clone, "rev-parse", "HEAD")
+    await locks.fenced_push(
+        fence, git=train.lane_for.git, checkout_path=str(origin.clone),
+        repository=GitHubRepositoryBinding(123, github.full_name),
+        tip_oid=repaired, expected_old_oid=git(origin.url, "rev-parse", ref),
+    )
+    github.runs[target] = "success"
+    github.runs[repaired] = "failure"
+    red = await train.visit(MAIN)
+    assert (red.state, red.checks) == ("repair", "red"), red
+    assert red.repair["task_id"] == repair.id
+    assert git(origin.url, "rev-parse", "main") == target
+    assert not github.records
+    await close(world.db, repair.id, [repaired], origin=origin)
+    await locks.release(fence)
+    github.runs[repaired] = "success"
+    delivered = await train.visit(MAIN)
+    assert delivered.state == "delivered", delivered
+    assert delivered.candidate_sha == delivered.target_sha == repaired
+    assert github.records[-1]["head_sha"] == repaired
+    assert git(origin.url, "rev-parse", "main") == repaired
+    for tid, head in zip(("a", "b", "c"), sources, strict=True):
+        git(origin.url, "merge-base", "--is-ancestor", head, repaired)
+        assert git(origin.url, "rev-parse", f"aq/{tid}") == head
+    git(origin.url, "merge-base", "--is-ancestor", target, repaired)
+    modules = set(json.loads(git(origin.url, "show", f"{repaired}:{Catalogue.CATALOGUE_PATH}"))[
+        "modules"])
+    assert modules == {f"tests/test_{module}.py" for module in ("base", "alpha", "beta", "gamma")}
+
+
+
+@pytest.mark.parametrize("content_conflict", [False, True])
+async def test_conflicting_epic_joins_root_batch_without_author_refresh(collected_epic, content_conflict):
+    case = collected_epic
+    head, default, _ = await conflicting_epic_pr(case, content_conflict=content_conflict)
+    leaf = await completed(case.world, "leaf")
+    case.github.reviews.append({"id": 100, "state": "APPROVED", "commit_id": leaf,
+                               "user": {"login": "alice", "type": "User"}})
+    visit = await case.train.visit(MAIN)
+    assert visit.state == ("repair" if content_conflict else "testing"), visit
+    members = await BatchStore(case.db).members(visit.batch_id)
+    assert [(m.task_id, m.source_sha) for m in members] == [("epic", head), ("leaf", leaf)]
+    async with case.db._engine.connect() as conn:
+        assert not (await conn.execute(select(integration_batches.c.id).where(
+            integration_batches.c.id.like("train-epic-refresh-%")))).first()
+        assert not (await conn.execute(select(events.c.id).where(
+            events.c.event_type == "integration.epic_refresh"))).first()
+    assert git(case.origin.url, "rev-parse", "aq/epic") == head
+    assert git(case.origin.url, "rev-parse", "main") == default
+    if content_conflict:
+        repair = await case.db.get_task(visit.repair["task_id"])
+        assert repair.branch_name == candidate_ref(visit.batch_id).removeprefix("refs/heads/")
+        assert head in repair.description and leaf in repair.description
+        again = await case.train.visit(MAIN)
+        assert again.repair["task_id"] == repair.id and again.repair["attempt_count"] == 1
+    else:
+        case.github.runs[visit.candidate_sha] = "success"
+        assert (await case.train.visit(MAIN)).state == "delivered"
+        for source in (head, leaf, default):
+            git(case.origin.url, "merge-base", "--is-ancestor", source, "main")
+
+
+
+@pytest.mark.parametrize(
+    "change,strict",
+    [(change, True) for change in
+     ("modify", "delete", "add", "mixed", "rename", "retained", "directory")]
+    + [("delete", False)],
+)
+async def test_train_surfaces_obsolete_child_without_claiming_delivery(
+    world, monkeypatch, change, strict,
+):
+    from src.integration.delivery_truth import (
+        CONTAINMENT_CONTRACT_VERSION, load_delivery_requests,
+    )
+    from src.integration.git_truth import LEGACY_CONTRACT_VERSION
+    from src.integration.obsolete_children import obsolete_child_blocker
+
+    db, origin = world.db, world.origin
+    world.truth.contract_version = (
+        CONTAINMENT_CONTRACT_VERSION if strict else LEGACY_CONTRACT_VERSION
+    )
+    base = git(origin.clone, "rev-parse", "main")
+    await db.create_task(Task(
+        id="epic", project_id="p", repo_id="r", title="epic", description="",
+        status=TaskStatus.IN_PROGRESS, branch_name="aq/epic",
+    ))
+    git(origin.clone, "checkout", "-q", "-B", "aq/child", base)
+    if change == "delete":
+        git(origin.clone, "rm", "base.txt")
+    elif change == "rename":
+        git(origin.clone, "mv", "base.txt", "renamed.txt")
+    elif change != "add":
+        (origin.clone / "base.txt").write_text("child edit\n")
+    if change in {"add", "mixed"}:
+        (origin.clone / "new.txt").write_text("new work\n")
+    git(origin.clone, "add", "-A")
+    git(origin.clone, "commit", "-qm", "child changes")
+    head = git(origin.clone, "rev-parse", "HEAD")
+    git(origin.clone, "push", "-q", "origin", "aq/child")
+    await completed(world, "child", parent="epic", head=head, source_base=base)
+    git(origin.clone, "checkout", "-q", "-B", "aq/epic", base)
+    if change != "retained":
+        git(origin.clone, "rm", "base.txt")
+        if change == "directory":
+            (origin.clone / "base.txt").mkdir()
+            (origin.clone / "base.txt" / "kept.txt").write_text("path still exists\n")
+            git(origin.clone, "add", "base.txt")
+        git(origin.clone, "commit", "-qm", "parent removes obsolete path")
+    git(origin.clone, "push", "-q", "origin", "aq/epic")
+    target = TrainTarget("p", "r", "refs/heads/aq/epic", "epic")
+    observed = await snapshot(world, target)
+    obsolete = await obsolete_child_blocker(
+        observed.observation, task_id="child", source_base=base, source_oid=head,
+    )
+    assert bool(obsolete) is (change in {"modify", "delete"})
+    blockers = []
+    pending = await fixture_batches(db).pending(target, observed, blockers=blockers)
+    if obsolete:
+        assert pending is None
+        assert [item["code"] for item in blockers] == ["obsolete_child"]
+        assert blockers[0]["source_head"] == head
+        assert blockers[0]["target_head"] == observed.target_oid
+        assert "redrive-child child --dispose-obsolete" in obsolete["remedy"]
+        assert f"--head {head} --parent-head {observed.target_oid}" in obsolete["remedy"]
+        assert "--superseded-by" in obsolete["remedy"]
+        request = (await load_delivery_requests(db, ["child"], repository_id="r",
+                                                target_ref=target.target_ref))["child"]
+        assert not (await observed.strict_is_delivered(request)).satisfied
+        from src.integration.child_delivery import ChildDelivery
+
+        db.set_prerequisite_observer(db._delivery_observer)
+        diagnosis = await ChildDelivery(db, None).run("child")
+        if strict:
+            assert diagnosis["outcome"] == "blocked"
+            assert "obsolete_child" in diagnosis["reason"]
+            assert obsolete["remedy"] in diagnosis["reason"]
+        else:
+            # Equivalent deletions already satisfy the legacy tree/patch
+            # contract; diagnostics must preserve that existing proof.
+            assert diagnosis["outcome"] == "nothing_to_redrive"
+            assert "already delivered into the parent" in diagnosis["reason"]
+
+        from src.commands.contracts.integration import IntegrationRedriveChildArgs
+        from src.integration.obsolete_child_disposal import ObsoleteChildDisposal
+
+        service = ObsoleteChildDisposal(db)
+        args = dict(task_id="child", dispose_obsolete=True, superseded_by=observed.target_oid)
+        preview = await service.run(IntegrationRedriveChildArgs(**args), operator_id="supervisor:p")
+        assert preview["outcome"] == "would_advance", preview
+        assert git(origin.url, "rev-parse", "aq/epic") == observed.target_oid
+        args.update(dry_run=False, expected_head_sha=head,
+                    expected_parent_head_sha=observed.target_oid,
+                    reason="parent removed the obsolete paths")
+        # Bad proof and stale previews must leave the parent untouched.
+        for override, outcome in (
+            ({"superseded_by": base}, "blocked"),
+            ({"expected_head_sha": base}, "changed"),
+            ({"expected_parent_head_sha": base}, "changed"),
+        ):
+            refused = await service.run(IntegrationRedriveChildArgs(**(args | override)),
+                                        operator_id="supervisor:p")
+            assert refused["outcome"] == outcome, refused
+            assert git(origin.url, "rev-parse", "aq/epic") == observed.target_oid
+        from src.integration.lock import BranchLock
+        from src.integration.models import BranchKey
+
+        locks = BranchLock(db)
+        fence = await locks.acquire(BranchKey(repository_id="r", branch="aq/epic"),
+                                    "another-publisher")
+        refused = await service.run(IntegrationRedriveChildArgs(**args), operator_id="supervisor:p")
+        assert refused["outcome"] == "blocked", refused
+        assert "lease" in refused["reason"]
+        assert git(origin.url, "rev-parse", "aq/epic") == observed.target_oid
+        await locks.release(fence)
+        if change == "modify":
+            from src.database.tables import sessions
+            from src.models import SessionRecord
+
+            await db.create_session(SessionRecord(
+                id="parent-writer", task_id="epic", project_id="p", profile_id="worker",
+                harness="codex", provider="fake", name="parent-writer", work_dir=str(origin.clone),
+                lifecycle="task", epoch="daemon", instance_token="writer", started_at=1.0,
+                state="running",
+            ))
+            refused = await service.run(IntegrationRedriveChildArgs(**args), operator_id="supervisor:p")
+            assert refused["outcome"] == "blocked", refused
+            assert "live writer" in refused["reason"]
+            assert git(origin.url, "rev-parse", "aq/epic") == observed.target_oid
+            async with db.immediate() as conn:
+                await conn.execute(sessions.delete().where(sessions.c.id == "parent-writer"))
+
+            # An external publisher can bypass our DB fence. The Git lease
+            # must preserve its new parent tip rather than overwrite it.
+            git(origin.clone, "commit", "--allow-empty", "-qm", "external parent update")
+            moved = git(origin.clone, "rev-parse", "HEAD")
+            push = observed.observation.git.apush_qualified_ref
+
+            async def move_before_push(*positional, **kwargs):
+                git(origin.clone, "push", "-q", "origin", "aq/epic")
+                return await push(*positional, **kwargs)
+
+            with monkeypatch.context() as patch:
+                patch.setattr(observed.observation.git, "apush_qualified_ref", move_before_push)
+                refused = await service.run(IntegrationRedriveChildArgs(**args),
+                                            operator_id="supervisor:p")
+            assert refused["outcome"] == "blocked", refused
+            assert git(origin.url, "rev-parse", "aq/epic") == moved
+            git(origin.clone, "push", "-q", "origin", f"+{observed.target_oid}:aq/epic")
+        result = await service.run(IntegrationRedriveChildArgs(**args), operator_id="supervisor:p")
+        assert result["outcome"] == "advanced", result
+        merge = result["merge_head_sha"]
+        assert git(origin.url, "rev-parse", "aq/epic") == merge
+        assert git(origin.url, "show", "-s", "--format=%P", merge).split() == [
+            observed.target_oid, head,
+        ]
+        assert git(origin.url, "rev-parse", merge + "^{tree}") == git(
+            origin.url, "rev-parse", observed.target_oid + "^{tree}",
+        )
+        message = git(origin.url, "show", "-s", "--format=%B", merge)
+        assert "parent removed the obsolete paths" in message
+        assert f"AQ-Superseded-By: {observed.target_oid}" in message
+        assert "AQ-Disposition-Actor: supervisor:p" in message
+        assert (await db.get_task("child")).status is TaskStatus.COMPLETED
+        assert (await db.get_task_completion("child")).commits == [head]
+        delivered = await snapshot(world, target)
+        assert (await delivered.strict_is_delivered(request)).satisfied
+        again = await service.run(IntegrationRedriveChildArgs(**args), operator_id="supervisor:p")
+        assert again["outcome"] == "nothing_to_redrive", again
+        assert git(origin.url, "rev-parse", "aq/epic") == merge
+
+    else:
+        assert not any(item["code"] == "obsolete_child" for item in blockers)
+        from src.commands.contracts.integration import IntegrationRedriveChildArgs
+        from src.integration.obsolete_child_disposal import ObsoleteChildDisposal
+
+        db.set_prerequisite_observer(db._delivery_observer)
+        refused = await ObsoleteChildDisposal(db).run(IntegrationRedriveChildArgs(
+            task_id="child", dispose_obsolete=True, superseded_by=observed.target_oid,
+        ), operator_id="supervisor:p")
+        assert refused["outcome"] == "blocked", refused
+        assert git(origin.url, "rev-parse", "aq/epic") == observed.target_oid
+
+
+
+@pytest.mark.parametrize("earlier", ["source_ci", "legacy_delegate", "root_pr"])
+async def test_root_pr_recovery_cannot_restart_a_source_ci_repair_chain(world, earlier):
+    from src.database.tables import messages
+    from src.integration.root_pr_recovery import RECOVERY_KEY
+
+    train, github, _ = await hosted_train(world, failure_handler=root_pr_recovery(world))
+    source = await completed(world, "root")
+    original = await world.db.get_task("root")
+    if earlier == "source_ci":
+        await world.db.add_task_context("root", type="reopen_feedback",
+            label="Source CI Repair", content="prior changed head")
+    elif earlier == "legacy_delegate":
+        await world.db.update_task("root", created_by_kind="source_ci_repair")
+    else:
+        await world.db.set_task_meta("root", RECOVERY_KEY, {"heads": ["f" * 40]})
+        async with world.db._engine.begin() as conn:
+            policy = await conn.scalar(select(projects.c.hierarchical_integration_policy))
+            policy["root"]["repair"] = {"source_ci": True, "on_exhausted": "continue",
+                                       "debug_intelligence_class": "standard-high"}
+            await conn.execute(update(projects).values(hierarchical_integration_policy=policy))
+    github.pr_runs[source] = "failure"
+    for _ in range(2):
+        blocked = await train.visit(MAIN, seal_now=True)
+        assert blocked.detail["blockers"][0]["code"] == "source_ci_repair_exhausted"
+    task = await world.db.get_task("root")
+    assert task.status is TaskStatus.COMPLETED
+    assert task.pr_url == original.pr_url and task.branch_name == original.branch_name
+    async with world.db._engine.connect() as conn:
+        notices = (await conn.execute(select(messages).where(
+            messages.c.id == "msg-source-ci-budget-root"))).mappings().all()
+    assert len(notices) == 1

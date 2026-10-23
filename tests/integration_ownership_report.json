@@ -4030,6 +4030,27 @@
     "storage": "A writer key includes path, enclosing definition and call AST; enclosing AST changes require another classification review. Ordinary audits are not ref-replay authority."
   },
   "measurement": "Union physical newline-terminated rows per file (wc -l), full dedicated files, full shared definitions/columns/container registrations with attached comments and blanks.",
+  "obsolete_child_measurement": {
+    "authorized_engine_delta": 366,
+    "authorized_owned_delta": 430,
+    "authorized_table_delta": 0,
+    "decision_id": "size-cap-delegation-2026-10-23",
+    "decision_message_id": "msg-efc241b8ddbb4c1fb63a41f5fe3f0d90",
+    "grant_delivery_message_id": "msg-21f0bc97741343c39d69d7c5c7b97400",
+    "measured_engine_lines": 85376,
+    "measured_owned_total": 161647,
+    "measured_source_revision": "9c830f717be72274fb8af1521941c52927af541b",
+    "measured_table_count": 45,
+    "operator_decision": "6679052c",
+    "operator_task": "sharp-cascade-53",
+    "previous_engine_lines": 85010,
+    "previous_owned_total": 161217,
+    "previous_source_revision": "de9a68b81cfcabe55ca5ce527a933891d36c8a1d",
+    "previous_table_count": 45,
+    "pull_request": "https://github.com/ElectricJack/agent-queue/pull/1789",
+    "reason": "Compose the reviewed obsolete-child disposition with current dev using a plain merge. Exact merged measurement pre-approved under size-cap-delegation-2026-10-23; preserve all historical grants and strict Git ancestry.",
+    "task_id": "fair-flare-67"
+  },
   "onboarding_repository_verifier_review": {
     "added_definition_fingerprints": 1,
     "current_owned_groups": {
@@ -15029,6 +15050,27 @@
           "pull_request": "https://github.com/ElectricJack/agent-queue/pull/1816",
           "reason": "Preapproved exact PR #1816 conflict-repair measurement on merged dev tree. Preserve all historical grants and the charged extracted scheduler/resume helpers; no implementation changes beyond conflict resolution.",
           "task_id": "bold-flare-41"
+        },
+        {
+          "authorized_engine_delta": 366,
+          "authorized_owned_delta": 430,
+          "authorized_table_delta": 0,
+          "decision_id": "size-cap-delegation-2026-10-23",
+          "decision_message_id": "msg-efc241b8ddbb4c1fb63a41f5fe3f0d90",
+          "grant_delivery_message_id": "msg-21f0bc97741343c39d69d7c5c7b97400",
+          "measured_engine_lines": 85376,
+          "measured_owned_total": 161647,
+          "measured_source_revision": "9c830f717be72274fb8af1521941c52927af541b",
+          "measured_table_count": 45,
+          "operator_decision": "6679052c",
+          "operator_task": "sharp-cascade-53",
+          "previous_engine_lines": 85010,
+          "previous_owned_total": 161217,
+          "previous_source_revision": "de9a68b81cfcabe55ca5ce527a933891d36c8a1d",
+          "previous_table_count": 45,
+          "pull_request": "https://github.com/ElectricJack/agent-queue/pull/1789",
+          "reason": "Compose the reviewed obsolete-child disposition with current dev using a plain merge. Exact merged measurement pre-approved under size-cap-delegation-2026-10-23; preserve all historical grants and strict Git ancestry.",
+          "task_id": "fair-flare-67"
         }
       ],
       "authenticated_push_measurement": {
@@ -15213,11 +15255,13 @@
         "msg-98d8517c56104e8fbf87e1330d2d5c1a",
         "size-cap-delegation-2026-10-23",
         "msg-000c812477994a65a62633a4a051224c",
-        "msg-d3de4e1b"
+        "msg-d3de4e1b",
+        "msg-efc241b8ddbb4c1fb63a41f5fe3f0d90",
+        "msg-21f0bc97741343c39d69d7c5c7b97400"
       ],
       "decision_record": "record:2720bdbe-7521-427e-8e72-1f40a3ff9818",
       "delivery_method": "operator direct integration; user request 2026-10-22",
-      "delta": 5718,
+      "delta": 6148,
       "expires_at": "s4_modules",
       "frozen_batch_composition": {
         "approved_deltas": {
@@ -15246,9 +15290,9 @@
         "source_revision": "73e99672d2447c44ef6a71d43a0187f2d16630af",
         "starting_revision": "48adaddad079a7adc2930e470590621c1575e674"
       },
-      "measured_engine_lines": 85010,
-      "measured_owned_total": 161217,
-      "measured_source_revision": "a36c389c39a33ff60bffa98cc019591298bdcfa9",
+      "measured_engine_lines": 85376,
+      "measured_owned_total": 161647,
+      "measured_source_revision": "9c830f717be72274fb8af1521941c52927af541b",
       "measured_table_count": 45,
       "merge_measurement": {
         "approval_message_id": "msg-a10c7ab8ff2946f8b1f27528a407524c",
@@ -15437,7 +15481,7 @@
     "expires_at": "s4_modules",
     "fixed_replacement_allowance": 15000,
     "original_owned_total_cap": 155499,
-    "owned_total_cap": 161217,
+    "owned_total_cap": 161647,
     "phase": "transition",
     "table_cap": 45
   },

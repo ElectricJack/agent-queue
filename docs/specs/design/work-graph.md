@@ -223,6 +223,31 @@ already contained work or pending delivery owned by the train, and never
 reissues receipts or invokes the legacy collector. Unknown Git proof remains a
 visible blocker.
 
+For pending children without a batch, redrive reports the train's source admission
+blockers or the open batch ahead of the child, rather than claiming a batch owns
+it. If every changed path existed at the child's origin base and is absent from
+the current parent tree, diagnostics identify `obsolete_child`. New files and
+renamed destinations do not satisfy this test. This is a diagnostic, never proof
+of delivery or permission to discard code.
+The diagnostic supplies `aq integration redrive-child CHILD --dispose-obsolete
+--superseded-by SHA --apply --head SOURCE --parent-head TARGET --reason REASON`.
+This explicit local operator or project/global supervisor disposition creates a
+two-parent merge with the parent's unchanged tree (`-s ours` semantics). The child
+then has real ancestry on the parent; its completion and source history remain.
+`--superseded-by` must name an ancestor of the parent that removed the last of
+the child's changed paths. The audit commit records the source, superseding
+commit, actor and reason. Preview is read-only; apply pins both heads, rechecks
+task/repository identities and absence of live writers/batches under the hierarchy
+and repository/ref fences, and pushes with an exact expected-parent lease.
+Movement, active ownership or unavailable proof refuses the write. Retrying an
+already contained source is harmless. No human gate is required. A child with
+real code is never reclassified as a code-free completion by `record-noop`.
+
+`integration record-noop` admits local operators, authorized playbooks and live
+elevated named supervisors (project-scoped or global). Workers, stopped supervisors
+and supervisors of another project remain refused. The exact-head, passing no-op
+completion, reserved-base and approved reviewer evidence guards still apply.
+
 For a completed leaf with `missing_git_provenance`, `redrive-child --adopt-source`
 previews retaining its existing passing completion generation. Apply requires the
 previewed full `--head` and a nonblank `--reason`. The materialized origin must
