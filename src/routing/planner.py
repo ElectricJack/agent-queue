@@ -110,6 +110,9 @@ class ProfileFacts:
     classes: frozenset[str] = frozenset()
     slots: int = 0
     enabled: bool = True
+    min_active: int = 0
+    max_active: int | None = None
+    quarantined: bool = False
     template: bool = False
     read_only: bool = False
     runtime: str = ""
@@ -974,6 +977,9 @@ def preference_record(
 
 
 def launchable(candidate: Candidate, snapshot: Snapshot) -> bool:
+    profile = snapshot.profile(candidate.profile_id)
+    if profile is None or not is_candidate(candidate, snapshot) or profile.quarantined:
+        return False
     facts = snapshot.provider(candidate.provider)
     return facts.launchable and facts.state not in UNLAUNCHABLE_STATES
 

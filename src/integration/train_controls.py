@@ -967,8 +967,10 @@ class TrainControls:
         def frozen(name):
             return repair.get(name, RepairPolicy.model_fields[name].default)
 
-        budget = frozen("primary_attempts") + frozen("debug_attempts")
-        if frozen("on_exhausted") == "human" and batch.repair_attempt_count >= budget:
+        primary, debug = frozen("primary_attempts"), frozen("debug_attempts")
+        budget = primary + debug
+        if (primary and debug and frozen("on_exhausted") == "human"
+                and batch.repair_attempt_count >= budget):
             raise TrainControlError("repair_exhausted", (
                 f"the aborted batch spent its repair budget ({batch.repair_attempt_count} of "
                 f"{budget}); a release would carry it exhausted. The owner decides: a new "

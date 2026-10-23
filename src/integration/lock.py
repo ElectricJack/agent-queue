@@ -27,6 +27,7 @@ from src.git.github_contracts import GitHubRepositoryBinding
 from src.git.manager import GitError, GitManager, RemoteRefState
 from src.integration.models import BranchKey, Fence
 from src.integration.ownership import BranchBusy, BranchOwnershipError, StaleFence
+from src.integration.row_query import select_row
 
 DEFAULT_TTL_SECONDS = 480.0
 RENEWAL_MARGIN_SECONDS = DEFAULT_TTL_SECONDS / 3
@@ -381,11 +382,7 @@ async def session_leases_on(conn, session_id: str, *, task_id: str | None = None
 
 async def renew_session_leases_on(db, conn, session_id: str, observed_at: float) -> None:
     """Heartbeat renews only a current live claim, and cannot revive an expiry."""
-    session = (
-        (await conn.execute(select(sessions).where(sessions.c.id == session_id).with_for_update()))
-        .mappings()
-        .one_or_none()
-    )
+    session = await select_row(conn, sessions, sessions.c.id == session_id, lock=True)
     if (
         session is None
         or not session["task_id"]
@@ -393,11 +390,7 @@ async def renew_session_leases_on(db, conn, session_id: str, observed_at: float)
         or session["desired_state"] != "running"
     ):
         return
-    task = (
-        (await conn.execute(select(tasks).where(tasks.c.id == session["task_id"])))
-        .mappings()
-        .one_or_none()
-    )
+    task = await select_row(conn, tasks, tasks.c.id == session['task_id'])
     if (
         task is None
         or task["assigned_agent_id"] != session["agent_id"]
@@ -450,11 +443,7 @@ async def renew_session_leases_on_liveness(
     ]
     if not candidates:
         return
-    session = (
-        (await conn.execute(select(sessions).where(sessions.c.id == session_id).with_for_update()))
-        .mappings()
-        .one_or_none()
-    )
+    session = await select_row(conn, sessions, sessions.c.id == session_id, lock=True)
     if (
         session is None
         or not session["task_id"]
@@ -462,11 +451,7 @@ async def renew_session_leases_on_liveness(
         or session["desired_state"] != "running"
     ):
         return
-    task = (
-        (await conn.execute(select(tasks).where(tasks.c.id == session["task_id"])))
-        .mappings()
-        .one_or_none()
-    )
+    task = await select_row(conn, tasks, tasks.c.id == session['task_id'])
     from src.waits.holding import execution_waits
 
     execution_wait = await conn.scalar(execution_waits().where(
