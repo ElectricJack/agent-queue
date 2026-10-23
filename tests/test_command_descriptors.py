@@ -398,7 +398,7 @@ def test_legacy_execution_documents_and_fingerprints():
             assert expected["previous_fingerprint"] == old["fingerprint"]
             assert expected["fingerprint"] != old["fingerprint"]
         for recording in (_hibernation_changes(), _dispatch_changes(), _merge_changes(),
-                          _leaf_changes(), _completion_changes()):
+                          _leaf_changes(), _completion_changes(), _restart_hold_changes()):
             later = recording["contracts"].get(name)
             if later:
                 assert later["previous_fingerprint"] == expected["fingerprint"]
@@ -440,13 +440,15 @@ def test_transport_views_and_cli_serialization_preserve_golden_evidence():
             assert approved["previous_sha256"] == digest
             digest = approved["sha256"]
         for recording in (_hibernation_changes(), _dispatch_changes(), _merge_changes(),
-                          _leaf_changes(), _completion_changes()):
+                          _leaf_changes(), _completion_changes(), _restart_hold_changes()):
             if name in recording["transport_definitions"]:
                 approved = recording["transport_definitions"][name]
                 assert approved["previous_sha256"] == digest
                 digest = approved["sha256"]
         assert _digest(snapshot.commands[name].tool_definition()) == digest, name
-    actual = hashlib.sha256(render_command_catalogue().encode()).hexdigest()
+    actual = hashlib.sha256(
+        (json.dumps(_before_restart_hold_catalogue(), indent=2) + "\n").encode()
+    ).hexdigest()
     assert changes["previous_cli_catalogue_sha256"] == fixture["cli_catalogue_sha256"]
     assert scripts["previous_cli_catalogue_sha256"] == changes["cli_catalogue_sha256"]
     assert main["previous_cli_catalogue_sha256"] == scripts["cli_catalogue_sha256"]
