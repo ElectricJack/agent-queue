@@ -2,6 +2,11 @@
 
 Playbooks are AQ's event-driven automation: a Markdown policy is compiled into a typed, immutable graph, activated deliberately, and then produces durable runs when matching events arrive.
 
+The runtime and V2 authoring commands require `playbooks.enabled: true`. The code
+default is `false`; installation tuning enables it. Agent cron is independent of
+this switch. Ordinary source edits neither enqueue compilation nor change an
+activation; use the explicit proposal/import/activation workflow below.
+
 ## Why they exist
 
 Some work should happen consistently without putting policy into a daemon branch: route an unassigned task, turn an approved specification into a task proposal, or pause until a person makes a decision. A Playbook V2 makes that policy inspectable. It is a graph of typed steps, not an agent conversation that must be inferred after the fact. The engine records the artifact, state changes, waits, and step receipts so an operator can see both what was configured and what actually happened.
@@ -128,7 +133,8 @@ The V2 step vocabulary is deliberately closed:
 | `agent_task` | Creates and optionally waits for a delegated task; child capability policy is an intersection, never an escalation. |
 | `decision` | Selects an edge from typed conditions plus an explicit default. |
 | `wait` | Suspends for an event, a human resolution, a child task, or a timer. |
-| `foreach` | Iterates a bounded collection and aggregates its declared result. |
+| `foreach` | Iterates a pinned, bounded collection and aggregates its declared result; nesting is limited to four levels with durable iteration paths. |
+| `script` | Runs a source-declared program as a durable managed job with protected output; see [script steps](../guides/playbook-script-runner.md). |
 | `terminal` | Ends the rule as `completed`, `failed`, `blocked`, or `cancelled`. |
 
 Live, dry-run, and shadow modes use the same graph and validator. Dry-run and shadow executors report command/AI/delegation/wait behavior without performing live side effects. The executor registry is [explicit](../../src/playbooks/executors/__init__.py), so a newly introduced step cannot silently run in an unsafe mode.
@@ -153,11 +159,16 @@ and intersects it with the caller's current authority and step narrowing.
 
 ## Playbook commands
 
-A `command` step is the only way a playbook changes durable state, and the set of commands it may call is closed. [`CONTRACTS`](../../src/commands/contracts/registry.py) registers each one with a typed argument model, a typed result, named outcomes, the capability a caller's policy must grant, and machine-readable effect clauses. Three surfaces read that single registry, so none of them can drift from it or from each other.
+A `command` step changes AQ state through the command handler. Delegated tasks, script jobs and engine run/wait records also have durable effects. The set of commands a step may call comes from the registry and remains subject to caller authority. [`CONTRACTS`](../../src/commands/contracts/registry.py) registers each one with a typed argument model, a typed result, named outcomes, the capability a caller's policy must grant, and machine-readable effect clauses. Three surfaces read that single registry; generated freshness does not guarantee that a legacy description still matches its handler.
 
 **The reference section.** [Playbook commands](../reference/playbook-commands/README.md) is one page per registered command. The block between the `aq:generated` markers — title, summary, parameters, result fields, outcomes and the execution contract — is written from the registry by [`scripts/gen-command-docs.py`](../../scripts/gen-command-docs.py); everything outside the markers is hand-written prose explaining what the command is for, how it works internally, what it persists, and how it fails. Two families share one state machine and are described once on the index rather than restated per page: [the escalation incident lifecycle](../reference/playbook-commands/README.md#the-escalation-incident-lifecycle) and [the integration operation model](../reference/playbook-commands/README.md#the-integration-operation-model). `aq test tests/test_command_docs.py` is the drift guard — it fails when a registered command has no page, a page names a command that is no longer registered, or a generated block is stale.
 
-**The catalog command.** `aq playbook commands` returns the same registry as data: name, title, summary, documentation URL and the parameter JSON Schema for every command. It reads no vault and touches no run, and it is what the dashboard calls to build its links.
+**The catalog command.** `aq playbook commands` returns registry data: name, title,
+summary, documentation URL and parameter schema. Results are paged (`offset`,
+`limit`, default 50, maximum 100); follow `next_offset` until null. Filters include
+name/prefix, origin, plugin, schema quality, result mode, availability and denial.
+`include_schema: false` omits large schemas. Discovery touches no run and grants no
+authority. The dashboard uses the same catalog for its links.
 
 **The documentation link.** A command's page URL is derived once, from the `docs.base_url` setting, as `<docs.base_url>reference/playbook-commands/<command_name>.md` ([`src/docs_urls.py`](../../src/docs_urls.py)). It is never copied into a contract, and presentation metadata is excluded from the contract fingerprint, so pointing `docs.base_url` at a fork or a mirror does not invalidate artifacts compiled against those commands. The dashboard carries it to two places: selecting a command node in a playbook graph shows a **Documentation** link in the side pane, and in a playbook's rendered source preview a backticked command name becomes a link to that command's page. [Command contracts](../reference/cli/contracts.md) documents the contract layer underneath both.
 
@@ -170,6 +181,8 @@ A `command` step is the only way a playbook changes durable state, and the set o
 | Artifact bytes | Content-addressed compiled-artifact store plus artifact record | Proposal/import path writes canonical bytes atomically; artifacts are immutable. |
 | Active policy | Durable `playbook_activations` row | `activate` chooses an artifact and `set-enabled` controls delivery. Health is recomputed from live contracts and profiles. |
 | Run progress | Durable V2 run snapshot and step receipts | The engine advances with versioned transaction boundaries; each run remains pinned to its starting artifact. |
+| Playbook-local state | Durable state entries, tombstones and notification journal | State commands use revisions and schema versions; see [state](../guides/playbook-state.md). |
+| Protected execution data | Encrypted private values and script job output | Server-managed keys and run ownership control retrieval; public receipts expose handles. |
 | Suspensions and held events | Durable playbook waits and pending-event records | The wait scheduler and event dispatcher claim/resume them; operators can inspect or resolve held events. |
 
 The in-process [EventBus](../../src/event_bus.py) owns subscriptions only, not a durable event log. It adds `_event_type` and an `event_id`, validates registered payloads by default, and dispatches subscribers sequentially. In development an invalid payload raises; in non-development environments it is warned about and still delivered. `src/event_schemas.py` is the registry that makes source-event references checkable.
@@ -188,7 +201,15 @@ For a normal reviewed workflow, the sequence is:
 
 **Through a document review.** Instead of steps 2–3, an author can submit the review document with the playbook attached (`aq review submit --task-id <task> --file <draft.md> --kind other --title "…" --playbook-id <id> --playbook-body <body.json>`). Submission compiles the vault source and refuses anything that is not activatable, the revision pins the exact artifact hash, and approval stores that artifact — and activates it when the review asked for it — then tells the supervisor. `aq doctor --check reviews.playbook_artifacts` lists approved playbook reviews whose artifact is not stored or not activated. See [Playbook reviews](../guides/reviews.md#playbook-reviews).
 
-`update-source` is a separate convenience path: it atomically writes full Markdown and compiles synchronously. If compilation fails, the previous compiled version stays live. It is not a shortcut around deliberate activation. The exact flags are documented by the [CLI command reference](../reference/cli/commands.md#aq-playbook), and the command implementation is [PlaybookV2Commands](../../src/commands/playbook_v2_commands.py).
+`update-source` atomically writes full Markdown, optionally checking
+`expected_source_hash`. For `kind: pipeline`, it lowers and validates synchronously,
+stores a new artifact and **directly replaces the existing activation's hash**,
+preserving its enabled bit. It does not use the normal activation-diff blockers.
+For prose source it returns `compiled: false` and requires an explicit compiler-agent
+proposal. Compilation failure keeps the previous active artifact while retaining the
+new source. Use the reviewed workflow above for deliberate activation. See
+[the handler](../../src/commands/playbook_commands.py) and
+[command details](../reference/playbook-commands/update_playbook_source.md).
 
 > **Warning.** `v2-import` is operator-only and `activate` changes running policy. Test artifacts in a disposable project or vault before activating a policy that can create tasks or mutate operational state.
 
@@ -196,7 +217,7 @@ For a normal reviewed workflow, the sequence is:
 
 A V2 `wait` with `wait_kind: human` has a closed `outcomes` vocabulary. The eventual decision must be one of those declared values; otherwise the engine records a contract violation instead of inventing an undisplayed branch. Event, task, and timer waits have their own result vocabulary. The pause, receipt, and wait registration commit together, and pending-event matching closes the race where an event arrives while a run begins waiting. [Wait execution](../../src/playbooks/executors/wait.py) and [wait records](../../src/playbooks/waits.py) implement this boundary.
 
-The default pipeline source illustrates a different use of a human gate: `proposal.ready` creates a durable `human` gate and a later filtered `gate.resolved` event commits the approved task batch. It does **not** mean a task waits for another task, and the current default source explicitly does **not** create automatic per-task reviewers, final reviewers, or review/PR gates. See [default-pipeline.md](../../src/prompts/default_playbooks/default-pipeline.md) and [gate commands](../../src/commands/gate_commands.py).
+The default pipeline uses a human gate for ordinary proposals: `proposal.ready` creates a durable `human` gate and a later filtered `gate.resolved` event commits the approved task batch. Approved-spec ingestion instead carries a server-stamped decision/packet receipt and commits directly after validation; it does not ask for a second approval. It does **not** mean a task waits for another task, and the current default source explicitly does **not** create automatic per-task reviewers, final reviewers, or review/PR gates. See [default-pipeline.md](../../src/prompts/default_playbooks/default-pipeline.md) and [gate commands](../../src/commands/gate_commands.py).
 
 ## Shipped policy, local policy, and compatibility
 
@@ -206,7 +227,7 @@ The default pipeline source illustrates a different use of a human gate: `propos
 
 **Shipped shared defaults.** `supervisor-failure-triage` and `default-pipeline` are the IDs in `DEFAULT_SYSTEM_PLAYBOOK_IDS`. They activate only during the receipt's initial attempt. Later restart and required-policy repair preserve an operator's removal or disablement. `morning-report` is installed but remains inactive until the operator opts in. Project defaults remain code-owned creation/installer settings. The default pipeline describes spec approval → spec-ingest task and proposal-ready → human gate → task-batch commit.
 
-**Shipped sources, not necessarily active policy.** Integration lifecycle sources and the agent-queue project sources ship as Markdown policies, and `ci-main-sentinel` also ships its reviewed bundle so an operator can import it. Their presence does not prove an installation activated them: a project-scoped policy is always activated per project, by hand.
+**Shipped sources, not necessarily active policy.** Integration and project sources ship as Markdown policies. Optional reviewed bundles include `ci-main-sentinel`, `github-issue-triage`, `object-loop`, the promotion policies and `fast-smooth-train`. The stateful `stuck-task-watch` and `stuck-task-watch-reminder` are also optional: neither joins the six-bundle installation set. Their presence does not prove an installation activated them: a project-scoped policy is always activated per project, by hand.
 
 **Explicit reviewed-bundle refresh.** `v2-import` accepts bundles inside the vault root. Ordinary restart never installs or refreshes them. `aq doctor --check playbooks.reviewed_bundles` reports drift among installed shipped bundles without writing. Its explicit `--fix` refreshes those installed copies, preserves superseded bytes in `<id>.bak-<epoch>`, carries operator notes into the replacement, and repairs required activations when a bundle was refreshed. It leaves uninstalled optional bundles absent and preserves optional activation choices. Use the required-policy fix above when required bundles themselves are missing. The [isolated acceptance kit](../guides/e2e-swarm.md#deliberate-policy-installation-and-project-setup) records these boundaries against real PostgreSQL and daemons.
 
@@ -225,7 +246,7 @@ The default pipeline source illustrates a different use of a human gate: `propos
 | Activation is `invalid` or `question_required` | Validation errors or unresolved compile questions block execution. | Run `v2-validate` on the artifact, correct the source/semantic body, and repeat review/import. |
 | An artifact is `unavailable` | The activated artifact bytes are missing, unreadable, or fail their hash check. | Restore/re-import the exact reviewed bundle; do not replace bytes under the same hash. |
 | A run paused unexpectedly | A `wait` step or child task requires an external event/decision. | Inspect `run-overlay` for the pinned artifact and receipts; resolve the declared gate or use `aq playbook resume` where the policy expects manual input. |
-| A workflow is left after restart | Its owning run/session no longer lines up with durable workflow state. | The startup/periodic orphan recovery reconciles it; inspect the workflow and playbook run rather than recreating it manually. |
+| A run is interrupted by restart | Its last attempt may have reached an external effect. | The V2 restart reconciler replays only safe attempts and pauses ambiguous effects for operator resolution. Inspect the pinned run and receipts. The legacy `OrphanWorkflowRecovery` class is not wired into the daemon. |
 
 ## Related pages
 

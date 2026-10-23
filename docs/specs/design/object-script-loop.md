@@ -1,9 +1,10 @@
 # Object-script loop contracts (AQ-2)
 
 AQ coordinates bounded evaluation rounds for an external object generator and
-scorer. Matter owns rendering and image metrics. A reviewed V2 playbook (AQ-3)
-will call these commands; this change does not activate a playbook or run a
-capture. The approved source is Matter review `rev-amber-zenith`, revision 2.
+scorer. Matter owns rendering and image metrics. The optional reviewed V2
+`object-loop` playbook calls these commands; its presence does not activate policy
+or run a capture. See the [review and activation handoff](../../guides/object-loop.md).
+The approved source is Matter review `rev-amber-zenith`, revision 2.
 
 ## Commands
 
