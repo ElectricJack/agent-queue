@@ -2833,11 +2833,13 @@ _ALL_TOOL_DEFINITIONS = [
     },
     {
         "name": "restart_task",
-        "description": "Reset a completed, failed, or blocked task back to READY so it gets picked up by an agent again.",
+        "description": "Reset a completed, failed, or blocked task to READY. Recovery holds require override_hold, a reason and operator/global-supervisor authority; the release is audited.",
         "input_schema": {
             "type": "object",
             "properties": {
                 "task_id": {"type": "string", "description": "Task ID to restart"},
+                "override_hold": {"type": "boolean", "description": "Explicitly release the recovery hold (operator/global supervisor only)"},
+                "reason": {"type": "string", "description": "Required reason for overriding a recovery hold"},
             },
             "required": ["task_id"],
         },

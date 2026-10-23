@@ -46,8 +46,8 @@ resources:
   # Physical budget. null → os.cpu_count().
   cores: null
   # How many agents this box is expected to run at once. This is the
-  # denominator of the per-session share, so it should match the largest
-  # project's max_concurrent_agents.
+  # denominator of the per-session share across the whole box, including
+  # sessions in different projects.
   max_concurrent_agents: 8
   # Explicit override for the per-session share. null → cores // agents.
   per_session_cpu_share: null
@@ -73,8 +73,13 @@ resources:
 ```
 
 The section is hot-reloadable: the launcher reads it per launch and `aq
-test` reads it per run, so a change takes effect on the next session
-without a daemon restart.
+test` reads it per run. New sessions receive the updated resource environment
+without a daemon restart; an already running harness keeps its inherited
+`AQ_*` and thread/xdist caps until relaunched.
+
+`resources.max_concurrent_agents` is a budget denominator, not a hard ceiling
+on all session lifecycles. It also supplies the default pool ceiling when
+`swarm.global_max_active` is unset; an explicit swarm ceiling can differ.
 
 On the 24-core box above, the defaults derive **3 workers per session** and
 **2 concurrent test runs**, which bounds the worst case at 6 test processes
@@ -117,7 +122,7 @@ spike. `aq test` is a pytest wrapper that takes one of `test_slots` slots
 first.
 
 ```bash
-aq test tests/test_pools.py              # one file, still slot-gated
+aq test tests/test_pool_sizing.py        # one file, still slot-gated
 aq test tests/ -k claim                  # a slice of the suite
 aq test --aq-status                      # who is holding the slots
 aq test --aq-no-wait tests/              # fail instead of queueing
@@ -163,7 +168,7 @@ run):
 
 | Full suite | Focused |
 |---|---|
-| no path (pytest collects `testpaths`), `tests/`, `tests`, `.` | `tests/test_pools.py`, `tests/perf`, any `::node-id` |
+| no path (pytest collects `testpaths`), `tests/`, `tests`, `.` | `tests/test_pool_sizing.py`, `tests/perf`, any `::node-id` |
 | files covering at least half the tree's test modules (`tests/test_*.py` expanded by the shell) | an area such as `tests/test_playbook*.py` |
 | a broad `-k`/`-m`: `-k "not slow"`, `-m "not perf"`, `-m ""` (`--aq-all-markers`) | a narrowing `-k`/`-m`: `tests/ -k claim`, `-m perf` |
 | `--lf` with nothing recorded (pytest then runs everything) | `--lf` with failures on record, `--co` / `--collect-only` |
@@ -509,13 +514,13 @@ resources:
 ```
 
 ```bash
-./run.sh restart
+aq restart --no-dashboard
 aq doctor --check resources.cgroups
 ```
 
-**Absence degrades, it never blocks a launch.** The daemon probes
-delegation once at startup, logs the reason if it is missing, and falls
-back to layer 1. `resources.cgroups` reports `info` when layer 3 is off and
+**Absence degrades, it never blocks a launch.** The delegation probe runs
+on first use and caches its result per process. Missing delegation is logged
+and falls back to layer 1. `resources.cgroups` reports `info` when layer 3 is off and
 `warn` when it is switched on but not actually working — the latter being
 the dangerous state, where an operator believes hard limits are protecting
 them and they are not.
@@ -540,9 +545,10 @@ deployment steps do need a human, because both touch live shared state:
    the line from both files to let the derived share apply; the vault
    watcher picks it up live, no restart.
 2. **Pin the denominator.** `resources.max_concurrent_agents` defaults to
-   `8`. If your project's `max_concurrent_agents` differs, set it to match,
-   or the derived share will be wrong in whichever direction the two
-   disagree.
+   `8`. Set it to the expected aggregate concurrent session count across the
+   box, rather than copying one project's cap. If you set a different explicit
+   swarm ceiling, include that fleet and any other expected session load when
+   choosing the resource denominator.
 
 Then confirm the launcher is doing it — the daemon states the budget once
 at startup:

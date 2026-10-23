@@ -2686,6 +2686,7 @@
         "required": [],
         "optional": [
           "--fix",
+          "--offline",
           "--json",
           "--check",
           "--brief",
@@ -21210,6 +21211,8 @@
         ],
         "optional": [
           "--yes",
+          "--override-hold",
+          "--reason",
           "--json",
           "--brief",
           "--save-output",
@@ -22457,6 +22460,7 @@
           "--extend-seconds",
           "--to",
           "--expected-generation",
+          "--continuation-id",
           "--project",
           "--json",
           "--brief",

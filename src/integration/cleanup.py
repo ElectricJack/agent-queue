@@ -183,8 +183,7 @@ class IntegrationCleanupService:
         nonce = uuid.uuid4().hex
         async with self.db.immediate() as conn:
             row = await select_row(
-                conn,
-                integration_cleanup_items,
+                conn, integration_cleanup_items,
                 integration_cleanup_items.c.batch_id == batch_id,
                 integration_cleanup_items.c.kind == kind,
                 integration_cleanup_items.c.identity == identity,
@@ -401,8 +400,7 @@ class IntegrationCleanupService:
         now = float(row["updated_at"])
         async with self.db.immediate() as conn:
             current = await select_row(
-                conn,
-                integration_cleanup_items,
+                conn, integration_cleanup_items,
                 integration_cleanup_items.c.batch_id == row['batch_id'],
                 integration_cleanup_items.c.kind == row['kind'],
                 integration_cleanup_items.c.identity == row['identity'],
@@ -459,8 +457,7 @@ class IntegrationCleanupService:
         if row["member_ordinal"] is not None:
             async with self.db._engine.connect() as conn:
                 owner = await select_row(
-                    conn,
-                    integration_branch_owners,
+                    conn, integration_branch_owners,
                     integration_branch_owners.c.repository_id == row['repository_id'],
                     integration_branch_owners.c.ref == row['target_ref'],
                     integration_branch_owners.c.handoff_state != 'released',
@@ -504,22 +501,19 @@ class IntegrationCleanupService:
         store = str(await self.resolved_store(row["repository_id"]))
         async with self.db._engine.connect() as conn:
             intent = await select_row(
-                conn,
-                integration_promotion_intents,
+                conn, integration_promotion_intents,
                 integration_promotion_intents.c.intent_kind == 'root',
                 integration_promotion_intents.c.root_batch_id == row['batch_id'],
                 integration_promotion_intents.c.root_candidate_revision == row['revision'],
             )
             mutation = await select_row(
-                conn,
-                integration_candidate_ref_mutations,
+                conn, integration_candidate_ref_mutations,
                 integration_candidate_ref_mutations.c.batch_id == row['batch_id'],
                 integration_candidate_ref_mutations.c.revision == row['revision'],
                 integration_candidate_ref_mutations.c.purpose == 'root_main',
             )
             owner = await select_row(
-                conn,
-                integration_branch_owners,
+                conn, integration_branch_owners,
                 integration_branch_owners.c.repository_id == row['repository_id'],
                 integration_branch_owners.c.ref == row['target_ref'],
             )
@@ -833,16 +827,14 @@ class IntegrationCleanupService:
         async with self.db.immediate() as conn:
             await self.db.lock_hierarchy_project(conn, str(project_id))
             batch = await select_row(
-                conn,
-                integration_batches,
+                conn, integration_batches,
                 integration_batches.c.id == batch_id,
                 lock=True,
             )
             if batch is not None and batch["lifecycle"] == "aborted":
                 return await self.materialize_aborted_on(conn, batch, observed_at)
             publication = await select_row(
-                conn,
-                integration_candidate_publications,
+                conn, integration_candidate_publications,
                 integration_candidate_publications.c.batch_id == batch_id,
                 integration_candidate_publications.c.revision == (batch['current_revision'] if batch is not None else -1),
             )

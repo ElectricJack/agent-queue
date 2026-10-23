@@ -2,6 +2,7 @@ from enum import Enum
 
 
 class IntegrationSettingsHierarchicalIntegrationMode(str, Enum):
+    DEVELOPMENT = "development"
     DISABLED = "disabled"
     HIERARCHY = "hierarchy"
     OBSERVE = "observe"
