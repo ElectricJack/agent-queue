@@ -19893,6 +19893,25 @@
         }
       },
       "reason": "Compose both unchanged approved member grants on the retained starting head, which already includes fair-dune-41. Preserve every historical grant and measurement."
+    },
+    "dashboard_pr_snapshot_merge_measurement": {
+      "task_id": "fair-crest-95",
+      "referenced_decision": "size-cap-delegation-2026-10-23",
+      "grant_id": "sharp-rapids-10-cap-epoch2-2026-10-23",
+      "merged_dev_revision": "61869b7cdcf507b8e8acb596893bb63ac0794997",
+      "dev_owned_total": 161102,
+      "dev_engine_lines": 85517,
+      "dev_table_count": 45,
+      "source_revision": "3de48be2157c1b68414a77514c9250cb2b27d11d",
+      "prerequisite_task_id": "sharp-rapids-10",
+      "prerequisite_owned_delta": 9,
+      "prerequisite_engine_delta": 0,
+      "authorized_owned_delta": 0,
+      "authorized_engine_delta": 0,
+      "measured_owned_total": 161111,
+      "measured_engine_lines": 85517,
+      "measured_table_count": 45,
+      "reason": "Plain merge of origin/dev into accepted PR 1889. Compose the existing sharp-rapids-10 grant with dev; fair-crest-95 contributes zero owned or engine lines. Reopen instructions cite size-cap-delegation-2026-10-23."
     }
   },
   "storage_dispositions": {
