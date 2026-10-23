@@ -48,6 +48,7 @@ EPIC_CHANGES = ROOT / "tests/fixtures/contracts/epic-integration-contract-change
 EPIC_COMMANDS = ("integration_cutover_containment", "integration_reconcile_git_truth")
 WATCH_CHANGES = ROOT / "tests/fixtures/contracts/watch-contract-changes.json"
 INGEST_CHANGES = ROOT / "tests/fixtures/contracts/ingestion-replay-contract-changes.json"
+PIPELINE_CHANGES = ROOT / "tests/fixtures/contracts/default-pipeline-building-blocks-changes.json"
 HIBERNATION_CHANGES = ROOT / "tests/fixtures/contracts/hibernation-contract-changes.json"
 DISPATCH_CHANGES = ROOT / "tests/fixtures/contracts/dispatch-wait-contract-changes.json"
 BATCH_FIX_CHANGES = ROOT / "tests/fixtures/contracts/batch-fix-contract-changes.json"
@@ -493,7 +494,9 @@ def test_legacy_playbook_fixtures_are_unchanged():
     watch = _watch_changes()["playbook_fixtures"]
     ingest = json.loads(INGEST_CHANGES.read_text())["playbook_fixtures"]
     hibernation = _hibernation_changes()["playbook_fixtures"]
+    pipeline = json.loads(PIPELINE_CHANGES.read_text())["playbook_fixtures"]
     assert set(ingest) == {"tests/fixtures/playbooks/v2/default-pipeline/artifact.json"}
+    assert set(pipeline) == {"tests/fixtures/playbooks/v2/default-pipeline/artifact.json"}
     for path, digest in json.loads(GOLDEN.read_text())["playbook_fixtures"].items():
         if path in changes:
             assert changes[path]["previous_sha256"] == digest
@@ -516,6 +519,12 @@ def test_legacy_playbook_fixtures_are_unchanged():
             assert hibernation[path]["previous_sha256"] == digest
             assert hibernation[path]["sha256"] != digest
             digest = hibernation[path]["sha256"]
+        if path in pipeline:
+            assert pipeline[path]["previous_sha256"] == digest
+            historical = ROOT / pipeline[path]["preserved_previous_path"]
+            assert hashlib.sha256(historical.read_bytes()).hexdigest() == digest
+            assert pipeline[path]["sha256"] != digest
+            digest = pipeline[path]["sha256"]
         assert hashlib.sha256((ROOT / path).read_bytes()).hexdigest() == digest, path
 
 
