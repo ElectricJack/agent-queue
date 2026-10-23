@@ -31,7 +31,8 @@ TRANSITION_BATCH_EXCEPTION = {'batch_id': 'train-745592300af5cef0338dec80ebabb46
                           'msg-381054d695e64055979a687c4d811e7e',
                           'msg-ab86b9766c2f42b9ba4920aba585b577',
                           'msg-21784b3e56aa4f54bf1042b7c9af4aaf',
-                          'msg-1984d09ec70e479c9d0cc14c57e828c3'],
+                          'msg-1984d09ec70e479c9d0cc14c57e828c3',
+                          'msg-00b0e08117cc479c9a4a0b36fc5a30d0'],
  'decision_record': 'record:2720bdbe-7521-427e-8e72-1f40a3ff9818',
  'measured_source_revision': 'c19fa67c3040faef95d80170aa6b40fdfe7d2dc5',
  'original_owned_total_cap': 155499,
@@ -84,7 +85,10 @@ TRANSITION_BATCH_EXCEPTION = {'batch_id': 'train-745592300af5cef0338dec80ebabb46
                  'reason': 'Bounded retry of provably unlaunched batch fixers and recovery of '
                            'expired legacy family owners; global supervisor approved the exact '
                            '+65-line exception under the project supervisor delegation.',
-                 'grant_delivery_message_id': 'msg-1984d09ec70e479c9d0cc14c57e828c3'}]}
+                 'grant_delivery_message_id': 'msg-1984d09ec70e479c9d0cc14c57e828c3',
+                 'project_grant_message_id': 'msg-00b0e08117cc479c9a4a0b36fc5a30d0',
+                 'operator_decision': '6679052c',
+                 'pull_request': 'https://github.com/ElectricJack/agent-queue/pull/1820'}]}
 FINAL_ENGINE_CAP = 11_999
 FINAL_TOTAL_CAP = 19_999
 FINAL_TABLE_CAP = 10
