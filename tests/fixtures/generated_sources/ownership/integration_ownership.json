@@ -19536,7 +19536,7 @@
       "msg-e2dd5a423516458eb564e745a12ab30e"
     ],
     "decision_record": "record:2720bdbe-7521-427e-8e72-1f40a3ff9818",
-    "measured_source_revision": "bd8fcfe183d6a59ea90f4498cda2bee80a7222f4",
+    "measured_source_revision": "4e98fa0b96d561cfa7de934541c3e66df430b2a6",
     "original_owned_total_cap": 155499,
     "measured_owned_total": 161102,
     "delta": 5603,
@@ -19701,8 +19701,8 @@
       "reason": "Plain merge of PR1877 preparation diagnostics from dev; combined totals remain unchanged and this task retains its approved 65-line delta. Project grant requires re-recording against the combined total when dev advances."
     },
     "batch_composition": {
-      "batch_id": "train-50e78cbb5d9d858fd62dd6971aa4b789",
-      "starting_revision": "a37f877271c716df04fe6cf97a8749032cf479e9",
+      "batch_id": "train-854bd30527fc85b1edc0e2c7047bd673",
+      "starting_revision": "bd8fcfe183d6a59ea90f4498cda2bee80a7222f4",
       "base_revision": "4e50c276fca68cbe92ba4fc704363ec6026db7dc",
       "base_owned_total": 160879,
       "base_engine_lines": 85316,
@@ -19733,7 +19733,7 @@
         }
       },
       "reason": "Compose the existing exact grants on their common measured dev tree; preserve each historical measurement below.",
-      "source_revision": "bd8fcfe183d6a59ea90f4498cda2bee80a7222f4",
+      "source_revision": "4e98fa0b96d561cfa7de934541c3e66df430b2a6",
       "member_sources": {
         "agile-beacon-80": "6ba25e2472d4a8c6bb145d6f9bc2e067c8ebad61",
         "grand-quest-20": "d60c599767a340d3e3fd6dba2eff8451d349d7e7",

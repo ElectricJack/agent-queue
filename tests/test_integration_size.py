@@ -414,6 +414,7 @@ def test_batch_exception_is_exact_and_has_no_remaining_headroom(report, manifest
         "quick-pinnacle-97": {"owned": 28, "engine": 28},
         "stark-beacon-94": {"owned": 21, "engine": 21},
     }
+    # Keep historical member measurements separate from the combined exact grant.
     orphan_launch = amendments["quick-pinnacle-97"]
     assert orphan_launch["previous_owned_total"] == 161_053
     assert orphan_launch["measured_owned_total"] == 161_081
