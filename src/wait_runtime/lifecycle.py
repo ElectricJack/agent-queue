@@ -253,6 +253,8 @@ class WaitLifecycle:
                 tasks.c.status == "RESUME_PENDING",
             ).order_by(tasks.c.effective_priority, continuations.c.created_at))).mappings()]
         for intent in ready:
+            if intent['facts'].get('workspace_retry', {}).get('due_at', 0) > self.clock():
+                continue
             key = (intent["id"], intent["suspension_generation"])
             pending = self._resume_tasks.get(key)
             if pending is not None and not pending.done():
