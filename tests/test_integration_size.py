@@ -413,6 +413,7 @@ def test_batch_exception_is_exact_and_has_no_remaining_headroom(report, manifest
         "fair-harbor-71",
         "nimble-torrent-12",
         "noble-flare-12",
+        "prime-grove-46",
         "prime-impact-40",
         "quick-pinnacle-97",
         "sharp-rapids-10",
