@@ -111,11 +111,11 @@
         }
       }
     },
-    "/plans/{task_id}": {
+    "/api/plans/{task_id}": {
       "get": {
-        "summary": "Plan Viewer",
-        "description": "Serve plan content as an HTML page.",
-        "operationId": "plan_viewer_plans__task_id__get",
+        "summary": "Plan Content",
+        "description": "Return plan markdown as data for the standalone dashboard viewer.",
+        "operationId": "getPlan",
         "parameters": [
           {
             "name": "task_id",
@@ -132,7 +132,9 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/PlanContentResponse"
+                }
               }
             }
           },
@@ -18408,8 +18410,8 @@
         "tags": [
           "system"
         ],
-        "summary": "Update and restart the daemon. Without deploy.tag_glob or deploy.track_branch, pull the upstream and restart even when already current. With a release or branch selector, run shared preflight and launch the operator updater; returns pid, log, selector and commit, or up_to_date without restarting. Read the log for the final outcome. Use wait_for_tasks=true to let running tasks finish before restarting; scheduling resumes if the updater exits without restarting. Excluded from MCP by default for safety.",
-        "description": "Update and restart the daemon. Without deploy.tag_glob or deploy.track_branch, pull the upstream and restart even when already current. With a release or branch selector, run shared preflight and launch the operator updater; returns pid, log, selector and commit, or up_to_date without restarting. Read the log for the final outcome. Use wait_for_tasks=true to let running tasks finish before restarting; scheduling resumes if the updater exits without restarting. Excluded from MCP by default for safety.",
+        "summary": "Update and restart the daemon. Requires deploy.tag_glob or deploy.track_branch; otherwise refuses with operator configuration guidance. Run shared preflight and launch the operator updater; returns pid, log, selector and commit, or up_to_date without restarting. Read the log for the final outcome. Use wait_for_tasks=true to let running tasks finish before restarting; scheduling resumes if the updater exits without restarting. Excluded from MCP by default for safety.",
+        "description": "Update and restart the daemon. Requires deploy.tag_glob or deploy.track_branch; otherwise refuses with operator configuration guidance. Run shared preflight and launch the operator updater; returns pid, log, selector and commit, or up_to_date without restarting. Read the log for the final outcome. Use wait_for_tasks=true to let running tasks finish before restarting; scheduling resumes if the updater exits without restarting. Excluded from MCP by default for safety.",
         "operationId": "update_and_restart",
         "requestBody": {
           "content": {
@@ -58106,6 +58108,24 @@
           "description"
         ],
         "title": "Placeholder"
+      },
+      "PlanContentResponse": {
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "title": "Task Id"
+          },
+          "content": {
+            "type": "string",
+            "title": "Content"
+          }
+        },
+        "type": "object",
+        "required": [
+          "task_id",
+          "content"
+        ],
+        "title": "PlanContentResponse"
       },
       "PlaybookActivateRequest": {
         "properties": {

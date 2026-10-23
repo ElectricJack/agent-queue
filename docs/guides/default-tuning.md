@@ -16,7 +16,7 @@ aq system config tune --explain       # …with the reason for every value
 aq system config tune --apply         # write it
 ```
 
-`aq setup` does this automatically for a fresh config. Nothing consults the
+`aq install` does this automatically for a fresh config. Nothing consults the
 tuner at runtime: once written, the file is the truth, and your edits stand.
 
 ## What the machine decides
@@ -101,9 +101,9 @@ it is not a limit on simultaneous V2 runs.
 | --- | --- | --- |
 | `auto_task.max_verification_retries` | 2 | One reopen for a genuine flake, then a stop. |
 | `swarm.prepare_timeout` | 120 | An abandoned preparation becomes eligible for recovery after two minutes. A live preparation request remains protected while its Git operations run under their own timeouts. |
-| `agents_config.stuck_timeout_seconds` | 1800 (3600 on a small box) | A long tool call on a contended small box legitimately takes longer. |
+| `agents_config.stuck_timeout_seconds` (emitted name) | 1800 (3600 on a small box) | A long tool call on a contended small box legitimately takes longer. The loader currently reads YAML `agents`, so this recommendation needs that key to take effect; see the [configuration reference](../reference/configuration.md#top-level-sections). |
 | `integration.default_mode` | `pull_request` | Worker output lands on a branch and a PR, never straight onto the default branch. |
-| `integration.merge_ci_policy` | `warn` | The merge path asks GitHub for the check rollup and records the verdict, but still merges. A new install usually has no CI yet, and `required` fails closed on an unreadable rollup — nothing would ever merge. Move to `required` once the default branch is reliably green. |
+| `integration.merge_ci_policy` | `warn` | Installation-level compatibility default. Active delivery also follows project/repository CI and integration policy; this value alone does not guarantee a merge. |
 | `integration.merge_require_up_to_date` | `true` | A green rollup only proves the head passed against the base as it was when the run started. |
 
 ## Playbooks
@@ -113,7 +113,9 @@ On a fresh, empty vault the installation receipt installs six reviewed system
 bundles. Its first activation attempt enables three required policies
 (`default-assignment-routing`, `provider-usage-probe`, `provider-failover`) and two
 shared defaults (`default-pipeline`, `supervisor-failure-triage`). `morning-report`
-stays inactive. `blocked-task-escalation` is retired, and the stateful stuck-task
+stays inactive and needs explicit activation and `reports.morning.enabled`.
+An existing non-empty vault gets an installation receipt without new activation.
+`blocked-task-escalation` is retired, and the stateful stuck-task
 watch is optional. Later restarts only observe activations; repair and bundle
 refresh require explicit operator commands. See [installation and recovery](../concepts/playbooks.md#shipped-policy-local-policy-and-compatibility).
 
@@ -168,7 +170,11 @@ aq system config tune --apply --overwrite         # re-derive and replace
 `--apply` **keeps** any section you have already customised and reports it as
 `kept`; only `--overwrite` replaces one. A section that already matches the
 recommendation is reported `unchanged` and not rewritten, so re-running the
-command is a no-op.
+command is a no-op. Decisions apply to whole sections, not individual keys.
+Before writing, the tuner validates a candidate and refuses newly introduced
+errors; pre-existing errors are reported separately. It writes locally without
+forcing live reload or retaining a transaction backup. The temporary-file
+preflight does not reproduce environment overlays or a caller-selected profile.
 
 Two knobs move together and are the usual mistake:
 
