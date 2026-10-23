@@ -612,6 +612,7 @@
         "tests/test_parent_ci_publication.py",
         "tests/test_promote_commands.py",
         "tests/test_promotion_backmerge.py",
+        "tests/test_promotion_continuous_equivalence.py",
         "tests/test_promotion_flow.py",
         "tests/test_promotion_notes_input.py",
         "tests/test_promotion_policy.py",
@@ -15182,6 +15183,27 @@
         "parametrize"
       ],
       "summary": "Hotfix and backmerge gates with real PostgreSQL, retained refs and Git DAGs."
+    },
+    "tests/test_promotion_continuous_equivalence.py": {
+      "areas": [
+        "integration-promotion"
+      ],
+      "default_arm": true,
+      "digest": "sha256:686bc16dbdb476e758d4d472d0e7fb02335b34523ac43c3f1929b6f13ccac2d6",
+      "imports": [
+        "src.commands.contracts",
+        "src.commands.contracts.models",
+        "src.commands.contracts.registry",
+        "src.commands.principal",
+        "src.playbooks.definition",
+        "src.playbooks.engine",
+        "src.playbooks.executors.base",
+        "src.profiles.capabilities"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Run the typed-source port and frozen shipped policy through the same real engine."
     },
     "tests/test_promotion_flow.py": {
       "areas": [
