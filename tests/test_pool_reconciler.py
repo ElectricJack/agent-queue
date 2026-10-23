@@ -318,14 +318,10 @@ async def test_pool_diagnostics_never_fetch_hierarchy_or_stack_prerequisites(
     assert ("frontier_sibling_prerequisite_not_delivered" in explained["reason_codes"]) is (
         not stackable and not unavailable
     )
-    assert ("delivery_evidence_unavailable" in explained["reason_codes"]) is unavailable
-    if unavailable:
-        reason = next(reason for reason in explained["reasons"]
-                      if reason["code"] == "delivery_evidence_unavailable")
-        assert "has not loaded yet" in reason["detail"]
+    assert "delivery_evidence_unavailable" not in explained["reason_codes"]
     status = await handler._cmd_pool_status({})
     row = next(row for row in status["pools"] if row["profile_id"] == "worker")
-    assert row["ready"] == int(stackable)
+    assert row["ready"] == int(stackable or unavailable)
     for call in forbidden.values():
         call.assert_not_awaited()
 
@@ -348,7 +344,7 @@ async def _frontier(orch, db, env, handler, expected, *, evidence_unavailable=Fa
     explained = await handler._cmd_explain_task({"task_id": "second"})
     assert any(r["code"] == "frontier_sibling_prerequisite_not_delivered"
                for r in explained["reasons"]) is (not expected and not evidence_unavailable)
-    assert ("delivery_evidence_unavailable" in explained["reason_codes"]) is evidence_unavailable
+    assert "delivery_evidence_unavailable" not in explained["reason_codes"]
     diagnosis = await _check_ready_frontier_exclusions(DoctorContext(config=orch.config, db=db))
     assert any(
         row["task_id"] == "second" and "sibling_prerequisite_not_delivered" in row["reasons"]
@@ -475,6 +471,10 @@ async def test_container_sibling_contained_by_external_fast_forward_releases_dep
     frontier_clock.return_value += env.observer.READ_MAX_AGE + 0.01
     modes = await frontier(False)
     assert modes[PROJECT_ID].delivered_prerequisite_ids == {"first"}
+    # An observed but unprovable aggregate is not an unloaded Git observation.
+    assert modes[PROJECT_ID].unknown_prerequisite_ids == frozenset()
+    view = await env.observer.prerequisite_view(PROJECT_ID)
+    assert view.siblings.evidence["group"].reason == "missing_git_provenance"
     _fast_forward_epic(env, "aq/group-b")
     frontier_clock.return_value += env.observer.READ_MAX_AGE + 0.01
     modes = await frontier(True)
@@ -491,24 +491,30 @@ async def test_container_sibling_contained_by_external_fast_forward_releases_dep
     }
 
 
-async def test_container_sibling_shadow_mode_still_requires_receipts(
-    orch, db, git_first_frontier,
+@pytest.mark.parametrize("observation", ["absent", "timeout", "fetch_error"])
+async def test_container_sibling_with_unknown_delivery_can_be_claimed(
+    orch, db, git_first_frontier, monkeypatch, observation,
 ):
-    """Without a truth-bearing observer the sibling stays excluded as unknown evidence.
-
-    Receipts no longer prove delivery (fast-smooth §3.3), so a missing observer
-    withholds the dependent and explain names the unavailable evidence.
-    """
+    """Unknown delivery permits scheduler demand and a claim without receipt proof."""
     from src.commands.handler import CommandHandler
     from src.integration.delivery_observer import prerequisite_observer
 
     env = git_first_frontier
     await _completed_container(db, env)
     _fast_forward_epic(env, "aq/first", "aq/group-a", "aq/group-b")
-    db.set_delivery_observer(None)
-    assert prerequisite_observer(db) is None
-    await _frontier(orch, db, env, CommandHandler(orch, orch.config), False,
-                    evidence_unavailable=True)
+    if observation == "absent":
+        db.set_delivery_observer(None)
+        assert prerequisite_observer(db) is None
+    elif observation == "timeout":
+        monkeypatch.setattr(env.observer, "prerequisite_view", AsyncMock(side_effect=TimeoutError))
+    else:
+        from src.git.manager import GitError
+
+        monkeypatch.setattr(env.observer.git, "afetch_origin",
+                            AsyncMock(side_effect=GitError("offline")))
+    handler = CommandHandler(orch, orch.config)
+    modes = await _frontier(orch, db, env, handler, True)
+    await _claim_second(orch, db, handler, modes)
 
 
 async def test_stacked_frontier_agrees_for_scheduler_demand_explain_and_claim(
@@ -598,7 +604,7 @@ async def test_git_first_advisory_cycles_reuse_fetch_until_bound(
     assert fetch.await_count == 2
 
 
-async def test_git_first_expired_advisory_snapshot_fails_closed_on_fetch_error(
+async def test_git_first_expired_advisory_snapshot_allows_preparation_on_fetch_error(
     orch, db, git_first_frontier, frontier_clock, monkeypatch,
 ):
     from src.git.manager import GitError
@@ -619,8 +625,9 @@ async def test_git_first_expired_advisory_snapshot_fails_closed_on_fetch_error(
     assert modes[PROJECT_ID].delivered_prerequisite_ids == frozenset()
     fetch.assert_awaited_once()
     await orch._schedule(hierarchy_modes=modes)
-    assert "second" not in orch._last_scheduler_state.hierarchy_runnable_task_ids
-    assert (await orch._measure_pools(hierarchy_modes=modes)).demand[PoolKey("worker")] == 0
+    assert modes[PROJECT_ID].unknown_prerequisite_ids == {"first"}
+    assert "second" in orch._last_scheduler_state.hierarchy_runnable_task_ids
+    assert (await orch._measure_pools(hierarchy_modes=modes)).demand[PoolKey("worker")] == 1
 
 
 async def test_git_first_claim_refetches_after_cached_advisory_target_rewinds(
@@ -679,7 +686,7 @@ async def test_git_first_claim_refetches_after_cached_advisory_target_rewinds(
 
 
 @pytest.mark.parametrize("movement", ["rewind", "retarget", "generation", "unstable", "shadow"])
-async def test_git_first_frontier_withholds_invalid_or_shadow_proof(
+async def test_git_first_frontier_distinguishes_invalidated_and_unknown_proof(
     orch, db, git_first_frontier, movement, monkeypatch,
 ):
     from src.commands.handler import CommandHandler
@@ -702,6 +709,11 @@ async def test_git_first_frontier_withholds_invalid_or_shadow_proof(
             completed_at=time.time(),
         ))
         await db.set_task_meta("first", DEVELOPMENT_COMPLETION_ID_KEY, "close-first-again")
+        view = await env.observer.prerequisite_view(PROJECT_ID)
+        proof = view.siblings.evidence["first"]
+        assert proof.request.completion_id == "close-first-again"
+        assert proof.reason == "missing_git_provenance"
+        assert not proof.unloaded
     elif movement == "unstable":
         view = await env.observer.prerequisite_view(PROJECT_ID)
         monkeypatch.setattr(type(view), "fresh", AsyncMock(return_value=False))
@@ -719,23 +731,22 @@ async def test_git_first_frontier_withholds_invalid_or_shadow_proof(
                 after_sha=env.source, disposition="code", created_at=time.time(),
             ))
 
-    assert not await db.is_hierarchy_task_runnable("second")
-    assert await db.count_ready_by_profile(PROJECT_ID) == {}
+    allowed = movement in {"unstable", "shadow"}
+    assert await db.is_hierarchy_task_runnable("second") is allowed
+    assert await db.count_ready_by_profile(PROJECT_ID) == ({"worker": 1} if allowed else {})
     await orch._schedule()
-    assert "second" not in orch._last_scheduler_state.hierarchy_runnable_task_ids
-    assert (await orch._measure_pools()).demand[PoolKey("worker")] == 0
+    assert ("second" in orch._last_scheduler_state.hierarchy_runnable_task_ids) is allowed
+    assert (await orch._measure_pools()).demand[PoolKey("worker")] == int(allowed)
     explained = await CommandHandler(orch, orch.config)._cmd_explain_task({"task_id": "second"})
     # DB-invalidated identities give a negative result. A rewind invalidates
     # the bounded advisory cache; display does not fetch a replacement proof.
     assert ("frontier_sibling_prerequisite_not_delivered" in explained["reason_codes"]) is (
         movement in {"retarget", "generation"}
     )
-    assert ("delivery_evidence_unavailable" in explained["reason_codes"]) is (
-        movement in {"rewind", "shadow"}
-    )
+    assert "delivery_evidence_unavailable" not in explained["reason_codes"]
     if movement == "unstable":
         # The mocked freshness failure checks no refs, so it must not poison
-        # otherwise valid cached display evidence. Decisions above still withhold.
+        # otherwise valid cached display evidence. The unloaded view permits preparation.
         assert all(snapshot._freshness.get(snapshot.target_ref, True)
                    for _, snapshot in env.observer._recent.values())
 
@@ -2388,9 +2399,6 @@ async def test_admission_view_projects_identical_ids_counts_and_reasons(
 
     env.observer.truth = None
     unknown = await orch._delivery_admission(["second", "independent"])
-    assert unknown.allowed == {"independent"}
-    assert await unknown.counts(PROJECT_ID) == {"worker": 1}
-    assert [reason["code"] for reason in unknown.reasons["second"]] == [
-        "delivery_evidence_unavailable",
-    ]
-    assert not unknown.reasons.get("independent")
+    assert unknown.allowed == {"second", "independent"}
+    assert await unknown.counts(PROJECT_ID) == {"worker": 2}
+    assert not any(unknown.reasons.values())

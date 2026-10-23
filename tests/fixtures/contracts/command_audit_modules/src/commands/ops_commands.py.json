@@ -133,7 +133,7 @@
     ],
     "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
     "schema_quality": "declared",
-    "source_digest": "sha256:b53bc62fa7a75070d9843624793bd0386ac7afe64154c41491a4b24729c8a24a",
+    "source_digest": "sha256:d705a3bb26d9c083fd86b841fde56282f4ccf53b1c0b551fafb5236b209b58cf",
     "tests": [
       "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
       "tests/test_generated_command_contracts.py::test_generic_result_protocol",

@@ -412,6 +412,7 @@ def test_batch_exception_is_exact_and_has_no_remaining_headroom(report, manifest
         'calm-lantern-21',
         'calm-rapids-50',
         'fair-dune-41',
+        'fair-ember-93',
         'fair-flare-10',
         'fair-harbor-71',
         'fair-meadow-87',
@@ -4333,3 +4334,44 @@ def test_escalation_noise_amendment_composes_on_merged_dev(report, manifest):
     assert exception["measured_owned_total"] == report["total"]
     assert exception["measured_engine_lines"] == report["groups"]["engine"]
     assert exception["measured_table_count"] == len(report["tables"]) == 45
+
+
+def test_ingestion_evidence_keeps_release_and_reviewer_fences_charged(report, manifest):
+    generic = {
+        "src/asks/ingestion.py": ("approved_packet",),
+        "src/asks/operations.py": ("operation",),
+        "src/asks/batch_scope.py": ("scope_source", "scope_ask"),
+        "src/api/scope.py": ("held_task_for_session", "fidelity_review_task_for_session"),
+        "src/database/queries/proposal_queries.py": ("detect_cycles",),
+        "src/database/queries/ingest_batch_queries.py": (
+            "get_batch", "members", "live_digest", "passing_receipt",
+        ),
+        "src/task_graph/batch_digest.py": (
+            "normalize_description", "canonical_batch_structure", "compute_structure_digest",
+        ),
+    }
+    charged = {
+        "src/commands/principal.py": ("batch_release_actor",),
+        "src/commands/proposal_commands.py": (
+            "TaskProposalCommandsMixin._create_ingest_batch",
+            "TaskProposalCommandsMixin._update_held_batch",
+            "TaskProposalCommandsMixin._cmd_task_batch_release",
+        ),
+        "src/commands/fidelity_review_commands.py": (
+            "FidelityReviewCommandsMixin._cmd_task_batch_review_record",
+        ),
+    }
+    for expected, paths in ((False, generic), (True, charged)):
+        for path, names in paths.items():
+            source = ownership.python_source(path, (ROOT / path).read_bytes())
+            units = {unit.name: unit for unit in source.units}
+            for name in names:
+                unit = units[name]
+                rows = set(range(unit.start, unit.end + 1))
+                actual = set(report["spans"].get(path, []))
+                if expected:
+                    assert rows <= actual, unit.key
+                    assert unit.key not in manifest["generic_dependencies"]
+                else:
+                    assert unit.key in manifest["generic_dependencies"]
+                    assert rows.isdisjoint(actual), unit.key

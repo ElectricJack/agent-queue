@@ -2084,6 +2084,17 @@
     "referenced_decision": "size-cap-delegation-2026-10-23",
     "task_id": "noble-flare-12"
   },
+  "held_release_p3_measurement": {
+    "authority": "decision:8f9bd96b-900d-4afc-8b98-645dd0ae4eab",
+    "global_request": "msg-a65b93b943b44cd48cbdee7fb0672950",
+    "grant_delivery_message_id": "msg-8011136a1ef04a6b8ec1112fab150eb1",
+    "measured_engine_lines": 85317,
+    "measured_owned_total": 161162,
+    "measured_shared_lines": 62288,
+    "measured_table_count": 45,
+    "source_revision": "681915da53686a31f183fd6c63040e979b124d15",
+    "task_id": "fair-ember-93"
+  },
   "human_ask_storage_review": {
     "budget": "Pinned baseline, 15000-line allowance, table predicate and all caps unchanged.",
     "charged_import": "src/api/target_scope.py::import from src.database.tables import ask_decision_previews, ask_decisions, conversation_inputs, escalation_messages, escalations, gates, human_asks, integration_batches, integration_branch_owners, integration_candidate_resolutions, integration_check_evidence, integration_outbox, integration_parent_episodes, integration_subjects, jobs, projects, repos, task_branch_origins, test_selection_promotions, test_selections",
@@ -14893,6 +14904,21 @@
           "reason": "Escalation source recovery and supervisor routing, including the deferred database imports required by CLI discovery; supervisor approved the exact PR #1858 footprint under size-cap-delegation-2026-10-23.",
           "referenced_decision": "size-cap-delegation-2026-10-23",
           "task_id": "keen-forge-77"
+        },
+        {
+          "authorized_engine_delta": 1,
+          "authorized_owned_delta": 325,
+          "authorized_shared_delta": 324,
+          "decision_message_id": "msg-1b59c9af50fd43418246593c54d85a16",
+          "decision_record": "decision:8f9bd96b-900d-4afc-8b98-645dd0ae4eab",
+          "global_request": "msg-a65b93b943b44cd48cbdee7fb0672950",
+          "grant_delivery_message_id": "msg-8011136a1ef04a6b8ec1112fab150eb1",
+          "measured_shared_lines": 62288,
+          "previous_engine_lines": 85316,
+          "previous_owned_total": 160837,
+          "previous_shared_lines": 61964,
+          "reason": "Merge held-ingestion P3 (sharp-cascade-53, PR #1774, ddc3e6e6d) with dev 94e69a6a6; global supervisor approved the exact merged footprint (batch release outbox enqueue, retirement proof reads, held-release contracts and doctor checks).",
+          "task_id": "fair-ember-93"
         }
       ],
       "authenticated_push_measurement": {
@@ -15070,7 +15096,8 @@
         "msg-c80bde55a6d1442791a2ba4f9597d7a0",
         "msg-49a7a4f4f8a5420eb80abf1d4d8b4a12",
         "msg-2a11607018264013b97698493f53906e",
-        "msg-08efc39cceeb430cafb8636f1acb85f1"
+        "msg-08efc39cceeb430cafb8636f1acb85f1",
+        "msg-1b59c9af50fd43418246593c54d85a16"
       ],
       "decision_record": "record:2720bdbe-7521-427e-8e72-1f40a3ff9818",
       "delivery_method": "operator direct integration; user request 2026-10-22",
