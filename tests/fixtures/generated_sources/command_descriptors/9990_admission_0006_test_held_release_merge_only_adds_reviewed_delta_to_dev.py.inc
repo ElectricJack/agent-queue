@@ -13,3 +13,5 @@ def test_held_release_merge_only_adds_reviewed_delta_to_dev():
             contract = CONTRACTS.require(name).contract
             assert canonical_execution_document(contract.execution) == approved["execution"]
             assert contract.fingerprint() == approved["fingerprint"]
+
+

@@ -774,6 +774,13 @@ class Orchestrator(
         return self._command_handler
 
     @cached_property
+    def cycle_waits(self):
+        """Agent-wait and wait-service maintenance, off the cycle's critical path."""
+        from src.wait_runtime.cycle import CycleWaitMaintenance
+
+        return CycleWaitMaintenance(self)
+
+    @cached_property
     def morning_due(self):
         """The morning-report playbook's once-per-local-day trigger.
 
@@ -3387,6 +3394,13 @@ class Orchestrator(
             await asyncio.gather(self._tracked_deploy_check, return_exceptions=True)
         await self.cancel_claim_preparations()
         await stop_ready_owner_recovery(self)
+        if "cycle_waits" in self.__dict__:
+            await self.cycle_waits.stop()
+        for name in ("_operational_retention_dispatch", "_operational_retention_task",
+                     "_worktree_maintenance_task"):
+            pending = getattr(self, name, None)
+            if pending is not None:
+                await asyncio.gather(pending, return_exceptions=True)
         await self.message_delivery_service.stop()
         await self.provider_availability.close()
         await self.wait_for_pool_launches(cancel=True)
@@ -4151,6 +4165,21 @@ class Orchestrator(
             return
         self._last_worktree_reaper = now
 
+        pending = getattr(self, "_worktree_maintenance_task", None)
+        if pending is None or pending.done():
+            self._worktree_maintenance_task = asyncio.create_task(
+                self._reap_worktree_slots_background(), name="worktree-maintenance",
+            )
+
+    async def _reap_worktree_slots_background(self) -> None:
+        """One serialized maintenance pass; Git subprocesses never block a cycle."""
+        try:
+            await self._reap_worktree_slots_pass()
+        except Exception:
+            logger.exception("Worktree maintenance failed; retrying on the next pass")
+
+    async def _reap_worktree_slots_pass(self) -> None:
+
         try:
             projects = await self.db.list_projects()
         except Exception as e:
@@ -4604,20 +4633,8 @@ class Orchestrator(
                     logger.error("CollaborationReconciler tick refused: %s", result)
             except Exception:
                 logger.error("CollaborationReconciler tick failed", exc_info=True)
-            try:
-                from src.agent_waits import AgentWaitReconciler
-                result = await _bounded_stage(
-                    "agent waits", AgentWaitReconciler(self._command_handler).tick())
-                if not result.get("success"):
-                    logger.error("AgentWaitReconciler tick refused: %s", result)
-            except Exception:
-                logger.error("AgentWaitReconciler tick failed", exc_info=True)
-            try:
-                wait_service = getattr(self, "wait_service", None)
-                if wait_service is not None:
-                    await _bounded_stage("wait service", wait_service.tick())
-            except Exception:
-                logger.error("WaitService recovery tick failed", exc_info=True)
+            # A bounded single-flight task keeps slow graph maintenance off the cycle.
+            await self.cycle_waits.tick()
             try:
                 result = await _bounded_stage("agent cron", self.agent_cron.tick())
                 if not result.get("success"):

@@ -1140,7 +1140,9 @@ async def test_hung_project_sync_is_bounded_and_rotates_off_the_head(monkeypatch
 
     orchestrator = SimpleNamespace(
         db=SimpleNamespace(list_projects=AsyncMock(return_value=projects)),
-        wait_scheduler_service=SimpleNamespace(sync=AsyncMock(), deadline=AsyncMock()),
+    )
+    orchestrator.wait_scheduler_service = scheduler.SchedulerWaitService(
+        orchestrator, reader=SimpleNamespace(),
     )
     handler = SimpleNamespace(orchestrator=orchestrator, execute=execute)
 
@@ -1149,7 +1151,8 @@ async def test_hung_project_sync_is_bounded_and_rotates_off_the_head(monkeypatch
     synced.clear()
     await asyncio.wait_for(scheduler.scheduler_tick(handler), 5)
 
-    assert sorted(first) == sorted(synced) == ["a", "b", "c"]
+    assert sorted(first) == ["a", "b", "c"]
+    assert sorted(synced) == ["b", "c"]  # successful clean projects wait for recovery
     assert first[0] != synced[0]
     assert caplog.text.count("scheduler_wait_sync for project b exceeded") == 2
     assert caplog.text.count("scheduler_wait_sync for project c deferred") == 2

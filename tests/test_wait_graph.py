@@ -468,6 +468,45 @@ async def test_busy_graph_lock_refuses_within_bound_then_admits(env):
         await lock_graph(waiter, timeout=0.2)
 
 
+@pytest.mark.parametrize("end", ["commit", "rollback"])
+async def test_graph_watchdog_names_idle_holder_and_clears_on_transaction_end(
+    env, monkeypatch, caplog, end,
+):
+    from src.waits import graph
+
+    monkeypatch.setattr(graph, "GRAPH_LOCK_WARN_SECONDS", 0.01)
+    async with env.db._engine.connect() as conn:
+        transaction = await conn.begin()
+        await graph.lock_graph(conn)
+        await graph.lock_graph(conn)  # Nested helpers share one watchdog.
+        await asyncio.sleep(0.03)
+        assert len(caplog.records) == 1
+        assert "wait.graph_lock_slow" in caplog.text
+        assert "test_graph_watchdog_names_idle_holder" in caplog.text
+        await getattr(transaction, end)()
+        assert not graph.graph_locked(conn)
+        assert "wait_graph_timer" not in conn.info
+        # A quick subsequent transaction must not inherit the holder's timer.
+        async with conn.begin():
+            await graph.lock_graph(conn)
+        await asyncio.sleep(0.03)
+        assert len(caplog.records) == 1
+
+
+async def test_graph_reacquires_after_savepoint_rollback(env):
+    from src.waits.graph import lock_graph
+
+    async with env.db._engine.begin() as owner:
+        savepoint = await owner.begin_nested()
+        await lock_graph(owner)
+        await savepoint.rollback()
+        async with env.db._engine.begin() as other:
+            await lock_graph(other, timeout=0.05)
+            with pytest.raises(WaitError) as refused:
+                await lock_graph(owner, timeout=0.05)
+            assert refused.value.code == 'wait.graph_busy'
+        await lock_graph(owner, timeout=0.05)
+
 async def test_graph_contender_releases_pool_connection_needed_by_holder(env):
     """Two connections reproduce the fleet convoy without timing live queries."""
     from sqlalchemy.ext.asyncio import create_async_engine
@@ -520,6 +559,7 @@ async def test_background_fence_budget_does_not_shorten_foreground_writes(monkey
     from unittest.mock import AsyncMock
     from src.waits import graph
 
+    monkeypatch.setattr(graph, "track_graph_lock", lambda conn: None)
     stamps = iter((0.0, 0.3, 0.0, 0.3))
     monkeypatch.setattr(graph, "time", SimpleNamespace(monotonic=lambda: next(stamps)))
     monkeypatch.setattr(graph.asyncio, "sleep", AsyncMock())

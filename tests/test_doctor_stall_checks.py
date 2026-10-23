@@ -236,8 +236,12 @@ class DB:
     async def list_workspaces(self, project_id=None):
         return [w for w in self.workspaces if project_id in (None, w.project_id)]
 
+    async def count_available_workspaces(self, project_id, **kwargs):
+        return 1
+
     async def get_project(self, project_id):
-        return SimpleNamespace(id=project_id, git_identity_name=None, git_identity_email=None)
+        return SimpleNamespace(id=project_id, max_concurrent_agents=2,
+                               git_identity_name=None, git_identity_email=None)
 
     async def list_provider_availability(self):
         return self.providers
@@ -887,3 +891,19 @@ async def test_delivery_held_ready_work_is_not_reported_as_unclaimed(context):
     assert finding["kind"] == "WAITING-ON-DELIVERY"
     assert finding["blockers"] == ["source.6"]
     assert "aq/epic" in finding["detail"]
+
+
+async def test_workspace_capacity_sweep_names_physical_holds(context, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    holds = [{"workspace_id": "held", "reason": "hibernated_checkout", "task_id": "paused"},
+             {"workspace_id": "stale", "reason": "stopped_agent_lock", "agent_id": "old"}]
+    monkeypatch.setattr(context.db, "count_available_workspaces", AsyncMock(return_value=0))
+    read = AsyncMock(return_value=holds)
+    monkeypatch.setattr(import_module("src.workspace_ownership"), "workspace_capacity_holds", read)
+    [finding] = await module._workspace_capacity_findings(context, {"one"}, [task("ready")])
+    assert finding["kind"] == "workspace_capacity_held"
+    assert finding["holds"] == holds and finding["ready_task_ids"] == ["ready"]
+    read.assert_awaited_once_with(context.db, "one")
+    context.db.count_available_workspaces.return_value = 1
+    assert await module._workspace_capacity_findings(context, {"one"}, [task("ready")]) == []

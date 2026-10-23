@@ -62,6 +62,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "list_workspace_kinds": "project",
     "find_merge_conflict_workspaces": "project",
     "release_workspace": "project",
+    "rebind_workspace": "project",
     "remove_workspace": "project",
     "edit_workspace": "project",
     "queue_sync_workspaces": "project",
@@ -299,6 +300,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "claude_usage": "system",
     "get_chat_analyzer_metrics": "system",
     "reload_config": "system",
+    "operational_retention": "system",
     "get_config": "system",
     "get_config_schema": "system",
     "update_config": "system",
@@ -2370,13 +2372,28 @@ _ALL_TOOL_DEFINITIONS = [
     },
     {
         "name": "release_workspace",
-        "description": "Force-release a stuck workspace lock. Use when a workspace is locked by a dead agent or stale task.",
+        "description": "Release a stuck workspace after checking claim, session, integration and job ownership.",
         "input_schema": {
             "type": "object",
             "properties": {
                 "workspace_id": {"type": "string", "description": "Workspace ID to release"},
+                "force": {"type": "boolean", "description": "Override only the exact named task protection"},
+                "task_id": {"type": "string", "description": "Exact protected task; required with force"},
             },
             "required": ["workspace_id"],
+        },
+    },
+    {
+        "name": "rebind_workspace",
+        "description": "Restore workspace lock columns from an existing coherent active pool claim.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "workspace_id": {"type": "string", "description": "Workspace to re-bind"},
+                "task_id": {"type": "string", "description": "Task holding the active claim"},
+                "session_id": {"type": "string", "description": "Session holding that exact claim"},
+            },
+            "required": ["workspace_id", "task_id", "session_id"],
         },
     },
     {
@@ -4025,6 +4042,16 @@ _ALL_TOOL_DEFINITIONS = [
             },
             "required": ["section", "data"],
         },
+    },
+    {
+        "name": "operational_retention",
+        "description": "Archive and collect one bounded batch of old operational records.",
+        "input_schema": {"type": "object", "properties": {
+            "dry_run": {"type": "boolean", "default": False,
+                        "description": "Count eligible records without archiving or deletion."},
+            "batch_size": {"type": "integer", "minimum": 1, "maximum": 1000,
+                           "default": 1000},
+        }},
     },
     {
         "name": "reload_config",

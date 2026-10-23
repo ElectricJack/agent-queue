@@ -12982,6 +12982,53 @@
         }
       }
     },
+    "/api/project/rebind-workspace": {
+      "post": {
+        "tags": [
+          "project"
+        ],
+        "summary": "Restore workspace lock columns from an existing coherent active pool claim.",
+        "description": "Restore workspace lock columns from an existing coherent active pool claim.",
+        "operationId": "rebind_workspace",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RebindWorkspaceRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RebindWorkspaceResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/project/release-constraint": {
       "post": {
         "tags": [
@@ -13034,8 +13081,8 @@
         "tags": [
           "project"
         ],
-        "summary": "Force-release a stuck workspace lock. Use when a workspace is locked by a dead agent or stale task.",
-        "description": "Force-release a stuck workspace lock. Use when a workspace is locked by a dead agent or stale task.",
+        "summary": "Release a stuck workspace after checking claim, session, integration and job ownership.",
+        "description": "Release a stuck workspace after checking claim, session, integration and job ownership.",
         "operationId": "release_workspace",
         "requestBody": {
           "content": {
@@ -17255,6 +17302,53 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ListPromptsResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/system/operational-retention": {
+      "post": {
+        "tags": [
+          "system"
+        ],
+        "summary": "Archive and collect one bounded batch of old operational records.",
+        "description": "Archive and collect one bounded batch of old operational records.",
+        "operationId": "operational_retention",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OperationalRetentionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperationalRetentionResponse"
                 }
               }
             }
@@ -56845,6 +56939,86 @@
         "title": "OperationPerf",
         "description": "Bounded operation timing; coarser tiers average concurrency gauges."
       },
+      "OperationalRetentionRequest": {
+        "properties": {
+          "dry_run": {
+            "type": "boolean",
+            "title": "Dry Run",
+            "description": "Count eligible records without archiving or deletion.",
+            "default": false
+          },
+          "batch_size": {
+            "type": "integer",
+            "title": "Batch Size",
+            "description": "",
+            "default": 1000
+          }
+        },
+        "type": "object",
+        "title": "OperationalRetentionRequest"
+      },
+      "OperationalRetentionResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success"
+          },
+          "counts": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "integer"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Counts"
+          },
+          "dry_run": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dry Run"
+          },
+          "outcome": {
+            "anyOf": [
+              {
+                "type": "string",
+                "const": "already_running"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Outcome"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          }
+        },
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "title": "OperationalRetentionResponse",
+        "description": "A completed bounded retention pass, overlap acknowledgement, or refusal."
+      },
       "OperatorDecisionDTO": {
         "properties": {
           "step_id": {
@@ -69104,6 +69278,60 @@
         "title": "ReadyTask",
         "description": "One frontier row.\n\nTwo shapes share this model: the default (``task_id``, ``title``,\n``priority``) and ``brief: true`` (``id``, ``title``, ``status``,\n``priority``, ``is_blocked``, ``profile_id``).  Both keys are optional so\neither projection validates."
       },
+      "RebindWorkspaceRequest": {
+        "properties": {
+          "workspace_id": {
+            "type": "string",
+            "title": "Workspace Id",
+            "description": "Workspace to re-bind"
+          },
+          "task_id": {
+            "type": "string",
+            "title": "Task Id",
+            "description": "Task holding the active claim"
+          },
+          "session_id": {
+            "type": "string",
+            "title": "Session Id",
+            "description": "Session holding that exact claim"
+          }
+        },
+        "type": "object",
+        "required": [
+          "workspace_id",
+          "task_id",
+          "session_id"
+        ],
+        "title": "RebindWorkspaceRequest"
+      },
+      "RebindWorkspaceResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success"
+          },
+          "workspace_id": {
+            "type": "string",
+            "title": "Workspace Id"
+          },
+          "task_id": {
+            "type": "string",
+            "title": "Task Id"
+          },
+          "session_id": {
+            "type": "string",
+            "title": "Session Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "success",
+          "workspace_id",
+          "task_id",
+          "session_id"
+        ],
+        "title": "RebindWorkspaceResponse"
+      },
       "ReceiptDTO": {
         "properties": {
           "receipt_id": {
@@ -70176,6 +70404,30 @@
             "type": "string",
             "title": "Workspace Id",
             "description": "Workspace ID to release"
+          },
+          "force": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Force",
+            "description": "Override only the exact named task protection"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id",
+            "description": "Exact protected task; required with force"
           }
         },
         "type": "object",
