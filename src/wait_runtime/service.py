@@ -246,8 +246,9 @@ class WaitService:
     async def _bounded_bridge(self):
         """Wait briefly for the bridge; a slow pass finishes beside the scheduler."""
         task = getattr(self, "_bridge_task", None)
-        if task is None or task.done():
-            self._bridge_task = asyncio.create_task(self._run_bridge())
+        if (task is not None and not task.done()) or self._bridge_lock.locked():
+            return
+        self._bridge_task = asyncio.create_task(self._run_bridge())
         # A slow pass keeps running; the scheduler continues after the budget.
         await asyncio.wait({self._bridge_task}, timeout=BRIDGE_TICK_BUDGET_SECONDS)
 
@@ -264,6 +265,13 @@ class WaitService:
         from src.waits.decision import project_policy
 
         async with self._bridge_lock:
+            # Held migrations used to rerun their complete project scan every
+            # scheduler cycle. Retry once a minute; explicit operator bridge
+            # commands still run immediately, and completed receipts stay durable.
+            now = time.monotonic()
+            if now - getattr(self, "_last_bridge_attempt", float("-inf")) < 60:
+                return
+            self._last_bridge_attempt = now
             async with self.orch.db._engine.connect() as conn:
                 pids = list((await conn.execute(select(projects.c.id).where(~exists(
                     select(wait_bridge_progress.c.identity).where(
@@ -273,11 +281,17 @@ class WaitService:
                         wait_bridge_progress.c.state == 'complete',
                     ),
                 )))).scalars())
+            bridge = self.legacy_bridge
             for pid in pids:
+                if bridge.retry_at.get(pid, 0) > bridge.clock():
+                    continue
                 if project_policy(self.orch.config.wait_policy, pid).v2_enabled:
                     result = await self.command('wait_legacy_bridge', {
                         'project_id': pid, 'mode': 'agent-waits', 'apply': True,
                     })
+                    report = (result.get('result') or {}).get('projects', {}).get(pid, {})
+                    if not result.get('success') or report.get('state') == 'held':
+                        bridge.retry_at[pid] = bridge.clock() + bridge.RETRY_SECONDS
                     if not result.get('success'):
                         return
 

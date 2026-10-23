@@ -736,7 +736,7 @@ _SUBJECTS = {
     "worker_relaunch_loop": ("task", "task_id"),
     "train_repair_capacity_wait": ("task", "task_id"),
     "train_repair_off_frontier": ("task", "task_id"),
-    "slot_capacity_short": None, "train_batch_stalled": ("batch", "batch_id"),
+    "slot_capacity_short": None, "workspace_capacity_held": None, "train_batch_stalled": ("batch", "batch_id"),
     "non_design_expensive_route": ("task", "task_id"),
     "pool_without_claim": ("session", "session_name"),
     "idle_worker": ("task", "task_id"), "idle_pool": ("session", "session_name"),
@@ -939,6 +939,8 @@ async def _check_sweep(ctx: DoctorContext) -> CheckResult:
                    lambda c: _continuous_promotion_findings(c, active, now)),
             _probe(ctx, active, ("stranded_promotion_task",),
                    lambda c: _stranded_promotion_findings(c, active)),
+            _probe(ctx, active, ("workspace_capacity_held",),
+                   lambda c: _workspace_capacity_findings(c, active, tasks)),
             _probe(ctx, active, ("slot_capacity_short",),
                    lambda c: _slot_capacity_findings(c, active)),
             _probe(ctx, active, ("train_batch_stalled",),
@@ -1006,6 +1008,31 @@ async def _container_dependency_findings(ctx: DoctorContext, active: set[str]) -
             "container_dependencies_truncated", None,
             "container dependency report capped at 50 edges; resolve findings and rerun",
         ))
+    return findings
+
+
+async def _workspace_capacity_findings(ctx, active, task_inventory):
+    from src.workspace_ownership import workspace_capacity_holds
+
+    findings = []
+    for project_id in sorted(active):
+        ready = [t for t in task_inventory if t.project_id == project_id
+                 and t.status == TaskStatus.READY and not getattr(t, "is_blocked", False)]
+        if not ready:
+            continue
+        project = await ctx.db.get_project(project_id)
+        cap = project.max_concurrent_agents if ctx.config.worktrees.enabled else None
+        if await ctx.db.count_available_workspaces(
+            project_id, kind_id="project-repo", worktree_slot_cap=cap,
+        ):
+            continue
+        holds = await workspace_capacity_holds(ctx.db, project_id)
+        if holds:
+            findings.append(_finding(
+                "workspace_capacity_held", project_id,
+                "Ready work has no physical checkout capacity; inspect retained ownership "
+                "before releasing locks", holds=holds, ready_task_ids=[t.id for t in ready],
+            ))
     return findings
 
 

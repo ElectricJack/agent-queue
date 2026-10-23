@@ -672,7 +672,9 @@ async def test_redrive_reports_a_delivered_child_and_a_no_code_child(case):
 
 
 
-async def test_doctor_explains_ready_sibling_excluded_from_claim_frontier(case):
+async def test_doctor_explains_ready_sibling_excluded_from_claim_frontier(case, tmp_path):
+    # Unloaded Git evidence admits the sibling; an unprovable source withholds it.
+    await _unretained_leaf(case, tmp_path)
     async with case.db.immediate() as conn:
         await conn.execute(update(tasks).where(tasks.c.id == "epic.2").values(
             status="READY", is_blocked=False,

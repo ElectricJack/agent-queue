@@ -789,6 +789,7 @@
     "src/asks/buttons.py::decide": "Generic opaque-token, root, mode and version fences for external human decisions. Source effects are delegated through the shared decision handler; IntegrationAdapter and authorize_source remain independently charged.",
     "src/asks/delivery.py::config_fingerprint": "Generic notification-destination configuration hashing; no integration state or ref authority.",
     "src/asks/delivery.py::destination": "Generic notification channel identity for all human asks; no integration branch or delivery lifecycle.",
+    "src/asks/ingestion.py::approved_packet": "Generic immutable specification/plan approval validation and feedback evidence, shared by ingestion dispatch and replay. It grants no integration branch, code publication or ref replay authority; release and publication callers remain independently charged.",
     "src/asks/intake.py::input_values": "Generic human discussion input normalization, reply binding and provenance; integration source effects remain independently charged.",
     "src/asks/models.py::digest": "Generic canonical JSON hashing for all ask sources; no integration state, policy or ref authority. Integration adapters remain independently charged.",
     "src/asks/operations.py::get_operation": "Generic decision-operation lookup in escalation_actions, shared by all ask sources; no integration subject, branch or lifecycle state.",
@@ -1250,6 +1251,7 @@
     "src/database/tables.py::agent_waits": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/database/tables.py::agents": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/database/tables.py::api_session_tokens": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/tables.py::approved_document_snapshots": "Generic immutable approved document bytes and approval provenance when no review revision is available (docs/specs/database.md). Ingestion release reads this source evidence; it stores no integration subject, branch, code publication or ref replay authority. The release command and shared outbox adapter remain independently charged.",
     "src/database/tables.py::archived_tasks": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/database/tables.py::ask_decision_previews": "Generic human ask identity and verified decision evidence shared by all source kinds; no integration subject, branch, gate lifecycle or ref authority. IntegrationAdapter and authorize_source remain independently charged.",
     "src/database/tables.py::ask_decisions": "Generic human ask identity and verified decision evidence shared by all source kinds; no integration subject, branch, gate lifecycle or ref authority. IntegrationAdapter and authorize_source remain independently charged.",
@@ -15964,6 +15966,13 @@
       ],
       "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget."
     },
+    "src/wait_runtime/resume.py::ResumeTransaction._reserve": {
+      "landing_span": [
+        83,
+        149
+      ],
+      "reason": "Locked resume admission and reservation extracted from the charged reserve wrapper; both remain charged within the approved footprint."
+    },
     "src/wait_runtime/resume.py::ResumeTransaction.bind_launch": {
       "landing_span": [
         229,
@@ -16040,6 +16049,9 @@
         46
       ],
       "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget."
+    },
+    "src/wait_runtime/scheduler.py::SchedulerWaitService._sync_owner": {
+      "reason": "Per-owner reconciliation extracted from the charged scheduler sync; retains integration admission and branch-owner authority, so remains charged without changing the cap."
     },
     "src/wait_runtime/scheduler.py::SchedulerWaitService.authorize": {
       "landing_span": [
@@ -19913,6 +19925,101 @@
         "task_id": "keen-forge-77"
       },
       {
+        "authorized_engine_delta": 1,
+        "authorized_owned_delta": 325,
+        "authorized_shared_delta": 324,
+        "decision_message_id": "msg-1b59c9af50fd43418246593c54d85a16",
+        "decision_record": "decision:8f9bd96b-900d-4afc-8b98-645dd0ae4eab",
+        "global_request": "msg-a65b93b943b44cd48cbdee7fb0672950",
+        "grant_delivery_message_id": "msg-8011136a1ef04a6b8ec1112fab150eb1",
+        "measured_shared_lines": 62288,
+        "previous_engine_lines": 85316,
+        "previous_owned_total": 160837,
+        "previous_shared_lines": 61964,
+        "reason": "Merge held-ingestion P3 (sharp-cascade-53, PR #1774, ddc3e6e6d) with dev 94e69a6a6; global supervisor approved the exact merged footprint (batch release outbox enqueue, retirement proof reads, held-release contracts and doctor checks).",
+        "task_id": "fair-ember-93"
+      },
+      {
+        "authorized_engine_delta": -486,
+        "authorized_owned_delta": -9,
+        "decision_message_id": "msg-8f9cda4b9dcc460f8bcf006a22bfa2e0",
+        "global_decision": "907cdbb6-a78a-4d3f-9fd0-063b0cd050d6",
+        "global_grant": "msg-178ee4e85b0140598410d0cb16005443",
+        "previous_engine_lines": 85316,
+        "previous_owned_total": 160837,
+        "reason": "Held-ingestion P4 merged onto dev: dev's retirements plus three orphaned helpers removed; supervisor approved recording the exact lower footprint under size-cap-delegation-2026-10-23.",
+        "referenced_decision": "msg-f06302bed6424579bdb6b51290cbed1e",
+        "task_id": "stark-grove-42"
+      },
+      {
+        "authorized_engine_delta": 0,
+        "authorized_owned_delta": 144,
+        "decision_message_id": "msg-98d8517c56104e8fbf87e1330d2d5c1a",
+        "grant_baseline_owned_total": 160820,
+        "grant_maximum_delta": 172,
+        "measured_delta_from_grant_baseline": 161,
+        "measured_source_revision": "07988d776f3dd68759d34c8152dd684099ff7298",
+        "operator_decision_id": "c363ba40-0d03-4303-8667-e192e92091ad",
+        "previous_engine_lines": 85316,
+        "previous_owned_total": 160837,
+        "reason": "Exact remaining ownership-fence footprint after sharing session predicates and reusing transaction row reads; no change to baseline, final caps or storage categories.",
+        "task_id": "nimble-meadow-99"
+      },
+      {
+        "authorized_engine_delta": -534,
+        "authorized_owned_delta": 129,
+        "authorized_table_delta": 0,
+        "measured_engine_lines": 85010,
+        "measured_owned_total": 161342,
+        "measured_source_revision": "9b8ad6e58179dde7ac486d12d446e116e8120187",
+        "measured_table_count": 45,
+        "merged_dev_revision": "d60c0f238c8205f495a384c0bd77c322a8fc89ac",
+        "operator_decision": "6679052c",
+        "operator_task": "sharp-cascade-53",
+        "previous_engine_lines": 85544,
+        "previous_owned_total": 161213,
+        "previous_source_revision": "4bafa45f1ac0a466eab372c7b6b0b866f67bb832",
+        "previous_table_count": 45,
+        "pull_request": "https://github.com/ElectricJack/agent-queue/pull/1802",
+        "reason": "Exact combined-tree remeasurement after merging origin/dev into PR #1802. Preapproved by size-cap-delegation-2026-10-23, operator decision 6679052c on sharp-cascade-53. Preserve every historical grant and classification; no code trimmed or moved for the count.",
+        "referenced_decision": "size-cap-delegation-2026-10-23",
+        "task_id": "nimble-meadow-99"
+      },
+      {
+        "authority_task": "sharp-cascade-53",
+        "authorized_engine_delta": 0,
+        "authorized_owned_delta": 131,
+        "branch": "aq/epic/wait-graph-advisory-lock-held-across-idle-in-transaction",
+        "decision_message_id": "msg-000c812477994a65a62633a4a051224c",
+        "measured_engine_lines": 85316,
+        "measured_owned_total": 160968,
+        "measured_source_revision": "24b2dde7d4be3f393c698eff68b2fd08bd7b9de0",
+        "measured_table_count": 45,
+        "previous_engine_lines": 85316,
+        "previous_owned_total": 160837,
+        "reason": "Keep external observations outside the wait graph fence and reconcile one scheduler owner per transaction; the extracted reconciliation helper remains explicitly charged. Project supervisor approved the exact measured footprint under the delegated size-cap authority.",
+        "referenced_decision": "size-cap-delegation-2026-10-23",
+        "task_id": "bold-flare-41"
+      },
+      {
+        "authority_task": "sharp-cascade-53",
+        "authorized_engine_delta": 0,
+        "authorized_owned_delta": 131,
+        "branch": "aq/epic/wait-graph-advisory-lock-held-across-idle-in-transaction",
+        "decision_id": "size-cap-delegation-2026-10-23",
+        "measured_engine_lines": 85544,
+        "measured_owned_total": 161344,
+        "measured_source_revision": "0300be58d47adf905900b108db979240ff4aea16",
+        "measured_table_count": 45,
+        "operator_decision": "6679052c",
+        "previous_engine_lines": 85544,
+        "previous_owned_total": 161213,
+        "previous_source_revision": "dae4a86819d8c4ed6ec70d0d9349f3895f284c4d",
+        "pull_request": "https://github.com/ElectricJack/agent-queue/pull/1816",
+        "reason": "Preapproved exact PR #1816 conflict-repair measurement on merged dev tree. Preserve all historical grants and the charged extracted scheduler/resume helpers; no implementation changes beyond conflict resolution.",
+        "task_id": "bold-flare-41"
+      },
+      {
         "authorized_engine_delta": 366,
         "authorized_owned_delta": 430,
         "authorized_table_delta": 0,
@@ -20110,6 +20217,13 @@
       "msg-49a7a4f4f8a5420eb80abf1d4d8b4a12",
       "msg-2a11607018264013b97698493f53906e",
       "msg-08efc39cceeb430cafb8636f1acb85f1",
+      "msg-1b59c9af50fd43418246593c54d85a16",
+      "msg-f06302bed6424579bdb6b51290cbed1e",
+      "msg-8f9cda4b9dcc460f8bcf006a22bfa2e0",
+      "msg-98d8517c56104e8fbf87e1330d2d5c1a",
+      "size-cap-delegation-2026-10-23",
+      "msg-000c812477994a65a62633a4a051224c",
+      "msg-d3de4e1b",
       "msg-efc241b8ddbb4c1fb63a41f5fe3f0d90",
       "msg-21f0bc97741343c39d69d7c5c7b97400"
     ],

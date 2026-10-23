@@ -90,7 +90,8 @@ class OpsCommandsMixin:
         if isinstance(only, str):
             only = [c.strip() for c in only.split(",") if c.strip()]
 
-        ctx = DoctorContext(config=self.config, db=self.db, handler=self)
+        ctx = DoctorContext(config=self.config, db=self.db, handler=self,
+                            leave_gated=bool(args.get("leave_gated")))
         try:
             result = await run_doctor(registry, ctx, fix=bool(args.get("fix")), only=only)
         except Exception as exc:

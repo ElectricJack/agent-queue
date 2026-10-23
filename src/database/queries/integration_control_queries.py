@@ -280,19 +280,3 @@ class IntegrationControlQueriesMixin:
                 .one_or_none()
             )
         return dict(row) if row is not None else None
-
-    async def list_integration_legacy_suppressions(self) -> list[dict]:
-        """Return the small per-project routing predicate snapshot."""
-        async with self._engine.connect() as conn:
-            rows = (
-                (
-                    await conn.execute(
-                        select(integration_legacy_suppression).order_by(
-                            integration_legacy_suppression.c.project_id
-                        )
-                    )
-                )
-                .mappings()
-                .all()
-            )
-        return [dict(row) for row in rows]

@@ -65,9 +65,9 @@ def sync_detailed(
     client: AuthenticatedClient | Client,
     body: ReleaseWorkspaceRequest,
 ) -> Response[ReleaseWorkspaceResponse | ReleaseWorkspaceResponse422]:
-    """Force-release a stuck workspace lock. Use when a workspace is locked by a dead agent or stale task.
+    """Release a stuck workspace after checking claim, session, integration and job ownership.
 
-     Force-release a stuck workspace lock. Use when a workspace is locked by a dead agent or stale task.
+     Release a stuck workspace after checking claim, session, integration and job ownership.
 
     Args:
         body (ReleaseWorkspaceRequest):
@@ -96,9 +96,9 @@ def sync(
     client: AuthenticatedClient | Client,
     body: ReleaseWorkspaceRequest,
 ) -> ReleaseWorkspaceResponse | ReleaseWorkspaceResponse422 | None:
-    """Force-release a stuck workspace lock. Use when a workspace is locked by a dead agent or stale task.
+    """Release a stuck workspace after checking claim, session, integration and job ownership.
 
-     Force-release a stuck workspace lock. Use when a workspace is locked by a dead agent or stale task.
+     Release a stuck workspace after checking claim, session, integration and job ownership.
 
     Args:
         body (ReleaseWorkspaceRequest):
@@ -122,9 +122,9 @@ async def asyncio_detailed(
     client: AuthenticatedClient | Client,
     body: ReleaseWorkspaceRequest,
 ) -> Response[ReleaseWorkspaceResponse | ReleaseWorkspaceResponse422]:
-    """Force-release a stuck workspace lock. Use when a workspace is locked by a dead agent or stale task.
+    """Release a stuck workspace after checking claim, session, integration and job ownership.
 
-     Force-release a stuck workspace lock. Use when a workspace is locked by a dead agent or stale task.
+     Release a stuck workspace after checking claim, session, integration and job ownership.
 
     Args:
         body (ReleaseWorkspaceRequest):
@@ -151,9 +151,9 @@ async def asyncio(
     client: AuthenticatedClient | Client,
     body: ReleaseWorkspaceRequest,
 ) -> ReleaseWorkspaceResponse | ReleaseWorkspaceResponse422 | None:
-    """Force-release a stuck workspace lock. Use when a workspace is locked by a dead agent or stale task.
+    """Release a stuck workspace after checking claim, session, integration and job ownership.
 
-     Force-release a stuck workspace lock. Use when a workspace is locked by a dead agent or stale task.
+     Release a stuck workspace after checking claim, session, integration and job ownership.
 
     Args:
         body (ReleaseWorkspaceRequest):

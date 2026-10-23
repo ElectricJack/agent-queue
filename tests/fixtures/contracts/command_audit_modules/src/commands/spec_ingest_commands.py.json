@@ -169,6 +169,33 @@
       "tests/test_routing_mandatory.py"
     ]
   },
+  "spec_ingest_legacy_adopt": {
+    "argument_reads_diagnostic_only": [],
+    "denial_reason": null,
+    "effect": "destructive",
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/spec_ingest_commands.py:SpecIngestCommandsMixin._cmd_spec_ingest_legacy_adopt",
+    "resource_gates": [
+      "system_scope"
+    ],
+    "result_policy": "Delegates to adopt_legacy: explicit success boolean; operator-only authority, immutable source approval and unresolved human gates remain enforced.",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer: adopt_legacy preserves explicit success boolean",
+        "return": "await adopt_legacy(self, args)"
+      }
+    ],
+    "schema_quality": "declared",
+    "source_digest": "sha256:02f127a834f48f07eaba636fe7771fcdf537f011fc5fbc4047f04c5cbde39efd",
+    "tests": [
+      "tests/test_task_batch_commands.py",
+      "tests/test_fidelity_review.py",
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete"
+    ]
+  },
   "spec_ingest_legacy_inventory": {
     "argument_reads_diagnostic_only": [
       "after_id",

@@ -8,8 +8,7 @@ def test_original_pr_1789_legacy_execution_documents_and_fingerprints():
             assert expected["previous_fingerprint"] == old["fingerprint"]
             assert expected["fingerprint"] != old["fingerprint"]
         for recording in (_hibernation_changes(), _dispatch_changes(), _merge_changes(),
-                          _leaf_changes(), _completion_changes(), _structure_changes(),
-                          _obsolete_child_changes()):
+                          _leaf_changes(), _completion_changes(), _obsolete_child_changes()):
             later = recording["contracts"].get(name)
             if later:
                 assert later["previous_fingerprint"] == expected["fingerprint"]

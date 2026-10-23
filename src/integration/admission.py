@@ -437,11 +437,11 @@ class AdmissionSnapshot:
             fresh = all([await view.fresh() for view in self.hierarchy_views.values()])
             if not fresh and (task_id is None or not await self.matches(task_id=task_id)):
                 return False
-            if not all([await view.fresh() for view in self.stack_views.values()]):
+            if any([(await v.currentness()).state == "changed" for v in self.stack_views.values()]):
                 return False
         return all(
             [
-                await snapshot.is_fresh()
+                snapshot.error is not None or await snapshot.is_fresh()
                 for snapshot in self.snapshots
                 if required is None or required.intersection(snapshot._identities)
             ]
@@ -501,14 +501,15 @@ class AdmissionSnapshot:
             current_mode = await view.mode(mode, conn=conn)
             ids = (self.hierarchy_required.get(task_id, set()) if task_id else
                    set().union(*(self.hierarchy_required.get(tid, set()) for tid in self.allowed)))
-            for name in ("delivered_prerequisite_ids", "default_prerequisite_ids"):
+            for name in ("delivered_prerequisite_ids", "default_prerequisite_ids",
+                         "unknown_prerequisite_ids", "unknown_default_prerequisite_ids"):
                 before, after = getattr(mode, name), getattr(current_mode, name)
                 if (before & ids if ids is not None else before) != (
                     after & ids if ids is not None else after
                 ):
                     return False
-            if task_id and ((task_id in mode.parent_contained_task_ids)
-                            != (task_id in current_mode.parent_contained_task_ids)):
+            if task_id and any((task_id in getattr(mode, n)) != (task_id in getattr(current_mode, n))
+                               for n in ("parent_contained_task_ids", "unknown_parent_task_ids")):
                 return False
         for pid, view in self.stack_views.items():
             verified = frozenset(await view.verified_on(conn))
@@ -538,7 +539,8 @@ class AdmissionSnapshot:
         dependents = {task_id} if task_id else self.allowed
         required = set().union(*(self.delivery_required.get(tid, set()) for tid in dependents))
         verified = await self.delivery_view.verified_on(conn, required)
-        return all(tid in verified and verified[tid].satisfied for tid in required)
+        return all(verified[t].satisfied or verified[t].unloaded if t in verified
+                   else t not in self.delivery_view.evidence for t in required)
 
 
 async def _observe_sources(
@@ -569,14 +571,15 @@ async def _observe_sources(
         for r in requests.values()
         if r.task_status == "COMPLETED" and r.task_id not in obsolete
     }
+    observer = getattr(service, "delivery_observer", None)
     for project_id, repo_id, target in sorted(scopes):
         repo = repo_rows.get(repo_id)
-        if not repo or repo["project_id"] != project_id:
-            continue  # Missing/wrong configuration withholds the prerequisite.
+        if not repo or repo["project_id"] != project_id or observer is None:
+            continue  # No observation: workspace preparation resolves the source.
         try:
-            snapshot = await service.delivery_observer.snapshot(
+            snapshot = await observer.snapshot(
                 DeliveryTarget(project_id, repo_id, repo["url"], target),
-                **({"max_age": service.delivery_observer.READ_MAX_AGE, "cached_only": True}
+                **({"max_age": observer.READ_MAX_AGE, "cached_only": True}
                    if cached_only else {}),
             )
             batch.snapshots.append(snapshot)
@@ -596,21 +599,15 @@ async def _observe_sources(
             if dep_id in obsolete or request is None:
                 continue  # Non-development dependencies use the graph predicate.
             proof = evidence.get(dep_id)
-            if request.task_status != "COMPLETED" or proof is None or not proof.satisfied:
-                unavailable = (cached_only and proof is not None
-                               and proof.reason == "snapshot_unavailable")
+            if request.task_status == "COMPLETED" and (proof is None or proof.unloaded):
+                continue  # Unknown delivery is not a worker admission veto.
+            if request.task_status != "COMPLETED" or not proof.satisfied:
                 detail = f"{proof.state} ({proof.reason})" if proof else "unknown"
-                if unavailable:
-                    detail = ("delivery evidence has not loaded yet; claimability is unknown "
-                              "(snapshot_unavailable)")
-                reasons.append(
-                    {
-                        "code": ("delivery_evidence_unavailable" if unavailable
-                                 else "development_dependency_delivery"),
-                        "ref": dep_id,
-                        "detail": f"Development prerequisite {dep_id}: {detail}",
-                    }
-                )
+                reasons.append({
+                    "code": "development_dependency_delivery",
+                    "ref": dep_id,
+                    "detail": f"Development prerequisite {dep_id}: {detail}",
+                })
         if reasons:
             batch.reasons[task_id] = reasons
         else:
@@ -618,7 +615,7 @@ async def _observe_sources(
     # A moving target/generation never produces a usable allowed set. Callers
     # retry snapshots; they never write this answer back into the database.
     for snapshot in batch.snapshots:
-        if cached_only:
+        if cached_only or snapshot.error is not None:
             # Display pins the last observed target OID, as graph reads do.
             # Remote freshness is a writer's guard, not a diagnostic fetch.
             continue
@@ -670,10 +667,18 @@ async def _frontier_inputs(conn, ids):
     ))).mappings().all()
     required = {}
     for edge in edges:
-        if edge["dep_type"] == "blocks":
+        if edge["dep_type"] in {"blocks", "delivery-of"}:
             required.setdefault(edge["task_id"], set()).add(edge["depends_on_task_id"])
+    # Fence source generations without a DeliveryView, minus this claim's own rows.
+    sources = (await conn.execute(select(tasks).where(
+        tasks.c.id.in_(set().union(*required.values())),
+        or_(tasks.c.id.not_in(ids), tasks.c.status == "COMPLETED")))).all() if required else []
+    completions, markers = [(await conn.execute(select(table).where(
+        table.c.task_id.in_({row.id for row in sources})))).all() if sources else []
+        for table in (task_completion_records, task_metadata)]
     fingerprint = tuple(tuple(sorted(repr(tuple(row)) for row in group))
-                        for group in (rows, policies, [tuple(e.items()) for e in edges]))
+                        for group in (rows, policies, [tuple(e.items()) for e in edges],
+                                      sources, completions, markers))
     return fingerprint, required
 
 
@@ -754,15 +759,14 @@ async def observe_admission(
         views=batch.hierarchy_views, stack_views=batch.stack_views,
         display_unavailable=unavailable, conn=hierarchy_conn,
         task_ids=ids,
+
         **({"max_age": 0} if not cached_only else {}),
-        **({"task_ids": ids} if cached_only else {}),
     ) if pids else {}
     batch.hierarchy_modes = dict(modes)
     batch.lock_ids |= set().union(*batch.hierarchy_required.values())
     exclusions = await db.claim_frontier_exclusions_many(
         ids, hierarchy_modes=modes, cached_only=cached_only,
         router_ready_projects=router_ready_projects,
-        display_unavailable=unavailable,
     )
     for tid, reasons in exclusions.items():
         if reasons:
@@ -805,15 +809,13 @@ async def _observe_delivery_edges(batch, *, cached_only):
     for tid, sources in batch.delivery_required.items():
         for source in sorted(sources):
             proof = verified.get(source)
-            if proof is not None and proof.satisfied:
+            if proof is None or proof.satisfied or proof.unloaded:
                 continue
             batch.allowed.discard(tid)
             batch.reasons.setdefault(tid, []).append({
-                "code": "delivery_evidence_unavailable" if proof is None
-                        or proof.reason == "snapshot_unavailable" else "prerequisite_delivery",
+                "code": "prerequisite_delivery",
                 "ref": source,
-                "detail": f"Delivery prerequisite {source}: "
-                          + (f"{proof.state} ({proof.reason})" if proof else "Git evidence unavailable"),
+                "detail": f"Delivery prerequisite {source}: {proof.state} ({proof.reason})",
             })
 
 
