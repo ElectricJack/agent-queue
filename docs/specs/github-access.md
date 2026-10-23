@@ -288,6 +288,22 @@ or CLI diagnostic also starts the cooldown; an ordinary permission 403 does not.
 Requests resume when the shared deadline expires. API invocations retain HTTP
 headers even when a binding/account caller only consumes the body.
 
+The startup-owned runner caches successful REST GET responses with an ETag or
+Last-Modified validator, including their bodies and pagination Link headers.
+Each entry is isolated by credential identity and token fingerprint, repository,
+and full request arguments (including URL, page/query and representation headers).
+Stored-login entries belong to that runner's startup-selected login. The cache
+holds at most 256 entries and 16 MiB, evicting least recently used entries; it is
+cleared on daemon restart. Writes and transformed or caller-conditional requests
+bypass it. No-store responses are not retained. Subsequent GETs send
+If-None-Match, or If-Modified-Since when only Last-Modified is available. A 304
+restores the cached body and merges response headers, retaining pagination links
+when omitted by the 304. Response-size limits still apply to restored content.
+Every reuse is validated over the network; failures never serve stale content.
+The activity snapshot separately reports `not_modified_per_hour` by component.
+These counts are a subset of API launch counts, exposing conditional-request
+savings without changing the existing traffic counters.
+
 `aq integration status` includes a `github` snapshot, also in brief output:
 daemon-wide `api_calls_per_minute` keyed by method and endpoint (without query
 values), `gh_commands_per_minute` for non-API CLI invocations, and the active
