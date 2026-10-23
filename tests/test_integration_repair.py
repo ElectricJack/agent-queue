@@ -5490,6 +5490,9 @@ async def test_scheduler_launches_retained_debug_in_exact_workspace(
     from src.intelligence_classes import IntelligenceClass
     from tests.session_dispatch_helpers import fake_provider
 
+    # Exercise retained-repair launch in isolation: the active background train
+    # otherwise retires this deliberately seeded legacy parent operation.
+    await session_orch.integration_service.stop()
     db = session_orch.db
     await _configure_db(db)
     await db.update_profile(

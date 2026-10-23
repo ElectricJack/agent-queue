@@ -14158,5 +14158,13 @@
     "grant_delivery_message_id": "msg-21784b3e56aa4f54bf1042b7c9af4aaf",
     "global_request": "msg-9f895e0d",
     "global_grant": "msg-7f2f68c1"
+  },
+  "git_first_active_measurement": {
+    "source_revision": "2ee133c6039c9255f71b01591d0afc49d7bba1a9",
+    "task_id": "brisk-impact-33",
+    "measured_owned_total": 159841,
+    "measured_engine_lines": 84430,
+    "measured_table_count": 45,
+    "reason": "Retiring shadow removes legacy delivery paths. Record the reduction exactly while preserving the approved historical transition exception, baseline, allowance and caps."
   }
 }

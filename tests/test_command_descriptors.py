@@ -60,6 +60,25 @@ DEV_HIBERNATION_CHANGES = ROOT / "tests/fixtures/contracts/hibernation-main-refr
 SUPERVISOR_HEALTH_CHANGES = ROOT / "tests/fixtures/contracts/supervisor-health-contract-changes.json"
 TARGET_REPAIR_CHANGES = ROOT / "tests/fixtures/contracts/target-repair-contract-changes.json"
 PR_REPAIR_CHANGES = ROOT / "tests/fixtures/contracts/pr-repair-publication-contract-changes.json"
+GIT_FIRST_CHANGES = ROOT / "tests/fixtures/contracts/git-first-active-contract-changes.json"
+
+
+def _git_first_changes():
+    return json.loads(GIT_FIRST_CHANGES.read_text())
+
+
+def test_git_first_catalogue_only_updates_delivery_mode_description():
+    evidence = _git_first_changes()
+    change = evidence["catalogue_sections"]["explicit"]["entries"]["edit_project"]
+    previous, current = change["previous"], change["current"]
+    previous["input_schema"]["properties"]["hierarchical_integration_mode"]["description"] = (
+        current["input_schema"]["properties"]["hierarchical_integration_mode"]["description"]
+    )
+    assert previous == current
+    restored = _revert_catalogue(json.loads(render_command_catalogue()), _git_first_changes())
+    assert hashlib.sha256((json.dumps(restored, indent=2) + "\n").encode()).hexdigest() == (
+        evidence["previous_cli_catalogue_sha256"]
+    )
 
 
 def _stuck_check_changes():
@@ -72,7 +91,7 @@ def _pr_repair_changes():
 
 def _before_pr_repair_catalogue():
     evidence = _pr_repair_changes()
-    catalogue = json.loads(render_command_catalogue())
+    catalogue = _revert_catalogue(json.loads(render_command_catalogue()), _git_first_changes())
     assert catalogue["fallback"].pop(evidence["command"]) == evidence["transport_definition"]
     return catalogue
 
@@ -341,7 +360,7 @@ def test_legacy_execution_documents_and_fingerprints():
             assert expected["previous_fingerprint"] == old["fingerprint"]
             assert expected["fingerprint"] != old["fingerprint"]
         for recording in (_hibernation_changes(), _dispatch_changes(), _merge_changes(),
-                          _leaf_changes(), _completion_changes()):
+                          _leaf_changes(), _completion_changes(), _git_first_changes()):
             later = recording["contracts"].get(name)
             if later:
                 assert later["previous_fingerprint"] == expected["fingerprint"]
@@ -383,7 +402,7 @@ def test_transport_views_and_cli_serialization_preserve_golden_evidence():
             assert approved["previous_sha256"] == digest
             digest = approved["sha256"]
         for recording in (_hibernation_changes(), _dispatch_changes(), _merge_changes(),
-                          _leaf_changes(), _completion_changes()):
+                          _leaf_changes(), _completion_changes(), _git_first_changes()):
             if name in recording["transport_definitions"]:
                 approved = recording["transport_definitions"][name]
                 assert approved["previous_sha256"] == digest
@@ -414,7 +433,9 @@ def test_transport_views_and_cli_serialization_preserve_golden_evidence():
     assert stuck_check["previous_cli_catalogue_sha256"] == completion["cli_catalogue_sha256"]
     pr_repair = _pr_repair_changes()
     assert pr_repair["previous_cli_catalogue_sha256"] == stuck_check["cli_catalogue_sha256"]
-    assert actual == pr_repair["cli_catalogue_sha256"]
+    git_first = _git_first_changes()
+    assert git_first["previous_cli_catalogue_sha256"] == pr_repair["cli_catalogue_sha256"]
+    assert actual == git_first["cli_catalogue_sha256"]
     previous = json.dumps(_before_batch_fix_catalogue(), indent=2) + "\n"
     assert hashlib.sha256(previous.encode()).hexdigest() == dispatch["cli_catalogue_sha256"]
     previous = json.dumps(_before_dispatch_catalogue(), indent=2) + "\n"
