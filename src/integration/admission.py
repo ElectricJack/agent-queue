@@ -26,7 +26,7 @@ from src.database.tables import (
     task_metadata,
     tasks,
 )
-from src.git.manager import GitError
+from src.git.manager import GitError, bounded_git_reads
 from src.integration.delivery_truth import (
     SETTLEMENT_KEY,
     DeliveryRequest,
@@ -727,6 +727,7 @@ class AdmissionView:
                 self._snapshot.stack_views.get(project_id))
 
 
+@bounded_git_reads
 async def observe_admission(
     db, candidate_ids, service, *, cached_only=False, default_mode="pull_request",
     hierarchy_modes=None, router_ready_projects=None, hierarchy_conn=None,
@@ -754,6 +755,7 @@ async def observe_admission(
         display_unavailable=unavailable, conn=hierarchy_conn,
         task_ids=ids,
         **({"max_age": 0} if not cached_only else {}),
+        **({"task_ids": ids} if cached_only else {}),
     ) if pids else {}
     batch.hierarchy_modes = dict(modes)
     batch.lock_ids |= set().union(*batch.hierarchy_required.values())

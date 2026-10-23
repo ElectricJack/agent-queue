@@ -156,7 +156,7 @@ def stacked_policy(project) -> bool:
     return choice in {None, "stacked"}
 
 
-async def _inputs(conn, project_id, task_id=None, *, task_ids=None):
+async def _inputs(conn, project_id, task_id=None, *, task_ids=None, source_ids=None):
     from src.database.queries.task_queries import (
         DEVELOPMENT_COMPLETION_ID_KEY, INTEGRATION_REWORK_AT_KEY,
     )
@@ -229,6 +229,8 @@ async def _inputs(conn, project_id, task_id=None, *, task_ids=None):
         query = query.where(dependent.c.id == task_id)
     if task_ids is not None:
         query = query.where(dependent.c.id.in_(task_ids))
+    if source_ids is not None:
+        query = query.where(source.c.id.in_(source_ids))
     rows = tuple(dict(row) for row in (await conn.execute(query)).mappings())
     blocked = await _unauthorized_sources(conn, {row["task_id"] for row in rows})
     result = []
@@ -545,9 +547,18 @@ class StackView:
         return StackCurrentness("current")
 
     async def verified_on(self, conn, ids=None):
+        wanted = set(self.proofs) if ids is None else set(self.proofs).intersection(ids)
+        if not wanted:
+            return {}
+        # A display read must not re-authorize every historical stack in the
+        # project to validate a handful of current proofs. Scheduler passes
+        # retain their explicitly shared snapshot; other callers load only
+        # the sources whose identities they are actually checking.
+        rows = (await _project_inputs(conn, self.project_id) if _SHARED_INPUTS.get() is not None
+                else await _inputs(conn, self.project_id, source_ids=wanted))
         current = {
             _identity(row)["task_id"]: _identity(row)
-            for row in await _project_inputs(conn, self.project_id)
+            for row in rows
         }
         return {
             tid: proof
@@ -563,7 +574,8 @@ async def observe_stacks(observer, project_id, *, task_id=None, max_age=0, snaps
                          cached_only=False, require_snapshot=False, task_ids=None):
     """Observe prerequisites; preparation and refresh need Git even for an empty set."""
     async with observer.db._engine.connect() as conn:
-        rows = await _inputs(conn, project_id, task_id, task_ids=task_ids)
+        rows = await _inputs(conn, project_id, task_id,
+                             **({"task_ids": task_ids} if task_ids is not None else {}))
         repository_query = select(repos).join(
             projects, projects.c.integration_repository_id == repos.c.id,
         ).where(projects.c.id == project_id)
@@ -1629,30 +1641,22 @@ class EpicRefresh:
         self.db, self.train, self.clock = db, train, clock
 
     async def identity(self, task_id, *, conn=None):
-        from src.database.queries.hierarchy_queries import container_flag_exists
-        from src.database.tables import archived_tasks
-
-        child = tasks.alias("refresh_epic_child")
-        query = select(tasks.c.id, tasks.c.project_id, tasks.c.branch_name,
-                       tasks.c.repo_id, repos.c.default_branch).select_from(
-            tasks.join(projects, projects.c.id == tasks.c.project_id)
-            .join(repos, repos.c.id == projects.c.integration_repository_id)
-        ).where(tasks.c.id == task_id, tasks.c.repo_id == repos.c.id,
-                projects.c.hierarchical_integration_mode.in_(("hierarchy", "train")),
-                projects.c.status == "ACTIVE",
-                tasks.c.branch_name.is_not(None),
-                container_flag_exists() |
-                select(child.c.id).where(child.c.parent_task_id == task_id).exists() |
-                select(archived_tasks.c.id).where(
-                    archived_tasks.c.parent_task_id == task_id).exists())
+        from src.integration.train_sources import _epic_branches_on
         if conn is None:
             async with self.db._engine.connect() as owned:
-                return (await owned.execute(query)).mappings().one_or_none()
-        return (await conn.execute(query)).mappings().one_or_none()
+                return await self.identity(task_id, conn=owned)
+        cols = tasks.c
+        return (await conn.execute(select(
+            cols.id, cols.project_id, cols.branch_name, cols.repo_id, repos.c.default_branch,
+        ).select_from(tasks.join(projects, projects.c.id == tasks.c.project_id).join(
+            repos, repos.c.id == projects.c.integration_repository_id,
+        )).where(tasks.c.id.in_(await _epic_branches_on(conn, [task_id])),
+                 tasks.c.repo_id == repos.c.id, projects.c.status == "ACTIVE",
+                 projects.c.hierarchical_integration_mode.in_(("hierarchy", "train"))
+        ))).mappings().one_or_none()
 
     async def inspect(self, task_id, *, snapshot=None):
         from src.integration.train_sources import project_snapshot
-
         row = await self.identity(task_id)
         if row is None:
             raise ValueError("task is not an epic in its project's integration repository")
@@ -1668,26 +1672,31 @@ class EpicRefresh:
         if main.error or not main.target_oid:
             raise ValueError("default branch cannot be observed")
         git, store = observed.observation.git, observed.observation.store
-        counts = await git.arun_git_result(
-            ["rev-list", "--left-right", "--count", f"{observed.target_oid}...{main.target_oid}"],
-            cwd=store,
-        )
+        span = f"{observed.target_oid}...{main.target_oid}"
+        counts = await git.arun_git_result(["rev-list", "--left-right", "--count", span], cwd=store)
         if counts.returncode:
             raise ValueError("epic distance cannot be observed")
         ahead, behind = map(int, counts.stdout.split())
-        result = {"task_id": task_id, "project_id": row["project_id"], "target_ref": ref,
-                  "target_sha": observed.target_oid, "default_ref": default,
-                  "default_sha": main.target_oid, "ahead": ahead, "behind": behind}
-        return row, target, observed, result
+        return row, target, observed, {
+            "task_id": task_id, "project_id": row["project_id"], "target_ref": ref,
+            "target_sha": observed.target_oid, "default_ref": default,
+            "default_sha": main.target_oid, "ahead": ahead, "behind": behind}
 
-    async def refresh(self, task_id, *, dry_run=True, operator_id=None):
+    async def start(self, task_id, *, snapshot=None):
+        return await self.refresh(task_id, snapshot=snapshot, automatic=True, dry_run=False)
+
+    async def refresh(self, task_id, *, dry_run=True, operator_id=None,
+                      snapshot=None, automatic=False):
         from src.integration.train_sources import DatabaseBatches
-
-        row, target, observed, result = await self.inspect(task_id)
+        row, target, observed, result = await self.inspect(task_id, snapshot=snapshot)
         if dry_run:
             return {**result, "outcome": "preview", "dry_run": True}
+        reply = result if automatic else {**result, "dry_run": False}
         batches = DatabaseBatches(self.db, clock=self.clock)
         current = await batches.current(target)
+        if current is not None and automatic:
+            return {**reply, "outcome": "running" if current.epic_refresh else "pending",
+                    "batch_id": current.id}
         if current is not None and not current.epic_refresh:
             from src.database.queries.escalation_queries import OPEN_ESCALATION_STATES
             from src.integration.repair import ordinary_repair_id
@@ -1697,68 +1706,70 @@ class EpicRefresh:
                     f"batch {current.id} cannot progress (escalation {stuck['id']}): run aq "
                     f"integration abort-batch {current.id} --apply --reason REASON, then retry "
                     f"aq integration refresh-epic --task {task_id} --apply")
-            return {**result, "outcome": "pending", "dry_run": False, "batch_id": current.id}
-        if current is None and not result["behind"]:
-            return {**result, "outcome": "current", "dry_run": False}
-        if self.train is None:
+            return {**reply, "outcome": "pending", "batch_id": current.id}
+        if current is None:
+            if not result["behind"]:
+                return {**reply, "outcome": "current"}
+            if await self._delivered(batches, target, observed, result):
+                return {**reply, "outcome": "skipped", "reason": "delivered"}
+        if not automatic and self.train is None:
             raise ValueError("the Git-first integration train is unavailable")
         if current is None:
-            batch, member = await self._batch(task_id, target, observed, result)
-            current = await self._freeze(row, observed, batch, member)
+            git, checkout = observed.observation.git, observed.observation.store
+            base = await git.amerge_base(checkout, result["target_sha"], result["default_sha"])
+            if not base:
+                raise ValueError("epic and default branch have no common base")
+            member = BatchMember(task_id, result["default_sha"], base)
+            key = hashlib.sha256(repr((target.key, member, result["target_sha"])).encode())
+            batch = Batch("train-epic-refresh-" + key.hexdigest(), target.project_id,
+                          target.repository_id, target.target_ref, created_at=self.clock())
+            store = BatchStore(self.db, clock=self.clock)
+            if automatic and await store.get(batch.id) is not None:
+                return {**reply, "outcome": "settled", "batch_id": batch.id}
+            tree = await git.atree_sha(checkout, member.source_sha)
+            if await self.identity(task_id) != row or not await observed.is_fresh():
+                raise ValueError("epic identity changed during refresh")
+            current = await store.freeze(batch, (member,), trees={task_id: tree})
+        if automatic:
+            return {**reply, "outcome": "started", "batch_id": current.id}
         visit = await self.train.request_visit(target)
         if visit is None:
-            return {**result, "outcome": "pending", "dry_run": False,
-                    "batch_id": current.id, "state": "queued"}
+            return {**reply, "outcome": "pending", "batch_id": current.id, "state": "queued"}
         if operator_id:
             await self.db.log_event("integration.epic_refresh", project_id=row["project_id"],
                 task_id=task_id, payload=json.dumps({**result, "batch_id": current.id,
                     "operator_id": operator_id, "state": visit.state}))
-        return {**result, "target_sha": visit.target_sha or result["target_sha"],
+        return {**reply, "target_sha": visit.target_sha or result["target_sha"],
                 "outcome": "refreshed" if visit.state == "delivered" else "pending",
-                "dry_run": False, "batch_id": current.id, "state": visit.state,
-                "candidate_sha": visit.candidate_sha, "detail": visit.detail}
+                "batch_id": current.id, "state": visit.state, "candidate_sha": visit.candidate_sha,
+                "detail": visit.detail}
 
-    async def start(self, task_id, *, snapshot=None):
-        """Freeze the refresh of the epic's current (head, default head) pair.
-
-        The train's own visits run it; nothing here waits for one. A pair whose
-        refresh batch already exists, settled or not, is never started again.
-        """
-        from src.integration.train_sources import DatabaseBatches
-
-        row, target, observed, result = await self.inspect(task_id, snapshot=snapshot)
-        current = await DatabaseBatches(self.db, clock=self.clock).current(target)
-        if current is not None:
-            return {**result, "outcome": "running" if current.epic_refresh else "pending",
-                    "batch_id": current.id}
-        if not result["behind"]:
-            return {**result, "outcome": "current"}
-        batch, member = await self._batch(task_id, target, observed, result)
-        if await BatchStore(self.db, clock=self.clock).get(batch.id) is not None:
-            return {**result, "outcome": "settled", "batch_id": batch.id}
-        await self._freeze(row, observed, batch, member)
-        return {**result, "outcome": "started", "batch_id": batch.id}
-
-    async def _batch(self, task_id, target, observed, result):
-        """The deterministic refresh batch of one (epic head, default head) pair."""
-        git, store = observed.observation.git, observed.observation.store
-        base = await git.arun_git_result(
-            ["merge-base", result["target_sha"], result["default_sha"]], cwd=store,
-        )
-        if base.returncode:
-            raise ValueError("epic and default branch have no common base")
-        member = BatchMember(task_id, result["default_sha"], base.stdout.strip())
-        key = hashlib.sha256(repr((target.key, member, result["target_sha"])).encode()).hexdigest()
-        return Batch("train-epic-refresh-" + key, target.project_id, target.repository_id,
-                     target.target_ref, created_at=self.clock()), member
-
-    async def _freeze(self, row, observed, batch, member):
-        git, store = observed.observation.git, observed.observation.store
-        tree = await git.atree_sha(store, member.source_sha)
-        if await self.identity(member.task_id) != row or not await observed.is_fresh():
-            raise ValueError("epic identity changed during refresh")
-        return await BatchStore(self.db, clock=self.clock).freeze(
-            batch, (member,), trees={member.task_id: tree})
+    async def _delivered(self, queue, target, observed, result):
+        """Only completed, fully delivered subtrees can forgo a stale-branch refresh."""
+        from src.integration.delivery_truth import DeliveryState
+        graph = await queue.closed_epic_graph(target)
+        if graph is None or graph.epic_id != result["task_id"]:
+            return False
+        delivery = observed.for_target(graph.target(graph.epic_id))
+        if delivery.error or not delivery.target_oid:
+            return False
+        for child in (node for node in graph.nodes if node.required):
+            if child.task_id not in {graph.epic_id, graph.node(graph.epic_id).parent_id}:
+                proof = await delivery.strict_is_delivered(
+                    replace(child.request, target_ref=delivery.observation.target_ref))
+                if proof.state not in {DeliveryState.CONTAINED, DeliveryState.NOT_APPLICABLE}:
+                    return False
+        diff = await observed.observation.git.arun_git_result(
+            ["diff", "--quiet", "--no-ext-diff", "--no-textconv",
+             f"{delivery.target_oid}...{result['target_sha']}"], cwd=observed.observation.store)
+        if (diff.returncode != 0 or not await observed.is_fresh()
+                or not await delivery.is_fresh() or await queue.closed_epic_graph(target) != graph):
+            return False
+        await self.db.log_event("integration.epic_refresh", project_id=target.project_id,
+            task_id=graph.epic_id, payload=json.dumps({**result, "outcome": "skipped",
+                "reason": "delivered", "detail": "refresh skipped: delivered",
+                "delivery_ref": graph.target(graph.epic_id), "delivery_sha": delivery.target_oid}))
+        return True
 
     async def child_base(self, task, origin):
         if not task.parent_task_id:

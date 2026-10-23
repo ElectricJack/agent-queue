@@ -35,7 +35,7 @@ from src.database.tables import (
     task_completion_records,
     tasks,
 )
-from src.git.manager import GitError, RemoteRefState
+from src.git.manager import GitError, RemoteRefState, within_git_read_budget
 from src.integration.delivery_truth import (
     DeliveryEvidence,
     DeliveryRequest,
@@ -468,6 +468,8 @@ async def hierarchy_frontier_modes(
     freshness. Claims take fresh views under task locks. cached_only diagnostics
     never fetch or check remote refs; display_unavailable records cache misses.
     Missing observers and unstable views withhold only Git-gated work.
+    task_ids scopes batched display reads to their candidate dependents; it
+    must not turn a viewport's readiness into a project-wide stack walk.
     """
     from dataclasses import replace
 
@@ -524,7 +526,8 @@ async def hierarchy_frontier_modes(
                 db, observer, project, mode, task_id=task_id, cached_only=cached_only,
                 display_unavailable=display_unavailable,
                 views=views, stack_views=stack_views,
-                max_age=max_age, conn=conn, task_ids=task_ids,
+                max_age=max_age, conn=conn,
+                **({"task_ids": task_ids} if task_ids is not None else {}),
             ), timeout)
         except TimeoutError:
             # Fail closed for this read: no Git-proven prerequisite admits work,
@@ -592,8 +595,8 @@ async def _project_frontier_mode(
 
         stack_view = await observe_stacks(observer, project.id, task_id=task_id,
                                            max_age=observer.READ_MAX_AGE if max_age is None else max_age,
-                                           task_ids=task_ids,
-                                           **({"cached_only": True} if cached_only else {}))
+                                           **({"cached_only": True} if cached_only else {}),
+                                           **({"task_ids": task_ids} if task_ids is not None else {}))
         if stack_views is not None:
             stack_views[project.id] = stack_view
         # Containment never overrides an explicit source/owning-epic decision.
@@ -740,11 +743,11 @@ class DeliveryObserver:
             and (recent[1].error is None or cached_only)
             and (not cached_only or recent[1]._freshness.get(target.target_ref, True))):
             return recent[1]
-        if cached_only:
-            # Interactive diagnostic reads must never queue behind a fetch or start
-            # one. Expired evidence is unknown, not evidence of non-delivery.
+        if cached_only or (shared := await within_git_read_budget(
+                self._shared_observation, target, path)) is None:
+            # Interactive or over-budget reads never wait on a fetch: unknown, not undelivered.
             return self._unavailable(target, path, "snapshot_unavailable")
-        snapshot, stamp, flight = await self._shared_observation(target, path)
+        snapshot, stamp, flight = shared
         # Each caller owns its request caches and freshness marks, as if it had
         # fetched alone; observers sharing a store read with their own transport.
         snapshot = replace(snapshot, git=self.git, _cache={}, _identities={}, _freshness={})
@@ -904,7 +907,7 @@ class DeliveryObserver:
 
     async def prerequisite_view(
         self, project_id: str, *, task_id: str | None = None, max_age: float = 0.0,
-        cached_only: bool = False, task_ids: Iterable[str] | None = None,
+        cached_only: bool = False, task_ids=None,
     ):
         """Completed prerequisites, routed to the parent or default branch.
 
