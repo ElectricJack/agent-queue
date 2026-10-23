@@ -1,0 +1,9 @@
+{
+  "generic_dependencies": {
+    "src/git/identity.py::GitIdentity": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/git/identity.py::LEDGER_IDENTITY": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/git/identity.py::PublishPolicy": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/git/identity.py::resolve_git_identity": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/git/identity.py::task_publish_policy": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}

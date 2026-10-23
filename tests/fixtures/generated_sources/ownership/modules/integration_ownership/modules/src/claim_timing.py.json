@@ -1,0 +1,8 @@
+{
+  "generic_dependencies": {
+    "src/claim_timing.py::claim_phase": "Measures named claim phases with monotonic elapsed time and logging; it records latency rather than interpreting integration state.",
+    "src/claim_timing.py::claim_selection": "Wraps a database transaction in claim-phase timing and yields its connection; it supplies no integration predicates or branch authority.",
+    "src/claim_timing.py::current_claim_timing": "Stores a per-context ClaimTiming instance for instrumentation; the ContextVar contains no integration admission or ref mutation mechanism.",
+    "src/claim_timing.py::timed_claim_phase": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged."
+  }
+}

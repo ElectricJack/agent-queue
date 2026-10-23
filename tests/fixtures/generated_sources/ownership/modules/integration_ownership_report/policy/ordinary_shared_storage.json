@@ -1,0 +1,11 @@
+{
+  "ordinary_shared_storage": {
+    "events/op_events": "The current Table is events. Ordinary immutable audit rows remain generic; no ref-operation replay or authoritative delivery lifecycle may be encoded in the payload.",
+    "jobs": "Generic job requests/results, owner identity and process/workspace pins remain resource-owned; integration_operation_id is removed legacy coupling.",
+    "projects": "Ordinary configuration and integration-mode/repository selection are intent; legacy hierarchical drain/generation mirrors retire.",
+    "sessions": "Ordinary runtime identity, resume keys, status and claim bindings remain session-owned; integration-aware reconciler definitions are separately charged.",
+    "task_metadata": "Generic key/value mechanism remains task-owned. Every direct SQL/metadata API writer has an audited call and enclosing-code identity; duplicate delivery/repair state is marked retire.",
+    "tasks": "Ordinary status, completion identity, branch/source reference, PR URL, holds, gates and worker evidence remain task-owned; integration_mode is scheduling policy intent.",
+    "workspaces": "Ordinary repository/branch/generation identity and job pins remain workspace-owned; integration-specific adapters are separately charged."
+  }
+}

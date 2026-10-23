@@ -1,0 +1,15 @@
+{
+  "shared_definitions": {
+    "src/commands/contracts/registry.py::ContractRegistry._ensure_loaded": {
+      "baseline_span": [
+        57,
+        74
+      ],
+      "landing_span": [
+        57,
+        74
+      ],
+      "reason": "Imports or references an explicitly owned integration primitive."
+    }
+  }
+}

@@ -1,0 +1,750 @@
+{
+  "bind_project_repository": {
+    "argument_reads_diagnostic_only": [
+      "expected_repo_url",
+      "project_id",
+      "reason",
+      "repo_url"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {},
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/project_commands.py:ProjectCommandsMixin._cmd_bind_project_repository",
+    "resource_gates": [
+      "system_scope"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error_code': 'global_operator_required', 'error': refusal}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error_code': 'invalid_arguments', 'error': 'Provide project_id, repo_url, expected_repo_url and reason as strings'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error_code': 'invalid_arguments', 'error': 'Project ID and audit reason must be nonempty'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error_code': 'invalid_repository_url', 'error': 'Repository URL contains control characters'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error_code': 'invalid_repository_url', 'error': exc.message}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error_code': 'project_not_found', 'error': 'Project not found'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error_code': 'repository_binding_stale', 'error': 'The expected repository URL is stale'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error_code': 'repository_already_bound', 'error': 'An existing repository cannot be reassigned'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error_code': exc.code.value, 'error': exc.message}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error_code': 'global_operator_required', 'error': refusal}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "await self.db.bind_project_repository(project.id, repo_url=repository.clone_https, expected_repo_url=args['expected_repo_url'], reason=args['reason'].strip(), operator_id=operator_id)"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:910e9d6985554cb0adb01b9c3a632bbe93caec1a69326dbe7ed119753d3bac8c",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_project_onboarding_service.py",
+      "tests/test_worker_git_scope.py"
+    ]
+  },
+  "create_project": {
+    "argument_reads_diagnostic_only": [
+      "create_repo",
+      "credit_weight",
+      "default_branch",
+      "max_concurrent_agents",
+      "name",
+      "private",
+      "project_id",
+      "relative_path",
+      "repo_url",
+      "request_id",
+      "root_id"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {
+      "_cmd_onboard_project": "sha256:f41de0d0d690bd0be5cb84e03bc4603249cbace9e67ef1ff5314874b9a0fa5aa",
+      "_run_onboarding_command": "sha256:b427233ffad3d945d39b8025e99c04311b2552e610fb2cccd1ae99389de815f1"
+    },
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/project_commands.py:ProjectCommandsMixin._cmd_create_project",
+    "resource_gates": [
+      "system_scope"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': \"'name' is required to create a project\"}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'repo_url and create_repo are mutually exclusive'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'Choose a configured project root with --root-id'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': exc.message}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "result"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'created': project_id, 'name': project.name, 'assignment_playbook_id': project.assignment_playbook_id}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:9138c63411a05895afeec7e8672b61de9d3d5f26c8d1086fad7708d32a54b24a",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_agent_profiles.py",
+      "tests/test_command_invoked_event.py",
+      "tests/test_default_pipeline_intake.py",
+      "tests/test_project_onboarding_service.py",
+      "tests/test_proposal_status_event.py"
+    ]
+  },
+  "delete_project": {
+    "argument_reads_diagnostic_only": [
+      "project_id"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {},
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/project_commands.py:ProjectCommandsMixin._cmd_delete_project",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"Project '{pid}' not found\"}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'Cannot delete: hierarchical integration must be disabled and drained with no live rollout projection.'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f'Cannot delete: {len(tasks)} task(s) currently IN_PROGRESS. Stop them first.'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'code': f'hierarchy.{exc.code}', 'error': f'hierarchy.{exc.code}: {exc.detail}', **(exc.context or {})}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'deleted': pid, 'name': project.name}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:ddffd5c5a30eafba637b25f5e611d2918cd17abab30475f12ae24738532a25e5",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "edit_project": {
+    "argument_reads_diagnostic_only": [
+      "assignment_playbook_id",
+      "budget_limit",
+      "credit_weight",
+      "expected_integration_generation",
+      "max_concurrent_agents",
+      "name",
+      "project_id",
+      "reason",
+      "repo_default_branch",
+      "review_delegate_to",
+      "supervisor_enabled"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {
+      "_configure_promotion_flow": "sha256:d2ea12c4137f8c0083f1ac45a1921685033782ecfb525ace0cebff9b0859eadc",
+      "_router_binding_refusal": "sha256:192c65730d2a5053c0715c2d19f84d9989301ca5d55b9a83e82bd11f29cd0f3c"
+    },
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/project_commands.py:ProjectCommandsMixin._cmd_edit_project",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'updated': pid, 'fields': list(updates.keys())}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"Project '{pid}' not found\"}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error_code': 'repository_binding_required', 'error': 'Use bind_project_repository for an audited first repository binding'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'Derived rollout fields cannot be edited directly; configure policy with an explicit expected generation.'}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "await PolicyActivation(self.db, hierarchy_service_factory=self._hierarchy_integration_service if sensitive.get('hierarchical_integration_mode') in {'hierarchy', 'train'} else None).configure(pid, updates=sensitive, expected_generation=int(args['expected_integration_generation']), reason=str(args.get('reason') or 'configure hierarchical integration'), operator_id=operator_id)"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'No fields to update. Provide name, credit_weight, max_concurrent_agents, budget_limit, assignment_playbook_id, repo_default_branch, review_delegate_to, supervisor_enabled, or git_identity_name/git_identity_email.'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error_code': 'local_operator_only', 'error': 'review delegation requires local operator'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error_code': 'local_operator_only', 'error': 'review_delegate_to must be user, supervisor, or empty'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'local_operator_only', 'message': 'A promotion flow is set by the operator only.'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'expected_integration_generation is required'}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "await self._configure_promotion_flow(project, sensitive, args, operator_id=operator_id)"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'supervisor_enabled must be a boolean'}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "refusal"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "identity_updates"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'Integration configuration requires LOCAL operator or supervisor authority'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error_code': 'delivery_engine_unavailable', 'error': f'no delivery engine for this project: {refusal}. Restore the selected engine before enabling this mode.'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f'Integration configuration refused: {refusal}'}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. ",
+    "schema_quality": "declared",
+    "source_digest": "sha256:c1c675cbee5bc448aa1746fc05b0376c7068efe6f0bba9c91419b53d4cd0a1a5",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_doctor_integration_checks.py",
+      "tests/test_git_identity.py",
+      "tests/test_policy_profiles.py",
+      "tests/test_project_supervisors.py",
+      "tests/test_promotion_flow.py"
+    ]
+  },
+  "get_project": {
+    "argument_reads_diagnostic_only": [
+      "project_id"
+    ],
+    "denial_reason": null,
+    "effect": "read",
+    "helper_producers": {},
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/project_commands.py:ProjectCommandsMixin._cmd_get_project",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"Project '{pid}' not found\"}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "info"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:3393815a61681e876b13f0c71faaee0776461159ac4dc7a61559a29ed8555a75",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_git_identity.py",
+      "tests/test_project_supervisors.py",
+      "tests/test_routing_doctor.py"
+    ]
+  },
+  "get_status": {
+    "argument_reads_diagnostic_only": [
+      "project_id"
+    ],
+    "denial_reason": null,
+    "effect": "read",
+    "helper_producers": {},
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/project_commands.py:ProjectCommandsMixin._cmd_get_status",
+    "resource_gates": [
+      "system_scope"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'projects': 1 if filter_project else len(projects), 'tasks': {'total': len(tasks), 'by_status': _count_by(tasks, lambda t: t.status.value), 'in_progress': in_progress, 'ready_to_work': ready}, 'orchestrator_paused': self.orchestrator._paused, 'graph_layout_enabled': bool(getattr(self.config, 'graph_layout', None) and self.config.graph_layout.enabled)}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:9ceea0a5b9f92e5aad36546dbdec28698d848142fa09e36ae9cbc2be1411dddb",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_file_command_handlers.py",
+      "tests/test_system_commands.py"
+    ]
+  },
+  "list_projects": {
+    "argument_reads_diagnostic_only": [],
+    "denial_reason": null,
+    "effect": "read",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/project_commands.py:ProjectCommandsMixin._cmd_list_projects",
+    "resource_gates": [
+      "system_scope"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean_or_legacy_typed",
+        "return": "{'projects': result}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "await snapshot_command(self, 'list_projects', args)"
+      }
+    ],
+    "review_notes": "Opt-in snapshots authorize current caller and effective scope before scans. Stored encrypted pages never rerun producers; explicit incomplete/refusal outcomes. Maintenance admits only LOCAL/SERVICE and deletes bounded expired rows.",
+    "schema_quality": "typed",
+    "source_digest": "sha256:632423daecb937026fb2078c720a1c0117edbbe55bf2d3acfccf858eabff7c21",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_observation_snapshots.py"
+    ]
+  },
+  "pause_project": {
+    "argument_reads_diagnostic_only": [
+      "project_id"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {},
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/project_commands.py:ProjectCommandsMixin._cmd_pause_project",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"Project '{pid}' not found\"}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'paused': pid, 'name': project.name}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:6797a7eedf586044c8b5e325808e8740ee805d01e8545a64ce318a3d58383e4d",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_project_constraint_enforcement.py"
+    ]
+  },
+  "project_doctor": {
+    "argument_reads_diagnostic_only": [
+      "project_id"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {},
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/project_commands.py:ProjectCommandsMixin._cmd_project_doctor",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'Project not found'}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'project_id': project.id, 'ready': bool(project.repo_url), 'code': 'repository_bound' if project.repo_url else 'workspace_missing'}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'project_id': project.id, 'ready': False, 'code': 'repository_authorization_missing', 'recovery_command': command, 'message': 'Local repository has no authorized remote. Review and run the binding command.'}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:c6373294aad25187b4c15bb634923fdd5c03e92cd536e2d9824023143ed86220",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_project_onboarding_service.py"
+    ]
+  },
+  "release_project_constraint": {
+    "argument_reads_diagnostic_only": [
+      "fields",
+      "project_id"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {},
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/project_commands.py:ProjectCommandsMixin._cmd_release_project_constraint",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"Project '{pid}' not found\"}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"No active constraint on project '{pid}'\"}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'project_id': pid, 'constraint_released': True, 'fields': 'all'}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'project_id': pid, 'constraint_released': False, 'fields_released': fields_to_release, 'remaining_fields': [k for k, v in [('exclusive', exclusive), ('pause_scheduling', pause_scheduling), ('max_agents_by_type', bool(max_agents_by_type))] if v]}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'project_id': pid, 'constraint_released': True, 'fields': 'all'}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:b2ec69f28cd041c1834c816acfd817b090a901cc39fe2ed021982b0b236b1f1c",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_project_constraint_enforcement.py"
+    ]
+  },
+  "repair_repository_checkout": {
+    "argument_reads_diagnostic_only": [
+      "apply",
+      "expected_path",
+      "project_id",
+      "reason",
+      "replacement_path",
+      "repository_id"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/project_commands.py:ProjectCommandsMixin._cmd_repair_repository_checkout",
+    "resource_gates": [
+      "system_scope"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "await self.db.repair_repository_checkout(repo, after=after, reason=args['reason'].strip(), operator_id=operator_id)"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error_code': 'global_operator_required', 'error': refusal}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error_code': 'invalid_arguments', 'error': 'Provide project, repository, expected/replacement paths and reason'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error_code': 'repository_not_found', 'error': 'Repository not found in this project'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error_code': 'repository_checkout_stale', 'error': 'The expected path no longer matches the registration'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error_code': 'checkout_not_missing', 'error': 'Expected path must be absolute and confirmed missing'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error_code': 'replacement_unverified', 'error': 'Require an existing absolute checkout and a registered repository URL'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error_code': 'replacement_unverified', 'error': 'Replacement must be a Git checkout of the registered repository'}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'project_id': repo.project_id, 'repository_id': repo.id, 'changed': False, 'preview': True, 'before': before, 'after': after}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error_code': 'global_operator_required', 'error': refusal}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error_code': 'checkout_not_missing', 'error': 'The old checkout path is no longer confirmed missing'}"
+      }
+    ],
+    "review_notes": "Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. ",
+    "schema_quality": "declared",
+    "source_digest": "sha256:bea4b8a7cfd17f91521368a45738730dc94a3671a0c2adc3b3a93d947d9c823e",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_branch_sweep.py",
+      "tests/test_generated_command_contracts.py",
+      "tests/test_shipped_profile_capabilities.py",
+      "tests/test_repository_checkout_repair.py",
+      "tests/test_cli_projects.py"
+    ]
+  },
+  "resume_project": {
+    "argument_reads_diagnostic_only": [
+      "project_id"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {},
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/project_commands.py:ProjectCommandsMixin._cmd_resume_project",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"Project '{pid}' not found\"}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'resumed': pid, 'name': project.name}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:07a8f0b57c1d309434296d08027062cba6c1ea5a95cc1bdd37bb219a0dc0ae3f",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_project_constraint_enforcement.py",
+      "tests/test_project_supervisors.py"
+    ]
+  },
+  "set_default_branch": {
+    "argument_reads_diagnostic_only": [
+      "branch",
+      "project_id"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {},
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/project_commands.py:ProjectCommandsMixin._cmd_set_default_branch",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"Project '{pid}' not found\"}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'branch is required'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f'refusing to create {branch} from the workspace HEAD: {exc}'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f'could not verify/create default branch {branch}: {exc}'}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "result"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:fa366b1d77af01fb28eaeaec10df570a8fc101cb9880a0eab034d3fa52bedb6f",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_set_default_branch_command.py"
+    ]
+  },
+  "set_project_constraint": {
+    "argument_reads_diagnostic_only": [
+      "created_by",
+      "exclusive",
+      "max_agents_by_type",
+      "pause_scheduling",
+      "project_id"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {},
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/project_commands.py:ProjectCommandsMixin._cmd_set_project_constraint",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"Project '{pid}' not found\"}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'At least one constraint must be set: exclusive, max_agents_by_type, or pause_scheduling.'}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'project_id': pid, 'constraint_set': True, 'active_fields': active_fields}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:c97d550ea5a878612a05deaf21dbc9c9a31980d01d7761536904430987c57290",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  }
+}

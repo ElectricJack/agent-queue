@@ -1,0 +1,49 @@
+{
+  "shared": {
+    "src/orchestrator/events.py::EventsMixin._emit_task_event": {
+      "reason": "Persists a hotfix-completed promotion policy event before volatile task event fanout; identifies the daemon-owned hotfix task, without carrying publication authority."
+    },
+    "src/orchestrator/events.py::EventsMixin._notify_agent_question": {
+      "baseline_span": [
+        142,
+        177
+      ],
+      "landing_span": [
+        142,
+        177
+      ],
+      "reason": "Imports or references an explicitly owned integration primitive."
+    },
+    "src/orchestrator/events.py::import from src.notifications.builder import build_agent_summary, build_task_detail": {
+      "baseline_span": [
+        8,
+        9
+      ],
+      "landing_span": [
+        8,
+        9
+      ],
+      "reason": "Imports or references an explicitly owned integration primitive."
+    }
+  },
+  "storage_sinks": {
+    "src/orchestrator/events.py::EventsMixin._check_budget_warning::1909f55ccfabc697d800cc0c5c575d835813e6fd817d759fa19da05402762571": {
+      "call": "log_event",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 270,
+      "owner": "EventsMixin._check_budget_warning",
+      "owner_fingerprint": "d96ac23fd00f073610e3880f3b69d45be48da97775a57b480254237ea02b5a81",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+    },
+    "src/orchestrator/events.py::EventsMixin._notify_agent_question::b2d3ace22bc24ee370cd60e8e73787b610e28044d21c0685c9f68a848747ae5c": {
+      "call": "log_event",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 189,
+      "owner": "EventsMixin._notify_agent_question",
+      "owner_fingerprint": "5c88f9fc2c220ff5595b629c3bd205dee0d8262f0feee38e072e289ef1b88b95",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+    }
+  }
+}

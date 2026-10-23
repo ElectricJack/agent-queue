@@ -1,0 +1,5 @@
+{
+  "generic_dependencies": {
+    "src/vault_manager.py::VaultManager": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}

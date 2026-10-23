@@ -1,0 +1,16 @@
+{
+  "shared_definitions": {
+    "src/task_graph/batch_checks.py::LiveGraph.integration_owner": {
+      "reason": "Stores the live integration owner observation used to fence batch graph edits."
+    },
+    "src/task_graph/batch_checks.py::RETRYABLE_CODES['integration_owned']": {
+      "reason": "Marks live integration ownership as a retryable graph-change refusal, keeping an integration-controlled task from being mutated."
+    },
+    "src/task_graph/batch_checks.py::check": {
+      "reason": "Rejects graph changes to integration-owned tasks and validates delivery-condition cycles and post-landing placement; charges the complete mixed checker."
+    },
+    "src/task_graph/batch_checks.py::load_live_graph": {
+      "reason": "Reads live integration ownership for graph-controlled tasks in addition to ordinary graph and claim state."
+    }
+  }
+}

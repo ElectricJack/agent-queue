@@ -1,0 +1,5 @@
+{
+  "generic_dependencies": {
+    "src/database/queries/report_queries.py::ReportQueriesMixin": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}

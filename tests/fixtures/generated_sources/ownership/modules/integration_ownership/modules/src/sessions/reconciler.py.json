@@ -1,0 +1,234 @@
+{
+  "exclusions": {
+    "src/sessions/reconciler.py::_HELD_CLAIM_STATUSES[TaskStatus.ASSIGNED]": "Generic same-shaped definition independently present at the pinned baseline/landing; new relocations are still charged.",
+    "src/sessions/reconciler.py::_HELD_CLAIM_STATUSES[TaskStatus.IN_PROGRESS]": "Generic same-shaped definition independently present at the pinned baseline/landing; new relocations are still charged."
+  },
+  "generic_dependencies": {
+    "src/sessions/reconciler.py::LIVE_SESSION_STATES": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/sessions/reconciler.py::SessionReconciler": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/sessions/reconciler.py::SessionReconciler._idle_stop_candidate": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/sessions/reconciler.py::SessionReconciler._record_worker_failure": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/sessions/reconciler.py::SessionReconciler._step_claim_refusals": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/sessions/reconciler.py::import from src.pool_claims import CLAIM_FAILURE_DRAIN_REASON, MAX_IDENTICAL_CLAIM_FAILURES, idle_pool_claim_loop_stalled, is_live_pool_claim_task_status, pool_claim_budget_exhausted, pool_claim_cap, pool_claim_loop_stall_seconds": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged."
+  },
+  "shared": {
+    "src/sessions/reconciler.py::SessionReconciler._apply_provider_failover": {
+      "baseline_span": [
+        1283,
+        1475
+      ],
+      "landing_span": [
+        1266,
+        1458
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/sessions/reconciler.py::SessionReconciler._claim_starting_reconciliation": {
+      "baseline_span": [
+        1040,
+        1085
+      ],
+      "landing_span": [
+        1028,
+        1068
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/sessions/reconciler.py::SessionReconciler._hand_back_pool_integration_owner": {
+      "reason": "Reconciler adapter that hands a pool train writer's attached owner back through the existing arelease_integration_writer_for_retry(pool=True) once its WIP is saved clean and pushed; adds no storage, fence semantics or publication authority."
+    },
+    "src/sessions/reconciler.py::SessionReconciler._release_task": {
+      "baseline_span": [
+        2831,
+        2877
+      ],
+      "landing_span": [
+        2814,
+        2860
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/sessions/reconciler.py::SessionReconciler._renew_live_session_leases": {
+      "reason": "Reconciler adapter for bounded process-liveness renewal of existing ref leases; no new storage or replay authority."
+    },
+    "src/sessions/reconciler.py::SessionReconciler._step_orphans": {
+      "baseline_span": [
+        2148,
+        2354
+      ],
+      "landing_span": [
+        2131,
+        2337
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/sessions/reconciler.py::SessionReconciler._stop_drain_acked_holder": {
+      "baseline_span": [
+        597,
+        616
+      ],
+      "landing_span": [
+        585,
+        604
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/sessions/reconciler.py::SessionReconciler._stop_retired_delegate_writer": {
+      "baseline_span": [
+        617,
+        680
+      ],
+      "landing_span": [
+        605,
+        668
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    }
+  },
+  "storage_sinks": {
+    "src/sessions/reconciler.py::SessionReconciler._apply_pool_verdict::672b462b5108595d73e5b020839bafa231daab0955a6d595626fa61eb403bb47": {
+      "call": "set_task_meta",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 1798,
+      "owner": "SessionReconciler._apply_pool_verdict",
+      "owner_fingerprint": "6d55628c30ed1e1ca158a7b41c236c5128ae31ca39183f8c5657abfc75d3ceee",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'needs_attention'"
+    },
+    "src/sessions/reconciler.py::SessionReconciler._apply_verdict::d0667d61d923ef69bf1ebe2b78426b134485aee6cccd32b75095d7e45a868885": {
+      "call": "set_task_meta",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 1354,
+      "owner": "SessionReconciler._apply_verdict",
+      "owner_fingerprint": "0f2e3edeca802af4336461297d3ed2ce068e66d59e0b063cbed64f3b519d8ffb",
+      "reason": "Existing ordinary session-exit attention metadata; reviewed the owner change introducing claim-fenced worker recovery, without adding integration lifecycle state or replay authority."
+    },
+    "src/sessions/reconciler.py::SessionReconciler._carry_resume_key::d3fb74dd4277956ec98d1e49fb181624c034b9d089b72c42973c93a088ee79c6": {
+      "call": "set_task_meta",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 3369,
+      "owner": "SessionReconciler._carry_resume_key",
+      "owner_fingerprint": "3a43573d5d832b805b95cc9cb6fc9bb5de55fdda17ab4159e2517a30b19ac748",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'session_resume_key'"
+    },
+    "src/sessions/reconciler.py::SessionReconciler._exit_usage_limit_screen::2fc410e5e6cb875696994311109b55067ff1da9123f3889244bb579af7fdf5d0": {
+      "call": "set_task_meta",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 2246,
+      "owner": "SessionReconciler._exit_usage_limit_screen",
+      "owner_fingerprint": "9bedd5ed7708c79f8018e3a7e021db6f9149fde8b4f2c32def029b62bf73715c",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: META_STALL_NUDGES"
+    },
+    "src/sessions/reconciler.py::SessionReconciler._exit_usage_limit_screen::6732ef9f714e4fd40a44bc09eb86d98df200c62ed9943329ff0c3deb8ca6103f": {
+      "call": "set_task_meta",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 2247,
+      "owner": "SessionReconciler._exit_usage_limit_screen",
+      "owner_fingerprint": "9bedd5ed7708c79f8018e3a7e021db6f9149fde8b4f2c32def029b62bf73715c",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: META_STALL_LAST_ACTION"
+    },
+    "src/sessions/reconciler.py::SessionReconciler._quarantine::e6ea176b9b46a55a2b4277f0513670a6ce3be7a79b4057dcd2163b1c8ab93b90": {
+      "call": "set_task_meta",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 3474,
+      "owner": "SessionReconciler._quarantine",
+      "owner_fingerprint": "c35a6e3ccdb45303a7811d661876f245a124d9bbbd90e75cd5ca585235442a23",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'needs_attention'"
+    },
+    "src/sessions/reconciler.py::SessionReconciler._recover_guarded_failure::9092769dc16180050c1d7a01c5d46256c2cd0383b351f15fadc91645e2ec169a": {
+      "call": "set_task_meta",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 1687,
+      "owner": "SessionReconciler._recover_guarded_failure",
+      "owner_fingerprint": "74932194f5b7721fe57ecc60b553903fe67b1445f67f78bdc1bf4e65721d4046",
+      "reason": "Ordinary worker stall-nudge and last-action counters are reset after a claim-fenced worker failure. Observed teardown state only selects the continuation comment and event; it grants no claim admission, hold release, integration lifecycle state or replay authority."
+    },
+    "src/sessions/reconciler.py::SessionReconciler._recover_guarded_failure::ac90864190cb937e76dcb9c547f507fd4285011a7f0853249f741e69e6ba8acb": {
+      "call": "set_task_meta",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 1688,
+      "owner": "SessionReconciler._recover_guarded_failure",
+      "owner_fingerprint": "74932194f5b7721fe57ecc60b553903fe67b1445f67f78bdc1bf4e65721d4046",
+      "reason": "Ordinary worker stall-nudge and last-action counters are reset after a claim-fenced worker failure. Observed teardown state only selects the continuation comment and event; it grants no claim admission, hold release, integration lifecycle state or replay authority."
+    },
+    "src/sessions/reconciler.py::SessionReconciler._step_backstop::213c372048797b24b8404f77b4a725611b628d2c507388c007a182869507e1b5": {
+      "call": "set_task_meta",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 3257,
+      "owner": "SessionReconciler._step_backstop",
+      "owner_fingerprint": "011d1ae5dfe6c721be3a8472f845e090903b296e4ebd63b00259b22abd947429",
+      "reason": "Existing ordinary stuck-worker attention metadata; reviewed the owner change introducing claim-fenced recovery, without adding integration lifecycle state or replay authority. Idle pool-claim bound reviewed: a completed pool turn now feeds the same stall and backstop inactivity timers (sessions.idle_claim_timeout_seconds); the metadata write is unchanged."
+    },
+    "src/sessions/reconciler.py::SessionReconciler._step_backstop::520a5d4212b5ec30a7dd206187632959436230a62055bda95fec1b7292be78c7": {
+      "call": "set_task_meta",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 3239,
+      "owner": "SessionReconciler._step_backstop",
+      "owner_fingerprint": "011d1ae5dfe6c721be3a8472f845e090903b296e4ebd63b00259b22abd947429",
+      "reason": "Existing ordinary stuck-worker attention metadata; reviewed the owner change introducing claim-fenced recovery, without adding integration lifecycle state or replay authority. Idle pool-claim bound reviewed: a completed pool turn now feeds the same stall and backstop inactivity timers (sessions.idle_claim_timeout_seconds); the metadata write is unchanged."
+    },
+    "src/sessions/reconciler.py::SessionReconciler._step_orphans::bd56abe22d01405d7daf3f367c989c6039944b48df86b62d01fd17e0697a3b6d": {
+      "call": "set_task_meta",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 2676,
+      "owner": "SessionReconciler._step_orphans",
+      "owner_fingerprint": "003f8245704ad48ba075e2da5136501b0c3b91ee2d7625811e048df96693c0b7",
+      "reason": "Unchanged ordinary session_not_live attention marker. Stopped integration writers now delegate to exact-identity fenced recovery before fallback; refusal retains bindings and bypasses this marker. No ref replay or duplicate integration lifecycle storage."
+    },
+    "src/sessions/reconciler.py::SessionReconciler._step_stall_ladder::2fc410e5e6cb875696994311109b55067ff1da9123f3889244bb579af7fdf5d0": {
+      "call": "set_task_meta",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 2454,
+      "owner": "SessionReconciler._step_stall_ladder",
+      "owner_fingerprint": "cb98e6b7b5ecdeaa17a96ad6bf612e407476c4c8dcc8fdbcd8a6875e69ef6f74",
+      "reason": "Existing ordinary worker stall-nudge and last-action metadata; reviewed the owner change introducing claim-fenced recovery, without adding integration lifecycle state or replay authority. Idle pool-claim bound reviewed: a completed pool turn now feeds the same stall and backstop inactivity timers (sessions.idle_claim_timeout_seconds); the metadata write is unchanged."
+    },
+    "src/sessions/reconciler.py::SessionReconciler._step_stall_ladder::6732ef9f714e4fd40a44bc09eb86d98df200c62ed9943329ff0c3deb8ca6103f": {
+      "call": "set_task_meta",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 2418,
+      "owner": "SessionReconciler._step_stall_ladder",
+      "owner_fingerprint": "cb98e6b7b5ecdeaa17a96ad6bf612e407476c4c8dcc8fdbcd8a6875e69ef6f74",
+      "reason": "Existing ordinary worker stall-nudge and last-action metadata; reviewed the owner change introducing claim-fenced recovery, without adding integration lifecycle state or replay authority. Idle pool-claim bound reviewed: a completed pool turn now feeds the same stall and backstop inactivity timers (sessions.idle_claim_timeout_seconds); the metadata write is unchanged."
+    },
+    "src/sessions/reconciler.py::SessionReconciler._step_stall_ladder::675fd05fe0efd918ede8974d1c8788d12fe7f5b20d28d4ef5e184db913b1f27e": {
+      "call": "set_task_meta",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 2417,
+      "owner": "SessionReconciler._step_stall_ladder",
+      "owner_fingerprint": "cb98e6b7b5ecdeaa17a96ad6bf612e407476c4c8dcc8fdbcd8a6875e69ef6f74",
+      "reason": "Existing ordinary worker stall-nudge and last-action metadata; reviewed the owner change introducing claim-fenced recovery, without adding integration lifecycle state or replay authority. Idle pool-claim bound reviewed: a completed pool turn now feeds the same stall and backstop inactivity timers (sessions.idle_claim_timeout_seconds); the metadata write is unchanged."
+    },
+    "src/sessions/reconciler.py::SessionReconciler._wait_lease::2fc410e5e6cb875696994311109b55067ff1da9123f3889244bb579af7fdf5d0": {
+      "call": "set_task_meta",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 1913,
+      "owner": "SessionReconciler._wait_lease",
+      "owner_fingerprint": "d1afa0a113a1f492b67bf9cb2a1a5f83228ca841d88ee8cf047b692125fb22d4",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: META_STALL_NUDGES"
+    },
+    "src/sessions/reconciler.py::SessionReconciler._wait_lease::6e9f98aeae2dec09708a219d6776a0dbecabe1567f744ba35ecbd8e4eccc11b2": {
+      "call": "set_task_meta",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 1914,
+      "owner": "SessionReconciler._wait_lease",
+      "owner_fingerprint": "d1afa0a113a1f492b67bf9cb2a1a5f83228ca841d88ee8cf047b692125fb22d4",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: META_STALL_LAST_ACTION"
+    }
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "storage_sinks": {
+    "src/integration/reconciler.py::IntegrationReconciler._finish::20284a0791a875d72d7ba5f1004f15ad32b1d0739bab478655b9c55b6ce68210": {
+      "call": "append_integration_subject_journal_on",
+      "disposition": "retire",
+      "integration_signal": true,
+      "line": 573,
+      "owner": "IntegrationReconciler._finish",
+      "owner_fingerprint": "aa7cb628dbe0d726d836c7ce42aee0ae59bd6ceb237b377ddae2113c5f0b5a43",
+      "reason": "Legacy subject ref/phase replay journal must disappear at s4_modules."
+    },
+    "src/integration/reconciler.py::IntegrationReconciler._prepare::80d0cfcace439f7f83d63fcebdd5bdb5879bcb14ef495c380d82b136f4a7b0b7": {
+      "call": "append_integration_subject_journal_on",
+      "disposition": "retire",
+      "integration_signal": true,
+      "line": 397,
+      "owner": "IntegrationReconciler._prepare",
+      "owner_fingerprint": "9598b6294d2474cb0d068e53e96429e7711b9f7e63877f74faf43a60fe54a974",
+      "reason": "Legacy subject ref/phase replay journal must disappear at s4_modules."
+    }
+  }
+}

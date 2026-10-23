@@ -1,0 +1,5 @@
+{
+  "generic_dependencies": {
+    "src/doctor/profile_checks.py::profile_checks": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}

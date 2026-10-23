@@ -1,0 +1,5 @@
+{
+  "generic_dependencies": {
+    "src/api/dependencies.py::get_command_handler": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}

@@ -1,0 +1,82 @@
+{
+  "generic_dependencies": {
+    "src/commands/git_commands.py::GitCommandsMixin": "Generic dependency; integration-specific definitions in this file are charged independently."
+  },
+  "shared": {
+    "src/commands/git_commands.py::GitCommandsMixin._check_ci_before_merge": {
+      "baseline_span": [
+        274,
+        381
+      ],
+      "landing_span": [
+        274,
+        381
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/commands/git_commands.py::GitCommandsMixin._cmd_integration_migrate_provenance": {
+      "baseline_span": [
+        28,
+        46
+      ],
+      "landing_span": [
+        28,
+        46
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/commands/git_commands.py::GitCommandsMixin._cmd_pr_merge": {
+      "baseline_span": [
+        47,
+        215
+      ],
+      "landing_span": [
+        47,
+        215
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/commands/git_commands.py::GitCommandsMixin._cmd_task_deliver": {
+      "baseline_span": [
+        216,
+        273
+      ],
+      "landing_span": [
+        216,
+        273
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/commands/git_commands.py::GitCommandsMixin._record_pr_base": {
+      "baseline_span": [
+        382,
+        418
+      ],
+      "landing_span": [
+        382,
+        418
+      ],
+      "reason": "Integration-specific delivery and reserved-path Git wrapper; generic transport is excluded."
+    }
+  },
+  "storage_sinks": {
+    "src/commands/git_commands.py::GitCommandsMixin._record_pr_base::2640196177c24b14dc6f061a9ed0349d2f796c10ccc5affa49106456b90139be": {
+      "call": "set_task_meta",
+      "disposition": "retire",
+      "integration_signal": false,
+      "line": 338,
+      "owner": "GitCommandsMixin._record_pr_base",
+      "owner_fingerprint": "27c13089ff8d64e1cd265156065a000a29efed734612f0f5f1424c4b73b14543",
+      "reason": "Legacy duplicate delivery/repair-evidence metadata: 'pr_merged_to_default'"
+    },
+    "src/commands/git_commands.py::GitCommandsMixin._record_pr_base::850f284411169c6129c656dca5037d124055172dd237d95322d0a706d42f4f73": {
+      "call": "set_task_meta",
+      "disposition": "retire",
+      "integration_signal": false,
+      "line": 337,
+      "owner": "GitCommandsMixin._record_pr_base",
+      "owner_fingerprint": "27c13089ff8d64e1cd265156065a000a29efed734612f0f5f1424c4b73b14543",
+      "reason": "Legacy duplicate delivery/repair-evidence metadata: 'pr_base'"
+    }
+  }
+}

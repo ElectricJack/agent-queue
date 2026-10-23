@@ -1,0 +1,15 @@
+{
+  "exclusions": {
+    "src/handoffs.py::LIST_FIELDS['completed']": "Generic same-shaped definition independently present at the pinned baseline/landing; new relocations are still charged."
+  },
+  "generic_dependencies": {
+    "src/handoffs.py::agent_note": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/handoffs.py::clip_utf8": "Generic UTF-8 text clipping for task and handoff displays; no integration state, storage or authority.",
+    "src/handoffs.py::collect_facts": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/handoffs.py::display_data": "Generic display escaping for historical task observations; no integration state, storage or authority.",
+    "src/handoffs.py::latest_note": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/handoffs.py::meaningful": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/handoffs.py::render_facts": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/handoffs.py::render_note": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged."
+  }
+}

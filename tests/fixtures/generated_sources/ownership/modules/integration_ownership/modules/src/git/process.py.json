@@ -1,0 +1,5 @@
+{
+  "generic_dependencies": {
+    "src/git/process.py::PREPARE_CLEANUP_HOLD": "Generic string key naming an unproved preparation cleanup hold. It performs no reads or writes; integration consumers and metadata writers remain inventoried."
+  }
+}

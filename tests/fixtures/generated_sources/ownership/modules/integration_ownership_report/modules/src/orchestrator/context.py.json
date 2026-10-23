@@ -1,0 +1,26 @@
+{
+  "shared_definitions": {
+    "src/orchestrator/context.py::ContextMixin._build_task_context_with_prompt_builder": {
+      "baseline_span": [
+        178,
+        364
+      ],
+      "landing_span": [
+        178,
+        364
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/orchestrator/context.py::ContextMixin._get_execution_rules": {
+      "baseline_span": [
+        13,
+        177
+      ],
+      "landing_span": [
+        13,
+        177
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    }
+  }
+}

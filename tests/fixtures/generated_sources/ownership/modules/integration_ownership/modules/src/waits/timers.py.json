@@ -1,0 +1,6 @@
+{
+  "generic_dependencies": {
+    "src/waits/timers.py::WaitTimerDriver.fire": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/waits/timers.py::import from src.database.queries.wait_queries import REGISTRATION_LOCK": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged."
+  }
+}

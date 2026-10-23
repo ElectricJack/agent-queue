@@ -1,0 +1,340 @@
+{
+  "generic_dependencies": {
+    "src/database/queries/task_queries.py::ACCEPTED_CLOSE_KEY": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/queries/task_queries.py::DEVELOPMENT_COMPLETION_ID_KEY": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/queries/task_queries.py::STALE_OPEN_ATTENTION": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/queries/task_queries.py::STALE_OPEN_DETAIL_KEY": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/queries/task_queries.py::StaleClaim": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/queries/task_queries.py::TERMINAL_BLOCKED_META_KEY": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/queries/task_queries.py::TaskProjectMoveError": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/queries/task_queries.py::TaskQueryMixin": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/queries/task_queries.py::TransitionResult": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/queries/task_queries.py::_OPERATOR_ADOPTION_TOKEN": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/queries/task_queries.py::supports_returning": "Generic dependency; integration-specific definitions in this file are charged independently."
+  },
+  "shared": {
+    "src/database/queries/task_queries.py::INTEGRATION_REWORK_AT_KEY": {
+      "baseline_span": [
+        95,
+        98
+      ],
+      "landing_span": [
+        94,
+        97
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/queries/task_queries.py::TERMINAL_BLOCKED_CONTEXTS": {
+      "baseline_span": [
+        199,
+        217
+      ],
+      "landing_span": [
+        198,
+        216
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/queries/task_queries.py::TaskQueryMixin._apply_transition": {
+      "baseline_span": [
+        1116,
+        1623
+      ],
+      "landing_span": [
+        1106,
+        1613
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/queries/task_queries.py::TaskQueryMixin._delete_one": {
+      "baseline_span": [
+        1925,
+        2055
+      ],
+      "landing_span": [
+        1915,
+        2045
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/queries/task_queries.py::TaskQueryMixin._delete_task_body": {
+      "baseline_span": [
+        1863,
+        1914
+      ],
+      "landing_span": [
+        1853,
+        1904
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/queries/task_queries.py::TaskQueryMixin._insert_task_row": {
+      "baseline_span": [
+        294,
+        354
+      ],
+      "landing_span": [
+        293,
+        353
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/queries/task_queries.py::TaskQueryMixin._moved_task_repo_id": {
+      "baseline_span": [
+        734,
+        760
+      ],
+      "landing_span": [
+        724,
+        750
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/queries/task_queries.py::TaskQueryMixin._pause_owners": {
+      "reason": "Captures exact integration owner identities for pause fencing."
+    },
+    "src/database/queries/task_queries.py::TaskQueryMixin._release_stopped_slot_reset_claim": {
+      "reason": "Row-local stopped-writer and retained branch-owner fence shared by slot-reset claim recovery; classifies ordinary claim ownership, never a ref or integration lifecycle transition."
+    },
+    "src/database/queries/task_queries.py::TaskQueryMixin._resume_locked": {
+      "baseline_span": [
+        1002,
+        1049
+      ],
+      "landing_span": [
+        992,
+        1039
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/queries/task_queries.py::TaskQueryMixin._row_to_task": {
+      "baseline_span": [
+        2490,
+        2540
+      ],
+      "landing_span": [
+        2480,
+        2530
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/queries/task_queries.py::TaskQueryMixin._task_project_move_blockers_on": {
+      "baseline_span": [
+        568,
+        599
+      ],
+      "landing_span": [
+        558,
+        589
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/queries/task_queries.py::TaskQueryMixin.delete_task": {
+      "baseline_span": [
+        1820,
+        1862
+      ],
+      "landing_span": [
+        1810,
+        1852
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/queries/task_queries.py::TaskQueryMixin.recover_orphaned_pause": {
+      "baseline_span": [
+        921,
+        989
+      ],
+      "landing_span": [
+        911,
+        979
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/queries/task_queries.py::TaskQueryMixin.resume_task": {
+      "baseline_span": [
+        871,
+        920
+      ],
+      "landing_span": [
+        861,
+        910
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/queries/task_queries.py::TaskQueryMixin.transition_task": {
+      "reason": "Public lifecycle transition observes current Git delivery outside the transaction and passes request-scoped evidence to the locked mutation guard; no persisted delivery projection or ref replay authority."
+    },
+    "src/database/queries/task_queries.py::TaskQueryMixin.update_task": {
+      "baseline_span": [
+        605,
+        733
+      ],
+      "landing_span": [
+        595,
+        723
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/queries/task_queries.py::_INTEGRATION_COMPLETION_TOKEN": {
+      "baseline_span": [
+        78,
+        81
+      ],
+      "landing_span": [
+        77,
+        80
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/queries/task_queries.py::_INTEGRATION_WAKE_TOKEN": {
+      "baseline_span": [
+        83,
+        83
+      ],
+      "landing_span": [
+        82,
+        82
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/queries/task_queries.py::_not_manually_paused": {
+      "reason": "Row-local operator-pause fence imported by hierarchical settlement and stale-claim recovery."
+    },
+    "src/database/queries/task_queries.py::import from src.database.tables import agents, archived_tasks, continuations, events, gates, integration_branch_owners, integration_repair_operations, integration_repair_stages, projects, repos, sessions, task_branch_origins, task_comments, task_completion_records, task_context, task_criteria, task_dependencies, task_gates, task_integration_checkpoints, task_labels, task_metadata, task_results, task_subtasks, task_tools, task_workspace_requirements, tasks, wait_records, workspaces": {
+      "reason": "Shared task lifecycle/claim import; charged to integration ownership because the same adapter guards delivery and retained branches."
+    },
+    "src/database/queries/task_queries.py::import from src.database.tables import agents, archived_tasks, events, gates, integration_branch_owners, integration_repair_operations, integration_repair_stages, projects, repos, sessions, task_branch_origins, task_comments, task_completion_records, task_context, task_criteria, task_dependencies, task_gates, task_integration_checkpoints, task_labels, task_metadata, task_results, task_subtasks, task_tools, task_workspace_requirements, tasks, workspaces": {
+      "baseline_span": [
+        36,
+        63
+      ],
+      "landing_span": [
+        35,
+        62
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/queries/task_queries.py::task_repository_id": {
+      "baseline_span": [
+        109,
+        113
+      ],
+      "landing_span": [
+        108,
+        112
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    }
+  },
+  "storage_sinks": {
+    "src/database/queries/task_queries.py::TaskQueryMixin._apply_transition::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
+      "call": "delete",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 2121,
+      "owner": "TaskQueryMixin._apply_transition",
+      "owner_fingerprint": "e363c1d4ba8ad14cc42844cc440e1c0e366ec3170d56eef3f13df30b83c35d8c",
+      "reason": "Cleans transition-specific task metadata, claim bindings, pause/recovery markers and stale completion pointers; typed transition and handoff guards govern cleanup, not this storage call."
+    },
+    "src/database/queries/task_queries.py::TaskQueryMixin._delete_one::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
+      "call": "delete",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 2319,
+      "owner": "TaskQueryMixin._delete_one",
+      "owner_fingerprint": "d4319c8a462675b9056cfd21b165edd019baf125b78c43d5c0d8a8df4b9f081c",
+      "reason": "Ordinary task metadata cleanup after audited operator deletion; completion records, comments, subtask evidence and integration audit identities remain intact. No ref replay or duplicate integration lifecycle storage."
+    },
+    "src/database/queries/task_queries.py::TaskQueryMixin._note_frontier_entry::7f9a172d90564131599dcbc17c8abdfadd20f21c0ea0e36f65fa816d1433dfc8": {
+      "call": "insert",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 1627,
+      "owner": "TaskQueryMixin._note_frontier_entry",
+      "owner_fingerprint": "94d6c5858476ab6ed935e5c5831b964c7bb945a73de510cb7e31acc1ea5619d9",
+      "reason": "Inserts ordinary frontier-entry events from the selected READY tasks; events record readiness transitions rather than authorizing integration admission."
+    },
+    "src/database/queries/task_queries.py::TaskQueryMixin._note_frontier_entry::b912d90937a9a84a4c4302c8aecd1c0de09370de865efb9a1636e8468e1b5d92": {
+      "call": "log_event",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 1642,
+      "owner": "TaskQueryMixin._note_frontier_entry",
+      "owner_fingerprint": "94d6c5858476ab6ed935e5c5831b964c7bb945a73de510cb7e31acc1ea5619d9",
+      "reason": "Emits task.ready with its readiness reason after the frontier transition; the event is diagnostic history and not a substitute for claim predicates."
+    },
+    "src/database/queries/task_queries.py::TaskQueryMixin._record_recovery_failure_generation_on::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
+      "call": "delete",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 1336,
+      "owner": "TaskQueryMixin._record_recovery_failure_generation_on",
+      "owner_fingerprint": "7c009da3d22cb253b9be89eeec22bd5233b72e55e03488dccb95a5fddbf1d635",
+      "reason": "Clears the ordinary supervisor_recovery_failure_at metadata clock when a task leaves FAILED. This failure incarnation identifies supervisor incidents; it records no Git ref update, replay authority or separate integration lifecycle."
+    },
+    "src/database/queries/task_queries.py::TaskQueryMixin._release_stopped_slot_reset_claim::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
+      "call": "delete",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 1043,
+      "owner": "TaskQueryMixin._release_stopped_slot_reset_claim",
+      "owner_fingerprint": "2390e3c6e9f20e2c63615dd8429e6148c0451a6e2f06388d9fabc263b91a524c",
+      "reason": "Ordinary claim-ownership marker cleanup for a claim whose every holder session is proved stopped with matching claim epoch, instance token and desired state, and whose workspace and branch ownership are already released. Metadata key: 'claimed_by_session'; contains no remote OIDs, publication intent or ref replay authority."
+    },
+    "src/database/queries/task_queries.py::TaskQueryMixin._resume_locked::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
+      "call": "delete",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 1557,
+      "owner": "TaskQueryMixin._resume_locked",
+      "owner_fingerprint": "8ec653f5146188407bf24adb8aab07cf5f1f31bd18ed246666588aa91a1c87e2",
+      "reason": "Deletes manual-pause and attention metadata as part of guarded resume; managed integration episodes retain their separate pause and handoff controls."
+    },
+    "src/database/queries/task_queries.py::TaskQueryMixin.delete_task_meta::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
+      "call": "delete",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 2567,
+      "owner": "TaskQueryMixin.delete_task_meta",
+      "owner_fingerprint": "0c91483eb816281600c7cc15700a2aa743aedb2050f033387dcc1c7b07e1fc02",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+    },
+    "src/database/queries/task_queries.py::TaskQueryMixin.resume_task::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
+      "call": "delete",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 1061,
+      "owner": "TaskQueryMixin.resume_task",
+      "owner_fingerprint": "5c38788248a432e1f59e1cac3b2f4611f202c9dce5c9cda3fe7627dc9595aad9",
+      "reason": "Ordinary preparation-backoff and attention cleanup when a slot-reset claim is retried; the shared stopped-writer fence is taken first and the status change goes through the ordinary transition. Metadata keys: 'claim_prepare_backoff_until', 'claim_prepare_backoff_attempts', 'needs_attention'; contains no remote OIDs, publication intent or ref replay authority."
+    },
+    "src/database/queries/task_queries.py::TaskQueryMixin.set_task_meta::2d36ab3da05dcd99c7a0cb4b8a22925dd23e723147d1b0fe6a07ff4716ee55ac": {
+      "call": "insert",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 2177,
+      "owner": "TaskQueryMixin.set_task_meta",
+      "owner_fingerprint": "50b95f01505f19f5f02c1b293716208aa13426928b4582eac2aba9fb42417dc3",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+    },
+    "src/database/queries/task_queries.py::TaskQueryMixin.set_task_meta::51be9b5b9698cee60f963e966b52a7527686e8e5a5f266c953c9f4919f14106d": {
+      "call": "update",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 2166,
+      "owner": "TaskQueryMixin.set_task_meta",
+      "owner_fingerprint": "50b95f01505f19f5f02c1b293716208aa13426928b4582eac2aba9fb42417dc3",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+    },
+    "src/database/queries/task_queries.py::TaskQueryMixin.set_task_meta::be3be394bad4eaa21aa8a28db135b02557490ddb64be7fdc9e1c1efef1d879ec": {
+      "call": "pg_insert",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 2829,
+      "owner": "TaskQueryMixin.set_task_meta",
+      "owner_fingerprint": "0a8e405f2d5c5e99eaab652601cdf343b26f43cdecd66fba6fd13906d33614e6",
+      "reason": "Performs the shared metadata upsert after protected-key and value validation; this general storage mechanism is not an integration ref-replay journal."
+    }
+  }
+}

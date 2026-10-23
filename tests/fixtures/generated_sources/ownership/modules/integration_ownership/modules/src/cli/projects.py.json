@@ -1,0 +1,15 @@
+{
+  "shared": {
+    "src/cli/projects.py::project_set": {
+      "baseline_span": [
+        219,
+        355
+      ],
+      "landing_span": [
+        219,
+        355
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    }
+  }
+}
