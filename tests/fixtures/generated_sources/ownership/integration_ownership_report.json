@@ -1043,7 +1043,7 @@
     "phase": "transition",
     "fixed_replacement_allowance": 15000,
     "engine_cap": 97627,
-    "owned_total_cap": 161213,
+    "owned_total_cap": 161342,
     "table_cap": 45,
     "expires_at": "s4_modules",
     "automatic_baseline_increase": false,
@@ -1068,13 +1068,14 @@
         "msg-9f16388d39524c8b9a33d6796b88d1fb",
         "msg-5c55b72faec1497391205876fc5dfeb9",
         "msg-96fed6b8e86148f0bbf55ded244c9a0f",
-        "msg-98d8517c56104e8fbf87e1330d2d5c1a"
+        "msg-98d8517c56104e8fbf87e1330d2d5c1a",
+        "size-cap-delegation-2026-10-23"
       ],
       "decision_record": "record:2720bdbe-7521-427e-8e72-1f40a3ff9818",
-      "measured_source_revision": "4bafa45f1ac0a466eab372c7b6b0b866f67bb832",
+      "measured_source_revision": "9b8ad6e58179dde7ac486d12d446e116e8120187",
       "original_owned_total_cap": 155499,
-      "measured_owned_total": 161213,
-      "delta": 5714,
+      "measured_owned_total": 161342,
+      "delta": 5843,
       "predecessors": [
         {
           "batch_id": "train-77f0d8e451f6aed08d608e443031047a",
@@ -1094,7 +1095,7 @@
           "measured_owned_total": 158958
         }
       ],
-      "batch_measured_delta": 2255,
+      "batch_measured_delta": 2384,
       "restore_task": "azure-ridge-72",
       "expires_at": "s4_modules",
       "category_approval_message_id": "msg-90f9f1b1e0cd4e8e8d28071cffc927a6",
@@ -1103,7 +1104,7 @@
       ],
       "category_restore_task": "stark-willow-95.17",
       "verification_task": "stark-willow-95.18",
-      "measured_engine_lines": 85544,
+      "measured_engine_lines": 85010,
       "measured_table_count": 45,
       "delivery_method": "operator direct integration; user request 2026-10-22",
       "amendments": [
@@ -1326,6 +1327,26 @@
           "grant_baseline_owned_total": 160820,
           "grant_maximum_delta": 172,
           "measured_delta_from_grant_baseline": 161
+        },
+        {
+          "task_id": "nimble-meadow-99",
+          "referenced_decision": "size-cap-delegation-2026-10-23",
+          "operator_decision": "6679052c",
+          "operator_task": "sharp-cascade-53",
+          "pull_request": "https://github.com/ElectricJack/agent-queue/pull/1802",
+          "previous_source_revision": "4bafa45f1ac0a466eab372c7b6b0b866f67bb832",
+          "previous_owned_total": 161213,
+          "previous_engine_lines": 85544,
+          "previous_table_count": 45,
+          "merged_dev_revision": "d60c0f238c8205f495a384c0bd77c322a8fc89ac",
+          "measured_source_revision": "9b8ad6e58179dde7ac486d12d446e116e8120187",
+          "measured_owned_total": 161342,
+          "measured_engine_lines": 85010,
+          "measured_table_count": 45,
+          "authorized_owned_delta": 129,
+          "authorized_engine_delta": -534,
+          "authorized_table_delta": 0,
+          "reason": "Exact combined-tree remeasurement after merging origin/dev into PR #1802. Preapproved by size-cap-delegation-2026-10-23, operator decision 6679052c on sharp-cascade-53. Preserve every historical grant and classification; no code trimmed or moved for the count."
         }
       ],
       "supplemental_grants": [
@@ -14907,5 +14928,25 @@
     "engine_lines": 85316,
     "table_count": 45,
     "remaining_owned_headroom": 0
+  },
+  "workspace_ownership_merge_measurement": {
+    "task_id": "nimble-meadow-99",
+    "referenced_decision": "size-cap-delegation-2026-10-23",
+    "operator_decision": "6679052c",
+    "operator_task": "sharp-cascade-53",
+    "pull_request": "https://github.com/ElectricJack/agent-queue/pull/1802",
+    "previous_source_revision": "4bafa45f1ac0a466eab372c7b6b0b866f67bb832",
+    "previous_owned_total": 161213,
+    "previous_engine_lines": 85544,
+    "previous_table_count": 45,
+    "merged_dev_revision": "d60c0f238c8205f495a384c0bd77c322a8fc89ac",
+    "measured_source_revision": "9b8ad6e58179dde7ac486d12d446e116e8120187",
+    "measured_owned_total": 161342,
+    "measured_engine_lines": 85010,
+    "measured_table_count": 45,
+    "authorized_owned_delta": 129,
+    "authorized_engine_delta": -534,
+    "authorized_table_delta": 0,
+    "reason": "Exact combined-tree remeasurement after merging origin/dev into PR #1802. Preapproved by size-cap-delegation-2026-10-23, operator decision 6679052c on sharp-cascade-53. Preserve every historical grant and classification; no code trimmed or moved for the count."
   }
 }

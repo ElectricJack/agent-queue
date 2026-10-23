@@ -391,6 +391,7 @@ def test_batch_exception_is_exact_and_has_no_remaining_headroom(report, manifest
         "sound-forge-62",
         "calm-rapids-50",
         "fair-harbor-71",
+        "nimble-meadow-99",
     }
     amendment = amendments["solid-impact-56"]
     assert amendment["task_id"] == "solid-impact-56"
@@ -741,7 +742,7 @@ def test_resume_batch_preserves_grants_and_composes_exact_inventory(report, mani
     batch = exception["resume_batch_composition"]
     assert batch["batch_id"] == "train-9394fdec634bb068ee8e58c1008dd4b2-resume-1e142f1858d8"
     assert batch["starting_revision"] == "c177d24e86d25fde7804131c94bfd637b0eb540a"
-    assert batch["source_revision"] == exception["measured_source_revision"]
+    assert batch["source_revision"] == "4bafa45f1ac0a466eab372c7b6b0b866f67bb832"
     assert batch["member_sources"] == {
         "calm-rapids-50": "45626ba27ff1c7711f5aa17893f7ce997928da5f",
         "fair-crest-95": "63163a7d4fd4aa5611c18ae139580902abf32770",
@@ -763,12 +764,37 @@ def test_resume_batch_preserves_grants_and_composes_exact_inventory(report, mani
     assert batch["base_table_count"] == 45
     assert batch["base_owned_total"] + sum(
         delta["owned"] for delta in batch["approved_deltas"].values()
-    ) == exception["measured_owned_total"] == 161_213
+    ) == 161_213
     assert batch["base_engine_lines"] + sum(
         delta["engine"] for delta in batch["approved_deltas"].values()
-    ) == exception["measured_engine_lines"] == 85_544
+    ) == 85_544
     assert batch["base_table_count"] + sum(
         delta["tables"] for delta in batch["approved_deltas"].values()
     ) == exception["measured_table_count"] == len(report["tables"]) == 45
     recorded = json.loads((ROOT / "tests/integration_ownership_report.json").read_text())
     assert recorded["resume_recovery_measurement"] == amendments["calm-rapids-50"]
+
+
+def test_workspace_ownership_merge_measurement_is_exact(report, manifest):
+    exception = manifest["transition_exception"]
+    grants = [item for item in exception["amendments"] if item["task_id"] == "nimble-meadow-99"]
+    original, merged = grants
+    assert original["operator_decision_id"] == "c363ba40-0d03-4303-8667-e192e92091ad"
+    assert original["authorized_owned_delta"] == 144
+    assert original["decision_message_id"] in exception["decision_message_ids"]
+    assert merged["referenced_decision"] == "size-cap-delegation-2026-10-23"
+    assert merged["operator_decision"] == "6679052c"
+    assert merged["operator_task"] == "sharp-cascade-53"
+    assert merged["pull_request"] == "https://github.com/ElectricJack/agent-queue/pull/1802"
+    assert merged["measured_source_revision"] == exception["measured_source_revision"]
+    assert (merged["previous_owned_total"] + merged["authorized_owned_delta"]
+            == merged["measured_owned_total"] == exception["measured_owned_total"]
+            == report["total"] == 161_342)
+    assert (merged["previous_engine_lines"] + merged["authorized_engine_delta"]
+            == merged["measured_engine_lines"] == exception["measured_engine_lines"]
+            == report["groups"]["engine"] == 85_010)
+    assert (merged["previous_table_count"] + merged["authorized_table_delta"]
+            == merged["measured_table_count"] == exception["measured_table_count"]
+            == len(report["tables"]) == 45)
+    recorded = json.loads((ROOT / "tests/integration_ownership_report.json").read_text())
+    assert recorded["workspace_ownership_merge_measurement"] == merged
