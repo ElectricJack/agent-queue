@@ -12955,10 +12955,11 @@
         "object-loop"
       ],
       "default_arm": true,
-      "digest": "sha256:a3cdf19f7a4d12cef6e8461b937a4c572635f13c0f3b2aeec5a561d9bfc852ec",
+      "digest": "sha256:8a2f25d8200f737cc8dc9009829ea642e89794076bdf40c55bcf03d964f9fc18",
       "imports": [
         "src.commands.contracts",
         "src.commands.contracts.builtin",
+        "src.commands.contracts.models",
         "src.commands.contracts.registry",
         "src.commands.principal",
         "src.database.tables",

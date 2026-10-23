@@ -48,6 +48,7 @@ EPIC_CHANGES = ROOT / "tests/fixtures/contracts/epic-integration-contract-change
 EPIC_COMMANDS = ("integration_cutover_containment", "integration_reconcile_git_truth")
 WATCH_CHANGES = ROOT / "tests/fixtures/contracts/watch-contract-changes.json"
 INGEST_CHANGES = ROOT / "tests/fixtures/contracts/ingestion-replay-contract-changes.json"
+OBJECT_LOOP_CHANGES = ROOT / "tests/fixtures/contracts/object-loop-port-changes.json"
 HIBERNATION_CHANGES = ROOT / "tests/fixtures/contracts/hibernation-contract-changes.json"
 DISPATCH_CHANGES = ROOT / "tests/fixtures/contracts/dispatch-wait-contract-changes.json"
 BATCH_FIX_CHANGES = ROOT / "tests/fixtures/contracts/batch-fix-contract-changes.json"
@@ -505,6 +506,8 @@ def test_legacy_playbook_fixtures_are_unchanged():
     assert set(failover) == {"tests/fixtures/playbooks/v2/provider-failover/artifact.json"}
     triage = json.loads(TRIAGE_CHANGES.read_text())["playbook_fixtures"]
     assert set(triage) == {"tests/fixtures/playbooks/v2/supervisor-failure-triage/artifact.json"}
+    object_loop = json.loads(OBJECT_LOOP_CHANGES.read_text())["playbook_fixtures"]
+    assert set(object_loop) == {"tests/fixtures/playbooks/v2/object-loop/artifact.json"}
     for path, digest in json.loads(GOLDEN.read_text())["playbook_fixtures"].items():
         if path in changes:
             assert changes[path]["previous_sha256"] == digest
@@ -545,6 +548,11 @@ def test_legacy_playbook_fixtures_are_unchanged():
             assert hashlib.sha256(historical.read_bytes()).hexdigest() == digest
             assert triage[path]["sha256"] != digest
             digest = triage[path]["sha256"]
+        if path in object_loop:
+            assert object_loop[path]["previous_sha256"] == digest
+            historical = ROOT / object_loop[path]["preserved_previous_path"]
+            assert object_loop[path]["sha256"] != digest
+            digest = object_loop[path]["sha256"]
         assert hashlib.sha256((ROOT / path).read_bytes()).hexdigest() == digest, path
 
 
