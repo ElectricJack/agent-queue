@@ -8013,7 +8013,7 @@
   "integration_mutate_hierarchy": {
     "mode": "typed",
     "producer": "src/commands/integration_commands.py:IntegrationCommandsMixin._cmd_integration_mutate_hierarchy",
-    "source_digest": "sha256:87c10e75f304163ebdc234330cfa3d84c156844a278041b64c374a55cb41f36f",
+    "source_digest": "sha256:9435192a88cf014cc30352ae6defa0493a94479a8260b54282caf164957638d7",
     "input_schema_source": "typed_contract",
     "schema_quality": "typed",
     "argument_reads_diagnostic_only": [],
@@ -8043,15 +8043,17 @@
         "protocol": "delegated_producer"
       },
       {
-        "return": "_failure(outcome, str(exc))",
+        "return": "failure",
         "protocol": "delegated_producer"
       }
     ],
     "tests": [
       "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
       "tests/test_generated_command_contracts.py::test_generic_result_protocol",
-      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
-    ]
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_integration_hierarchy.py"
+    ],
+    "review_notes": " Post-release structure merge: reviewed strict split validation and exact acceptance partition, original operator/live-supervisor authorization, guarded generation and quiescence refusals, and released-batch supervisor repair scope. Failure branches return explicit false or preserve the delegated producer; successful mutations retain explicit true. Existing resource gates and generated execution policy are unchanged."
   },
   "integration_off": {
     "mode": "typed",
@@ -17800,7 +17802,7 @@
   "reparent_task": {
     "mode": "json_object",
     "producer": "src/commands/task_commands.py:TaskCommandsMixin._cmd_reparent_task",
-    "source_digest": "sha256:7f7ee75d1c4a6bce6d4b4f5e5bae5d7e0f3ed110394c9c9376b46fa9fc0a3161",
+    "source_digest": "sha256:820fe9d8b7695f96424d7a183dd8aa345fdd272b1ca2dab753c1c87945f7d045",
     "input_schema_source": "explicit_tool",
     "schema_quality": "declared",
     "argument_reads_diagnostic_only": [
@@ -17851,8 +17853,16 @@
         "protocol": "explicit_boolean: False"
       },
       {
+        "return": "{'success': False, 'code': exc.code, 'outcome': exc.code, 'error': f'{exc.code}: {exc.detail}', **exc.context}",
+        "protocol": "explicit_boolean: False"
+      },
+      {
         "return": "refusal",
         "protocol": "delegated_producer"
+      },
+      {
+        "return": "{'success': False, 'code': 'unauthorized', 'error': 'caller cannot mutate this hierarchy'}",
+        "protocol": "explicit_boolean: False"
       }
     ],
     "tests": [
@@ -17861,12 +17871,13 @@
       "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
       "tests/test_claim_commands.py",
       "tests/test_hierarchy_commands.py",
-      "tests/test_worker_filing.py"
+      "tests/test_worker_filing.py",
+      "tests/test_integration_hierarchy.py"
     ],
     "helper_producers": {
       "_worker_reparent_refusal": "sha256:577fedffb326cf8ad8166eca91544957e0b16db1b5cdd2804a92857139524ca6"
     },
-    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. "
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled.  Post-release structure merge: reviewed strict split validation and exact acceptance partition, original operator/live-supervisor authorization, guarded generation and quiescence refusals, and released-batch supervisor repair scope. Failure branches return explicit false or preserve the delegated producer; successful mutations retain explicit true. Existing resource gates and generated execution policy are unchanged."
   },
   "report_brief": {
     "mode": "typed",
@@ -21455,7 +21466,7 @@
   "task_batch_propose": {
     "mode": "json_object",
     "producer": "src/commands/proposal_commands.py:TaskProposalCommandsMixin._cmd_task_batch_propose",
-    "source_digest": "sha256:9b7df21759628001bd84d8ab1a79d47b76b18321a24c0f3bff4162952bdc6975",
+    "source_digest": "sha256:4cffa4e392d1cde6ec81833558f9561ff4f8876388162b0ff13a3d4ca3901b6b",
     "input_schema_source": "explicit_tool",
     "schema_quality": "declared",
     "argument_reads_diagnostic_only": [
@@ -21483,7 +21494,7 @@
       },
       {
         "return": "{**committed, 'diff': payload['diff']}",
-        "protocol": "delegated_producer: dictionary expansion retains producer outcome"
+        "protocol": "delegated_producer"
       },
       {
         "return": "{'success': False, 'error': str(exc)}",
@@ -21519,9 +21530,9 @@
       "tests/test_task_batch_commands.py"
     ],
     "helper_producers": {
-      "_change_set_failure": "sha256:1ab0076765ff4e55c9b709c73c3734df4415a566889ebd6b721886c232920772"
+      "_change_set_failure": "sha256:84e95e25ec389a8657dd596d04936f2a7401df67c54e8819ca34922f8ffdf509"
     },
-    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. "
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled.  Post-release structure merge: reviewed strict split validation and exact acceptance partition, original operator/live-supervisor authorization, guarded generation and quiescence refusals, and released-batch supervisor repair scope. Failure branches return explicit false or preserve the delegated producer; successful mutations retain explicit true. Existing resource gates and generated execution policy are unchanged. The _change_set_failure helper retains hierarchy owner/context fields, then forces success=false and the producer code/error; caller context cannot override the failure flag."
   },
   "task_batch_review_record": {
     "mode": "typed",
@@ -21596,7 +21607,7 @@
   "task_batch_update": {
     "mode": "json_object",
     "producer": "src/commands/proposal_commands.py:TaskProposalCommandsMixin._cmd_task_batch_update",
-    "source_digest": "sha256:004d571c9cd2b0951d13ac18ddd9e06fa256cc8cd626d253f735944ab4eff78a",
+    "source_digest": "sha256:c93f0f9e9aab904b979a6b8c6950f573d16b6ffb74f833cc995feeda6ed78ef0",
     "input_schema_source": "explicit_tool",
     "schema_quality": "declared",
     "argument_reads_diagnostic_only": [
@@ -21642,12 +21653,13 @@
     "tests": [
       "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
       "tests/test_generated_command_contracts.py::test_generic_result_protocol",
-      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_task_batch_commands.py"
     ],
     "helper_producers": {
-      "_change_set_failure": "sha256:1ab0076765ff4e55c9b709c73c3734df4415a566889ebd6b721886c232920772"
+      "_change_set_failure": "sha256:84e95e25ec389a8657dd596d04936f2a7401df67c54e8819ca34922f8ffdf509"
     },
-    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. "
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled.  Post-release structure merge: reviewed strict split validation and exact acceptance partition, original operator/live-supervisor authorization, guarded generation and quiescence refusals, and released-batch supervisor repair scope. Failure branches return explicit false or preserve the delegated producer; successful mutations retain explicit true. Existing resource gates and generated execution policy are unchanged. The _change_set_failure helper retains hierarchy owner/context fields, then forces success=false and the producer code/error; caller context cannot override the failure flag."
   },
   "task_batch_validate": {
     "mode": "typed",
@@ -22982,6 +22994,49 @@
       "_task_provider_view": "sha256:bc0669889619cdd9fb0b87f490059d9d607d472e0b96ce5805fb12db1307db26"
     },
     "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled.  Dev reconciliation (4e9a17b8c0adae80acc6cf1195b339b974b69270): reviewed delegated _cmd_get_task dependency batching as recorded on get_task. This wrapper and its producer exits are unchanged; existing project_resources, handler_gates authority remains required. Only the reviewed helper digest is refreshed."
+  },
+  "task_split": {
+    "mode": "typed",
+    "producer": "src/commands/task_split_commands.py:TaskSplitCommandsMixin._cmd_task_split",
+    "input_schema_source": "typed_contract",
+    "schema_quality": "typed",
+    "argument_reads_diagnostic_only": [],
+    "effect": "destructive",
+    "retry_safe": false,
+    "principal_requirement": "original_principal",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "denial_reason": null,
+    "result_policy": "retained typed adapter",
+    "tests": [
+      "tests/test_task_split.py",
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete"
+    ],
+    "source_digest": "sha256:706cec7dd4656f2d08fd62edd27a24434de90ff9b61ad7c7548a5aaa1c8c8449",
+    "return_branches": [
+      {
+        "return": "{'success': True, **result}",
+        "protocol": "explicit_boolean: True"
+      },
+      {
+        "return": "{'success': False, 'code': 'split.not_found', 'error': 'source task not found'}",
+        "protocol": "explicit_boolean: False"
+      },
+      {
+        "return": "{'success': False, 'code': 'unauthorized', 'error': 'caller cannot split this task'}",
+        "protocol": "explicit_boolean: False"
+      },
+      {
+        "return": "{'success': False, 'code': 'split.invalid', 'error': str(exc)}",
+        "protocol": "explicit_boolean: False"
+      },
+      {
+        "return": "{'success': False, 'code': exc.code, 'error': exc.detail, **exc.context}",
+        "protocol": "explicit_boolean: False"
+      }
+    ],
+    "review_notes": " Post-release structure merge: reviewed strict split validation and exact acceptance partition, original operator/live-supervisor authorization, guarded generation and quiescence refusals, and released-batch supervisor repair scope. Failure branches return explicit false or preserve the delegated producer; successful mutations retain explicit true. Existing resource gates and generated execution policy are unchanged."
   },
   "task_subtask_add": {
     "mode": "json_object",
