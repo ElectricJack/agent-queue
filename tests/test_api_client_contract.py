@@ -323,7 +323,19 @@ async def test_pool_scale_typed_route_preserves_explicit_null_max(live_app):
     ]
 
 
-def test_codegen_routes_keep_execute_exclusions_off_every_live_router():
+@pytest.fixture
+def offline_contract_snapshot():
+    """Route the offline descriptor snapshot even when an earlier test on this
+    worker left a live handler (with qualified plugin commands) installed."""
+    from src.commands.contracts import builtin
+
+    previous = builtin._handler_provider
+    builtin.set_handler_provider(None)
+    yield
+    builtin.set_handler_provider(previous)
+
+
+def test_codegen_routes_keep_execute_exclusions_off_every_live_router(offline_contract_snapshot):
     """Plan 3: one route per discovered command; excluded commands get none."""
     from src.api.codegen import API_EXCLUDED, build_category_routers
     from src.mcp_registration import _discover_all_commands

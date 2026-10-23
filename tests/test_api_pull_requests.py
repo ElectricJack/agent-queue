@@ -1,5 +1,7 @@
 """The Reviews inbox reads a durable snapshot and pins human approvals."""
 
+import asyncio
+
 import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
@@ -12,7 +14,8 @@ from src.database.queries.pull_request_queries import (
     list_known_pull_requests, read_pull_request_snapshot, write_pull_request_snapshot,
 )
 from src.database.tables import archived_tasks, projects, tasks
-from src.git.github_contracts import GitHubRepositoryBinding
+from src.git.github_activity import GitHubActivity
+from src.git.github_contracts import GitHubAccessError, GitHubRepositoryBinding
 
 SHA = "a" * 40
 MOVED = "b" * 40
@@ -76,9 +79,11 @@ class FakeClient:
             return [
                 {"html_url": BASE + "1", "number": 1, "title": "Fresh title",
                  "state": "open", "head": {"sha": SHA},
+                 "updated_at": "2026-09-20T00:00:00Z",
                  "created_at": "2026-09-20T00:00:00Z"},
                 {"html_url": BASE + "4", "number": 4, "title": "Archived title",
                  "state": "open", "head": {"sha": SHA},
+                 "updated_at": "2026-09-20T00:00:00Z",
                  "created_at": "2026-09-19T00:00:00Z"},
             ]
         return [
@@ -374,3 +379,214 @@ async def test_approval_refuses_a_bot_saved_as_gh_login(db, monkeypatch):
     result = await Handler()._cmd_approve_pull_request({"task_id": "open-task", "head_sha": SHA})
     assert result["error_code"] == "credentials"
     assert access.binds == []
+
+
+@pytest.fixture
+async def cached_inbox(db):
+    await seed(db)
+    access = FakeAccess()
+    activity = GitHubActivity(lambda: 1000)
+
+    class Client(FakeClient):
+        pulls = None
+        fail_checks = False
+
+        async def pull_request(self, url):
+            self.calls.append(url)
+            activity.check_background()
+            activity.record(True)
+            return next(pull for pull in self.pulls if pull["html_url"] == url)
+
+        async def paged_list(self, path, **kwargs):
+            activity.check_background()
+            activity.record(True)
+            if "state=open" in path and self.pulls is not None:
+                self.calls.append(path)
+                return self.pulls
+            return await super().paged_list(path, **kwargs)
+
+        async def paged_items(self, path, **kwargs):
+            activity.check_background()
+            activity.record(True)
+            if self.fail_checks:
+                raise RuntimeError("checks unavailable")
+            return await super().paged_items(path, **kwargs)
+
+    client = Client(await access.bind_repository("acme/repo"), access=access)
+    client.pulls = await FakeClient.paged_list(client, "state=open")
+    client.calls.clear()
+    inbox = PendingPullRequestInbox(db, access, client_factory=lambda *_a, **_kw: client)
+    return inbox, client, activity
+
+
+async def test_unchanged_refresh_makes_no_badge_calls_and_updates_metadata(db, cached_inbox):
+    inbox, client, activity = cached_inbox
+    assert inbox.interval == 300
+    await inbox.refresh()
+    assert len(client.calls) == 5  # inventory + two badge requests per PR
+    assert activity.snapshot()["api_calls_per_hour"] == {"dashboard_pr_snapshot": 5}
+    client.calls.clear()
+    async with db._engine.begin() as conn:
+        await conn.execute(projects.update().where(projects.c.id == "active").values(
+            name="Renamed project",
+        ))
+    await inbox.refresh()
+    assert client.calls == ["repos/acme/repo/pulls?state=open&per_page=100"]
+    items, _ = await read_pull_request_snapshot(db)
+    assert {item["project_name"] for item in items} == {"Renamed project"}
+    assert {item["review_decision"] for item in items} == {"approved"}
+    assert {item["ci_status"] for item in items} == {"success"}
+
+
+@pytest.mark.parametrize("field", ["head", "updated_at", "missing_timestamp"])
+async def test_badge_cache_invalidates_only_changed_pr(cached_inbox, field):
+    inbox, client, _ = cached_inbox
+    await inbox.refresh()
+    client.calls.clear()
+    if field == "head":
+        client.pulls[0]["head"] = {"sha": MOVED}
+    elif field == "updated_at":
+        client.pulls[0]["updated_at"] = "2026-09-21T00:00:00Z"
+    else:
+        client.pulls[0].pop("updated_at")
+    await inbox.refresh()
+    assert len(client.calls) == 3
+    assert any("/pulls/1/reviews" in path for path in client.calls)
+    assert not any("/pulls/4/reviews" in path for path in client.calls)
+    if field == "missing_timestamp":
+        client.calls.clear()
+        await inbox.refresh()
+        assert len(client.calls) == 3
+
+
+async def test_closed_pr_is_evicted_and_reopening_fetches_badges(db, cached_inbox):
+    inbox, client, _ = cached_inbox
+    await inbox.refresh()
+    closed = client.pulls.pop(0)
+    await inbox.refresh()
+    items, _ = await read_pull_request_snapshot(db)
+    assert {item["task_id"] for item in items} == {"archived-task"}
+    client.calls.clear()
+    client.pulls.append(closed)
+    await inbox.refresh()
+    assert len(client.calls) == 3
+    assert any("/pulls/1/reviews" in path for path in client.calls)
+
+
+async def test_failed_badge_read_is_retried_without_replacing_snapshot(db, cached_inbox):
+    inbox, client, _ = cached_inbox
+    await inbox.refresh()
+    before = await read_pull_request_snapshot(db)
+    client.pulls[0]["updated_at"] = "2026-09-21T00:00:00Z"
+    client.fail_checks = True
+    with pytest.raises(RuntimeError, match="checks unavailable"):
+        await inbox.refresh()
+    assert await read_pull_request_snapshot(db) == before
+    client.fail_checks = False
+    client.calls.clear()
+    await inbox.refresh()
+    assert len(client.calls) == 3
+
+
+async def test_row_refresh_forces_badges_and_background_respects_reserve(db, cached_inbox):
+    inbox, client, activity = cached_inbox
+    await inbox.refresh()
+    before = await read_pull_request_snapshot(db)
+    activity.observe({"x-ratelimit-limit": "100", "x-ratelimit-remaining": "10",
+                      "x-ratelimit-reset": "1100"})
+    client.calls.clear()
+    with pytest.raises(GitHubAccessError, match="reserve"):
+        await inbox.refresh()
+    assert client.calls == []
+    assert await read_pull_request_snapshot(db) == before
+    # A user-triggered row refresh can use the reserved foreground quota.
+    await inbox.refresh_row("open-task")
+    assert len(client.calls) == 3
+    assert not any("state=open" in path or "/pulls/4/" in path for path in client.calls)
+    activity.quota = None
+    client.calls.clear()
+    await inbox.refresh()
+    assert len(client.calls) == 1
+    # A closed row is removed immediately; its old fingerprint cannot be reused.
+    client.pulls[0]["state"] = "closed"
+    await inbox.refresh_row("open-task")
+    items, _ = await read_pull_request_snapshot(db)
+    assert {item["task_id"] for item in items} == {"archived-task"}
+    client.pulls[0]["state"] = "open"
+    client.calls.clear()
+    await inbox.refresh()
+    assert len(client.calls) == 3
+
+
+async def test_approval_survives_cached_badges_when_review_list_lags(db, cached_inbox):
+    inbox, client, _ = cached_inbox
+    await inbox.refresh()
+    original = client.paged_list
+
+    async def lagging_reviews(path, **kwargs):
+        if "/reviews" in path:
+            client.calls.append(path)
+            return []
+        return await original(path, **kwargs)
+
+    client.paged_list = lagging_reviews
+
+    class Handler:
+        async def execute(self, command, params):
+            assert command == "approve_pull_request"
+            assert params == {"task_id": "open-task", "head_sha": SHA}
+            return {"success": True, "url": BASE + "1"}
+
+    app = FastAPI()
+    app.include_router(build_pull_requests_router(db=db, inbox=inbox, command_handler=Handler()))
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://localhost") as ac:
+        response = await ac.post(
+            "/api/reviews/pull-requests/open-task/approve", json={"head_sha": SHA},
+        )
+    assert response.status_code == 200
+    client.calls.clear()
+    await inbox.refresh()
+    assert len(client.calls) == 1
+    items, _ = await read_pull_request_snapshot(db)
+    assert next(item for item in items if item["task_id"] == "open-task")["review_decision"] == (
+        "approved"
+    )
+    # A head that moved after approval cannot inherit the old head's approval.
+    client.pulls[0]["head"] = {"sha": MOVED}
+    await inbox.refresh_row("open-task", approved_head_sha=SHA)
+    items, _ = await read_pull_request_snapshot(db)
+    assert next(item for item in items if item["task_id"] == "open-task")["review_decision"] == (
+        "pending"
+    )
+
+
+async def test_failed_refresh_joins_remaining_projections_before_releasing_lock(
+    db, cached_inbox,
+):
+    inbox, client, _ = cached_inbox
+    await inbox.refresh()
+    before = await read_pull_request_snapshot(db)
+    for pull in client.pulls:
+        pull["updated_at"] = "2026-09-21T00:00:00Z"
+    started = asyncio.Event()
+    release = asyncio.Event()
+    original = client.paged_list
+
+    async def failing_reviews(path, **kwargs):
+        if "/pulls/1/reviews" in path:
+            raise RuntimeError("reviews unavailable")
+        if "/pulls/4/reviews" in path:
+            started.set()
+            await release.wait()
+        return await original(path, **kwargs)
+
+    client.paged_list = failing_reviews
+    refresh = asyncio.create_task(inbox.refresh())
+    try:
+        await asyncio.wait_for(started.wait(), timeout=5)
+        assert not refresh.done()
+    finally:
+        release.set()
+        with pytest.raises(RuntimeError, match="reviews unavailable"):
+            await refresh
+    assert await read_pull_request_snapshot(db) == before

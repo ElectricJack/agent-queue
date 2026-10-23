@@ -4,6 +4,12 @@ tags: [guide, agents, waits]
 
 # Verified agent waits
 
+Prime follows the effective project `wait_policy.v2_enabled` setting. When it is
+disabled, report a blocker once, preserve the held claim and end the turn awaiting
+supervisor inbox delivery. Do not retry registration or poll inboxes. Run tests in
+the foreground with `aq test`. Existing persisted waits retain their recovery and
+acknowledgement paths during a rollback.
+
 Register a condition once, then end the turn. AQ verifies the source, chooses
 whether to retain the process or hibernate, and delivers a durable outcome.
 Agents do not choose sleep mode, maintain a polling heartbeat, or choose an
@@ -73,6 +79,12 @@ aq wait ack --wait-id WAIT_ID --continuation-id CONTINUATION_ID --generation GEN
 
 For an in-place outcome, `aq wait show WAIT_ID --consume` acknowledges its
 notification. Receipt replay preserves the original registration identity.
+Named supervisors can register, cancel and acknowledge their own in-place waits.
+Cancellation resolves the wait but holds routine mail until the owner acknowledges
+the outcome with `aq wait ack --wait-id WAIT_ID` (or `show --consume`). The
+acknowledgement returns held mail and records its delivery atomically; subsequent
+mail appears in the ordinary inbox. Supervisor elevation does not permit
+acknowledging another session's wait or crossing a project boundary.
 `source_unavailable`, cancellation and a failed producer are explicit outcomes;
 none implies success. See [wake context](wake-context-compaction.md).
 
@@ -106,6 +118,13 @@ ordinary admission retries continue until an explicit hold or acknowledgement.
 `aq doctor --check waits.orphans` reports orphan ownership. Repair is conservative:
 live ownership and missing checkpoint/head evidence remain held. Fixes retain
 continuations, summaries, saved heads and resolved outcomes.
+
+When a task becomes terminal its waits and deadlines are retired without waking
+it. A permanently refused deadline is quarantined with a recorded refusal and a
+project-supervisor notice, allowing later deadlines to proceed. A supervisor can
+use `aq wait cancel <wait-id>` to cancel an orphaned task wait before escalation;
+this clears its old execution state without changing a replacement claim or
+resuming its task.
 
 The Metrics page shows pending waits, observed slot time, wake causes and resume
 costs. Missing measurements remain null. Released slot time starts at proven

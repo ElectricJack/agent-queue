@@ -72,6 +72,7 @@ import logging
 import os
 import time
 import uuid
+from collections.abc import Mapping
 from functools import cached_property
 from pathlib import Path
 from typing import Any
@@ -82,6 +83,7 @@ from src.database.queries.hierarchy_queries import HierarchyError
 from src.event_bus import EventBus
 from src.git.github import GitHubAccess, GitHubClient
 from src.git.manager import GitManager
+from src.jobs.policy import JobError
 from src.llm_logger import LLMLogger
 from src.messaging.types import (
     CreateThreadCallback as _CreateThreadCallbackType,
@@ -133,6 +135,26 @@ logger = logging.getLogger(__name__)
 PAUSE_CHECKPOINT_RETRY_META = "manual_pause_checkpoint_retry"
 PAUSE_CHECKPOINT_MAX_ATTEMPTS = 3
 PAUSE_CHECKPOINT_MAX_BACKOFF = 30.0
+# Bound on each _reconcile_sessions stage; see _bounded_stage.
+SESSION_STAGE_TIMEOUT = 60.0
+
+
+async def _bounded_stage(name: str, step) -> dict:
+    """Run one session-cascade stage under ``SESSION_STAGE_TIMEOUT``.
+
+    Each stage holds pooled connections and, for the wait stages, the
+    global wait-graph fence; unbounded, one slow stage delayed every later
+    pool and materialization pass (2026-10-22 wedges). A cancelled stage
+    rolls back its transaction and resumes from durable rows next cycle.
+    """
+    try:
+        async with asyncio.timeout(SESSION_STAGE_TIMEOUT):
+            return await step
+    except TimeoutError:
+        logger.warning("Session cascade stage '%s' exceeded %.0fs; cancelled, "
+                       "retrying next cycle", name, SESSION_STAGE_TIMEOUT)
+        return {"success": True, "timed_out": True, "stage": name}
+
 
 # File handlers run synchronously on the scheduler's event loop. Bound writes
 # even when a capacity change affects every READY task at once.
@@ -576,8 +598,8 @@ class Orchestrator(
 
         self.session_lens = SessionLens(
             db=self.db,
-            availability=self.provider_availability,
             bus=self.bus,
+            availability=self.provider_availability,
             providers=self.session_providers,
             spec_builder=self.session_spec_builder,
             harness_registry=self.harness_registry,
@@ -1100,7 +1122,8 @@ class Orchestrator(
             await self._finish_manual_pause(task_id, snapshot)
 
     async def resume_task(
-        self, task_id: str, *, recover_stale_pause: bool = False, actor: str = "local-operator"
+        self, task_id: str, *, recover_stale_pause: bool = False, actor: str = "local-operator",
+        defer_recovery_supersession: bool = False,
     ):
         async with self._task_control_lock(task_id):
             snapshot = await self.db.get_task_meta(task_id, "manual_pause")
@@ -1147,8 +1170,13 @@ class Orchestrator(
                     if stopped is not True:
                         raise ValueError("Slot reset recovery must wait for the old writer to stop")
                     stopped_sessions.append(session)
-                return await self.db.resume_task(task_id, stopped_sessions=stopped_sessions)
-            return await self.db.resume_task(task_id)
+                return await self.db.resume_task(
+                    task_id, stopped_sessions=stopped_sessions,
+                    defer_recovery_supersession=defer_recovery_supersession,
+                )
+            return await self.db.resume_task(
+                task_id, defer_recovery_supersession=defer_recovery_supersession,
+            )
 
     async def _recover_stale_pause(self, task_id, snapshot, *, retained, actor):
         """Prove the captured writers gone before rebinding obsolete pause identities."""
@@ -1332,6 +1360,16 @@ class Orchestrator(
             if (identity.get("claim_phase") == "preparing"
                     and (identity["id"], identity["last_claim_epoch"], identity["instance_token"])
                     not in proved):
+                # No live request was cancelled above: the attempt ended before
+                # this pause (failed, cancelled by a restart, timed out). Its
+                # durable failure record proves it unwound its git children.
+                from src.database.queries.task_queries import settled_preparation_proved
+
+                if settled_preparation_proved(
+                    await self.db.settled_task_preparation(task_id), identity,
+                    identity["last_claim_epoch"],
+                ):
+                    continue
                 raise PauseFenceError(
                     "Task remains paused; interrupted preparation termination is unproved. "
                     "Source and claim are retained for guarded recovery; Resume is not cleanup."
@@ -1947,6 +1985,7 @@ class Orchestrator(
         # Archive/removal guards prove development delivery in git before
         # their transaction; the database layer has no Git of its own.
         self.db.set_delivery_observer(self.delivery_observer)
+        self.db._admission_reader = self._delivery_admission
         # Git-first promotion writes no delivery receipt, so sibling
         # prerequisites are proven from the parent branch in Git instead.
         if self.config.integration.git_first == "active":
@@ -2265,6 +2304,7 @@ class Orchestrator(
         self.integration_outbox = IntegrationOutbox(
             self.db, accept_integration_event,
             project_max_wait=project_max_wait,
+            publication_wake=self.bus.emit,
         )
         github_clients = {}
 
@@ -2280,7 +2320,8 @@ class Orchestrator(
             from src.projects.github import GitHubError, parse_github_repository
 
             try:
-                parsed = parse_github_repository(repository.url)
+                url = repository["url"] if isinstance(repository, Mapping) else repository.url
+                parsed = parse_github_repository(url)
             except GitHubError:
                 return None
             # Share onboarding's identity rules; authentication still goes
@@ -2378,6 +2419,26 @@ class Orchestrator(
         )
         owner_recovery = owner_recovery_for(self)
         self.development_integration.owner_recovery = owner_recovery
+        from src.integration.truth_reconciler import GitTruthReconciler
+        from src.sessions.obsolete import ObsoleteClose, obsolete_owner_release_for
+
+        self.git_truth_reconciler = GitTruthReconciler(
+            self.db, self.git, data_dir=self.config.data_dir,
+            owner_recovery=owner_recovery if self.config.integration.owner_recovery_sweep else None,
+            obsolete_close=ObsoleteClose(
+                self.db, release_owner=obsolete_owner_release_for(self), git_manager=self.git,
+            ),
+        )
+
+        async def reconcile_git_truth(now):
+            from src.commands.principal import ExecutionPrincipal, principal_context
+
+            if self._command_handler is not None:
+                with principal_context(ExecutionPrincipal.service("git-truth-reconciler")):
+                    return await self._command_handler.execute(
+                        "integration_reconcile_git_truth", {"now": now},
+                    )
+
         from src.integration.train_sources import TrainCommandDriver, train_for
 
         self.parent_owner_recovery = owner_recovery
@@ -2405,15 +2466,16 @@ class Orchestrator(
         self.development_subject_runtime = None
         self.integration_service = IntegrationService(
             self.db, self.integration_outbox,
+            bus=self.bus,
             # The service drives the train through integration_train_tick.
             train=TrainCommandDriver(self.integration_train, lambda: self._command_handler)
             if train_active else None,
             maintenance={
+                "git truth": reconcile_git_truth,
                 "orphaned parent operations": settle_orphaned_parents,
                 "batch cleanup": self.integration_cleanup_service.reconcile,
                 "branch discard": self._drain_branch_discards,
                 "branch materialization": self._drain_branch_materializations,
-                "owner recovery": self._sweep_stranded_owners,
                 "delegate cleanup": RepairService(self.db).retire_terminal_delegates,
                 "GitHub PR reviews": GitHubReviewPoller(
                     self.db, ReviewEvidenceProducer(self.db, self.repository_git), self.git,
@@ -2953,6 +3015,10 @@ class Orchestrator(
         # slot->base mapping so the git mutex keeps serializing.
         # Full adoption (git worktree list cross-check, prune, repair) is
         # phase 4.
+        # Settle the previous run's jobs first: a launch it left ambiguous
+        # still pins its workspace, and the cleanup below refuses to mutate a
+        # pinned workspace (smart-lantern-91).
+        await self._recover_stale_jobs()
         all_workspaces = await self.db.list_workspaces()
         self._recover_worktree_base_paths(all_workspaces)
         for ws in all_workspaces:
@@ -2973,6 +3039,10 @@ class Orchestrator(
                     )
                     await self.db.release_workspace(ws.id)
                 continue
+            if ws.kind_id == "job-snapshot":
+                # Job snapshots are durable across restarts; only job
+                # retention (``JobService.sweep``) may remove one.
+                continue
             self._remove_sentinel(ws.workspace_path)
             if ws.source_type == RepoSourceType.WORKTREE:
                 logger.info(
@@ -2980,7 +3050,14 @@ class Orchestrator(
                     ws.id,
                     ws.workspace_path,
                 )
-                await self._cleanup_worktree_workspace(ws)
+                try:
+                    await self._cleanup_worktree_workspace(ws)
+                except JobError as exc:
+                    # A live job pin defers the cleanup to a later restart;
+                    # it never aborts startup.
+                    logger.warning(
+                        "Recovery: deferring cleanup of workspace '%s' (%s)", ws.id, exc
+                    )
             elif ws.locked_by_agent_id and ws.locked_by_agent_id not in protected_agents:
                 logger.info(
                     "Recovery: releasing workspace lock '%s' (was locked by %s)",
@@ -3037,6 +3114,20 @@ class Orchestrator(
             await self.db.transition_task(
                 t.id, TaskStatus.READY, context="recovery", assigned_agent_id=None
             )
+
+    async def _recover_stale_jobs(self) -> None:
+        """Run job startup recovery; a failure is logged, never fatal."""
+        if not hasattr(type(self.db), "reconcilable_jobs"):
+            return  # lightweight test doubles have no job storage
+        from src.jobs.service import JobService
+
+        service = getattr(self, "job_service", None)
+        if service is None:
+            service = self.job_service = JobService(self.db, self.config)
+        try:
+            await service.recover_on_startup()
+        except Exception:
+            logger.exception("Recovery: job startup reconciliation failed")
 
     async def _ensure_task_directories(self) -> None:
         """Create per-project task directories under ``{data_dir}/tasks/``.
@@ -4270,7 +4361,10 @@ class Orchestrator(
                 publisher = getattr(self, "development_integration", None)
                 if publisher is not None:
                     retained_paths.append(publisher._store_path(repository))
+                from src.projects.storage_binding import bound_path
+
                 for path in retained_paths:
+                    path = bound_path(project.storage_binding, path)
                     extra_paths.append(str(path))
                     if origin:
                         retained_origins[str(Path(path).resolve())] = origin
@@ -4474,26 +4568,26 @@ class Orchestrator(
         # tolerant of missing transcripts and its own per-session failures,
         # so a wedged reader degrades one session rather than the cycle.
         try:
-            await self.transcript_watcher.tick()
+            await _bounded_stage("transcript watcher", self.transcript_watcher.tick())
         except Exception:
             logger.error("TranscriptWatcher tick failed", exc_info=True)
         try:
-            await self.agent_questions.tick()
+            await _bounded_stage("agent questions", self.agent_questions.tick())
         except Exception:
             logger.error("AgentQuestionService tick failed", exc_info=True)
         if self._command_handler is not None:
             try:
                 from src.commands.collaboration_lifecycle import CollaborationReconciler
-
-                result = await CollaborationReconciler(self._command_handler).tick()
+                result = await _bounded_stage(
+                    "collaboration", CollaborationReconciler(self._command_handler).tick())
                 if not result.get("success"):
                     logger.error("CollaborationReconciler tick refused: %s", result)
             except Exception:
                 logger.error("CollaborationReconciler tick failed", exc_info=True)
             try:
                 from src.agent_waits import AgentWaitReconciler
-
-                result = await AgentWaitReconciler(self._command_handler).tick()
+                result = await _bounded_stage(
+                    "agent waits", AgentWaitReconciler(self._command_handler).tick())
                 if not result.get("success"):
                     logger.error("AgentWaitReconciler tick refused: %s", result)
             except Exception:
@@ -4501,11 +4595,11 @@ class Orchestrator(
             try:
                 wait_service = getattr(self, "wait_service", None)
                 if wait_service is not None:
-                    await wait_service.tick()
+                    await _bounded_stage("wait service", wait_service.tick())
             except Exception:
                 logger.error("WaitService recovery tick failed", exc_info=True)
             try:
-                result = await self.agent_cron.tick()
+                result = await _bounded_stage("agent cron", self.agent_cron.tick())
                 if not result.get("success"):
                     logger.error("Agent cron tick refused: %s", result)
             except Exception:
@@ -4515,7 +4609,7 @@ class Orchestrator(
             # no durable wait can resolve, so say so rather than skip silently.
             logger.warning("AgentWaitReconciler skipped: no command handler installed")
             logger.warning("CollaborationReconciler skipped: no command handler installed")
-        await self.session_reconciler.tick()
+        await _bounded_stage("session reconciler", self.session_reconciler.tick())
         from src.integration.completion_recovery import schedule_ready_owner_recovery
 
         schedule_ready_owner_recovery(self)
@@ -4676,17 +4770,9 @@ class Orchestrator(
 
     async def _notify_provider_half_change(self, transition) -> None:
         """Send the D19 state-change message without blocking the evidence path."""
-        availability = self.provider_availability
-
-        async def _send() -> None:
-            try:
-                await availability.notify_state_change(
-                    transition.provider, transition.generation
-                )
-            except Exception:
-                logger.warning("provider state notification failed", exc_info=True)
-
-        asyncio.get_running_loop().create_task(_send())
+        self.provider_availability.notify_state_change_soon(
+            transition.provider, transition.generation
+        )
 
     async def _schedule(self, *, hierarchy_modes=None) -> list[AssignAction]:
         """Build scheduler state snapshot and compute task-to-agent assignments.
@@ -4730,8 +4816,25 @@ class Orchestrator(
         task_snapshot = [
             task for task in task_snapshot if not is_supervisor_profile(task.profile_id)
         ]
+        # Containers settle independently of worker admission, which excludes
+        # them from the claim frontier.
+        withheld = await self._release_ready_containers(
+            [t.id for t in task_snapshot if t.status == TaskStatus.READY and not t.is_blocked]
+        )
+        if withheld:
+            # Releasing a parent can unblock its children in this cycle.
+            task_snapshot = [
+                task for task in await self.db.list_active_tasks(exclude_held_ready=True)
+                if task.id not in withheld and not is_supervisor_profile(task.profile_id)
+            ]
+        if hierarchy_modes is None:
+            from src.integration.delivery_observer import hierarchy_frontier_modes
+
+            hierarchy_modes = await hierarchy_frontier_modes(self.db)
         delivery_admission = await self._delivery_admission(
-            [task.id for task in task_snapshot if task.status == TaskStatus.READY]
+            [task.id for task in task_snapshot if task.status == TaskStatus.READY],
+            hierarchy_modes=hierarchy_modes,
+            router_ready_projects=await self.router_readiness.ready_projects(),
         )
         task_snapshot = [
             task for task in task_snapshot
@@ -4739,19 +4842,8 @@ class Orchestrator(
         ]
         hierarchy_runnable_task_ids = await self.db.hierarchy_runnable_task_ids(
             [task.id for task in task_snapshot if task.status == TaskStatus.READY],
-            hierarchy_modes=hierarchy_modes,
+            hierarchy_modes=delivery_admission.hierarchy_modes,
         )
-        # A flagged container (spec §7) is settle-only work and never
-        # dispatchable.  Promotion releases the ones it promotes; this catches
-        # a container that was already READY when it gained its first child
-        # (``set_parent`` on a READY task) or came back READY from PAUSED,
-        # and withholds it from the reconciler and the scheduler this cycle
-        # even if its release did not land (calm-ember-48).
-        withheld = await self._release_ready_containers(
-            [t.id for t in task_snapshot if t.status == TaskStatus.READY]
-        )
-        if withheld:
-            task_snapshot = [t for t in task_snapshot if t.id not in withheld]
         # Only routed work is launchable (mandatory routing §9.1, I3): a
         # queued task whose route the router, an override or a role did not
         # write -- unrouted, or legacy once its project's router is ready --
@@ -4822,16 +4914,11 @@ class Orchestrator(
         for p in projects:
             project_usage[p.id] = await self.db.get_project_token_usage(p.id, since=window_start)
 
-        # Active (BUSY) agent count per project — used to enforce each
-        # project's max_concurrent_agents limit.  We look up the project
-        # from the agent's current task rather than storing it on the agent
-        # directly, because agent-project affinity is transient.
-        active_counts: dict[str, int] = {}
-        for a in agents:
-            if a.state == AgentState.BUSY and a.current_task_id:
-                task = await self.db.get_task(a.current_task_id)
-                if task:
-                    active_counts[task.project_id] = active_counts.get(task.project_id, 0) + 1
+        # Session ownership, including idle pools and unconfirmed stops, is
+        # capacity. Historical agent task pointers are not execution proof.
+        from src.orchestrator.agent_reconciler import project_live_session_counts
+
+        active_counts = project_live_session_counts(live_sessions)
 
         total_used = sum(project_usage.values())
 

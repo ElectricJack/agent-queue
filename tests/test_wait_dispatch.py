@@ -29,6 +29,7 @@ from src.commands import CommandHandler
 from src.commands.principal import ExecutionPrincipal, principal_context
 from src.config import AppConfig
 from src.database.tables import wait_deadlines, wait_listener_cursors, wait_records
+from src.integration.admission import observe_admission
 from src.waits.conditions import Condition, Scope
 from src.waits.listener import LeaseLost, ListenerUnavailable
 from src.waits.registry import build_registry
@@ -306,6 +307,7 @@ def runtime(env, *, clock=lambda: NOW, dispatcher=None, enabled=True, registry=N
     config = AppConfig()
     config.wait_policy.v2_enabled = enabled
     orch = SimpleNamespace(db=env.db, config=config, bus=SimpleNamespace(emit=AsyncMock()),
+                           _delivery_admission=lambda ids: observe_admission(env.db, ids, None),
                            plugin_registry=None, wait_registry=registry or env.registry,
                            wait_dispatcher=dispatcher)
     orch._command_handler = CommandHandler(orch, config)
@@ -574,6 +576,114 @@ async def test_deadline_missing_or_failed_effect_and_supersession_do_not_fire(ru
     assert (await service.command("wait_deadline_fire", args))["error_code"] == "wait.deadline_stale"
 
 
+@pytest.mark.parametrize("lost_owner,code", [("session", "wait.out_of_scope"),
+                                            ("claim", "stale_claim")])
+async def test_poisoned_deadline_is_quarantined_and_later_deadlines_fire_after_restart(
+    runtime_env, lost_owner, code,
+):
+    from src.database.tables import events
+    from tests.test_wait_queries import owner
+
+    env = runtime_env
+    orphan = await register(env, escalate_after_seconds=10)
+    other = await owner(env.db, "later-owner", "later-session", "later-agent")
+    later = await register(env, {"kind": "timer", "due_at": NOW + 11},
+                           scope=other, idempotency_key="later")
+    async with env.db._engine.begin() as conn:
+        # A lost claim leaves the task nonterminal, so terminal cleanup alone
+        # cannot fix it. The real escalation callback will reject its fence.
+        if lost_owner == "session":
+            from src.database.tables import sessions
+            await conn.execute(update(sessions).where(sessions.c.id == "s").values(state="stopped"))
+        else:
+            await conn.execute(update(tasks).where(tasks.c.id == "owner").values(claim_epoch=2))
+    service = runtime(env, clock=lambda: NOW + 12)
+    assert await service.lease()
+    await service.timers.rearm()
+    poisoned = next(row for _, _, row in service.timers.heap
+                    if row["wait_id"] == orphan["wait_id"] and row["deadline_type"] == "escalation")
+    assert await service.timers.tick() == 1
+    rows = await records(env, wait_deadlines)
+    assert next(r for r in rows if r["id"] == poisoned["id"])["cancelled_at"] == NOW + 12
+    assert next(r for r in rows if r["wait_id"] == later["wait_id"]
+                and r["deadline_type"] == "due")["fired_at"] == NOW + 12
+    audit = [r for r in await records(env, events)
+             if r["event_type"] == "wait.deadline_quarantined"]
+    assert len(audit) == 1 and code in audit[0]["payload"]
+    notices = [r for r in await records(env, messages)
+               if r["body_kind"] == "wait_deadline_quarantined"]
+    assert len(notices) == 1 and notices[0]["to_id"] == "supervisor-p"
+    assert next(r for r in await records(env) if r["id"] == orphan["wait_id"])["outcome"] == "pending"
+    await service.lease(release=True)
+    restarted = runtime(env, clock=lambda: NOW + 12)
+    assert await restarted.lease()
+    await restarted.timers.rearm()
+    assert all(row["id"] != poisoned["id"] for _, _, row in restarted.timers.heap)
+    # Replaying the internal cleanup cannot duplicate either durable record.
+    await restarted.quarantine_deadline(poisoned, {"success": False,
+                                                 "error_code": "wait.out_of_scope"})
+    assert await restarted.timers.tick() == 0
+    assert len([r for r in await records(env, events)
+                if r["event_type"] == "wait.deadline_quarantined"]) == 1
+    assert len([r for r in await records(env, messages)
+                if r["body_kind"] == "wait_deadline_quarantined"]) == 1
+
+
+@pytest.mark.parametrize("refusal", [
+    {"success": False, "error_code": "wait.unavailable"},
+    {"success": False, "error": "database temporarily unavailable"},
+])
+async def test_transient_deadline_refusal_is_not_quarantined(runtime_env, refusal):
+    env = runtime_env
+    await register(env, {"kind": "timer", "due_at": NOW + 10})
+    service = runtime(env, clock=lambda: NOW + 11)
+    assert await service.lease()
+    await service.timers.rearm()
+    service.command = AsyncMock(return_value=refusal)
+    with pytest.raises(ListenerUnavailable):
+        await service.timers.tick()
+    assert service.timers.heap
+    assert all(r["cancelled_at"] is None and r["fired_at"] is None
+               for r in await records(env, wait_deadlines))
+    assert not await records(env, messages)
+
+
+async def test_old_terminal_owner_is_retired_before_deadline_effect(runtime_env):
+    env = runtime_env
+    await register(env, escalate_after_seconds=10)
+    # Model an orphan left after the listener already consumed its task event.
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == "owner").values(
+            status="COMPLETED", assigned_agent_id=None,
+        ))
+    service = runtime(env, clock=lambda: NOW + 11)
+    assert await service.lease()
+    await service.timers.rearm()
+    assert await service.timers.tick() == 0
+    wait = (await records(env))[0]
+    assert wait["outcome"] == "cancelled" and wait["cleared_at"] == NOW + 11
+    assert all(r["cancelled_at"] == NOW + 11 for r in await records(env, wait_deadlines))
+    assert not await records(env, messages)
+
+
+async def test_deadline_quarantine_requires_current_listener_lease(runtime_env):
+    env = runtime_env
+    await register(env, escalate_after_seconds=10)
+    now = [NOW + 11]
+    stale = runtime(env, clock=lambda: now[0])
+    assert await stale.lease()
+    await stale.timers.rearm()
+    deadline = stale.timers.heap[0][2]
+    now[0] += stale.listener.lease_seconds + 1
+    current = runtime(env, clock=lambda: now[0])
+    assert await current.lease()
+    with pytest.raises(LeaseLost):
+        await stale.quarantine_deadline(deadline, {"success": False,
+                                                  "error_code": "wait.out_of_scope"})
+    assert all(r["cancelled_at"] is None for r in await records(env, wait_deadlines))
+    assert not await records(env, messages)
+
+
 async def test_wait_runtime_is_dormant_and_service_bound(runtime_env):
     env = runtime_env
     service = runtime(env, enabled=False)
@@ -775,7 +885,7 @@ async def test_deadline_waits_for_graph_without_blocking_lease_renewal(runtime_e
     waiting = asyncio.Event()
 
     def before_execute(conn, cursor, statement, parameters, context, executemany):
-        if "pg_advisory_xact_lock" in statement:
+        if "advisory_xact_lock" in statement:
             waiting.set()
 
     try:

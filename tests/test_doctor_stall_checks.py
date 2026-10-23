@@ -63,6 +63,50 @@ async def test_worker_relaunch_streak_is_visible_to_stall_sweep():
     assert findings[0]["count"] == 2 and findings[0]["cause"] == "context_thrash"
 
 
+@pytest.mark.parametrize("health", ["stale_contract", "invalid", "unavailable",
+                                    "question_required", "disabled"])
+@pytest.mark.parametrize("scope,pid", [("system", ""), ("project", "paused-project")])
+async def test_activation_faults_reach_sweep_without_tasks(context, monkeypatch, health, scope, pid):
+    from unittest.mock import AsyncMock
+
+    from src.playbooks.activation import ActivationHealth, ActivationHealthRecord, HealthReason
+
+    context.config.playbooks.enabled = True
+    context.handler._v2_lookups = AsyncMock(return_value=(object(), object(), None))
+    context.db.list_projects = AsyncMock(return_value=[])
+    record = ActivationHealthRecord(
+        "activation-one", "broken-policy", scope, pid, True, "sha256:" + "a" * 64,
+        ActivationHealth(health), (HealthReason("command_contract_changed", "changed", "gate_create"),),
+        activated_at=NOW - 7200,
+    )
+    monkeypatch.setattr(import_module("src.playbooks.activation"), "load_activation_health",
+                        AsyncMock(return_value=[record]))
+    context.reference_time = NOW
+    result = await module._check_sweep(context)
+    [alert] = result.data["findings"]
+    assert alert["kind"] == "playbook_activation_unhealthy"
+    assert alert["project_id"] == (pid or None)
+    assert alert["activation_age_seconds"] == 7200
+    assert "gate_create" in alert["detail"] and "2.0h ago" in alert["detail"]
+    result.observation_data = [alert]
+    [observation] = module._stall_observations(result)
+    assert observation["subject"] == {"type": "playbook_activation", "id": "activation-one"}
+    assert any(p["kind"] == alert["kind"] and p["project_id"] == (pid or None)
+               and p["complete"] for p in result.coverage)
+
+
+async def test_activation_read_failure_cannot_prove_health(context):
+    from dataclasses import replace
+
+    context.config.playbooks.enabled = True
+    probe = await module._probe(
+        replace(context, read_only=True), {"one"}, ("playbook_activation_unhealthy",),
+        lambda c: module._activation_findings(c, NOW),
+    )
+    assert probe.findings == []
+    assert all(not p["complete"] and "probe_unavailable" in p["reasons"] for p in probe.coverage)
+
+
 async def test_container_dependencies_sweep_reports_cap_and_retargeting(context, monkeypatch):
     from unittest.mock import AsyncMock
 
@@ -583,7 +627,7 @@ async def test_sweep_reports_missing_delivery_engine_without_waiting_for_tasks(c
         "_provider_findings", "_unmaterialized_pr_findings", "_completed_undelivered_findings",
         "_unadmitted_parent_findings", "_stranded_child_findings", "_reviewed_file_guard_findings",
         "_orphaned_pr_findings", "_validation_findings", "_subject_unknown_findings",
-        "_object_bootstrap_findings", "_worker_relaunch_findings", "_stranded_promotion_findings",
+        "_object_bootstrap_findings", "_worker_relaunch_findings", "_delivery_stuck_findings", "_stranded_promotion_findings",
     ):
         monkeypatch.setattr(module, name, AsyncMock(return_value=[]))
     monkeypatch.setattr(module, "_log_findings", lambda *args: [])

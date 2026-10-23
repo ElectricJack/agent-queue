@@ -114,7 +114,7 @@ request-scoped answer. Unknown git evidence withholds work; absent or misleading
 SQL delivery rows never establish containment. Branchless organizational tasks
 have no own artifact; a missing worker ref is unknown.
 
-In hierarchy/train mode with Git-first active, a completed `blocks` sibling
+In hierarchy/train mode, a completed `blocks` sibling
 must be proven on the shared parent's current branch before its dependent can
 run. One request-scoped, identity-revalidated Git prerequisite view per project
 is shared by scheduler/reconciler supply and pool demand within a tick, outside
@@ -126,9 +126,15 @@ observer refetches; a failed refresh never falls back to the expired snapshot.
 A rewind, retarget, reopened generation or unknown proof withholds work; no
 receipt can override it. Claim selection
 retains its own uncached observation (`max_age=0`) and revalidation under task
-locks, even when a tick's advisory view still makes a task look runnable. Shadow
-mode keeps the existing receipt fence, and non-hierarchy projects keep their
-existing admission policy.
+locks, even when a tick's advisory view still makes a task look runnable. An
+absent truth-bearing observer withholds the affected prerequisites without a
+receipt fallback. Non-hierarchy projects keep their source admission policy.
+
+`delivery-of` edges require source completion in the persisted graph projection
+and current default-target Git proof in `AdmissionView`. Completion alone is
+insufficient for dispatch, pool demand or a claim. Delivery is never persisted
+as blockedness: a rewind withholds the dependent on its next admission view
+without waiting for a SQL receipt change.
 
 A cross-epic dependent whose epic already contains every prerequisite's exact
 default-branch source needs no new refresh. Ordinary sibling collection does
@@ -148,6 +154,13 @@ Stacked prerequisites additionally require the existing, unexpired remote-ref
 cache. An explanation shares one request-scoped pool measurement between the
 pool wait reason and capacity spill planning. Actual scheduling, routing and
 claim admission retain their existing fresh observations and guards.
+
+For pull-request prerequisites, interactive explanations do not observe the
+current PR identity or its Git containment. They report
+`delivery_evidence_unavailable`, explicitly naming containment and claimability
+as unknown in this cached-only read, rather than asserting that the source is
+missing from the default branch. This also applies to merged PRs and running
+tasks. Fresh admission still requires the current PR and containment proof.
 
 For a development worker close, the completion generation id becomes visible in
 the same database transaction as the `COMPLETED` transition. Git provenance is
@@ -534,6 +547,15 @@ Containers are marked explicitly: `task_metadata.container = true`, set on a tas
 **Events and error codes.** A successful reparent emits `task.reparented` on the bus after commit, with `task_id`, `project_id`, `title`, `old_parent` and `new_parent` (`null` at the root); playbooks can trigger on it. Rejected hierarchy mutations raise `HierarchyError` and surface as `hierarchy.<code>`, the full set being: `not_found` (task or parent missing), `self_parent`, `cross_project`, `container_closed` (parent is COMPLETED), `dependency_on_container` (worker scheduling edge targets a container), `cycle`, `depth` (structural or naming cap), `open_children` (any unforced transition to COMPLETED with a non-terminal direct child — enforced in `_apply_transition`, not only at the close surfaces), `open_descendants` (archive of a subtree with a non-terminal *descendant*), `has_children` (delete without `--cascade`), `live_descendants` (abandon or cascade while a *descendant* — never the closing task itself — has a live session), `live_parent` (reparenting onto another worker's held task, refused under the destination task lock so the claim cannot race the check), `manually_paused_descendants` (abandon while a descendant is hand-paused), and `cycle_check_skipped` (internal: the bulk graph-creation writer `set_parent_bulk` was handed a task that is not a freshly inserted leaf). `aq schema` exposes the same list as the `hierarchy_error` enum.
 
 **Hierarchical child ids:** children created under a parent (supervisor graphs, plan subtasks, `--parent`) get `<parent_id>.1`, `<parent_id>.1.2` — ordinal per parent via `next_child_ordinal`, depth ≤ 3 — while root ids stay adjective-noun slugs. Ids never change after assignment. A name is never minted while anything still keys it: a live or archived task, or the integration identity a deleted task leaves behind (a `task_integration_checkpoints` row, a `task_branch_origins` row, live or retired, or an `integration_branch_owners` row it owns) — a new task minted onto that name would inherit the predecessor's checkpoint and branch fence (`_task_identity_exists` in `src/task_names.py`). The id itself now carries structure a human can read in Discord, a branch name (`aq/swift-falcon.2`), or a log line, and sorting groups a family together everywhere.
+
+**Root filing bases.** Creating a hierarchy/train root reserves its exact base
+from the designated repository's retained Git store. Prefer the fetched
+`refs/remotes/origin/<base>` commit, then the bare clone's `refs/heads/<base>`
+commit. An available local base needs no GitHub API or network request, so API
+backoff cannot prevent filing. If neither ref exists, acquire it through the
+authorized Git clone/fetch path; unavailable or missing Git evidence refuses
+filing rather than substituting another branch. This base selection does not
+replace live remote observations used by adoption, reparenting or completion.
 
 ### Operator removal (2026-10-06)
 

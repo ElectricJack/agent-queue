@@ -82,18 +82,22 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`integration_app_verify`](integration_app_verify.md) | Integration App Verify | Check the App credential, repository, producer, trust manifest, Actions variables, protection and audit workflow App mode depends on; one item each. |
 | [`integration_authorize_root`](integration_authorize_root.md) | Integration Authorize Root | Authenticated hierarchical integration operational control. |
 | [`integration_backmerge_source`](integration_backmerge_source.md) | Integration Backmerge Source | Author gated back-merge sources and fast-forward intents down the chain. |
+| [`integration_batch_fix`](integration_batch_fix.md) | Integration Batch Fix | Only the bound task-free fixer may inspect or publish its batch. |
 | [`integration_checkpoint_parent`](integration_checkpoint_parent.md) | Checkpoint integration parent | Pin the parent head and generation before waiting for child deliveries. |
 | [`integration_ci_evidence`](integration_ci_evidence.md) | Observe exact root candidate CI | Observe exact root candidate CI |
 | [`integration_cleanup`](integration_cleanup.md) | Advance integration cleanup | Materialize and advance bounded cleanup for one terminal root batch. |
 | [`integration_clear_retained_recovery`](integration_clear_retained_recovery.md) | Integration Clear Retained Recovery | Authenticated hierarchical integration operational control. |
 | [`integration_close_delivered_pr`](integration_close_delivered_pr.md) | Integration Close Delivered Pr | Authenticated hierarchical integration operational control. |
 | [`integration_complete_parent`](integration_complete_parent.md) | Integration Complete Parent | Complete a verified parent task at its exact verified generation and head. |
+| [`integration_continue_close`](integration_continue_close.md) | Integration Continue Close | Authenticated hierarchical integration operational control. |
 | [`integration_cutover`](integration_cutover.md) | Integration Cutover | Authenticated hierarchical integration operational control. |
+| [`integration_cutover_containment`](integration_cutover_containment.md) | Prepare strict-containment history | Local operator previews and applies exact historical lifecycle exclusions. |
 | [`integration_cutover_plan`](integration_cutover_plan.md) | Integration Cutover Plan | Authenticated hierarchical integration operational control. |
 | [`integration_delegate_publication`](integration_delegate_publication.md) | Integration Delegate Publication | Authenticated hierarchical integration operational control. |
 | [`integration_delivery_readiness`](integration_delivery_readiness.md) | Integration Delivery Readiness | Read whether every child of one parent has delivered, changing nothing. |
 | [`integration_eject`](integration_eject.md) | Integration Eject | Authenticated hierarchical integration operational control. |
 | [`integration_engine_transfer`](integration_engine_transfer.md) | Integration Engine Transfer | Authenticated hierarchical integration operational control. |
+| [`integration_fast_forward_pr`](integration_fast_forward_pr.md) | Integration Fast Forward Pr | Authenticated hierarchical integration operational control. |
 | [`integration_file_children`](integration_file_children.md) | File isolated child tasks | Reserve child origins and advance the parent integration generation atomically. |
 | [`integration_migrate_provenance_refs`](integration_migrate_provenance_refs.md) | Move Git provenance out of branches | Local operator copies and verifies immutable provenance refs before deleting legacy heads. |
 | [`integration_mutate_hierarchy`](integration_mutate_hierarchy.md) | Mutate integration hierarchy | Apply a guarded hierarchy change and invalidate affected parent generations. |
@@ -105,6 +109,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`integration_promotion_publish`](integration_promotion_publish.md) | Integration Promotion Publish | Authenticated hierarchical integration operational control. |
 | [`integration_quiesce`](integration_quiesce.md) | Quiesce idle train admission | Local operator closes an unfrozen root and releases explicitly fenced idle reservations. |
 | [`integration_reconcile_expired_mutation`](integration_reconcile_expired_mutation.md) | Reconcile an expired mutation after its operation ended | Local operator verifies nonce, fences, stopped authority and actual remote target. |
+| [`integration_reconcile_git_truth`](integration_reconcile_git_truth.md) | Integration Reconcile Git Truth | Daemon-only repair of Git-derived integration projections. |
 | [`integration_record_delivered`](integration_record_delivered.md) | Record exact externally delivered completion | Local operator verifies exact source on the designated default and records shipped work. |
 | [`integration_record_noop`](integration_record_noop.md) | Record verified no-code child disposition | Bind a child's current no-op completion and exact Git head to its parent receipt. |
 | [`integration_record_repair`](integration_record_repair.md) | Integration Record Repair | Record one exact repair check attempt against the current stage budget. |
@@ -123,7 +128,9 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`integration_repair_close_current`](integration_repair_close_current.md) | Resolve exact current repair close | Resolve exact current repair close |
 | [`integration_repair_dispatch`](integration_repair_dispatch.md) | Integration Repair Dispatch | Create the repair task and hand the current branch writer fence to it. |
 | [`integration_repair_start`](integration_repair_start.md) | Integration Repair Start | Activate or durably continue one operation's bounded repair stage. |
+| [`integration_repair_target`](integration_repair_target.md) | Integration Repair Target | Authenticated hierarchical integration operational control. |
 | [`integration_repair_timeout`](integration_repair_timeout.md) | Integration Repair Timeout | Expire the current repair stage once its absolute deadline has passed. |
+| [`integration_rerequest_check`](integration_rerequest_check.md) | Integration Rerequest Check | Authenticated hierarchical integration operational control. |
 | [`integration_reserve_owner`](integration_reserve_owner.md) | Integration Reserve Owner | Authenticated hierarchical integration operational control. |
 | [`integration_restore_task_origin`](integration_restore_task_origin.md) | Integration Restore Task Origin | Authenticated hierarchical integration operational control. |
 | [`integration_resume_batch`](integration_resume_batch.md) | Integration Resume Batch | Authenticated hierarchical integration operational control. |
@@ -431,6 +438,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`profile_reseed`](profile_reseed.md) | Profile Reseed | Restore or repair one vault system profile from its shipped default. |
 | [`project_doctor`](project_doctor.md) | Project Doctor | Diagnose the local-first project authorization gap without changing it. |
 | [`project_ready`](project_ready.md) | Project Ready | Ready frontier for a project + withheld tasks with reasons. |
+| [`project_relocate`](project_relocate.md) | Project Relocate | Execute the project_relocate command. |
 | [`promote_approve`](promote_approve.md) | Promote Approve | Post a pinned GitHub approval using the authenticated human gh login. |
 | [`promote_cancel`](promote_cancel.md) | Promote Cancel | Close an unpublished promotion PR and abort its intent. |
 | [`promote_hotfix`](promote_hotfix.md) | Promote Hotfix | File a hotfix based on a promotion target, through ordinary task routing. |

@@ -23,7 +23,6 @@ from src.database.tables import (
     integration_repair_operations,
     sessions,
     task_branch_origins,
-    task_delivery_receipts,
     task_integration_checkpoints,
     task_metadata,
     task_session_attempts,
@@ -377,6 +376,7 @@ class HierarchyIntegration:
         db,
         *,
         default_head_resolver: DefaultHeadResolver | None = None,
+        filing_head_resolver: DefaultHeadResolver | None = None,
         branch_materializer: BranchMaterializer | None = None,
         checkpoint_verifier: CheckpointVerifier | None = None,
         ancestry_verifier: AncestryVerifier | None = None,
@@ -390,6 +390,7 @@ class HierarchyIntegration:
         self.db = db
         self.subject_policy_loader = subject_policy_loader
         self.default_head_resolver = default_head_resolver
+        self.filing_head_resolver = filing_head_resolver
         self.branch_materializer = branch_materializer
         self.checkpoint_verifier = checkpoint_verifier
         self.ancestry_verifier = ancestry_verifier
@@ -1663,7 +1664,8 @@ class HierarchyIntegration:
             branch = row["branch_name"] or f"aq/{row['id']}"
             if parent_checkpoint is None:
                 base_sha = await self._resolve_head(
-                    repo, root_branch or row["branch_name"] or repo.default_branch
+                    repo, root_branch or row["branch_name"] or repo.default_branch,
+                    filing=root_branch is not None,
                 )
                 parent_ref = root_parent_ref or repo.default_branch
             else:
@@ -1698,10 +1700,11 @@ class HierarchyIntegration:
                 "checkpoint_sha": base_sha,
             }
 
-    async def _resolve_head(self, repo: RepoConfig, branch: str) -> str:
-        if self.default_head_resolver is None:
+    async def _resolve_head(self, repo: RepoConfig, branch: str, *, filing: bool = False) -> str:
+        resolver = (self.filing_head_resolver if filing else None) or self.default_head_resolver
+        if resolver is None:
             raise HierarchyError("invalid", "repository head resolver is unavailable")
-        value = self.default_head_resolver(repo, branch)
+        value = resolver(repo, branch)
         if inspect.isawaitable(value):
             value = await value
         if not isinstance(value, str) or not _OID.fullmatch(value):
@@ -1914,12 +1917,8 @@ class HierarchyIntegration:
         await self.db.guard_integration_mutation(
             task_id, "reparent", conn=conn, delivery=delivery,
         )
-        delivered = await conn.scalar(
-            select(task_delivery_receipts.c.id)
-            .where(task_delivery_receipts.c.source_task_id == task_id).limit(1)
-        )
-        if busy or live or delivered:
-            raise HierarchyError("delivery_target_fixed", "task has started or delivered work")
+        if busy or live:
+            raise HierarchyError("delivery_target_fixed", "task has started work")
         if origin["materialized"]:
             if await self._resolve_head(repo, task["branch_name"]) != origin["base_sha"]:
                 raise HierarchyError("delivery_target_fixed", "branch contains commits")

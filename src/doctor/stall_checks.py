@@ -572,6 +572,35 @@ async def _unmaterialized_pr_findings(ctx: DoctorContext, active: set[str]) -> l
     ]
 
 
+async def _delivery_stuck_findings(ctx: DoctorContext, active: set[str]) -> list[dict]:
+    """Generations the delivery watchdog projects as stuck, with its exact reason."""
+    from src.database.tables import wait_records
+
+    async with ctx.db._engine.connect() as conn:
+        rows = await _mapping_rows(conn, select(
+            wait_records.c.project_id, wait_records.c.owner_id, wait_records.c.decision_inputs,
+        ).where(
+            wait_records.c.project_id.in_(active), wait_records.c.origin == "integration",
+            wait_records.c.owner_kind == "scheduler", wait_records.c.outcome == "pending",
+        ).order_by(wait_records.c.created_at, wait_records.c.id).limit(MAX_ROWS))
+    findings = []
+    for row in rows:
+        inputs = row["decision_inputs"] or {}
+        if not inputs.get("delivery_watchdog_projection") or inputs.get("delivery_state") != "stuck":
+            continue
+        redrive = (inputs.get("redrive") or {}).get("task_id")
+        findings.append(_finding(
+            "delivery_stuck", row["project_id"],
+            f"delivery of {row['owner_id']} is stuck ({inputs.get('delivery_reason')}) for "
+            f"{int(inputs.get('age_seconds') or 0)}s"
+            + (f"; landing task {redrive}" if redrive else "")
+            + f"; aq wait explain --task {row['owner_id']}",
+            task_id=row["owner_id"], reason=inputs.get("delivery_reason"),
+            takeover_task_id=redrive, incident_id=inputs.get("incident_id"),
+        ))
+    return findings
+
+
 async def _completed_undelivered_findings(
     ctx: DoctorContext, active: set[str], now: float,
 ) -> list[dict]:
@@ -643,6 +672,40 @@ async def _conversation_findings(ctx: DoctorContext, now: float) -> list[dict]:
     )]
 
 
+async def _activation_findings(ctx: DoctorContext, now: float) -> list[dict]:
+    """Recompute health before another trigger discovers blocked automation."""
+    from src.playbooks.activation import ActivationHealth, load_activation_health
+
+    if not ctx.config.playbooks.enabled:
+        return []
+    if not callable(getattr(ctx.handler, "_v2_lookups", None)):
+        raise ObservationUnavailable("playbook health registries unavailable")
+    contracts, profiles, _events = await ctx.handler._v2_lookups()
+    records = await load_activation_health(ctx.db, contracts=contracts, profiles=profiles)
+    findings = []
+    for record in records:
+        if record.health is ActivationHealth.READY:
+            continue
+        age = max(0, now - record.activated_at) if record.activated_at is not None else None
+        age_text = f"activated {age / 3600:.1f}h ago" if age is not None else "activation age unknown"
+        reasons = "; ".join(
+            f"{reason.code}: {reason.subject or reason.message}" for reason in record.reasons
+        ) or "no health reasons"
+        findings.append(_finding(
+            "playbook_activation_unhealthy",
+            record.scope_identifier if record.scope == "project" else None,
+            f"{record.playbook_id} ({record.scope}:{record.scope_identifier or '-'}) is "
+            f"{record.health.value}, enabled={record.enabled}, {age_text}; {reasons}; "
+            "inspect activation-health, then recompile and reactivate through the reviewed path",
+            activation_id=record.activation_id, playbook_id=record.playbook_id,
+            scope=record.scope, scope_identifier=record.scope_identifier,
+            health=record.health.value, enabled=record.enabled,
+            artifact_sha256=record.active_artifact_sha256, activated_at=record.activated_at,
+            activation_age_seconds=age, reasons=[reason.as_dict() for reason in record.reasons],
+        ))
+    return findings
+
+
 def _sweep_result(ctx: DoctorContext, findings: list[dict], active: int) -> CheckResult:
     summary = (
         f"{len(findings)} stall finding(s) across {active} active project(s)" if findings
@@ -664,6 +727,7 @@ def _sweep_result(ctx: DoctorContext, findings: list[dict], active: int) -> Chec
 # The producer owns every identity mapping. None denotes a scope aggregate,
 # never a guessed task/project reference hidden somewhere in legacy JSON.
 _SUBJECTS = {
+    "playbook_activation_unhealthy": ("playbook_activation", "activation_id"),
     "unclaimed_work": ("task", "task_id"),
     "undelivered_blocker": ("task", "task_id"),
     "WAITING-ON-DELIVERY": ("task", "task_id"),
@@ -681,6 +745,7 @@ _SUBJECTS = {
     "disabled_provider": ("task", "task_id"),
     "unmaterialized_train_pr": ("task", "task_id"),
     "completed_undelivered": ("task", "task_id"), "conversation_unowned": None,
+    "delivery_stuck": ("task", "task_id"),
     "delivery_engine_unavailable": None, "flock_untracked": None,
     "session_authentication": ("session", "session_id"),
     "container_dependency": ("task", "task_id"), "container_dependencies_truncated": None,
@@ -753,7 +818,8 @@ async def _probe(ctx, active, kinds, run):
         retained.append(row)
     projects = set(active) | {row["project_id"] for row in retained}
     global_kinds = {kind for kind in kinds if _SUBJECTS[kind] is None
-                    or kind in {"validation_db", "session_authentication"}}
+                    or kind in {"validation_db", "session_authentication",
+                                "playbook_activation_unhealthy"}}
     if global_kinds:
         projects.add(None)
     if not projects:
@@ -823,6 +889,8 @@ async def _check_sweep(ctx: DoctorContext) -> CheckResult:
         failed_projects.update(active)
         tasks = tasks[:MAX_ROWS]
     runs = [
+        _probe(ctx, active, ("playbook_activation_unhealthy",),
+               lambda c: _activation_findings(c, now)),
         _probe(ctx, active, ("flock_untracked", "session_authentication"),
                lambda c: _flock_findings(c, now)),
         _probe(ctx, active, ("conversation_unowned",), lambda c: _conversation_findings(c, now)),
@@ -847,6 +915,8 @@ async def _check_sweep(ctx: DoctorContext) -> CheckResult:
                    lambda c: _unmaterialized_pr_findings(c, active)),
             _probe(ctx, active, ("completed_undelivered",),
                    lambda c: _completed_undelivered_findings(c, active, now)),
+            _probe(ctx, active, ("delivery_stuck",),
+                   lambda c: _delivery_stuck_findings(c, active)),
             _probe(ctx, active, ("unadmitted_parent",),
                    lambda c: _unadmitted_parent_findings(c, active)),
             _probe(ctx, active, ("stranded_child",), lambda c: _stranded_child_findings(c, now)),
@@ -1185,7 +1255,6 @@ async def _find_unadmitted_parents(ctx: DoctorContext) -> list[dict]:
     from src.database import tables as t
     from src.database.queries.integration_train_queries import (
         _ACTIVE_BATCH_LIFECYCLES,
-        _root_delivery_receipt_conditions,
     )
     from src.integration.reviews import ReviewEvidenceProducer
     from src.integration.delivery_observer import prerequisite_observer
@@ -1217,10 +1286,6 @@ async def _find_unadmitted_parents(ctx: DoctorContext) -> list[dict]:
             t.integration_batches, t.integration_batches.c.id == t.integration_batch_members.c.batch_id,
         ).where(t.integration_batch_members.c.task_id == t.tasks.c.id,
                 t.integration_batches.c.lifecycle.in_(_ACTIVE_BATCH_LIFECYCLES))),
-        (True if observer is not None else ~exists(select(t.task_delivery_receipts.c.id).where(
-            t.task_delivery_receipts.c.source_task_id == t.tasks.c.id,
-            *_root_delivery_receipt_conditions(t.repos.c.id, t.repos.c.default_branch),
-        ))),
     ).order_by(t.tasks.c.updated_at, t.tasks.c.id).limit(100)
     producer = ReviewEvidenceProducer(ctx.db, None)
     findings = []
@@ -1238,6 +1303,8 @@ async def _find_unadmitted_parents(ctx: DoctorContext) -> list[dict]:
         for index, record in enumerate(rows):
             row = dict(record)
             proof = verified.get(row["task_id"])
+            if proof is not None and proof.lifecycle_exclusion:
+                continue
             if (proof is not None
                     and proof.state in {DeliveryState.CONTAINED, DeliveryState.NO_CHANGE}
                     and (not row["checkpoint_sha"] or row["checkpoint_sha"] == proof.source_oid)):

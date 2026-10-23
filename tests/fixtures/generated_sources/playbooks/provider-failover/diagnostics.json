@@ -1,0 +1,16 @@
+[
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'generation' could not be determined statically, so the check against integer was silenced",
+    "rule_id": "reroute-on-change",
+    "severity": "info",
+    "step_id": "reroute-on-change--notify"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'provider' could not be determined statically, so the check against string was silenced",
+    "rule_id": "reroute-on-change",
+    "severity": "info",
+    "step_id": "reroute-on-change--notify"
+  }
+]

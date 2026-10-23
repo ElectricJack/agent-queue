@@ -1065,11 +1065,83 @@ async def _seed_repeated_parent_conflict(db, *, deadline_at: float = 300.0):
     return current_head
 
 
-async def test_second_parent_conflict_reuses_current_stage_without_resetting_budget(db):
+async def _retain_delegate_delivery(
+    db, tmp_path, *, task_id="repair-operation-1", delivered=False,
+):
+    """A completed delegate has real undelivered source evidence, like worker close."""
+    from src.integration.delivery_observer import DeliveryObserver
+    from src.integration.delivery_truth import CONTAINMENT_CONTRACT_VERSION
+    from src.integration.git_truth import GitTruth
+    from src.integration.provenance import CompletedSource, CompletionIdentity, GitProvenance
+    from src.models import TaskCompletion
+    from tests.git_seed_helpers import clone_seed, init_bare_seed
+
+    remote, work = tmp_path / "origin.git", tmp_path / "work"
+    init_bare_seed(remote)
+    clone_seed(remote, work)
+    def git(*args):
+        return subprocess.check_output(["git", "-C", str(work), *args], text=True).strip()
+    git("config", "user.name", "Repair Test")
+    git("config", "user.email", "repair@example.test")
+    (work / "base").write_text("base")
+    git("add", ".")
+    git("commit", "-qm", "base")
+    git("push", "-q", "origin", "main")
+    git("checkout", "-qb", "aq/parent")
+    (work / "repair").write_text("repair")
+    git("add", ".")
+    git("commit", "-qm", "repair")
+    head = git("rev-parse", "HEAD")
+    git("push", "-q", "origin", "aq/parent")
+    await db.update_repo("repo", url=str(remote))
+    completion_id = "repair-completed"
+    if delivered:
+        git("push", "-q", "origin", f"{head}:refs/heads/main")
+    await db.save_task_completion(TaskCompletion(
+        id=completion_id, task_id=task_id, outcome="pass", commits=[head], completed_at=130.0,
+    ))
+    await GitProvenance(
+        GitManager(), str(work), repository_url=str(remote),
+    ).write_completion(CompletedSource(
+        CompletionIdentity("p", "repo", task_id, completion_id), head,
+    ))
+    db.set_prerequisite_observer(DeliveryObserver(
+        db, git=GitManager(), data_dir=tmp_path / "observer",
+        truth=GitTruth(GitManager(), contract_version=CONTAINMENT_CONTRACT_VERSION),
+    ))
+    return work, head
+
+
+@pytest.mark.parametrize("proof", ["missing", "contained"])
+async def test_parent_repair_continuation_refuses_unproven_reopen(db, tmp_path, proof):
+    import subprocess
+
+    from src.database.queries.hierarchy_queries import HierarchyError
+    from src.integration.repair import RepairService
+
+    current_head = await _seed_repeated_parent_conflict(db)
+    if proof == "contained":
+        work, head = await _retain_delegate_delivery(db, tmp_path)
+        subprocess.run(
+            ["git", "-C", str(work), "push", "origin", f"{head}:refs/heads/main"],
+            check=True, capture_output=True,
+        )
+    before = await _repair_stage(db, "operation", 1)
+    task_before = await db.get_task("repair-operation-1")
+    with pytest.raises(HierarchyError):
+        await RepairService(db).start("operation", current_head, "operation", now=150.0)
+    assert await _repair_stage(db, "operation", 1) == before
+    task = await db.get_task("repair-operation-1")
+    assert task.status is TaskStatus.COMPLETED
+    assert task.description == task_before.description
+
+
+async def test_second_parent_conflict_reuses_current_stage_without_resetting_budget(db, tmp_path):
     """A later exact conflict resumes the detached debugger under its frozen budget."""
     from src.integration.repair import RepairService
 
     current_head = await _seed_repeated_parent_conflict(db)
+    await _retain_delegate_delivery(db, tmp_path)
     service = RepairService(db)
     before = await _repair_stage(db, "operation", 1)
 
@@ -2377,6 +2449,8 @@ async def test_transient_prepare_preserves_legacy_stage_attempts_and_fence(db, t
     before = await _repair_stage(db, "operation", 0)
     commands = ClaimCommandsMixin()
     commands.db = db
+    commands._development_integration = lambda: None
+    commands.config = SimpleNamespace(integration=SimpleNamespace(default_mode="pull_request"))
     commands.orchestrator = SimpleNamespace(
         _task_control_lock=lambda _task_id: asyncio.Lock(), claim_waiters={},
         _worktree_slots=lambda: SimpleNamespace(reset_slot_for_task=AsyncMock(return_value="aq/parent")),
@@ -7404,11 +7478,12 @@ async def test_pending_primary_release_recovers_stranded_debug_delegate(db, reco
 @pytest.mark.parametrize("invalid", [
     None, "session", "detached", "epoch", "claim", "intent", "subject", "resolved",
 ])
-async def test_parent_repair_prime_reads_only_current_attached_conflict(db, invalid):
+async def test_parent_repair_prime_reads_only_current_attached_conflict(db, tmp_path, invalid):
     from src.integration.repair import RepairService
     from src.prime.sections import build_task_context_section
 
     current_head = await _seed_repeated_parent_conflict(db)
+    await _retain_delegate_delivery(db, tmp_path)
     await RepairService(db).start("operation", current_head, "operation", now=150.0)
     repair_id = "repair-operation-1"
     async with db.immediate() as conn:
@@ -8114,7 +8189,9 @@ async def test_ordinary_repair_allocates_once_across_concurrent_visits_and_resta
 
 
 @pytest.mark.parametrize("archived", [False, True])
-async def test_completed_ordinary_repair_reseals_once_and_recovers_on_visit(ordinary_env, archived):
+async def test_completed_ordinary_repair_reseals_once_and_recovers_on_visit(
+    ordinary_env, archived, tmp_path,
+):
     from src.integration.train import TrainTarget
     from src.integration.train_sources import DatabaseBatches
 
@@ -8128,6 +8205,7 @@ async def test_completed_ordinary_repair_reseals_once_and_recovers_on_visit(ordi
         await conn.execute(update(integration_batches).where(
             integration_batches.c.id == "ordinary").values(lifecycle="repairing", updated_at=1000))
     if archived:
+        await _retain_delegate_delivery(env.db, tmp_path, task_id=task_id, delivered=True)
         await env.db.archive_task(task_id)
     resumed = await asyncio.gather(*(env.service.resume_completed(
         task_id, batch_id="ordinary", attempt=1) for _ in range(4)))
@@ -8202,7 +8280,9 @@ async def test_ordinary_repair_is_filed_ahead_of_ordinary_work(ordinary_env):
 
 
 @pytest.mark.parametrize("archived", [False, True])
-async def test_ordinary_default_sync_is_bounded_across_restart_and_archival(ordinary_env, archived):
+async def test_ordinary_default_sync_is_bounded_across_restart_and_archival(
+    ordinary_env, archived, tmp_path,
+):
     from src.integration.repair import OrdinaryRepairService
 
     env = ordinary_env
@@ -8220,6 +8300,7 @@ async def test_ordinary_default_sync_is_bounded_across_restart_and_archival(ordi
     await env.db.update_task(task_id, status=TaskStatus.COMPLETED)
     env.now += 10
     if archived:
+        await _retain_delegate_delivery(env.db, tmp_path, task_id=task_id, delivered=True)
         await env.db.archive_task(task_id)
         assert await env.db.get_task(task_id) is None
     restarted = OrdinaryRepairService(env.db, locks=env.locks, clock=lambda: env.now)
@@ -8249,6 +8330,64 @@ async def test_ordinary_default_sync_is_bounded_across_restart_and_archival(ordi
         authorize=authorize,
     ))["outcome"] == "sync_exhausted"
     assert (await env.store.get("ordinary")).repair_attempt_count == 2
+
+
+async def test_spent_default_sync_escalates_the_batch_once(ordinary_env):
+    """A spent sync left an epic batch sealed with nothing to run for 60m+ (train-56f15)."""
+    env = ordinary_env
+    decision = {"ref": "refs/heads/main", "sha": "c" * 40, "checks": ["unit"],
+                "provenance": "train_candidate"}
+    filed = await env.service.allocate(
+        "ordinary", target_ref=env.ref, head_sha=STARTING_SHA, sync_default_branch=decision,
+        authorize=AsyncMock(return_value=True), ttl_seconds=10,
+    )
+    await env.db.update_task(filed["task_id"], status=TaskStatus.COMPLETED)
+    env.now += 10
+    replays = [await env.service.allocate(
+        "ordinary", target_ref=env.ref, head_sha="d" * 40, sync_default_branch=decision,
+        authorize=AsyncMock(return_value=True),
+    ) for _ in range(3)]
+    assert {(r["outcome"], r["task_id"]) for r in replays} == {("sync_exhausted", filed["task_id"])}
+    assert len({r["escalation_id"] for r in replays}) == 1
+    incident = await env.db.get_escalation(replays[0]["escalation_id"])
+    assert (incident["state"], incident["source_identity"], incident["summary"]) == (
+        "needs_human", "ordinary", "Default-branch sync exhausted for batch ordinary")
+    assert "abort-batch ordinary --apply" in incident["decision_requested"]
+    assert "refresh-epic --task EPIC --apply" in incident["decision_requested"]
+    assert filed["task_id"] in incident["investigation"]
+    async with env.db._engine.connect() as conn:
+        notices = (await conn.execute(select(messages).where(
+            messages.c.body_kind == "integration_repair_exhausted",
+        ))).mappings().all()
+    assert [n["to_id"] for n in notices] == ["supervisor-p"]
+    assert (await env.store.get("ordinary")).repair_attempt_count == 1
+
+
+async def test_restart_refuses_an_ordinary_repair_that_is_not_the_current_attempt(ordinary_env):
+    """A restarted attempt-1 repair went READY but no claim or handoff could ever take it."""
+    env = ordinary_env
+    first = await env.service.allocate("ordinary", authorize=AsyncMock(return_value=True),
+                                       target_ref=env.ref, head_sha=STARTING_SHA, ttl_seconds=10)
+    await env.db.update_task(first["task_id"], status=TaskStatus.COMPLETED)
+    env.now += 10
+    second = await env.service.allocate("ordinary", authorize=AsyncMock(return_value=True),
+                                        target_ref=env.ref, head_sha=STARTING_SHA, ttl_seconds=10)
+    assert second["attempt_count"] == 2
+    await env.db.update_task(first["task_id"], status=TaskStatus.FAILED)
+    result = await TaskCommandsMixin._cmd_restart_task(
+        SimpleNamespace(db=env.db), {"task_id": first["task_id"]},
+    )
+    assert (result["success"], result["error_code"]) == (False, "stale_repair")
+    assert "attempt 1 but batch ordinary is open at attempt 2" in result["error"]
+    assert f"aq task close {first['task_id']} --obsolete" in result["error"]
+    assert (await env.db.get_task(first["task_id"])).status is TaskStatus.FAILED
+    current = await env.db.get_task(second["task_id"])
+    assert await env.service.stale(current) is None
+    assert await env.service.stale(await env.db.get_task(first["task_id"])) is not None
+    async with env.db.immediate() as conn:
+        await conn.execute(update(integration_batches).where(
+            integration_batches.c.id == "ordinary").values(intent="aborted"))
+    assert "is aborted at attempt 2" in await env.service.stale(current)
 
 
 @pytest.mark.parametrize("sync", [False, True])

@@ -23,6 +23,315 @@ LANDING_REVISION = "8e73e088fa5050621a165b9d13f90ef88334572d"
 BASELINE_ENGINE_LINES = 82_627
 BASELINE_OWNED_LINES = 140_499
 REPLACEMENT_ALLOWANCE = 15_000
+# Exact standing batch exception, not a new replacement allowance. Remove its
+# manifest opt-in when azure-ridge-72 restores the original transition cap.
+TRANSITION_BATCH_EXCEPTION = {'batch_id': 'train-745592300af5cef0338dec80ebabb465',
+ 'decision_message_id': 'msg-7ed85e78d1af4f3e85b485a57967e794',
+ 'decision_message_ids': ['msg-7ed85e78d1af4f3e85b485a57967e794',
+                          'msg-381054d695e64055979a687c4d811e7e',
+                          'msg-ab86b9766c2f42b9ba4920aba585b577',
+                          'msg-21784b3e56aa4f54bf1042b7c9af4aaf',
+                          'msg-1984d09ec70e479c9d0cc14c57e828c3',
+                          'msg-00b0e08117cc479c9a4a0b36fc5a30d0',
+                          'msg-3bed5d5db4ed4c7fa1ef9150b1c3dd8c',
+                          'msg-a337e2c905ce4f5c8a236344a4e25211',
+                          'msg-330ea2478c724381acbb5512fc99e4b5',
+                          'msg-e2dd5a423516458eb564e745a12ab30e',
+                          'msg-3f6311071a6647429059f3a990750597',
+                          'msg-99539879',
+                          'msg-68ccb1d50ee04851a7268dd58e9d4459',
+                          'msg-9f16388d39524c8b9a33d6796b88d1fb'],
+ 'decision_record': 'record:2720bdbe-7521-427e-8e72-1f40a3ff9818',
+ 'measured_source_revision': '73e99672d2447c44ef6a71d43a0187f2d16630af',
+ 'original_owned_total_cap': 155499,
+ 'measured_owned_total': 161162,
+ 'delta': 5663,
+ 'predecessors': [{'batch_id': 'train-77f0d8e451f6aed08d608e443031047a',
+                   'decision_message_id': 'msg-edb5f857de344716a38857406fa69958',
+                   'decision_record': 'record:2720bdbe-7521-427e-8e72-1f40a3ff9818',
+                   'measured_source_revision': 'd00e25221856145f24777f8b016a008b4e954bca',
+                   'original_owned_total_cap': 155499,
+                   'measured_owned_total': 156792,
+                   'delta': 1293,
+                   'restore_task': 'azure-ridge-72',
+                   'expires_at': 's4_modules'},
+                  {'batch_id': 'train-48d0a1c1f1f8292b2977546011609db6',
+                   'measured_source_revision': 'cbfd455b0e9f053854a2c1becfa1efaeef231582',
+                   'authorized_delta': 2166,
+                   'measured_owned_total': 158958}],
+ 'batch_measured_delta': 2204,
+ 'restore_task': 'azure-ridge-72',
+ 'expires_at': 's4_modules',
+ 'category_approval_message_id': 'msg-90f9f1b1e0cd4e8e8d28071cffc927a6',
+ 'storage_categories': ['integration_close_attempts'],
+ 'category_restore_task': 'stark-willow-95.17',
+ 'verification_task': 'stark-willow-95.18',
+ 'measured_engine_lines': 85543,
+ 'measured_table_count': 45,
+ 'delivery_method': 'operator direct integration; user request 2026-10-22',
+ 'amendments': [{'task_id': 'solid-impact-56',
+                 'decision_message_id': 'msg-ab86b9766c2f42b9ba4920aba585b577',
+                 'referenced_decision': 'msg-9f895e0d',
+                 'previous_owned_total': 160820,
+                 'previous_engine_lines': 85301,
+                 'authorized_owned_delta': 17,
+                 'authorized_engine_delta': 15,
+                 'reason': 'Memoize stack authorization inputs within one scheduler sync pass; '
+                           'supervisor approved exact net footprint after removing an unused '
+                           'parent query.',
+                 'global_request': 'msg-9f895e0d',
+                 'global_grant': 'msg-7f2f68c1',
+                 'grant_delivery_message_id': 'msg-21784b3e56aa4f54bf1042b7c9af4aaf'},
+                {'task_id': 'agile-beacon-80',
+                 'decision_message_id': 'msg-1984d09ec70e479c9d0cc14c57e828c3',
+                 'referenced_decision': 'msg-00b0e081',
+                 'delegation_thread': 'size-cap-delegation-2026-10-23',
+                 'previous_owned_total': 160837,
+                 'previous_engine_lines': 85316,
+                 'authorized_owned_delta': 65,
+                 'authorized_engine_delta': 65,
+                 'reason': 'Bounded retry of provably unlaunched batch fixers and recovery of '
+                           'expired legacy family owners; global supervisor approved the exact '
+                           '+65-line exception under the project supervisor delegation.',
+                 'grant_delivery_message_id': 'msg-1984d09ec70e479c9d0cc14c57e828c3',
+                 'project_grant_message_id': 'msg-00b0e08117cc479c9a4a0b36fc5a30d0',
+                 'operator_decision': '6679052c',
+                 'pull_request': 'https://github.com/ElectricJack/agent-queue/pull/1820'},
+                {'task_id': 'nimble-torrent-12',
+                 'decision_message_id': 'msg-3bed5d5db4ed4c7fa1ef9150b1c3dd8c',
+                 'referenced_decision': 'size-cap-delegation-2026-10-23',
+                 'previous_owned_total': 160879,
+                 'previous_shared_lines': 62006,
+                 'authorized_owned_delta': 1,
+                 'authorized_shared_delta': 1,
+                 'authorized_engine_delta': 0,
+                 'reason': 'Accept repository mappings in the shared GitHub binding resolver for '
+                           'verified CI waits; supervisor approved the exact one-line shared '
+                           'footprint.'},
+                {'task_id': 'prime-impact-40',
+                 'decision_message_id': 'msg-a337e2c905ce4f5c8a236344a4e25211',
+                 'referenced_decision': 'size-cap-delegation-2026-10-23',
+                 'previous_owned_total': 160879,
+                 'previous_engine_lines': 85316,
+                 'authorized_owned_delta': 103,
+                 'authorized_engine_delta': 82,
+                 'reason': 'GitHub caller diagnostics, shared background quota reserve and '
+                           'inventory reuse; exact supervisor grant under '
+                           'size-cap-delegation-2026-10-23.',
+                 'supersedes_message_id': 'msg-ac47a08407a6462bb411326ecefeab44',
+                 'grant_source_message_id': 'msg-330ea2478c724381acbb5512fc99e4b5'},
+                {'task_id': 'quick-pinnacle-97',
+                 'decision_message_id': 'msg-e2dd5a423516458eb564e745a12ab30e',
+                 'referenced_decision': 'size-cap-delegation-2026-10-23',
+                 'operator_decision': '6679052c',
+                 'previous_source_revision': 'dd95038cca3fef9aae70eb0092079fe24d52a062',
+                 'previous_owned_total': 161053,
+                 'previous_engine_lines': 85468,
+                 'authorized_owned_delta': 28,
+                 'authorized_engine_delta': 28,
+                 'measured_owned_total': 161081,
+                 'measured_engine_lines': 85496,
+                 'measured_table_count': 45,
+                 'measured_source_revision': '344a85b9d8388521975af9b830e4d8b17817562e',
+                 'pull_request': 'https://github.com/ElectricJack/agent-queue/pull/1884',
+                 'reason': 'Recover orphaned launching fixer reservations after a per-attempt '
+                           'grace period; fence late registration and completion by session, '
+                           'instance and launch timestamp. Exact self-approved measurement under '
+                           'the project supervisor delegation.'},
+                {'task_id': 'stark-beacon-94',
+                 'decision_id': 'size-cap-delegation-2026-10-23',
+                 'operator_decision': '6679052c',
+                 'operator_task': 'sharp-cascade-53',
+                 'pr_url': 'https://github.com/ElectricJack/agent-queue/pull/1817',
+                 'measured_source_revision': '24d081eecf0c00a912a064e37ba616334382e263',
+                 'previous_owned_total': 161053,
+                 'previous_engine_lines': 85468,
+                 'previous_table_count': 45,
+                 'authorized_owned_delta': 21,
+                 'authorized_engine_delta': 21,
+                 'authorized_table_delta': 0,
+                 'reason': 'Exclude published base history from repair identity checks; supervisor '
+                           'granted the exact measured footprint for PR #1817 under the delegated '
+                           'operator decision. Plain merge retains the existing implementation and '
+                           'all dev amendments.',
+                 'base_revision': 'dd95038cca3fef9aae70eb0092079fe24d52a062',
+                 'previous_source_revision': '438aa36cc93945305ea291622009f6b34d4ee733'},
+                {'task_id': 'sharp-rapids-10',
+                 'decision_message_id': 'msg-3f6311071a6647429059f3a990750597',
+                 'referenced_decision': 'size-cap-delegation-2026-10-23',
+                 'operator_decision': '6679052c',
+                 'grant_id': 'sharp-rapids-10-cap-epoch2-2026-10-23',
+                 'pull_request': 'https://github.com/ElectricJack/agent-queue/pull/1885',
+                 'previous_source_revision': '61869b7cdcf507b8e8acb596893bb63ac0794997',
+                 'previous_owned_total': 161102,
+                 'previous_engine_lines': 85517,
+                 'authorized_owned_delta': 9,
+                 'authorized_engine_delta': 0,
+                 'measured_source_revision': '43b3e220a2a1ac6e8d5b7543d3f83063c7c747f6',
+                 'measured_owned_total': 161111,
+                 'measured_engine_lines': 85517,
+                 'measured_table_count': 45,
+                 'reason': 'Dashboard PR snapshot quota fix; exact project supervisor amendment '
+                           'under size-cap-delegation-2026-10-23. No automatic ceiling increase or '
+                           'source relocation.'},
+                {'task_id': 'fair-dune-41',
+                 'decision_message_id': 'msg-99539879',
+                 'referenced_decision': 'size-cap-delegation-2026-10-23',
+                 'previous_source_revision': '4a0c4e38ab979a1664586d47d16404b48def4089',
+                 'previous_owned_total': 161111,
+                 'previous_engine_lines': 85517,
+                 'previous_table_count': 45,
+                 'authorized_owned_delta': 2,
+                 'authorized_engine_delta': 0,
+                 'authorized_table_delta': 0,
+                 'original_approved_owned_total': 161053,
+                 'original_measured_owned_total': 161055,
+                 'measured_source_revision': 'ca7a4377c532d723b0ab9c3bb5f833707a317cf5',
+                 'measured_owned_total': 161113,
+                 'measured_engine_lines': 85517,
+                 'measured_table_count': 45,
+                 'pull_request': 'https://github.com/ElectricJack/agent-queue/pull/1886',
+                 'charged_definition': 'src/doctor/stall_checks.py::_check_sweep',
+                 'reason': 'Stall-sweep alert for non-ready playbook activations. Global '
+                           'supervisor approved the exact +2 owned lines under '
+                           'size-cap-delegation-2026-10-23; project supervisor directed carrying '
+                           'that unchanged delta onto current dev after PR1885. Engine lines and '
+                           'table count remain unchanged.'},
+                {'task_id': 'noble-flare-12',
+                 'decision_message_id': 'msg-68ccb1d50ee04851a7268dd58e9d4459',
+                 'operator_decision': '6679052c',
+                 'operator_task': 'sharp-cascade-53',
+                 'referenced_decision': 'size-cap-delegation-2026-10-23',
+                 'pull_request': 'https://github.com/ElectricJack/agent-queue/pull/1892',
+                 'previous_source_revision': '4a0c4e38ab979a1664586d47d16404b48def4089',
+                 'previous_owned_total': 161111,
+                 'previous_engine_lines': 85517,
+                 'authorized_owned_delta': 23,
+                 'authorized_engine_delta': 22,
+                 'authorized_shared_delta': 1,
+                 'measured_source_revision': 'b194122701a0130039230dea4c8caa93c70f60e1',
+                 'measured_owned_total': 161134,
+                 'measured_engine_lines': 85539,
+                 'measured_table_count': 45,
+                 'reason': 'Bound cached tile readiness to visible candidates and stack proof '
+                           'sources; exact project supervisor approval under '
+                           'size-cap-delegation-2026-10-23. Preserve scheduler shared inputs and '
+                           'fail-closed authorization. No new storage or automatic cap increase.'},
+                {'task_id': 'sound-forge-62',
+                 'decision_message_id': 'msg-9f16388d39524c8b9a33d6796b88d1fb',
+                 'referenced_decision': 'size-cap-delegation-2026-10-23',
+                 'operator_decision': '6679052c',
+                 'operator_task': 'sharp-cascade-53',
+                 'pull_request': 'https://github.com/ElectricJack/agent-queue/pull/1891',
+                 'previous_source_revision': '4a0c4e38ab979a1664586d47d16404b48def4089',
+                 'previous_owned_total': 161111,
+                 'previous_engine_lines': 85517,
+                 'previous_table_count': 45,
+                 'authorized_owned_delta': 26,
+                 'authorized_engine_delta': 4,
+                 'authorized_shared_delta': 22,
+                 'authorized_table_delta': 0,
+                 'measured_source_revision': '1f0633050802438db6ef954c43d6d0eb2ce0edf3',
+                 'measured_owned_total': 161137,
+                 'measured_engine_lines': 85521,
+                 'measured_table_count': 45,
+                 'original_task_source_revision': '8e4e71b34b5c03b191b392a9d8f28176d177dd82',
+                 'original_task_owned_total': 161079,
+                 'original_task_engine_lines': 85472,
+                 'original_task_base_owned_total': 161053,
+                 'original_task_base_engine_lines': 85468,
+                 'reason': 'Explicit supervisor approval of the exact retained Git filing resolver '
+                           'footprint; compose the unchanged +26 owned/+4 engine grant on dev, '
+                           'preserving historical grants.'}],
+ 'supplemental_grants': [{'task_id': 'fresh-apex-30',
+                          'approval_message_id': 'msg-4e25c0d3',
+                          'relay_message_id': 'msg-bd98955a2fa443cc920ce725e42a5c3f',
+                          'measured_source_revision': 'd9c50555a1d87beaefbfc8de3b13229a6ab9f061',
+                          'prior_owned_total_cap': 160820,
+                          'authorized_delta': 5,
+                          'measured_owned_total': 160825,
+                          'reason': 'Verify registered linked fixer worktrees before permission '
+                                    'bypass.'}],
+ 'merge_measurement': {'task_id': 'fresh-apex-30',
+                       'dev_source_revision': '4e50c276fca68cbe92ba4fc704363ec6026db7dc',
+                       'dev_owned_total': 160879,
+                       'dev_engine_lines': 85316,
+                       'authorized_owned_delta': 5,
+                       'authorized_engine_delta': 5,
+                       'approval_message_id': 'msg-a10c7ab8ff2946f8b1f27528a407524c',
+                       'reason': 'Carry forward the unchanged approved fixer delta onto the '
+                                 'measured dev tree.',
+                       'decision_id': 'size-cap-delegation-2026-10-23'},
+ 'merge_remeasurement': {'task_id': 'agile-beacon-80',
+                         'authority': 'msg-00b0e08117cc479c9a4a0b36fc5a30d0',
+                         'operator_decision': '6679052c',
+                         'delegation_thread': 'size-cap-delegation-2026-10-23',
+                         'merged_dev_revision': '4e50c276fca68cbe92ba4fc704363ec6026db7dc',
+                         'merged_dev_owned_total': 160879,
+                         'merged_dev_engine_lines': 85316,
+                         'merged_dev_table_count': 45,
+                         'previous_source_revision': '974e10dcf94ad95f98c14fbc3d7171072e644da2',
+                         'previous_measured_owned_total': 160944,
+                         'measured_source_revision': 'efd690243cecfafedfeaf81c829d86255cabd620',
+                         'measured_owned_total': 160944,
+                         'measured_engine_lines': 85381,
+                         'measured_table_count': 45,
+                         'authorized_owned_delta': 65,
+                         'authorized_engine_delta': 65,
+                         'reason': 'Plain merge of PR1877 preparation diagnostics from dev; '
+                                   'combined totals remain unchanged and this task retains its '
+                                   'approved 65-line delta. Project grant requires re-recording '
+                                   'against the combined total when dev advances.'},
+ 'batch_composition': {'batch_id': 'train-854bd30527fc85b1edc0e2c7047bd673',
+                       'starting_revision': 'bd8fcfe183d6a59ea90f4498cda2bee80a7222f4',
+                       'base_revision': '4e50c276fca68cbe92ba4fc704363ec6026db7dc',
+                       'base_owned_total': 160879,
+                       'base_engine_lines': 85316,
+                       'approved_deltas': {'fresh-apex-30': {'owned': 5, 'engine': 5},
+                                           'agile-beacon-80': {'owned': 65, 'engine': 65},
+                                           'nimble-torrent-12': {'owned': 1, 'engine': 0},
+                                           'prime-impact-40': {'owned': 103, 'engine': 82},
+                                           'quick-pinnacle-97': {'owned': 28, 'engine': 28},
+                                           'stark-beacon-94': {'owned': 21, 'engine': 21}},
+                       'reason': 'Compose the existing exact grants on their common measured dev '
+                                 'tree; preserve each historical measurement below.',
+                       'source_revision': '4e98fa0b96d561cfa7de934541c3e66df430b2a6',
+                       'member_sources': {'agile-beacon-80': '6ba25e2472d4a8c6bb145d6f9bc2e067c8ebad61',
+                                          'grand-quest-20': 'd60c599767a340d3e3fd6dba2eff8451d349d7e7',
+                                          'nimble-torrent-12': '9f2dd1988046baa0e40681c4457f4729b55e80c6',
+                                          'prime-impact-40': '0b090fb969c46143f8cce7a55dd21f7d8bf1b1d8',
+                                          'quick-pinnacle-97': '344a85b9d8388521975af9b830e4d8b17817562e',
+                                          'stark-beacon-94': '7cf8687ede868f8f714a655a63a00ba5dd428266'}},
+ 'post_batch_composition': {'base_revision': '4a0c4e38ab979a1664586d47d16404b48def4089',
+                            'base_owned_total': 161111,
+                            'base_engine_lines': 85517,
+                            'source_revision': '1f0633050802438db6ef954c43d6d0eb2ce0edf3',
+                            'member_sources': {'sound-forge-62': '8e4e71b34b5c03b191b392a9d8f28176d177dd82'},
+                            'approved_deltas': {'sound-forge-62': {'owned': 26,
+                                                                   'engine': 4,
+                                                                   'shared': 22,
+                                                                   'tables': 0}},
+                            'decision_message_id': 'msg-9f16388d39524c8b9a33d6796b88d1fb'},
+ 'frozen_batch_composition': {'batch_id': 'train-5429c3c71859f327ff8b46dbf1edc557',
+                              'starting_revision': '48adaddad079a7adc2930e470590621c1575e674',
+                              'source_revision': '73e99672d2447c44ef6a71d43a0187f2d16630af',
+                              'base_owned_total': 161113,
+                              'base_engine_lines': 85517,
+                              'base_table_count': 45,
+                              'member_sources': {'noble-flare-12': 'f09829d145915bc7426d24f28623283f7319a7a2',
+                                                 'sound-forge-62': '15239e75971ae5ac39e6a7d0a5e467331ab58428'},
+                              'approved_deltas': {'noble-flare-12': {'owned': 23,
+                                                                     'engine': 22,
+                                                                     'shared': 1,
+                                                                     'tables': 0},
+                                                  'sound-forge-62': {'owned': 26,
+                                                                     'engine': 4,
+                                                                     'shared': 22,
+                                                                     'tables': 0}},
+                              'reason': 'Compose both unchanged approved member grants on the '
+                                        'retained starting head, which already includes '
+                                        'fair-dune-41. Preserve every historical grant and '
+                                        'measurement.'}}
 FINAL_ENGINE_CAP = 11_999
 FINAL_TOTAL_CAP = 19_999
 FINAL_TABLE_CAP = 10
@@ -49,10 +358,10 @@ STORAGE_METHOD = re.compile(
     r"(?:task_meta|metadata|op_event|operation_event|journal)|^log_event$"
 )
 STORAGE_TABLES = {"task_metadata", "op_events", "operation_events", "events",
-                  "integration_subject_journal"}
+                  "integration_subject_journal", "system_config"}
 SQL_STORAGE_WRITE = re.compile(
     r"\b(?:insert\s+into|update|delete\s+from)\s+[\"\w.]*"
-    r"(?:task_metadata|op_events|operation_events|events|integration_subject_journal)\b",
+    r"(?:task_metadata|op_events|operation_events|events|integration_subject_journal|system_config)\b",
     re.IGNORECASE,
 )
 WRITE_CALLS = {"insert", "update", "delete"}
@@ -432,13 +741,27 @@ def inventory(root: Path, manifest: dict) -> dict:
             "unknown_sinks": unknown_sinks, "legacy_sinks": legacy_sinks}
 
 
+def transition_owned_cap(manifest: dict) -> int:
+    """Accept only the recorded batch decision; never derive a cap from counts."""
+    original = BASELINE_OWNED_LINES + REPLACEMENT_ALLOWANCE
+    exception = manifest.get("transition_exception")
+    if exception is None:
+        return original
+    if exception != TRANSITION_BATCH_EXCEPTION:
+        raise ValueError("unapproved integration transition exception")
+    return original + TRANSITION_BATCH_EXCEPTION["delta"]
+
+
 def budget_errors(report: dict, manifest: dict) -> list[str]:
     phase = manifest["phase"]
     if phase not in {"transition", "s4_modules", "final"}:
         return [f"unknown budget phase: {phase}"]
     if phase == "transition":
         engine_cap = BASELINE_ENGINE_LINES + REPLACEMENT_ALLOWANCE
-        total_cap = BASELINE_OWNED_LINES + REPLACEMENT_ALLOWANCE
+        try:
+            total_cap = transition_owned_cap(manifest)
+        except ValueError as exc:
+            return [str(exc)]
         table_cap = 45  # replacement reshapes the existing five, adds no table
     else:
         engine_cap, total_cap, table_cap = FINAL_ENGINE_CAP, FINAL_TOTAL_CAP, FINAL_TABLE_CAP

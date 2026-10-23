@@ -546,6 +546,33 @@ async def _codex_down(orch):
     assert orch.provider_availability.suppresses("codex")
 
 
+async def test_provider_close_stops_half_change_notification_writes(orch, monkeypatch):
+    """A notification must not keep writing after the fixture resets identities."""
+    started = asyncio.Event()
+    release = asyncio.Event()
+    notifications = []
+
+    async def notify(provider, generation=None):
+        notifications.append(asyncio.current_task())
+        started.set()
+        await release.wait()
+        await orch.db.wait_source_commit(
+            source_key="notification:late", generation=0, revision="1",
+            outcome_ref="notification:late", payload={},
+        )
+
+    monkeypatch.setattr(orch.provider_availability, "notify_state_change", notify)
+    await _codex_down(orch)
+    await asyncio.wait_for(started.wait(), timeout=5)
+    try:
+        await orch.provider_availability.close()
+        assert all(task.done() for task in notifications)
+    finally:
+        for task in notifications:
+            task.cancel()
+        await asyncio.gather(*notifications, return_exceptions=True)
+
+
 def _handler(orch):
     from src.commands.handler import CommandHandler
 

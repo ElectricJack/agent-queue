@@ -1,8 +1,9 @@
 """Physical-line ownership and table integration ratchets.
 
 During replacement the *fixed* recorded baseline permits 15,000 overlapping
-lines. Set the manifest phase to s4_modules when retiring the legacy modules;
-that immediately enforces the final caps, with no allowance to carry forward.
+lines, plus the explicitly recorded one-time batch exception. Set the manifest
+phase to s4_modules when retiring the legacy modules; that immediately enforces
+the final caps, with no allowance to carry forward.
 """
 
 from __future__ import annotations
@@ -12,6 +13,8 @@ from copy import deepcopy
 import hashlib
 import json
 from pathlib import Path
+import runpy
+import sys
 
 import pytest
 
@@ -70,7 +73,19 @@ def test_pinned_table_predicate_names_all_45(manifest):
 
 
 def test_replacement_adds_no_new_integration_storage_category(report, manifest):
-    assert report["tables"].keys() <= manifest["baseline"]["tables"].keys(), (
+    # The approved author-close category remains visible and charged. No
+    # unreviewed category inherits this exact feature disposition.
+    assert manifest["storage_dispositions"] == {
+        "integration_close_attempts": {
+            "task": "stark-willow-95.15",
+            "authority": "Approved fast-smooth-integration section 5 and current task close "
+                         "contract, 2026-10-21",
+            "purpose": "Version-fenced retained author candidate and wait evidence, never delivery "
+                       "truth. Additive table charged; no cap increase.",
+        },
+    }
+    approved = set(manifest["storage_dispositions"]) if manifest["phase"] == "transition" else set()
+    assert report["tables"].keys() <= manifest["baseline"]["tables"].keys() | approved, (
         "Replacement reshapes the existing five tables; a renamed journal or "
         "new storage category needs a design disposition, not unused table allowance."
     )
@@ -104,7 +119,9 @@ def test_recorded_ownership_report_and_landing_delta(manifest):
     assert recorded["complete_baseline"] == manifest["baseline"]
     assert recorded["actual_landing"] == manifest["landing"]
     assert recorded["shared_definitions"] == manifest["shared"]
-    assert recorded["transition"]["owned_total_cap"] == 155_499
+    assert recorded["transition"]["original_owned_total_cap"] == 155_499
+    assert recorded["transition"]["owned_total_cap"] == ownership.transition_owned_cap(manifest)
+    assert recorded["transition"]["batch_exception"] == manifest["transition_exception"]
     assert recorded["transition"]["expires_at"] == "s4_modules"
     assert recorded["landing_delta"]["owned_lines"] == -2_431
     assert recorded["landing_delta"]["remaining_owned_allowance"] == 17_431
@@ -200,6 +217,10 @@ def test_unknown_owned_definitions_fail_coverage(tmp_path, text):
     "from src.database.tables import task_metadata as hidden\n"
     "def replay(conn):\n    conn.execute(insert(hidden).values(key='ref_updates'))\n",
     "def replay(conn):\n    conn.execute(text('INSERT INTO op_events VALUES (1)'))\n",
+    "def replay(conn):\n    conn.execute(insert(system_config).values(key='ref_updates'))\n",
+    "from src.database.tables import system_config as hidden\n"
+    "def replay(conn):\n    conn.execute(update(hidden).values(value='replay'))\n",
+    "def replay(conn):\n    conn.execute(text('DELETE FROM system_config'))\n",
     "from src.database.tables import events as hidden\n"
     "def replay(conn):\n    conn.execute(insert(hidden).values(payload='ref_updates'))\n",
 ])
@@ -313,9 +334,17 @@ def test_ingest_storage_keeps_outbox_adapter_charged(report, manifest):
     assert "integration_outbox" in report["tables"]
 
 
+def test_operator_decision_storage_keeps_stack_authorization_charged(report, manifest):
+    assert "src/database/tables.py::operator_decisions" in manifest["generic_dependencies"]
+    assert "operator_decisions" not in report["tables"]
+    path = "src/integration/stacked_branches.py"
+    assert report["spans"][path] == list(range(1, (ROOT / path).read_bytes().count(b"\n") + 1))
+
+
 def test_transition_budget_cannot_reset_to_current_counts(manifest):
     copy = deepcopy(manifest)
     copy["phase"] = "transition"
+    copy.pop("transition_exception", None)
     baseline = copy["baseline"]
     result = {"groups": {"engine": baseline["groups"]["engine"] + 15_001},
               "total": baseline["total"] + 15_001,
@@ -327,6 +356,284 @@ def test_transition_budget_cannot_reset_to_current_counts(manifest):
     copy["baseline"]["total"] += 99_999
     copy["baseline"]["groups"]["engine"] += 99_999
     assert ownership.budget_errors(result, copy) == errors
+
+
+def test_batch_exception_is_exact_and_has_no_remaining_headroom(report, manifest):
+    exception = manifest["transition_exception"]
+    assert exception == ownership.TRANSITION_BATCH_EXCEPTION
+    assert exception["original_owned_total_cap"] == 155_499
+    measured = exception["measured_owned_total"]
+    assert measured == report["total"]
+    assert exception["measured_engine_lines"] == report["groups"]["engine"]
+    assert exception["measured_table_count"] == len(report["tables"])
+    assert exception["storage_categories"] == ["integration_close_attempts"]
+    assert exception["delta"] == measured - 155_499
+    assert [p.get("delta", p.get("authorized_delta")) for p in exception["predecessors"]] == [
+        1_293, 2_166,
+    ]
+    assert exception["batch_measured_delta"] == measured - 158_958
+    grant, = exception["supplemental_grants"]
+    assert grant["task_id"] == "fresh-apex-30"
+    assert grant["approval_message_id"] == "msg-4e25c0d3"
+    assert grant["authorized_delta"] == 5
+    assert grant["prior_owned_total_cap"] + grant["authorized_delta"] == 160_825
+    assert grant["measured_owned_total"] == 160_825
+    amendments = {item["task_id"]: item for item in exception["amendments"]}
+    assert set(amendments) == {
+        "solid-impact-56", "agile-beacon-80", "nimble-torrent-12", "prime-impact-40",
+        "quick-pinnacle-97",
+        "stark-beacon-94",
+        "sharp-rapids-10",
+        "fair-dune-41",
+        "noble-flare-12",
+        "sound-forge-62",
+    }
+    amendment = amendments["solid-impact-56"]
+    assert amendment["task_id"] == "solid-impact-56"
+    assert amendment["authorized_owned_delta"] == 17
+    assert grant["measured_owned_total"] + amendment["authorized_owned_delta"] == 160_842
+    merged = exception["merge_measurement"]
+    assert merged["task_id"] == "fresh-apex-30"
+    assert merged["approval_message_id"] == "msg-a10c7ab8ff2946f8b1f27528a407524c"
+    assert merged["decision_id"] == "size-cap-delegation-2026-10-23"
+    assert merged["authorized_owned_delta"] == grant["authorized_delta"] == 5
+    assert merged["dev_owned_total"] + merged["authorized_owned_delta"] == 160_884
+    assert (merged["dev_engine_lines"] + merged["authorized_engine_delta"]
+            == 85_321)
+    composition = exception["batch_composition"]
+    assert composition["source_revision"] == "4e98fa0b96d561cfa7de934541c3e66df430b2a6"
+    # sharp-rapids-10's exact +9/+0 is composed on top of dev's frozen batch record.
+    snapshot = amendments["sharp-rapids-10"]
+    assert snapshot["decision_message_id"] == "msg-3f6311071a6647429059f3a990750597"
+    assert snapshot["decision_message_id"] in exception["decision_message_ids"]
+    assert snapshot["referenced_decision"] == "size-cap-delegation-2026-10-23"
+    assert snapshot["operator_decision"] == "6679052c"
+    assert snapshot["grant_id"] == "sharp-rapids-10-cap-epoch2-2026-10-23"
+    assert snapshot["pull_request"] == "https://github.com/ElectricJack/agent-queue/pull/1885"
+    assert snapshot["previous_source_revision"] == "61869b7cdcf507b8e8acb596893bb63ac0794997"
+    assert snapshot["previous_owned_total"] == 161_102
+    assert snapshot["authorized_owned_delta"] == 9
+    assert snapshot["authorized_engine_delta"] == 0
+    assert snapshot["previous_owned_total"] + snapshot["authorized_owned_delta"] == 161_111
+    assert snapshot["measured_owned_total"] == 161_111
+    assert snapshot["previous_engine_lines"] == snapshot["measured_engine_lines"] == 85_517
+    assert snapshot["measured_table_count"] == 45
+    assert snapshot["measured_source_revision"] == "43b3e220a2a1ac6e8d5b7543d3f83063c7c747f6"
+    recorded = json.loads((ROOT / "tests/integration_ownership_report.json").read_text())
+    assert recorded["dashboard_pr_snapshot_measurement"] == snapshot
+    viewport = amendments["noble-flare-12"]
+    assert viewport["decision_message_id"] == "msg-68ccb1d50ee04851a7268dd58e9d4459"
+    assert viewport["decision_message_id"] in exception["decision_message_ids"]
+    assert viewport["referenced_decision"] == "size-cap-delegation-2026-10-23"
+    assert viewport["operator_decision"] == "6679052c"
+    assert viewport["operator_task"] == "sharp-cascade-53"
+    assert viewport["pull_request"] == "https://github.com/ElectricJack/agent-queue/pull/1892"
+    assert viewport["previous_source_revision"] == "4a0c4e38ab979a1664586d47d16404b48def4089"
+    assert viewport["previous_owned_total"] == snapshot["measured_owned_total"]
+    assert viewport["previous_engine_lines"] == snapshot["measured_engine_lines"]
+    assert viewport["authorized_owned_delta"] == 23
+    assert viewport["authorized_engine_delta"] == 22
+    assert viewport["authorized_shared_delta"] == 1
+    assert (viewport["previous_owned_total"] + viewport["authorized_owned_delta"]
+            == viewport["measured_owned_total"])
+    assert viewport["measured_owned_total"] == 161_134
+    assert (viewport["previous_engine_lines"] + viewport["authorized_engine_delta"]
+            == viewport["measured_engine_lines"] == 85_539)
+    assert viewport["measured_table_count"] == exception["measured_table_count"] == 45
+    assert viewport["measured_source_revision"] == "b194122701a0130039230dea4c8caa93c70f60e1"
+    assert recorded["graph_viewport_readiness_measurement"] == viewport
+    filing = amendments["sound-forge-62"]
+    assert filing["decision_message_id"] == "msg-9f16388d39524c8b9a33d6796b88d1fb"
+    assert filing["decision_message_id"] in exception["decision_message_ids"]
+    assert filing["referenced_decision"] == "size-cap-delegation-2026-10-23"
+    assert filing["operator_decision"] == "6679052c"
+    assert filing["operator_task"] == "sharp-cascade-53"
+    assert filing["pull_request"] == "https://github.com/ElectricJack/agent-queue/pull/1891"
+    assert filing["previous_owned_total"] == snapshot["measured_owned_total"]
+    assert filing["previous_engine_lines"] == snapshot["measured_engine_lines"]
+    assert filing["authorized_owned_delta"] == 26
+    assert filing["authorized_engine_delta"] == 4
+    assert filing["authorized_shared_delta"] == 22
+    assert filing["authorized_table_delta"] == 0
+    assert filing["previous_owned_total"] + 26 == filing["measured_owned_total"] == 161_137
+    assert filing["previous_engine_lines"] + 4 == filing["measured_engine_lines"] == 85_521
+    assert filing["measured_source_revision"] == "1f0633050802438db6ef954c43d6d0eb2ce0edf3"
+    assert filing["measured_table_count"] == filing["previous_table_count"] == 45
+    assert recorded["task_create_retained_base_measurement"] == filing
+    post = exception["post_batch_composition"]
+    assert post["base_revision"] == filing["previous_source_revision"]
+    assert post["source_revision"] == filing["measured_source_revision"]
+    assert post["approved_deltas"] == {
+        "sound-forge-62": {"owned": 26, "engine": 4, "shared": 22, "tables": 0},
+    }
+    assert post["base_owned_total"] + 26 == filing["measured_owned_total"]
+    assert post["base_engine_lines"] + 4 == filing["measured_engine_lines"]
+    assert set(composition["member_sources"]) == {
+        "agile-beacon-80", "grand-quest-20", "nimble-torrent-12", "prime-impact-40",
+        "quick-pinnacle-97",
+        "stark-beacon-94",
+    }
+    assert composition["base_revision"] == merged["dev_source_revision"]
+    assert composition["base_owned_total"] == merged["dev_owned_total"]
+    assert composition["base_engine_lines"] == merged["dev_engine_lines"]
+    assert composition["approved_deltas"] == {
+        "fresh-apex-30": {"owned": 5, "engine": 5},
+        "agile-beacon-80": {"owned": 65, "engine": 65},
+        "nimble-torrent-12": {"owned": 1, "engine": 0},
+        "prime-impact-40": {"owned": 103, "engine": 82},
+        "quick-pinnacle-97": {"owned": 28, "engine": 28},
+        "stark-beacon-94": {"owned": 21, "engine": 21},
+    }
+    # Keep historical member measurements separate from the combined exact grant.
+    orphan_launch = amendments["quick-pinnacle-97"]
+    assert orphan_launch["previous_owned_total"] == 161_053
+    assert orphan_launch["measured_owned_total"] == 161_081
+    assert orphan_launch["measured_engine_lines"] == 85_496
+    assert orphan_launch["measured_table_count"] == 45
+    assert orphan_launch["referenced_decision"] == "size-cap-delegation-2026-10-23"
+    assert orphan_launch["decision_message_id"] == "msg-e2dd5a423516458eb564e745a12ab30e"
+    assert orphan_launch["pull_request"] == "https://github.com/ElectricJack/agent-queue/pull/1884"
+    for task_id in ("agile-beacon-80", "nimble-torrent-12", "prime-impact-40", "quick-pinnacle-97"):
+        grant_delta = composition["approved_deltas"][task_id]
+        assert grant_delta["owned"] == amendments[task_id]["authorized_owned_delta"]
+        assert grant_delta["engine"] == amendments[task_id]["authorized_engine_delta"]
+        assert amendments[task_id]["decision_message_id"] in exception["decision_message_ids"]
+    assert composition["base_owned_total"] + sum(
+        delta["owned"] for delta in composition["approved_deltas"].values()
+    ) == snapshot["previous_owned_total"]
+    assert composition["base_engine_lines"] + sum(
+        delta["engine"] for delta in composition["approved_deltas"].values()
+    ) == snapshot["measured_engine_lines"]
+    repair = amendments["stark-beacon-94"]
+    assert repair["decision_id"] == "size-cap-delegation-2026-10-23"
+    assert repair["operator_decision"] == "6679052c"
+    assert repair["operator_task"] == "sharp-cascade-53"
+    assert repair["pr_url"] == "https://github.com/ElectricJack/agent-queue/pull/1817"
+    assert repair["previous_owned_total"] + repair["authorized_owned_delta"] == 161_074
+    assert (repair["previous_engine_lines"] + repair["authorized_engine_delta"]
+            == 85_489)
+    assert repair["previous_table_count"] + repair["authorized_table_delta"] == 45
+    assert repair["measured_source_revision"] == "24d081eecf0c00a912a064e37ba616334382e263"
+    assert ownership.transition_owned_cap(manifest) == measured
+    too_large = {**report, "total": measured + 1}
+    assert ownership.budget_errors(too_large, manifest) == [
+        f"owned total: {measured + 1:,} exceeds {measured:,} in transition",
+    ]
+    # Changing the historical snapshot still cannot enlarge the exception.
+    copy = deepcopy(manifest)
+    copy["baseline"]["total"] += 99_999
+    assert ownership.budget_errors(too_large, copy) == ownership.budget_errors(too_large, manifest)
+    copy.pop("transition_exception")
+    assert ownership.transition_owned_cap(copy) == 155_499
+    assert ownership.budget_errors({**report, "total": measured}, copy) == [
+        f"owned total: {measured:,} exceeds 155,499 in transition",
+    ]
+    # The exception is an upper bound: later genuine reductions still pass.
+    assert ownership.budget_errors({**report, "total": measured - 1}, manifest) == []
+
+
+def test_activation_health_grant_carries_only_two_owned_lines(report, manifest):
+    exception = manifest["transition_exception"]
+    grant = next(item for item in exception["amendments"] if item["task_id"] == "fair-dune-41")
+    assert grant["decision_message_id"] == "msg-99539879"
+    assert grant["decision_message_id"] in exception["decision_message_ids"]
+    assert grant["referenced_decision"] == "size-cap-delegation-2026-10-23"
+    assert grant["charged_definition"] == "src/doctor/stall_checks.py::_check_sweep"
+    assert grant["previous_source_revision"] == "4a0c4e38ab979a1664586d47d16404b48def4089"
+    assert grant["original_approved_owned_total"] == 161_053
+    assert grant["original_measured_owned_total"] == 161_055
+    assert grant["authorized_owned_delta"] == 2
+    assert grant["authorized_engine_delta"] == grant["authorized_table_delta"] == 0
+    assert grant["previous_owned_total"] == 161_111
+    assert (grant["previous_owned_total"] + grant["authorized_owned_delta"]
+            == grant["measured_owned_total"])
+    assert grant["measured_owned_total"] == 161_113
+    assert grant["previous_engine_lines"] == grant["measured_engine_lines"] == 85_517
+    assert grant["previous_table_count"] == grant["measured_table_count"] == len(report["tables"])
+    assert grant["measured_source_revision"] == "ca7a4377c532d723b0ab9c3bb5f833707a317cf5"
+    recorded = json.loads((ROOT / "tests/integration_ownership_report.json").read_text())
+    assert recorded["playbook_activation_health_measurement"] == grant
+    assert ownership.budget_errors(report, manifest) == []
+    assert ownership.budget_errors({**report, "total": report["total"] + 1}, manifest) == [
+        f"owned total: {report['total'] + 1:,} exceeds {report['total']:,} in transition",
+    ]
+
+
+def test_frozen_batch_composes_only_the_approved_member_deltas(report, manifest):
+    exception = manifest["transition_exception"]
+    batch = exception["frozen_batch_composition"]
+    assert batch["batch_id"] == "train-5429c3c71859f327ff8b46dbf1edc557"
+    assert batch["starting_revision"] == "48adaddad079a7adc2930e470590621c1575e674"
+    assert batch["source_revision"] == exception["measured_source_revision"]
+    assert batch["member_sources"] == {
+        "noble-flare-12": "f09829d145915bc7426d24f28623283f7319a7a2",
+        "sound-forge-62": "15239e75971ae5ac39e6a7d0a5e467331ab58428",
+    }
+    assert batch["approved_deltas"] == {
+        "noble-flare-12": {"owned": 23, "engine": 22, "shared": 1, "tables": 0},
+        "sound-forge-62": {"owned": 26, "engine": 4, "shared": 22, "tables": 0},
+    }
+    amendments = {item["task_id"]: item for item in exception["amendments"]}
+    for task_id, delta in batch["approved_deltas"].items():
+        grant = amendments[task_id]
+        for category in ("owned", "engine", "shared"):
+            assert delta[category] == grant[f"authorized_{category}_delta"]
+        assert delta["tables"] == grant.get("authorized_table_delta", 0)
+    activation = amendments["fair-dune-41"]
+    assert batch["base_owned_total"] == activation["measured_owned_total"] == 161_113
+    assert batch["base_engine_lines"] == activation["measured_engine_lines"] == 85_517
+    assert batch["base_table_count"] == activation["measured_table_count"] == 45
+    assert batch["base_owned_total"] + sum(
+        delta["owned"] for delta in batch["approved_deltas"].values()
+    ) == exception["measured_owned_total"] == report["total"] == 161_162
+    assert batch["base_engine_lines"] + sum(
+        delta["engine"] for delta in batch["approved_deltas"].values()
+    ) == exception["measured_engine_lines"] == report["groups"]["engine"] == 85_543
+    assert batch["base_table_count"] + sum(
+        delta["tables"] for delta in batch["approved_deltas"].values()
+    ) == exception["measured_table_count"] == len(report["tables"]) == 45
+
+
+@pytest.mark.parametrize("field,value", [
+    ("batch_id", "another-batch"),
+    ("decision_message_id", "another-decision"),
+    ("measured_source_revision", "another-source"),
+    ("delta", 1_294),
+    ("measured_owned_total", 156_793),
+    ("original_owned_total_cap", 155_500),
+])
+def test_batch_exception_cannot_be_reused_or_enlarged(manifest, field, value):
+    copy = deepcopy(manifest)
+    copy["transition_exception"][field] = value
+    assert ownership.budget_errors({}, copy) == ["unapproved integration transition exception"]
+
+
+@pytest.mark.parametrize("phase", ["transition", "s4_modules", "final"])
+def test_cutover_evidence_uses_the_enforced_caps(manifest, report, monkeypatch, phase):
+    copy = deepcopy(manifest)
+    copy["phase"] = phase
+    monkeypatch.setattr(ownership, "load_manifest", lambda: copy)
+    monkeypatch.setattr(ownership, "inventory", lambda *_: report)
+    monkeypatch.setitem(sys.modules, "integration_ownership", ownership)
+    monkeypatch.setattr(sys, "path", list(sys.path))
+    script = runpy.run_path(str(ROOT / "scripts/integration-cutover-evidence.py"))
+    result = script["ownership"]()
+    assert result["budget_errors"] == ownership.budget_errors(report, copy)
+    transition = phase == "transition"
+    assert result["owned_cap_in_phase"] == (
+        ownership.transition_owned_cap(copy) if transition else 19_999)
+    assert result["engine_cap_in_phase"] == (97_627 if transition else 11_999)
+    assert result["table_cap_in_phase"] == (45 if transition else 10)
+    assert result["transition_exception"] == (copy["transition_exception"] if transition else None)
+    ledger = json.loads((ROOT / "docs/gates/git-first-cutover/ledger.json").read_text())
+    ledger["ownership"] = result
+    rendered = script["render"](ledger)
+    if transition:
+        assert f"{ownership.transition_owned_cap(copy):,} transition cap" in rendered
+        assert copy["transition_exception"]["decision_message_id"] in rendered
+    else:
+        assert f"19,999 {phase} cap" in rendered
+        assert "one-time batch exception: none" in rendered
 
 
 @pytest.mark.parametrize("phase", ["s4_modules", "final"])

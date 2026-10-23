@@ -142,6 +142,14 @@ does not release integration ownership or resolve gates and dependencies.
 > and answered by exact `question_id` through `aq question`. For an explicit
 > one-way blocker notification, use `aq message send --to user:dashboard`.
 
+Worker file reads admit `read_file` through the shared command surface. In addition
+to registered repositories and workspaces belonging to the session's project,
+workers may read `vault/projects/<project_id>/plans/` and `specs/` through
+`aq file read`, using either an absolute path or a `projects/...` vault-relative
+path. Resolve traversal and symlinks against these document roots before reading;
+foreign projects, other vault areas and write access remain outside this grant.
+Project document reads do not depend on knowledge-record activation.
+
 ### 3.2 Human surface
 
 | Command | Args | Aud. | Output (`data`) |

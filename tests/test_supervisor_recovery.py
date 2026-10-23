@@ -1557,15 +1557,79 @@ async def test_refused_explicit_restart_preserves_recovery_hold(env, command):
     await env.db.pause_task("t")
     before = await env.db.get_task("t")
 
+    # Restart resumes a manual pause, so its refusal must come from an
+    # actual stop failure rather than the presence of the pause alone.
+    env.orch.session_providers = SimpleNamespace(
+        create=lambda *_: SimpleNamespace(
+            stop=AsyncMock(side_effect=RuntimeError("stop unavailable")),
+        )
+    )
     result = await env.handler.execute(command, {"task_id": "t", "feedback": "Try again",
                                               "override_hold": True, "reason": "Diagnosis resolved"})
 
     assert "error" in result, result
+    if command == "restart_task":
+        assert "session could not stop" in result["error"]
     after = await env.db.get_task("t")
     assert (after.status, after.retry_count, after.description) == (
         before.status, before.retry_count, before.description,
     )
     assert await env.db.get_task_meta("t", "supervisor_recovery_incident") == held
+
+
+@pytest.mark.parametrize("replace_hold", [False, True])
+async def test_restart_of_manual_pause_requires_override_and_audits_recovery_hold(
+    env, monkeypatch, replace_hold,
+):
+    current = await incident(env)
+    assert "error" not in await decide(env, current, "hold")
+    held = await env.db.get_task_meta("t", "supervisor_recovery_incident")
+    await env.db.pause_task("t")
+
+    before = asdict(await env.db.get_task("t"))
+    before_comments = (await env.db.list_task_comments("t"))["comments"]
+    refused = await env.handler.execute("restart_task", {"task_id": "t"})
+    assert refused["error_code"] == "task_recovery.held"
+    assert asdict(await env.db.get_task("t")) == before
+    assert await env.db.get_task_meta("t", "supervisor_recovery_incident") == held
+    assert await env.db.get_task_meta("t", "manual_pause") is not None
+
+    if replace_hold:
+        resume = env.orch.resume_task
+
+        async def resume_with_replacement_hold(*args, **kwargs):
+            task = await resume(*args, **kwargs)
+            assert await env.db.get_task_meta("t", "supervisor_recovery_incident") == held
+            await env.db.set_task_meta("t", "supervisor_recovery_incident", {
+                **held, "decided_at": held["decided_at"] + 1, "decision_reason": "New diagnosis",
+            })
+            return task
+
+        monkeypatch.setattr(env.orch, "resume_task", resume_with_replacement_hold)
+    result = await env.handler.execute("restart_task", {
+        "task_id": "t", "override_hold": True, "reason": "Diagnosis resolved",
+    })
+
+    if replace_hold:
+        assert result["error_code"] == "task_recovery.held"
+        replacement = await env.db.get_task_meta("t", "supervisor_recovery_incident")
+        assert replacement["decision"] == "hold"
+        assert replacement["decision_reason"] == "New diagnosis"
+        assert (await env.db.list_task_comments("t"))["comments"] == before_comments
+        return
+    assert result["success"], result
+    task = await env.db.get_task("t")
+    assert task.status is TaskStatus.READY and task.retry_count == 0
+    assert await env.db.get_task_meta("t", "manual_pause") is None
+    superseded = await env.db.get_task_meta("t", "supervisor_recovery_incident")
+    assert superseded["id"] == held["id"]
+    assert superseded["decision"] == "superseded"
+    assert superseded["decision_history"][-1]["decided_at"] == held["decided_at"]
+
+    assert superseded["decided_by"] == "human:local-operator"
+    assert "Diagnosis resolved" in superseded["decision_reason"]
+    comments = (await env.db.list_task_comments("t"))["comments"]
+    assert any("overridden by restart: Diagnosis resolved" in row["body"] for row in comments)
 
 
 @pytest.mark.parametrize("command", ["restart_task", "reopen_with_feedback"])

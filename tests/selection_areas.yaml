@@ -114,6 +114,7 @@ areas:
       - tests/test_agent_task_routing.py
       - tests/test_cross_project_routing.py
       - tests/test_default_assignment_routing_playbook.py
+      - tests/test_assignment_routing_building_blocks.py
       - tests/test_pool_agent_routing.py
       - tests/test_task_route_source.py
       - tests/test_routing_planner.py
@@ -380,7 +381,9 @@ areas:
       - tests/test_shipped_playbook_sources.py
       - tests/test_default_agent_type_playbooks.py
       - tests/test_default_pipeline_intake.py
+      - tests/test_default_pipeline_equivalence.py
       - tests/test_default_assignment_routing_playbook.py
+      - tests/test_assignment_routing_building_blocks.py
       - tests/test_plugin_cron_to_playbook_migration.py
       - tests/test_blocked_task_escalation.py
       - tests/test_ci_main_sentinel.py
@@ -393,10 +396,14 @@ areas:
   - id: integration-trains
     description: "Hierarchical integration trains: durable integration state, the reconciliation service and schedules, settling and sealing, candidate construction, the outbox, integration mode policy, attestations, CI and cleanup, plus the end-to-end regression scenarios for incidents that needed a hand fix."
     match:
+      - tests/test_integration_workspaces.py
+      - tests/test_integration_failure_groups.py
+      - tests/test_integration_fixers.py
       - tests/test_integration_size.py
       - tests/test_integration_state.py
       - tests/test_integration_service.py
       - tests/test_integration_stall_recovery.py
+      - tests/test_integration_delivery_watchdog.py
       - tests/test_integration_schedule.py
       - tests/test_integration_stale_schedule.py
       - tests/test_integration_batch_settlement.py
@@ -407,13 +414,19 @@ areas:
       - tests/test_integration_superseded_completion.py
       - tests/test_integration_operator_decisions.py
       - tests/test_integration_cli_controls_present.py
+      - tests/test_integration_models.py
       - tests/test_integration_train.py
+      - tests/test_integration_train_policy.py
+      - tests/test_integration_dispatch_waits.py
+      - tests/test_epic_train_end_to_end.py
+      - tests/test_fast_smooth_integration_e2e.py
       - tests/test_integration_train_sources.py
       - tests/perf/test_train_selection.py
       - tests/test_integration_stacked_branches.py
       - tests/test_integration_container_completion.py
       - tests/test_integration_candidate_baseline.py
       - tests/test_integration_cutover.py
+      - tests/test_integration_containment_cutover.py
       - tests/test_integration_settling.py
       - tests/test_integration_sealing.py
       - tests/test_integration_candidates.py
@@ -430,8 +443,10 @@ areas:
       - tests/test_integration_root_adapters.py
       - tests/test_integration_root_scenarios.py
       - tests/test_integration_train_regressions.py
+      - tests/test_integration_close_merge.py
       - tests/test_integration_gitops.py
       - tests/test_integration_git_truth.py
+      - tests/test_integration_truth_reconciler.py
       - tests/test_integration_replay.py
       - tests/test_integration_reconciler.py
       - tests/test_integration_observe.py
@@ -445,6 +460,7 @@ areas:
       - tests/test_integration_ci.py
       - tests/test_integration_ci_producers.py
       - tests/test_integration_checks.py
+      - tests/test_integration_check_reconciliation.py
       - tests/test_integration_cleanup.py
       - tests/test_branch_sweep.py
       - tests/test_attestation_check_run_id.py
@@ -495,6 +511,7 @@ areas:
       - tests/test_integration_root_authorization.py
       - tests/test_integration_legacy_*.py
       - tests/test_integration_pr_delivery.py
+      - tests/test_integration_pr_repair_publication.py
       - tests/test_parent_ci_publication.py
       - tests/test_repair_checkout_refs.py
       - tests/test_integration_child_delivery.py
@@ -573,6 +590,7 @@ areas:
   - id: workspaces
     description: "Workspaces v2: workspace kinds (parser, registry, queries), per-task kind requirements, multi-kind acquisition and attachments, workspace commands, names, sentinels, control-file excludes and base-checkout guards."
     match:
+      - tests/test_workspace.py
       - tests/test_workspace_*.py
       - tests/test_create_task_requires_kinds.py
       - tests/test_cli_task_create_requires_kinds.py
@@ -842,6 +860,7 @@ areas:
     match:
       - tests/test_project_onboarding_*.py
       - tests/test_project_repository_binding.py
+      - tests/test_project_relocation.py
       - tests/test_repository_checkout_repair.py
       - tests/test_project_supervisors.py
       - tests/test_onboarding_queries.py

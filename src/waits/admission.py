@@ -129,14 +129,20 @@ class AdmissionReader:
         # separately re-observed below; an old cached verdict never clears a hold.
         project_model = await o.db.get_project(task["project_id"])
         mode = ProjectIntegrationMode.of(project_model)
-        if mode.hierarchical:
-            from src.integration.delivery_observer import hierarchy_frontier_modes
+        from src.integration.admission import observe_admission
+        from src.integration.development import DevelopmentPrimitives
 
-            # Git refresh belongs outside graph/owner locks; revalidate cached
-            # identities on this transaction, never use legacy receipts in Git-first.
-            mode = (await hierarchy_frontier_modes(
-                o.db, task_id=task_id, cached_only=True, conn=conn,
-            )).get(task['project_id'], mode)
+        service = getattr(o, "development_integration", None)
+        if service is None:
+            service = DevelopmentPrimitives(o.db, data_dir=config.data_dir,
+                                            git=getattr(o, "git", None))
+        admission = await observe_admission(
+            o.db, [task_id], service, cached_only=True,
+            default_mode=config.integration.default_mode,
+            hierarchy_conn=conn,
+            router_ready_projects={task["project_id"]} if ready else set(),
+        )
+        mode = admission.hierarchy_modes.get(task["project_id"], mode)
         predicates = claim_frontier_predicates(hierarchy_mode=mode)
         predicates["route"] = route_claimable(ready)
         if profile:
@@ -213,10 +219,8 @@ class AdmissionReader:
             tasks.c.id == task_id, tasks.c.id.in_(select(branch_holders().subquery().c.task_id)),
         )))
         batch_reasons = []
-        if project["hierarchical_integration_mode"] == "development":
-            admission = await o._delivery_admission([task_id])
-            if task_id not in admission.allowed or not await admission.matches(conn=conn, task_id=task_id):
-                batch_reasons.append("delivery_not_verified")
+        if task_id not in admission.allowed or not await admission.matches(conn=conn, task_id=task_id):
+            batch_reasons.append("delivery_not_verified")
         batch_names = {"sibling_prerequisite_not_delivered", "prerequisite_not_on_default_branch",
                        "epic_refresh_pending", "origin_not_materialized", "retired_repair_delegate"}
         batch_reasons.extend(name for name in batch_names if checks.get(name) is False)
