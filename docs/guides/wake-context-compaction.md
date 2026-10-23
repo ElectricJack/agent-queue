@@ -55,7 +55,9 @@ labelled facts-only recovery checkpoint. It cannot replace a meaningful agent
 note in prime.
 
 The daemon observes current task, claim, session, branch, HEAD, work directory,
-subtask counts, and dirty paths. It includes at most 20 dirty paths, each with a
+subtask counts, active jobs, waits and retained result pointers, open gates,
+and dirty paths. Failed store reads are labelled unknown. It includes at most
+20 dirty paths, each with a
 256-byte display limit, plus the total observed count. Failed Git reads are
 unknown rather than a claim that the checkout is clean. Continuation prime additionally projects authoritative wait identity,
 source evidence and the retained result reference. Note paths are assertions and are never used to read files.

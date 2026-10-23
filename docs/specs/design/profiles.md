@@ -12,7 +12,13 @@ tags: [design, profiles, agents, markdown]
 > see [historical material](../../history/README.md) for how this material is
 > organised.
 
-**Status:** Draft
+For current behavior, use [profiles and classes](../../reference/profiles-and-classes.md),
+[agents and routing](../../concepts/agents-and-routing.md), and the
+[system spec](../systems/routing-and-profiles.md).
+The original DB-only storage, project-default cascade, profile model pins and
+in-process runtime descriptions below are historical, superseded designs.
+
+**Status:** Historical design with implementation notes
 **Principles:** [guiding-design-principles](guiding-design-principles.md) (#1 files as source of truth, #9 simple interfaces)
 **Related:** [vault](vault.md), [memory-scoping](memory-scoping.md), [specs/agent-profiles](../agent-profiles.md), [agent-coordination](agent-coordination.md)
 
@@ -30,8 +36,8 @@ durable worker is shared between projects, so a definition that applied to only
 one project was a contradiction — project-scoped profiles
 (`project:<pid>:<id>`, sourced from `vault/projects/<pid>/agent-types/`) were
 retired. Pool `lifecycle` and sizing therefore live on the system profile and
-apply everywhere; sizing still happens per project at runtime, under each
-project's own `max_concurrent_agents` (see [guides/worker-pools](../../guides/worker-pools.md) §2-3).
+apply fleet-wide; project concurrency and per-project residency are separate
+admission constraints (see [guides/worker-pools](../../guides/worker-pools.md) §2-3).
 `src/profiles/project_override_migration.py` promotes anything an older vault
 still carries into its system profile — automatically at startup, or on demand
 via `aq doctor --check profiles.project_overrides --fix`.
@@ -317,13 +323,14 @@ Section renames drift the same way — a copy predating the `## Tools` →
 `## Capabilities` rename routes through the legacy `allowed_tools` adapter
 forever. So does a `## Capabilities` grant list: a release that adds a
 command to a shipped profile's `aq_commands` (or `harness_tools` /
-`plugin_tools`) never reaches an existing vault copy either.
+`plugin_tools`) needs an explicit repair unless the profile receives additive
+capability sync (see below).
 
-**Detection** is `src/profiles/drift.py`, surfaced two ways:
+**Detection** is `src/profiles/drift.py`, surfaced through:
 
 - `profiles.system_drift` — a report-only doctor check (trust-and-ops §5.2).
 - `profiles.supervisor_capability_drift` — the supervisor's missing shipped
-  grants only, with a `--fix` (see *Supervisor capability sync* below).
+  grants only, with a `--fix` (see *Shipped capability sync* below).
 - `aq agent profile-drift [--profile-id <id>] [--drifted-only]` — the same
   comparison as a command, one row per system profile with its status
   (`ok` / `not_seeded` / `drifted` / `unreadable`), the diverging semantic
@@ -332,7 +339,7 @@ command to a shipped profile's `aq_commands` (or `harness_tools` /
   vault copy lacks.
 
 Only the four fields above, *missing* sections, and `missing_grants` count as
-drift. A changed `description`, `default_class` or `harness`, sections the
+drift. A changed `description` or `default_class`, sections the
 operator added, and grants the operator added beyond what ships are the
 operator's business and are reported for context but never flagged.
 
@@ -359,11 +366,12 @@ valid vault frontmatter, then syncs the new text straight to the DB. Missing
 or unreadable frontmatter uses the shipped name. Neither installer refresh
 nor profile reseeding creates agent rows. There is deliberately no
 `aq doctor --fix` for either shape: overwriting
-or merging into an operator-owned vault file automatically would violate the
-`--fix` safety rules (trust-and-ops §5.4) — the operator always invokes the
-repair explicitly. The supervisor's grants are the one exception, below.
+or merging arbitrary profile content automatically would violate the
+`--fix` safety rules (trust-and-ops §5.4) — the operator invokes that
+repair explicitly. Additive capability sync is the exception, below: the
+supervisor, shipped worker templates and opted-in shipped profiles receive it.
 
-#### Supervisor capability sync
+#### Shipped capability sync
 
 The supervisor is the operator's own control plane, and the operator's
 policy (2026-09-24) is that it may do basically anything. Under
@@ -374,7 +382,7 @@ existing install until the vault copy was hand-edited. So its grants are kept
 in step automatically (`src/profiles/capability_sync.py`):
 
 - **When.** On daemon start (before the startup profile→DB scan) and every
-  time the vault watcher reloads `vault/agent-types/supervisor/profile.md`
+  time the vault watcher reloads a synced profile or worker template
   (before that reload's DB sync).
 - **What.** The same additive merge as `--grants-only`
   (`merge_profile_grants`): each shipped `## Capabilities` name the vault copy

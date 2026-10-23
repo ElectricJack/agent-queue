@@ -35,9 +35,9 @@ asyncio event loop
 │   ├── Smart Cascade            — promotion pipeline (approvals → resume → promote → monitor)
 │   ├── Plan Parser              — manual `process_plan` command → subtask chain creation (no auto-discovery)
 │   └── Playbook Engine          — compiled DAG workflows
-│       ├── PlaybookCompiler     — markdown → JSON graph (LLM-powered, one-shot)
-│       ├── PlaybookRunner       — graph walker with conversation history
-│       └── PlaybookManager      — lifecycle, triggers, cooldown, concurrency
+│       ├── Proposal + Validator — authored rules/steps → immutable typed artifact
+│       ├── PlaybookEngine       — durable step walk, receipts, waits and recovery
+│       └── V2PlaybookRuntime    — dispatch from deliberately activated hashes
 ├── Workflow Coordination        — multi-agent pipeline orchestration
 │   ├── Stage Resume Handler     — auto-resume on workflow.stage.completed events
 │   ├── Orphan Recovery          — detect & recover stale/crashed workflows
@@ -123,26 +123,26 @@ and [knowledge context](docs/specs/knowledge-context.md).
 
 ### Playbook System
 
-| File | Purpose |
-|------|---------|
-| `src/playbooks/models.py` | Data models: CompiledPlaybook, PlaybookNode, PlaybookTransition, PlaybookRun |
-| `src/playbooks/compiler.py` | LLM-powered markdown → JSON graph compiler with retry/validation |
-| `src/playbooks/runner.py` | Graph walker — steps through nodes maintaining conversation history |
-| `src/playbooks/manager.py` | Lifecycle: compilation, versioning, trigger mapping, cooldown, concurrency |
-| `src/playbooks/store.py` | Disk storage with scope-mirrored directory structure |
-| `src/playbooks/handler.py` | Vault watcher — detects `.md` changes, dispatches to compiler |
-| `src/playbooks/state_machine.py` | Formal state machine for run lifecycle |
-| `src/playbooks/resume_handler.py` | Human-in-the-loop resume logic |
-| `src/playbooks/health.py` | Metrics computation for run analysis |
-| `src/playbooks/graph.py` | Graph rendering (ASCII + Mermaid visualization) |
-
-### Workflow Coordination
+Playbooks are V2 only. Read [the concepts](docs/concepts/playbooks.md),
+[system map](docs/specs/systems/playbooks.md) and [module catalog](docs/reference/modules/playbooks.md).
 
 | File | Purpose |
 |------|---------|
-| `src/workflow_stage_resume_handler.py` | Auto-resume paused playbooks on `workflow.stage.completed` events |
-| `src/orphan_workflow_recovery.py` | Detect & recover workflows whose coordination playbook died (startup + periodic) |
-| `src/workflow_pipeline_view.py` | Dashboard-ready pipeline visualization (stages, tasks, agents, progress) |
+| `src/playbooks/definition.py`, `validation.py`, `proposal.py` | Strict typed rules/steps, validation and server-derived artifact identity |
+| `src/playbooks/artifact_store.py`, `activation.py`, `required.py` | Immutable bytes, activation health, deliberate initial installation and explicit repair |
+| `src/playbooks/engine.py`, `runtime.py`, `services.py` | Event dispatch, step walking, waits, durable receipts and engine wiring |
+| `src/playbooks/run_state.py`, `recovery.py`, `authority.py` | Versioned run lifecycle, safe restart reconciliation and run-bound caller authority |
+| `src/playbooks/state.py`, `state_notify.py`, `private_values.py` | Persistent local state, notification episodes and encrypted execution data |
+| `src/playbooks/executors/` | Command, LLM, agent-task, script, decision, foreach, wait and terminal steps |
+| `src/playbooks/graph_projection.py`, `run_overlay.py` | Semantic graph and redacted run inspection pinned to the executed artifact |
+
+### Workflow Compatibility
+
+| File | Purpose |
+|------|---------|
+| `src/workflow_stage_resume_handler.py` | Bridges `workflow.stage.completed` to V2 runs referenced by legacy workflows |
+| `src/orphan_workflow_recovery.py` | Legacy V1 recovery class, not constructed by the orchestrator; current V2 recovery is `RestartReconciler` |
+| `src/workflow_pipeline_view.py` | Dashboard pipeline projection; does not execute policy |
 
 ### Hierarchy, Claims & Pools (Swarm Work Model)
 
@@ -222,7 +222,12 @@ Optional knowledge extraction and consolidation produce proposals; no reflection
 engine runs on every completed task.
 
 ### Why playbooks over hooks/rules?
-Hooks were single-shot LLM calls with no context accumulation or multi-step reasoning. Playbooks model workflows as directed graphs: each node is a focused LLM decision point, transitions carry context forward, and human checkpoints enable oversight. Markdown authoring keeps them human-readable; LLM compilation makes them executable.
+Playbooks make event policy inspectable as typed rules and steps. Command outcomes
+and schema-checked model results select declared edges; human waits provide explicit
+checkpoints. Markdown remains the reviewed source, while a deliberately activated
+immutable artifact controls execution. Source edits do not enqueue compilation or
+replace that artifact, except the legacy pipeline `update-source` path described in
+the [operating guide](docs/concepts/playbooks.md#author-validate-import-and-activate).
 
 ### Why bounded knowledge context?
 
@@ -257,7 +262,7 @@ policy authority. No autonomous reflection loop or scheduled consolidation
 policy is shipped. See [knowledge records](docs/guides/knowledge-records.md).
 
 ### Why workflow coordination via playbooks?
-Multi-agent workflows (code → review → QA) are just playbooks with stage gates and agent affinity. The same execution model, same event system, same human-in-the-loop checkpoints. Workflows track stage progress and task assignments; orphan recovery handles daemon restarts and stale state. No separate workflow engine needed.
+V2 playbooks can delegate tasks and wait for declared outcomes. The shipped pipeline does not add automatic per-task or final-branch reviewers; integration owns validation and delivery. Legacy workflow rows and stage-resume bridges remain compatibility surfaces, while V2 run recovery uses durable snapshots and receipts.
 
 ### Why spec-driven development?
 Specs in `docs/specs/` are the source of truth. Flow: specs → implementation → tests → docs. When spec and code disagree, the spec is correct.
@@ -268,7 +273,7 @@ Specs in `docs/specs/` are the source of truth. Flow: specs → implementation �
 
 **Core:** `projects`, `repos`, `tasks`, `task_dependencies`, `agents`, `token_ledger`, `events`, `rate_limits`
 **Workflows:** `workflows` (multi-agent pipeline state, stages, task assignments, agent affinity)
-**Playbooks:** `playbook_runs`, `compiled_playbooks` (run state, node traces, compiled graphs)
+**Playbooks:** `playbook_artifacts`, `playbook_activations`, `playbook_v2_runs`, `playbook_step_receipts`, `playbook_waits`, `playbook_pending_events`, `playbook_private_values`, `playbook_state_*` (immutable policy, activation, runs, waits and protected state)
 **Supporting:** `task_criteria`, `task_context`, `task_tools`, `task_results`, `system_config`, `workspaces`, `agent_profiles`, `archived_tasks`, `chat_analyzer_suggestions`, `plugins`, `plugin_data`
 
 ## Configuration
@@ -282,7 +287,7 @@ Key sections: `discord`, `scheduling`, `auto_task`, `pause_retry`, `hook_engine`
 ```
 ~/.agent-queue/vault/
 ├── system/
-│   ├── playbooks/          # System-wide automation (e.g., task-outcome.md)
+│   ├── playbooks/          # System-wide policy sources (e.g., default-pipeline.md)
 │   ├── memory/             # Retained legacy memory sources
 │   └── facts.md            # System-level KV facts
 ├── orchestrator/
