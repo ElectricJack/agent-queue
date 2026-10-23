@@ -113,6 +113,12 @@ policy leaves the target's reviewed policy in place. Configuration refusals
 occur before writing other selected files; later file/review failures report any
 already-configured integration item. Reapplying identical settings is a no-op.
 
+The integration mode accepts `disabled`, `observe`, `hierarchy`, `train` and
+`development`. An authored profile can select `development` through the same
+project configuration path as `aq project set`; an omitted policy retains the
+target's local policy. Export continues to omit development integration settings
+with a warning because their policies pin local task and artifact identities.
+
 Exported playbook sources and artifacts replace installation, vault, home and
 workspace roots with target-install placeholders. Unrecognized absolute machine
 paths get explicit placeholders without source defaults. Imports require values
