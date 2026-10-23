@@ -4,7 +4,8 @@ Shares the daemon's Orchestrator, Database, EventBus, and CommandHandler
 instead of creating its own.  Serves on streamable-http transport via uvicorn.
 
 Also serves the FastAPI REST API (``/api/*``, ``/health``, ``/ready``,
-``/plans/*``, ``/docs``) on the same port for the ``aq`` CLI and other clients.
+``/plans/*``) on the same port for the ``aq`` CLI and other clients. Dashboard
+assets and HTML documentation UIs are not hosted by this process.
 
 This module must be imported lazily (after orchestrator initialization)
 because importing the ``mcp`` SDK takes ~3 seconds.
@@ -137,7 +138,7 @@ async def run_mcp_server(
             mcp_app = mcp.streamable_http_app()
 
             # Mount MCP sub-app at root on the FastAPI app.
-            # FastAPI's own routes (/api/*, /health, /docs, etc.) take
+            # FastAPI's own routes (/api/*, /health, etc.) take
             # precedence; MCP handles /mcp underneath.
             # Replace — never accumulate — the root mount: a supervised
             # restart would otherwise append another Mount pointing at the

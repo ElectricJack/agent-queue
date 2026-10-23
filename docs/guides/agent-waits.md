@@ -88,6 +88,19 @@ acknowledging another session's wait or crossing a project boundary.
 `source_unavailable`, cancellation and a failed producer are explicit outcomes;
 none implies success. See [wake context](wake-context-compaction.md).
 
+Transient resume workspace failures get up to three attempts with backoff while
+retaining the checkout. For a repaired workspace or launch hold, a supervisor can requeue
+the exact continuation generation without changing the resolved wait:
+
+```bash
+aq wait decide --wait-id WAIT_ID --decision requeue \
+  --continuation-id CONTINUATION_ID --expected-generation GENERATION \
+  --note 'Infrastructure repaired; retry this saved continuation'
+```
+
+Pause and uncertain-stop holds require their own recovery. Requeue is audited;
+the hold incident resolves when the fresh session receives its resume context.
+
 ## Deadlines and human input
 
 Operational deadlines escalate to the supervisor without waking the worker or
@@ -119,6 +132,15 @@ During cutover, check the atomic submit-with-wait readiness item in the
 
 Continuation recovery runs independently of source draining and the main
 orchestration cycle. A slow resume attempt does not block other continuations.
+A slow hibernation attempt also runs independently; maintenance inspects persisted
+suspension intents even when their transition deadline has not fired. After the
+stop budget expires, AQ makes one read-only proof attempt before holding ownership.
+A `stop_uncertain` hold receives up to five total proof attempts, each bounded to
+five seconds, with persisted delays of 5, 10, 20 and 40 seconds. Successful proof
+withdraws the operational escalation and continues saving and parking; exhausted
+retries preserve the hold for supervisor recovery. An absent instance token never
+authorizes a stop signal. A same-named successor, live process or unavailable proof
+retains the checkout.
 If a resolved wait remains `RESUME_PENDING` for five minutes, the project
 supervisor receives one durable stall notice per continuation generation.
 Set `wait_policy.resume_stall_seconds` globally or in a project override to

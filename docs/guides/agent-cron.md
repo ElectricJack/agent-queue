@@ -2,7 +2,8 @@
 
 AQ schedules prompts for the authenticated session on Codex, Claude and other
 harnesses. The daemon queues messages and wakes idle sessions through the normal
-delivery engine. Registration does not run commands or grant permissions.
+delivery engine. Registration requires `messages.enabled` and `sessions.enabled`;
+it does not depend on `playbooks.enabled`, run commands or grant permissions.
 
 ```bash
 aq cron register --every 900 --offset 120 --idempotency-key patrol-v1 \
@@ -36,7 +37,8 @@ epoch time regardless of the display timezone. Show/list include the timezone,
 next-fire epoch, UTC time and local time with its UTC offset.
 
 Every registration belongs to a live session ID and instance token. Global
-supervisors can leave project unset; no schedule can nominate another recipient.
+supervisors can leave project unset. Session callers cannot nominate another
+recipient; a local operator may select a live session with `--session-id`.
 A daemon restart that adopts the same session retains the schedule and timing.
 Ending or replacing the owner instance expires its schedules. A new supervisor
 session must register its patrol again. Workers also bind to their current task
@@ -51,8 +53,8 @@ Missed ticks coalesce into one pending prompt per schedule. No backlog replays
 every missed tick after restart. Busy owners wait; absent/sleeping owners are
 never cold-started by cron. Cron coalescing counts are a lower bound after outages
 over seven days; interval counts are exact. Pending delivery expires after one hour. There are
-five terminal submission attempts, with 30/60/120/240/480 second backoff, and
-attempts/status/errors persist through daemon restart. A later future tick may
+at most five terminal submission attempts, with exponential retry backoff starting
+at 30 seconds. Attempts/status/errors persist through daemon restart. A later future tick may
 try a fresh prompt after failure. Show includes pending message ID/expiry,
 delivery receipt (queued versus delivered versus read), coalescing count and
 last-delivery diagnostics. Prompt handling should be idempotent because an
@@ -70,11 +72,13 @@ The supervisor startup patrol uses one stable `supervisor-patrol-v1` key,
 findings with the authorized stall actions. It works with no project selected.
 Use `cron_register`, `cron_get`, `cron_list`, `cron_cancel` as equivalent agent tools.
 
-Fresh supervisor and worker templates grant these commands. Supervisor capability
-sync merges new grants on reload. Existing worker profiles and skills remain
-write-if-absent; operators inspect `aq doctor --check profiles.system_drift` and
+Fresh supervisor and worker templates grant these commands. Capability sync
+additively merges missing shipped grants for the supervisor and worker templates
+on startup and reload, unless `capability_sync: false` opts out. Installed prose
+and skills remain write-if-absent; operators inspect `aq doctor --check profiles.system_drift` and
 `aq doctor --check skills.installed_drift`, merge profile grants using
 `aq agent profile-reseed --profile-id ID --grants-only`, and repair installed skill
 drift with `aq doctor --check skills.installed_drift --fix`. Code deployment also
-requires the operator's normal `aq db upgrade` for revision `a00000000086`;
-worker sessions never migrate the operator database.
+requires the operator's normal upgrade to the checkout's schema head (`agent_cron`
+was introduced in revision `a00000000086`); worker sessions never migrate the
+operator database.
