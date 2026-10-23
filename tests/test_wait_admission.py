@@ -78,6 +78,7 @@ async def test_scheduler_sync_reads_stack_inputs_once_per_project_per_pass(env, 
     read = AsyncMock(return_value=())
     monkeypatch.setattr("src.integration.stacked_branches._inputs", read)
     view = StackView(env.db, "p")
+    view.proofs = {"source": {"task_id": "source"}}
 
     async def observe(conn, task_id, **kwargs):
         # Admission verifies the same project inputs at both read boundaries.
@@ -96,6 +97,14 @@ async def test_scheduler_sync_reads_stack_inputs_once_per_project_per_pass(env, 
         await view.verified_on(conn)
         await view.verified_on(conn)
     assert read.await_count == 4
+
+
+async def test_empty_stack_verification_does_not_read_project_history(env, monkeypatch):
+    read = AsyncMock(side_effect=AssertionError("empty proof set scanned project history"))
+    monkeypatch.setattr("src.integration.stacked_branches._inputs", read)
+    async with env.db._engine.connect() as conn:
+        assert await StackView(env.db, "p").verified_on(conn) == {}
+    read.assert_not_awaited()
 
 
 async def fire(env, deadline, now):
