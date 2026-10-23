@@ -169,7 +169,7 @@ aq test tests/test_api_client_contract.py
 ```
 
 ```text
-======================== 9 passed, 8 warnings in 17.80s ========================
+======================== 9 passed, 8 warnings in 17.80s =================
 ```
 
 `--offline` is the canonical path: `create_app()` builds the whole route
@@ -399,6 +399,12 @@ pinned in `tests/fixtures/contracts/generated-command-audit.json`, keyed by all
 built-in handlers. Adding a handler or changing its return branches requires
 reviewing and updating that evidence. Static argument reads are diagnostic;
 they never silently expand the public schema.
+
+The restart hold correction records `restart_task`'s optional `override_hold` and
+`reason` arguments in `restart-hold-contract-changes.json`. Removing exactly that
+transport delta restores the supervisor-health catalogue bytes. The producer audit
+pins the explicit refusal and delegated restart paths; recovery tests cover exact
+hold fencing, release authority and recorded provenance.
 
 After reviewing a handler's return branches and contract fields, refresh its
 source digest with `python scripts/refresh-command-audit-digest.py --command explain_task --write`

@@ -138,7 +138,14 @@ attempt or epoch has changed. A status projection to READY alone does not releas
 a current hold. Legacy incidents lacking an identity field retain their hold
 until an explicit control supersedes it.
 
-An accepted `reopen_with_feedback` or `restart_task` supersedes the previous
+`restart_task` refuses a decided hold unless `override_hold` and a nonempty `reason`
+are supplied by a local operator or live global supervisor. It fences the exact
+incident and hold timestamp in the READY transaction, preserves decision history,
+and records the releasing actor and reason in the incident and a task comment.
+`task_explain` reports the active hold, its owner and diagnosis. A refused restart
+keeps the hold; an undecided incident does not require an override.
+
+An accepted `reopen_with_feedback` or authorized `restart_task` supersedes the previous
 incident in the READY transaction, including a READY-to-READY restart. It keeps
 the incident identity and previous decision in its audit history and archives
 the obsolete incident notice. A refused transition or repair reservation keeps

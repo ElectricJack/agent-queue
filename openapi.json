@@ -20412,8 +20412,8 @@
         "tags": [
           "task"
         ],
-        "summary": "Reset a completed, failed, or blocked task back to READY so it gets picked up by an agent again.",
-        "description": "Reset a completed, failed, or blocked task back to READY so it gets picked up by an agent again.",
+        "summary": "Reset a completed, failed, or blocked task to READY. Recovery holds require override_hold, a reason and operator/global-supervisor authority; the release is audited.",
+        "description": "Reset a completed, failed, or blocked task to READY. Recovery holds require override_hold, a reason and operator/global-supervisor authority; the release is audited.",
         "operationId": "restart_task",
         "requestBody": {
           "content": {
@@ -71687,6 +71687,30 @@
             "type": "string",
             "title": "Task Id",
             "description": "Task ID to restart"
+          },
+          "override_hold": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Override Hold",
+            "description": "Explicitly release the recovery hold (operator/global supervisor only)"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason",
+            "description": "Required reason for overriding a recovery hold"
           }
         },
         "type": "object",

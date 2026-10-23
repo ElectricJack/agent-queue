@@ -1122,7 +1122,8 @@ class Orchestrator(
             await self._finish_manual_pause(task_id, snapshot)
 
     async def resume_task(
-        self, task_id: str, *, recover_stale_pause: bool = False, actor: str = "local-operator"
+        self, task_id: str, *, recover_stale_pause: bool = False, actor: str = "local-operator",
+        defer_recovery_supersession: bool = False,
     ):
         async with self._task_control_lock(task_id):
             snapshot = await self.db.get_task_meta(task_id, "manual_pause")
@@ -1169,8 +1170,13 @@ class Orchestrator(
                     if stopped is not True:
                         raise ValueError("Slot reset recovery must wait for the old writer to stop")
                     stopped_sessions.append(session)
-                return await self.db.resume_task(task_id, stopped_sessions=stopped_sessions)
-            return await self.db.resume_task(task_id)
+                return await self.db.resume_task(
+                    task_id, stopped_sessions=stopped_sessions,
+                    defer_recovery_supersession=defer_recovery_supersession,
+                )
+            return await self.db.resume_task(
+                task_id, defer_recovery_supersession=defer_recovery_supersession,
+            )
 
     async def _recover_stale_pause(self, task_id, snapshot, *, retained, actor):
         """Prove the captured writers gone before rebinding obsolete pause identities."""
