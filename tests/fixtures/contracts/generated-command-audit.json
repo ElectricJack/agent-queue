@@ -11099,7 +11099,7 @@
   "list_agents": {
     "mode": "json_object",
     "producer": "src/commands/flock_commands.py:FlockCommandsMixin._cmd_list_agents",
-    "source_digest": "sha256:afe46ac41a7313c81143e9339d7b6dafbd66b6e34eb389d27600f3d5c8e4afba",
+    "source_digest": "sha256:e2276d1950a62ac2f95d1bd37aa8089843e815fc6a908007ba718a057e48d10b",
     "input_schema_source": "explicit_tool",
     "schema_quality": "declared",
     "argument_reads_diagnostic_only": [
@@ -15074,6 +15074,36 @@
       "_policy_authority": "sha256:368f9c5c03ed0a8ed96e59848bcd904f54904dc68738a77981a215c4b5427ea8"
     },
     "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys."
+  },
+  "pool_delete": {
+    "mode": "json_object",
+    "producer": "src/commands/ops_commands.py:OpsCommandsMixin._cmd_pool_delete",
+    "source_digest": "sha256:2e3abe3ec9858bd92fc02e1f90d0792b69f437ec826669a820ae5cbab1e2f077",
+    "input_schema_source": "explicit_tool",
+    "schema_quality": "declared",
+    "argument_reads_diagnostic_only": [],
+    "effect": "destructive",
+    "retry_safe": false,
+    "principal_requirement": "original_principal",
+    "resource_gates": [
+      "system_scope"
+    ],
+    "denial_reason": null,
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "return_branches": [
+      {
+        "return": "await delete_pool(self, args)",
+        "protocol": "delegated_producer"
+      }
+    ],
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_pool_admin.py::test_delete_pool_removes_configuration_and_respects_vault_depth",
+      "tests/test_pool_admin.py::test_delete_pool_warns_on_unconfirmed_stop_and_preserves_held_resources",
+      "tests/test_pool_admin.py::test_delete_pool_validates_global_id_before_side_effects"
+    ],
+    "helper_producers": {},
+    "review_notes": "The handler delegates to delete_pool, which returns explicit success=false for invalid IDs, depth and non-pool targets; successful retirement/deletion returns success=true with warnings for unconfirmed stops or file cleanup. Database failures propagate as command errors. Missing retired rows permit idempotent cleanup retries. No task completion is inferred from deletion."
   },
   "pool_rename": {
     "mode": "json_object",
@@ -21997,7 +22027,7 @@
       "_claim_precondition_refusal": "sha256:43692f096a7f7a1c94305812d7f4090d90ea2a53de5d6924659e30310d648b7d",
       "_claimed_response": "sha256:45088970df50fd509a820e83976770c42739806c56fb9eeba7d3f67262c7eb3e",
       "_prepare_and_activate": "sha256:18945c36fdfbd5e69b9ef6f4fb0befef0e3123554b7cb1fdc4cdd71f3bd06b00",
-      "_prepare_and_activate_locked": "sha256:6722ada280e9abcccb852ee3e7a4d751780a958ec24dbad4bfcaa0f1fdb3cc79",
+      "_prepare_and_activate_locked": "sha256:d4dfda501280d4675a7236320d840443fb310cb9234b4850514f93279d9b7f9b",
       "_record_claim_refusal": "sha256:c798ed323fd6827da3d8bd6d6bc8e2f6b859296830c70139749bf5dee3a7f14e",
       "_recover_stale_binding": "sha256:ca2744567435292ae87efc87fe55410930a687edc1623e0f071ad7483e0917a1",
       "_refusal_response": "sha256:3d822aff2b782bcd5ddf3cfec3a6f085095a046cb78df46d756c558b1f869aeb",
@@ -22056,7 +22086,7 @@
       "_close_task_obsolete": "sha256:b6532b76f6a8dce25aafc0c9a8d8969ec38b6ea16b2686d8b7734042b6d30016",
       "_cmd_task_claim": "sha256:292aa904450d12b5b757e74bef9e59db6a62d2256a1916be054e1b0ab7c0e60e",
       "_prepare_and_activate": "sha256:18945c36fdfbd5e69b9ef6f4fb0befef0e3123554b7cb1fdc4cdd71f3bd06b00",
-      "_prepare_and_activate_locked": "sha256:6722ada280e9abcccb852ee3e7a4d751780a958ec24dbad4bfcaa0f1fdb3cc79",
+      "_prepare_and_activate_locked": "sha256:d4dfda501280d4675a7236320d840443fb310cb9234b4850514f93279d9b7f9b",
       "_record_claim_refusal": "sha256:c798ed323fd6827da3d8bd6d6bc8e2f6b859296830c70139749bf5dee3a7f14e",
       "_recover_stale_binding": "sha256:ca2744567435292ae87efc87fe55410930a687edc1623e0f071ad7483e0917a1",
       "_refusal_response": "sha256:3d822aff2b782bcd5ddf3cfec3a6f085095a046cb78df46d756c558b1f869aeb",

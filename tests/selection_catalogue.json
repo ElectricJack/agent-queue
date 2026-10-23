@@ -612,6 +612,7 @@
         "tests/test_parent_ci_publication.py",
         "tests/test_promote_commands.py",
         "tests/test_promotion_backmerge.py",
+        "tests/test_promotion_continuous_equivalence.py",
         "tests/test_promotion_flow.py",
         "tests/test_promotion_notes_input.py",
         "tests/test_promotion_policy.py",
@@ -1136,6 +1137,7 @@
         "tests/test_provider_commands.py",
         "tests/test_provider_escalation.py",
         "tests/test_provider_evidence.py",
+        "tests/test_provider_failover_playbook.py",
         "tests/test_provider_inflight.py",
         "tests/test_provider_intent.py",
         "tests/test_provider_reroute.py",
@@ -1229,6 +1231,7 @@
         "tests/test_playbook_v2_fixtures.py",
         "tests/test_plugin_cron_to_playbook_migration.py",
         "tests/test_project_defaults_playbook.py",
+        "tests/test_quilt_health_watch.py",
         "tests/test_shipped_playbook_sources.py",
         "tests/test_supervisor_failure_triage.py",
         "tests/test_v1_removal.py"
@@ -2138,7 +2141,7 @@
         "agent-roster"
       ],
       "default_arm": true,
-      "digest": "sha256:b180d922c68e6f98e46a69dab9b54be9e3e0f1387e3e90b4e7c74493026c8a86",
+      "digest": "sha256:840e813d2c41f96c3d11824d05bde4803616a45042572ee11fce933924847a40",
       "imports": [
         "src.agents.configuration",
         "src.api.auth",
@@ -2150,6 +2153,7 @@
         "src.commands.handler",
         "src.config",
         "src.database",
+        "src.database.tables",
         "src.event_bus",
         "src.intelligence_classes",
         "src.models",
@@ -8452,11 +8456,12 @@
         "worker-pools"
       ],
       "default_arm": true,
-      "digest": "sha256:7cc8ed3d7a5ab2077a2c178fb21ed03c1ff9c830777b18f9e4195f1cabe036fd",
+      "digest": "sha256:b12d119266a758e6cc262b3b228500b9db5d5598272715bb300b7815416aaf22",
       "imports": [
         "src.install.pools",
         "src.profiles.catalog",
-        "src.profiles.parser"
+        "src.profiles.parser",
+        "src.profiles.retired_defaults"
       ],
       "markers": [],
       "summary": "Default worker pools: a fresh install's first tasks need something to claim them."
@@ -9203,9 +9208,10 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:cc992bfd524fc0775b9f6c74d3005c17795e24b4682bf0317db4ae54db19bbe9",
+      "digest": "sha256:250c0409cbeb70896f23a4ff365c21fecbfd7e9733d15a801c03f3be10fa0d0b",
       "imports": [
         "src.api.auth",
+        "src.api.scope",
         "src.commands.handler",
         "src.commands.principal",
         "src.config",
@@ -9220,6 +9226,7 @@
         "src.integration.lock",
         "src.integration.models",
         "src.integration.train",
+        "src.messages.delivery",
         "src.models",
         "src.profiles.capabilities",
         "src.sessions",
@@ -11979,12 +11986,15 @@
         "metrics"
       ],
       "default_arm": true,
-      "digest": "sha256:9e2b403c361669cb3d4235e0f5abb25a28109b95a5d24bf87d14b429d419c49b",
+      "digest": "sha256:455665410406fc660bfff251c683d7491340cac9197018de8cdf044d456d53e5",
       "imports": [
         "src.config",
+        "src.logging_config",
+        "src.metrics",
         "src.metrics.histogram",
         "src.metrics.loop_watchdog",
-        "src.metrics.perf"
+        "src.metrics.perf",
+        "src.metrics.sampler"
       ],
       "markers": [
         "parametrize"
@@ -14377,7 +14387,7 @@
         "worker-pools"
       ],
       "default_arm": true,
-      "digest": "sha256:b6261ebb581c040bbbfd3bc0d799f8010a79e241750d4f0e363988bdcdf9129e",
+      "digest": "sha256:58e35ec8cccd65b2090806218256bde7aba9a7064bfe24961ee1349b2c1fe89a",
       "imports": [
         "src.api.auth",
         "src.commands.claim_commands",
@@ -14407,6 +14417,7 @@
         "src.models",
         "src.orchestrator",
         "src.orchestrator.pools",
+        "src.orchestrator.worktree_manager",
         "src.pool_claims",
         "src.scheduler",
         "src.sessions.harness_parser"
@@ -15184,6 +15195,27 @@
       ],
       "summary": "Hotfix and backmerge gates with real PostgreSQL, retained refs and Git DAGs."
     },
+    "tests/test_promotion_continuous_equivalence.py": {
+      "areas": [
+        "integration-promotion"
+      ],
+      "default_arm": true,
+      "digest": "sha256:686bc16dbdb476e758d4d472d0e7fb02335b34523ac43c3f1929b6f13ccac2d6",
+      "imports": [
+        "src.commands.contracts",
+        "src.commands.contracts.models",
+        "src.commands.contracts.registry",
+        "src.commands.principal",
+        "src.playbooks.definition",
+        "src.playbooks.engine",
+        "src.playbooks.executors.base",
+        "src.profiles.capabilities"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Run the typed-source port and frozen shipped policy through the same real engine."
+    },
     "tests/test_promotion_flow.py": {
       "areas": [
         "integration-promotion"
@@ -15591,6 +15623,26 @@
       ],
       "summary": "Provider availability collectors and the service around the reducer."
     },
+    "tests/test_provider_failover_playbook.py": {
+      "areas": [
+        "provider-failover"
+      ],
+      "default_arm": true,
+      "digest": "sha256:d8408926f7c680c81a0f5dc8aee9af02bc785c8e3d6c7997a00a9c1c1006ceec",
+      "imports": [
+        "src.commands.contracts",
+        "src.commands.contracts.builtin",
+        "src.commands.principal",
+        "src.playbooks.definition",
+        "src.playbooks.engine",
+        "src.playbooks.executors.base",
+        "src.providers.availability"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Recorded old/new provider-failover scenarios through the V2 command executor."
+    },
     "tests/test_provider_inflight.py": {
       "areas": [
         "provider-failover"
@@ -15744,18 +15796,24 @@
         "provider-usage"
       ],
       "default_arm": true,
-      "digest": "sha256:b8c86225f8b06a664d3ae813b723bbbfe82fa476120ec0c0311707db7647a98d",
+      "digest": "sha256:a71a5472c418cb415edd0fd15a1f146eca40646e844e38b3e8b2f9a61725545d",
       "imports": [
         "src.commands.contracts",
         "src.commands.contracts.builtin",
+        "src.commands.principal",
         "src.config",
         "src.database.queries.provider_usage_queries",
         "src.playbooks.definition",
+        "src.playbooks.engine",
+        "src.playbooks.executors.base",
         "src.playbooks.executors.command",
+        "src.profiles.capabilities",
         "src.providers",
         "src.providers.probe"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "``provider_usage_probe`` — implementation spec T4."
     },
     "tests/test_provider_usage_queries.py": {
@@ -15770,6 +15828,30 @@
       ],
       "markers": [],
       "summary": "ProviderUsageQueryMixin — implementation spec T1."
+    },
+    "tests/test_quilt_health_watch.py": {
+      "areas": [
+        "shipped-playbooks"
+      ],
+      "default_arm": true,
+      "digest": "sha256:315bf3bfe0f6377ffac5afc08af5c85165087348c714095fce129f6e2d84e732",
+      "imports": [
+        "src.commands.contracts.models",
+        "src.commands.contracts.registry",
+        "src.commands.principal",
+        "src.playbooks.authority",
+        "src.playbooks.definition",
+        "src.playbooks.engine",
+        "src.playbooks.executors",
+        "src.playbooks.executors.agent_task",
+        "src.playbooks.executors.base",
+        "src.playbooks.expressions",
+        "src.profiles.capabilities"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Disabled Quilt candidate against the unmodified installed graph and old goldens."
     },
     "tests/test_rate_guard.py": {
       "areas": [
@@ -17879,14 +17961,21 @@
         "supervisor"
       ],
       "default_arm": true,
-      "digest": "sha256:c9a0ad91ff3c66758d2afda433d70c621f5acd1540b94760c41aaa1ea706bd36",
+      "digest": "sha256:bc42f024e92a2a1938b30465d93ee543198493691fd1f86d12093d029f1dedbb",
       "imports": [
         "src.commands.contracts",
         "src.commands.contracts.builtin",
+        "src.commands.handler",
+        "src.commands.principal",
+        "src.config",
         "src.playbooks.authoring",
-        "src.playbooks.definition"
+        "src.playbooks.definition",
+        "src.playbooks.engine",
+        "src.playbooks.executors.base"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "Reviewed supervisor-failure-triage artifact and internal command contract."
     },
     "tests/test_supervisor_global_lifecycle.py": {
@@ -20011,12 +20100,13 @@
         "agent-waits"
       ],
       "default_arm": true,
-      "digest": "sha256:3cdef87877891a366dd387d18ce4c59a65ce8c8e8fb782b37643dbc917580df5",
+      "digest": "sha256:83d9e39efa228ab22cbc2655c0479179405c814fdcc42c86b7c82041d144f292",
       "imports": [
         "src.database",
         "src.database.queries.wait_queries",
         "src.database.tables",
         "src.models",
+        "src.waits",
         "src.waits.conditions",
         "src.waits.explain",
         "src.waits.graph",
@@ -20030,7 +20120,7 @@
         "agent-waits"
       ],
       "default_arm": true,
-      "digest": "sha256:a68fea078ce3de9a4232c227ba75470518bd0490929ab0eb2215b24058f59474",
+      "digest": "sha256:279a4ad1652f9215b4f472de3474093ea88cc15ee548df21148cfd10ebe54fbd",
       "imports": [
         "src.cli.waits",
         "src.commands",
@@ -20042,7 +20132,9 @@
         "src.database.queries.wait_queries",
         "src.database.tables",
         "src.git.manager",
+        "src.integration",
         "src.integration.admission",
+        "src.integration.delivery_observer",
         "src.models",
         "src.orchestrator.worktree_manager",
         "src.prime",
@@ -20061,6 +20153,7 @@
         "src.waits.conditions",
         "src.waits.decision",
         "src.waits.fencing",
+        "src.waits.graph",
         "src.waits.holding",
         "src.waits.occupancy",
         "src.waits.registry",

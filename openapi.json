@@ -111,11 +111,11 @@
         }
       }
     },
-    "/plans/{task_id}": {
+    "/api/plans/{task_id}": {
       "get": {
-        "summary": "Plan Viewer",
-        "description": "Serve plan content as an HTML page.",
-        "operationId": "plan_viewer_plans__task_id__get",
+        "summary": "Plan Content",
+        "description": "Return plan markdown as data for the standalone dashboard viewer.",
+        "operationId": "getPlan",
         "parameters": [
           {
             "name": "task_id",
@@ -132,7 +132,9 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/PlanContentResponse"
+                }
               }
             }
           },
@@ -11649,6 +11651,53 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/PolicyExportResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/pool/delete": {
+      "post": {
+        "tags": [
+          "pool"
+        ],
+        "summary": "Delete a global worker pool, stop its sessions through guarded teardown and return routed tasks to their router. Running work is interrupted. Retires the profile so install/update cannot recreate it. Backs `aq pool delete`.",
+        "description": "Delete a global worker pool, stop its sessions through guarded teardown and return routed tasks to their router. Running work is interrupted. Retires the profile so install/update cannot recreate it. Backs `aq pool delete`.",
+        "operationId": "pool_delete",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PoolDeleteRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PoolDeleteResponse"
                 }
               }
             }
@@ -54963,6 +55012,7 @@
                 "counters": {},
                 "pool": {}
               },
+              "operations": {},
               "host": {
                 "psi": {},
                 "stale": false,
@@ -56762,6 +56812,39 @@
         ],
         "title": "OnboardingErrorInfo"
       },
+      "OperationPerf": {
+        "properties": {
+          "latency": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Histogram"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "outcomes": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Outcomes",
+            "default": {}
+          },
+          "in_flight": {
+            "type": "number",
+            "title": "In Flight",
+            "default": 0
+          },
+          "peak_in_flight": {
+            "type": "number",
+            "title": "Peak In Flight",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "title": "OperationPerf",
+        "description": "Bounded operation timing; coarser tiers average concurrency gauges."
+      },
       "OperatorDecisionDTO": {
         "properties": {
           "step_id": {
@@ -57802,6 +57885,14 @@
               "pool": {}
             }
           },
+          "operations": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/OperationPerf"
+            },
+            "type": "object",
+            "title": "Operations",
+            "default": {}
+          },
           "host": {
             "$ref": "#/components/schemas/HostPerf",
             "default": {
@@ -58165,6 +58256,24 @@
           "description"
         ],
         "title": "Placeholder"
+      },
+      "PlanContentResponse": {
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "title": "Task Id"
+          },
+          "content": {
+            "type": "string",
+            "title": "Content"
+          }
+        },
+        "type": "object",
+        "required": [
+          "task_id",
+          "content"
+        ],
+        "title": "PlanContentResponse"
       },
       "PlaybookActivateRequest": {
         "properties": {
@@ -61505,6 +61614,116 @@
           "review_id"
         ],
         "title": "PolicyReviewReceipt"
+      },
+      "PoolDeleteRequest": {
+        "properties": {
+          "profile_id": {
+            "type": "string",
+            "title": "Profile Id",
+            "description": "Pool profile ID to delete."
+          },
+          "depth": {
+            "type": "string",
+            "title": "Depth",
+            "description": "profile removes profile.md and preserves other vault content; directory removes the entire profile directory. Both retire the pool.",
+            "default": "profile"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason",
+            "description": "Optional retirement reason."
+          }
+        },
+        "type": "object",
+        "required": [
+          "profile_id"
+        ],
+        "title": "PoolDeleteRequest"
+      },
+      "PoolDeleteResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success"
+          },
+          "profile_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Profile Id"
+          },
+          "deleted": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Deleted"
+          },
+          "retired": {
+            "type": "boolean",
+            "title": "Retired",
+            "default": false
+          },
+          "depth": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Depth"
+          },
+          "sessions": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Sessions",
+            "default": []
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Warnings",
+            "default": []
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          }
+        },
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "title": "PoolDeleteResponse"
       },
       "PoolGauges": {
         "properties": {

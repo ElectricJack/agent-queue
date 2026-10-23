@@ -7079,6 +7079,35 @@
       }
     },
     {
+      "name": "pool_delete",
+      "description": "Delete a global worker pool, stop its sessions through guarded teardown and return routed tasks to their router. Running work is interrupted. Retires the profile so install/update cannot recreate it. Backs `aq pool delete`.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "profile_id": {
+            "type": "string",
+            "description": "Pool profile ID to delete."
+          },
+          "depth": {
+            "type": "string",
+            "enum": [
+              "profile",
+              "directory"
+            ],
+            "default": "profile",
+            "description": "profile removes profile.md and preserves other vault content; directory removes the entire profile directory. Both retire the pool."
+          },
+          "reason": {
+            "type": "string",
+            "description": "Optional retirement reason."
+          }
+        },
+        "required": [
+          "profile_id"
+        ]
+      }
+    },
+    {
       "name": "pool_rename",
       "description": "Rename a global pool's display name while keeping its profile ID, routing, bounds and task assignments unchanged. Saves the name to the profile source with a backup and emits pool.renamed. Backs `aq pool rename`.",
       "input_schema": {
@@ -21312,6 +21341,7 @@
     "provider_allocation_apply": "provider",
     "pool_status": "pool",
     "pool_rename": "pool",
+    "pool_delete": "pool",
     "pool_scale": "pool",
     "pool_set_lifecycle": "pool",
     "pool_set_enabled": "pool",

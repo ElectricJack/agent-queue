@@ -634,3 +634,9 @@ class OpsCommandsMixin:
         from src.commands.pool_admin import command_response, set_pool_bounds
 
         return command_response(await set_pool_bounds(self, args))
+
+    async def _cmd_pool_delete(self, args: dict) -> dict:
+        """Delete a global pool, stopping its sessions and invalidating its routes."""
+        from src.commands.pool_admin import delete_pool
+
+        return await delete_pool(self, args)

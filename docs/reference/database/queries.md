@@ -1,9 +1,10 @@
 # Query modules
 
-Every SQL statement AQ issues lives in one of the 49 query modules under
-[`src/database/queries/`](../../../src/database/queries/). Nothing above them
-builds SQL, and nothing below them makes a decision. This page says what each
-one owns, so you can go from "where does this row come from?" to a file.
+Domain persistence is grouped under
+[`src/database/queries/`](../../../src/database/queries/). This page explains
+query-layer patterns and selected modules; it is not an exhaustive inventory.
+The owning [system specs](../../specs/systems/README.md) describe newer domains.
+The source directory is the complete list of query implementations.
 
 If you want the tables instead, see [Table families](tables.md). For the
 layering these files sit in, see [the database overview](README.md#how-code-reaches-the-database).
@@ -13,14 +14,14 @@ layering these files sit in, see [the database overview](README.md#how-code-reac
 A query module is a **mixin class**: a plain class with async methods that reach
 the database through `self._engine`. The adapter
 ([`adapters/postgresql.py`](../../../src/database/adapters/postgresql.py))
-inherits from 47 of them, so every method ends up on one object:
+composes domain mixins, so their methods end up on one object:
 
 ```python
 class PostgreSQLDatabaseAdapter(
     IntegrationControlQueriesMixin,
     HierarchyQueryMixin,
     TaskQueryMixin,
-    ...,            # 47 in total
+    ...,            # additional domain mixins
     TransactionQueryMixin,
 ):
 ```

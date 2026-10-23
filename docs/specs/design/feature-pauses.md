@@ -12,6 +12,11 @@ tags: [design, feature-pauses, memory, playbooks, overhaul, feature-flags]
 > see [historical material](../../history/README.md) for how this material is
 > organised.
 
+> **Implementation note (2026-10-22).** Feature pause/resume is shipped; the
+> Draft label below records this design's original approval stage. Current
+> task states and manual-pause semantics are described in
+> [Tasks](../../concepts/tasks.md#statuses-and-phases).
+
 **Status:** Draft — approved direction (2026-08-19)
 **Principles:** [guiding-design-principles](guiding-design-principles.md) (#2 everything is visible and editable, #5 reduce
 human effort not judgment, #10 favor fewer moving parts)
@@ -20,6 +25,14 @@ Workstream P), [self-improvement](self-improvement.md), [playbooks](playbooks.md
 `docs/specs/implementation/feature-pauses.md` (the paired implementation spec)
 
 ---
+
+> **Current boundary (2026-10-22).** The pause/re-enable plan below is
+> historical. `memory.enabled` now gates legacy commands and optional knowledge
+> context/provider paths, but a config flip does not supply a memory backend.
+> Core fences legacy plugin loads, legacy L1/L2 slots are empty, and reflection
+> was deleted. No periodic reflection or old consolidation schedule ships.
+> See [knowledge records](../../guides/knowledge-records.md) for independent
+> storage/provider gates and [knowledge context](../knowledge-context.md).
 
 ## 1. Problem & Direction
 

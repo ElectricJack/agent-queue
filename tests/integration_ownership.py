@@ -44,6 +44,10 @@ TRANSITION_BATCH_EXCEPTION = {'batch_id': 'train-745592300af5cef0338dec80ebabb46
                           'msg-5c55b72faec1497391205876fc5dfeb9',
                           'msg-96fed6b8e86148f0bbf55ded244c9a0f',
                           'msg-76ff7843e72d451b9017a0b4db30c970',
+                          'msg-c47a1a9a635a465b8a0cb286f93cb0b0',
+                          'msg-c45ccf8341f946819758858c7bff488d',
+                          'msg-625e460c4a7c456983e5eb114ea22446',
+                          'msg-c80bde55a6d1442791a2ba4f9597d7a0',
                           'msg-1b59c9af50fd43418246593c54d85a16'],
  'decision_record': 'record:2720bdbe-7521-427e-8e72-1f40a3ff9818',
  'measured_source_revision': 'a36c389c39a33ff60bffa98cc019591298bdcfa9',
@@ -63,7 +67,7 @@ TRANSITION_BATCH_EXCEPTION = {'batch_id': 'train-745592300af5cef0338dec80ebabb46
                    'measured_source_revision': 'cbfd455b0e9f053854a2c1becfa1efaeef231582',
                    'authorized_delta': 2166,
                    'measured_owned_total': 158958}],
- 'batch_measured_delta': 2255,
+ 'batch_measured_delta': 2310,
  'restore_task': 'azure-ridge-72',
  'expires_at': 's4_modules',
  'category_approval_message_id': 'msg-90f9f1b1e0cd4e8e8d28071cffc927a6',
@@ -317,6 +321,97 @@ TRANSITION_BATCH_EXCEPTION = {'batch_id': 'train-745592300af5cef0338dec80ebabb46
                  'reason': 'Remove the legacy updater path in clear-delta-43 / PR #1855 after '
                            'merging PR #1797; re-record exactly origin/dev measured_owned_total '
                            'minus 30 under the supervisor delegated size-cap decision.'},
+                {'task_id': 'calm-lantern-21',
+                 'decision_message_id': 'msg-c47a1a9a635a465b8a0cb286f93cb0b0',
+                 'referenced_decision': 'size-cap-delegation-2026-10-23',
+                 'operator_decision': '6679052c',
+                 'operator_task': 'sharp-cascade-53',
+                 'pull_request': 'https://github.com/ElectricJack/agent-queue/pull/1902',
+                 'previous_source_revision': 'c177d24e86d25fde7804131c94bfd637b0eb540a',
+                 'previous_owned_total': 161162,
+                 'previous_engine_lines': 85543,
+                 'previous_shared_lines': 62037,
+                 'previous_table_count': 45,
+                 'authorized_owned_delta': 12,
+                 'authorized_engine_delta': 8,
+                 'authorized_shared_delta': 4,
+                 'authorized_table_delta': 0,
+                 'measured_source_revision': '925ee7bf7fbeffacf5db9fb2b4c41420f67d7be3',
+                 'measured_owned_total': 161174,
+                 'measured_engine_lines': 85551,
+                 'measured_shared_lines': 62041,
+                 'measured_table_count': 45,
+                 'charged_definitions': ['src/integration/pr_repair_publication.py::PRRepairPublication',
+                                         'src/cli/client.py::_COMMAND_TIMEOUTS'],
+                 'reason': 'Authenticated current remote PR base history and repair/root-redrive '
+                           'CLI timeout budgets. Project supervisor approved the exact +12 owned '
+                           '(+8 engine, +4 shared) footprint for PR1902 under '
+                           'size-cap-delegation-2026-10-23; preserve historical frozen-batch '
+                           'measurements and classifications.'},
+                {'task_id': 'smart-forge-49',
+                 'decision_message_id': 'msg-c45ccf8341f946819758858c7bff488d',
+                 'referenced_decision': 'size-cap-delegation-2026-10-23',
+                 'operator_decision': '6679052c',
+                 'operator_task': 'sharp-cascade-53',
+                 'pull_request': 'https://github.com/ElectricJack/agent-queue/pull/1907',
+                 'previous_source_revision': 'dae4a86819d8c4ed6ec70d0d9349f3895f284c4d',
+                 'previous_owned_total': 161213,
+                 'previous_engine_lines': 85544,
+                 'previous_table_count': 45,
+                 'authorized_owned_delta': 55,
+                 'authorized_engine_delta': 55,
+                 'authorized_shared_delta': 0,
+                 'authorized_table_delta': 0,
+                 'measured_owned_total': 161268,
+                 'measured_engine_lines': 85599,
+                 'measured_table_count': 45,
+                 'measured_source_revision': 'ddf86c8595adb25c7361740bf680b2273f88c90a',
+                 'reason': 'Cache exact-head root PR admission against the fetched target and '
+                           'report selection coverage; exact supervisor approval under '
+                           'size-cap-delegation-2026-10-23. Preserve historical grants; no '
+                           'headroom or new storage.'},
+                {'task_id': 'azure-cascade-22',
+                 'decision_message_id': 'msg-625e460c4a7c456983e5eb114ea22446',
+                 'referenced_decision': 'size-cap-delegation-2026-10-23',
+                 'operator_decision': '6679052c',
+                 'operator_task': 'sharp-cascade-53',
+                 'pull_request': 'https://github.com/ElectricJack/agent-queue/pull/1908',
+                 'previous_source_revision': 'dae4a86819d8c4ed6ec70d0d9349f3895f284c4d',
+                 'previous_owned_total': 161213,
+                 'previous_engine_lines': 85544,
+                 'previous_shared_lines': 61996,
+                 'previous_table_count': 45,
+                 'authorized_owned_delta': 295,
+                 'authorized_engine_delta': 204,
+                 'authorized_shared_delta': 91,
+                 'authorized_table_delta': 0,
+                 'authorized_storage_category_delta': 0,
+                 'implementation_revision': 'b8b754ecb8992b45b6c3dfefa9c51bf2d9519b3f',
+                 'measured_source_revision': '55a41b433cec061cddfd51ab786af7366663bbc5',
+                 'measured_owned_total': 161508,
+                 'measured_engine_lines': 85748,
+                 'measured_shared_lines': 62087,
+                 'measured_table_count': 45,
+                 'reason': 'Drop conflicting train members and their dependents, rebuild the '
+                           'healthy remainder and refresh the original source. Project supervisor '
+                           'approved the exact merged footprint under '
+                           'size-cap-delegation-2026-10-23; no headroom, new tables or storage '
+                           'categories. Preserve all historical grants and final caps.'},
+                {'task_id': 'bright-impact-14',
+                 'decision_message_id': 'msg-c80bde55a6d1442791a2ba4f9597d7a0',
+                 'referenced_decision': 'size-cap-delegation-2026-10-23',
+                 'operator_decision': '6679052c',
+                 'pr_url': 'https://github.com/ElectricJack/agent-queue/pull/1861',
+                 'previous_owned_total': 160837,
+                 'previous_engine_lines': 85316,
+                 'authorized_owned_delta': 26,
+                 'authorized_engine_delta': 0,
+                 'measured_owned_total': 160863,
+                 'measured_engine_lines': 85316,
+                 'measured_table_count': 45,
+                 'reason': 'PR #1861 latency instrumentation and bounded background graph waits; '
+                           'project supervisor approved the exact footprint under '
+                           'size-cap-delegation-2026-10-23. Retain features and count equality.'},
                 {'task_id': 'fair-ember-93',
                  'decision_record': 'decision:8f9bd96b-900d-4afc-8b98-645dd0ae4eab',
                  'decision_message_id': 'msg-1b59c9af50fd43418246593c54d85a16',
@@ -530,7 +625,26 @@ TRANSITION_BATCH_EXCEPTION = {'batch_id': 'train-745592300af5cef0338dec80ebabb46
                                                      'hold repair grant on current dev for PR '
                                                      '#1900. Preserve every historical grant and '
                                                      'frozen batch measurement.',
-                                           'previous_recorded_owned_cap': 161213}}
+                                           'previous_recorded_owned_cap': 161213},
+ 'daemon_latency_merge_measurement': {'task_id': 'bright-impact-14',
+                                      'referenced_decision': 'size-cap-delegation-2026-10-23',
+                                      'operator_decision': '6679052c',
+                                      'operator_task': 'sharp-cascade-53',
+                                      'pr_url': 'https://github.com/ElectricJack/agent-queue/pull/1861',
+                                      'merged_dev_revision': 'dae4a86819d8c4ed6ec70d0d9349f3895f284c4d',
+                                      'measured_source_revision': 'ebc184bd0922e51438cb5a048324c0631df71a08',
+                                      'previous_owned_total': 161213,
+                                      'previous_engine_lines': 85544,
+                                      'authorized_owned_delta': 26,
+                                      'authorized_engine_delta': 0,
+                                      'measured_owned_total': 161239,
+                                      'measured_engine_lines': 85544,
+                                      'measured_table_count': 45,
+                                      'reason': 'PR #1861 merge refresh: retain all dev grants and '
+                                                'the historical latency grant; exact merged '
+                                                'footprint pre-approved in supervisor reopen '
+                                                'feedback under size-cap-delegation-2026-10-23. No '
+                                                'additional headroom.'}}
 FINAL_ENGINE_CAP = 11_999
 FINAL_TOTAL_CAP = 19_999
 FINAL_TABLE_CAP = 10
