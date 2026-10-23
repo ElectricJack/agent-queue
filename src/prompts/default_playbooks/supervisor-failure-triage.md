@@ -4,6 +4,7 @@ name: Supervisor failure triage
 version: 1
 scope: system
 enabled: true
+required_capabilities: [task_failure_triage_notify]
 triggers:
   - task.failed
 ---
@@ -51,3 +52,22 @@ The rule has no retry. A refused or failed command ends the run visibly. The
 next durable failure starts a fresh run, while a replay of the same generation
 uses the existing incident and message. The event's `project_id` remains the
 authorization boundary for the incident and supervisor wake.
+
+## Reusable building blocks
+
+The typed command step is the reusable building block for this event policy.
+Its declared outcomes determine completion; there is no generic success-field
+inference or agent-authored triage step. The incident receipt remains bound as
+`incident`, and the command owns the atomic failure-generation incident and
+supervisor notification shared with the periodic recovery scan.
+
+Collections, foreach, observations, snapshot pages and the doctor catalogue do
+not apply to a single task event: this rule performs no inventory scan. Generic
+playbook state and notify would introduce a second notification identity beside
+the domain incident and could re-alert on an event/scan replay. Keep that domain
+command instead, with no state namespace or `state_schema_version`. No host
+process is needed, so there is no script runner step or scripts manifest.
+
+The existing domain command and incident lifecycle are deliberately retained.
+This port changes neither the unfiltered trigger nor the outcome edges, retry
+policy, project boundary, incident identity or remediation authority.
