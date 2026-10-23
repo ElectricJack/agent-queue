@@ -13,7 +13,7 @@ from src.config import AppConfig
 from src.database import Database
 from src.database.tables import messages, projects
 from src.messages.delivery import MessageDeliveryEngine
-from src.models import Project, SessionRecord
+from src.models import Project, ProjectStatus, SessionRecord
 from tests.db_fixtures import lease_dsn
 
 
@@ -183,6 +183,117 @@ async def test_session_wake_cannot_revive_a_disabled_project_supervisor(db):
     await db.update_project("p1", supervisor_enabled=True)
     woken = await command._cmd_session_wake({"session_id": row.name})
     assert woken["success"] is True
+    assert (await db.get_session(row.id)).desired_state == "running"
+
+
+async def test_waking_a_paused_project_supervisor_is_refused(db):
+    """A paused project's supervisor must not be woken by the wake command.
+
+    The resume command is the supported path back, which is why the refusal
+    names it rather than the supervisor-enable edit.
+    """
+    command = handler(db)
+    await db.update_project("p1", supervisor_enabled=True)
+    row = SessionRecord(
+        id="project-sup", name="n-supervisor--p1", project_id="p1", profile_id="supervisor",
+        harness="codex", provider="fake", lifecycle="named", work_dir="/tmp", epoch="e",
+        instance_token="token", started_at=1, state="stopped", desired_state="running",
+    )
+    await db.create_session(row)
+    await command._cmd_pause_project({"project_id": "p1"})
+    assert (await db.get_project("p1")).status == ProjectStatus.PAUSED
+    refused = await command._cmd_session_wake({"session_id": row.id})
+    assert refused["success"] is False
+    assert "paused" in refused["error"]
+    assert "aq project resume p1" in refused["error"]
+    # The refusal never mutates the session nor the operator's enable intent.
+    assert (await db.get_session(row.id)).desired_state == "running"
+    assert (await db.get_project("p1")).supervisor_enabled is True
+
+
+async def test_resume_rearms_a_previously_enabled_supervisor(db):
+    """Resume restarts a supervisor only when it was enabled before the pause.
+
+    The pause itself never flips ``supervisor_enabled``; the resume simply
+    re-expresses the pre-existing intent by wanting the named session to run.
+    A supervisor that was off before the pause stays off.
+    """
+    command = handler(db)
+    await db.update_project("p1", supervisor_enabled=True)
+    row = SessionRecord(
+        id="project-sup", name="n-supervisor--p1", project_id="p1", profile_id="supervisor",
+        harness="codex", provider="fake", lifecycle="named", work_dir="/tmp", epoch="e",
+        instance_token="token", started_at=1, state="stopped", desired_state="stopped",
+    )
+    await db.create_session(row)
+
+    await command._cmd_pause_project({"project_id": "p1"})
+    # The operator's enable intent survives the pause untouched — that state
+    # is what resume consults, so it is recoverable without operator action.
+    assert (await db.get_project("p1")).status == ProjectStatus.PAUSED
+    assert (await db.get_project("p1")).supervisor_enabled is True
+    # Pause alone does not re-arm (the reconciler drains it); it stays stopped.
+    assert (await db.get_session(row.id)).desired_state == "stopped"
+
+    await command._cmd_resume_project({"project_id": "p1"})
+    assert (await db.get_project("p1")).status == ProjectStatus.ACTIVE
+    assert (await db.get_project("p1")).supervisor_enabled is True
+    rearmed = await db.get_session(row.id)
+    assert rearmed.desired_state == "running"
+    assert rearmed.restarts == 0
+
+
+async def test_resume_does_not_rearm_a_disabled_supervisor(db):
+    """A supervisor that was off before the pause is never enabled by resume.
+
+    "Only where work is active": pausing is a temporary stop, not an opt-in.
+    """
+    command = handler(db)
+    # Supervisor was already off before the pause.
+    await db.update_project("p1", supervisor_enabled=False)
+    row = SessionRecord(
+        id="project-sup", name="n-supervisor--p1", project_id="p1", profile_id="supervisor",
+        harness="codex", provider="fake", lifecycle="named", work_dir="/tmp", epoch="e",
+        instance_token="token", started_at=1, state="stopped", desired_state="stopped",
+    )
+    await db.create_session(row)
+    await command._cmd_pause_project({"project_id": "p1"})
+    await command._cmd_resume_project({"project_id": "p1"})
+    assert (await db.get_project("p1")).status == ProjectStatus.ACTIVE
+    assert (await db.get_project("p1")).supervisor_enabled is False
+    assert (await db.get_session(row.id)).desired_state == "stopped"
+
+
+async def test_resume_without_a_supervisor_session_is_safe(db):
+    """A resume that finds no supervisor session row is a no-op for re-arm."""
+    command = handler(db)
+    await db.update_project("p1", supervisor_enabled=True)
+    await command._cmd_pause_project({"project_id": "p1"})
+    res = await command._cmd_resume_project({"project_id": "p1"})
+    assert res["success"] is True
+    assert (await db.get_project("p1")).status == ProjectStatus.ACTIVE
+
+
+async def test_repeated_pause_resume_is_idempotent_and_keeps_enabled_state(db):
+    """Idempotent repeat pause/resume never enables or disables the supervisor.
+
+    Each pair keeps the pre-existing enable intent; the only durable stop
+    effect is the supervisor's ``desired_state``, which is re-expressed on
+    resume and re-stopped by the pause.
+    """
+    command = handler(db)
+    await db.update_project("p1", supervisor_enabled=True)
+    row = SessionRecord(
+        id="project-sup", name="n-supervisor--p1", project_id="p1", profile_id="supervisor",
+        harness="codex", provider="fake", lifecycle="named", work_dir="/tmp", epoch="e",
+        instance_token="token", started_at=1, state="running", desired_state="running",
+    )
+    await db.create_session(row)
+    for _ in range(3):
+        await command._cmd_pause_project({"project_id": "p1"})
+        await command._cmd_resume_project({"project_id": "p1"})
+    assert (await db.get_project("p1")).status == ProjectStatus.ACTIVE
+    assert (await db.get_project("p1")).supervisor_enabled is True
     assert (await db.get_session(row.id)).desired_state == "running"
 
 

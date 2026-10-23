@@ -2,7 +2,7 @@
 
 An AI agent can reach Agent Queue two ways: by shelling out to `aq`, or by
 calling a **tool** — a JSON Schema description of one command, handed to a
-model so it can call it natively. Both paths end in the same place:
+model so it can call it natively. Both paths delegate command execution to:
 `CommandHandler.execute(name, args)`. The tool layer is a *presentation* of
 the command surface, not a second surface.
 
@@ -21,35 +21,52 @@ that ship alongside. For the CLI itself see [the CLI contract](README.md).
 [`src/tools/definitions.py`](../../../src/tools/definitions.py) holds
 `_ALL_TOOL_DEFINITIONS`: a list of plain dicts, each `{"name",
 "description", "input_schema"}`, where `name` is a `CommandHandler` command.
-It is a pure data structure with no heavy imports, which is what lets the CLI
-generate its command tree with the daemon down.
+These definitions feed the shared command inventory. The CLI uses a packaged
+catalogue generated from that inventory, so help works with the daemon down.
 
-Three things read that list, and they must agree:
+The shared descriptor snapshot (`src/commands/command_inventory.py`) composes
+that list with typed contracts, fallback schemas, discovered handlers and
+plugin registrations. MCP, API code generation and command-catalogue
+generation project its transport view. Explicit definitions retain precedence
+on those transports; typed playbook contracts use a separate view, and schema
+disagreements are recorded in descriptor audits. This does not make the
+transport schemas runtime validators.
+
+The CLI reads the generated, committed `src/tools/command_catalogue.json`,
+without importing the handler. The data flows are:
 
 ```mermaid
 flowchart LR
   D["src/tools/definitions.py<br/>_ALL_TOOL_DEFINITIONS"] --> R["ToolRegistry<br/>core + categories"]
-  D --> C["auto_commands.py<br/>aq &lt;group&gt; &lt;cmd&gt;"]
-  D --> M["mcp_registration.py<br/>MCP tools"]
+  D --> S["Command descriptor snapshot"]
+  S --> J["command_catalogue.json"]
+  J --> C["auto_commands.py<br/>aq &lt;group&gt; &lt;cmd&gt;"]
+  S --> M["mcp_registration.py<br/>MCP tools"]
   R --> A["authorization.command_allowed()"]
   C --> A
-  M --> A
+  M -->|trusted-local scope| H
   A --> H["CommandHandler.execute()"]
 ```
 
 A command with no definition here is still dispatchable — the MCP layer
 discovers `_cmd_*` methods and synthesises a schema for them — but it will
-carry a generic docstring-derived schema rather than an authored one.
+use its typed contract or fallback schema if present. A genuinely
+argumentless handler gets an empty-object schema; an argument-taking command
+without a schema is marked opaque in the descriptor inventory.
 
 ## Categories, core tools, and on-demand loading
 
 [`ToolRegistry`](../../../src/tools/registry.py) splits the definitions in
 two. A tool listed in `_TOOL_CATEGORIES` belongs to a named category; a tool
-listed nowhere is **core** and is always loaded. Core is deliberately tiny —
-fewer than a dozen tools, including `find_applicable_tool` and `load_tools` —
-because the whole point is to keep a conversation's opening context small.
+listed nowhere is **core** and is included by the registry's core-tools API.
+Core includes `find_applicable_tool` and `load_tools`. This grouping comes
+from the former conversation tool-loading loop; it does not configure a
+running tmux harness's tools.
 
-The current categories, with the CLI group each becomes:
+Selected categories and their CLI groups are below. This is not a complete
+inventory: commands also cover knowledge/records, reviews, waits, jobs,
+collaboration, routing and other areas. Category assignment and CLI overrides
+live in `definitions.py`; use `aq --help` for the installed tree.
 
 | Category | CLI group | What it covers |
 |---|---|---|
@@ -74,24 +91,25 @@ The current categories, with the CLI group each becomes:
 
 Two commands drive discovery:
 
-* **`load_tools`** injects one category's definitions into the active tool set
-  for subsequent turns. Loading is purely an attention optimisation —
-  execution flows through `CommandHandler.execute` whether a tool is "loaded"
-  or not. It is excluded from the CLI and from MCP: it is a
-  supervisor-internal meta-tool.
+* **`load_tools`** returns executable names for a category or one tool. It
+  does not inject schemas into a running harness. The old `ChatAgent` loop
+  that performed that injection is gone. It remains an internal command,
+  excluded from CLI and MCP; the registry's core/category APIs remain useful
+  to code that explicitly consumes them. Loading never grants authority.
 * **`find_applicable_tool`** (`aq system find-applicable-tool`) searches tools
   by describing what you want to do. It is backed by
   [`ToolIndex`](../../../src/tools/tool_index.py), an in-memory cosine-
   similarity index over tool names and descriptions, rebuilt at startup and
   never persisted. If the embedding provider is unavailable the index simply
-  stays empty and search returns nothing — semantic tool search is an
-  optional convenience, not a dependency.
+  stays empty and the command falls back to keyword overlap in tool names
+  and descriptions (`method: "keyword"`). Results describe the registry;
+  they are not currently filtered by dispatchability or capability, so a
+  match is not evidence that this caller can execute it.
 
 ## What an agent is actually shown
 
 `load_tools` does not hand back everything in a category. Two filters run
-first, and both exist so that **a name that is published is a name that can be
-run**:
+first, and both exist to avoid advertising unavailable commands:
 
 1. **Dispatchability** — a definition with no backing `_cmd_*` method and no
    plugin command is dropped, with a reason. Advertising `memory_search` with
@@ -107,7 +125,7 @@ run**:
 
 ## MCP
 
-The daemon embeds a streamable-HTTP MCP server on the same host and port as
+When enabled, the daemon embeds a streamable-HTTP MCP server on the same host and port as
 its API (`mcp_server.host` / `mcp_server.port`, default `127.0.0.1:8081`),
 mounted at `/mcp`.
 
@@ -121,12 +139,23 @@ defaults exclude `shutdown`, `restart_daemon`, `update_and_restart`,
 something an MCP client should reach) and `subagent_event` (harness telemetry
 an LLM has no reason to hand-write).
 
-**How a session gets it.** When `mcp_server.inject_into_tasks` is true — the
-default when the server is enabled — the registry exposes a synthetic
-`agent-queue` entry pointing at `/mcp`, and a profile that names it under
-`## MCP Servers` gets it in its session. Publication is coarse; the real
-narrowing happens at call time, where the token's scope and the profile's
-capability policy both apply.
+**Registry versus session launch.** With both `mcp_server.enabled` and
+`inject_into_tasks` true, the registry exposes a synthetic `agent-queue`
+entry pointing at `/mcp`. Profiles store external-server names, but session
+launch currently does not resolve them into harness MCP configuration.
+Workers reach AQ through `aq`; external MCP must be configured in the harness
+outside AQ. The registry and catalog work independently of launch.
+
+**Caller identity limitation.** MCP publication is process-wide, not filtered
+per caller. The HTTP middleware rejects invalid bearer tokens, but the MCP
+handler currently does not forward the resolved request scope to `execute`.
+Calls therefore use trusted-local identity, apart from the fixed MCP scope
+for `question_*`. The intended worker capability boundary is not enforced by
+this transport. Use the authenticated CLI/HTTP path for session-scoped calls.
+Read-only `agentqueue://` resources also read directly from shared state.
+
+Set `mcp_server.enabled` explicitly: the dataclass defaults to true, but a
+YAML `mcp_server` section that omits `enabled` currently loads it as false.
 
 > **Proposed, not implemented.** The aq-surface design describes a second
 > mount at `/mcp-task` exposing a small task-scope allowlist. The
@@ -176,13 +205,18 @@ install-profile` acts on.
 
 ## Shipped agent skills
 
-Six skills ship in [`src/skills/`](../../../src/skills/) and are installed
-into a harness's skill directory at session start. They are the agent-facing
+Eight skills ship in [`src/skills/`](../../../src/skills/) and are seeded
+during vault setup, not at each session start. Claude's target is
+`~/.claude/skills/`; Codex (`~/.codex/skills/`) and Gemini
+(`~/.gemini/skills/` and `~/snap/gemini-cli/common/.gemini/skills/`) are seeded
+when their corresponding harness homes exist. They are the agent-facing
 documentation of this surface — short, task-shaped, and loaded on demand:
 
 | Skill | Covers |
 |---|---|
 | `aq-cli` | Orientation: how to find any command and get detail on it. |
+| `aq-knowledge` | Canonical durable records, scoped search, revision guards and readback. |
+| `aq-mini-projects` | Explicitly requested bounded ideation in one task, ending in plan review. |
 | `aq-tasks` | The task lifecycle from a worker's seat, and `aq task explain`. |
 | `aq-comms` | Messages, the inbox, and reporting a blocker to a human. |
 | `aq-workspaces-and-git` | The assigned worktree, its branch, committing, pushing, opening a PR. |
@@ -216,7 +250,8 @@ fail that test.
 | Tool definitions | Source, at edit time | [`src/tools/definitions.py`](../../../src/tools/definitions.py) |
 | Category assignment | Source | `_TOOL_CATEGORIES`, `_CLI_CATEGORY_OVERRIDES` in the same module |
 | The semantic tool index | Daemon startup | Memory only; rebuilt every start |
-| Which categories a conversation has loaded | The supervisor's tool-use loop | Conversation state, not the registry |
+| Core/category tool views | `ToolRegistry` | Computed views; no automatic harness schema injection |
+| Offline CLI catalogue | `scripts/generate-command-catalogue.py` | `src/tools/command_catalogue.json`; regenerate, never hand-edit |
 | MCP exclusions | Code, config file, environment | `DEFAULT_EXCLUDED_COMMANDS`, `mcp_server.excluded_commands`, `AGENT_QUEUE_MCP_EXCLUDED` |
 | MCP server registry entries | `aq mcp …` | `vault/[projects/<pid>/]mcp-servers/*.md` |
 | Installed agent skills | `ensure_default_aq_skills`, write-if-absent | The harness's skill directory |
@@ -228,7 +263,7 @@ fail that test.
 | A tool the agent calls answers "unknown command" | `aq system find-applicable-tool --description "<what you wanted>"` | The definition exists but nothing backs it — most often an uninstalled plugin. |
 | A tool is missing from an agent's list | `aq agent get-profile --profile-id <id>` | The profile's `## Capabilities` block does not allow it; discovery drops it silently by design. |
 | A command works from the CLI but not over MCP | `aq system get-config --section mcp_server` | It is in the effective exclusion set. |
-| `find_applicable_tool` returns nothing at all | daemon log at startup | The embedding provider was unavailable, so the index never built. Search degrades to empty rather than failing. |
+| `find_applicable_tool` returns nothing at all | daemon log at startup | Without embeddings, keyword matching is used; zero matches can mean no keyword overlap. |
 | An installed skill disagrees with this repository | `aq doctor` (`skills.installed_drift`) | Skill installation is write-if-absent; the installed copy is older. |
 | An enum value is rejected | `aq schema` | Read the value from the catalog rather than a document. |
 
