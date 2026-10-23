@@ -169,7 +169,7 @@ class FixerBatches:
                 continue
             changed = bool(head and (head != queue["observed_head"] or (
                 companion_head and companion_head != queue.get("companion_sha"))))
-            retry_capacity = queue["reason"] == "capacity"
+            retry_capacity = queue["reason"] in {"capacity", "launch_retry"}
             green = False
             if head and not (changed or released):
                 if service.observe_deferred is not None:
@@ -227,7 +227,7 @@ class FixerBatches:
                         "task_id": members[0].task_id, "replacement_batch_id": successor.id,
                         "operator_id": "integration-train", "reason": "Deferred input resumed",
                     }
-                # Capacity waits have no process/checkout to rebind. Transfer the
+                # Capacity and launch-retry waits have no process to rebind. Transfer the
                 # one unlaunched identity; all registered sessions rebind explicitly.
                 state = current["fixer_state"] or {}
                 if state.get("status") == "waiting_capacity":
