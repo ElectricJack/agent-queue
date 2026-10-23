@@ -16662,10 +16662,11 @@
         "task-routing"
       ],
       "default_arm": true,
-      "digest": "sha256:9b70ec9a491f4985ea932f6314abae41e8d750eff50e50624663c1c27a4bc1a8",
+      "digest": "sha256:0faf50a7f76a72cdce91a9df5ddf891dfa7ef71ace22ea75a1bfbe0f7a4733ab",
       "imports": [
         "src.assignment_routing",
         "src.models",
+        "src.providers.availability",
         "src.routing.readiness",
         "src.routing.sources"
       ],
