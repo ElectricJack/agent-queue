@@ -164,6 +164,21 @@ with no subprocess launcher of its own. Explicit account operations such as
 repository creation and gist sharing use the same runner under the capability
 rules in section 9.
 
+### Shared exact-commit check-run observations
+
+The startup-owned GitHub access service shares complete `filter=all` check-run
+listings across integration CI (including CI wait watchers), source observers,
+and the PR inbox. The key is the bound numeric repository identity and exact
+commit SHA; policy, producer and event filtering remain the caller's job.
+Concurrent readers share one bounded paginated request. Pending, empty or
+incomplete listings expire after 45 seconds; nonempty completed listings stay
+available without a time expiry. An observed missing commit removes its entry.
+Workflow identity/attempt/status changes and explicit suite/job reruns invalidate
+cached check runs so an unchanged SHA can acquire new evidence. Failed reads
+are not cached, and cancelling a reader does not cancel other readers' request.
+Actual requests retain the initiating caller's GitHub activity attribution and
+background quota policy; cache hits do not count as GitHub requests.
+
 ## 5. Repository identity and authorization
 
 Every repository operation receives an explicit validated target. Resolve it
@@ -288,6 +303,22 @@ or CLI diagnostic also starts the cooldown; an ordinary permission 403 does not.
 Requests resume when the shared deadline expires. API invocations retain HTTP
 headers even when a binding/account caller only consumes the body.
 
+The startup-owned runner caches successful REST GET responses with an ETag or
+Last-Modified validator, including their bodies and pagination Link headers.
+Each entry is isolated by credential identity and token fingerprint, repository,
+and full request arguments (including URL, page/query and representation headers).
+Stored-login entries belong to that runner's startup-selected login. The cache
+holds at most 256 entries and 16 MiB, evicting least recently used entries; it is
+cleared on daemon restart. Writes and transformed or caller-conditional requests
+bypass it. No-store responses are not retained. Subsequent GETs send
+If-None-Match, or If-Modified-Since when only Last-Modified is available. A 304
+restores the cached body and merges response headers, retaining pagination links
+when omitted by the 304. Response-size limits still apply to restored content.
+Every reuse is validated over the network; failures never serve stale content.
+The activity snapshot separately reports `not_modified_per_hour` by component.
+These counts are a subset of API launch counts, exposing conditional-request
+savings without changing the existing traffic counters.
+
 `aq integration status` includes a `github` snapshot, also in brief output:
 daemon-wide `api_calls_per_minute` keyed by method and endpoint (without query
 values), `gh_commands_per_minute` for non-API CLI invocations, and the active
@@ -297,6 +328,47 @@ them; failed launched calls do. Endpoint cardinality and per-second buckets are
 bounded, with excess endpoints aggregated under `other endpoints` and excess
 CLI operations under `gh other commands`. A non-API `gh` invocation may
 make several HTTP requests; its counter measures invocations only.
+
+The same snapshot includes `api_calls_per_hour` and `gh_commands_per_hour`
+keyed by caller component, with `component_window_seconds: 3600`. These are
+rolling, bounded, in-memory launch counts at one-second resolution, reset on
+daemon restart. Nested calls inherit explicit component context; other calls
+use their nearest AQ caller outside the Git package, or `unattributed`.
+The event-loop host `src.main` is not a caller: child tasks without an explicit
+component or a more specific AQ frame remain `unattributed`. Endpoint counters
+and rate-limit warnings still identify their request.
+Excess component identities aggregate under `other components`. Counters include
+failed launches that reached a process and exclude calls refused before launch;
+they measure traffic, not GitHub's billable primary-quota usage.
+
+The response that starts each shared backoff episode logs one structured warning
+with a query-free endpoint template, caller component, HTTP status,
+`x-ratelimit-remaining`, `x-ratelimit-reset`, `retry-after`, and primary/secondary
+classification. Missing headers are null. An empty primary quota identifies a
+primary limit; other rate-limit refusals identify a secondary limit. Requests
+refused during that episode do not repeat this warning or log their diagnostics.
+
+`primary_quota` reports the last valid core-quota limit, remaining, reset and
+reserve, or null after reset/when unknown. The reserve is ten percent of the
+limit, rounded up. The background review poller, periodic PR cleanup and
+dashboard PR snapshot share this reserve: at or below it, they defer until reset
+without launching requests.
+Foreground worker and train operations retain access to that share; actual
+rate-limit backoff still applies to everyone. Out-of-order responses in one
+window cannot increase the observed remaining quota.
+
+Review polling uses one paginated open-PR inventory per repository and tick to
+skip detail reads for unchanged open PRs. The fingerprint includes update time,
+state, head/base refs, SHAs and repository identities. Missing/unreadable inventory
+falls back to detail reads. Reviews still refresh periodically, failed review
+reads retry, and source CI is observed independently because checks can change
+without a PR update. A closed PR stays skipped until it appears open again.
+PR cleanup reuses its repository inventory for dry-run observations only; apply
+re-reads the PR and keeps its final head check and Git delivery proof. On shared
+backoff, cleanup retains the current item and remaining page, and review polling
+retains its cursor before the interrupted root. Neither iterates the page logging
+one refusal per PR. Inventory snapshots are internal service context, never
+caller-supplied command arguments or authorization to close a PR.
 
 Ordinary task PR creation reuses an exact existing request. If the sole matching
 request was closed without merging, reopen that same request after validating
