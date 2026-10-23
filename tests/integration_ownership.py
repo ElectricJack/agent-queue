@@ -42,7 +42,7 @@ TRANSITION_BATCH_EXCEPTION = {'batch_id': 'train-745592300af5cef0338dec80ebabb46
                           'msg-68ccb1d50ee04851a7268dd58e9d4459',
                           'msg-9f16388d39524c8b9a33d6796b88d1fb'],
  'decision_record': 'record:2720bdbe-7521-427e-8e72-1f40a3ff9818',
- 'measured_source_revision': '15239e75971ae5ac39e6a7d0a5e467331ab58428',
+ 'measured_source_revision': '73e99672d2447c44ef6a71d43a0187f2d16630af',
  'original_owned_total_cap': 155499,
  'measured_owned_total': 161162,
  'delta': 5663,
@@ -301,7 +301,37 @@ TRANSITION_BATCH_EXCEPTION = {'batch_id': 'train-745592300af5cef0338dec80ebabb46
                                           'nimble-torrent-12': '9f2dd1988046baa0e40681c4457f4729b55e80c6',
                                           'prime-impact-40': '0b090fb969c46143f8cce7a55dd21f7d8bf1b1d8',
                                           'quick-pinnacle-97': '344a85b9d8388521975af9b830e4d8b17817562e',
-                                          'stark-beacon-94': '7cf8687ede868f8f714a655a63a00ba5dd428266'}}}
+                                          'stark-beacon-94': '7cf8687ede868f8f714a655a63a00ba5dd428266'}},
+ 'post_batch_composition': {'base_revision': '4a0c4e38ab979a1664586d47d16404b48def4089',
+                            'base_owned_total': 161111,
+                            'base_engine_lines': 85517,
+                            'source_revision': '1f0633050802438db6ef954c43d6d0eb2ce0edf3',
+                            'member_sources': {'sound-forge-62': '8e4e71b34b5c03b191b392a9d8f28176d177dd82'},
+                            'approved_deltas': {'sound-forge-62': {'owned': 26,
+                                                                   'engine': 4,
+                                                                   'shared': 22,
+                                                                   'tables': 0}},
+                            'decision_message_id': 'msg-9f16388d39524c8b9a33d6796b88d1fb'},
+ 'frozen_batch_composition': {'batch_id': 'train-5429c3c71859f327ff8b46dbf1edc557',
+                              'starting_revision': '48adaddad079a7adc2930e470590621c1575e674',
+                              'source_revision': '73e99672d2447c44ef6a71d43a0187f2d16630af',
+                              'base_owned_total': 161113,
+                              'base_engine_lines': 85517,
+                              'base_table_count': 45,
+                              'member_sources': {'noble-flare-12': 'f09829d145915bc7426d24f28623283f7319a7a2',
+                                                 'sound-forge-62': '15239e75971ae5ac39e6a7d0a5e467331ab58428'},
+                              'approved_deltas': {'noble-flare-12': {'owned': 23,
+                                                                     'engine': 22,
+                                                                     'shared': 1,
+                                                                     'tables': 0},
+                                                  'sound-forge-62': {'owned': 26,
+                                                                     'engine': 4,
+                                                                     'shared': 22,
+                                                                     'tables': 0}},
+                              'reason': 'Compose both unchanged approved member grants on the '
+                                        'retained starting head, which already includes '
+                                        'fair-dune-41. Preserve every historical grant and '
+                                        'measurement.'}}
 FINAL_ENGINE_CAP = 11_999
 FINAL_TOTAL_CAP = 19_999
 FINAL_TABLE_CAP = 10
