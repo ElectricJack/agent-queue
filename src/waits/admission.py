@@ -4,7 +4,7 @@ Identities bind a typed constraint to its task, route, repository and current
 configuration. Occupancy and time are observations, never cached verdicts.
 """
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from functools import wraps
@@ -155,7 +155,6 @@ class AdmissionReader:
                 return await self.observe_task(conn, task_id, continuation_id=continuation_id,
                                                migration_audit=migration_audit)
         _, admission, ready_projects = prepared
-
         o = self.orchestrator
         config = o.config
         config_revision = digest(asdict(config))
@@ -185,11 +184,12 @@ class AdmissionReader:
         ))).mappings().one()
         profile = await o.db.get_profile(task["profile_id"], conn=conn) if task["profile_id"] else None
         ready = task["project_id"] in ready_projects
-        # The same SQL predicates the ordinary claim path uses. Git delivery is
-        # separately re-observed below; an old cached verdict never clears a hold.
+        # Prepared stack views check cache expiry without Git I/O under the lock.
         project_model = await o.db.get_project(task["project_id"], conn=conn)
-        mode = ProjectIntegrationMode.of(project_model)
-        mode = admission.hierarchy_modes.get(task["project_id"], mode)
+        mode = admission.hierarchy_modes.get(task["project_id"], ProjectIntegrationMode.of(project_model))
+        _, stack = admission.hierarchy_evidence(task["project_id"])
+        if stack is not None and not await stack.fresh():
+            mode = replace(mode, stackable_prerequisite_ids=frozenset())
         predicates = claim_frontier_predicates(hierarchy_mode=mode)
         predicates["route"] = route_claimable(ready)
         if profile:

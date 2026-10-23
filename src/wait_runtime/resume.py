@@ -69,19 +69,19 @@ class ResumeTransaction:
         self.db = self.orch.db
         self.clock = clock
 
-    @admission_pass("service.scheduler.reader")
     async def reserve(self, continuation_id, generation):
+        """Refresh Git before capturing admission, outside the global graph lock."""
         from src.integration.delivery_observer import hierarchy_frontier_modes
-
-        # Network/Git observation must not hold the global wait graph lock.
-        # AdmissionReader revalidates these cached identities in the transaction.
         async with self.db._engine.connect() as conn:
             task_id = await conn.scalar(select(continuations.c.task_id).where(
-                continuations.c.id == continuation_id,
-                continuations.c.resume_state == 'queued',
+                continuations.c.id == continuation_id, continuations.c.resume_state == 'queued',
             ))
         if task_id:
             await hierarchy_frontier_modes(self.db, task_id=task_id)
+        return await self._reserve(continuation_id, generation)
+
+    @admission_pass("service.scheduler.reader")
+    async def _reserve(self, continuation_id, generation):
         async with self.db._engine.begin() as conn:
             wait_id = await conn.scalar(select(continuations.c.wait_id).where(
                 continuations.c.id == continuation_id,

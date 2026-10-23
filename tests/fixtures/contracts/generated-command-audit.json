@@ -4567,11 +4567,13 @@
     "tests": [
       "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
       "tests/test_generated_command_contracts.py::test_generic_result_protocol",
-      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_escalation_commands.py",
+      "tests/test_wait_decisions.py"
     ],
-    "review_notes": " Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. ",
+    "review_notes": " Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled.  Transaction reuse repair (bold-flare-41): reviewed _create_escalation project/task reads on the caller-owned connection; authorization, validation, conflict errors and explicit success envelopes retain their existing return contracts.",
     "helper_producers": {
-      "_create_escalation": "sha256:e5ec830fbd973f539bd34d950ab1f6ce3971c32b596d6bf9ec9b507533e32a14"
+      "_create_escalation": "sha256:fa28dd69290b28bfb85618eb4b767df15e015ec0681be05ed325ee8c574a21df"
     }
   },
   "escalation_get": {

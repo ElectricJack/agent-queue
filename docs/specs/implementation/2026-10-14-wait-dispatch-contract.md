@@ -127,6 +127,10 @@ and current task, project, profile, occupancy and workspace inputs on the owned
 connection. Stale delivery evidence blocks admission. An unprepared admission
 read under the fence refuses instead of doing external work.
 
+Resume refreshes its Git prerequisites before capturing the admission pass.
+The locked reservation revalidates that pass, including expiry and policy, so
+newly loaded evidence can admit work without accepting expired observations.
+
 Scheduler reconciliation discovers candidates first and commits one owner at a
 time, including legacy age audit. It owns only scheduler-owned subscriptions;
 task-owned resource waits retain their delivery owner. Cycle checks read the

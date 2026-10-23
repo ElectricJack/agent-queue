@@ -9602,6 +9602,13 @@
     },
     "src/wait_runtime/scheduler.py::SchedulerWaitService._sync_owner": {
       "reason": "Per-owner reconciliation extracted from the charged scheduler sync; retains integration admission and branch-owner authority, so remains charged without changing the cap."
+    },
+    "src/wait_runtime/resume.py::ResumeTransaction._reserve": {
+      "reason": "Locked resume admission and reservation extracted from the charged reserve wrapper; both remain charged within the approved footprint.",
+      "landing_span": [
+        83,
+        149
+      ]
     }
   },
   "exclusions": {
