@@ -122,6 +122,73 @@ The read uses `project_id` and `limit`. Start forwards `epic_task_id`,
 All commands route `completed`, `rejected` and `runtime_error` explicitly;
 foreach collection failures end `failed`.
 
+## Reusable building blocks and retained ownership
+
+The graph uses the reusable bounded `foreach` step for `inputs.starts` and
+`inputs.loops`, with `max_iterations` = `32` and failure policy `halt`.
+The `object_loop_inputs` read uses `limit` = `32`; overflow is a refusal, not
+a partial successful scan. These finite domain inputs need no snapshot pages
+or diagnostic observations. Generic doctor checks cannot replace the exact
+approved brief, policy, scorer and checkpoint reads.
+
+All five commands use typed command results directly, without a generic
+`payload` wrapper. They preserve the existing `completed`, `rejected` and
+`runtime_error` transitions. The compiled command pins and bundle manifest
+record the command surface for review.
+
+The `required_capabilities` declaration is deliberately deferred under
+`amber-crest-92`. Adding it selects trusted execution with a PLAYBOOK principal,
+which currently refuses `object_checkpoint_read` as a held-worker command.
+This port retains the installed artifact's legacy authority metadata until
+that compatibility issue is resolved and reviewed. It changes no authority
+checks and grants no additional permission.
+
+Durable object versions, reservations, receipts, checkpoint approvals and
+bootstrap failure notifications remain command-owned. Their writes must stay
+atomic with task and gate changes. A second playbook-state namespace or
+`playbook_state_notify` episode would duplicate that domain state and change
+its recovery behavior. Therefore no `state_schema_version` is needed. The
+graph already has no ad-hoc agent, shell or script steps to replace, so it
+declares no `scripts`. The retained `kind: pipeline` source is compiled to the
+existing V2 graph, not executed by a legacy runtime.
+
+### Exact result paths and predicates
+
+The read returns `starts` and `loops`. Each start tests `proposal_approved`
+for truth and compares `policy_artifact` to the running `artifact_sha256`.
+Each registered object uses that same policy comparison before any mutation.
+The returned `started.object_id` identifies a newly started object.
+
+Within each matching object, evaluate these cases in order:
+
+- `state.status` `eq` `stopped`: reconcile settlement first.
+- `elapsed_seconds` `gte` `86400`: stop at the wall deadline, including equality.
+- `scorer_failed`: stop the exhausted scorer named by `state.score_task_id`.
+- `state.checkpoint`: read the current checkpoint.
+- `score`: consume the typed score packet; otherwise reconcile only.
+
+The checkpoint rejection predicate is `review_state` `in` `["rejected", "withdrawn", "changes_requested"]`.
+Continuation requires truthy `checkpoint.approved` and `next_variants`, using
+the freshly read `checkpoint.version`; ordinary stops use the object's `version`.
+The score refusal fallback applies only when `score.action` `eq` `continue`.
+
+Forward the start packet's exact paths:
+`request.project_id`, `request.epic_task_id`, `request.object_id`, `request.attempt_id`,
+`request.incumbent_sha256`, `request.incumbent_artifact`, `request.incumbent_capture_sha256`,
+`request.reference_kind`, `request.reference_sha256`, `request.rig_sha256`,
+`request.scorer_sha256`, `request.render_profile_sha256`, `request.policy_sha256`,
+`request.brief_review_id`, `request.brief_review_revision`, `request.brief_review_sha256`,
+`request.mandatory_views`, `request.limits`, `request.final_reserve`,
+`request.score_reservation`, `request.noise_band`, `request.max_rounds`,
+`request.max_repair_rounds`, `request.max_plateau_rounds`, `request.variants`.
+
+Forward the score packet's exact paths:
+`score.object_id`, `score.project_id`, `score.expected_version`, `score.score_task_id`,
+`score.receipts`, `score.spent`, `score.action`, `score.next_variants`, `score.stop_reason`,
+`score.review_id`, `score.review_revision`, `score.review_sha256`.
+The stop fallback preserves the packet's evidence and spend, replaces the action,
+clears next variants and omits review fields as specified in the sweep above.
+
 ## Formula and worker handoff
 
 Jack sees two documents per attempt. Before cooking, submit one brief in plain

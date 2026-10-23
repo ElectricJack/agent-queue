@@ -135,7 +135,10 @@ an explicit version. Selection pins the remote tag-object OID, fetches it,
 requires an annotated tag peeling to a commit contained in `origin/<target>`,
 and refuses a tag that changes during fetch. The update detaches the checkout
 at that commit and records it in `deploy.json`. With no tag selector configured,
-the existing branch-following update path remains available. An explicit
+the guarded branch-following `aq update` remains available to the operator.
+The daemon's `update_and_restart` command instead refuses until a tag glob or
+tracked branch is configured. Tag deployment planning validates the selected
+commit's migration graph and requires one Alembic head. An explicit
 `--ref <branch>` is an unreleased deployment recorded as such. Sources:
 [src/install/deploy.py](../../src/install/deploy.py) and
 [src/cli/update.py](../../src/cli/update.py).
