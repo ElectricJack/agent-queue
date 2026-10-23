@@ -901,7 +901,15 @@ class RoutingCommandsMixin:
     def _route_state_refusal(task, *, command: str) -> dict | None:
         """Refuse *command* on a task no route may change now (spec §7)."""
         status = getattr(task.status, "value", task.status)
-        if task.assigned_agent_id or task.status in (TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS):
+        if task.status == TaskStatus.RESUME_PENDING:
+            why = (
+                f"task '{task.id}' is RESUME_PENDING; pause it before changing its route "
+                f"(aq task pause --task-id {task.id}), then run {command} again and "
+                f"resume it (aq task resume --task-id {task.id}). "
+                "For provider failover, use aq provider reroute --dry-run to preview "
+                "unassigned continuations with no live session"
+            )
+        elif task.assigned_agent_id or task.status in (TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS):
             why = (
                 f"task '{task.id}' is claimed or running; stop it first "
                 f"(aq task stop --task-id {task.id}), then run {command} again"

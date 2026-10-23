@@ -22590,7 +22590,7 @@
     ],
     "helper_producers": {
       "_route_actor": "sha256:d72bc9e262a2b706279943c25205f213b9b7fc0e413addbbd6aae633ba98c6ae",
-      "_route_state_refusal": "sha256:eeda1ce435abf9e3a6b66f93df26e9cc92ec2bcf0ad786c728076bdf7cc66693"
+      "_route_state_refusal": "sha256:00bd52b546fd1a919d1bc6e7051ce83d9bc511fb76bec87d11296e4757b14b94"
     },
     "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. "
   },
@@ -22759,7 +22759,7 @@
     ],
     "helper_producers": {
       "_route_actor": "sha256:d72bc9e262a2b706279943c25205f213b9b7fc0e413addbbd6aae633ba98c6ae",
-      "_route_state_refusal": "sha256:eeda1ce435abf9e3a6b66f93df26e9cc92ec2bcf0ad786c728076bdf7cc66693"
+      "_route_state_refusal": "sha256:00bd52b546fd1a919d1bc6e7051ce83d9bc511fb76bec87d11296e4757b14b94"
     },
     "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys."
   },
