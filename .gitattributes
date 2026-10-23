@@ -17,8 +17,8 @@ tests/fixtures/generated_sources/command_descriptors/*.py.inc whitespace=-blank-
 # tests/test_generated_artifacts.py).  Never hand-merge them: take either side,
 # resolve the source files, run the script and commit what it writes.
 # `merge=aq-generated` names a driver the development publisher defines when it
-# merges task branches (a text merge that keeps our side of each overlapping
-# hunk), after which it regenerates these files.  Where the driver is not
+# merges task branches (keeping our side after validating reviewed bookkeeping
+# provenance), after which it regenerates these files. Where the driver is not
 # defined, Git falls back to its ordinary text merge.
 tests/selection_catalogue.json merge=aq-generated linguist-generated
 docs/reference/cli-command-inventory.json merge=aq-generated linguist-generated

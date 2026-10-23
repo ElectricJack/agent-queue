@@ -119,6 +119,73 @@ bookkeeping projections. It never refreshes a command digest or invents review
 evidence. The full regeneration command includes the same step through
 `generate-recorded-artifacts.py`.
 
+### Legacy bookkeeping migration
+
+An older branch may carry reviewed evidence only in the former aggregates:
+`tests/fixtures/generated_sources/ownership/integration_ownership.json`,
+`tests/fixtures/generated_sources/ownership/integration_ownership_report.json`,
+`tests/fixtures/contracts/generated-command-audit.json`, or
+`tests/test_command_descriptors.py`. Those deltas must be transferred before
+regeneration. The train checks both source sides against their own shards,
+including clean single-sided changes, before restoring any generated output.
+Unrepresented evidence produces an **Unmigrated legacy bookkeeping evidence**
+conflict naming the paths and this recipe. Normal regeneration and `--check`
+also refuse committed or edited aggregate evidence absent from the shards;
+they leave that evidence untouched.
+
+1. Before merging or regenerating, retain the old PR head and its merge base
+   with current `origin/dev`. Save both versions and their exact diff for all
+   four paths outside the checkout. Include any compatibility ownership changes
+   present only in `tests/integration_ownership*.json` and reconcile them too.
+2. Merge current dev and resolve ordinary authored-source conflicts. Keep the
+   saved evidence while transferring its additions, edits **and deletions** to
+   the current shards. Preserve concurrent dev evidence. Resolve overlapping
+   reviewed changes explicitly; choosing an entire aggregate loses evidence.
+3. Ownership rows in `shared`, `exclusions`, `storage_sinks`,
+   `generic_dependencies`, `shared_state`, and `shared_definitions` belong under
+   `tests/fixtures/generated_sources/ownership/modules/<artifact>/modules/`,
+   grouped by the row key's module before `::`, with the existing
+   `{section: {key: value}}` wrapper. Non-path keys use
+   `modules/_other/<section>.json`. Other top-level sections, including reviewed
+   historical measurements, ceilings and exceptions, belong in
+   `policy/<section>.json`. Transfer fingerprint list changes to
+   `fingerprints/<field>/<first-hex-character>.json`. Preserve reviewed pins;
+   never remeasure baselines to satisfy a check.
+4. Transfer audit rows verbatim into
+   `tests/fixtures/contracts/command_audit_modules/<producer-path>.json`, keyed
+   by command name. Preserve digests, consumers, notes and reviewed metadata.
+   Remove deleted rows; a producer move removes its old row and adds its new
+   row. Do not bulk-refresh digests.
+5. Transfer exact changed descriptor definitions and decorated tests to the
+   matching numbered `.py.inc` fragments under
+   `tests/fixtures/generated_sources/command_descriptors/`. The preamble owns
+   imports and the docstring. Place new definitions in lexical order before
+   use without renumbering existing fragments. Preserve assertions, bytes and
+   separators, and remove deleted definitions.
+6. Resolve the four aggregate conflicts to the corresponding shard projections
+   **after** porting every saved delta. `python scripts/bookkeeping_sources.py`
+   projects these now-reviewed shards; stage the resolved paths and commit the
+   reviewed migration before running the full generation check if the old HEAD
+   still contains unported aggregates. Then run
+   `scripts/regenerate-generated.sh` and its `--check` mode. Review the output
+   against both the saved delta and current dev evidence. Verify that no row,
+   policy exception, pin or assertion vanished. Run the generated-artifact,
+   generated-command-contract, descriptor, integration-size and selection
+   catalogue tests plus branch-specific checks. Commit shards and projections
+   together, then publish from the held branch.
+
+Older Git versions supply only temporary blobs to a low-level merge driver.
+The default `aq-generated` driver conservatively leaves changed legacy files
+conflicted when it cannot prove their provenance. For a branch whose deltas
+are already ported, callers may configure the same driver with explicit
+`--base-ref <merge-base> --current-ref <our-head> --other-ref <their-head>`
+before its `%O %A %B %P` arguments. It verifies those refs against all supplied
+blobs, validates each source side, then merges. This is an evidence check, not
+an override. Untouched legacy branches and migrated branches still merge and
+regenerate through the train. The final batch sweep rechecks its frozen merge
+inputs through `AQ_GENERATED_MERGE_INPUTS`, supplied by the integration runner
+in its otherwise isolated subprocess environment; ambient values are discarded.
+
 Reviewed playbooks similarly have explicit canonical inputs under
 `tests/fixtures/generated_sources/playbooks/`: a readable `definition.json`, the
 approved source snapshot, manifest/provenance, and diagnostics. `index.json`

@@ -169,6 +169,31 @@
         "reason": "Explicit supervisor approval of the exact retained Git filing resolver footprint; compose the unchanged +26 owned/+4 engine grant on dev, preserving historical grants.",
         "referenced_decision": "size-cap-delegation-2026-10-23",
         "task_id": "sound-forge-62"
+      },
+      {
+        "authorization": "Supervisor reopen instructions, 2026-10-23: record the exact measured amendment without asking.",
+        "authorized_engine_delta": 352,
+        "authorized_owned_delta": 352,
+        "authorized_shared_delta": 0,
+        "authorized_table_delta": 0,
+        "measured_engine_lines": 85895,
+        "measured_owned_total": 161514,
+        "measured_sources_sha256": {
+          "src/integration/bookkeeping_guard.py": "919f524776c0d9989b3c4283936fc958ab380076c945cae64a39bf2f9b91262b",
+          "src/integration/development.py": "0523ad2f59f852dc623b2155a64cfbab6d43f0e9c5a23d98647181307c2136e2",
+          "src/integration/generated_merge_driver.py": "91f79cf8c4d0f7cc91bcc6427693ed3999214154234c388b994c35524cbfc720",
+          "src/integration/gitops.py": "920cebc4a60a17361489c70a49a5c81e7daa3f6f588a43f6aaa4cd838d316023",
+          "src/integration/regeneration.py": "ebb5053f3734bfa05ffc9339511bab273425528f55b873f23b7641598336976c"
+        },
+        "measured_table_count": 45,
+        "previous_engine_lines": 85543,
+        "previous_owned_total": 161162,
+        "previous_source_revision": "2f84216797cfb17b6cf0cda921d659a96ca8447b",
+        "previous_table_count": 45,
+        "pull_request": "https://github.com/ElectricJack/agent-queue/pull/1906",
+        "reason": "Fail closed on unported reviewed legacy bookkeeping deltas before train regeneration, Git generated merges and regeneration checks. Exact scoped guard footprint; preserve all frozen batch grants and original baselines.",
+        "referenced_decision": "size-cap-delegation-2026-10-23",
+        "task_id": "prime-vault-39"
       }
     ],
     "batch_composition": {
@@ -215,7 +240,7 @@
       "starting_revision": "bd8fcfe183d6a59ea90f4498cda2bee80a7222f4"
     },
     "batch_id": "train-745592300af5cef0338dec80ebabb465",
-    "batch_measured_delta": 2204,
+    "batch_measured_delta": 2556,
     "category_approval_message_id": "msg-90f9f1b1e0cd4e8e8d28071cffc927a6",
     "category_restore_task": "stark-willow-95.17",
     "decision_message_id": "msg-7ed85e78d1af4f3e85b485a57967e794",
@@ -237,7 +262,7 @@
     ],
     "decision_record": "record:2720bdbe-7521-427e-8e72-1f40a3ff9818",
     "delivery_method": "operator direct integration; user request 2026-10-22",
-    "delta": 5663,
+    "delta": 6015,
     "expires_at": "s4_modules",
     "frozen_batch_composition": {
       "approved_deltas": {
@@ -266,8 +291,8 @@
       "source_revision": "73e99672d2447c44ef6a71d43a0187f2d16630af",
       "starting_revision": "48adaddad079a7adc2930e470590621c1575e674"
     },
-    "measured_engine_lines": 85543,
-    "measured_owned_total": 161162,
+    "measured_engine_lines": 85895,
+    "measured_owned_total": 161514,
     "measured_source_revision": "73e99672d2447c44ef6a71d43a0187f2d16630af",
     "measured_table_count": 45,
     "merge_measurement": {

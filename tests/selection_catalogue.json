@@ -7367,11 +7367,14 @@
         "generated-artifacts"
       ],
       "default_arm": true,
-      "digest": "sha256:6e99ed692dfe25c3cbfeeacfcdda3e0f7010bb882d1bbde533e01719bdd6992e",
+      "digest": "sha256:4ecaf7ef37fa6585db32ded1f5dbf2e81432e06b2959c5918cf67d5637a54866",
       "imports": [
         "src.git.manager",
+        "src.integration.bookkeeping_guard",
         "src.integration.development",
+        "src.integration.gitops",
         "src.integration.regeneration",
+        "src.integration.runtime_contracts",
         "src.test_selection",
         "src.test_selection.catalogue"
       ],

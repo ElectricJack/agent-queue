@@ -12,15 +12,20 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from src.git.manager import GitError, GitManager
 from src.integration.development import GENERATED_MERGE_CONFIG, GENERATED_MERGE_DRIVER
+from src.integration.bookkeeping_guard import LEGACY_SOURCES, RECIPE
+from src.integration.gitops import GitOperations
+from src.integration.runtime_contracts import MemberRef
 from src.integration.regeneration import GeneratedMergeConflict, merge_generated_tree
 from src.test_selection import catalogue as cat
 
@@ -216,14 +221,16 @@ async def test_hot_bookkeeping_merge_preserves_authored_evidence(
         (descriptors / f"{module}.py.inc").write_text(f"def test_{module}():\n    assert {side!r}\n\n")
         regenerate()
         if stale_outputs:
-            # A stale aggregate is disposable, including an overlapping change
-            # whose old text cannot be parsed. Only the reviewed shards matter.
-            (repo / "tests/test_command_descriptors.py").write_text(f"stale {side}\n")
+            # Stale output may lag an authored source edit. New aggregate-only
+            # evidence, including invalid text, now requires explicit migration.
+            (repo / "tests/test_command_descriptors.py").write_text(
+                _git(repo, "show", f"{base}:tests/test_command_descriptors.py").stdout,
+            )
         _git(repo, "add", "-A")
         _git(repo, "commit", "-qm", side)
         heads.append(_git(repo, "rev-parse", "HEAD").stdout.strip())
     args = ["merge-tree", "--write-tree", f"--merge-base={base}", *heads]
-    if same_module or stale_outputs:
+    if same_module:
         assert _git(repo, *args, check=False).returncode == 1
     if same_module:
         with pytest.raises(GeneratedMergeConflict):
@@ -528,3 +535,248 @@ def test_committed_generated_files_match_regeneration():
         [str(SCRIPT), "--check"], capture_output=True, text=True, timeout=900, check=False
     )
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def _legacy_bookkeeping_branches(tmp_path, path, *, ported=False, untouched=False):
+    """The legacy probe as real pre-migration -> migrated/legacy branches."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q", "--initial-branch=main")
+    source = "tests/fixtures/generated_sources"
+
+    def write(name, value):
+        target = repo / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(value if isinstance(value, str) else json.dumps(value, indent=2) + "\n")
+
+    ownership = {"version": 1, "shared": {"src/base.py::owned": {"reason": "base"}}}
+    audit = {"base": {"producer": "src/base.py:Handler._cmd_base", "source_digest": "base"}}
+    descriptor = "def test_base():\n    assert 1\n\n"
+    for name in ("integration_ownership", "integration_ownership_report"):
+        write(f"{source}/ownership/{name}.json", ownership)
+        write(f"tests/{name}.json", ownership)
+    write("tests/fixtures/contracts/generated-command-audit.json", audit)
+    write("tests/test_command_descriptors.py", descriptor)
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "pre-migration baseline")
+    base = _git(repo, "rev-parse", "HEAD").stdout.strip()
+
+    shutil.copyfile(ROOT / ".gitattributes", repo / ".gitattributes")
+    (repo / "scripts").mkdir()
+    shutil.copyfile(ROOT / "scripts/bookkeeping_sources.py", repo / "scripts/bookkeeping_sources.py")
+    for name in ("integration_ownership", "integration_ownership_report"):
+        write(f"{source}/ownership/modules/{name}/policy/version.json", {"version": 1})
+        write(f"{source}/ownership/modules/{name}/modules/base.json", {"shared": ownership["shared"]})
+        write(f"{source}/ownership/modules/{name}/modules/migration.json",
+              {"shared": {"src/migration.py::owned": {"reason": "reviewed migration"}}})
+    write("tests/fixtures/contracts/command_audit_modules/src/base.py.json", audit)
+    write("tests/fixtures/contracts/command_audit_modules/src/migration.py.json",
+          {"migration": {"producer": "src/migration.py:Handler._cmd_migration",
+                         "source_digest": "reviewed migration"}})
+    write(f"{source}/command_descriptors/0000_base.py.inc", descriptor)
+    write(f"{source}/command_descriptors/0010_migration.py.inc",
+          "def test_migration():\n    assert 'reviewed migration'\n\n")
+    driver = ROOT / "src/integration/generated_merge_driver.py"
+    write("scripts/regenerate-generated.sh", "#!/bin/sh\n"
+          f"{shlex.quote(sys.executable)} {shlex.quote(str(driver))} --check-worktree . || exit $?\n"
+          "exec python3 scripts/bookkeeping_sources.py\n")
+    (repo / "scripts/regenerate-generated.sh").chmod(0o755)
+    subprocess.run([sys.executable, "scripts/bookkeeping_sources.py"], cwd=repo, check=True)
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "migration with independent reviewed evidence")
+    migrated = _git(repo, "rev-parse", "HEAD").stdout.strip()
+
+    if not ported:
+        _git(repo, "checkout", "--detach", base)
+    if untouched:
+        write("README.md", "Unrelated reviewed source edit\n")
+    elif path.endswith(".py"):
+        write(path, (repo / path).read_text().replace("assert 1", "assert 2"))
+        if ported:
+            write(f"{source}/command_descriptors/0000_base.py.inc", descriptor.replace("assert 1", "assert 2"))
+    else:
+        payload = json.loads((repo / path).read_text())
+        if "ownership" in path:
+            payload["version"] = 2
+            if ported:
+                stem = Path(path).stem
+                write(f"{source}/ownership/modules/{stem}/policy/version.json", {"version": 2})
+        else:
+            payload["base"]["source_digest"] = "reviewed legacy delta"
+            if ported:
+                write("tests/fixtures/contracts/command_audit_modules/src/base.py.json",
+                      {"base": payload["base"]})
+        write(path, payload)
+    if ported:
+        subprocess.run([sys.executable, "scripts/bookkeeping_sources.py"], cwd=repo, check=True)
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "legacy delta ported" if ported else "legacy branch")
+    other = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    return repo, migrated if ported else base, migrated, other
+
+
+@pytest.mark.parametrize("path", LEGACY_SOURCES)
+@pytest.mark.parametrize("reverse", [False, True])
+@pytest.mark.parametrize("deferred", [False, True])
+async def test_unmigrated_legacy_deltas_refuse_before_regeneration(tmp_path, path, reverse, deferred):
+    repo, base, migrated, legacy = _legacy_bookkeeping_branches(tmp_path, path)
+    sides = [legacy, migrated] if reverse else [migrated, legacy]
+    before = _git(repo, "status", "--porcelain").stdout
+    with pytest.raises(GeneratedMergeConflict) as caught:
+        await merge_generated_tree(
+            GitManager(), repo, ["merge-tree", "--write-tree", f"--merge-base={base}", *sides],
+            defer_regeneration=deferred,
+        )
+    assert path in caught.value.files
+    assert path in str(caught.value) and RECIPE in str(caught.value)
+    assert _git(repo, "status", "--porcelain").stdout == before
+    assert not list(tmp_path.glob("aq-regen-*"))
+
+
+@pytest.mark.parametrize("path", LEGACY_SOURCES)
+@pytest.mark.parametrize("ported", [False, True], ids=["untouched", "ported"])
+async def test_legacy_branch_without_unported_deltas_merges_cleanly(tmp_path, path, ported):
+    repo, base, migrated, other = _legacy_bookkeeping_branches(
+        tmp_path, path, ported=ported, untouched=not ported,
+    )
+    tree = await merge_generated_tree(
+        GitManager(), repo, ["merge-tree", "--write-tree", f"--merge-base={base}", migrated, other],
+    )
+    result = _git(repo, "show", f"{tree}:{path}").stdout
+    if ported:
+        assert ("assert 2" if path.endswith(".py") else
+                '"version": 2' if "ownership" in path else "reviewed legacy delta") in result
+    assert "reviewed migration" in result
+    assert _git(repo, "status", "--porcelain").stdout == ""
+
+
+@pytest.mark.parametrize("path", LEGACY_SOURCES)
+@pytest.mark.parametrize("ported", [False, True], ids=["unported", "ported"])
+def test_legacy_merge_driver_requires_proven_source_refs(tmp_path, path, ported):
+    repo, base, migrated, other = _legacy_bookkeeping_branches(tmp_path, path, ported=ported)
+    blobs = []
+    for index, ref in enumerate((base, migrated, other)):
+        blob = tmp_path / f"blob-{index}"
+        blob.write_text(_git(repo, "show", f"{ref}:{path}").stdout)
+        blobs.append(str(blob))
+    driver = ROOT / "src/integration/generated_merge_driver.py"
+    direct = subprocess.run(
+        [sys.executable, str(driver), "--base-ref", base, "--current-ref", migrated,
+         "--other-ref", other, *blobs, path], cwd=repo, capture_output=True, text=True,
+    )
+    assert direct.returncode == (0 if ported else 1), direct.stderr
+    # Restore the actual current-side blob after the successful driver merged it.
+    Path(blobs[1]).write_text(_git(repo, "show", f"{migrated}:{path}").stdout)
+    # Exercise the actual configured Git driver and its stderr, rather than a
+    # hand-selected conflict resolver. Explicit refs bind to the supplied blobs.
+    command = (f"{shlex.quote(sys.executable)} {shlex.quote(str(driver))} "
+               f"--base-ref {base} --current-ref {migrated} --other-ref {other} %O %A %B %P")
+    _git(repo, "checkout", "--detach", migrated)
+    merged = _git(repo, "-c", f"merge.aq-generated.driver={command}",
+                  "merge", "--no-edit", other, check=False)
+    if ported:
+        assert merged.returncode == 0, merged.stderr
+    else:
+        assert merged.returncode == 1
+        assert path in merged.stderr and RECIPE in merged.stderr
+        assert _git(repo, "diff", "--name-only", "--diff-filter=U").stdout.split() == [path]
+    # Older Git supplies no source refs to a driver. The default must refuse
+    # conservatively, retaining the caller's blob instead of dropping evidence.
+    blobs[1] = str(tmp_path / "without-context")
+    Path(blobs[1]).write_text(_git(repo, "show", f"{migrated}:{path}").stdout)
+    result = subprocess.run([sys.executable, str(driver), *blobs, path],
+                            cwd=repo, capture_output=True, text=True)
+    assert result.returncode == 1 and RECIPE in result.stderr
+
+
+@pytest.mark.parametrize("path", LEGACY_SOURCES)
+@pytest.mark.parametrize("committed", [False, True], ids=["dirty", "committed"])
+def test_regeneration_check_refuses_unported_legacy_delta_without_writing(tmp_path, path, committed):
+    repo, _, migrated, _ = _legacy_bookkeeping_branches(tmp_path, path)
+    _git(repo, "checkout", "--detach", migrated)
+    if path.endswith(".py"):
+        (repo / path).write_text((repo / path).read_text().replace("assert 1", "assert 2"))
+    else:
+        payload = json.loads((repo / path).read_text())
+        if "ownership" in path:
+            payload["version"] = 2
+        else:
+            payload["base"]["source_digest"] = "reviewed legacy delta"
+        (repo / path).write_text(json.dumps(payload))
+    if committed:
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-qm", "unported legacy delta")
+    before = (repo / path).read_bytes()
+    # Run the real --check shell entry point, stopping before all generators.
+    # A stub list avoids copying the unrelated full code-generation toolchain.
+    shutil.copyfile(SCRIPT, repo / "scripts/regenerate-generated.sh")
+    (repo / "src").symlink_to(ROOT / "src", target_is_directory=True)
+    marker = tmp_path / "generator-ran"
+    (repo / "scripts/generate-recorded-artifacts.py").write_text(
+        "import sys\nfrom pathlib import Path\n"
+        f"if '--list' in sys.argv: print({path!r})\n"
+        f"else: Path({str(marker)!r}).write_text('unsafe overwrite')\n",
+    )
+    result = subprocess.run([str(repo / "scripts/regenerate-generated.sh"), "--check"],
+                            cwd=repo, capture_output=True, text=True)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert path in result.stderr and RECIPE in result.stderr
+    assert (repo / path).read_bytes() == before
+    assert not marker.exists()
+
+
+@pytest.mark.parametrize("path", LEGACY_SOURCES)
+@pytest.mark.parametrize("state", ["legacy", "ported", "untouched"])
+async def test_batch_build_refuses_only_unmigrated_legacy_evidence(tmp_path, path, state):
+    repo, base, migrated, other = _legacy_bookkeeping_branches(
+        tmp_path, path, ported=state == "ported", untouched=state == "untouched",
+    )
+    operations = GitOperations(None, git=GitManager(), repository=None, authority=None)
+    retained = SimpleNamespace(
+        store=repo, regenerate="scripts/regenerate-generated.sh", regenerate_timeout_seconds=30,
+    )
+    original_base = _git(repo, "rev-parse", f"{migrated}^").stdout.strip()
+    _git(repo, "checkout", "--detach", original_base)
+    (repo / "docs.txt").write_text("Another independent batch member\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "independent following member")
+    following = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    result = await operations.merge_sources(
+        retained, migrated, [MemberRef(task_id="legacy-probe", base_sha=base, head_sha=other),
+                             MemberRef(task_id="following", base_sha=original_base, head_sha=following)],
+        created_at=1700000000,
+    )
+    if state == "legacy":
+        assert result["outcome"] == "conflict", result
+        assert path in result["files"]
+        assert path in result["reason"] and RECIPE in result["reason"]
+    else:
+        assert result["outcome"] == "merged", result
+        output = _git(repo, "show", f"{result['head']}:{path}").stdout
+        assert "reviewed migration" in output
+        if state == "ported":
+            assert ("assert 2" if path.endswith(".py") else
+                    '"version": 2' if "ownership" in path else "reviewed legacy delta") in output
+
+
+@pytest.mark.parametrize("path", LEGACY_SOURCES)
+async def test_clean_single_sided_legacy_change_is_still_refused(tmp_path, path):
+    repo, base, migrated, legacy = _legacy_bookkeeping_branches(tmp_path, path)
+    _git(repo, "checkout", "--detach", migrated)
+    for prefix, _ in LEGACY_SOURCES.values():
+        for fragment in (repo / prefix).rglob("*migration*"):
+            fragment.unlink()
+    # Migration alone need not change any aggregate bytes. This is precisely
+    # the clean merge that never invokes a low-level conflict driver.
+    for name in (*LEGACY_SOURCES, "tests/integration_ownership.json",
+                 "tests/integration_ownership_report.json"):
+        (repo / name).write_text(_git(repo, "show", f"{base}:{name}").stdout)
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "source-only migration")
+    current = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    args = ["merge-tree", "--write-tree", f"--merge-base={base}", current, legacy]
+    assert _git(repo, *args).returncode == 0
+    with pytest.raises(GeneratedMergeConflict) as caught:
+        await merge_generated_tree(GitManager(), repo, args, defer_regeneration=True)
+    assert caught.value.files == (path,)
+    assert RECIPE in str(caught.value)

@@ -387,6 +387,7 @@ def test_batch_exception_is_exact_and_has_no_remaining_headroom(report, manifest
         "fair-dune-41",
         "noble-flare-12",
         "sound-forge-62",
+        "prime-vault-39",
     }
     amendment = amendments["solid-impact-56"]
     assert amendment["task_id"] == "solid-impact-56"
@@ -585,13 +586,25 @@ def test_frozen_batch_composes_only_the_approved_member_deltas(report, manifest)
     assert batch["base_table_count"] == activation["measured_table_count"] == 45
     assert batch["base_owned_total"] + sum(
         delta["owned"] for delta in batch["approved_deltas"].values()
-    ) == exception["measured_owned_total"] == report["total"] == 161_162
+    ) == amendments["prime-vault-39"]["previous_owned_total"] == 161_162
     assert batch["base_engine_lines"] + sum(
         delta["engine"] for delta in batch["approved_deltas"].values()
-    ) == exception["measured_engine_lines"] == report["groups"]["engine"] == 85_543
+    ) == amendments["prime-vault-39"]["previous_engine_lines"] == 85_543
     assert batch["base_table_count"] + sum(
         delta["tables"] for delta in batch["approved_deltas"].values()
     ) == exception["measured_table_count"] == len(report["tables"]) == 45
+    guard = amendments["prime-vault-39"]
+    assert guard["referenced_decision"] == "size-cap-delegation-2026-10-23"
+    assert guard["pull_request"] == "https://github.com/ElectricJack/agent-queue/pull/1906"
+    assert guard["authorized_owned_delta"] == guard["authorized_engine_delta"] == 352
+    assert guard["authorized_shared_delta"] == guard["authorized_table_delta"] == 0
+    assert guard["previous_owned_total"] + 352 == guard["measured_owned_total"] == report["total"]
+    assert (guard["previous_engine_lines"] + 352 == guard["measured_engine_lines"]
+            == report["groups"]["engine"])
+    for path, digest in guard["measured_sources_sha256"].items():
+        assert hashlib.sha256((ROOT / path).read_bytes()).hexdigest() == digest
+    recorded = json.loads((ROOT / "tests/integration_ownership_report.json").read_text())
+    assert recorded["legacy_bookkeeping_guard_measurement"] == guard
 
 
 @pytest.mark.parametrize("field,value", [

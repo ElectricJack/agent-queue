@@ -81,6 +81,10 @@ if [[ "$MODE" == "--list" ]]; then
     exit 0
 fi
 
+# Check the original Git history/index before --check creates a fresh scratch
+# commit, and before any generator can overwrite reviewed legacy evidence.
+"$PYTHON" "$ROOT_DIR/src/integration/generated_merge_driver.py" --check-worktree "$ROOT_DIR"
+
 # Run every generator against the tree at $1.  They are independent, so they
 # run concurrently; each one's output is shown only when it fails.
 regenerate() {
