@@ -312,7 +312,13 @@ async def test_ordinary_preparation_preserves_activation_loss(handler, db, tmp_p
 
 
 @pytest.mark.parametrize("change", ["hold", "development"])
-async def test_ordinary_preparation_rechecks_policy_and_holds(handler, db, tmp_path, change):
+async def test_ordinary_preparation_rechecks_policy_and_holds(
+    handler, db, tmp_path, change, monkeypatch,
+):
+    # Exercise the request's moved-policy retry to completion. A deferred
+    # response instead exposes the first generation's refusal; backend load
+    # must not choose which behavior this test asserts.
+    monkeypatch.setattr("src.commands.claim_commands._PREPARATION_RESPONSE_SECONDS", 60.0)
     await mktask(db, "dependent", profile_id="worker")
     sid, _ = await pool_session(db, tmp_path)
     resets = 0

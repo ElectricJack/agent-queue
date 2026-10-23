@@ -556,8 +556,9 @@ def test_activation_health_grant_carries_only_two_owned_lines(report, manifest):
     recorded = json.loads((ROOT / "tests/integration_ownership_report.json").read_text())
     assert recorded["playbook_activation_health_measurement"] == grant
     assert ownership.budget_errors(report, manifest) == []
-    assert ownership.budget_errors({**report, "total": report["total"] + 1}, manifest) == [
-        f"owned total: {report['total'] + 1:,} exceeds {report['total']:,} in transition",
+    cap = exception["measured_owned_total"]
+    assert ownership.budget_errors({**report, "total": cap + 1}, manifest) == [
+        f"owned total: {cap + 1:,} exceeds {cap:,} in transition",
     ]
 
 
@@ -587,13 +588,18 @@ def test_frozen_batch_composes_only_the_approved_member_deltas(report, manifest)
     assert batch["base_table_count"] == activation["measured_table_count"] == 45
     assert batch["base_owned_total"] + sum(
         delta["owned"] for delta in batch["approved_deltas"].values()
-    ) == exception["measured_owned_total"] == report["total"] == 161_162
+    ) == exception["measured_owned_total"] == 161_162
     assert batch["base_engine_lines"] + sum(
         delta["engine"] for delta in batch["approved_deltas"].values()
-    ) == exception["measured_engine_lines"] == report["groups"]["engine"] == 85_543
+    ) == exception["measured_engine_lines"] == 85_543
     assert batch["base_table_count"] + sum(
         delta["tables"] for delta in batch["approved_deltas"].values()
-    ) == exception["measured_table_count"] == len(report["tables"]) == 45
+    ) == exception["measured_table_count"] == 45
+    # Later refactors can shrink the live inventory without rewriting the
+    # historical member grants or their exact composed caps.
+    assert report["total"] <= exception["measured_owned_total"]
+    assert report["groups"]["engine"] <= exception["measured_engine_lines"]
+    assert len(report["tables"]) <= exception["measured_table_count"]
 
 
 @pytest.mark.parametrize("field,value", [
