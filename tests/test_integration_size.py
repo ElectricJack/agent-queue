@@ -376,8 +376,12 @@ def test_batch_exception_is_exact_and_has_no_remaining_headroom(report, manifest
     assert grant["task_id"] == "fresh-apex-30"
     assert grant["approval_message_id"] == "msg-4e25c0d3"
     assert grant["authorized_delta"] == 5
-    assert grant["prior_owned_total_cap"] + grant["authorized_delta"] == measured
-    assert grant["measured_owned_total"] == measured
+    assert grant["prior_owned_total_cap"] + grant["authorized_delta"] == 160_825
+    assert grant["measured_owned_total"] == 160_825
+    amendment, = exception["amendments"]
+    assert amendment["task_id"] == "solid-impact-56"
+    assert amendment["authorized_owned_delta"] == 17
+    assert grant["measured_owned_total"] + amendment["authorized_owned_delta"] == measured
     assert ownership.transition_owned_cap(manifest) == measured
     too_large = {**report, "total": measured + 1}
     assert ownership.budget_errors(too_large, manifest) == [
