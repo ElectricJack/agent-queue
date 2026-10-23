@@ -16,7 +16,7 @@ aq system config tune --explain       # …with the reason for every value
 aq system config tune --apply         # write it
 ```
 
-`aq setup` does this automatically for a fresh config. Nothing consults the
+`aq install` does this automatically for a fresh config. Nothing consults the
 tuner at runtime: once written, the file is the truth, and your edits stand.
 
 ## What the machine decides
@@ -102,22 +102,25 @@ quota.
 | --- | --- | --- |
 | `auto_task.max_verification_retries` | 2 | One reopen for a genuine flake, then a stop. |
 | `swarm.prepare_timeout` | 120 | An abandoned preparation becomes eligible for recovery after two minutes. A live preparation request remains protected while its Git operations run under their own timeouts. |
-| `agents_config.stuck_timeout_seconds` | 1800 (3600 on a small box) | A long tool call on a contended small box legitimately takes longer. |
+| `agents_config.stuck_timeout_seconds` (emitted name) | 1800 (3600 on a small box) | A long tool call on a contended small box legitimately takes longer. The loader currently reads YAML `agents`, so this recommendation needs that key to take effect; see the [configuration reference](../reference/configuration.md#top-level-sections). |
 | `integration.default_mode` | `pull_request` | Worker output lands on a branch and a PR, never straight onto the default branch. |
-| `integration.merge_ci_policy` | `warn` | The merge path asks GitHub for the check rollup and records the verdict, but still merges. A new install usually has no CI yet, and `required` fails closed on an unreadable rollup — nothing would ever merge. Move to `required` once the default branch is reliably green. |
+| `integration.merge_ci_policy` | `warn` | Installation-level compatibility default. Active delivery also follows project/repository CI and integration policy; this value alone does not guarantee a merge. |
 | `integration.merge_require_up_to_date` | `true` | A green rollup only proves the head passed against the base as it was when the run started. |
 
 ## Playbooks
 
-The tuner sets `playbooks.enabled: true`. Playbooks are how AQ routes a task to
-a worker (`default-assignment-routing`), escalates a blocked task
-(`blocked-task-escalation`) and probes provider usage
-(`provider-usage-probe`); a fresh daemon activates those shared system
-playbooks on its first start. The routing playbook is the only writer of a
-task's route (mandatory task routing), so with playbooks off no new task is
-ever routed or run, and Settings → Playbooks is empty. The code default is
-`false` only because it predates the Playbook V2 runtime.
-`playbooks.enabled: false` suits a daemon that runs no workers at all.
+The tuner sets `playbooks.enabled: true`. On an absent or empty vault's first
+installation, the daemon installs six reviewed bundles and activates
+`default-assignment-routing`, `provider-usage-probe`, `provider-failover`,
+`supervisor-failure-triage` and `default-pipeline`. `morning-report` is installed
+but needs explicit activation and `reports.morning.enabled`.
+`blocked-task-escalation` is not an automatically activated default.
+
+An existing non-empty vault gets an installation receipt without new activation.
+Restarts rehydrate durable activations; they do not restore deleted policy or
+replace an operator's active artifact. Use explicit playbook import/activation or
+operator doctor repair for changes. With playbooks disabled, mandatory routing
+cannot route new work. The code default remains `false`.
 
 ## Pull-based worker pools
 
@@ -129,8 +132,9 @@ task's context does not leak into the next on a shared worker.
 
 `swarm.max_starts_per_tick` (1 / 2 / 3 by size class) and
 `swarm.scale_down_grace` (300s on a small box, 120s elsewhere) exist to stop
-start/drain churn on a bursty queue. Set `swarm.enabled: false` to keep every
-profile on `lifecycle: task` (push). Operator detail:
+start/drain churn on a bursty queue. `swarm.enabled: false` disables pool
+scheduling; it does not rewrite a profile’s lifecycle or turn pool profiles into
+push workers. Operator detail:
 [worker pools](worker-pools.md).
 
 ## What is deliberately *not* written
@@ -164,7 +168,11 @@ aq system config tune --apply --overwrite         # re-derive and replace
 `--apply` **keeps** any section you have already customised and reports it as
 `kept`; only `--overwrite` replaces one. A section that already matches the
 recommendation is reported `unchanged` and not rewritten, so re-running the
-command is a no-op.
+command is a no-op. Decisions apply to whole sections, not individual keys.
+Before writing, the tuner validates a candidate and refuses newly introduced
+errors; pre-existing errors are reported separately. It writes locally without
+forcing live reload or retaining a transaction backup. The temporary-file
+preflight does not reproduce environment overlays or a caller-selected profile.
 
 Two knobs move together and are the usual mistake:
 
