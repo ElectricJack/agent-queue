@@ -719,24 +719,20 @@ These hold today, and changes to this system must keep them.
 13. **Mechanism here, judgment in playbooks.** Planning, auto-resolve, the
     sweep, the watchdog and the digest are deterministic and make no LLM
     calls.
+14. **One rate tracker and one hourly budget.** Startup configures the shared
+    invalid-request tracker in place so logging and the bot count the same
+    responses. Hourly report submissions use the digest's `MAX_CHARS` budget
+    (600), including the dashboard footer and delivery marker; validation
+    messages derive the limit from that constant. Escalation diagnostics and
+    compatibility refusals both link to `/focus/asks/<id>`.
 
 ## 5. Known gaps
 
-**Probable bugs.**
+**Resolved audit findings.**
 
-- **Discord's internal 429s may go uncounted.** `setup_logging`
-  (`src/logging_config.py`) attaches a `DiscordHTTPLogHandler` bound to the
-  tracker returned by `get_tracker()` at that moment. The bot later calls
-  `configure_tracker` (`src/discord/bot.py`), which replaces the module
-  singleton with a new tracker (`src/discord/rate_guard.py`). The log
-  handler keeps feeding the old one, so the rate guard never sees the 429s
-  that discord.py retries internally.
-- **The hourly report budget disagrees with itself.** `report_submit` checks
-  against the digest `MAX_CHARS` (600), but its error says "exceeds 1,200
-  characters", and the hourly playbook also says 1,200. The operator guide
-  now documents the enforced 600-character ceiling, including link and marker.
-- **Ask URLs are inconsistent.** `escalation_commands.py` builds `/asks/<id>`
-  and `_legacy_ask_decision` builds `/focus/asks/<id>`.
+The 429 tracker binding, hourly report budget and ask URL findings are
+corrected by the changes described in §4. Channel admission and configuration
+retirement are corrected by task `amber-torrent-90`.
 
 **Design hazards.**
 
@@ -844,7 +840,8 @@ legacy ask and escalation records, per Jack's 2026-10-19 reset directive.
 The documentation drift listed in the earlier snapshot was corrected by this audit.
 The two publishers and old notification queries remain cleanup work. Task
 `amber-torrent-90` addresses channel admission and configuration retirement;
-inconsistent URLs and the missing application sweep remain separate gaps.
+the missing application sweep remains a separate gap. The inconsistent ask URLs
+are corrected by the changes described in §4.
 
 ### 6.2 Event-driven hibernation and verified waits
 
