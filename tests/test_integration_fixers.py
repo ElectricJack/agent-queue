@@ -206,25 +206,52 @@ async def test_stopped_registered_launch_retries_under_a_fresh_identity(db, fixe
     assert first["session_id"] == retry["session_id"] != launched["session_id"]
     assert retry["instance_token"] != launched["instance_token"]
     assert retry["session_name"] == launched["session_name"]
+    assert retry["session_id"] == str(UUID(retry["session_id"]))
     await transfer(db, "batch-fix", "fresh-next")
     now[0] += 5000
     runtime.start.side_effect = None
     result = await allocate_on(service, "fresh-next")
     assert result["outcome"] == "filed"
     assert result["session_id"] == retry["session_id"]
+    assert runtime.start.await_args.args[0]["session_id"] == str(UUID(retry["session_id"]))
     assert not await notices(db, supervisor=True)
 
 
+async def test_launch_retry_dashes_a_legacy_unregistered_identity_before_relaunch(db, fixer):
+    service, runtime, now = fixer
+    runtime.start.side_effect = RuntimeError("authenticated Git push preparation failed")
+    assert (await allocate(service))["outcome"] == "deferred"
+    legacy = uuid4().hex
+    waiting = await state(db)
+    async with db.immediate() as conn:
+        await conn.execute(update(integration_batches).where(
+            integration_batches.c.id == "batch-fix",
+        ).values(fixer_state={**waiting, "session_id": legacy}))
+    await transfer(db, "batch-fix", "legacy-launch-retry")
+    now[0] += 5000
+    runtime.start.side_effect = None
+    result = await allocate_on(service, "legacy-launch-retry")
+    assert result["outcome"] == "filed"
+    assert result["session_id"] == str(UUID(legacy))
+    assert runtime.start.await_args.args[0]["session_id"] == str(UUID(legacy))
+    assert (await db.get_integration_batch("legacy-launch-retry"))["fixer_state"][
+        "session_id"
+    ] == str(UUID(legacy))
+
+
+@pytest.mark.parametrize("owner_status", ["active", "launching"])
 @pytest.mark.parametrize("session_state", [None, "stopped"])
 async def test_family_blocked_by_legacy_launch_failure_relaunches_on_successor(
-        db, fixer, session_state):
+        db, fixer, session_state, owner_status):
     from src.integration.fixer_batches import defer_on
 
     service, runtime, now = fixer
     await allocate(service)
     owner = await state(db)
-    # The pre-retry shape: a permanent launch blocker on an aborted owner.
-    owner.update(status="launching", blocker="launch incomplete: push preparation failed")
+    # The pre-retry shape: an expired root owner with a permanent launch blocker.
+    legacy = UUID(owner["session_id"]).hex
+    owner.update(status=owner_status, session_id=legacy,
+                 blocker="launch incomplete: push preparation failed")
     async with db.immediate() as conn:
         await conn.execute(update(integration_batches).where(
             integration_batches.c.id == "batch-fix").values(fixer_state=owner))
@@ -239,13 +266,18 @@ async def test_family_blocked_by_legacy_launch_failure_relaunches_on_successor(
     async with db.immediate() as conn:
         await conn.execute(update(integration_batches).where(integration_batches.c.id == successor.id)
                            .values(fixer_queue={"family_id": "batch-fix"}))
+    now[0] = owner["deadline"] + 5000
     result = await allocate_on(service, successor.id)
     assert result["outcome"] == "filed"
-    assert (result["session_id"] == owner["session_id"]) is (session_state is None)
+    assert result["session_id"] == str(UUID(result["session_id"]))
+    assert (UUID(result["session_id"]) == UUID(legacy)) is (session_state is None)
     assert (await state(db)) is None
     moved = (await db.get_integration_batch(successor.id))["fixer_state"]
     assert moved["batch_id"] == successor.id and moved["starting_sha"] == NEXT
     assert moved["status"] == "active" and "blocker" not in moved
+    assert moved["family_id"] == "batch-fix"
+    assert moved["deadline"] > now[0]
+    assert runtime.start.await_args.args[0]["session_id"] == result["session_id"]
     assert runtime.start.await_count == 2
 
 
