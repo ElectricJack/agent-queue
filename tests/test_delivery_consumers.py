@@ -1853,17 +1853,38 @@ async def test_concurrent_guarded_writers_share_fetches_and_need_current_proof(
 
     db, origin, _observer = active_git_world
     real_fetch = recovery.fetch_retained_origin
+    real_observation = DeliveryObserver._shared_observation
     fetched, captured, release = [], asyncio.Event(), asyncio.Event()
+    second_started = asyncio.Event()
+    arrivals = 0
+    joined = {n: asyncio.Event() for n in (4, 8, 9)}
+
+    async def controlled_observation(self, *args, **kwargs):
+        nonlocal arrivals
+        arrivals += 1
+        arrival = arrivals
+        if arrival in joined:
+            joined[arrival].set()
+        result = await real_observation(self, *args, **kwargs)
+        if arrival == 1:
+            # The stale creator must ask for its retry after fetch 2 begins.
+            await second_started.wait()
+        return result
 
     async def controlled_fetch(*args, **kwargs):
-        result = await real_fetch(*args, **kwargs)
         fetched.append(kwargs.get("repository_url"))
+        if len(fetched) == 2:
+            second_started.set()
+            # Keep fetch 2 in flight until the stale creator asks again.
+            await joined[9].wait()
+        result = await real_fetch(*args, **kwargs)
         if len(fetched) == 1:
             captured.set()
             await release.wait()
         return result
 
     monkeypatch.setattr(recovery, "fetch_retained_origin", controlled_fetch)
+    monkeypatch.setattr(DeliveryObserver, "_shared_observation", controlled_observation)
     def epic_head() -> str:
         return git(origin.url, "rev-parse", "refs/heads/aq/epic")
 
@@ -1872,19 +1893,10 @@ async def test_concurrent_guarded_writers_share_fetches_and_need_current_proof(
     def guarded_view():
         return asyncio.create_task(db.observe_removal_delivery(["reopened"], for_mutation=True))
 
-    async def joined(readers: int) -> None:
-        # Writers reach the store after their own database reads; wait until each
-        # has really asked the shared observation rather than guessing a delay.
-        from src.integration.delivery_observer import _FLIGHTS
-
-        async with asyncio.timeout(30):
-            while sum(state.readers for state in _FLIGHTS.get(
-                    asyncio.get_running_loop(), {}).values()) < readers:
-                await asyncio.sleep(0.005)
-
-    early = [guarded_view() for _ in range(4)]
+    early = [guarded_view()]
     await captured.wait()
-    await joined(4)
+    early.extend(guarded_view() for _ in range(3))
+    await joined[4].wait()
     # Fetch 1 holds aq/epic without the reopened work; now it is collected.
     git(origin.clone, "fetch", "-q", "origin")
     git(origin.clone, "checkout", "-q", "-B", "aq/epic", "origin/aq/epic")
@@ -1894,7 +1906,7 @@ async def test_concurrent_guarded_writers_share_fetches_and_need_current_proof(
     current_epic = epic_head()
     assert current_epic != stale_epic
     late = [guarded_view() for _ in range(4)]
-    await joined(8)
+    await joined[8].wait()
     release.set()
     views = await asyncio.gather(*early, *late)
     # Eight guarded writers, no serial per-caller backlog. Fetch 1 began before
@@ -2024,6 +2036,69 @@ async def test_unavailable_delivery_observer_withholds_only_edge_consumers(world
     view = await observe_admission(db, ["waiting", "independent"], service)
     assert view.allowed == {"independent"}
     assert view.reasons["waiting"][0]["code"] == "delivery_evidence_unavailable"
+
+
+@pytest.mark.parametrize('source_edge', ['blocks', 'delivery-of'])
+async def test_admission_completes_while_retained_fsck_holds_repository(
+    world, tmp_path, monkeypatch, source_edge,
+):
+    from src.integration.admission import observe_admission
+    from src.integration.git_truth import GitTruth
+
+    db, origin, _observer, service = world
+    observer = DeliveryObserver(db, git=service.git, data_dir=tmp_path / 'recovery-observer',
+                                truth=GitTruth(service.git) if source_edge == 'delivery-of' else None)
+    if source_edge == 'delivery-of':
+        db.set_prerequisite_observer(observer)
+    if source_edge == 'blocks':
+        # The development-mode sources use the service's ordinary observer.
+        service._delivery_observer = observer
+    for tid in ('waiting', 'independent'):
+        await db.create_task(Task(
+            id=tid, project_id='p', title=tid, description='', status=TaskStatus.READY,
+        ))
+    await db.add_dependency('waiting', 'done', source_edge)
+    from src.integration.delivery_observer import DeliveryTarget
+
+    target = DeliveryTarget('p', 'r', origin.url, 'refs/heads/main')
+    store = await observer._store(target)
+    assert (await observer.snapshot(target)).error is None
+    # Force full verification, then keep its real repository transaction held.
+    service.git.__dict__.setdefault('_retained_verified', {}).clear()
+    started, release = asyncio.Event(), asyncio.Event()
+    normal = service.git.arun_git_result
+
+    async def slow_fsck(args, **kwargs):
+        if 'fsck' in args and kwargs.get('cwd') == str(store):
+            started.set()
+            await release.wait()
+        return await normal(args, **kwargs)
+
+    monkeypatch.setattr(service.git, 'arun_git_result', slow_fsck)
+    monkeypatch.setattr('src.git.manager.REQUEST_GIT_READ_SECONDS', 0.1)
+    recovery = asyncio.create_task(observer.snapshot(target))
+    try:
+        await asyncio.wait_for(started.wait(), 10)
+        view = await asyncio.wait_for(observe_admission(
+            db, ['waiting', 'independent'], service,
+        ), 5)
+        assert view.allowed == {'independent'}
+        assert view.reasons['waiting']
+        assert not recovery.done()
+        # A subsequent reader also returns without a second fetch or cancellation.
+        assert (await asyncio.wait_for(observe_admission(
+            db, ['waiting', 'independent'], service,
+        ), 5)).allowed == {'independent'}
+        assert not recovery.done()
+    finally:
+        release.set()
+        await asyncio.wait_for(recovery, 10)
+    # Recovery completion does not extend admission's expired request budget.
+    # A new admission must acquire fresh proof and can release the dependent.
+    monkeypatch.setattr('src.git.manager.REQUEST_GIT_READ_SECONDS', 5)
+    assert (await observe_admission(db, ['waiting', 'independent'], service)).allowed == {
+        'waiting', 'independent',
+    }
 
 
 async def test_cleanup_guard_rechecks_current_target_without_receipts(world, tmp_path):

@@ -573,6 +573,15 @@ Containers are marked explicitly: `task_metadata.container = true`, set on a tas
 
 **Hierarchical child ids:** children created under a parent (supervisor graphs, plan subtasks, `--parent`) get `<parent_id>.1`, `<parent_id>.1.2` — ordinal per parent via `next_child_ordinal`, depth ≤ 3 — while root ids stay adjective-noun slugs. Ids never change after assignment. A name is never minted while anything still keys it: a live or archived task, or the integration identity a deleted task leaves behind (a `task_integration_checkpoints` row, a `task_branch_origins` row, live or retired, or an `integration_branch_owners` row it owns) — a new task minted onto that name would inherit the predecessor's checkpoint and branch fence (`_task_identity_exists` in `src/task_names.py`). The id itself now carries structure a human can read in Discord, a branch name (`aq/swift-falcon.2`), or a log line, and sorting groups a family together everywhere.
 
+**Root filing bases.** Creating a hierarchy/train root reserves its exact base
+from the designated repository's retained Git store. Prefer the fetched
+`refs/remotes/origin/<base>` commit, then the bare clone's `refs/heads/<base>`
+commit. An available local base needs no GitHub API or network request, so API
+backoff cannot prevent filing. If neither ref exists, acquire it through the
+authorized Git clone/fetch path; unavailable or missing Git evidence refuses
+filing rather than substituting another branch. This base selection does not
+replace live remote observations used by adoption, reparenting or completion.
+
 ### Operator removal (2026-10-06)
 
 `remove_task` (`aq task remove TASK --reason "..."`, dashboard **Remove**) is

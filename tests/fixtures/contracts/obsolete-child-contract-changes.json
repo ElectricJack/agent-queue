@@ -2,8 +2,8 @@
   "source_base": "feeb89e65e4bb5e2a4a2033fa32f967d1f66fce9",
   "source_commit": "c6564ad51c006c5f759ac1c9cdd7d74bd2677945",
   "reason": "fair-flare-67: integration_redrive_child adds the supervisor-authorized obsolete-child disposition (dispose_obsolete with required superseded_by proof and expected_parent_head_sha on apply) and reports parent_head_sha, merge_head_sha and superseded_by. The disposition performs a fenced unchanged-tree merge of the child head into its parent; existing redrive and source adoption arguments, defaults and results are unchanged.",
-  "previous_cli_catalogue_sha256": "c98fef6af2ba4db8c1c07f5e5b35e69242da57d98a02c737b3bc11eebaf946cb",
-  "cli_catalogue_sha256": "896574f1c0e4d909a6ada27d9e8fe9fb4df02158f43cf62718a0e606e4413ffb",
+  "previous_cli_catalogue_sha256": "6822549bffd34428c2c731814d6c02afe64a55c38ae3504bb846dd1a6262ecaf",
+  "cli_catalogue_sha256": "8088852591c477a778b3601b1357bb93bc07952aced44bf3011661bdf9784811",
   "contracts": {
     "integration_redrive_child": {
       "previous_fingerprint": "sha256:d1c67fe0f8a46e453b371a36a853e61cb5d9349de568dca0d21450a4af3558b1",
