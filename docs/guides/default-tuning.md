@@ -127,10 +127,12 @@ be pushed one — and the code default is `false` only because the pull path
 post-dates the push path. `swarm.fresh_context_per_task` stays on so one
 task's context does not leak into the next on a shared worker.
 
-`swarm.max_starts_per_tick` (1 / 2 / 3 by size class) and
+`swarm.max_starts_per_tick` (1 / 2 / 3 by size class, shared across all profiles
+and projects) and
 `swarm.scale_down_grace` (300s on a small box, 120s elsewhere) exist to stop
-start/drain churn on a bursty queue. Set `swarm.enabled: false` to keep every
-profile on `lifecycle: task` (push). Operator detail:
+start/drain churn on a bursty queue. `swarm.enabled: false` stops pool scheduling
+without changing profile lifecycle. To use push workers instead, explicitly
+change the relevant profiles to `lifecycle: task` before disabling pools. Operator detail:
 [worker pools](worker-pools.md).
 
 ## What is deliberately *not* written

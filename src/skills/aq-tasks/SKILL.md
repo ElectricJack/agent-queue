@@ -199,6 +199,15 @@ aq task close --outcome pass|fail --summary "..." --claim-next --wait 60
 | `stale_claim` | a mutator's `claim_epoch` no longer matches the task's current one |
 | `out_of_scope` | the caller isn't allowed to claim (not a pool session) |
 
+On `claim_in_progress`, continue `aq task claim --next --wait 60` in the same
+session to observe the existing preparation job. Do not run `aq prime` or begin
+task work until `claimed`; a progress result is not a preparation refusal or an
+instruction to await inbox delivery. `claim_timing` reports the current phase
+and elapsed durations, also visible through `aq task show <task-id>`. A
+`no_ready_work` reason of `delivery_observation_timeout` or
+`claim_deadline_exceeded` means observation ran out of time, not proof that the
+queue is empty; continue the normal loop.
+
 `prepare_failed` and `not_admissible` carry `retry_after` (seconds),
 `refusal_count`, and `instructions`. Respect the cooldown before another attempt.
 The daemon persists the same-session result/reason streak across restarts; cooldown
@@ -239,7 +248,8 @@ claim. The same goes for `aq task heartbeat`.
 Three identical preparation refusals in one session persist across daemon
 restarts and return `drain_requested`; the daemon disables that workspace
 and stops the worker through guarded pool teardown. On `prepare_failed`,
-retry the claim. On `drain_requested` or `session_exhausted`, run
+follow the cooldown and refusal protocol above. On `drain_requested` or
+`session_exhausted`, run
 `aq session drain-ack` and exit 0. A quarantined workspace keeps its checkout
 and any branch attachment for operator recovery; never delete its Git locks.
 

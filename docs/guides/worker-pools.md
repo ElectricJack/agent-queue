@@ -12,9 +12,10 @@ default lifecycle.
 
 A `lifecycle: task` profile is **pushed** work: the scheduler picks a READY
 task, launches a session for it, and that session dies with the task. A
-`lifecycle: pool` profile is **pulled**: the daemon keeps a small pool of
-long-lived sessions alive, and each one asks for work in a loop with
-`aq task claim`.
+`lifecycle: pool` profile is **pulled**: the daemon maintains bounded worker
+capacity, and each session asks for work with `aq task claim`. By default
+`swarm.fresh_context_per_task` retires a session after one claim; disabling it
+allows the same session to work multiple tasks up to its claim cap.
 
 The difference that matters operationally is *who decides how many workers
 exist*. Under push it is the queue, one session per assigned task. Under pull
@@ -121,16 +122,16 @@ Both commands are admin surfaces. A worker session's task-scoped token gets
 
 The Agents page's create control opens a fork — **Create agent** or **Create
 agent pool** — because the two are different objects: one durable global worker
-versus per-project elastic capacity. The pool form covers the second command
-only: it lists the profiles that already carry `lifecycle: pool`, takes the
-project whose pool view to open, collects `min_active` / `max_active`, and calls
+versus fleet-wide elastic capacity. The pool form covers the second command
+only: it lists the profiles that already carry `lifecycle: pool`,
+collects `min_active` / `max_active`, and calls
 `pool_scale`. Giving a profile pool lifecycle in the first place is still
 `aq pool set-lifecycle`, and the form says so when no profile is eligible.
 
-The dashboard still addresses pools per `(project, profile)`: the project it
-asks for is the pool view it opens, not a pool of its own, and the bounds it
-writes are the profile's fleet-wide ones (`pool_scale` ignores `project_id`).
-The CLI and API are the accurate surfaces until the Agents page is re-keyed.
+The dashboard addresses one pool per profile. The form does not ask for a
+project: placement chooses each worker's project at launch. Saving bounds for
+an existing pool reconfigures it and opens its fleet-wide view rather than
+creating a second pool. The settings view includes the project breakdown.
 
 The create-agent form deliberately cannot build a durable worker on a pool
 profile: the profile is shown but disabled, and a submit is refused, because
@@ -188,8 +189,8 @@ max_active: 12
 min_per_project: 1
 ```
 
-- The reservation is honoured **first**: placement gives a start to a project
-  below its warm floor before it looks at demand anywhere else, and a drain
+- After unserved active train repairs, placement gives a start to a project
+  below its warm floor before ordinary demand elsewhere. A normal drain
   never takes a project at or below its floor.
 - It **raises the effective floor** rather than being ignored when
   `min_active` cannot fund it: the floor sizing uses is
@@ -293,9 +294,10 @@ Two ceilings bind the sizer, in order:
 2. **`swarm.max_starts_per_tick`** (default 2) — starts are handed out one at
    a time, round-robin across every pool that still wants more, so a saturated
    cap shares the remaining headroom instead of starving whichever pool sorts
-   last. This is now 2 per profile *in total* rather than 2 per profile per
-   project, so a 0→8 ramp takes 4 ticks (~20 s) rather than being parallelised
-   across projects.
+   last. The default budget is **2 starts total across all profiles and
+   projects**, not 2 per profile. Profiles with unserved active train repairs
+   go first. A 0→8 ramp therefore needs at least 4 sizing ticks, plus launch
+   and placement time.
 
 `projects.max_concurrent_agents` is **not** a sizing input any more. It is a
 property of a project, not of a pool, so it moved to placement.
@@ -333,6 +335,50 @@ completion evidence; unreadable evidence is not a reason to release. Task
 heartbeats, questions and durable waits retain their grace/exemptions. Attached
 integration ownership remains fenced, and repeated failures use the existing
 bounded recovery budget instead of relaunching forever.
+
+### Claim selection and asynchronous preparation
+
+Pool demand and `aq task claim` share the admissible frontier. A READY row is
+not enough: its route, dependencies, hierarchy, ingestion/recovery holds and
+Git delivery proofs must permit execution. Once the project's router is ready,
+legacy or missing routes do not supply demand. Eligible wait reservations are
+considered before train repairs, then ordinary priority/affinity ordering.
+
+The lifecycle sweep tracks continuously rejected READY work. After
+`work_graph.frontier_rejected_after_seconds`, it raises an advisory with the
+excluding rules and sends the project supervisor one notice for that episode.
+Admission recovery or leaving READY clears the advisory; it does not bypass
+the frontier or force a task into a worker.
+
+Selection reserves a session/task/epoch fence in PostgreSQL. Checkout reset and
+setup then run outside the selection transaction, followed by ownership,
+admission and checkout rechecks before activation. Preparation writes the
+workspace's `.aq/claim.json` after reset, removing it if preparation is released.
+The marker can therefore exist before activation: wait for `claimed` before
+running `aq prime` and beginning task work.
+
+Preparation runs as a daemon job. A request that cannot observe its completion
+within its response window returns `claim_in_progress` with the task, epoch,
+`claim_phase` and `claim_timing`. Continue with
+`aq task claim --next --wait 60` in the **same session**: it observes the existing
+job rather than starting a second reset. This progress result is not a refusal
+and is not an instruction to end the turn awaiting an inbox message. A detached
+CLI request does not cancel live preparation.
+
+`claim_timing` reports total elapsed time, current phase and phase durations
+(frontier selection, owner lease, fetch, checkout, reset and setup). Phases can
+nest, so their durations need not sum to the total. `aq task show <id>` exposes
+live timing or the recorded snapshot; timing is diagnostic, not proof of claim
+ownership. Use `.aq/claim.json` and the daemon's fenced state for ownership.
+
+`--wait` is the long-poll budget (capped by `swarm.claim_wait_max`, default 60s),
+not an unlimited Git operation budget. Git observations share an additional
+60s allowance within a 150s request ceiling. A selection that exceeds its
+deadline returns `no_ready_work` with `delivery_observation_timeout` or
+`claim_deadline_exceeded` and takes no task later. Those reasons mean the
+observation timed out, not that the queue is empty. `claim_conflict` and ordinary
+`no_ready_work` use the normal claim loop; preparation refusals use the bounded
+protocol below.
 
 ### Repeated claim preparation refusals
 
@@ -446,8 +492,11 @@ rows remain fenced. Owner recovery still needs its own preview and guarded
 release; sleep never releases claims, integration owners or workspace locks.
 Named sessions retain their sleep/wake behavior.
 
-`aq pool scale --now` is the exception: it terminates idle sessions above the
-new effective max immediately, oldest first, skipping the grace window.
+`aq pool scale --now` skips the grace window for idle surplus, oldest first.
+Currently its immediate sweep checks each project's sessions against the
+minimum of the profile, project and global ceilings separately. It can leave
+the aggregate fleet above the profile ceiling when sessions are spread across
+projects; normal fleet-wide reconciliation still applies the new bound.
 
 ### 3.2 Placement — which project gets the worker
 
@@ -461,18 +510,25 @@ fails is the blocking reason reported on a starvation:
 | Predicate | Blocking reason |
 |---|---|
 | the `(project, profile)` key is not quarantined (§4a) | `quarantined` |
-| the project has a free `project-repo` workspace | `no workspace capacity` |
+| the project has a free workspace of the candidate's execution kind | `no workspace capacity` |
 | the project is under its own `projects.max_concurrent_agents`, counting all its pool sessions of any profile | `at project cap (N)` |
 | the project is not already holding an idle worker with nothing queued behind it | `an idle worker is already available` |
 
-Eligible projects are then ordered, re-sorting after every single start so a
+Placement candidates are `(project, workspace_kind)` pairs. The ordinary kind
+is `project-repo`. A profile declaring another writable, lockable worktree or
+exclusive-clone repository kind uses that kind; an auto-attached vault does
+not count as an execution slot. Non-default kinds require unserved demand
+rather than launching speculative warm workers. Workspace capacity is shared
+by all profiles using the same kind, and the project cap is shared across kinds.
+
+Eligible candidates are then ordered, re-sorting after every single start so a
 budget of two does not pile onto whichever project sorts first:
 
 1. projects with unserved active train repair delegates;
 2. projects below their `min_per_project` warm floor, largest shortfall first;
-3. then by fewest live workers among projects with unserved demand;
-4. then by unserved deficit `ready - (idle + starting)`, largest first;
-5. then `project_id` ascending, so the outcome is deterministic.
+3. then by fewest live workers of that profile in the candidate's kind;
+4. then by unserved deficit `ready - (idle + starting + pending)`, largest first;
+5. then by project and workspace kind, so the outcome is deterministic.
 
 The winner's reason (`train_repair` / `warm_floor` / `deficit` / `spread`) is carried on the
 `pool.scaled` event as `placement_reason`, which is the answer to "why *there*?".
@@ -506,7 +562,11 @@ Claims prefer eligible repair delegates before ordinary priority/affinity
 ordering. `aq doctor --check stall.sweep` reports a distinct
 `train_repair_capacity_wait` after a READY repair waits on compatible worker
 capacity longer than 30 minutes, naming its task, batch, operation and profile.
-All-busy pools wait for held work to finish; no claim is interrupted.
+Ordinary busy claims finish before their seats can be redistributed. The
+wait runtime can separately checkpoint and evict an eligible waiting writer
+under capacity pressure. Eviction does not free a seat until parking is
+confirmed; hibernated continuations do not consume live seats, and pending
+resumes reserve capacity before fresh warm launches. See [agent waits](agent-waits.md).
 
 Over-subscribing per-project caps is still the intended arrangement: six
 profiles capped at 3+2+2+2+1+1 = 11 against a project cap of 8 does not mean 11
@@ -684,9 +744,9 @@ the design, not defects:
   can be redistributed after the scale-down grace, but busy claims finish
   first. `projects.max_concurrent_agents` still ceilings A's share and
   `min_per_project` still floors B's.
-- **Slower cold ramp under burst.** `max_starts_per_tick` is 2 per profile in
-  total now (§3.1), so a ramp is a few ticks rather than N projects' worth of
-  starts in parallel.
+- **Bounded cold ramp under burst.** `max_starts_per_tick` defaults to 2
+  across all profiles and projects (§3.1), so a burst consumes several ticks
+  rather than starting every project's workers in parallel.
 - **Workers stay project-bound for their lifetime.** Placement chooses once,
   at launch; a worker never switches repos. With
   `swarm.fresh_context_per_task` on (the default) that binding only has to
@@ -759,8 +819,8 @@ Quarantining failures:
 - the session started but its `sessions` row could not be written;
 - any other exception out of acquisition, token mint, spec build or launch.
 
-Pool capacity counts only the `project-repo` kind that workers actually acquire;
-the auto-attached vault is not an execution slot. A disabled base repository
+Pool capacity counts the execution workspace kind each worker actually acquires
+(§3.2); the auto-attached vault is not an execution slot. A disabled base repository
 prevents lazy worktree growth. Check the base's enabled state as well as its
 slots when a project has ready work but no capacity. Placement shares workspace
 and project concurrency budgets across all profiles in a tick. When unserved
@@ -993,7 +1053,7 @@ aq doctor --fix                             # apply fixable repairs, then re-run
 
 | Check | Severity | Fixable | What it means |
 |---|---|---|---|
-| `pools.stuck` | ERROR | yes | A running pool session still holds a `task_id` whose task is no longer IN_PROGRESS/ASSIGNED. |
+| `pools.stuck` | ERROR | yes | A running pool session still holds a `task_id` whose task is no longer IN_PROGRESS/ASSIGNED/WAITING. |
 | `pools.orphan_agents` | WARN / ERROR | yes | A pool-profile `agents` row with no session row at all, older than `2 × prepare_timeout`. |
 | `pools.preparing_stuck` | ERROR | yes | A session sat in `claim_phase` `claiming`/`preparing` past `2 × prepare_timeout` with no live preparation request. The fix releases the exact expired preparation as `prepare_failed`; an active reset or a claim that has since activated stays held. |
 | `pools.stranded_feature_branches` | WARN / INFO | prints the command | A remote branch that has had PRs merged **into** it, is ahead of the default branch, and has no open PR taking it there — its merged work is not on `main`. A second, INFO-only bucket lists non-`aq/` branches ahead of the default branch with no open PR to it. `--fix` prints the `gh pr create --base <default> --head <branch>` command; it never opens the PR, because `aq doctor --fix` runs every fix and opening a PR is outward-facing and not undoable. |
@@ -1577,7 +1637,7 @@ reseed command is the supported path.
 |---|---|
 | Tasks sit in READY, nothing launches | `aq doctor --check pools.disabled`; `swarm.enabled` and `sessions.enabled` |
 | `pool status` shows a pool flat at 0, with `quarantined_reason` | §4a — harness, provider, base checkout, or a dead startup |
-| `pool status` shows a pool flat at 0, no quarantine reason | starved: no `project-repo` kind, or no free workspace. `aq doctor --check pools.placement_starved` names the blocking reason per project |
+| `pool status` shows a pool flat at 0, no quarantine reason | starved: no compatible execution kind, or no free workspace. `aq doctor --check pools.placement_starved` names the blocking reason per project |
 | `desired` is below `ready` | `max_active` or `swarm.global_max_active` is binding — not a bug |
 | READY work waits on a full pool while a same-class pool sits idle | capacity spill (§3.3) moves it, within the task's route candidates, after `provider_failover.spill.after_seconds`. `aq provider reroute --dry-run` names each task's `kind` (`spill_pinned`, `spill_no_target`, ...); check `spill.enabled`, `provider_failover.mode` and that the `provider-failover` playbook is active |
 | The fleet is much smaller than it was before an upgrade | bounds are fleet-wide now: `aq doctor --check pools.global_bounds_migration` (§3a) |
@@ -1587,8 +1647,9 @@ reseed command is the supported path.
 | A session holds a task that is already closed | `aq doctor --check pools.stuck --fix` |
 | A worker holds an epic whose children someone else filed | released on the next pool tick; `aq doctor --check claims.container_held --fix` for any other holder. File epics with a graph whose `parent:` block creates the container, or (supervisor/operator) `aq task create --container`, so it is never claimable |
 | A completed integration task still has a running pool claim and attached branch owner after a restart | As a local operator, run `aq integration flush <project-id>`; it recovers only a quiescent, clean, origin-published exact holder. |
-| A claim never completes | `aq doctor --check pools.preparing_stuck --fix` (releases as `prepare_failed`) |
-| Pools stopped growing and nothing is quarantined | a soft-deleted worker row is fencing `create_automatic_agent` — §5 |
+| A claim returns `claim_in_progress` | Repeat the same session's long-poll claim to observe its existing preparation; inspect `claim_timing` on the response or `aq task show`. Live preparation remains protected from doctor release. |
+| Preparation is abandoned after the daemon lost its live job | Operator: `aq doctor --check pools.preparing_stuck --fix` releases only the exact expired preparation as `prepare_failed`. |
+| Pools stopped growing and nothing is quarantined | Inspect placement capacity, pending launches and `pool.scaler_stalled` (§4a); use `pools.orphan_agents` for leaked agent rows (§5). |
 | A task is BLOCKED with `needs_attention: session_stall` | the session was quarantined (§4b); clear the task by hand |
 | The pool never scales down | `scale_down_grace` has not elapsed, or every session is busy |
 
