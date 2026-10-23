@@ -13,6 +13,7 @@ import os
 import random
 import re
 import time
+from pathlib import Path
 
 from src.plugins.base import InternalPlugin, PluginContext
 
@@ -584,14 +585,51 @@ class FilesPlugin(InternalPlugin):
 
     # --- Command implementations ---
 
+    def _vault_read_path(self, path: str) -> tuple[bool, str | None]:
+        """Resolve read-only project documents without expanding the write sandbox.
+
+        Compare resolved candidates to lexical roots beneath the canonical vault:
+        symlinking a project or its plans/specs directory must not grant a new root.
+        """
+        from src.commands.principal import current_principal
+
+        vault = (Path(self._cfg.data_dir) / "vault").resolve()
+        candidate = Path(path)
+        if not candidate.is_absolute():
+            if not candidate.parts or candidate.parts[0] != "projects":
+                return False, None
+            candidate = vault / candidate
+        try:
+            relative = candidate.relative_to(vault)
+        except ValueError:
+            return False, None
+        if len(relative.parts) < 4 or relative.parts[0] != "projects":
+            return True, None
+        _, project_id, area, *_ = relative.parts
+        if project_id in {".", ".."} or area not in {"plans", "specs"}:
+            return True, None
+        principal = current_principal()
+        if principal and principal.enforced and (
+            principal.project_id != project_id
+            and not (principal.elevated and principal.project_id is None)
+        ):
+            return True, None
+        root = vault / "projects" / project_id / area
+        resolved = candidate.resolve()
+        if not resolved.is_relative_to(root):
+            return True, None
+        return True, str(resolved)
+
     async def cmd_read_file(self, args: dict) -> dict:
         path = args["path"]
         offset = max(args.get("offset", 1), 1)
         limit = args.get("limit")
         max_lines = limit if limit is not None else args.get("max_lines", 2000)
-        if not os.path.isabs(path):
-            path = os.path.join(self._cfg.workspace_dir, path)
-        validated = await self._ws.validate_path(path)
+        vault_path, validated = self._vault_read_path(path)
+        if not vault_path:
+            if not os.path.isabs(path):
+                path = os.path.join(self._cfg.workspace_dir, path)
+            validated = await self._ws.validate_path(path)
         if not validated:
             return {"error": "Access denied: path is outside allowed directories"}
         if not os.path.isfile(validated):

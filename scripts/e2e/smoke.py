@@ -623,13 +623,16 @@ def claim_fixture(worker: Worker, task_ids: str | list[str], *, what: str) -> di
 
     def claim():
         nonlocal last_claim
-        # Fixture assertions need the final ownership result. Let the daemon
-        # await its preparation job within this existing convergence budget.
-        last_claim = worker.claim_next(wait=int(CONVERGE_TIMEOUT))
-        # READY and routed does not imply available to this single attempt:
-        # PostgreSQL SKIP LOCKED can skip a fixture during another transaction.
-        # Releasing that lock emits no task.ready event, so retry explicitly.
+        # SKIP LOCKED can skip a READY fixture; releasing its row lock emits
+        # no task.ready event to wake a long poll. Leave time for retries.
+        # Preparation can outlive this short observation; the next call
+        # resumes the session's existing attempt.
+        last_claim = worker.claim_next(wait=1)
         if last_claim.get("result") == "no_ready_work":
+            return None
+        if last_claim.get("result") == "claim_in_progress":
+            check(last_claim.get("task_id") in fixtures,
+                  f"{what}: expected fixture {task_ids}, preparing {last_claim.get('task_id')}")
             return None
         check(last_claim.get("result") == "claimed", f"{what}: {last_claim}")
         check(worker.task_id in fixtures,
@@ -1014,6 +1017,20 @@ def s3_worker_filed_work(state: dict) -> str:
 
 def s4_formulas(state: dict) -> str:
     """A formula resolves, cooks, renders back as-cooked, and settles."""
+    # S1 leaves two live idle pool sessions at the project's cap of two.
+    # Formula role tasks run in their own task sessions, so provision one
+    # additional seat while exercising their sequential execution. Idle
+    # pool sessions consume real capacity even without current task pins.
+    project = api_checked("get_project", {"project_id": PROJECT})
+    cap = project["max_concurrent_agents"]
+    api_checked("edit_project", {"project_id": PROJECT, "max_concurrent_agents": cap + 1})
+    try:
+        return _s4_formulas(state)
+    finally:
+        api_checked("edit_project", {"project_id": PROJECT, "max_concurrent_agents": cap})
+
+
+def _s4_formulas(state: dict) -> str:
     names = {f["name"] for f in aq("formula", "list", "--project-id", PROJECT)["formulas"]}
     check({"base-review", "review-and-fix"} <= names, f"formula fixtures missing: {names}")
 

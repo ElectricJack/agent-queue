@@ -14,6 +14,7 @@ import logging
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from functools import lru_cache
 
 from sqlalchemy import (
     Text,
@@ -36,12 +37,12 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
+from src.database.queries.ingest_hold import not_ingest_held
 from src.database.queries.task_queries import (
     INTEGRATION_REWORK_AT_KEY,
     STALE_OPEN_ATTENTION,
     TransitionResult,
 )
-from src.database.queries.ingest_hold import not_ingest_held
 from src.database.tables import (
     agents,
     integration_batch_members,
@@ -53,7 +54,6 @@ from src.database.tables import (
     sessions,
     task_branch_origins,
     task_context,
-    task_delivery_receipts,
     task_dependencies,
     task_integration_checkpoints,
     task_metadata,
@@ -345,7 +345,7 @@ PHASES_UNSUPPORTED_MODE_CODE = "hierarchy.phases_unsupported_mode"
 
 @dataclass(frozen=True)
 class ProjectIntegrationMode:
-    """The two per-project constants the hierarchy claim predicates need.
+    """The per-project constants the hierarchy claim predicates need.
 
     Both predicates below ask one question of the ``projects`` row —
     "is this project in hierarchy/train mode, and against which
@@ -363,14 +363,17 @@ class ProjectIntegrationMode:
 
     hierarchical: bool
     integration_repository_id: str | None
-    # None preserves legacy admission; a supplied set is one revalidated Git view.
-    delivered_prerequisite_ids: frozenset[str] | None = None
+    # Empty means unobserved: only a revalidated Git view may admit prerequisites.
+    delivered_prerequisite_ids: frozenset[str] = frozenset()
+    observation_unavailable: bool = False
     cross_epic_prerequisites: str = "default_branch"
     default_prerequisite_ids: frozenset[str] = frozenset()
     #: Dependents whose epic branch already contains every cross-epic source.
     parent_contained_task_ids: frozenset[str] = frozenset()
     stacked: bool = False
     stackable_prerequisite_ids: frozenset[str] = frozenset()
+    project_id: str | None = None
+    train_playbook_id: str = "fast-smooth-train"
 
     @classmethod
     def of(cls, project) -> ProjectIntegrationMode | None:
@@ -384,6 +387,9 @@ class ProjectIntegrationMode:
         from src.integration.stacked_branches import stacked_policy
 
         return cls(
+            project_id=getattr(project, "id", None),
+            train_playbook_id=((getattr(project, "hierarchical_integration_policy", None)
+                                or {}).get("train") or {}).get("playbook_id") or "fast-smooth-train",
             stacked=stacked_policy(project),
             hierarchical=getattr(project, "hierarchical_integration_mode", None)
             in HIERARCHY_MODES,
@@ -394,7 +400,31 @@ class ProjectIntegrationMode:
         )
 
 
+@lru_cache(maxsize=128)
+def _train_disabled_for_binding(project_id=None, playbook_id=None):
+    # Reuse the SQL expression/binds; its activation values are read per query.
+    from src.integration.train_policy import train_activation_disabled, train_disabled_for_project
+
+    if playbook_id is not None:
+        return train_activation_disabled(project_id or tasks.c.project_id, playbook_id)
+
+    return exists(select(literal(1)).where(
+        projects.c.id == tasks.c.project_id, train_disabled_for_project(),
+    ))
+
+
+def _train_disabled_for_task(mode=None):
+    # Hoist only identity; activation state stays fresh even for a reused mode.
+    return (_train_disabled_for_binding(mode.project_id, mode.train_playbook_id)
+            if mode is not None else _train_disabled_for_binding())
+
+
 def materialized_origin_when_hierarchical(mode: ProjectIntegrationMode | None = None):
+    """An explicitly paused train creates no new origin admission requirement."""
+    return _train_disabled_for_task(mode) | _materialized_origin_when_hierarchical(mode)
+
+
+def _materialized_origin_when_hierarchical(mode: ProjectIntegrationMode | None = None):
     """Require an exact origin or an active delegate reservation in enabled projects.
 
     A repair delegate writes its operation's existing branch and a parent
@@ -599,13 +629,18 @@ def integration_rework_cutoff(task_id):
 def delivered_same_parent_prerequisites_when_hierarchical(
     mode: ProjectIntegrationMode | None = None,
 ):
+    """Paused trains use ordinary task dependencies without delivery paperwork."""
+    return _train_disabled_for_task(mode) | _delivered_same_parent_prerequisites(mode)
+
+
+def _delivered_same_parent_prerequisites(mode: ProjectIntegrationMode | None = None):
     """Require a direct sibling prerequisite to reach the shared parent first.
 
     Graph blockedness intentionally releases a ``blocks`` dependent when its
     predecessor completes.  In a hierarchy project that is too early: the
     predecessor's source still belongs to its feature branch until delivery
-    is proven on their common parent branch. A revalidated Git view replaces
-    the legacy receipt predicate when supplied in *mode*.
+    is proven on their common parent branch. Only the supplied Git view can
+    prove delivery; an absent view leaves affected prerequisites unproven.
 
     *mode*, when supplied, folds the two ``projects`` lookups away exactly as
     in :func:`materialized_origin_when_hierarchical`.
@@ -615,32 +650,8 @@ def delivered_same_parent_prerequisites_when_hierarchical(
     dependency = task_dependencies.alias("hierarchy_prerequisite")
     prerequisite = tasks.alias("hierarchy_prerequisite_task")
     parent = tasks.alias("hierarchy_prerequisite_parent")
-    checkpoint = task_integration_checkpoints.alias("hierarchy_prerequisite_checkpoint")
-    receipt = task_delivery_receipts.alias("hierarchy_prerequisite_receipt")
     origin = task_branch_origins.alias("hierarchy_prerequisite_origin")
-
-    delivered = exists(
-        select(literal(1))
-        # As above: ``tasks`` is two levels out, so name every correlated
-        # FROM explicitly (``correlate`` replaces auto-correlation).
-        .correlate(tasks, prerequisite, parent, checkpoint)
-        .where(
-            receipt.c.source_task_id == prerequisite.c.id,
-            receipt.c.target_task_id == tasks.c.parent_task_id,
-            receipt.c.repository_id == checkpoint.c.repository_id,
-            receipt.c.target_branch == parent.c.branch_name,
-            receipt.c.disposition == "code",
-            receipt.c.reviewed_head_sha == checkpoint.c.checkpoint_sha,
-            # Ordinary task bookkeeping and the close record may be written
-            # after delivery.  Only entry into a new work incarnation makes
-            # an old receipt stale.
-            receipt.c.created_at >= func.coalesce(
-                integration_rework_cutoff(prerequisite.c.id), prerequisite.c.created_at
-            ),
-        )
-    )
-    if mode is not None and mode.delivered_prerequisite_ids is not None:
-        delivered = prerequisite.c.id.in_(mode.delivered_prerequisite_ids)
+    delivered = prerequisite.c.id.in_(mode.delivered_prerequisite_ids) if mode else false()
     if mode is not None and mode.stacked:
         delivered = or_(delivered, prerequisite.c.id.in_(mode.stackable_prerequisite_ids))
     prerequisite_is_undelivered = exists(
@@ -648,7 +659,6 @@ def delivered_same_parent_prerequisites_when_hierarchical(
         .select_from(
             dependency.join(prerequisite, prerequisite.c.id == dependency.c.depends_on_task_id)
             .join(parent, parent.c.id == tasks.c.parent_task_id)
-            .outerjoin(checkpoint, checkpoint.c.task_id == prerequisite.c.id)
         )
         .where(
             dependency.c.task_id == tasks.c.id,
@@ -703,7 +713,7 @@ LIVE_SESSION_STATES = ("starting", "running", "draining")
 
 
 def delivered_prerequisites_for_projects(modes=None, *, cross_parent=True):
-    """Use each project's Git view, retaining legacy admission for other projects."""
+    """Use each project's Git view; missing views cannot prove delivery."""
     def predicate(mode=None):
         siblings = delivered_same_parent_prerequisites_when_hierarchical(mode)
         if not cross_parent:
@@ -743,6 +753,10 @@ def _cross_parent_prerequisites():
 
 
 def _cross_parent_delivery_enabled(mode):
+    return ~_train_disabled_for_task(mode) & _configured_cross_parent_delivery(mode)
+
+
+def _configured_cross_parent_delivery(mode):
     if mode is None:
         return exists(select(literal_column("1")).where(
             projects.c.id == tasks.c.project_id,
@@ -761,7 +775,9 @@ def cross_parent_prerequisites_on_default(mode: ProjectIntegrationMode | None = 
     With no observation, a completed cross-parent source remains unproven.
     """
     source, cross_edge = _cross_parent_prerequisites()
-    ids = mode.default_prerequisite_ids if mode else ()
+    ids = mode.default_prerequisite_ids if mode else frozenset()
+    if mode is not None and mode.stacked:
+        ids |= mode.stackable_prerequisite_ids
     unproven = ~(source.c.id == any_(literal(list(ids), type_=ARRAY(Text)))) if ids else true()
     return ~(_cross_parent_delivery_enabled(mode) & exists(cross_edge.where(unproven)))
 
@@ -788,7 +804,9 @@ def epic_refresh_ready(mode: ProjectIntegrationMode | None = None):
     An ordinary sibling collection, including a failed or held one, cannot
     withhold a child whose epic already contains every proven source.
     """
-    _, cross_edge = _cross_parent_prerequisites()
+    source, cross_edge = _cross_parent_prerequisites()
+    if mode is not None and mode.stacked:
+        cross_edge = cross_edge.where(~source.c.id.in_(mode.stackable_prerequisite_ids))
     parent = _CONTAINMENT_PARENT
     has_epic = exists(select(literal_column("1")).where(
         parent.c.id == tasks.c.parent_task_id, parent.c.branch_name.is_not(None),
@@ -905,16 +923,13 @@ class HierarchyQueryMixin:
         workspace-start overlay: a delivered parent head is a descendant of
         that base and lets the child's normal branch preparation fast-forward
         from the preserved origin without copying files or merging siblings.
-        In Git-first mode this uses the same current Git proof as admission,
+        This uses the same current Git proof as admission,
         including its exact parent tip, rather than historical receipt rows.
-        Active mode refuses stale or unknown proof. ``None`` means no sibling
-        prerequisite needs a head; shadow mode retains the receipt overlay
-        after the caller's :meth:`is_hierarchy_task_runnable` guard.
+        Stale or unknown proof refuses preparation. ``None`` means no sibling
+        prerequisite needs a head; unobserved siblings cannot pass admission.
         """
         dependency = task_dependencies.alias("delivery_head_dependency")
         prerequisite = tasks.alias("delivery_head_prerequisite")
-        checkpoint = task_integration_checkpoints.alias("delivery_head_checkpoint")
-        receipt = task_delivery_receipts.alias("delivery_head_receipt")
         from src.integration.delivery_observer import prerequisite_observer
 
         observer = prerequisite_observer(self)
@@ -968,55 +983,8 @@ class HierarchyQueryMixin:
             if not await view.fresh() or len(heads) != 1:
                 raise ValueError("hierarchy prerequisite target moved during preparation")
             return heads.pop()
-        async with self._engine.connect() as conn:
-            task = (
-                await conn.execute(select(tasks).where(tasks.c.id == task_id))
-            ).mappings().one_or_none()
-            if task is None or task["parent_task_id"] is None:
-                return None
-            parent_branch = (
-                await conn.execute(
-                    select(tasks.c.branch_name).where(tasks.c.id == task["parent_task_id"])
-                )
-            ).scalar_one_or_none()
-            if not parent_branch:
-                return None
-            rows = (
-                await conn.execute(
-                    select(receipt.c.after_sha, receipt.c.created_at)
-                    .select_from(
-                        dependency.join(
-                            prerequisite,
-                            prerequisite.c.id == dependency.c.depends_on_task_id,
-                        )
-                        .join(checkpoint, checkpoint.c.task_id == prerequisite.c.id)
-                        .join(
-                            receipt,
-                            and_(
-                                receipt.c.source_task_id == prerequisite.c.id,
-                                receipt.c.target_task_id == task["parent_task_id"],
-                                receipt.c.repository_id == checkpoint.c.repository_id,
-                                receipt.c.target_branch == parent_branch,
-                                receipt.c.disposition == "code",
-                                receipt.c.reviewed_head_sha == checkpoint.c.checkpoint_sha,
-                                receipt.c.created_at >= func.coalesce(
-                                    integration_rework_cutoff(prerequisite.c.id),
-                                    prerequisite.c.created_at,
-                                ),
-                            ),
-                        )
-                    )
-                    .where(
-                        dependency.c.task_id == task_id,
-                        dependency.c.dep_type == DepType.BLOCKS.value,
-                        prerequisite.c.parent_task_id == task["parent_task_id"],
-                    )
-                    .order_by(receipt.c.created_at.desc(), receipt.c.id.desc())
-                )
-            ).all()
-        for head, _created_at in rows:
-            if isinstance(head, str) and len(head) == 40:
-                return head
+        # Admission already withholds sibling-dependent work without a Git view.
+        # An ordinary root has no prerequisite overlay to prepare.
         return None
 
     async def mark_container(self, task_id: str, *, conn) -> None:
@@ -1450,24 +1418,11 @@ class HierarchyQueryMixin:
                     integration_repair_operations.c.state == "completed",
                 )
                 rollover_operation = (await conn.execute(_delivery_query)).scalar_one_or_none()
-        delivered_stmt = select(task_delivery_receipts.c.source_task_id).where(
-            task_delivery_receipts.c.source_task_id.in_(ids)
-        )
-        if rollover_operation is not None:
-            # A completed aggregate can reverify without changing any
-            # delivery inside its subtree, including nested collections.
-            # Only receipts that leave the subtree fix an external identity.
-            delivered_stmt = delivered_stmt.where(
-                or_(
-                    task_delivery_receipts.c.target_task_id.is_(None),
-                    task_delivery_receipts.c.target_task_id.not_in(ids),
-                )
-            )
-        from src.integration.delivery_observer import delivery_sensitive_ids, prerequisite_observer
+        from src.integration.delivery_observer import delivery_sensitive_ids
         from src.integration.delivery_truth import MISSING_PROVENANCE, DeliveryState
 
         recovering_provenance = False
-        if prerequisite_observer(self) is not None and mutation != "archive":
+        if mutation != "archive":
             sensitive = await delivery_sensitive_ids(conn, ids, hierarchical=True)
             verified = await delivery.verified_on(conn, sensitive) if delivery is not None else {}
             own_proof = verified.get(task_id)
@@ -1495,19 +1450,8 @@ class HierarchyQueryMixin:
                 and proof.request.target_ref not in internal_refs
                 for proof in verified.values()
             )
-            if recovering_provenance:
-                # Reopening only the aggregate preserves its children's internal
-                # deliveries. An existing receipt leaving the subtree still fixes
-                # its identity even when this completion cannot be located in Git.
-                external_receipt = delivered_stmt.where(or_(
-                    task_delivery_receipts.c.target_task_id.is_(None),
-                    task_delivery_receipts.c.target_task_id.not_in(ids),
-                ))
-                delivered = delivered or (await conn.execute(external_receipt.limit(1))).first()
-        elif prerequisite_observer(self) is not None:
-            delivered = False  # Archive already proved default-target delivery above.
         else:
-            delivered = (await conn.execute(delivered_stmt.limit(1))).first()
+            delivered = False  # Archive proved default-target delivery above.
         if delivered and mutation != "archive":
             raise HierarchyError(
                 "delivery_target_fixed", f"{mutation} would change delivered branch identity"

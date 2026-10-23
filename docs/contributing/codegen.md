@@ -36,6 +36,7 @@ This page is the list, in the order a change is most likely to reach them.
 | [`docs/reference/playbook-commands/`](../reference/playbook-commands/README.md) (one page per registered command, plus the index) | The command contract registry — the generated block only | `python scripts/gen-command-docs.py` | yes |
 | [`docs/reference/configuration-schema.json`](../reference/configuration-schema.json) | `AppConfig` | `python scripts/generate-config-schema-inventory.py` | yes |
 | [`tests/selection_catalogue.json`](../../tests/selection_catalogue.json) | `tests/selection_areas.yaml` + the test modules on disk | `python scripts/generate-selection-catalogue.py` | yes |
+| `tests/integration_ownership*.json` | Authored policy and fixed historical inputs in `tests/fixtures/generated_sources/ownership/` | `python scripts/generate-recorded-artifacts.py` | yes |
 | [`src/prompts/reviewed_playbooks/`](../../src/prompts/reviewed_playbooks/) | Shipped playbook markdown, through a human review step | `python scripts/rebuild-reviewed-playbook-artifacts.py` | yes |
 | [`module-inventory.json`](../plans/documentation-overhaul/module-inventory.json), [`module-ownership.json`](../plans/documentation-overhaul/module-ownership.json) | `git ls-files` + ownership rules | `python3 docs/plans/documentation-overhaul/refresh_inventory.py` — **owning shard only**, see [below](#the-documentation-coverage-manifest) | yes |
 
@@ -47,7 +48,7 @@ check is `--check-artefacts` and belongs to the shard that owns the file.
 ## One command, and never a hand merge
 
 [`scripts/regenerate-generated.sh`](../../scripts/regenerate-generated.sh)
-runs every generator above except the TS client, the reviewed playbooks and the
+runs every generator above except the TS client and the
 coverage manifest, concurrently:
 
 ```bash
@@ -80,14 +81,36 @@ scripts/regenerate-generated.sh`, see
 [development integration](../guides/development-integration.md#conflicts-confined-to-generated-files)),
 so a conflict confined to these files never parks a candidate.
 
-The train also regenerates overlapping generated artifacts when constructing
-members, promoting children into a parent, and rebuilding accepted CI repairs
-onto newer main. It uses the exact requested merge base and a scratch tree of
-the merged sources. Generated conflicts take the current side before rebuilding;
-clean text overlaps are rebuilt too, because merged JSON can still be stale.
+The train rebuilds the entire registered generated set once when assembling a
+batch candidate, including batches whose branches changed only source files.
+Intermediate merges discard changed generated output in favor of the current
+side; additions and deletions are rebuilt too. The final sweep uses a scratch
+tree containing every member's sources and the exact requested merge bases.
+Child promotion and accepted CI-repair merges share the source merge mechanism.
 Source conflicts, failed generators and writes outside the marked paths retain
 the existing repair path. The resulting commit still requires the boundary's
 normal publication authority and verification.
+
+Ownership policy and historical measurements are authored inputs, not new
+measurements at assembly time. Their canonical copies live in
+`tests/fixtures/generated_sources/ownership/`; generation reproduces the existing
+manifest and historical report without changing ceilings, revisions or fingerprints.
+
+Reviewed playbooks similarly have explicit canonical inputs under
+`tests/fixtures/generated_sources/playbooks/`: a readable `definition.json`, the
+approved source snapshot, manifest/provenance, and diagnostics. `index.json`
+names their fixture, shipped and operator-importable projections. These inputs
+merge normally; an input conflict requires resolution. The assembly generator
+serializes approved definitions canonically and reproduces all bundle copies,
+preserving timestamps and approval hashes byte for byte. It refuses missing
+inputs or definitions/source snapshots that no longer match their manifest
+bindings. It never compiles new policy or creates an approval.
+
+`scripts/rebuild-reviewed-playbook-artifacts.py` remains the authoring command:
+after a deliberate rebuild it records the inputs and refreshes their projections.
+Review the semantic diff and approval/provenance as before. Draft `--out` builds
+and `--check` leave canonical inputs alone. Never resolve a canonical input
+conflict by selecting a generated copy or recomputing historical measurements.
 
 Isolated train regeneration uses a fixed tool lookup order: the daemon's
 interpreter directory, the daemon user's `~/.local/bin`, then `/usr/local/bin`,
@@ -345,12 +368,25 @@ The producer audit records its existing human apply authority and source/target
 fences, plus the `explain_task` addition of the blocker action; older evidence
 files remain unchanged.
 
+The fast-smooth integration epic, refreshed onto `f88abe7fd245da853bd328187f01beda41e02e41`,
+adds `integration_cutover_containment` (typed, local operator only) and the
+daemon-only `integration_reconcile_git_truth` (system scope, like
+`integration_train_tick`). `epic-integration-contract-changes.json` records both
+transport definitions, the typed contract fingerprint and the chained catalogue
+digest; removing exactly those two fallback definitions must reproduce the
+withheld-source catalogue byte for byte.
 The batch repair change at `67575c6b9a43f820d824ff2bdb7d6be41ec21db3`
 records its optional `task_set.repair_batch` argument separately in
 `batch-repair-contract-changes.json`. Removing exactly that property restores
 the publication-delegation catalogue bytes. The producer audit also records
 the reserved metadata, active-mode and assignment validation refusals, with
 worker publication tests covering the supervisor/operator authority boundary.
+
+The epic refresh merge records both frozen input catalogues in
+`epic-main-refresh-contract-changes.json`. Its deltas reconstruct either input
+byte for byte before the earlier recording chains are checked. The epic keeps
+its existing hibernation recording; the upstream recording is retained unchanged
+as `hibernation-main-refresh-contract-changes.json`.
 
 **Generated invocation remains disabled pending private-value storage and safe
 inspection (A3).** There is no runtime bypass flag. The A2 producer audit is
@@ -361,9 +397,21 @@ they never silently expand the public schema.
 
 The restart hold correction records `restart_task`'s optional `override_hold` and
 `reason` arguments in `restart-hold-contract-changes.json`. Removing exactly that
-transport delta restores the supervisor-health catalogue bytes. The producer audit
+transport delta restores the pre-hold dev catalogue bytes. The producer audit
 pins the explicit refusal and delegated restart paths; recovery tests cover exact
 hold fencing, release authority and recorded provenance.
+
+After reviewing a handler's return branches and contract fields, refresh its
+source digest with `python scripts/refresh-command-audit-digest.py --command explain_task --write`
+(repeat `--command` for each reviewed handler). The default mode, also available
+as `--check`, reports digest drift without writing. This command updates only
+the selected handler digests; return
+branches and other audit evidence stay authored. A reviewed helper requires
+`--helper <existing-helper-name>` with exactly one `--command`; this updates only
+that command's existing helper pin, preserving the handler and other helper
+digests. Repeat the command explicitly if multiple audit rows pin that helper.
+Unknown selections are refused. This workflow is separate from bulk
+generated-artifact regeneration.
 
 Generated results must be JSON objects with an actual boolean `success` at
 every producer exit, including early refusals and delegated helpers. Only the

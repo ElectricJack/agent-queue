@@ -215,7 +215,7 @@ async def register_wait(
         source_watermark = await read_source_watermark()
     if type(source_watermark) is not int or source_watermark < 0:
         raise ValueError("source watermark must be a nonnegative committed sequence bound")
-    await conn.execute(select(func.pg_advisory_xact_lock(REGISTRATION_LOCK)))
+    await lock_graph(conn)  # REGISTRATION_LOCK is the graph fence; waiting is bounded
     scope = await verify_owner(conn, scope, lock_owner=False)
     cond = registry.normalise(condition)
     request_hash = hashlib.sha256(
@@ -336,7 +336,7 @@ async def register_wait(
         ceiling_anchor_at = await ceiling_anchor(conn, scope, now=now, policy=policy)
     ceiling_at = (
         ceiling_anchor_at + policy.in_place_ceiling_seconds
-        if decision.mode == "in_place" and cond.kind not in {"human", "resource"}
+        if decision.mode == "in_place" and cond.kind not in {"human", "resource", "close_merge"}
         else None
     )
     wait_id = str(uuid.uuid4())
@@ -737,7 +737,8 @@ async def wait_explain(
         ):
             raise WaitError("wait.not_found", "wait owner is outside the query scope or missing")
         query = query.where(
-            wait_records.c.owner_id == task_id, wait_records.c.owner_kind.in_(("task", "scheduler"))
+            wait_records.c.owner_id == task_id,
+            wait_records.c.owner_kind.in_(("task", "scheduler", "integration")),
         )
         if not history:
             query = query.where(wait_records.c.outcome == "pending")

@@ -47,6 +47,18 @@ class TestEventSchemasStructure:
 class TestExpectedEventTypes:
     """Verify that all known event types from the codebase are registered."""
 
+    def test_publication_notification_requires_verified_ref_facts(self):
+        event = "integration.publication_verified"
+        payload = {"project_id": "p", "batch_id": "b", "revision": 0,
+                   "repository_id": "repo", "target_ref": "refs/heads/main",
+                   "head_sha": "published", "candidate_sha": "tested",
+                   "publication_verified": True}
+        assert not validate_payload(event, payload, strict_extras=True)
+        for field in payload:
+            assert validate_payload(event, {k: v for k, v in payload.items() if k != field})
+        assert validate_payload(event, {**payload, "revision": "0"})
+        assert validate_payload(event, {**payload, "intent_id": "invented"}, strict_extras=True)
+
     def test_batch_wakeups_bind_structure_and_allow_unassigned_reviewer(self):
         from src.event_schemas import resolve_event_path
 

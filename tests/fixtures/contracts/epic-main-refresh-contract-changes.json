@@ -1,0 +1,3100 @@
+{
+  "source_base": "cbfd455b0e9f053854a2c1becfa1efaeef231582",
+  "merged_source": "c09b344de21c6bfc42d6c7edae95f1466b75637a",
+  "reason": "Preserve both frozen command catalogues and record only their combined surface delta. Historical recordings are unchanged; main refresh retains publication delegation, optional batch repair assignment, and supervisor health.",
+  "previous_cli_catalogue_sha256": "8f0a627b01e1091c48ef919f01c6ea2aaacfa71be5af4ed6093c23991f4f1c56",
+  "source_cli_catalogue_sha256": "27eea7007f305f62593d9c853a144d1cbd21a3894cccc032106de692d8566dc8",
+  "cli_catalogue_sha256": "4d9b24e03ed815ee0e80a8376465cb07557b0489561d44c9e820d917e7ed47ad",
+  "contracts": {},
+  "transport_definitions": {
+    "supervisor_restart": {
+      "previous_sha256": "65109f739f0012e33def3a34194a6557e6dcbdb0a5f50cae7587bdb490cc96cb",
+      "sha256": "4beda7621b9a70b76a16b3eac3ae324ab770b8db5fea8c7afcf88319f9838e49"
+    },
+    "task_set": {
+      "previous_sha256": "fca6ae2ce029e8d785f526b7271c43adbf1b44907d2b8406a82c824e1ffbc9e2",
+      "sha256": "6e7cde32ad7b5dacccbfd3312b8ff2e8170de41e1b88f150d1793467cc1402bb"
+    },
+    "git_push": {
+      "previous_sha256": "70738982d0ed3acb7deb115500e3b860aa832f2e257e85aa4cceeabe46c9a339",
+      "sha256": "8818ae51272db5c94dc5ae13cc85dbec87b54c3d65cec0f452e3dd2d8d04d6fc"
+    },
+    "push_branch": {
+      "previous_sha256": "9b588f1281a5b102890a0712e5d29ad03021a4b721b04481d939f2b3dff794d2",
+      "sha256": "9f11fecdc8618b9a058e31f0ed586b7d809155cda88e157edbacd07e6f0c1c36"
+    }
+  },
+  "catalogue_sections": {
+    "explicit": {
+      "list": true,
+      "previous_order": [
+        "policy_export",
+        "policy_diff",
+        "policy_apply",
+        "list_projects",
+        "repair_repository_checkout",
+        "repair_workspace_checkout",
+        "project_doctor",
+        "create_project",
+        "pause_project",
+        "resume_project",
+        "set_project_constraint",
+        "release_project_constraint",
+        "edit_project",
+        "bind_project_repository",
+        "get_git_identity",
+        "set_git_identity",
+        "set_default_branch",
+        "get_project",
+        "list_tasks",
+        "list_active_tasks_all_projects",
+        "task_recent_activity",
+        "get_task_tree",
+        "task_children",
+        "task_progress",
+        "reparent_task",
+        "create_task",
+        "ensure_task",
+        "get_downstream_tasks",
+        "task_route",
+        "task_route_override",
+        "add_workspace",
+        "list_workspaces",
+        "list_project_roots",
+        "browse_project_root",
+        "get_github_auth_status",
+        "list_github_owners",
+        "search_github_repositories",
+        "onboard_project",
+        "get_project_onboarding",
+        "list_workspace_kinds",
+        "find_merge_conflict_workspaces",
+        "workspace_doctor",
+        "workspace_cutover",
+        "workspace_retire_claim",
+        "workspace_clear_sentinel",
+        "workspace_reap",
+        "release_workspace",
+        "remove_workspace",
+        "edit_workspace",
+        "queue_sync_workspaces",
+        "list_agents",
+        "get_agent",
+        "create_agent",
+        "edit_agent",
+        "delete_agent",
+        "session_prune",
+        "session_cleanup",
+        "session_input",
+        "supervisor_restart",
+        "start_agent_terminal",
+        "get_task",
+        "edit_task",
+        "pause_task",
+        "resume_task",
+        "discard_pause_checkpoint",
+        "stop_task",
+        "task_recover",
+        "restart_task",
+        "reopen_with_feedback",
+        "remove_task",
+        "delete_task",
+        "archive_task",
+        "list_archived",
+        "skip_task",
+        "get_task_dependencies",
+        "add_dependency",
+        "remove_dependency",
+        "get_chain_health",
+        "get_status",
+        "list_event_triggers",
+        "get_recent_events",
+        "read_logs",
+        "get_task_result",
+        "run_command",
+        "get_stuck_tasks",
+        "delete_project",
+        "get_token_usage",
+        "token_audit",
+        "get_chat_analyzer_metrics",
+        "list_prompts",
+        "read_prompt",
+        "render_prompt",
+        "restart_daemon",
+        "orchestrator_control",
+        "get_agent_error",
+        "list_profiles",
+        "create_profile",
+        "get_profile",
+        "edit_profile",
+        "delete_profile",
+        "list_available_tools",
+        "check_profile",
+        "profile_audit",
+        "profile_drift",
+        "profile_reseed",
+        "install_profile",
+        "export_profile",
+        "import_profile",
+        "scan_stub_staleness",
+        "get_config",
+        "get_config_schema",
+        "preview_portable_config",
+        "export_portable_config",
+        "import_portable_config",
+        "update_config",
+        "reload_config",
+        "claude_usage",
+        "archive_settings",
+        "provide_input",
+        "set_task_status",
+        "task_deps",
+        "discord_purge_channel",
+        "shutdown",
+        "update_and_restart",
+        "find_applicable_tool",
+        "run_playbook",
+        "dry_run_playbook",
+        "show_playbook_graph",
+        "list_playbooks",
+        "list_playbook_runs",
+        "inspect_playbook_run",
+        "resume_playbook",
+        "cancel_playbook_run",
+        "playbook_health",
+        "playbook_graph_view",
+        "playbook_commands",
+        "playbook_v2_graph",
+        "playbook_graph_layout_save",
+        "playbook_activation_health",
+        "playbook_activate",
+        "playbook_artifacts",
+        "playbook_artifact_diff",
+        "playbook_pending_events",
+        "playbook_pending_event_action",
+        "playbook_run_overlay",
+        "get_playbook_source",
+        "playbook_source_resync",
+        "update_playbook_source",
+        "playbook_delete",
+        "set_playbook_enabled",
+        "show_effective_profile",
+        "list_mcp_servers",
+        "get_mcp_server",
+        "list_mcp_tool_catalog",
+        "probe_mcp_server",
+        "create_mcp_server",
+        "edit_mcp_server",
+        "delete_mcp_server",
+        "get_benchmark_report",
+        "doctor",
+        "get_costs",
+        "db_preflight_hierarchy",
+        "get_schema",
+        "project_ready",
+        "task_show",
+        "task_comment",
+        "benchmark_stage_record",
+        "task_comments",
+        "task_comment_edit",
+        "task_comment_delete",
+        "task_subtask_add",
+        "task_subtasks",
+        "task_subtask_get",
+        "task_subtask_update",
+        "phase_create",
+        "phase_list",
+        "task_set",
+        "task_close",
+        "task_heartbeat",
+        "subagent_event",
+        "task_claim",
+        "task_handoff",
+        "message_send",
+        "message_reply",
+        "message_inbox",
+        "message_list",
+        "message_status",
+        "agent_message",
+        "memory_save",
+        "memory_search",
+        "create_task_graph",
+        "formula_list",
+        "formula_show",
+        "formula_cook",
+        "graph_layout_rebuild",
+        "graph_tidy",
+        "graph_reflow_status",
+        "ci_completed_status",
+        "ci_baseline_status",
+        "ci_repair_adopt",
+        "provider_usage_probe",
+        "provider_status",
+        "provider_held_tasks",
+        "provider_allocation_status",
+        "provider_allocation_preview",
+        "provider_allocation_apply",
+        "provider_history",
+        "provider_recheck",
+        "provider_set_state",
+        "provider_reroute",
+        "provider_reroute_undo",
+        "pr_merge",
+        "spec_approve",
+        "task_batch_propose",
+        "task_batch_update",
+        "task_batch_commit",
+        "task_batch_validate",
+        "task_batch_discard",
+        "playbook_v2_validate",
+        "playbook_v2_propose",
+        "playbook_v2_import",
+        "playbook_v2_shadow_compile",
+        "list_intelligence_classes",
+        "edit_intelligence_class",
+        "delete_intelligence_class",
+        "pool_status",
+        "pool_rename",
+        "pool_scale",
+        "pool_set_enabled",
+        "pool_set_lifecycle",
+        "question_list",
+        "question_answer",
+        "question_escalate",
+        "review_attachment_add",
+        "review_attachment_list",
+        "review_submit",
+        "review_show",
+        "review_list",
+        "review_reopen",
+        "review_withdraw",
+        "gate_reopen",
+        "ask_prepare_decision",
+        "ask_decide",
+        "ask_retry_operation",
+        "review_feedback_complete",
+        "review_decide",
+        "approve_pull_request",
+        "review_comment",
+        "review_dispatch",
+        "review_delegate",
+        "review_import_edits",
+        "github_issue_triage",
+        "github_issue_fix_approved",
+        "github_issue_close_rejected",
+        "github_issue_rejection",
+        "dashboard_state_list",
+        "dashboard_state_get",
+        "dashboard_state_put",
+        "dashboard_state_reset",
+        "escalation_create",
+        "escalation_list",
+        "escalation_get",
+        "escalation_reply",
+        "escalation_update",
+        "escalation_resolve",
+        "escalation_apply_reply",
+        "escalation_sweep",
+        "digest_preview",
+        "digest_status",
+        "digest_facts",
+        "digest_post",
+        "digest_request",
+        "morning_report_tick",
+        "report_get",
+        "report_list",
+        "morning_report_preview",
+        "report_reconcile",
+        "report_request",
+        "report_brief",
+        "report_submit",
+        "supervisor_inbox_post",
+        "supervisor_inbox_reply",
+        "supervisor_inbox_status",
+        "supervisor_inbox_history",
+        "message_wait",
+        "wait_register",
+        "wait_get",
+        "wait_list",
+        "wait_cancel",
+        "integration_batch_fix",
+        "collaboration_create",
+        "collaboration_accept",
+        "collaboration_get",
+        "collaboration_list",
+        "collaboration_close",
+        "cron_register",
+        "cron_get",
+        "cron_list",
+        "cron_cancel",
+        "job_submit",
+        "job_submit_integration",
+        "job_get",
+        "job_list",
+        "job_cancel",
+        "job_result",
+        "job_logs",
+        "job_retain",
+        "artifact_verify",
+        "test_select",
+        "test_selection_recheck",
+        "test_selection_observe",
+        "test_selection_show",
+        "test_selection_list",
+        "test_selection_policy_show",
+        "test_selection_promote",
+        "test_selection_revoke",
+        "knowledge_create",
+        "knowledge_list",
+        "knowledge_show",
+        "knowledge_update",
+        "knowledge_history",
+        "knowledge_diff",
+        "knowledge_retire",
+        "knowledge_restore",
+        "record_show",
+        "record_search",
+        "knowledge_export",
+        "record_repair",
+        "record_capabilities",
+        "link_create",
+        "link_list",
+        "link_remove",
+        "knowledge_propose",
+        "knowledge_proposal_show",
+        "knowledge_proposal_decide",
+        "knowledge_verify",
+        "knowledge_authority_grant",
+        "knowledge_authority_revoke",
+        "knowledge_share",
+        "knowledge_redact",
+        "knowledge_generation_tick",
+        "knowledge_generation_status",
+        "knowledge_create_task",
+        "knowledge_cite",
+        "knowledge_context_deliver",
+        "decision_record",
+        "decision_list",
+        "operator_execute",
+        "operator_preflight",
+        "wait_ack",
+        "wait_checkpoint",
+        "wait_decide",
+        "wait_explain",
+        "wait_graph",
+        "wait_lift",
+        "playbook_script_run",
+        "ensure_spec_ingest",
+        "ensure_fidelity_review",
+        "approved_spec_packet",
+        "spec_ingest_reconcile",
+        "batch_reconcile",
+        "spec_ingest_legacy_inventory",
+        "ask_list",
+        "ask_show",
+        "ask_history",
+        "ask_reply",
+        "ask_apply_input",
+        "ask_discussion_reply",
+        "ask_update_context",
+        "ask_reconcile",
+        "ask_legacy_reset",
+        "ask_cutover",
+        "ask_cutover_status",
+        "ask_repair_delivery",
+        "ask_intake",
+        "ask_button"
+      ],
+      "entries": {
+        "supervisor_restart": {
+          "previous": {
+            "name": "supervisor_restart",
+            "description": "Restart a named supervisor through AQ with current profile permissions, model and effort. Starts a fresh conversation by default; --resume resumes its prior conversation. Requires global admin.",
+            "input_schema": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "default": "supervisor-global",
+                  "description": "Supervisor messaging address (supervisor-global or supervisor-<project>)"
+                },
+                "resume": {
+                  "type": "boolean",
+                  "default": false,
+                  "description": "Resume the prior conversation instead of starting fresh"
+                },
+                "session_id": {
+                  "type": "string",
+                  "description": "Restart only if this is still the current session"
+                }
+              }
+            }
+          },
+          "current": {
+            "name": "supervisor_restart",
+            "description": "Restart a named supervisor through AQ with current profile permissions, model and effort. Starts a fresh conversation by default; --resume resumes its prior conversation. Requires a local operator or live supervisor within the target project scope.",
+            "input_schema": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "default": "supervisor-global",
+                  "description": "Supervisor messaging address (supervisor-global or supervisor-<project>)"
+                },
+                "resume": {
+                  "type": "boolean",
+                  "default": false,
+                  "description": "Resume the prior conversation instead of starting fresh"
+                },
+                "session_id": {
+                  "type": "string",
+                  "description": "Restart only if this is still the current session"
+                }
+              }
+            }
+          }
+        },
+        "task_set": {
+          "previous": {
+            "name": "task_set",
+            "description": "Write work-state fields on a task and return the updated task: description, branch, PR URL, work_dir, a note, label add/remove, and arbitrary metadata. Never performs a status transition (the state machine belongs to work-graph's task_close \u2014 use the lifecycle commands for that).  Returns 'fields_changed' listing what was written; a call with no recognised field is an error rather than a no-op.  Backs `aq task set`.",
+            "input_schema": {
+              "type": "object",
+              "properties": {
+                "task_id": {
+                  "type": "string",
+                  "description": "Task id to update."
+                },
+                "description": {
+                  "type": "string",
+                  "description": "Replace the canonical task description, preserving requirements and adding durable findings."
+                },
+                "expected_description": {
+                  "type": "string",
+                  "description": "Exact description previously read; rejects concurrent edits before changing any fields."
+                },
+                "branch": {
+                  "type": "string",
+                  "description": "Branch name for this task's work (optional)."
+                },
+                "pr_url": {
+                  "type": "string",
+                  "description": "Pull-request URL (optional)."
+                },
+                "work_dir": {
+                  "type": "string",
+                  "description": "Directory the work happens in (optional; recorded as task metadata)."
+                },
+                "note": {
+                  "type": "string",
+                  "description": "Free-text note appended to the task's context (optional)."
+                },
+                "labels_add": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "Labels to add (optional)."
+                },
+                "labels_remove": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "Labels to remove (optional)."
+                },
+                "meta": {
+                  "type": "object",
+                  "description": "Arbitrary key/value task metadata to set (optional)."
+                },
+                "claim_epoch": {
+                  "type": "integer",
+                  "description": "Current claim epoch for a pool-session caller (optional \u2014 the CLI reads it from .aq/claim.json)."
+                }
+              },
+              "required": [
+                "task_id"
+              ]
+            }
+          },
+          "current": {
+            "name": "task_set",
+            "description": "Write work-state fields on a task and return the updated task: description, branch, PR URL, work_dir, a note, label add/remove, and arbitrary metadata. Never performs a status transition (the state machine belongs to work-graph's task_close \u2014 use the lifecycle commands for that).  Returns 'fields_changed' listing what was written; a call with no recognised field is an error rather than a no-op.  Backs `aq task set`.",
+            "input_schema": {
+              "type": "object",
+              "properties": {
+                "task_id": {
+                  "type": "string",
+                  "description": "Task id to update."
+                },
+                "description": {
+                  "type": "string",
+                  "description": "Replace the canonical task description, preserving requirements and adding durable findings."
+                },
+                "expected_description": {
+                  "type": "string",
+                  "description": "Exact description previously read; rejects concurrent edits before changing any fields."
+                },
+                "branch": {
+                  "type": "string",
+                  "description": "Branch name for this task's work (optional)."
+                },
+                "repair_batch": {
+                  "type": "string",
+                  "description": "Supervisor/operator only: assign push authority for this open batch's candidate branch, preserving the task's canonical branch."
+                },
+                "pr_url": {
+                  "type": "string",
+                  "description": "Pull-request URL (optional)."
+                },
+                "work_dir": {
+                  "type": "string",
+                  "description": "Directory the work happens in (optional; recorded as task metadata)."
+                },
+                "note": {
+                  "type": "string",
+                  "description": "Free-text note appended to the task's context (optional)."
+                },
+                "labels_add": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "Labels to add (optional)."
+                },
+                "labels_remove": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "Labels to remove (optional)."
+                },
+                "meta": {
+                  "type": "object",
+                  "description": "Arbitrary key/value task metadata to set (optional)."
+                },
+                "claim_epoch": {
+                  "type": "integer",
+                  "description": "Current claim epoch for a pool-session caller (optional \u2014 the CLI reads it from .aq/claim.json)."
+                }
+              },
+              "required": [
+                "task_id"
+              ]
+            }
+          }
+        }
+      }
+    },
+    "fallback": {
+      "list": false,
+      "previous_order": [
+        "advance_workflow_stage",
+        "create_workflow",
+        "cron_delivery_begin",
+        "cron_delivery_finish",
+        "delivery_receipts",
+        "doctor_catalog",
+        "doctor_run",
+        "explain_task",
+        "gate_create",
+        "gate_list",
+        "gate_resolve",
+        "gate_show",
+        "get_workflow",
+        "integration_abort_batch",
+        "integration_app_verify",
+        "integration_authorize_root",
+        "integration_backmerge_source",
+        "integration_checkpoint_parent",
+        "integration_ci_evidence",
+        "integration_cleanup",
+        "integration_clear_retained_recovery",
+        "integration_close_delivered_pr",
+        "integration_complete_parent",
+        "integration_cutover",
+        "integration_cutover_containment",
+        "integration_cutover_plan",
+        "integration_delivery_readiness",
+        "integration_eject",
+        "integration_engine_transfer",
+        "integration_file_children",
+        "integration_migrate_provenance_refs",
+        "integration_mutate_hierarchy",
+        "integration_off",
+        "integration_parent_verify",
+        "integration_pause_batch",
+        "integration_promotion_notes_input",
+        "integration_promotion_policy_input",
+        "integration_promotion_publish",
+        "integration_quiesce",
+        "integration_reconcile_expired_mutation",
+        "integration_reconcile_git_truth",
+        "integration_record_delivered",
+        "integration_record_noop",
+        "integration_record_repair",
+        "integration_record_root_noop",
+        "integration_recover_completed_container",
+        "integration_redrive_child",
+        "integration_redrive_root",
+        "integration_reevaluate_repair",
+        "integration_refresh_epic",
+        "integration_release",
+        "integration_release_held_gate",
+        "integration_release_owner",
+        "integration_release_stale_owners",
+        "integration_release_withheld_source",
+        "integration_reopen_collection",
+        "integration_repair_close_current",
+        "integration_repair_dispatch",
+        "integration_repair_start",
+        "integration_repair_timeout",
+        "integration_reserve_owner",
+        "integration_restore_task_origin",
+        "integration_resume_batch",
+        "integration_retire_legacy_park",
+        "integration_retire_origin",
+        "integration_reverify_epic",
+        "integration_seal_now",
+        "integration_settle_batch",
+        "integration_status",
+        "integration_supersede_completion",
+        "integration_train_tick",
+        "integration_transfer_owner",
+        "integration_trust_manifest",
+        "job_reconcile",
+        "knowledge_import",
+        "list_workflows",
+        "load_tools",
+        "migrate_profiles",
+        "object_checkpoint_read",
+        "object_loop_inputs",
+        "object_loop_reconcile",
+        "object_loop_start",
+        "object_score_record",
+        "observation_snapshot_cleanup",
+        "observe_integration_source_ci",
+        "playbook_state_delete",
+        "playbook_state_get",
+        "playbook_state_inspect",
+        "playbook_state_list",
+        "playbook_state_notify",
+        "playbook_state_reset",
+        "playbook_state_set",
+        "plugin_config",
+        "plugin_disable",
+        "plugin_enable",
+        "plugin_info",
+        "plugin_install",
+        "plugin_list",
+        "plugin_prompts",
+        "plugin_reload",
+        "plugin_remove",
+        "plugin_reset_prompts",
+        "plugin_update",
+        "prime",
+        "promote_approve",
+        "promote_cancel",
+        "promote_hotfix",
+        "promote_list",
+        "promote_prepare",
+        "promote_repair",
+        "promote_request",
+        "promote_rulesets",
+        "promote_schema",
+        "promote_status",
+        "promote_validate",
+        "provider_availability_notify",
+        "reconcile_agent_cron",
+        "reconcile_agent_waits",
+        "reconcile_collaborations",
+        "scheduler_wait_sync",
+        "session_attach",
+        "session_drain_ack",
+        "session_kill",
+        "session_list",
+        "session_logs",
+        "session_nudge",
+        "session_peek",
+        "session_show",
+        "session_sleep",
+        "session_token",
+        "session_wake",
+        "task_batch_review_record",
+        "task_failure_triage_notify",
+        "task_recovery_notify",
+        "task_route_apply",
+        "task_route_plan",
+        "vault_rebuild_index",
+        "wait_deadline_fire",
+        "wait_evict",
+        "wait_legacy_bridge",
+        "wait_resume_dispatch",
+        "wait_sleep_decide",
+        "wait_source_commit",
+        "workflow_pipeline_view"
+      ],
+      "entries": {
+        "integration_delegate_publication": {
+          "previous": null,
+          "current": {
+            "name": "integration_delegate_publication",
+            "description": "Authenticated hierarchical integration operational control.",
+            "input_schema": {
+              "additionalProperties": false,
+              "properties": {
+                "id": {
+                  "minLength": 1,
+                  "title": "Id",
+                  "type": "string"
+                },
+                "project_id": {
+                  "minLength": 1,
+                  "title": "Project Id",
+                  "type": "string"
+                },
+                "repository_id": {
+                  "minLength": 1,
+                  "title": "Repository Id",
+                  "type": "string"
+                },
+                "task_id": {
+                  "minLength": 1,
+                  "title": "Task Id",
+                  "type": "string"
+                },
+                "session_id": {
+                  "minLength": 1,
+                  "title": "Session Id",
+                  "type": "string"
+                },
+                "claim_epoch": {
+                  "minimum": 0,
+                  "title": "Claim Epoch",
+                  "type": "integer"
+                },
+                "target_branch": {
+                  "minLength": 1,
+                  "title": "Target Branch",
+                  "type": "string"
+                },
+                "expected_target_oid": {
+                  "title": "Expected Target Oid",
+                  "type": "string"
+                },
+                "expected_owner_fence": {
+                  "minimum": 0,
+                  "title": "Expected Owner Fence",
+                  "type": "integer"
+                },
+                "ttl_seconds": {
+                  "default": 480,
+                  "maximum": 480,
+                  "minimum": 1,
+                  "title": "Ttl Seconds",
+                  "type": "integer"
+                },
+                "reason": {
+                  "minLength": 1,
+                  "title": "Reason",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "project_id",
+                "repository_id",
+                "task_id",
+                "session_id",
+                "claim_epoch",
+                "target_branch",
+                "expected_target_oid",
+                "expected_owner_fence",
+                "reason"
+              ],
+              "title": "IntegrationDelegatePublicationArgs",
+              "type": "object"
+            }
+          }
+        },
+        "integration_revoke_publication": {
+          "previous": null,
+          "current": {
+            "name": "integration_revoke_publication",
+            "description": "Authenticated hierarchical integration operational control.",
+            "input_schema": {
+              "additionalProperties": false,
+              "properties": {
+                "id": {
+                  "minLength": 1,
+                  "title": "Id",
+                  "type": "string"
+                },
+                "project_id": {
+                  "minLength": 1,
+                  "title": "Project Id",
+                  "type": "string"
+                },
+                "reason": {
+                  "minLength": 1,
+                  "title": "Reason",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "project_id",
+                "reason"
+              ],
+              "title": "IntegrationRevokePublicationArgs",
+              "type": "object"
+            }
+          }
+        }
+      }
+    },
+    "internal": {
+      "list": true,
+      "previous_order": [
+        "files",
+        "git",
+        "notes",
+        "vibecop"
+      ],
+      "entries": {
+        "git": {
+          "previous": [
+            {
+              "name": "get_git_status",
+              "description": "Get git status for all workspaces in a project. Shows branch, uncommitted changes, recent commits, ahead/behind counts, and stash count.",
+              "input_schema": {
+                "type": "object",
+                "properties": {
+                  "project_id": {
+                    "type": "string",
+                    "description": "Project ID"
+                  }
+                },
+                "required": [
+                  "project_id"
+                ]
+              }
+            },
+            {
+              "name": "git_commit",
+              "description": "Stage all changes and create a commit.",
+              "input_schema": {
+                "type": "object",
+                "properties": {
+                  "message": {
+                    "type": "string",
+                    "description": "Commit message"
+                  },
+                  "project_id": {
+                    "type": "string",
+                    "description": "Project ID"
+                  },
+                  "workspace": {
+                    "type": "string",
+                    "description": "Workspace name or ID (optional)"
+                  }
+                },
+                "required": [
+                  "message"
+                ]
+              }
+            },
+            {
+              "name": "git_pull",
+              "description": "Pull (fetch + merge) from the remote origin.",
+              "input_schema": {
+                "type": "object",
+                "properties": {
+                  "project_id": {
+                    "type": "string",
+                    "description": "Project ID"
+                  },
+                  "branch": {
+                    "type": "string",
+                    "description": "Branch to pull (optional, defaults to current)"
+                  },
+                  "workspace": {
+                    "type": "string",
+                    "description": "Workspace name or ID (optional)"
+                  }
+                }
+              }
+            },
+            {
+              "name": "git_push",
+              "description": "Push a branch to origin; an explicit expected remote OID permits a guarded rewrite.",
+              "input_schema": {
+                "type": "object",
+                "properties": {
+                  "project_id": {
+                    "type": "string",
+                    "description": "Project ID"
+                  },
+                  "branch": {
+                    "type": "string",
+                    "description": "Branch to push (optional; defaults to the held task's branch for a worker session, else the current branch)"
+                  },
+                  "expected_remote_oid": {
+                    "type": "string",
+                    "description": "Exact remote branch OID expected before the push (40 hex digits); the push may then rewrite the branch, and is refused if the remote holds anything else. All zeros means the branch must still be absent."
+                  },
+                  "workspace": {
+                    "type": "string",
+                    "description": "Workspace name or ID (optional)"
+                  }
+                }
+              }
+            },
+            {
+              "name": "git_create_branch",
+              "description": "Create and switch to a new git branch.",
+              "input_schema": {
+                "type": "object",
+                "properties": {
+                  "branch_name": {
+                    "type": "string",
+                    "description": "New branch name"
+                  },
+                  "project_id": {
+                    "type": "string",
+                    "description": "Project ID"
+                  },
+                  "workspace": {
+                    "type": "string",
+                    "description": "Workspace name or ID (optional)"
+                  }
+                },
+                "required": [
+                  "branch_name"
+                ]
+              }
+            },
+            {
+              "name": "git_merge",
+              "description": "Merge a branch into the default branch.",
+              "input_schema": {
+                "type": "object",
+                "properties": {
+                  "branch_name": {
+                    "type": "string",
+                    "description": "Branch to merge"
+                  },
+                  "default_branch": {
+                    "type": "string",
+                    "description": "Target branch (default: project default)"
+                  },
+                  "project_id": {
+                    "type": "string",
+                    "description": "Project ID"
+                  },
+                  "workspace": {
+                    "type": "string",
+                    "description": "Workspace name or ID (optional)"
+                  }
+                },
+                "required": [
+                  "branch_name"
+                ]
+              }
+            },
+            {
+              "name": "git_create_pr",
+              "description": "Create a GitHub pull request using the gh CLI.",
+              "input_schema": {
+                "type": "object",
+                "properties": {
+                  "title": {
+                    "type": "string",
+                    "description": "PR title"
+                  },
+                  "body": {
+                    "type": "string",
+                    "description": "PR body/description"
+                  },
+                  "branch": {
+                    "type": "string",
+                    "description": "Source branch (default: the held task's branch for a worker session, else the current branch)"
+                  },
+                  "base": {
+                    "type": "string",
+                    "description": "Target branch (default: project default)"
+                  },
+                  "project_id": {
+                    "type": "string",
+                    "description": "Project ID"
+                  },
+                  "workspace": {
+                    "type": "string",
+                    "description": "Workspace name or ID (optional)"
+                  }
+                },
+                "required": [
+                  "title"
+                ]
+              }
+            },
+            {
+              "name": "git_changed_files",
+              "description": "List files changed compared to a base branch.",
+              "input_schema": {
+                "type": "object",
+                "properties": {
+                  "base_branch": {
+                    "type": "string",
+                    "description": "Base revision to compare against (default: project default branch). Accepts a branch name or a revision expression such as 'HEAD~1', 'HEAD^' or 'main@{1}'."
+                  },
+                  "project_id": {
+                    "type": "string",
+                    "description": "Project ID"
+                  },
+                  "workspace": {
+                    "type": "string",
+                    "description": "Workspace name or ID (optional)"
+                  }
+                }
+              }
+            },
+            {
+              "name": "git_log",
+              "description": "Show recent commit log.",
+              "input_schema": {
+                "type": "object",
+                "properties": {
+                  "project_id": {
+                    "type": "string",
+                    "description": "Project ID"
+                  },
+                  "count": {
+                    "type": "integer",
+                    "description": "Number of commits (default 10)",
+                    "default": 10
+                  },
+                  "workspace": {
+                    "type": "string",
+                    "description": "Workspace name or ID (optional)"
+                  }
+                },
+                "required": [
+                  "project_id"
+                ]
+              }
+            },
+            {
+              "name": "git_diff",
+              "description": "Show diff of the working tree or against a base branch.",
+              "input_schema": {
+                "type": "object",
+                "properties": {
+                  "project_id": {
+                    "type": "string",
+                    "description": "Project ID"
+                  },
+                  "base_branch": {
+                    "type": "string",
+                    "description": "Base revision to diff against (optional; defaults to a working-tree diff). Accepts a branch name or a revision expression such as 'HEAD~1', 'HEAD^' or 'main@{1}'."
+                  },
+                  "workspace": {
+                    "type": "string",
+                    "description": "Workspace name or ID (optional)"
+                  }
+                },
+                "required": [
+                  "project_id"
+                ]
+              }
+            },
+            {
+              "name": "git_branch",
+              "description": "List branches or create a new branch. If 'name' is provided, creates and checks out; otherwise lists branches.",
+              "input_schema": {
+                "type": "object",
+                "properties": {
+                  "project_id": {
+                    "type": "string",
+                    "description": "Project ID"
+                  },
+                  "name": {
+                    "type": "string",
+                    "description": "New branch name (optional -- omit to list)"
+                  },
+                  "workspace": {
+                    "type": "string",
+                    "description": "Workspace name or ID (optional)"
+                  }
+                },
+                "required": [
+                  "project_id"
+                ]
+              }
+            },
+            {
+              "name": "git_checkout",
+              "description": "Switch to an existing branch.",
+              "input_schema": {
+                "type": "object",
+                "properties": {
+                  "project_id": {
+                    "type": "string",
+                    "description": "Project ID"
+                  },
+                  "branch": {
+                    "type": "string",
+                    "description": "Branch name to switch to"
+                  },
+                  "workspace": {
+                    "type": "string",
+                    "description": "Workspace name or ID (optional)"
+                  }
+                },
+                "required": [
+                  "project_id",
+                  "branch"
+                ]
+              }
+            },
+            {
+              "name": "checkout_branch",
+              "description": "Check out an existing branch (alias for git_checkout).",
+              "input_schema": {
+                "type": "object",
+                "properties": {
+                  "project_id": {
+                    "type": "string",
+                    "description": "Project ID"
+                  },
+                  "branch_name": {
+                    "type": "string",
+                    "description": "Branch name"
+                  },
+                  "workspace": {
+                    "type": "string",
+                    "description": "Workspace name or ID (optional)"
+                  }
+                },
+                "required": [
+                  "branch_name"
+                ]
+              }
+            },
+            {
+              "name": "create_branch",
+              "description": "Create and switch to a new branch (alias for git_create_branch).",
+              "input_schema": {
+                "type": "object",
+                "properties": {
+                  "project_id": {
+                    "type": "string",
+                    "description": "Project ID"
+                  },
+                  "branch_name": {
+                    "type": "string",
+                    "description": "New branch name"
+                  },
+                  "workspace": {
+                    "type": "string",
+                    "description": "Workspace name or ID (optional)"
+                  }
+                },
+                "required": [
+                  "branch_name"
+                ]
+              }
+            },
+            {
+              "name": "commit_changes",
+              "description": "Stage all changes and commit (alias for git_commit).",
+              "input_schema": {
+                "type": "object",
+                "properties": {
+                  "project_id": {
+                    "type": "string",
+                    "description": "Project ID"
+                  },
+                  "message": {
+                    "type": "string",
+                    "description": "Commit message"
+                  },
+                  "workspace": {
+                    "type": "string",
+                    "description": "Workspace name or ID (optional)"
+                  }
+                },
+                "required": [
+                  "message"
+                ]
+              }
+            },
+            {
+              "name": "push_branch",
+              "description": "Push the current or specified branch to origin (alias for git_push).",
+              "input_schema": {
+                "type": "object",
+                "properties": {
+                  "project_id": {
+                    "type": "string",
+                    "description": "Project ID"
+                  },
+                  "branch_name": {
+                    "type": "string",
+                    "description": "Branch to push (optional; defaults to the held task's branch for a worker session, else the current branch)"
+                  },
+                  "expected_remote_oid": {
+                    "type": "string",
+                    "description": "Exact remote branch OID expected before the push (40 hex digits); the push may then rewrite the branch, and is refused if the remote holds anything else. All zeros means the branch must still be absent."
+                  },
+                  "workspace": {
+                    "type": "string",
+                    "description": "Workspace name or ID (optional)"
+                  }
+                }
+              }
+            },
+            {
+              "name": "merge_branch",
+              "description": "Merge a branch into the default branch (alias for git_merge).",
+              "input_schema": {
+                "type": "object",
+                "properties": {
+                  "project_id": {
+                    "type": "string",
+                    "description": "Project ID"
+                  },
+                  "branch_name": {
+                    "type": "string",
+                    "description": "Branch to merge"
+                  },
+                  "workspace": {
+                    "type": "string",
+                    "description": "Workspace name or ID (optional)"
+                  }
+                },
+                "required": [
+                  "branch_name"
+                ]
+              }
+            },
+            {
+              "name": "create_github_repo",
+              "description": "Create a new GitHub repository via the gh CLI.",
+              "input_schema": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "description": "Repository name"
+                  },
+                  "private": {
+                    "type": "boolean",
+                    "description": "Create private repo (default true)",
+                    "default": true
+                  },
+                  "org": {
+                    "type": "string",
+                    "description": "GitHub org (omit for personal repo)"
+                  },
+                  "description": {
+                    "type": "string",
+                    "description": "Repo description"
+                  }
+                },
+                "required": [
+                  "name"
+                ]
+              }
+            },
+            {
+              "name": "generate_readme",
+              "description": "Generate a README.md from project metadata and commit it.",
+              "input_schema": {
+                "type": "object",
+                "properties": {
+                  "project_id": {
+                    "type": "string",
+                    "description": "Project ID"
+                  },
+                  "name": {
+                    "type": "string",
+                    "description": "Human-readable project name"
+                  },
+                  "description": {
+                    "type": "string",
+                    "description": "Project description"
+                  },
+                  "tech_stack": {
+                    "type": "string",
+                    "description": "Comma-separated technologies"
+                  }
+                },
+                "required": [
+                  "name"
+                ]
+              }
+            },
+            {
+              "name": "git_remote_url",
+              "description": "Get the git remote URL (e.g. GitHub URL) for a project's workspace. Returns the origin remote URL directly from the git repository. Use this when you need the repo/GitHub URL and it's not in project metadata.",
+              "input_schema": {
+                "type": "object",
+                "properties": {
+                  "project_id": {
+                    "type": "string",
+                    "description": "Project ID"
+                  },
+                  "remote": {
+                    "type": "string",
+                    "description": "Remote name (default: origin)",
+                    "default": "origin"
+                  },
+                  "workspace": {
+                    "type": "string",
+                    "description": "Workspace name or ID (optional)"
+                  }
+                }
+              }
+            }
+          ],
+          "current": [
+            {
+              "name": "get_git_status",
+              "description": "Get git status for all workspaces in a project. Shows branch, uncommitted changes, recent commits, ahead/behind counts, and stash count.",
+              "input_schema": {
+                "type": "object",
+                "properties": {
+                  "project_id": {
+                    "type": "string",
+                    "description": "Project ID"
+                  }
+                },
+                "required": [
+                  "project_id"
+                ]
+              }
+            },
+            {
+              "name": "git_commit",
+              "description": "Stage all changes and create a commit.",
+              "input_schema": {
+                "type": "object",
+                "properties": {
+                  "message": {
+                    "type": "string",
+                    "description": "Commit message"
+                  },
+                  "project_id": {
+                    "type": "string",
+                    "description": "Project ID"
+                  },
+                  "workspace": {
+                    "type": "string",
+                    "description": "Workspace name or ID (optional)"
+                  }
+                },
+                "required": [
+                  "message"
+                ]
+              }
+            },
+            {
+              "name": "git_pull",
+              "description": "Pull (fetch + merge) from the remote origin.",
+              "input_schema": {
+                "type": "object",
+                "properties": {
+                  "project_id": {
+                    "type": "string",
+                    "description": "Project ID"
+                  },
+                  "branch": {
+                    "type": "string",
+                    "description": "Branch to pull (optional, defaults to current)"
+                  },
+                  "workspace": {
+                    "type": "string",
+                    "description": "Workspace name or ID (optional)"
+                  }
+                }
+              }
+            },
+            {
+              "name": "git_push",
+              "description": "Push a branch to origin; an explicit expected remote OID permits a guarded rewrite.",
+              "input_schema": {
+                "type": "object",
+                "properties": {
+                  "project_id": {
+                    "type": "string",
+                    "description": "Project ID"
+                  },
+                  "branch": {
+                    "type": "string",
+                    "description": "Branch to push (optional; defaults to the held task's branch for a worker session, else the current branch)"
+                  },
+                  "expected_remote_oid": {
+                    "type": "string",
+                    "description": "Exact remote branch OID expected before the push (40 hex digits); the push may then rewrite the branch, and is refused if the remote holds anything else. All zeros means the branch must still be absent."
+                  },
+                  "publication_delegation_id": {
+                    "type": "string",
+                    "description": "Single-use integration-owner grant for this target branch"
+                  },
+                  "workspace": {
+                    "type": "string",
+                    "description": "Workspace name or ID (optional)"
+                  }
+                }
+              }
+            },
+            {
+              "name": "git_create_branch",
+              "description": "Create and switch to a new git branch.",
+              "input_schema": {
+                "type": "object",
+                "properties": {
+                  "branch_name": {
+                    "type": "string",
+                    "description": "New branch name"
+                  },
+                  "project_id": {
+                    "type": "string",
+                    "description": "Project ID"
+                  },
+                  "workspace": {
+                    "type": "string",
+                    "description": "Workspace name or ID (optional)"
+                  }
+                },
+                "required": [
+                  "branch_name"
+                ]
+              }
+            },
+            {
+              "name": "git_merge",
+              "description": "Merge a branch into the default branch.",
+              "input_schema": {
+                "type": "object",
+                "properties": {
+                  "branch_name": {
+                    "type": "string",
+                    "description": "Branch to merge"
+                  },
+                  "default_branch": {
+                    "type": "string",
+                    "description": "Target branch (default: project default)"
+                  },
+                  "project_id": {
+                    "type": "string",
+                    "description": "Project ID"
+                  },
+                  "workspace": {
+                    "type": "string",
+                    "description": "Workspace name or ID (optional)"
+                  }
+                },
+                "required": [
+                  "branch_name"
+                ]
+              }
+            },
+            {
+              "name": "git_create_pr",
+              "description": "Create a GitHub pull request using the gh CLI.",
+              "input_schema": {
+                "type": "object",
+                "properties": {
+                  "title": {
+                    "type": "string",
+                    "description": "PR title"
+                  },
+                  "body": {
+                    "type": "string",
+                    "description": "PR body/description"
+                  },
+                  "branch": {
+                    "type": "string",
+                    "description": "Source branch (default: the held task's branch for a worker session, else the current branch)"
+                  },
+                  "base": {
+                    "type": "string",
+                    "description": "Target branch (default: project default)"
+                  },
+                  "project_id": {
+                    "type": "string",
+                    "description": "Project ID"
+                  },
+                  "workspace": {
+                    "type": "string",
+                    "description": "Workspace name or ID (optional)"
+                  }
+                },
+                "required": [
+                  "title"
+                ]
+              }
+            },
+            {
+              "name": "git_changed_files",
+              "description": "List files changed compared to a base branch.",
+              "input_schema": {
+                "type": "object",
+                "properties": {
+                  "base_branch": {
+                    "type": "string",
+                    "description": "Base revision to compare against (default: project default branch). Accepts a branch name or a revision expression such as 'HEAD~1', 'HEAD^' or 'main@{1}'."
+                  },
+                  "project_id": {
+                    "type": "string",
+                    "description": "Project ID"
+                  },
+                  "workspace": {
+                    "type": "string",
+                    "description": "Workspace name or ID (optional)"
+                  }
+                }
+              }
+            },
+            {
+              "name": "git_log",
+              "description": "Show recent commit log.",
+              "input_schema": {
+                "type": "object",
+                "properties": {
+                  "project_id": {
+                    "type": "string",
+                    "description": "Project ID"
+                  },
+                  "count": {
+                    "type": "integer",
+                    "description": "Number of commits (default 10)",
+                    "default": 10
+                  },
+                  "workspace": {
+                    "type": "string",
+                    "description": "Workspace name or ID (optional)"
+                  }
+                },
+                "required": [
+                  "project_id"
+                ]
+              }
+            },
+            {
+              "name": "git_diff",
+              "description": "Show diff of the working tree or against a base branch.",
+              "input_schema": {
+                "type": "object",
+                "properties": {
+                  "project_id": {
+                    "type": "string",
+                    "description": "Project ID"
+                  },
+                  "base_branch": {
+                    "type": "string",
+                    "description": "Base revision to diff against (optional; defaults to a working-tree diff). Accepts a branch name or a revision expression such as 'HEAD~1', 'HEAD^' or 'main@{1}'."
+                  },
+                  "workspace": {
+                    "type": "string",
+                    "description": "Workspace name or ID (optional)"
+                  }
+                },
+                "required": [
+                  "project_id"
+                ]
+              }
+            },
+            {
+              "name": "git_branch",
+              "description": "List branches or create a new branch. If 'name' is provided, creates and checks out; otherwise lists branches.",
+              "input_schema": {
+                "type": "object",
+                "properties": {
+                  "project_id": {
+                    "type": "string",
+                    "description": "Project ID"
+                  },
+                  "name": {
+                    "type": "string",
+                    "description": "New branch name (optional -- omit to list)"
+                  },
+                  "workspace": {
+                    "type": "string",
+                    "description": "Workspace name or ID (optional)"
+                  }
+                },
+                "required": [
+                  "project_id"
+                ]
+              }
+            },
+            {
+              "name": "git_checkout",
+              "description": "Switch to an existing branch.",
+              "input_schema": {
+                "type": "object",
+                "properties": {
+                  "project_id": {
+                    "type": "string",
+                    "description": "Project ID"
+                  },
+                  "branch": {
+                    "type": "string",
+                    "description": "Branch name to switch to"
+                  },
+                  "workspace": {
+                    "type": "string",
+                    "description": "Workspace name or ID (optional)"
+                  }
+                },
+                "required": [
+                  "project_id",
+                  "branch"
+                ]
+              }
+            },
+            {
+              "name": "checkout_branch",
+              "description": "Check out an existing branch (alias for git_checkout).",
+              "input_schema": {
+                "type": "object",
+                "properties": {
+                  "project_id": {
+                    "type": "string",
+                    "description": "Project ID"
+                  },
+                  "branch_name": {
+                    "type": "string",
+                    "description": "Branch name"
+                  },
+                  "workspace": {
+                    "type": "string",
+                    "description": "Workspace name or ID (optional)"
+                  }
+                },
+                "required": [
+                  "branch_name"
+                ]
+              }
+            },
+            {
+              "name": "create_branch",
+              "description": "Create and switch to a new branch (alias for git_create_branch).",
+              "input_schema": {
+                "type": "object",
+                "properties": {
+                  "project_id": {
+                    "type": "string",
+                    "description": "Project ID"
+                  },
+                  "branch_name": {
+                    "type": "string",
+                    "description": "New branch name"
+                  },
+                  "workspace": {
+                    "type": "string",
+                    "description": "Workspace name or ID (optional)"
+                  }
+                },
+                "required": [
+                  "branch_name"
+                ]
+              }
+            },
+            {
+              "name": "commit_changes",
+              "description": "Stage all changes and commit (alias for git_commit).",
+              "input_schema": {
+                "type": "object",
+                "properties": {
+                  "project_id": {
+                    "type": "string",
+                    "description": "Project ID"
+                  },
+                  "message": {
+                    "type": "string",
+                    "description": "Commit message"
+                  },
+                  "workspace": {
+                    "type": "string",
+                    "description": "Workspace name or ID (optional)"
+                  }
+                },
+                "required": [
+                  "message"
+                ]
+              }
+            },
+            {
+              "name": "push_branch",
+              "description": "Push the current or specified branch to origin (alias for git_push).",
+              "input_schema": {
+                "type": "object",
+                "properties": {
+                  "project_id": {
+                    "type": "string",
+                    "description": "Project ID"
+                  },
+                  "branch_name": {
+                    "type": "string",
+                    "description": "Branch to push (optional; defaults to the held task's branch for a worker session, else the current branch)"
+                  },
+                  "expected_remote_oid": {
+                    "type": "string",
+                    "description": "Exact remote branch OID expected before the push (40 hex digits); the push may then rewrite the branch, and is refused if the remote holds anything else. All zeros means the branch must still be absent."
+                  },
+                  "publication_delegation_id": {
+                    "type": "string",
+                    "description": "Single-use integration-owner grant for this target branch"
+                  },
+                  "workspace": {
+                    "type": "string",
+                    "description": "Workspace name or ID (optional)"
+                  }
+                }
+              }
+            },
+            {
+              "name": "merge_branch",
+              "description": "Merge a branch into the default branch (alias for git_merge).",
+              "input_schema": {
+                "type": "object",
+                "properties": {
+                  "project_id": {
+                    "type": "string",
+                    "description": "Project ID"
+                  },
+                  "branch_name": {
+                    "type": "string",
+                    "description": "Branch to merge"
+                  },
+                  "workspace": {
+                    "type": "string",
+                    "description": "Workspace name or ID (optional)"
+                  }
+                },
+                "required": [
+                  "branch_name"
+                ]
+              }
+            },
+            {
+              "name": "create_github_repo",
+              "description": "Create a new GitHub repository via the gh CLI.",
+              "input_schema": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "description": "Repository name"
+                  },
+                  "private": {
+                    "type": "boolean",
+                    "description": "Create private repo (default true)",
+                    "default": true
+                  },
+                  "org": {
+                    "type": "string",
+                    "description": "GitHub org (omit for personal repo)"
+                  },
+                  "description": {
+                    "type": "string",
+                    "description": "Repo description"
+                  }
+                },
+                "required": [
+                  "name"
+                ]
+              }
+            },
+            {
+              "name": "generate_readme",
+              "description": "Generate a README.md from project metadata and commit it.",
+              "input_schema": {
+                "type": "object",
+                "properties": {
+                  "project_id": {
+                    "type": "string",
+                    "description": "Project ID"
+                  },
+                  "name": {
+                    "type": "string",
+                    "description": "Human-readable project name"
+                  },
+                  "description": {
+                    "type": "string",
+                    "description": "Project description"
+                  },
+                  "tech_stack": {
+                    "type": "string",
+                    "description": "Comma-separated technologies"
+                  }
+                },
+                "required": [
+                  "name"
+                ]
+              }
+            },
+            {
+              "name": "git_remote_url",
+              "description": "Get the git remote URL (e.g. GitHub URL) for a project's workspace. Returns the origin remote URL directly from the git repository. Use this when you need the repo/GitHub URL and it's not in project metadata.",
+              "input_schema": {
+                "type": "object",
+                "properties": {
+                  "project_id": {
+                    "type": "string",
+                    "description": "Project ID"
+                  },
+                  "remote": {
+                    "type": "string",
+                    "description": "Remote name (default: origin)",
+                    "default": "origin"
+                  },
+                  "workspace": {
+                    "type": "string",
+                    "description": "Workspace name or ID (optional)"
+                  }
+                }
+              }
+            }
+          ]
+        }
+      }
+    }
+  },
+  "source_catalogue_sections": {
+    "explicit": {
+      "list": true,
+      "previous_order": [
+        "policy_export",
+        "policy_diff",
+        "policy_apply",
+        "list_projects",
+        "repair_repository_checkout",
+        "repair_workspace_checkout",
+        "project_doctor",
+        "create_project",
+        "pause_project",
+        "resume_project",
+        "set_project_constraint",
+        "release_project_constraint",
+        "edit_project",
+        "bind_project_repository",
+        "get_git_identity",
+        "set_git_identity",
+        "set_default_branch",
+        "get_project",
+        "list_tasks",
+        "list_active_tasks_all_projects",
+        "task_recent_activity",
+        "get_task_tree",
+        "task_children",
+        "task_progress",
+        "reparent_task",
+        "create_task",
+        "ensure_task",
+        "get_downstream_tasks",
+        "task_route",
+        "task_route_override",
+        "add_workspace",
+        "list_workspaces",
+        "list_project_roots",
+        "browse_project_root",
+        "get_github_auth_status",
+        "list_github_owners",
+        "search_github_repositories",
+        "onboard_project",
+        "get_project_onboarding",
+        "list_workspace_kinds",
+        "find_merge_conflict_workspaces",
+        "workspace_doctor",
+        "workspace_cutover",
+        "workspace_retire_claim",
+        "workspace_clear_sentinel",
+        "workspace_reap",
+        "release_workspace",
+        "remove_workspace",
+        "edit_workspace",
+        "queue_sync_workspaces",
+        "list_agents",
+        "get_agent",
+        "create_agent",
+        "edit_agent",
+        "delete_agent",
+        "session_prune",
+        "session_cleanup",
+        "session_input",
+        "supervisor_restart",
+        "start_agent_terminal",
+        "get_task",
+        "edit_task",
+        "pause_task",
+        "resume_task",
+        "discard_pause_checkpoint",
+        "stop_task",
+        "task_recover",
+        "restart_task",
+        "reopen_with_feedback",
+        "remove_task",
+        "delete_task",
+        "archive_task",
+        "list_archived",
+        "skip_task",
+        "get_task_dependencies",
+        "add_dependency",
+        "remove_dependency",
+        "get_chain_health",
+        "get_status",
+        "list_event_triggers",
+        "get_recent_events",
+        "read_logs",
+        "get_task_result",
+        "run_command",
+        "get_stuck_tasks",
+        "delete_project",
+        "get_token_usage",
+        "token_audit",
+        "get_chat_analyzer_metrics",
+        "list_prompts",
+        "read_prompt",
+        "render_prompt",
+        "restart_daemon",
+        "orchestrator_control",
+        "get_agent_error",
+        "list_profiles",
+        "create_profile",
+        "get_profile",
+        "edit_profile",
+        "delete_profile",
+        "list_available_tools",
+        "check_profile",
+        "profile_audit",
+        "profile_drift",
+        "profile_reseed",
+        "install_profile",
+        "export_profile",
+        "import_profile",
+        "scan_stub_staleness",
+        "get_config",
+        "get_config_schema",
+        "preview_portable_config",
+        "export_portable_config",
+        "import_portable_config",
+        "update_config",
+        "reload_config",
+        "claude_usage",
+        "archive_settings",
+        "provide_input",
+        "set_task_status",
+        "task_deps",
+        "discord_purge_channel",
+        "shutdown",
+        "update_and_restart",
+        "find_applicable_tool",
+        "run_playbook",
+        "dry_run_playbook",
+        "show_playbook_graph",
+        "list_playbooks",
+        "list_playbook_runs",
+        "inspect_playbook_run",
+        "resume_playbook",
+        "cancel_playbook_run",
+        "playbook_health",
+        "playbook_graph_view",
+        "playbook_commands",
+        "playbook_v2_graph",
+        "playbook_graph_layout_save",
+        "playbook_activation_health",
+        "playbook_activate",
+        "playbook_artifacts",
+        "playbook_artifact_diff",
+        "playbook_pending_events",
+        "playbook_pending_event_action",
+        "playbook_run_overlay",
+        "get_playbook_source",
+        "playbook_source_resync",
+        "update_playbook_source",
+        "playbook_delete",
+        "set_playbook_enabled",
+        "show_effective_profile",
+        "list_mcp_servers",
+        "get_mcp_server",
+        "list_mcp_tool_catalog",
+        "probe_mcp_server",
+        "create_mcp_server",
+        "edit_mcp_server",
+        "delete_mcp_server",
+        "get_benchmark_report",
+        "doctor",
+        "get_costs",
+        "db_preflight_hierarchy",
+        "get_schema",
+        "project_ready",
+        "task_show",
+        "task_comment",
+        "benchmark_stage_record",
+        "task_comments",
+        "task_comment_edit",
+        "task_comment_delete",
+        "task_subtask_add",
+        "task_subtasks",
+        "task_subtask_get",
+        "task_subtask_update",
+        "phase_create",
+        "phase_list",
+        "task_set",
+        "task_close",
+        "task_heartbeat",
+        "subagent_event",
+        "task_claim",
+        "task_handoff",
+        "message_send",
+        "message_reply",
+        "message_inbox",
+        "message_list",
+        "message_status",
+        "agent_message",
+        "memory_save",
+        "memory_search",
+        "create_task_graph",
+        "formula_list",
+        "formula_show",
+        "formula_cook",
+        "graph_layout_rebuild",
+        "graph_tidy",
+        "graph_reflow_status",
+        "ci_completed_status",
+        "ci_baseline_status",
+        "ci_repair_adopt",
+        "provider_usage_probe",
+        "provider_status",
+        "provider_held_tasks",
+        "provider_allocation_status",
+        "provider_allocation_preview",
+        "provider_allocation_apply",
+        "provider_history",
+        "provider_recheck",
+        "provider_set_state",
+        "provider_reroute",
+        "provider_reroute_undo",
+        "pr_merge",
+        "spec_approve",
+        "task_batch_propose",
+        "task_batch_update",
+        "task_batch_commit",
+        "task_batch_validate",
+        "task_batch_discard",
+        "playbook_v2_validate",
+        "playbook_v2_propose",
+        "playbook_v2_import",
+        "playbook_v2_shadow_compile",
+        "list_intelligence_classes",
+        "edit_intelligence_class",
+        "delete_intelligence_class",
+        "pool_status",
+        "pool_rename",
+        "pool_scale",
+        "pool_set_enabled",
+        "pool_set_lifecycle",
+        "question_list",
+        "question_answer",
+        "question_escalate",
+        "review_attachment_add",
+        "review_attachment_list",
+        "review_submit",
+        "review_show",
+        "review_list",
+        "review_reopen",
+        "review_withdraw",
+        "gate_reopen",
+        "ask_prepare_decision",
+        "ask_decide",
+        "ask_retry_operation",
+        "review_feedback_complete",
+        "review_decide",
+        "approve_pull_request",
+        "review_comment",
+        "review_dispatch",
+        "review_delegate",
+        "review_import_edits",
+        "github_issue_triage",
+        "github_issue_fix_approved",
+        "github_issue_close_rejected",
+        "github_issue_rejection",
+        "dashboard_state_list",
+        "dashboard_state_get",
+        "dashboard_state_put",
+        "dashboard_state_reset",
+        "escalation_create",
+        "escalation_list",
+        "escalation_get",
+        "escalation_reply",
+        "escalation_update",
+        "escalation_resolve",
+        "escalation_apply_reply",
+        "escalation_sweep",
+        "digest_preview",
+        "digest_status",
+        "digest_facts",
+        "digest_post",
+        "digest_request",
+        "morning_report_tick",
+        "report_get",
+        "report_list",
+        "morning_report_preview",
+        "report_reconcile",
+        "report_request",
+        "report_brief",
+        "report_submit",
+        "supervisor_inbox_post",
+        "supervisor_inbox_reply",
+        "supervisor_inbox_status",
+        "supervisor_inbox_history",
+        "message_wait",
+        "wait_register",
+        "wait_get",
+        "wait_list",
+        "wait_cancel",
+        "collaboration_create",
+        "collaboration_accept",
+        "collaboration_get",
+        "collaboration_list",
+        "collaboration_close",
+        "cron_register",
+        "cron_get",
+        "cron_list",
+        "cron_cancel",
+        "job_submit",
+        "job_submit_integration",
+        "job_get",
+        "job_list",
+        "job_cancel",
+        "job_result",
+        "job_logs",
+        "job_retain",
+        "artifact_verify",
+        "test_select",
+        "test_selection_recheck",
+        "test_selection_observe",
+        "test_selection_show",
+        "test_selection_list",
+        "test_selection_policy_show",
+        "test_selection_promote",
+        "test_selection_revoke",
+        "knowledge_create",
+        "knowledge_list",
+        "knowledge_show",
+        "knowledge_update",
+        "knowledge_history",
+        "knowledge_diff",
+        "knowledge_retire",
+        "knowledge_restore",
+        "record_show",
+        "record_search",
+        "knowledge_export",
+        "record_repair",
+        "record_capabilities",
+        "link_create",
+        "link_list",
+        "link_remove",
+        "knowledge_propose",
+        "knowledge_proposal_show",
+        "knowledge_proposal_decide",
+        "knowledge_verify",
+        "knowledge_authority_grant",
+        "knowledge_authority_revoke",
+        "knowledge_share",
+        "knowledge_redact",
+        "knowledge_generation_tick",
+        "knowledge_generation_status",
+        "knowledge_create_task",
+        "knowledge_cite",
+        "knowledge_context_deliver",
+        "decision_record",
+        "decision_list",
+        "operator_execute",
+        "operator_preflight",
+        "wait_ack",
+        "wait_checkpoint",
+        "wait_decide",
+        "wait_explain",
+        "wait_graph",
+        "wait_lift",
+        "playbook_script_run",
+        "ensure_spec_ingest",
+        "ensure_fidelity_review",
+        "approved_spec_packet",
+        "spec_ingest_reconcile",
+        "batch_reconcile",
+        "spec_ingest_legacy_inventory",
+        "ask_list",
+        "ask_show",
+        "ask_history",
+        "ask_reply",
+        "ask_apply_input",
+        "ask_discussion_reply",
+        "ask_update_context",
+        "ask_reconcile",
+        "ask_legacy_reset",
+        "ask_cutover",
+        "ask_cutover_status",
+        "ask_repair_delivery",
+        "ask_intake",
+        "ask_button"
+      ],
+      "entries": {
+        "integration_batch_fix": {
+          "previous": null,
+          "current": {
+            "name": "integration_batch_fix",
+            "description": "Inspect or push the batch branch bound to this task-free fixer session.",
+            "input_schema": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "action": {
+                  "type": "string",
+                  "enum": [
+                    "status",
+                    "push",
+                    "rebind"
+                  ],
+                  "default": "status"
+                }
+              }
+            }
+          }
+        },
+        "wait_cancel": {
+          "previous": {
+            "name": "wait_cancel",
+            "description": "Cancel a current-claim wait and queue its result.",
+            "input_schema": {
+              "additionalProperties": false,
+              "properties": {
+                "schema_version": {
+                  "default": 1,
+                  "enum": [
+                    1,
+                    2
+                  ],
+                  "title": "Schema Version",
+                  "type": "integer"
+                },
+                "project_id": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null,
+                  "title": "Project Id"
+                },
+                "task_id": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null,
+                  "title": "Task Id"
+                },
+                "session_id": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null,
+                  "title": "Session Id"
+                },
+                "wait_id": {
+                  "minLength": 1,
+                  "title": "Wait Id",
+                  "type": "string"
+                },
+                "claim_epoch": {
+                  "anyOf": [
+                    {
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null,
+                  "title": "Claim Epoch"
+                }
+              },
+              "required": [
+                "wait_id"
+              ],
+              "title": "WaitCancelArgs",
+              "type": "object"
+            }
+          },
+          "current": {
+            "name": "wait_cancel",
+            "description": "Cancel a current-claim wait and queue its result.",
+            "input_schema": {
+              "additionalProperties": false,
+              "properties": {
+                "schema_version": {
+                  "default": 1,
+                  "enum": [
+                    1,
+                    2
+                  ],
+                  "title": "Schema Version",
+                  "type": "integer"
+                },
+                "project_id": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null,
+                  "title": "Project Id"
+                },
+                "task_id": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null,
+                  "title": "Task Id"
+                },
+                "session_id": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null,
+                  "title": "Session Id"
+                },
+                "wait_id": {
+                  "minLength": 1,
+                  "title": "Wait Id",
+                  "type": "string"
+                },
+                "claim_epoch": {
+                  "anyOf": [
+                    {
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null,
+                  "title": "Claim Epoch"
+                },
+                "owner_kind": {
+                  "anyOf": [
+                    {
+                      "enum": [
+                        "scheduler",
+                        "integration",
+                        "playbook"
+                      ],
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null,
+                  "title": "Owner Kind"
+                },
+                "owner_id": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null,
+                  "title": "Owner Id"
+                }
+              },
+              "required": [
+                "wait_id"
+              ],
+              "title": "WaitCancelArgs",
+              "type": "object"
+            }
+          }
+        }
+      }
+    },
+    "fallback": {
+      "list": false,
+      "previous_order": [
+        "advance_workflow_stage",
+        "create_workflow",
+        "cron_delivery_begin",
+        "cron_delivery_finish",
+        "delivery_receipts",
+        "doctor_catalog",
+        "doctor_run",
+        "explain_task",
+        "gate_create",
+        "gate_list",
+        "gate_resolve",
+        "gate_show",
+        "get_workflow",
+        "integration_abort_batch",
+        "integration_app_verify",
+        "integration_authorize_root",
+        "integration_backmerge_source",
+        "integration_checkpoint_parent",
+        "integration_ci_evidence",
+        "integration_cleanup",
+        "integration_clear_retained_recovery",
+        "integration_close_delivered_pr",
+        "integration_complete_parent",
+        "integration_cutover",
+        "integration_cutover_plan",
+        "integration_delegate_publication",
+        "integration_delivery_readiness",
+        "integration_eject",
+        "integration_engine_transfer",
+        "integration_file_children",
+        "integration_migrate_provenance_refs",
+        "integration_mutate_hierarchy",
+        "integration_off",
+        "integration_parent_verify",
+        "integration_pause_batch",
+        "integration_promotion_notes_input",
+        "integration_promotion_policy_input",
+        "integration_promotion_publish",
+        "integration_quiesce",
+        "integration_reconcile_expired_mutation",
+        "integration_record_delivered",
+        "integration_record_noop",
+        "integration_record_repair",
+        "integration_record_root_noop",
+        "integration_recover_completed_container",
+        "integration_redrive_child",
+        "integration_redrive_root",
+        "integration_reevaluate_repair",
+        "integration_refresh_epic",
+        "integration_release",
+        "integration_release_held_gate",
+        "integration_release_owner",
+        "integration_release_stale_owners",
+        "integration_release_withheld_source",
+        "integration_reopen_collection",
+        "integration_repair_close_current",
+        "integration_repair_dispatch",
+        "integration_repair_start",
+        "integration_repair_timeout",
+        "integration_reserve_owner",
+        "integration_restore_task_origin",
+        "integration_resume_batch",
+        "integration_retire_legacy_park",
+        "integration_retire_origin",
+        "integration_reverify_epic",
+        "integration_revoke_publication",
+        "integration_seal_now",
+        "integration_settle_batch",
+        "integration_status",
+        "integration_supersede_completion",
+        "integration_train_tick",
+        "integration_transfer_owner",
+        "integration_trust_manifest",
+        "job_reconcile",
+        "knowledge_import",
+        "list_workflows",
+        "load_tools",
+        "migrate_profiles",
+        "object_checkpoint_read",
+        "object_loop_inputs",
+        "object_loop_reconcile",
+        "object_loop_start",
+        "object_score_record",
+        "observation_snapshot_cleanup",
+        "observe_integration_source_ci",
+        "playbook_state_delete",
+        "playbook_state_get",
+        "playbook_state_inspect",
+        "playbook_state_list",
+        "playbook_state_notify",
+        "playbook_state_reset",
+        "playbook_state_set",
+        "plugin_config",
+        "plugin_disable",
+        "plugin_enable",
+        "plugin_info",
+        "plugin_install",
+        "plugin_list",
+        "plugin_prompts",
+        "plugin_reload",
+        "plugin_remove",
+        "plugin_reset_prompts",
+        "plugin_update",
+        "prime",
+        "promote_approve",
+        "promote_cancel",
+        "promote_hotfix",
+        "promote_list",
+        "promote_prepare",
+        "promote_repair",
+        "promote_request",
+        "promote_rulesets",
+        "promote_schema",
+        "promote_status",
+        "promote_validate",
+        "provider_availability_notify",
+        "reconcile_agent_cron",
+        "reconcile_agent_waits",
+        "reconcile_collaborations",
+        "scheduler_wait_sync",
+        "session_attach",
+        "session_drain_ack",
+        "session_kill",
+        "session_list",
+        "session_logs",
+        "session_nudge",
+        "session_peek",
+        "session_show",
+        "session_sleep",
+        "session_token",
+        "session_wake",
+        "task_batch_review_record",
+        "task_failure_triage_notify",
+        "task_recovery_notify",
+        "task_route_apply",
+        "task_route_plan",
+        "vault_rebuild_index",
+        "wait_deadline_fire",
+        "wait_evict",
+        "wait_legacy_bridge",
+        "wait_resume_dispatch",
+        "wait_sleep_decide",
+        "wait_source_commit",
+        "workflow_pipeline_view"
+      ],
+      "entries": {
+        "integration_cutover_containment": {
+          "previous": null,
+          "current": {
+            "name": "integration_cutover_containment",
+            "description": "Local operator previews and applies exact historical lifecycle exclusions.",
+            "input_schema": {
+              "additionalProperties": false,
+              "properties": {
+                "project_id": {
+                  "minLength": 1,
+                  "title": "Project Id",
+                  "type": "string"
+                },
+                "dry_run": {
+                  "default": true,
+                  "title": "Dry Run",
+                  "type": "boolean"
+                },
+                "choices": {
+                  "additionalProperties": {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  "title": "Choices",
+                  "type": "object"
+                },
+                "plan": {
+                  "anyOf": [
+                    {
+                      "additionalProperties": true,
+                      "type": "object"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null,
+                  "title": "Plan"
+                },
+                "expected_digest": {
+                  "anyOf": [
+                    {
+                      "pattern": "^[0-9a-f]{64}$",
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null,
+                  "title": "Expected Digest"
+                }
+              },
+              "required": [
+                "project_id"
+              ],
+              "title": "IntegrationContainmentCutoverArgs",
+              "type": "object"
+            }
+          }
+        },
+        "integration_reconcile_git_truth": {
+          "previous": null,
+          "current": {
+            "name": "integration_reconcile_git_truth",
+            "description": "Daemon-only repair of Git-derived integration projections.",
+            "input_schema": {
+              "type": "object",
+              "properties": {
+                "now": {
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                }
+              },
+              "additionalProperties": false
+            }
+          }
+        }
+      }
+    },
+    "tool_categories": {
+      "list": false,
+      "previous_order": [
+        "operator_execute",
+        "operator_preflight",
+        "policy_export",
+        "policy_diff",
+        "policy_apply",
+        "decision_record",
+        "decision_list",
+        "object_loop_start",
+        "object_loop_inputs",
+        "object_loop_reconcile",
+        "object_score_record",
+        "object_checkpoint_read",
+        "test_select",
+        "test_selection_recheck",
+        "test_selection_observe",
+        "test_selection_show",
+        "test_selection_list",
+        "test_selection_policy_show",
+        "test_selection_promote",
+        "test_selection_revoke",
+        "discord_purge_channel",
+        "list_projects",
+        "create_project",
+        "project_doctor",
+        "repair_repository_checkout",
+        "repair_workspace_checkout",
+        "pause_project",
+        "resume_project",
+        "set_project_constraint",
+        "release_project_constraint",
+        "edit_project",
+        "bind_project_repository",
+        "set_default_branch",
+        "get_project",
+        "delete_project",
+        "add_workspace",
+        "list_workspaces",
+        "list_workspace_kinds",
+        "find_merge_conflict_workspaces",
+        "release_workspace",
+        "remove_workspace",
+        "edit_workspace",
+        "queue_sync_workspaces",
+        "workspace_doctor",
+        "workspace_reap",
+        "workspace_cutover",
+        "workspace_retire_claim",
+        "workspace_clear_sentinel",
+        "list_project_roots",
+        "browse_project_root",
+        "get_github_auth_status",
+        "list_github_owners",
+        "search_github_repositories",
+        "onboard_project",
+        "get_project_onboarding",
+        "list_agents",
+        "get_agent",
+        "create_agent",
+        "edit_agent",
+        "delete_agent",
+        "start_agent_terminal",
+        "get_agent_error",
+        "list_profiles",
+        "create_profile",
+        "get_profile",
+        "edit_profile",
+        "delete_profile",
+        "list_available_tools",
+        "check_profile",
+        "profile_audit",
+        "profile_drift",
+        "profile_reseed",
+        "agent_message",
+        "install_profile",
+        "export_profile",
+        "import_profile",
+        "subagent_event",
+        "show_effective_profile",
+        "list_mcp_servers",
+        "get_mcp_server",
+        "list_mcp_tool_catalog",
+        "probe_mcp_server",
+        "create_mcp_server",
+        "edit_mcp_server",
+        "delete_mcp_server",
+        "message_send",
+        "message_wait",
+        "message_reply",
+        "message_inbox",
+        "message_list",
+        "message_status",
+        "escalation_create",
+        "escalation_list",
+        "escalation_get",
+        "escalation_reply",
+        "escalation_update",
+        "escalation_resolve",
+        "escalation_apply_reply",
+        "escalation_sweep",
+        "supervisor_inbox_post",
+        "supervisor_inbox_reply",
+        "supervisor_inbox_status",
+        "supervisor_inbox_history",
+        "review_submit",
+        "review_attachment_add",
+        "review_attachment_list",
+        "github_issue_triage",
+        "github_issue_fix_approved",
+        "github_issue_rejection",
+        "github_issue_close_rejected",
+        "review_show",
+        "review_list",
+        "review_withdraw",
+        "review_reopen",
+        "review_decide",
+        "ask_prepare_decision",
+        "ask_decide",
+        "ask_retry_operation",
+        "review_feedback_complete",
+        "approve_pull_request",
+        "review_comment",
+        "review_dispatch",
+        "review_delegate",
+        "review_import_edits",
+        "digest_preview",
+        "digest_status",
+        "digest_facts",
+        "digest_post",
+        "digest_request",
+        "job_submit",
+        "job_get",
+        "job_list",
+        "job_cancel",
+        "job_result",
+        "job_logs",
+        "job_retain",
+        "artifact_verify",
+        "wait_register",
+        "wait_get",
+        "wait_list",
+        "wait_cancel",
+        "wait_explain",
+        "wait_graph",
+        "wait_checkpoint",
+        "wait_ack",
+        "wait_decide",
+        "wait_lift",
+        "wait_legacy_bridge",
+        "cron_register",
+        "cron_get",
+        "cron_list",
+        "cron_cancel",
+        "collaboration_create",
+        "collaboration_accept",
+        "collaboration_get",
+        "collaboration_list",
+        "collaboration_close",
+        "report_request",
+        "report_reconcile",
+        "report_brief",
+        "morning_report_preview",
+        "morning_report_tick",
+        "report_get",
+        "report_list",
+        "report_submit",
+        "dashboard_state_list",
+        "dashboard_state_get",
+        "dashboard_state_put",
+        "dashboard_state_reset",
+        "scan_stub_staleness",
+        "stop_task",
+        "pause_task",
+        "resume_task",
+        "discard_pause_checkpoint",
+        "restart_task",
+        "task_recover",
+        "reopen_with_feedback",
+        "delete_task",
+        "remove_task",
+        "skip_task",
+        "set_task_status",
+        "archive_task",
+        "archive_settings",
+        "list_archived",
+        "get_task_result",
+        "get_task_tree",
+        "task_children",
+        "task_progress",
+        "reparent_task",
+        "get_task_dependencies",
+        "task_deps",
+        "add_dependency",
+        "remove_dependency",
+        "get_chain_health",
+        "list_active_tasks_all_projects",
+        "task_recent_activity",
+        "create_task_graph",
+        "formula_list",
+        "formula_show",
+        "formula_cook",
+        "graph_layout_rebuild",
+        "graph_tidy",
+        "graph_reflow_status",
+        "run_playbook",
+        "dry_run_playbook",
+        "show_playbook_graph",
+        "list_playbooks",
+        "list_playbook_runs",
+        "inspect_playbook_run",
+        "resume_playbook",
+        "cancel_playbook_run",
+        "playbook_health",
+        "playbook_graph_view",
+        "get_playbook_source",
+        "update_playbook_source",
+        "set_playbook_enabled",
+        "playbook_delete",
+        "playbook_commands",
+        "playbook_v2_graph",
+        "playbook_graph_layout_save",
+        "playbook_activation_health",
+        "playbook_activate",
+        "playbook_source_resync",
+        "playbook_artifacts",
+        "playbook_artifact_diff",
+        "playbook_pending_events",
+        "playbook_pending_event_action",
+        "playbook_run_overlay",
+        "playbook_v2_validate",
+        "playbook_v2_propose",
+        "playbook_v2_import",
+        "playbook_v2_shadow_compile",
+        "plugin_list",
+        "plugin_info",
+        "plugin_install",
+        "plugin_update",
+        "plugin_remove",
+        "plugin_enable",
+        "plugin_disable",
+        "plugin_reload",
+        "plugin_config",
+        "plugin_prompts",
+        "plugin_reset_prompts",
+        "get_status",
+        "get_recent_events",
+        "list_event_triggers",
+        "read_logs",
+        "get_token_usage",
+        "token_audit",
+        "claude_usage",
+        "get_chat_analyzer_metrics",
+        "reload_config",
+        "get_config",
+        "get_config_schema",
+        "update_config",
+        "get_git_identity",
+        "set_git_identity",
+        "preview_portable_config",
+        "export_portable_config",
+        "import_portable_config",
+        "orchestrator_control",
+        "provide_input",
+        "list_prompts",
+        "read_prompt",
+        "render_prompt",
+        "shutdown",
+        "restart_daemon",
+        "update_and_restart",
+        "run_command",
+        "get_stuck_tasks",
+        "list_intelligence_classes",
+        "edit_intelligence_class",
+        "delete_intelligence_class",
+        "doctor",
+        "get_costs",
+        "get_benchmark_report",
+        "db_preflight_hierarchy",
+        "get_schema",
+        "task_show",
+        "task_set",
+        "task_comment",
+        "benchmark_stage_record",
+        "task_comments",
+        "task_comment_edit",
+        "task_comment_delete",
+        "task_subtask_add",
+        "task_subtasks",
+        "task_subtask_get",
+        "task_subtask_update",
+        "phase_create",
+        "phase_list",
+        "task_close",
+        "task_heartbeat",
+        "task_claim",
+        "memory_save",
+        "memory_search",
+        "knowledge_create",
+        "knowledge_create_task",
+        "knowledge_list",
+        "knowledge_show",
+        "knowledge_cite",
+        "knowledge_context_deliver",
+        "knowledge_update",
+        "knowledge_history",
+        "knowledge_diff",
+        "knowledge_retire",
+        "knowledge_restore",
+        "knowledge_export",
+        "record_show",
+        "record_search",
+        "record_capabilities",
+        "record_repair",
+        "link_create",
+        "link_list",
+        "link_remove",
+        "knowledge_import",
+        "session_list",
+        "session_show",
+        "session_peek",
+        "session_attach",
+        "session_nudge",
+        "session_input",
+        "session_logs",
+        "session_kill",
+        "session_prune",
+        "session_cleanup",
+        "session_sleep",
+        "session_wake",
+        "supervisor_restart",
+        "session_token",
+        "gate_create",
+        "gate_list",
+        "gate_show",
+        "gate_reopen",
+        "gate_resolve",
+        "explain_task",
+        "project_ready",
+        "spec_approve",
+        "task_batch_propose",
+        "task_batch_update",
+        "task_batch_commit",
+        "task_batch_discard",
+        "task_batch_validate",
+        "ensure_task",
+        "get_downstream_tasks",
+        "task_route",
+        "task_route_override",
+        "pr_merge",
+        "ci_baseline_status",
+        "ci_completed_status",
+        "ci_repair_adopt",
+        "provider_status",
+        "provider_history",
+        "provider_held_tasks",
+        "provider_recheck",
+        "provider_set_state",
+        "provider_reroute",
+        "provider_reroute_undo",
+        "provider_allocation_status",
+        "provider_allocation_preview",
+        "provider_allocation_apply",
+        "pool_status",
+        "pool_rename",
+        "pool_scale",
+        "pool_set_lifecycle",
+        "pool_set_enabled",
+        "question_list",
+        "question_answer",
+        "question_escalate",
+        "knowledge_propose",
+        "knowledge_proposal_show",
+        "knowledge_proposal_decide",
+        "knowledge_verify",
+        "knowledge_authority_grant",
+        "knowledge_authority_revoke",
+        "knowledge_share",
+        "knowledge_redact",
+        "knowledge_generation_tick",
+        "knowledge_generation_status",
+        "ensure_spec_ingest",
+        "approved_spec_packet",
+        "spec_ingest_reconcile",
+        "spec_ingest_legacy_inventory",
+        "batch_reconcile",
+        "ensure_fidelity_review",
+        "ask_list",
+        "ask_show",
+        "ask_history",
+        "ask_reply",
+        "ask_apply_input",
+        "ask_discussion_reply",
+        "ask_update_context",
+        "ask_reconcile",
+        "ask_legacy_reset",
+        "ask_cutover",
+        "ask_cutover_status",
+        "ask_repair_delivery",
+        "ask_intake",
+        "ask_button"
+      ],
+      "entries": {
+        "integration_batch_fix": {
+          "previous": null,
+          "current": "integration"
+        }
+      }
+    }
+  }
+}

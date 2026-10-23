@@ -294,6 +294,11 @@ Teardown wipes *and* replays the migration seed rows: the built-in
 test after the first without them.
 
 The wipe (`db_fixtures.reset_all`) deletes rows rather than truncating tables.
+Before scanning tables, it temporarily blocks new connections to the leased
+database and terminates the test role's existing clients, including idle ones.
+This prevents a late background write from surviving the wipe while its identity
+sequence restarts. Connection admission is restored even if the reset fails or
+is cancelled. Each lease belongs to one worker; other test databases remain open.
 `TRUNCATE ... CASCADE` gives every table in the foreign-key closure new files —
 279 of them after a test that wrote one `projects` row — and each new file is
 an fsync the next checkpoint owes. Every `DROP DATABASE` waits for a

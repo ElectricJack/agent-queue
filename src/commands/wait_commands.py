@@ -43,7 +43,15 @@ class WaitCommandsMixin:
             raise WaitError("out_of_scope", "a matching project scope is required")
         if args.get("session_id", session.id) != session.id:
             raise WaitError("out_of_scope", "owner session cannot be nominated")
-        if args.get("task_id", session.task_id) != session.task_id:
+        # A named supervisor holds no task, so it reads any task's waits within
+        # its project scope; it never registers or mutates on a task's behalf.
+        supervisor_read = (
+            not mutation
+            and principal.elevated
+            and session.lifecycle == "named"
+            and session.profile_id == "supervisor"
+        )
+        if args.get("task_id", session.task_id) != session.task_id and not supervisor_read:
             raise WaitError("out_of_scope", "owner task cannot be nominated")
         return dict(
             session_id=session.id,

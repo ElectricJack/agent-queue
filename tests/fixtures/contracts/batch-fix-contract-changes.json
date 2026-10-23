@@ -1,0 +1,27 @@
+{
+  "source_base": "d496e8a12c3e863aee09910856b018809f3eb21c",
+  "reason": "The in-place batch fixer adds one scoped publication command; all historical command and catalogue evidence remains unchanged.",
+  "previous_cli_catalogue_sha256": "91c959fd5d641250a6dd428e33d9c4a383a8193e4783311bbdd3e91fbdbd6b09",
+  "cli_catalogue_sha256": "8f0a627b01e1091c48ef919f01c6ea2aaacfa71be5af4ed6093c23991f4f1c56",
+  "transport_definition": {
+    "name": "integration_batch_fix",
+    "description": "Inspect or push the batch branch bound to this task-free fixer session.",
+    "input_schema": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "type": "string",
+          "enum": [
+            "status",
+            "push",
+            "rebind"
+          ],
+          "default": "status"
+        }
+      }
+    }
+  },
+  "tool_category": "integration",
+  "contract_fingerprint": "sha256:834d8103a7886d439e6876969403d0f9c55fd0a94c258073c641d795129637c1"
+}

@@ -940,17 +940,6 @@ async def _completion(db, *, completed_at=None, task_id="t1", outcome="pass"):
     ))
 
 
-async def _code_receipt(db, *, task_id="t1"):
-    from src.database.tables import task_delivery_receipts
-
-    async with db.immediate() as conn:
-        await conn.execute(insert(task_delivery_receipts).values(
-            id=f"receipt-{task_id}", domain_key=f"delivery:{task_id}", source_task_id=task_id,
-            repository_id="repo", target_branch="main", disposition="code",
-            created_at=time.time(),
-        ))
-
-
 async def _accepted_close(db, session_id, *, claim_epoch=1, task_id="t1"):
     """The identity the transition accepting a close records in its transaction."""
     await db.set_task_meta(task_id, ACCEPTED_CLOSE_KEY, {
@@ -999,8 +988,6 @@ class TestSettledClaimDrain:
 
     @pytest.mark.parametrize(("status", "evidence"), [
         (TaskStatus.COMPLETED, "completion_record"),
-        # sound-orbit: the restart lost the completion record; delivery wrote a receipt.
-        (TaskStatus.COMPLETED, "delivery_receipt"),
         (TaskStatus.FAILED, "completion_record"),
         # bold-impact-53's wait: no record and no receipt yet, but the transition
         # that accepted this session's close recorded its identity.
@@ -1013,8 +1000,6 @@ class TestSettledClaimDrain:
         await self._close_committed(db, status)
         if evidence == "completion_record":
             await _completion(db, outcome="pass" if status == TaskStatus.COMPLETED else "fail")
-        elif evidence == "delivery_receipt":
-            await _code_receipt(db)
         else:
             await _accepted_close(db, bound)
         completions = await db.get_task_completions("t1")
@@ -1144,7 +1129,7 @@ class TestSettledClaimDrain:
         self, db, reconciler, provider, bound
     ):
         await self._close_committed(db)
-        await _code_receipt(db)
+        await _completion(db, outcome="pass")
         real_stop = provider.stop
         provider.stop = AsyncMock(side_effect=RuntimeError("tmux server unreachable"))
 

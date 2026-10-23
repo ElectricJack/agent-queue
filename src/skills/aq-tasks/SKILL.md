@@ -215,8 +215,11 @@ and `.aq/claim.json`), run `aq session drain-ack` and exit: the pool can recycle
 The server marks an idle session for drain on the second identical failure.
 If preparation retained ownership, preserve it and **end the turn awaiting the
 supervisor's inbox delivery**. Durable waits require an active claim and cannot be
-registered during preparation. If you hold an active claim, register **one** durable
-message wait for the reply with the returned thread/cursor, then end the turn:
+registered during preparation. If you hold an active claim and prime reports waits
+enabled for the project, register **one** durable message wait for the reply with
+the returned thread/cursor, then end the turn. If waits are disabled or registration
+returns `wait.disabled`, preserve the claim and end the turn awaiting the supervisor
+inbox delivery; do not retry registration or poll:
 
 ```bash
 aq wait register --kind message --ref <reply-thread> --after-seq <cursor> \
@@ -519,7 +522,8 @@ gating edge onto the filer or the filing's own parent chain is refused as
 `dependency_on_ancestor`, by a graph and by `aq task add-dependency`
 alike. Order the new tasks among themselves with local `needs`. A delivered
 plan still satisfies anything that depends on it after its branch is cleaned
-up, because readiness trusts the delivery receipt rather than the branch.
+up, because readiness checks Git containment of its retained source commit, not
+the branch or a delivery receipt.
 
 **Checklist ownership.** An unphased planner graph may put `subtasks:` on a
 child task. Those are checklist rows owned and settled by the worker that
@@ -598,3 +602,16 @@ archived id can never be recreated in a different project.
   `formula cook` is supervisor-only.
 - Don't retry an `out of scope: <command>` error. It is a property of your
   token, not a transient failure; say so in a comment and close or ask instead.
+
+## Retained parent merge during close
+
+A passing close may return `close_in_progress` with a `close_merge` operation.
+The source stays frozen on your published task branch. In `candidate_path`, resolve
+conflicts or failing checks and commit the fix, preserving the merge parents.
+Run `aq integration continue-close --operation-id <id>` to regenerate, validate and
+publish through the daemon's parent fence. Never push the parent yourself.
+A returned exact-check wait is already registered: end the turn and resume the same
+operation when delivered. Your author budget goes to the supervisor; it does not
+interrupt your work or make a duplicate repair task. Root publication and a disabled
+train remain publisher policy. After an ambiguous close, inspect your claim and task
+before retrying. Completion records name the original source, not the merge candidate.
