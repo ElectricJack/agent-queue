@@ -325,7 +325,7 @@ async def test_ambiguous_launch_is_retained_and_never_retried(db, fixer):
 @pytest.mark.parametrize("reason", [
     "lock_wait_timeout", "git_timeout", "git_exit", "import_mismatch",
 ])
-async def test_preparation_reason_reaches_fixer_blocker_and_train_notice(db, fixer, reason):
+async def test_preparation_reason_reaches_launch_retry_and_train_notice(db, fixer, reason):
     service, runtime, _ = fixer
     runtime.start.side_effect = _git_preparation_error(
         reason, subcommand="fetch", elapsed=120, budget=120,
@@ -335,12 +335,28 @@ async def test_preparation_reason_reaches_fixer_blocker_and_train_notice(db, fix
     result = await allocate(service)
     assert result["outcome"] == "deferred"
     assert f"reason={reason}" in result["reason"]
-    assert f"reason={reason}" in (await state(db))["blocker"]
+    batch_id = "batch-fix"
+    for attempt in range(1, 4):
+        row = await db.get_integration_batch(batch_id)
+        current = row["fixer_state"]
+        assert current["status"] == "waiting_capacity" and "blocker" not in current
+        assert row["fixer_queue"]["reason"] == "launch_retry"
+        assert f"reason={reason}" in current["launch_error"]
+        assert "subcommand=fetch" in current["launch_error"]
+        if attempt < 3:
+            assert not await notices(db, supervisor=True)
+            successor = f"preparation-retry-{attempt}"
+            await transfer(db, batch_id, successor)
+            batch_id = successor
+            result = await allocate_on(service, batch_id)
+            assert result["outcome"] == "deferred"
+            assert f"reason={reason}" in result["reason"]
     notice, = await notices(db, supervisor=True)
     assert notice["from_id"] == "integration-train"
     assert f"reason={reason}" in notice["body"]
     assert "subcommand=fetch" in notice["body"]
-    runtime.start.assert_awaited_once()
+    assert "retries with backoff" in notice["body"]
+    assert runtime.start.await_count == 3
 
 
 @pytest.mark.parametrize("intent", ["paused", "aborted"])
