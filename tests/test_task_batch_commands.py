@@ -2448,7 +2448,9 @@ async def test_release_preserves_pauses_human_routing_and_delivery_gates(handler
     api, ui, draft = [batch["members"][key] for key in ("api", "ui", "draft")]
     async with handler.db.immediate() as conn:
         await handler.db.set_parent(draft, None, conn=conn)
-    await _existing(handler, "undelivered", status=TaskStatus.COMPLETED)
+    # SQL projects ``delivery-of`` structurally (AdmissionView proves Git
+    # delivery), so an unfinished source is what keeps the gate visible here.
+    await _existing(handler, "undelivered", status=TaskStatus.IN_PROGRESS)
     await handler.db.add_dependency(draft, "undelivered", "delivery-of")
     await handler.db.update_task(ui, status=TaskStatus.PAUSED)
     gate = await handler.execute("gate_create", {
@@ -2474,6 +2476,9 @@ async def test_release_preserves_pauses_human_routing_and_delivery_gates(handler
     assert (await handler.db.get_task(ui)).status == TaskStatus.PAUSED
     assert (await handler.db.get_task(api)).is_blocked
     assert (await handler.db.get_task(draft)).is_blocked
+    assert [(b[0], b[3]) for b in await handler.db.get_blocking_dependencies(draft)] == [
+        ("undelivered", "delivery-of"),
+    ]
     assert not (await handler.db.get_gate(gate["gate_id"]))["resolution"]
 
 
