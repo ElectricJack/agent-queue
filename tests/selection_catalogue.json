@@ -1215,10 +1215,12 @@
     "shipped-playbooks": {
       "description": "Shipped and reviewed playbooks: reviewed V2 artifact fixtures and their digests, prose-only playbook sources, the default pipeline intake, agent-type playbooks, the V1 removal ratchet and cron-to-playbook migration.",
       "modules": [
+        "tests/test_assignment_routing_building_blocks.py",
         "tests/test_blocked_task_escalation.py",
         "tests/test_ci_main_sentinel.py",
         "tests/test_default_agent_type_playbooks.py",
         "tests/test_default_assignment_routing_playbook.py",
+        "tests/test_default_pipeline_equivalence.py",
         "tests/test_default_pipeline_intake.py",
         "tests/test_default_playbook_v2_artifacts.py",
         "tests/test_hierarchical_delivery_playbook.py",
@@ -1353,6 +1355,7 @@
       "modules": [
         "tests/test_agent_task_routing.py",
         "tests/test_assignment_routing.py",
+        "tests/test_assignment_routing_building_blocks.py",
         "tests/test_cross_project_routing.py",
         "tests/test_default_assignment_routing_playbook.py",
         "tests/test_pool_agent_routing.py",
@@ -1757,18 +1760,26 @@
         "graph-layout"
       ],
       "default_arm": false,
-      "digest": "sha256:478ecbb5619826bee540bc54701fc6d730bbe0bf4d1b2238eab0070d3d93bde2",
+      "digest": "sha256:643164a7d02319b4809c5afd1149bcd97146616e0299df2020101a5a3b099ae7",
       "imports": [
+        "src.api",
+        "src.api.dependencies",
         "src.api.graph_layout",
         "src.database.queries.layout_queries",
         "src.database.tables",
         "src.git.manager",
+        "src.integration",
+        "src.integration.admission",
         "src.integration.delivery_observer",
+        "src.integration.development",
+        "src.integration.git_truth",
+        "src.integration.stacked_branches",
         "src.models",
         "src.task_graph.layout.driver",
         "src.task_graph.layout.view"
       ],
       "markers": [
+        "parametrize",
         "perf",
         "skipif"
       ],
@@ -2852,7 +2863,7 @@
         "github"
       ],
       "default_arm": true,
-      "digest": "sha256:d90bab6905d95f9ff7c05b58d6618eed30f80936ef427d54440aa3e31c75956d",
+      "digest": "sha256:0fdbcc6f9e29f90c4bfcea72fcae2f6b3ae7dbf38f1fd2eb03393a7147159f4b",
       "imports": [
         "src.api",
         "src.api.auth",
@@ -2862,7 +2873,11 @@
         "src.commands.review_commands",
         "src.database.queries.pull_request_queries",
         "src.database.tables",
-        "src.git.github_contracts"
+        "src.git.github",
+        "src.git.github_activity",
+        "src.git.github_auth",
+        "src.git.github_contracts",
+        "src.integration.ci"
       ],
       "markers": [
         "parametrize"
@@ -3180,6 +3195,27 @@
         "parametrize"
       ],
       "summary": "Assignment routing after the playbook cutover: the task row is the route."
+    },
+    "tests/test_assignment_routing_building_blocks.py": {
+      "areas": [
+        "shipped-playbooks",
+        "task-routing"
+      ],
+      "default_arm": true,
+      "digest": "sha256:54cf3c793b9c1d459035a164d9149162ae75296075ac9a2efcddd349c5b7f8ea",
+      "imports": [
+        "src.commands.contracts",
+        "src.commands.contracts.builtin",
+        "src.commands.contracts.models",
+        "src.playbooks.definition",
+        "src.playbooks.engine",
+        "src.playbooks.executors",
+        "src.playbooks.executors.base"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Installed and shipped routers retain their own policy and command traces."
     },
     "tests/test_attestation_check_run_id.py": {
       "areas": [
@@ -5534,6 +5570,26 @@
       ],
       "summary": "The shipped router runs as an ordinary pipeline over the router commands."
     },
+    "tests/test_default_pipeline_equivalence.py": {
+      "areas": [
+        "shipped-playbooks"
+      ],
+      "default_arm": true,
+      "digest": "sha256:c6e314968fa56cfa5afca411b633576783141507f8c18899f61aded3a4a45eeb",
+      "imports": [
+        "src.commands.contracts",
+        "src.commands.contracts.builtin",
+        "src.commands.contracts.registry",
+        "src.commands.principal",
+        "src.playbooks.definition",
+        "src.playbooks.engine",
+        "src.playbooks.executors.base"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Compare the building-block declaration with the captured shipped pipeline."
+    },
     "tests/test_default_pipeline_intake.py": {
       "areas": [
         "shipped-playbooks"
@@ -5775,7 +5831,7 @@
         "development-delivery"
       ],
       "default_arm": true,
-      "digest": "sha256:06c7336f0935b37dc2215fb582639fa266ac83fb2b456be2b8b77c01a15577f7",
+      "digest": "sha256:b6ff414c00111bda9f2edd10c4127aa2c4cad159811f21165d871e91d6a35a4d",
       "imports": [
         "src.commands",
         "src.commands.principal",
@@ -5783,6 +5839,7 @@
         "src.database.queries.task_queries",
         "src.database.tables",
         "src.doctor.models",
+        "src.git",
         "src.git.manager",
         "src.integration.admission",
         "src.integration.batches",
@@ -6417,11 +6474,12 @@
         "doctor"
       ],
       "default_arm": true,
-      "digest": "sha256:3c41f9834d4a60825f5b2f14b80fa03e3efb3e826a93b346c7a0bb4f29cf49ed",
+      "digest": "sha256:bec03d8c8a6ca05cbf4082948828310cf5f862fb20201b69b5c96bfba542d92b",
       "imports": [
         "src.config",
         "src.doctor.models",
         "src.models",
+        "src.playbooks.activation",
         "src.workspace_disable"
       ],
       "markers": [
@@ -7402,7 +7460,7 @@
         "github"
       ],
       "default_arm": true,
-      "digest": "sha256:7f5ddada294d348f28fc0fb3f5a5dabcb84c39646fcafaceae1533ee6c5794f9",
+      "digest": "sha256:50ee475ea282a6d11a5c5edfc80952c8f510fdc621c92ccb72d69eceb96f532d",
       "imports": [
         "src.config",
         "src.git.askpass_broker",
@@ -7411,6 +7469,7 @@
         "src.git.github_contracts",
         "src.git.manager",
         "src.integration.service",
+        "src.logging_config",
         "src.orchestrator.worktree_manager"
       ],
       "markers": [
@@ -7629,11 +7688,13 @@
         "github"
       ],
       "default_arm": true,
-      "digest": "sha256:46998fca9677830d0bef091f524ed25ceb7810607e2a577090b37c5b55ff4e72",
+      "digest": "sha256:e495615671ccd9357a45aaf8dda08035c06ce3558fe983e524dbf850d64ec519",
       "imports": [
         "src.commands.integration_commands",
         "src.config",
+        "src.git.check_runs",
         "src.git.github",
+        "src.git.github_activity",
         "src.git.github_app",
         "src.git.github_auth",
         "src.git.github_cli",
@@ -9108,7 +9169,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:60f6e679d87933dcb7d4825f3d2da09961ae16a996612b918d87a487e0ab9707",
+      "digest": "sha256:c3146fdc9b2af1f4236a3641b00a6457fe751123f9e8b35cbad79776a7d50e35",
       "imports": [
         "src.api.auth",
         "src.commands.principal",
@@ -9130,6 +9191,7 @@
         "src.sessions.fake",
         "src.sessions.harness_parser",
         "src.sessions.harness_registry",
+        "src.sessions.provider",
         "src.sessions.spec"
       ],
       "markers": [
@@ -9187,7 +9249,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:baf0cbb14b41c32aef5497ae1a53a03b80efa56f41d284ef846d377b8894704c",
+      "digest": "sha256:944fe6a7a7ded7ba1a83822a77b2028559a396e29ab210702bb2d3819574f6a4",
       "imports": [
         "src",
         "src.api",
@@ -9195,16 +9257,20 @@
         "src.api.execute",
         "src.cli.app",
         "src.cli.client",
+        "src.config",
         "src.database",
         "src.database.queries.claim_queries",
         "src.database.queries.hierarchy_queries",
         "src.database.tables",
+        "src.git.github",
+        "src.git.github_contracts",
         "src.git.manager",
         "src.integration.branch_materialization",
         "src.integration.collection",
         "src.integration.hierarchy",
         "src.integration.models",
         "src.integration.ownership",
+        "src.integration.repository_git",
         "src.models",
         "src.task_graph",
         "src.task_graph.creator",
@@ -9584,11 +9650,13 @@
         "integration-promotion"
       ],
       "default_arm": true,
-      "digest": "sha256:c3c0eb990fac0597e861b4ded8021a3ecc3cf0057ca09e5beef6be5b4d8961f8",
+      "digest": "sha256:1cdb2d9a08ca1d8711d976a4aed6a60a2824cd58af525bce7e606dc37db6f587",
       "imports": [
         "src.commands.integration_commands",
         "src.commands.principal",
         "src.database.tables",
+        "src.git.github_auth",
+        "src.git.github_cli",
         "src.git.github_contracts",
         "src.git.manager",
         "src.integration",
@@ -13042,7 +13110,7 @@
         "orchestrator"
       ],
       "default_arm": true,
-      "digest": "sha256:76ed5cd80c491220759122d65de452fdee5dbc61c082f93400046a861c47529c",
+      "digest": "sha256:86ba06f660411688076c131aa4c08f89a7d1e40108a422d9ccead98ba8ea1b8a",
       "imports": [
         "src.commands.contracts",
         "src.commands.contracts.builtin",
@@ -13053,6 +13121,7 @@
         "src.git.github_contracts",
         "src.git.manager",
         "src.integration.branch_materialization",
+        "src.integration.dispatch_waits",
         "src.integration.hierarchy",
         "src.integration.models",
         "src.integration.outbox",
@@ -13070,6 +13139,8 @@
         "src.runtimes.base",
         "src.scheduler",
         "src.sessions.harness_parser",
+        "src.waits.conditions",
+        "src.waits.watchers.ci",
         "src.workspace_spec_watcher"
       ],
       "markers": [
@@ -19256,11 +19327,14 @@
         "playbook-authoring"
       ],
       "default_arm": true,
-      "digest": "sha256:f1d34ee6b343a4a593676fe887cab533cd067893eee9c91d5dcaa342780701cb",
+      "digest": "sha256:042f2181214e7014186b60ee3d0f58e918b33e9a0800ba5ecfa8593e9b8c1e72",
       "imports": [
         "src.commands.handler",
         "src.commands.playbook_commands",
         "src.commands.playbook_v2_commands",
+        "src.doctor.models",
+        "src.doctor.stall_checks",
+        "src.playbooks.activation",
         "src.playbooks.artifact_store",
         "src.playbooks.definition",
         "src.playbooks.profiles",
@@ -19817,7 +19891,7 @@
         "agent-waits"
       ],
       "default_arm": true,
-      "digest": "sha256:2d54fac7cecc327be376e6edef264a52291666ba91f3cdab1b8fdbc1e26a8809",
+      "digest": "sha256:279a4ad1652f9215b4f472de3474093ea88cc15ee548df21148cfd10ebe54fbd",
       "imports": [
         "src.cli.waits",
         "src.commands",
@@ -19852,6 +19926,7 @@
         "src.waits.fencing",
         "src.waits.graph",
         "src.waits.holding",
+        "src.waits.occupancy",
         "src.waits.registry",
         "src.waits.resume_ack"
       ],

@@ -7489,7 +7489,7 @@
   "integration_close_delivered_pr": {
     "mode": "typed",
     "producer": "src/commands/integration_commands.py:IntegrationCommandsMixin._cmd_integration_close_delivered_pr",
-    "source_digest": "sha256:d8fdf9e5857408c3e1960ebdbf4626c7230cef322f3be9970ae830302b6254a8",
+    "source_digest": "sha256:af0a6625ec8bd214cb30fd21c6020cb24f4e632b1d9c701b0d6b211f8798d8c4",
     "input_schema_source": "typed_contract",
     "schema_quality": "typed",
     "argument_reads_diagnostic_only": [],

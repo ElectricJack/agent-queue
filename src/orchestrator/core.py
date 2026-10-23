@@ -72,6 +72,7 @@ import logging
 import os
 import time
 import uuid
+from collections.abc import Mapping
 from functools import cached_property
 from pathlib import Path
 from typing import Any
@@ -2314,7 +2315,8 @@ class Orchestrator(
             from src.projects.github import GitHubError, parse_github_repository
 
             try:
-                parsed = parse_github_repository(repository.url)
+                url = repository["url"] if isinstance(repository, Mapping) else repository.url
+                parsed = parse_github_repository(url)
             except GitHubError:
                 return None
             # Share onboarding's identity rules; authentication still goes
