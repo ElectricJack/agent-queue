@@ -2094,19 +2094,19 @@ async def test_admission_completes_while_retained_fsck_holds_repository(
         view = await asyncio.wait_for(observe_admission(
             db, ['waiting', 'independent'], service,
         ), 5)
-        assert view.allowed == {'independent'}
-        assert view.reasons['waiting']
+        # Unknown delivery remains admissible while the bounded Git read yields.
+        assert view.allowed == {'waiting', 'independent'}
+        assert not view.reasons.get('waiting')
         assert not recovery.done()
         # A subsequent reader also returns without a second fetch or cancellation.
         assert (await asyncio.wait_for(observe_admission(
             db, ['waiting', 'independent'], service,
-        ), 5)).allowed == {'independent'}
+        ), 5)).allowed == {'waiting', 'independent'}
         assert not recovery.done()
     finally:
         release.set()
         await asyncio.wait_for(recovery, 10)
-    # Recovery completion does not extend admission's expired request budget.
-    # A new admission must acquire fresh proof and can release the dependent.
+    # A fresh read confirms the proof after recovery without changing admission.
     monkeypatch.setattr('src.git.manager.REQUEST_GIT_READ_SECONDS', 5)
     assert (await observe_admission(db, ['waiting', 'independent'], service)).allowed == {
         'waiting', 'independent',
