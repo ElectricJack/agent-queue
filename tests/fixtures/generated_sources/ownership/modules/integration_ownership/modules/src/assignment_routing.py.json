@@ -1,0 +1,5 @@
+{
+  "generic_dependencies": {
+    "src/assignment_routing.py::ExplicitRouting": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}

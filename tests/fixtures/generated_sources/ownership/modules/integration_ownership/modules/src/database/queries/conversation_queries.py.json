@@ -1,0 +1,8 @@
+{
+  "exclusions": {
+    "src/database/queries/conversation_queries.py::INPUT_STATES['expired']": "Generic same-shaped definition independently present at the pinned baseline/landing; new relocations are still charged."
+  },
+  "generic_dependencies": {
+    "src/database/queries/conversation_queries.py::ConversationQueriesMixin": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}

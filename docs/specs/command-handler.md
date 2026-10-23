@@ -11,6 +11,9 @@ tags: [spec, command-handler, core]
 > Start at [the documentation home](../README.md) for what AQ does today, and
 > see [historical material](../history/README.md) for how this material is
 > organised.
+> Current implementation: [daemon-core](systems/daemon-core.md) and
+> [architecture](../concepts/architecture.md). Domain-specific behaviour is
+> described by the sibling [system specs](systems/README.md).
 
 ## 1. Overview
 
@@ -909,10 +912,25 @@ and live branch holds remain available to sweeps of other healthy checkouts.
 
 #### `release_workspace`
 
-Admin force-release a stuck workspace lock.
+Release a stuck workspace lock after re-reading ownership under a row lock.
+Refuse if a claim marker, live or preparing session, attached integration owner,
+agent launch reservation or job pin still protects the checkout. A stale listing is never release authority.
+`force=true` requires `task_id` matching every protected task; ambiguous or
+taskless protections and job pins cannot be overridden. Forced release changes
+only the lock row, preserving claim markers and integration ownership, and is audited.
 
 **Parameters:**
 - `workspace_id` (required)
+- `force` (optional, default false), `task_id` (required with force)
+
+#### `rebind_workspace`
+
+Repair missing lock columns for an existing active pool claim, without starting
+or stopping a session or changing task state. Require `workspace_id`, `task_id`
+and `session_id`; verify project, path, agent assignment, active claim phase and
+epoch against the claim marker. Conflicting locks, sessions or attached owners
+refuse the repair. The command restores only the lock binding and audits it;
+it does not enable a quarantined workspace or rewrite a claim marker.
 
 ---
 

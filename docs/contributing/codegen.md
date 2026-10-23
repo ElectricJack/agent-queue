@@ -36,7 +36,9 @@ This page is the list, in the order a change is most likely to reach them.
 | [`docs/reference/playbook-commands/`](../reference/playbook-commands/README.md) (one page per registered command, plus the index) | The command contract registry — the generated block only | `python scripts/gen-command-docs.py` | yes |
 | [`docs/reference/configuration-schema.json`](../reference/configuration-schema.json) | `AppConfig` | `python scripts/generate-config-schema-inventory.py` | yes |
 | [`tests/selection_catalogue.json`](../../tests/selection_catalogue.json) | `tests/selection_areas.yaml` + the test modules on disk | `python scripts/generate-selection-catalogue.py` | yes |
-| `tests/integration_ownership*.json` | Authored policy and fixed historical inputs in `tests/fixtures/generated_sources/ownership/` | `python scripts/generate-recorded-artifacts.py` | yes |
+| `tests/integration_ownership*.json`, `tests/fixtures/generated_sources/ownership/*.json` | Authored module rows, policy sections and fixed historical inputs in `tests/fixtures/generated_sources/ownership/modules/` | `python scripts/generate-recorded-artifacts.py` | yes |
+| `tests/fixtures/contracts/generated-command-audit.json` | Reviewed producer evidence in `tests/fixtures/contracts/command_audit_modules/`, one file per producer module | `python scripts/generate-recorded-artifacts.py` | yes |
+| `tests/test_command_descriptors.py` | Authored Python definitions in `tests/fixtures/generated_sources/command_descriptors/` | `python scripts/generate-recorded-artifacts.py` | yes |
 | [`src/prompts/reviewed_playbooks/`](../../src/prompts/reviewed_playbooks/) | Shipped playbook markdown, through a human review step | `python scripts/rebuild-reviewed-playbook-artifacts.py` | yes |
 | [`module-inventory.json`](../plans/documentation-overhaul/module-inventory.json), [`module-ownership.json`](../plans/documentation-overhaul/module-ownership.json) | `git ls-files` + ownership rules | `python3 docs/plans/documentation-overhaul/refresh_inventory.py` — **owning shard only**, see [below](#the-documentation-coverage-manifest) | yes |
 
@@ -93,8 +95,96 @@ normal publication authority and verification.
 
 Ownership policy and historical measurements are authored inputs, not new
 measurements at assembly time. Their canonical copies live in
-`tests/fixtures/generated_sources/ownership/`; generation reproduces the existing
-manifest and historical report without changing ceilings, revisions or fingerprints.
+`tests/fixtures/generated_sources/ownership/modules/<artifact>/`: `modules/`
+groups keyed evidence by source module, `policy/` holds individual reviewed
+policy sections and historical measurements, and `fingerprints/` holds existing
+fingerprint buckets. Edit the relevant shard after review. Generation combines
+the shards without measuring new ceilings, revisions or fingerprints. The two
+former canonical JSON files under `ownership/` are now generated compatibility
+projections, as are the copies under `tests/`.
+
+The producer audit likewise lives in
+`tests/fixtures/contracts/command_audit_modules/<producer-path>.json`; add or
+edit the reviewed command row in its producer module, then regenerate. The
+descriptor tests are assembled verbatim from numbered `.py.inc` definitions under
+`tests/fixtures/generated_sources/command_descriptors/`. Edit the definition's
+fragment; new definitions can use a new filename without editing an index or
+renumbering existing fragments. Their executable assertions remain authored.
+Both aggregate files use the generated merge path. Independent module or
+definition edits combine; conflicting edits to the same reviewed source shard
+remain source conflicts requiring resolution. Duplicate evidence is refused.
+
+`python scripts/bookkeeping_sources.py [--check]` rebuilds or checks only these
+bookkeeping projections. It never refreshes a command digest or invents review
+evidence. The full regeneration command includes the same step through
+`generate-recorded-artifacts.py`.
+
+### Legacy bookkeeping migration
+
+An older branch may carry reviewed evidence only in the former aggregates:
+`tests/fixtures/generated_sources/ownership/integration_ownership.json`,
+`tests/fixtures/generated_sources/ownership/integration_ownership_report.json`,
+`tests/fixtures/contracts/generated-command-audit.json`, or
+`tests/test_command_descriptors.py`. Those deltas must be transferred before
+regeneration. The train checks both source sides against their own shards,
+including clean single-sided changes, before restoring any generated output.
+Unrepresented evidence produces an **Unmigrated legacy bookkeeping evidence**
+conflict naming the paths and this recipe. Normal regeneration and `--check`
+also refuse committed or edited aggregate evidence absent from the shards;
+they leave that evidence untouched.
+
+1. Before merging or regenerating, retain the old PR head and its merge base
+   with current `origin/dev`. Save both versions and their exact diff for all
+   four paths outside the checkout. Include any compatibility ownership changes
+   present only in `tests/integration_ownership*.json` and reconcile them too.
+2. Merge current dev and resolve ordinary authored-source conflicts. Keep the
+   saved evidence while transferring its additions, edits **and deletions** to
+   the current shards. Preserve concurrent dev evidence. Resolve overlapping
+   reviewed changes explicitly; choosing an entire aggregate loses evidence.
+3. Ownership rows in `shared`, `exclusions`, `storage_sinks`,
+   `generic_dependencies`, `shared_state`, and `shared_definitions` belong under
+   `tests/fixtures/generated_sources/ownership/modules/<artifact>/modules/`,
+   grouped by the row key's module before `::`, with the existing
+   `{section: {key: value}}` wrapper. Non-path keys use
+   `modules/_other/<section>.json`. Other top-level sections, including reviewed
+   historical measurements, ceilings and exceptions, belong in
+   `policy/<section>.json`. Transfer fingerprint list changes to
+   `fingerprints/<field>/<first-hex-character>.json`. Preserve reviewed pins;
+   never remeasure baselines to satisfy a check.
+4. Transfer audit rows verbatim into
+   `tests/fixtures/contracts/command_audit_modules/<producer-path>.json`, keyed
+   by command name. Preserve digests, consumers, notes and reviewed metadata.
+   Remove deleted rows; a producer move removes its old row and adds its new
+   row. Do not bulk-refresh digests.
+5. Transfer exact changed descriptor definitions and decorated tests to the
+   matching numbered `.py.inc` fragments under
+   `tests/fixtures/generated_sources/command_descriptors/`. The preamble owns
+   imports and the docstring. Place new definitions in lexical order before
+   use without renumbering existing fragments. Preserve assertions, bytes and
+   separators, and remove deleted definitions.
+6. Resolve the four aggregate conflicts to the corresponding shard projections
+   **after** porting every saved delta. `python scripts/bookkeeping_sources.py`
+   projects these now-reviewed shards; stage the resolved paths and commit the
+   reviewed migration before running the full generation check if the old HEAD
+   still contains unported aggregates. Then run
+   `scripts/regenerate-generated.sh` and its `--check` mode. Review the output
+   against both the saved delta and current dev evidence. Verify that no row,
+   policy exception, pin or assertion vanished. Run the generated-artifact,
+   generated-command-contract, descriptor, integration-size and selection
+   catalogue tests plus branch-specific checks. Commit shards and projections
+   together, then publish from the held branch.
+
+Older Git versions supply only temporary blobs to a low-level merge driver.
+The default `aq-generated` driver conservatively leaves changed legacy files
+conflicted when it cannot prove their provenance. For a branch whose deltas
+are already ported, callers may configure the same driver with explicit
+`--base-ref <merge-base> --current-ref <our-head> --other-ref <their-head>`
+before its `%O %A %B %P` arguments. It verifies those refs against all supplied
+blobs, validates each source side, then merges. This is an evidence check, not
+an override. Untouched legacy branches and migrated branches still merge and
+regenerate through the train. The final batch sweep rechecks its frozen merge
+inputs through `AQ_GENERATED_MERGE_INPUTS`, supplied by the integration runner
+in its otherwise isolated subprocess environment; ambient values are discarded.
 
 Reviewed playbooks similarly have explicit canonical inputs under
 `tests/fixtures/generated_sources/playbooks/`: a readable `definition.json`, the
@@ -395,14 +485,15 @@ as `hibernation-main-refresh-contract-changes.json`.
 
 **Generated invocation remains disabled pending private-value storage and safe
 inspection (A3).** There is no runtime bypass flag. The A2 producer audit is
-pinned in `tests/fixtures/contracts/generated-command-audit.json`, keyed by all
-built-in handlers. Adding a handler or changing its return branches requires
+pinned in the authored `tests/fixtures/contracts/command_audit_modules/` shards
+and projected into `tests/fixtures/contracts/generated-command-audit.json`, keyed
+by all built-in handlers. Adding a handler or changing its return branches requires
 reviewing and updating that evidence. Static argument reads are diagnostic;
 they never silently expand the public schema.
 
 The restart hold correction records `restart_task`'s optional `override_hold` and
 `reason` arguments in `restart-hold-contract-changes.json`. Removing exactly that
-transport delta restores the supervisor-health catalogue bytes. The producer audit
+transport delta restores the pre-hold dev catalogue bytes. The producer audit
 pins the explicit refusal and delegated restart paths; recovery tests cover exact
 hold fencing, release authority and recorded provenance.
 
@@ -410,7 +501,8 @@ After reviewing a handler's return branches and contract fields, refresh its
 source digest with `python scripts/refresh-command-audit-digest.py --command explain_task --write`
 (repeat `--command` for each reviewed handler). The default mode, also available
 as `--check`, reports digest drift without writing. This command updates only
-the selected handler digests; return
+the selected handler digests in their owning module shards and refreshes the
+aggregate projection; return
 branches and other audit evidence stay authored. A reviewed helper requires
 `--helper <existing-helper-name>` with exactly one `--command`; this updates only
 that command's existing helper pin, preserving the handler and other helper

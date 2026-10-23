@@ -1,0 +1,43 @@
+{
+  "shared_definitions": {
+    "src/portable_config.py::PORTABLE_CONFIG_SECTIONS": {
+      "baseline_span": [
+        32,
+        60
+      ],
+      "landing_span": [
+        32,
+        60
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/portable_config.py::PORTABLE_SECTION_KEYS['integration']": {
+      "baseline_span": [
+        69,
+        78
+      ],
+      "landing_span": [
+        69,
+        78
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/portable_config.py::_project_fields": {
+      "reason": "Portable project import explicitly excludes active integration preferences from the generic project update."
+    },
+    "src/portable_config.py::_stage_project_preferences": {
+      "reason": "Writes a pending portable integration preference draft, retaining destination-local trust and rollout requirements without activation."
+    },
+    "src/portable_config.py::validate_candidate_config": {
+      "baseline_span": [
+        307,
+        334
+      ],
+      "landing_span": [
+        307,
+        334
+      ],
+      "reason": "Imports or references an explicitly owned integration primitive."
+    }
+  }
+}

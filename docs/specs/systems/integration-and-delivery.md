@@ -7,12 +7,11 @@ tags: [system-spec, integration, delivery, train, ci, repair, promotion, release
 **System:** `integration-and-delivery`, one of the 18 systems in the Agent Queue system
 inventory (vault: `projects/agent-queue/specs/2026-10-20-agent-queue-system-inventory.md`,
 review `rev-bright-rapids`, approved on 2026-10-20).
-**Written:** 2026-10-20, against the `dev` branch at `22cffd1b7`, for task
-`eager-vault-55.7`.
-**What this page is:** a map of the system as the code stands, written for an engineer
-new to Agent Queue. It describes the system and decides nothing. The "Planned work"
-section is a snapshot of the open tasks and in-flight specs on the date above, and it
-goes stale as they land.
+**Audited:** 2026-10-22 against `origin/dev` at `52d2efe4c`, task
+`noble-ridge-97`. Originally written on 2026-10-20 for `eager-vault-55.7`.
+**What this page is:** a map of the shipped system for an engineer new to Agent
+Queue. Runtime behavior below describes this checkout, not the operator's live
+configuration or the current state of remote branches and tasks.
 
 Where another document already explains something in depth, this page links to it
 rather than repeating it. Two documents come first:
@@ -43,8 +42,8 @@ never lose a commit. Integration-and-delivery does this job **without a human me
 - It **assembles** completed work into a candidate commit on top of the target branch
   (a *batch*).
 - It **verifies** that exact candidate with the project's required CI jobs.
-- It **repairs** a red or conflicting candidate by giving a bounded fix task to an
-  agent. When that budget runs out it escalates to a human.
+- It **repairs** a red or conflicting candidate through one bounded fixer session per batch family. Exhaustion reports once
+  to the project supervisor and defers the batch with a finite revisit.
 - It **publishes** a green candidate with a fenced, compare-and-swap fast-forward of the
   target branch.
 - It **cleans up** the branches, worktrees and pull requests that delivered work no
@@ -66,21 +65,21 @@ playbooks and supervisors, which act through the same commands
 
 | Path | What it holds |
 |---|---|
-| `src/integration/` | The whole engine: about 130 modules and about 81k lines. The reduced Git-first train is a small part of it; the rest is retained compatibility code from earlier designs (section 6). |
+| `src/integration/` | Live train, Git evidence, promotion, cleanup and retained compatibility/recovery boundaries; see the [module catalog](../../reference/modules/integration.md). |
 | `src/integration/train.py`, `train_sources.py`, `batches.py`, `train_controls.py` | **The live delivery engine.** `IntegrationTrain`, target and batch selection, the batch store, and the operator controls. |
-| `src/integration/gitops.py`, `regeneration.py`, `lock.py`, `checks.py`, `ci.py`, `attestation.py`, `candidate_baseline.py`, `repair.py` (`OrdinaryRepairService`) | Train helpers: deterministic merging, generated-file regeneration, the branch lock, required-check evaluation, trust manifests, hosted attestation, pre-existing-failure baselines and repair allocation. |
+| `src/integration/gitops.py`, `regeneration.py`, `lock.py`, `checks.py`, `ci.py`, `attestation.py`, `candidate_baseline.py`, `fixers.py`, `fixer_runtime.py`, `failure_groups.py` | Train helpers: deterministic merging, generated-file regeneration, the branch lock, required-check evaluation, trust manifests, hosted attestation, pre-existing-failure baselines and repair allocation. |
 | `src/integration/service.py` | `IntegrationService`, the daemon's integration loop. |
 | `src/integration/delivery_truth.py`, `git_truth.py`, `delivery_observer.py`, `provenance.py` | Delivery truth: completion provenance refs, Git-based containment proofs, and the observer that the scheduler, archive and status read. |
-| `src/integration/promotion_steps.py`, `promotion_flow*.py`, `src/commands/promote_commands.py` | Promotion flows and steps. |
+| `src/integration/promotion_steps.py`, `promotion_routing.py`, `src/commands/promote_commands.py` | Promotion flows and steps. |
 | `src/integration/cleanup.py`, `branch_retirement.py`, `branch_sweep.py`, `pr_cleanup.py`, `owner_recovery.py` | Cleanup, retirement and recovery. |
 | `src/integration/root_pull_requests.py`, `github_review_poll.py`, `epic_delivery.py`, `stacked_branches.py` | Root and epic PRs, the PR gate, the read-only epic delivery projection, and stacked prerequisites. |
 | `src/commands/integration_commands.py` | Every `integration_*` command, about 70 of them (section 3.4). |
 | `src/commands/ci_commands.py` | `ci_completed_status`, `ci_baseline_status` (the `ci-main-sentinel` playbook's observation half) and `ci_repair_adopt`. |
 | `src/cli/integration.py`, `src/cli/promote.py`, `src/cli/promote_rulesets.py` | `aq integration …` and `aq promote …`. |
-| `src/doctor/integration_checks.py` | 14 `integration.*` doctor checks. |
+| `src/doctor/integration_checks.py` | the `integration.*` doctor checks. |
 | `src/install/deploy.py`, `update.py`, `deploy_history.py` | The deploy half of releases (`aq update`). |
 | `src/releases/notes/` | Release notes, one file per version. |
-| `src/prompts/integration_playbooks/` | Shipped integration playbooks (`promotion-continuous`, `promotion-request`, `root-train`, …). |
+| `src/prompts/integration_playbooks/` | Shipped policy (`fast-smooth-train`, `promotion-continuous`, `promotion-request`) and retained older playbooks. |
 | `src/integrations/` | An empty package that is unrelated to `src/integration/`. |
 | `src/database/tables.py`, `src/database/queries/integration_*_queries.py`, `blocked_state.py`, `migrations/integration_guards.py` | Tables, queries and the database triggers that enforce append-only and monotone rules. |
 
@@ -104,15 +103,24 @@ To read the code, you need to know that two integration designs are in `src/inte
    tables, recovery commands and many helpers remain, and some still run in maintenance.
 
 A daemon-wide setting chooses between them: `integration.git_first` in
-`src/config.py:2647`. It is restart-required.
+`src/config.py`. It is restart-required.
 
 | `git_first` | What runs |
 |---|---|
-| `active` | `train_for()` (`train_sources.py:3026`) builds an `IntegrationTrain`. This is the operator's setting on this box. |
-| `shadow` (**the code default**) | `train_for()` returns `None`, and `core.py` sets every subject runtime to `None`. **Nothing delivers.** The `integration.delivery_engine` doctor check and `delivery_engine.py:engine_refusal` report "no engine". |
+| `active` | `train_for()` (`train_sources.py`) builds an `IntegrationTrain`. |
+| `shadow` (**the code default**) | `train_for()` returns `None`, and `core.py` sets every subject runtime to `None`. **No delivery engine runs.** Inspect `integration.delivery_engine` against the running daemon. |
 
-Several documents still say that `shadow` "keeps the subject runtimes authoritative".
-That stopped being true on 2026-10-12 (section 6).
+The Subject publishers and runtimes were retired on 2026-10-12. Shadow is no
+longer a fallback publisher. `integration.reconciler_active` does not pause an
+active train.
+
+The current project activation supplies train policy (`train_policy.py`). Its
+binding is `hierarchical_integration_policy.train.playbook_id`, defaulting to
+`fast-smooth-train`. Explicitly disabling the bound project activation stops train
+work; an unavailable, unhealthy or unreadable bound artifact produces finite retry.
+Projects with neither a binding nor an activation keep pre-install behavior.
+Current playbook required checks overlay a pending candidate without changing its
+frozen sources or intent. See the [train runbook](../../guides/git-first-train-runbook.md).
 
 Every project also has a **rollout mode** in `projects.hierarchical_integration_mode`
 (`ck_projects_hierarchical_integration_mode`):
@@ -151,7 +159,7 @@ A repository with no PR host falls back to `direct`.
   `refs/aq/provenance/completions/<digest>/<generation>`. The train selects sources from
   these refs. Close does not enqueue anything explicitly.
 - **Target.** A `TrainTarget = (project_id, repository_id, target_ref)` of kind root,
-  epic, development or promotion (`train.py:128`). No trains table exists; a target
+  epic, development or promotion (`train.py`). No trains table exists; a target
   exists because work is aimed at it.
 - **Batch.** One attempt to deliver a frozen set of sources to one target, stored in
   `integration_batches` and `integration_batch_members`.
@@ -193,7 +201,7 @@ A repository with no PR host falls back to `direct`.
   candidate: the seal prevents ordinary hierarchy repair. Unknown baseline checks
   never authorize this exception. Frozen members, repair budgets and publication
   checks remain authoritative.
-- **Repair.** A bounded fix task filed against a red or conflicting candidate
+- **Repair.** A bounded session working on the retained red or conflicting candidate
   (section 3.3.3).
 - **Receipt.** An append-only `task_delivery_receipts` row with a disposition of `code`,
   `noop`, `ineligible`, `skipped` or `failed`. The legacy protocol wrote receipts as its
@@ -201,7 +209,7 @@ A repository with no PR host falls back to `direct`.
 - **Delivery truth.** "Is task T delivered to ref R?" is answered from Git: the task's
   recorded commit is an ancestor of R. Only immutable, OID-bound proofs are cached.
   `delivery_truth.py` and `git_truth.py` hold the two implementations, and
-  `delivery_observer.py:DeliveryObserver` (line 585) serves the answer (section 3.3.6).
+  `delivery_observer.py:DeliveryObserver` serves the answer (section 3.3.6).
 - **Promotion flow and step.** An ordered list of `source → target` steps in
   `projects.promotion_flow`.
   - Each step pins one exact source commit *S* on a private
@@ -217,15 +225,16 @@ A repository with no PR host falls back to `direct`.
 `run_one_cycle` belongs to daemon-core, which owns its ordering. Integration runs
 **outside** that cycle:
 
-1. `IntegrationService` (`service.py:51`) runs its own asyncio loop every 5 s. It is
-   wired in `src/orchestrator/core.py`, around lines 2228–2421, together with
+1. `IntegrationService` (`service.py`) runs its own asyncio loop with a 5 s interval; readiness events also wake it. It is
+   wired in `src/orchestrator/core.py`, together with
    `IntegrationOutbox`, `IntegrationAttestationService`, `IntegrationCleanupService`,
    branch materialization, retirement and discard, and `TrainCommandDriver`.
-2. Each `tick` runs `_reconcile` in three parts: the train, then any runtimes, then
+2. Each `tick` runs `_reconcile` in three parts: the train, then any injected compatibility runtimes (none in current daemon wiring), then
    maintenance. Maintenance has a 300 s budget per source and 60 s per item. The tick
    then dispatches the outbox. With a train attached, the outbox delivers only
    `ACTIVE_OUTBOX_EVENT_TYPES`: the `promotion.*` and `batch.*` events.
 3. Maintenance callbacks include:
+   - Git-truth reconciliation
    - orphaned parent operations
    - batch cleanup
    - branch discard and materialization
@@ -236,13 +245,13 @@ A repository with no PR host falls back to `direct`.
    - delivered-PR cleanup
 
    Maintenance has no delivery authority.
-4. `TrainCommandDriver` (`train_sources.py:3002`) calls the train through
+4. `TrainCommandDriver` (`train_sources.py`) calls the train through
    `CommandHandler`, honouring the rule that every state change goes through a command.
    The command is `integration_train_tick`
    (`integration_commands.py:_cmd_integration_train_tick`). It accepts only the
    `integration-train` service principal and is excluded from the HTTP API. Every 60 s it
    runs `stall_alerts.alert_stalled_batches`, and then it calls `IntegrationTrain.tick`.
-5. `IntegrationTrain.tick` (`train.py:468`) visits targets with
+5. `IntegrationTrain.tick` (`train.py`) visits targets with
    `REPOSITORY_CONCURRENCY = 4`, a 900 s timeout per visit, and a 60–900 s backoff when
    GitHub rate-limits.
 
@@ -260,11 +269,12 @@ Each visit to a target (`_visit_target`, then `DatabaseBatches.open_batch`, then
      [root PR check recovery](../design/root-pr-check-recovery.md)).
    - Stacked sources whose prerequisite is not ready are refused with
      `undeclared_stack_base` or `stack_prerequisite_pending`.
-2. **Decide when to seal.** A batch seals at
-   `min(latest_admission + cadence, first_admission + settling_cap)`. The defaults are
-   300 s and 1800 s (`IntegrationTrainPolicy`, `models.py:294`). `seal-now` bypasses the
-   wait once.
-3. **Freeze and merge.** `gitops.py:merge_sources` (line 496) merges the frozen members
+2. **Seal when the target is idle.** Eligible work seals immediately; work arriving
+   while a batch runs belongs to the next batch. Deprecated `cadence_seconds` and
+   `settling_cap_seconds` no longer gate admission; the latter remains a stall-alert
+   threshold. `seal-now`
+   requests an immediate visit rather than bypassing a cadence gate.
+3. **Freeze and merge.** `gitops.py:merge_sources` merges the frozen members
    in order onto the target head. Its outcomes are:
    - `merged`
    - `conflict` (which includes a colliding Alembic head, `alembic_head_collision`)
@@ -276,47 +286,44 @@ Each visit to a target (`_visit_target`, then `DatabaseBatches.open_batch`, then
    (`regeneration.py`, 600 s timeout), and the regenerated tree becomes part of the
    candidate. A failure is reported as `RegenerationFailure` or `GeneratedMergeConflict`
    ([codegen](../../contributing/codegen.md#one-command-and-never-a-hand-merge)).
-5. **Publish the candidate.** `LeasedPublish` (`train_sources.py:2128`) pushes the
+5. **Publish the candidate.** `LeasedPublish` (`train_sources.py`) pushes the
    candidate ref under the branch lock with an expected-old compare-and-swap.
 6. **Check.** CI runs on the candidate ref. Which refs trigger CI is described in
-   [integration CI boundaries](../../guides/integration-ci-boundaries.md), which is
-   partly stale (section 6). The verdict follows section 3.2.
-7. **Green.** `settle_on` (`train_sources.py:1908`) fast-forwards the target to the
+   [integration CI boundaries](../../guides/integration-ci-boundaries.md), for the current workflow triggers and evidence boundary. The verdict follows section 3.2.
+7. **Green.** `settle_on` (`train_sources.py`) fast-forwards the target to the
    candidate with a fenced compare-and-swap push. The lifecycle becomes `promoted`, and
-   `cleanup_settled` (line 1942) materializes and advances the cleanup items.
+   `cleanup_settled` materializes and advances the cleanup items.
    - A root target also needs the daemon's hosted **attestation** check run
      (`attestation.py`; policy `hosted_attestation` is on for roots and off for epics).
-   - An epic target settles through `EpicCompletions.settle` (line 2017), which opens
+   - An epic target settles through `EpicCompletions.settle`, which opens
      the epic's root PR.
 
 #### 3.3.3 Red and conflicting batches
 
-`_red` (`train.py`, about line 867) handles a red candidate:
+The daemon constructs `BatchFixerService`, not the task-per-attempt allocator.
+`fixers.py` registers one session before launch, retains ambiguous launch outcomes,
+and sends changed evidence to that session. A repair uses no new task or pool claim.
+The fixer publishes only its bound candidate through `aq integration batch-fix
+--action status|push|rebind`; session identity, branch fences and exact-head checks
+remain authoritative.
 
-- **Every failure pre-dates the batch.** An epic target gets one sync with the default
-  branch. If that sync is unavailable or spent and this open batch seals the epic's
-  subtree, it files an ordinary candidate repair for the proven inherited failures.
-  Mixed candidate/target failures use the same scope exception. The operator or live
-  owning supervisor can preview `aq integration repair-target BATCH_ID` and apply with
-  the previewed `--candidate-sha`, `--target-sha` and a nonblank `--reason`. Apply
-  reobserves checks and both refs; it reuses outstanding repairs and retains the
-  existing attempt budget, intent, source and branch ownership fences. It never
-  reopens the epic, adds children or advances the target. Other targets get a bounded
-  recheck, which ends in the
-  `candidate_pre_existing_failure` blocker. A failing check that cannot be identified
-  yields `candidate_failing_checks_unknown`. A red promotion target is held.
-- **The batch introduced a failure, or the merge conflicted.** `_repair` calls
-  `repair.py:OrdinaryRepairService.allocate`, which:
-  - files a task `repair-<sha256(batch:attempt)>` with the dedup key
-    `repair:<batch>:<attempt>`, type BUGFIX, at `INTEGRATION_REPAIR_PRIORITY` (1);
-  - points the task at the candidate ref, and writes a "Repair input" task context that
-    names the failures;
-  - takes the branch lock with role `repair`.
+`RepairPolicy` bounds the primary budget (default 1800 s, at most three rounds).
+Exhaustion, failed launch or a stopped fixer produces one supervisor incident,
+retains the checkout and input, and releases the lane with a finite revisit
+(default 300 s). It creates neither an automatic human hold nor a successor agent.
+Exact green can still settle the batch after exhaustion.
 
-  `RepairPolicy` (`models.py:152`) bounds the attempts:
-  - a **primary** stage: 1800 s × 3
-  - a **debug** stage: 3600 s × 3
-  - then **human** (`_escalate_on`), or `continue` if `on_exhausted` says so.
+Attributed failure groups can split the failing subset and its transitive
+dependents from independent members. Companion/successor batches retain family
+identity and reuse the same fixer. Unknown attribution retains the group.
+
+`CandidateBaselineService` distinguishes introduced failures from target failures.
+An epic first tries default-branch synchronization. A sealed epic candidate can
+repair proven inherited failures in place, including through the guarded
+`repair-target` control. Unknown baseline evidence does not authorize this
+exception. Root pre-existing failures receive bounded rechecks; a red promotion
+is held. With a bound train policy, a missing push run is a finite wait rather
+than a code repair (the unbound compatibility path can allocate a repair).
 
   Zero in `primary_seconds`, `debug_seconds`, `primary_attempts`, or
   `debug_attempts` disables that limit. Unlimited durations store a null stage
@@ -334,19 +341,15 @@ Each visit to a target (`_visit_target`, then `DatabaseBatches.open_batch`, then
   The main CI sentinel also defaults to unlimited attempts; its
   optional `max_attempts` argument can set a positive limit, and zero disables it.
 
-  When the repair task closes, the fenced publication moves the candidate and
-  `resume_completed` re-seals the batch.
-- **The candidate drifted.** If a source moves under a batch, the batch reselects.
-  - `eject` removes a member that will not converge.
-  - `release_withheld_source` returns a withheld source to selection.
-  - `abort-batch`, `pause-batch` and `resume-batch` change the batch intent.
 
-  These are all `TrainControls` (`train_controls.py:59`) behind `aq integration …`.
 
-See [batch conflict repair starts](../design/batch-conflict-repair-starts.md) for where a
-repair starts. The legacy conflict path is still on disk:
-`integration_candidate_resolutions`, `reconciler_repair_close.py`, `preserved_repair.py`
-and `aq integration recover-preserved-repair`. The train does not use it.
+Source movement, ejection, withheld sources, pause/resume and abort remain fenced
+`TrainControls` operations. Existing ordinary repair tasks can still close through
+compatibility adapters; their staged primary/debug lifecycle is not the live
+allocator. Removed preserved-repair commands do not provide a train recovery path.
+
+See [batch conflict repair starts](../design/batch-conflict-repair-starts.md) and
+[the current recovery procedure](../../guides/integration-troubleshooting.md).
 
 #### 3.3.4 Epics and roots
 
@@ -356,8 +359,12 @@ An epic gets its own branch and target.
 - Epic *sync* and *refresh* batches keep the epic current with the default branch. A
   refresh counts as delivered only if the default head is an ancestor of the epic and
   the trees are identical.
-- When the epic's work is green, `EpicCompletions.settle` opens one pull request from the
-  epic branch to the default branch, and that PR delivers as a root.
+- Epic checks are advisory by default (`EpicPolicy.checks_required=False`). Only an
+  enabled, ready project playbook with `tables.parent_episode.required_checks` adds
+  an epic CI gate. Stored parent check settings alone do not add it.
+- When aggregate completion and any explicit epic gate are satisfied,
+  `EpicCompletions.settle` opens one PR from the epic branch to the default branch.
+  It then delivers as a root, with root checks and reviews still required.
 - A completed container owes an aggregate completion; a visit to an idle epic observes
   its readiness ([epic aggregate reverification](../design/epic-aggregate-reverification.md)).
 
@@ -386,7 +393,7 @@ The guides are [promotion flow](../../guides/promotion-flow.md) and
 How a step runs:
 
 1. It runs as a promotion batch.
-2. `promotion_steps.py:PromotionVisit` (line 1426) publishes in two recoverable writes:
+2. `promotion_steps.py:PromotionVisit` publishes in two recoverable writes:
    fast-forward the target to S, then create the tag.
 3. After settlement the train emits `promotion.delivered`.
 
@@ -403,7 +410,8 @@ cancel | repair | status | list | rulesets`.
 **Deploy** is a separate half. `aq update`
 (`src/install/deploy.py`, `update.py`, `system_commands.py:_cmd_update_and_restart`):
 
-1. picks the newest annotated tag matching `deploy.tag_glob` (default `v*`) that is
+1. when tag deployment is configured, picks the newest annotated tag matching
+   `deploy.tag_glob` that is
    reachable from `origin/<deploy.target>`;
 2. refuses a lightweight or moved tag, a tag on an unrelated history, and a rollback
    across a breaking migration;
@@ -411,7 +419,8 @@ cancel | repair | status | list | rulesets`.
    `deploy-history.json`;
 4. launches the updater detached.
 
-With `track_branch` configured, the daemon checks every 300 s and runs the update
+`deploy.tag_glob` defaults to `None`; set it (for example `v*`) and
+`deploy.target` to select tag deployment. With `track_branch` configured instead, the daemon checks every 300 s and runs the update
 automatically (`core.py:_check_tracked_deploy`).
 
 The name "release" also means `src/integration/release.py:IntegrationReleaseService`.
@@ -424,7 +433,7 @@ an active train does not.
 `DeliveryObserver` answers delivery questions for other systems:
 
 - SQL picks the identities to check.
-- `delivery_truth` (or `GitTruth`, `git_truth.py:106`) proves containment against an
+- `delivery_truth` (or `GitTruth`, `git_truth.py`) proves containment against an
   isolated fetched store, outside any database transaction.
 - `DeliveryView.verified_on` and `fresh` let writers re-check before they act. A missing
   proof fails closed: nothing settles, archives or deletes.
@@ -435,10 +444,10 @@ The consumers are:
 
 | Consumer | What it reads |
 |---|---|
-| **Claims** (`claim_queries.py`, around lines 631–812) | The frontier excludes a task whose prerequisite is not delivered: `frontier_sibling_prerequisite_not_delivered`, `frontier_prerequisite_not_on_default_branch` and `frontier_epic_refresh_pending`. With no snapshot available the reason is `delivery_evidence_unavailable`, and the claim fails closed. |
-| **Readiness** (`src/task_graph/readiness.py`) | Maps those codes to "Waiting on delivery" or "Checking delivery evidence", reading cached snapshots only. |
+| **Claims** (`claim_queries.py`, around lines 631–812) | The frontier excludes proven missing prerequisite delivery or pending refresh: `frontier_sibling_prerequisite_not_delivered`, `frontier_prerequisite_not_on_default_branch` and `frontier_epic_refresh_pending`. Unknown or unloaded observations permit worker preparation. |
+| **Readiness** (`src/task_graph/readiness.py`) | Maps delivery exclusions to "Waiting on delivery", reading cached snapshots only. Unknown evidence adds no exclusion. |
 | **Archive and delete** (`archive_queries.py`) | Refuse without an observer. |
-| **`delivery-of` edges** (`blocked_state.py:delivery_landed`) | Source completion in SQL plus current default-target Git proof in `AdmissionView`. |
+| **`delivery-of` edges** (`blocked_state.py:delivery_landed`) | Source completion in SQL plus a default-target Git observation in `AdmissionView`; unknown evidence permits preparation without establishing delivery. |
 
 #### 3.3.7 Cleanup, retirement and recovery
 
@@ -459,7 +468,7 @@ The consumers are:
   | Group | Commands |
   |---|---|
   | Inspect | `status`, `trust-manifest`, `app-verify`, `app-setup` |
-  | Batches | `pause-batch`, `resume-batch`, `abort-batch`, `eject`, `seal-now`, `settle-batch`, `record-root-noop`, `record-noop`, `release-withheld-source`, `release-held-gate` |
+  | Batches | `batch-fix`, `repair-target`, `pause-batch`, `resume-batch`, `abort-batch`, `eject`, `seal-now`, `settle-batch`, `record-root-noop`, `record-noop`, `release-withheld-source`, `release-held-gate` |
   | Hierarchy | `refresh-epic`, `reverify-epic`, `redrive-root`, `authorize-root`, `redrive-child`, `recover-completed-container`, `reopen-collection` |
   | Owners and origins | `retire-origin`, `restore-task-origin`, `reserve-owner`, `release-owner`, `release-stale-owners` |
   | Recovery and legacy | `clear-retained-recovery`, `close-delivered-pr`, `supersede-completion`, `reevaluate-repair`, `engine-transfer`, `off`, `migrate-provenance-refs`, `cutover-plan`, `cutover` |
@@ -467,7 +476,7 @@ The consumers are:
   `aq promote …` and `aq update …` are covered in section 3.3.5. The symptom-to-command
   index is
   [integration troubleshooting](../../guides/integration-troubleshooting.md).
-- **Doctor:** 14 `integration.*` checks, among them:
+- **Doctor:** integration checks include:
   - `delivery_engine`
   - `branch_origins` and `finished_branch_owners` (both fixable)
   - `completed_undelivered`
@@ -482,17 +491,16 @@ The consumers are:
 
 ### 3.5 Data model
 
-All tables are in `src/database/tables.py`. Approximate line numbers are given so the
-reader can find them.
+All tables are in `src/database/tables.py`; search by table name.
 
 | Group | Tables | Used by the train? |
 |---|---|---|
-| Batches and candidates | `integration_batches` (3730), `integration_batch_members` (3811), `integration_check_evidence` (4474), `integration_attestation_publications` (4538), `integration_cleanup_items` (4596), `integration_outbox` (5151) | Yes |
-| Branch authority | `integration_branch_owners` (3386; `UNIQUE(repository_id, ref)`; legacy `owner_id`/`fence_token`/`handoff_state` columns side by side with Git-first `holder`/`fence`/`expires_at`), `task_branch_origins` (3265), `branch_retirements` (3238), `branch_deletion_audit` (3331), `integration_owner_recoveries` (4454) | Yes |
-| Source evidence | `integration_source_ci` (706), `integration_review_evidence` (3419), `integration_root_authorizations` (3465), `task_integration_checkpoints` (3170) | Partly |
+| Batches and candidates | `integration_batches`, `integration_batch_members`, `integration_check_evidence`, `integration_attestation_publications`, `integration_cleanup_items`, `integration_outbox` | Yes |
+| Branch authority | `integration_branch_owners` (3386; `UNIQUE(repository_id, ref)`; legacy `owner_id`/`fence_token`/`handoff_state` columns side by side with Git-first `holder`/`fence`/`expires_at`), `task_branch_origins`, `branch_retirements`, `branch_deletion_audit`, `integration_owner_recoveries` | Yes |
+| Source evidence | `integration_source_ci`, `integration_review_evidence`, `integration_root_authorizations`, `task_integration_checkpoints` | Partly |
 | Receipts | `task_delivery_receipts` (3636; append-only, `UNIQUE domain_key`) | Historical audit/recovery; no `delivery-of` eligibility authority |
-| Repair and parents (legacy) | `integration_repair_operations` (4245), `integration_repair_stages` (4359), `integration_repair_stage_evidence` (4711), `integration_parent_episodes` (4311), `integration_child_dispositions` (4330), parent verifications (4736–4878) | No (retained) |
-| Legacy reconciler and publisher | `integration_subjects` (5293), `integration_subject_journal` (5477), `integration_candidate_*` (3856–4086), `integration_promotion_intents` (3499; root intents only), `integration_root_intent_members` (4155), `project_integration_schedules` (4909), `project_integration_leases` (4946), `integration_release_results` (4960), `integration_legacy_deliveries` (5203), waiver/rollout/gate-applicability tables (4980–5131) | No (retained; the drop set is empty) |
+| Repair and parents (legacy) | `integration_repair_operations`, `integration_repair_stages`, `integration_repair_stage_evidence`, `integration_parent_episodes`, `integration_child_dispositions`, parent verifications | No (retained) |
+| Legacy reconciler and publisher | `integration_subjects`, `integration_subject_journal`, `integration_candidate_*`, `integration_promotion_intents` (3499; root intents only), `integration_root_intent_members`, `project_integration_schedules`, `project_integration_leases`, `integration_release_results`, `integration_legacy_deliveries`, waiver/rollout/gate-applicability tables | No (retained; the drop set is empty) |
 | Per project | `projects.hierarchical_integration_mode`, `hierarchical_integration_policy`, `integration_mode`, `integration_repository_id`, `promotion_flow`, `default_branch_cutover` | Yes |
 
 The train holds one live batch per target with a `pg_advisory_xact_lock` in
@@ -503,14 +511,15 @@ The train holds one live batch per target with a `pg_advisory_xact_lock` in
 
 - `IntegrationConfig` (`src/config.py`, about lines 2577–2735; restart-required).
   `git_first`, `default_mode` and `merge_*` are covered above.
-  - `reconciler_active` (default `True`) matters only when `git_first` is not `active`.
+  - `reconciler_active` (default `True`) is a retained Subject-runtime control; it does
+    not pause the live train.
   - `reconciler_shadow` and `publisher_stall_after` have no remaining effect.
 - Per-project policy is `projects.hierarchical_integration_policy`, validated by
-  `models.py:HierarchicalIntegrationPolicy` (line 384). Its parts are:
+  `models.py:HierarchicalIntegrationPolicy`. Its parts are:
   - boundaries
   - `RepairPolicy`
   - `IntegrationCIPolicy`: `hosted`, `local` or `hybrid`
-  - `IntegrationTrainPolicy`: cadence
+  - `IntegrationTrainPolicy`: deprecated timing thresholds, optional policy binding and speculative CI
   - `IntegrationCleanupPolicy`
 
 ---
@@ -522,21 +531,21 @@ This table covers the inventory's other 17 systems and where the line falls with
 | System | Interaction |
 |---|---|
 | **daemon-core** | Owns the schema, migrations, `run_one_cycle` and its ordering, and wires `IntegrationService` into the orchestrator. Integration's 5 s loop runs beside the cycle, not inside it. |
-| **task-graph** | Owns tasks, edges and the blocked projection. Integration supplies delivery truth for `delivery-of` edges and the frontier's delivery fences, files repair tasks as ordinary BUGFIX tasks, and restricts graph edits that a train depends on. |
-| **scheduling-and-claims** | Owns the frontier query and claims. It calls `DeliveryObserver` for the claim-time delivery exclusions and fails closed without a snapshot. Repair tasks are claimed like any other task. |
-| **routing-and-profiles** | Routes repair tasks. The train asks for an intelligence class, and routing chooses the profile. |
+| **task-graph** | Owns tasks, edges and the blocked projection. Integration supplies delivery truth for `delivery-of` edges and the frontier's delivery fences, retains legacy repair-task compatibility, and restricts graph edits that a train depends on. |
+| **scheduling-and-claims** | Owns the frontier query and claims. It calls `DeliveryObserver` for the claim-time delivery exclusions and fails closed without a snapshot. Live batch fixers do not consume claims; retained repair tasks still do. |
+| **routing-and-profiles** | Resolves the intelligence class and harness for a batch fixer; retained repair tasks use ordinary routing. |
 | **sessions-and-harnesses** | Owns the worker session. A passing close records completion provenance, which is the train's input. `aq git push` publishes the worker's branch. |
 | **projects-workspaces-git** | Owns projects, repositories, worktrees and the `GitManager`. Integration keeps its own retained Git stores under the data directory and uses the async Git API. Branch origins (`task_branch_origins`) sit on the line: workspaces create them, and integration retires them. |
-| **playbooks** | Holds integration *policy*: promotion-continuous and promotion-request, ci-main-sentinel, and supervisor triage of held batches. Playbooks act through `integration_*` and `promote_*` commands, and the train consumes no playbook output during a visit. |
-| **supervisors-and-policy** | The supervisor watches stalled batches, human-held repairs and promotion requests, and holds a scoped set of integration controls. The [factory policy](../../concepts/factory-policy.md) is this system's normative contract. |
-| **messaging-and-human-asks** | A repair that exhausts its budget escalates to a human (`_escalate_on`). Stall alerts and promotion approvals reach the operator through messages and the digest. |
+| **playbooks** | Holds integration *policy*: promotion-continuous and promotion-request, ci-main-sentinel, and supervisor triage of held batches. Playbooks act through `integration_*` and `promote_*` commands, and the train reads current project train policy during a visit. |
+| **supervisors-and-policy** | The supervisor watches stalled batches, deferred fixers and explicit holds and promotion requests, and holds a scoped set of integration controls. The [factory policy](../../concepts/factory-policy.md) is this system's normative contract. |
+| **messaging-and-human-asks** | A batch fixer that exhausts its budget reports once to the project supervisor and defers with a finite revisit. Stall alerts and promotion approvals reach the operator through messages and the digest. |
 | **reviews-and-knowledge** | Root PR review evidence (`integration_review_evidence`, `RootPullRequestGate`) comes from GitHub, not from document reviews. Approved specs only start the work the train later delivers. |
-| **providers** | The repair-task model is subject to provider availability and failover. Integration itself makes no model calls. |
+| **providers** | Fixer sessions and retained repair tasks are subject to provider availability and failover. Integration itself makes no model calls. |
 | **configuration-and-vault** | Supplies `integration.*`, `deploy.*` and per-project policy columns. The vault holds the reviewed playbook bundles that carry promotion policy. |
 | **api-and-clients** | Integration commands go out through `/api/execute` only. `integration_train_tick` is excluded. |
 | **dashboard** | Shows readiness ("Waiting on delivery"), PRs (`/api/reviews/pull-requests`), deployment history and epic delivery state. It computes no delivery state of its own. |
 | **test-service-and-jobs** | `LocalChecks` and `HybridChecks` can run required checks as local managed jobs, and `aq test` is what workers run before close. Hosted CI is GitHub Actions (`.github/workflows/tests.yml`). |
-| **operations-and-recovery** | Owns the doctor framework, `aq update` mechanics and `aq restart`. Integration contributes 14 doctor checks and the operator recovery commands (owner recovery, preserved repair, completed-container recovery, retained-store recovery). |
+| **operations-and-recovery** | Owns the doctor framework, `aq update` mechanics and `aq restart`. Integration contributes 14 doctor checks and the operator recovery commands (owner recovery, completed-container recovery, retained-store recovery). |
 | **plugins-mcp-and-tools** | MCP is another front door to the same commands. The `git` internal plugin is unrelated to delivery. |
 
 ---
@@ -557,13 +566,14 @@ This table covers the inventory's other 17 systems and where the line falls with
 5. **Exact commits only.** Checks prove the exact candidate SHA. A changed candidate
    invalidates earlier checks. A promotion PR is pinned at S.
 6. **Generated files are regenerated, never hand-merged**, in the train, in the
-   publisher's merge driver and by humans alike.
+   generated merge driver and by humans alike.
 7. **Mechanism in code, policy in playbooks.** The train makes no LLM calls. Promotion,
    escalation and triage are playbooks and supervisors driving commands.
 8. **Every state change goes through `CommandHandler`**, including the train's own tick
    (`integration_train_tick`, service principal only).
 9. **Bounded repair with a durable escalation.** Each failure gets one incident, a
-   bounded number of attempts, and then a human hold. Nothing retries forever.
+   bounded fixer budget, a finite revisit and one supervisor report. An explicit
+   human hold is a separate operator decision.
 10. **Append-only evidence.** Receipts, audit rows and journals are protected by
     database triggers (`migrations/integration_guards.py`). Recovery preserves
     evidence before it deletes (backup bundles, `aq/preserved/<id>`).
@@ -572,213 +582,56 @@ This table covers the inventory's other 17 systems and where the line falls with
 
 ---
 
-## 6. Known gaps
+## 6. Remaining limitations and audit findings
 
-All of these were verified in the code on 2026-10-20 unless marked otherwise.
+- **Default engine selection:** `integration.git_first` still defaults to `shadow`,
+  which starts no writer after Subject-runtime retirement. An installation requiring
+  automatic delivery must explicitly select `active`. Reported for supervisor triage;
+  this documentation audit changes no runtime defaults.
+- **Offline engine diagnostic:** `delivery_engine.engine_refusal` returns no refusal
+  for `shadow` with `reconciler_active=True` when no live orchestrator is supplied,
+  despite the current startup wiring constructing no engine. The live-service check
+  does detect the missing writer. Reported as a suspected diagnostic bug.
+- **Portable policy model:** `src/policy_profiles/models.py:IntegrationSettings`
+  omits `development` from its rollout-mode literal, although the project runtime
+  accepts that mode. Reported as a suspected code bug; no model change is made here.
+- **Retained compatibility:** Subject tables, journals, staged repair adapters and
+  owner recovery remain. Their presence does not imply a live Subject publisher.
+  Some CLI help still uses Subject/cadence language; current procedures above and in
+  the train runbook describe the active engine.
+- **JSON columns:** the integration JSON columns noted in the original system map
+  are explicitly grandfathered by `tests/test_migration_json_columns.py`. They are
+  not evidence of a newly introduced migration violation.
 
-1. **A default config delivers nothing.** `integration.git_first` defaults to `"shadow"`.
-   Under shadow, `train_for()` returns `None` and no subject runtime is built. Several
-   docs still describe shadow as a working fallback that keeps the subject runtimes
-   authoritative or reactivates legacy writers:
-   - [concepts/integration.md](../../concepts/integration.md)
-   - [git-first-train-runbook.md](../../guides/git-first-train-runbook.md)
-   - the framing of [hierarchical-integration-trains.md](../../guides/hierarchical-integration-trains.md)
-     and [integration-troubleshooting.md](../../guides/integration-troubleshooting.md)
+The original 2026-10-20 map included live task states, remote branch tips, release
+progress and retrospective latency counts. Those were dated observations, not
+system contracts, and are no longer presented as current state. Use `aq promote
+status`, integration status and current Git evidence for operational state.
 
-   The [git-first cutover runbook](../../guides/git-first-cutover-runbook.md) and
-   [design/promotion-flow.md](../design/promotion-flow.md) state the true position.
-2. **`delivery-of` uses current Git admission.** Source completion releases its
-   structural SQL projection. `AdmissionView` then requires current default-target
-   containment, so the train can satisfy the edge without writing a receipt and a
-   rewind withholds the dependent again. Missing observers report unavailable
-   evidence and do not use historical receipts.
-3. **Two protocols side by side.** About 81k lines in 130 modules, against the Git-first
-   spec's target of about 12k engine lines and 10 tables. Among the duplicates:
-   - the legacy staged `RepairService` (`repair.py`, lines 602 onward) sits next to
-     `OrdinaryRepairService`;
-   - the task close path still tries `close_reconciler_delegate` and
-     `complete_accepted_delegate` first;
-   - `integration_branch_owners` carries both column sets;
-   - parent and epic repairs are legacy-only;
-   - two Git-truth implementations exist (`delivery_truth.py`, `git_truth.py`);
-   - about 15 legacy tables are retained with an empty drop set.
+## 7. Features shipped since the original map
 
-   The `tests/integration_ownership.json` size budget is still in phase `transition`.
-   Decision `msg-edb5f857de344716a38857406fa69958` authorizes one temporary
-   owned-line exception for batch `train-77f0d8e451f6aed08d608e443031047a`:
-   155,499 → 156,792, exactly the measured excess of 1,293 at source
-   `d00e25221856145f24777f8b016a008b4e954bca`. The source inventory and all
-   ownership classifications remain unchanged. The manifest records the exact
-   batch, decision and measurement; the budget rejects a changed exception or
-   any further growth. Historical baselines, the 15,000 replacement allowance,
-   engine/table caps and final retirement caps remain fixed. `s4_modules` and
-   `final` ignore this exception; `azure-ridge-72` owns its earlier removal and
-   restoration of 155,499 after this batch is delivered. This decision does not
-   change retry history, integration authority, required CI or cutover holds.
-4. **Dead or never-wired code:**
-   - `shadow.py` is imported only by tests.
-   - `GENERATED_MERGE_CONFIG` has no caller.
-   - `reconciler_shadow` and `publisher_stall_after` have no effect.
-   - `core.py:_dispatch_integration_repair_stage`, the uncalled
-     `_reconcile_integration_completion` flush and its `recover_completed_pr_links`
-     sweep were removed (azure-ridge-72).
-   - `WriterPrimitives`, `RecordsPrimitives` and the gate wait/eject ports were
-     test-only and were removed (azure-ridge-72); `OperationSafety` remains. The unused `ParentPrimitiveAdapters`
-     implementation was removed during the hibernation epic delivery recovery;
-     its policy fact models and historical refusal markers remain available.
-   - `orchestrator.promotion_service`, `root_promotion_service`,
-     `integration_release_service`, `parent_subject_runtime` and
-     `development_subject_runtime` are always `None`, yet `IntegrationService` still
-     accepts the subject-runtime arguments.
-   - `CancelledCollectionRecovery` receives `parent_source.promotion`, which may be
-     `None` (not traced to the end).
-   - `IntegrationReleaseService` is reachable only by the manual `integration_release`
-     command.
-   - `ENDED_LIFECYCLES` lists `"failed"`, which nothing writes.
-5. **Operator-only recovery modules accumulate.** Each answers one historical incident:
-   `parent_repair_heads`, `noop_repair`, `published_repair_handoff`, `source_repairs`
-   and `delegate_release`. On 2026-10-21, `stark-willow-95.24` removed the unreachable
-   `preserved_repair`, `repair_rebind`, `detached_repair_rebind` implementations and
-   `ParentPrimitiveAdapters`; their command handlers were already retired. The parent
-   policy facts and historical refusal markers remain readable.
-6. **Tail latency.** The 2026-10-19 retrospective (vault; review `rev-quick-pinnacle`,
-   withdrawn) measured pass-to-`dev` over 22 September to 20 October:
+The fast-smooth implementation is present in this audited `origin/dev` checkout.
+It is no longer future work on a separate epic branch. The current implementation
+includes:
 
-   | Measure | Value |
-   |---|---|
-   | Median | 0.46 h |
-   | p90 | 6.3 h |
-   | Share of waiting hours spent on the 6% of tasks slower than 8 h | 72% |
-   | Conflict repairs that touched a generated file | 52% |
-   | Stale state rows (reservations, working checkpoints, reserved owners) | 1,870 |
-   | Repair tasks that were repairs of repairs | 40 of 208 |
+- event-driven readiness, durable dispatch waits, stalled-batch diagnostics and
+  delivery latency observations;
+- immediate idle-target admission, current project playbook policy and advisory
+  epic checks;
+- failure grouping, task-free batch fixers, retained split/successor identity and
+  finite budget-exhaustion revisits;
+- warm retained workspaces and build-cache support;
+- strict Git containment, current admission evidence and Git-truth reconciliation;
+- declared stacked prerequisites, author-assisted close merging and opt-in
+  speculative next-batch CI;
+- generated-file regeneration once per assembly and retained exact source objects.
 
-   Section 7 is mostly the answer to these numbers.
-7. **No stall visibility beyond `train_batches_stalled`.** There is no watchdog, no
-   latency telemetry, and no "why is this waiting" view across stages (stark-willow-95.3
-   to .5).
-8. **The timed window and task-per-repair remain.** The 300 s cadence and 1800 s
-   settling cap are still the defaults, and every repair is a new task with its own
-   claim and worktree.
-9. **Promotion beyond `staging` has not run.**
-
-   | Ref | Tip |
-   |---|---|
-   | `origin/main` | `ad6a8e9ed`, 2026-10-07 |
-   | `staging` | about 870 commits ahead of `main` |
-
-   There is no `v*` tag on origin. The release step is configured but no release has
-   been cut. Step intent `promote-51310235aa3e3abe39f05fef` ("Promote staging
-   22cffd1b7236") is in progress.
-10. **Stale or wrong documentation:**
-    - [reference/modules/integration.md](../../reference/modules/integration.md) lists
-      29 modules, ten of which no longer exist (for example `subjects.py`,
-      `reconciler.py`, `candidates.py`), and omits `train.py`, `train_sources.py`,
-      `batches.py` and `delivery_observer.py`.
-    - [integration-ci-boundaries.md](../../guides/integration-ci-boundaries.md) omits
-      the PRs into `dev` and `staging` and the `aq/promote/**` and `aq/backmerge/**`
-      pushes that `tests.yml` covers.
-    - `PromotionPublisher`, named in the promotion-flow and releases guides, is
-      `PromotionVisit` in code.
-    - Historical guides point to the mixed
-      [hierarchical-integration-trains.md](../../guides/hierarchical-integration-trains.md)
-      as "current" rather than to the train runbook.
-    - The comments in `.gitattributes` and `regenerate-generated.sh` credit the retired
-      development publisher.
-    - `hierarchical-integration-trains.md` says the legacy engine was removed on
-      2026-10-04, while its code remains.
-    - The CLI help still says "Subjects", and the command catalogue gives many
-      `integration_*` and `promote_*` commands the same placeholder description.
-11. **Inconsistencies in the schema and policy:**
-    - `projects.hierarchical_integration_policy` and several
-      `integration_promotion_intents` columns are `JSON`, not `JSONB`. It is unverified
-      whether they are allow-listed in `tests/test_migration_json_columns.py`.
-    - `src/policy_profiles/models.py`'s mode literal omits `development`, which the
-      table check constraint allows.
-    - `SubjectEngine` has only `RECONCILER`, while the column defaults to `legacy`.
-    - `INTEGRATION_REPAIR_PRIORITY = 1` is commented as a stopgap.
-12. **Review-state drift:**
-    - [design/manual-integration.md](../design/manual-integration.md) cites
-      `rev-fair-lantern` revision 2 as its authority. The review database records
-      `rev-fair-lantern` as **approved at revision 2**, but the vault spec file describes
-      a revision 3 "in review". Revisions 3 and 4 exist only as vault decision notes.
-    - The system inventory review `rev-bright-rapids` was approved on 2026-10-20, but the
-      sibling `task-graph` system spec (`eager-vault-55.2`) quotes it as in review.
-
----
-
-## 7. Planned work
-
-This snapshot was taken on 2026-10-20 by a read-only query of the open `agent-queue`
-tasks, the `doc_reviews` table and the vault. Vault specs are not in this repository;
-their review ids and states are quoted as they stood that day.
-
-### 7.1 Open tasks that change this system
-
-Almost all of it is the **fast smooth integration** epic, `stark-willow-95`
-(IN_PROGRESS). Its work so far lives on
-`origin/aq/epic/fast-smooth-integration-implementation`, which is **not yet on `dev`**.
-
-The following children are complete on the epic branch:
-
-| Child | What it delivered |
-|---|---|
-| `.1`, `.2` | A strict Git containment contract (`docs/specs/design/strict-git-containment.md` on the epic), retained source identity, and a guarded containment cutover (`aq integration cutover-containment`) that records legacy dispositions. |
-| `.6` | Event-driven epic and root-leaf readiness without receipts. |
-| `.19` | A Git-truth reconciler (`truth_reconciler.py`, `integration_reconcile_git_truth`) that derives owners, checkpoints, branch origins and delivery from Git every cycle and heals rather than refuses. |
-| `.20` | Regeneration at batch assembly. The `dev` code already regenerates once per assembly. |
-| `.21`, `.22` | Repair and merge helpers. |
-
-The open children:
-
-| Task | State | What it changes |
-|---|---|---|
-| `stark-willow-95.3`: redrive stuck delivery once | READY | A new `delivery_watchdog.py`. The threshold is `max(1800 s, 2 × p90 batch CI)` per project. It tells slow from stuck using wait records, makes one fenced redrive, puts policy in a reviewed V2 playbook, and adds doctor stall checks and one waiting view. |
-| `stark-willow-95.4`: completion-to-dev metrics | READY | Generation-based latency with a per-stage breakdown (`src/metrics/delivery_latency.py`, the metrics API). Depends on `bold-zenith-11.1`. |
-| `stark-willow-95.5`: dashboard delivery panel | DEFINED | Median, p90, breakdown, backlog and shared blockers. Depends on `bold-zenith-11.8`. |
-| `stark-willow-95.7`: idle/busy dispatch | READY | Replaces the timed cadence and settling cap with lanes: depart immediately when idle, queue while busy, depart again on settle. The cadence fields stay parseable but are ignored. Needs hibernation P1/P2. |
-| `stark-willow-95.8`: deterministic failure groups | DEFINED | Pure functions that group a red batch's failures, with build failures taking precedence. |
-| `stark-willow-95.9`: parallel fixers | DEFINED | One fixer per failure group on `aq/batch/<id>/fix/<group>` (`max_parallel_fixers` 4, `max_rounds` 3), merge-back and one CI run, and a batch split with ejection records. The rev-4 decision notes rewrite it as in-place repair on the batch branch, with no new task, claim or worktree and no repairs of repairs. |
-| `stark-willow-95.10`: advisory epic checks | DEFINED | Epic-level checks stop gating unless a project opts in. The task says `parent.required_checks.mode`; the later decision notes put the switch in playbook data. |
-| `stark-willow-95.11`: warm workspaces | DEFINED | Candidate and fixer workspaces kept warm, with a shared compiler cache (`workspaces.build_cache`). |
-| `stark-willow-95.12`: native-storage relocation | DEFINED | Tooling and a Matter Engine runbook (moving off `/mnt/d`). |
-| `stark-willow-95.13`: one admission view | READY | One `AdmissionView` for the frontier, pools, explain and the delivery guards. It retires receipt authority and drops the SQL receipt fallback, which closes gap 2. Depends on `bold-zenith-11`. |
-| `stark-willow-95.14`: stacked prerequisites by default | DEFINED | Removes the `agent-queue` special case in `stacked_branches.py`. |
-| `stark-willow-95.15`: author-assisted parent merge | DEFINED | A new `close_merge.py`, `integration_continue_close` and an `integration_close_attempts` table, with author budgets as verified waits. |
-| `stark-willow-95.16`: speculative next-batch CI | DEFINED | Opt-in, with `train.speculative_ci` defaulting to false. |
-| `stark-willow-95.17`: align policy and ratchets | DEFINED | Aligns profiles, instructions and docs. Adds a no-active-receipt-authority ratchet and deprecates `cadence_seconds` and `settling_cap_seconds`. |
-| `stark-willow-95.18`: validate and cut over | DEFINED | Validates the complete flow on disposable repositories and gives operators cutover manifests for `agent-queue` and Matter Engine. |
-
-Other open tasks that touch this system:
-
-| Task | State | What it changes |
-|---|---|---|
-| `promote-51310235aa3e3abe39f05fef`: "Promote staging 22cffd1b7236" | IN_PROGRESS | A daemon-authored promotion step intent: the live `staging` step. |
-| `clear-impact-72.1`, `.7`, `.8` | READY | Evaluate rewriting the `ci-main-sentinel`, `promotion-continuous` and `promotion-request` playbooks onto the new playbook building blocks. They wait on the playbooks refactor. |
-| `bold-zenith-11`: event-driven hibernation and verified waits | IN_PROGRESS (`.22` READY) | Supplies the wait records that `stark-willow-95.4`, `.5`, `.7` and `.13` build on. |
-| `calm-grove-14`, `vivid-rapids-36` | READY | Remove duplicate human publishers and reconcile repository policy, then verify live acceptance. They touch repository policy and branch protection alongside integration. |
-| `eager-vault-55`: system map part 2 | IN_PROGRESS | This page and its 17 siblings. |
-
-**Deletion:** stage 4 of the Git-first train spec, and phase 4 of the `rev-agile-ridge`
-plan (`quick-glacier-88`), would remove the retained subject reconciler and bring the
-engine down to its line and table caps. **No open task carries this work today.**
-
-### 7.2 In-flight and governing specs
-
-| Spec | State on 2026-10-20 | What it changes |
-|---|---|---|
-| Fast smooth integration (vault, `specs/2026-10-12-fast-smooth-integration.md`), with decision notes `2026-10-13-…-rev2-decisions.md`, `2026-10-13-…-rev3-playbook-policy.md` and `2026-10-20-…-rev4-retrospective-decisions.md` | `rev-fair-lantern`: approved at revision 2 in the review database; the file describes revision 3 as in review; revision 4 exists as decision notes only | The source of `stark-willow-95`. Five stages: (1) truth, cutover, watchdog, telemetry; (2) policy, dispatch, failure groups, fixers; (3) advisory epic CI, caches, relocation; (4) admission, stacking, close merge, docs; (5) speculative CI. Revision 3 moves the on/off switch and required checks into a per-project `fast-smooth-train` playbook. Revision 4 adds in-place batch repair, drift fixed inside the integration branch, the per-cycle Git-truth reconciler, regeneration at assembly, retention of exact source objects, and latency measured from approved spec to `dev`. |
-| Retrospective: why work stalls before reaching `dev` (vault, `specs/2026-10-19-retrospective-…`) | `rev-quick-pinnacle`, withdrawn ("we already created work based off this review") | The evidence base for revision 4 (gap 6). |
-| Git-first integration train (vault, `specs/2026-10-04-git-first-integration-train.md`) | `rev-fair-impact`, approved | The design of the live engine. Stages 1–3 are landed. Stage 4 (deleting the reconciler; 12k engine lines, 20k total, 10 tables) is open. |
-| Git-first train fidelity and dev/main/stage building blocks (vault, `specs/2026-10-06-git-first-train-fidelity…`) | `rev-vivid-quest`, approved | Restored the epic PR, the PR gate, root cadence, per-batch cleanup, `RepairPolicy` escalation, the batch controls and promotion building blocks. Implemented. |
-| Dev-branch releases, revision 3 (vault, `specs/2026-10-05-dev-branch-releases-revision-3.md`) and its plan | `rev-smart-lantern`, approved; plan `rev-agile-apex`, approved | Composable promotion steps, `aq promote`, the promotion playbooks and tag deploys. Largely implemented; no release cut yet. |
-| Train mechanism inventory and simplification (vault, `specs/2026-10-02-integration-train-mechanism-inventory-…`) | `rev-agile-ridge`, approved at revision 2 | The subject reconciler. Phases 0–3 landed and were then reduced by Git-first. Phase 4 is open. |
-| App-mode integration train, GitHub App credentials (vault, `specs/2026-09-27-app-mode-integration-train-…`) | `rev-swift-glacier`, approved at revision 2 | Exact-SHA Actions trust, the daemon attestation check run, repository trust anchors, `app-setup` and `app-verify`. Implemented. |
-| Epic pull requests and the integration train (vault, `specs/2026-09-23-epic-pull-requests-…-2.md`) | `rev-stark-summit`, approved; plan `rev-sharp-quest`, approved | One PR per epic and the removal of the development publisher. Implemented, with a few `DevelopmentPublisher` references left. |
-| Retained Git corruption (vault, `specs/2026-10-14-retained-git-corruption-…`) | `rev-swift-flare`, approved at revision 2 | Retained-store detection and self-heal. Implemented ([design](../design/integration-repository-recovery.md)). |
-| Canonical origin admission, expired reservation lease (vault, `specs/2026-10-13-canonical-origin-admission-…`) | `rev-prime-current`, approved | A fenced re-lease path for origin admission. Implementation not verified. |
-| Event-driven hibernation and verified waits (vault) | design `rev-bold-pinnacle`, approved at revision 2; implementation `rev-fleet-orbit`, approved | The wait vocabulary that fast smooth integration builds on. |
-| Dashboard feedback and versioned releases (vault) | `rev-bright-ember`, approved; plan `rev-amber-delta`, in review | The deployment history and release surfaces in the dashboard. |
+The [hierarchical train guide](../../guides/hierarchical-integration-trains.md)
+describes the controls, close handoff, cache settings, waits and speculation.
+The [module catalog](../../reference/modules/integration.md) points to the shipped
+boundaries. A source module does not prove that a feature is enabled in an
+operator's project; activation and project policy still apply. Future task/review
+states belong in the daemon and vault rather than a static system specification.
 
 ---
 
@@ -786,7 +639,7 @@ engine down to its line and table caps. **No open task carries this work today.*
 
 Current behaviour:
 
-- [Integration](../../concepts/integration.md): the concepts page (mind gap 1).
+- [Integration](../../concepts/integration.md): the concepts page.
 - [Factory policy](../../concepts/factory-policy.md): the normative admit, deliver and
   recover contract.
 - [Git-first train runbook](../../guides/git-first-train-runbook.md): the operator's
@@ -795,8 +648,8 @@ Current behaviour:
   symptom-to-command.
 - [Promotion flow](../../guides/promotion-flow.md) and [releases](../../guides/releases.md).
 - [Hierarchical integration trains](../../guides/hierarchical-integration-trains.md):
-  train controls, mixed with subject-era material.
-- [Integration CI boundaries](../../guides/integration-ci-boundaries.md) (partly stale).
+  current train controls and explicitly retained recovery procedures.
+- [Integration CI boundaries](../../guides/integration-ci-boundaries.md).
 - [Codegen: one command and never a hand-merge](../../contributing/codegen.md#one-command-and-never-a-hand-merge).
 - Design notes that are current:
   - [promotion flow](../design/promotion-flow.md)
@@ -811,8 +664,7 @@ Current behaviour:
   - [retained object integrity](../design/retained-object-integrity.md)
   - [branch retirement](../design/branch-retirement.md)
   - [integration identity diagnostics](../design/integration-identity-diagnostics.md)
-- Module reference: [docs/reference/modules/integration.md](../../reference/modules/integration.md)
-  (stale; gap 10).
+- Module reference: [docs/reference/modules/integration.md](../../reference/modules/integration.md).
 
 Historical records (the code wins where they disagree):
 
@@ -830,3 +682,16 @@ Historical records (the code wins where they disagree):
 - About 50 dated point-fix specs in `docs/superpowers/specs/` (2026-09-15 to 2026-10-13)
   record individual repair, recovery and subject-reconciler fixes. Most belong to the
   retired subject and publisher era.
+
+### Historical PR #1858 ownership authorization
+
+The following records the original reviewed footprint, rather than a new merged ceiling.
+
+For PR [#1858](https://github.com/ElectricJack/agent-queue/pull/1858), supervisor
+decision `msg-08efc39cceeb430cafb8636f1acb85f1` under
+`size-cap-delegation-2026-10-23` (operator decision `6679052c`) amends the
+recorded transition exception to exactly **161,023 owned lines**, **85,320
+engine lines** and **45 tables** at source
+`a68665e4afde3be9a0aba0d9dec50e61e632be84`. This adds 186 owned lines and four
+engine lines to the previous exact measurement. The ownership records retain
+the earlier decisions and the measurement-equality assertion remains enforced.

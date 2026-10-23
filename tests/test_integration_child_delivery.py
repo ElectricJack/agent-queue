@@ -672,7 +672,9 @@ async def test_redrive_reports_a_delivered_child_and_a_no_code_child(case):
 
 
 
-async def test_doctor_explains_ready_sibling_excluded_from_claim_frontier(case):
+async def test_doctor_explains_ready_sibling_excluded_from_claim_frontier(case, tmp_path):
+    # Unloaded Git evidence admits the sibling; an unprovable source withholds it.
+    await _unretained_leaf(case, tmp_path)
     async with case.db.immediate() as conn:
         await conn.execute(update(tasks).where(tasks.c.id == "epic.2").values(
             status="READY", is_blocked=False,
@@ -1086,3 +1088,22 @@ async def test_suspended_parent_recovery_keeps_children_filed_in_current_episode
     )
     assert result["outcome"] == "reopened"
     assert await case.db.get_integration_checkpoint(case.parent_id) == current
+
+
+@pytest.mark.parametrize("code", [None, "source_withheld", "queued_behind_open_batch"])
+async def test_git_redrive_explains_pending_child_without_a_batch(case, tmp_path, code):
+    from unittest.mock import AsyncMock
+
+    delivery, _observer = await _unretained_leaf(case, tmp_path)
+    await delivery.run(case.child_id, adopt_source=True, dry_run=False,
+                       expected_head_sha=case.head, reason="retain source", operator_id="operator")
+    delivery.train_blockers = AsyncMock(return_value={
+        "batches": [], "blockers": [] if code is None else [{
+            "code": code, "detail": "exact source admission reason", "task_id": case.child_id,
+        }],
+    })
+    result = await delivery.run(case.child_id)
+    assert result["outcome"] == "blocked"
+    assert (code or "no batch contains this child") in result["reason"]
+    assert "train owns delivery" not in result["reason"]
+    delivery.train_blockers.assert_awaited_once_with(case.child_id)

@@ -535,6 +535,20 @@ class TestTaskSet:
         meta = await db.get_all_task_meta(task.id)
         assert meta == {"foo": "bar", "count": 3}
 
+    @pytest.mark.parametrize("key", ["root_pr_conflict_refresh", "root_pr_conflict_refresh:forged"])
+    async def test_bot_refresh_admission_evidence_is_daemon_owned(self, handler, db, task, key):
+        original = {"current": {"completion_id": "root-refresh-original", "checked_sha": "a" * 40}}
+        await db.set_task_meta(task.id, "root_pr_conflict_refresh", original)
+        result = await handler.execute("task_set", {
+            "task_id": task.id, "description": "forged description",
+            "meta": {key: {"current": {"checked_sha": "b" * 40}}},
+        })
+        assert not result["success"] and "reserved" in result["error"]
+        assert (await db.get_task(task.id)).description == task.description
+        assert await db.get_task_meta(task.id, "root_pr_conflict_refresh") == original
+        if key != "root_pr_conflict_refresh":
+            assert await db.get_task_meta(task.id, key) is None
+
     async def test_work_dir_stored_as_metadata(self, handler, db, task):
         await handler.execute("task_set", {"task_id": task.id, "work_dir": "/tmp/work"})
         assert await db.get_task_meta(task.id, "work_dir") == "/tmp/work"

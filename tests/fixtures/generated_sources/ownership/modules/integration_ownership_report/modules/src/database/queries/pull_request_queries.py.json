@@ -1,0 +1,37 @@
+{
+  "shared_definitions": {
+    "src/database/queries/pull_request_queries.py::import from src.database.tables import archived_tasks, integration_batch_members, integration_batches, projects, pull_request_inbox_snapshot, repos, tasks": {
+      "baseline_span": [
+        9,
+        13
+      ],
+      "landing_span": [
+        9,
+        13
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/queries/pull_request_queries.py::list_known_pull_requests": {
+      "baseline_span": [
+        14,
+        49
+      ],
+      "landing_span": [
+        14,
+        49
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/queries/pull_request_queries.py::train_states_for_tasks": {
+      "baseline_span": [
+        94,
+        131
+      ],
+      "landing_span": [
+        94,
+        131
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    }
+  }
+}

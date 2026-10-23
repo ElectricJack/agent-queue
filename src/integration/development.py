@@ -9,6 +9,7 @@ import hashlib
 import json
 import logging
 import shlex
+import sys
 import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -77,13 +78,14 @@ def _publishable_object_task(task):
     ).correlate(task).exists()
 #: The ``merge`` attribute a repository gives its generated artifacts in
 #: ``.gitattributes``.  Under a ``regenerate`` policy the publisher defines this
-#: driver for its own merges as a text merge that keeps our side of every
-#: overlapping hunk -- it never conflicts -- and then rebuilds the files with
-#: the policy's command, so a conflict confined to them never parks a source.
+#: driver for its own merges, then rebuilds the files with the policy's command.
+#: Legacy reviewed bookkeeping requires verified shard provenance first.
 GENERATED_MERGE_DRIVER = "aq-generated"
 GENERATED_MERGE_CONFIG = (
     "-c", f"merge.{GENERATED_MERGE_DRIVER}.name=generated artifact, rebuilt after the merge",
-    "-c", f"merge.{GENERATED_MERGE_DRIVER}.driver=git merge-file --quiet --ours %A %O %B",
+    "-c", f"merge.{GENERATED_MERGE_DRIVER}.driver="
+    f"{shlex.quote(sys.executable)} "
+    f"{shlex.quote(str(Path(__file__).with_name('generated_merge_driver.py')))} %O %A %B %P",
 )
 REGENERATION_OUTPUT_TAIL_CHARS = 4000
 

@@ -4,7 +4,7 @@ Where an Agent Queue install keeps its settings and its markdown, and how both r
 running daemon. This page covers:
 - the operator config file `~/.agent-queue/config.yaml`: how it is loaded, validated,
   edited, reloaded, tuned, redacted and made portable;
-- secrets, which are `${VAR}` references resolved from the environment or a `.env` file;
+- secrets, preferably `${VAR}` references resolved from the environment or a `.env` file;
 - the vault `~/.agent-queue/vault/`: its layout, the write-if-absent seeding of
   shipped content, the watcher that reacts to edits, and the index pages;
 - the vault side-channels: facts files, project overrides, project READMEs and
@@ -12,8 +12,8 @@ running daemon. This page covers:
 - the prompt-building code that is not `aq prime`: the legacy `PromptBuilder`, the
   per-workspace prompt manager and the task templates.
 
-This is system 13 of the 18 in the system inventory. It describes `main` as of
-2026-10-20. Where a guide already explains something well, this page gives the short
+This is system 13 of the 18 in the system inventory. It describes `origin/dev` at `52d2efe4c` as of
+2026-10-22. Where a guide already explains something well, this page gives the short
 version and links to it. Line numbers are a starting point for a reader; they drift.
 
 **Much of this system is plumbing that other systems sit on, and a fair part of the
@@ -41,7 +41,7 @@ for the keys.
 - [Boundaries](#boundaries)
 - [Design principles and invariants](#design-principles-and-invariants)
 - [Known gaps](#known-gaps)
-- [Planned work](#planned-work)
+- [Recent shipped changes](#recent-shipped-changes)
 - [Source and tests](#source-and-tests)
 
 ## Purpose
@@ -71,8 +71,9 @@ This system solves five problems around that state:
   config fails at startup with a named error, not later in a subsystem.
 - **Changing settings without a restart where that is safe.** A config watcher applies
   "hot" sections to the live object and reports the rest as needing a restart.
-- **Secrets that never sit in the YAML.** Credentials are `${VAR}` references. The
-  config API redacts them on read and restores them on write.
+- **Secret-safe configuration reads.** Prefer `${VAR}` references. Literal credentials
+  are also accepted; the config API redacts them on read and restores placeholders
+  on write. References themselves remain visible.
 - **Shipping defaults without clobbering edits.** Shipped vault content is written
   only if absent. A few narrow, explicit refresh paths cover cases where the shipped
   copy must win. Hash-matched harnesses, reviewed playbook bundles and additive
@@ -174,21 +175,22 @@ specially:
 - `hook_engine` is dropped silently;
 - `chat_provider` is accepted as an alias for `llm`.
 
-There are **no per-project config files**. Only three settings are keyed by project or
-repository:
-- `project_roots`;
-- `resources.test_interpreters`;
-- the per-repository timeouts under `worktrees`.
+There are no separately loaded per-project config files. The installation config
+has project/repository maps, including `project_roots`,
+`resources.test_interpreters`, per-repository `worktrees` timeouts,
+`workspaces.projects` cache overrides and `wait_policy.projects` policy overrides.
+Other per-project settings live in database policy columns or the vault.
 
-Everything else per project lives in the database (the `projects` table and its
-policy columns) or in the vault (`projects/<pid>/`).
+YAML agent defaults use `agents`, while the typed attribute is `agents_config`.
+The schema/tuner/portable exporter currently use the typed name as a YAML key;
+the loader ignores it. See [Behaviour gaps](#behaviour-gaps).
 
 ### Hot reload and restart
 
 [src/config.py](../../../src/config.py) declares two disjoint sets that together cover
-all 58 sections:
+all 60 sections:
 
-- **Hot (31)** (`HOT_RELOADABLE_SECTIONS`, about line 4320). These are:
+- **Hot (33)** (`HOT_RELOADABLE_SECTIONS`, about line 4320). These are:
   - `scheduling`, `monitoring`, `archive`, `llm_logging`, `agents_config`,
     `auto_task`, `logging`;
   - `agent_profiles`, `global_token_budget_daily`, `max_daily_playbook_tokens`,
@@ -197,7 +199,8 @@ all 58 sections:
     `test_selection`, `metrics`;
   - `providers`, `provider_failover`, `routing`, `docs`, `graph_layout`,
     `dashboard_server`, `host_shell`, `pricing`;
-  - `surface`, `project_roots`, `git_identity`, `deploy`, `knowledge`.
+  - `surface`, `project_roots`, `git_identity`, `deploy`, `knowledge`,
+    `workspaces`, `wait_policy`.
 - **Restart required (27)** (`RESTART_REQUIRED_SECTIONS`, about line 4373). These are:
   - `database`, `database_path`, `data_dir`, `workspace_dir`, `env`, `profile`;
   - `discord`, `messaging_platform`, `mcp_server`, `api_auth`, `security`;
@@ -207,7 +210,8 @@ all 58 sections:
     `playbooks`, `health_check`, `reports`.
 
 `ConfigWatcher` (about line 4441) polls the file's mtime every
-`scheduling.config_poll_interval_seconds` (default 30). On a change it reloads,
+`scheduling.config_poll_interval_seconds` (default 30). It watches only the base
+file’s mtime; overlay or `.env` edits alone need a forced reload. On a change it reloads,
 diffs with `diff_configs` (about line 4422), assigns each changed hot section onto the
 live `AppConfig` with `setattr`, and emits `config.reloaded`. Changed
 restart-required sections produce `config.restart_needed` instead. The orchestrator
@@ -223,8 +227,9 @@ about line 522) forces the same path and also reloads intelligence classes.
 
 ### Editing the config
 
-All writes go through [src/config_editor.py](../../../src/config_editor.py), which uses
-ruamel in round-trip mode so that comments and key order survive. Its parts:
+The section writers use [src/config_editor.py](../../../src/config_editor.py), which
+uses ruamel in round-trip mode. Comments, order and quotes outside a replaced
+section survive; replacing a section can lose its internal comments. Its parts:
 - **Readers:**
   - `read_raw_config` returns the file without substitution;
   - `find_env_var_refs` lists the `${VAR}` names;
@@ -247,14 +252,14 @@ wrap these:
 |---|---|---|
 | `get_config` | 251 | Returns the raw config, redacted. |
 | `get_config_schema` | 312 | Returns the schema with reload hints. |
-| `update_config` | 393 | Restores redacted secrets, writes one section, validates by reloading, and restores the old file on failure. |
+| `update_config` | 393 | Restores redacted secrets, preflights a temporary candidate, then writes one section. A temporary backup restores only write exceptions and is removed before live reload. |
 | `reload_config` | 522 | Re-reads the file now. |
 | `preview_portable_config` / `export_portable_config` / `import_portable_config` | 325 / 340 / 360 | See [Portable bundles](#portable-bundles). |
 
 The CLI is `aq system config` ([src/cli/system_config.py](../../../src/cli/system_config.py)):
 - `get [SECTION]`;
 - `set KEY=VALUE [--dry-run]`;
-- `edit` (opens `$EDITOR` on a section);
+- `edit` (opens `$EDITOR` on redacted whole-config YAML, then submits changed sections);
 - `schema`;
 - `tune`;
 - `git-identity`.
@@ -265,8 +270,8 @@ The dashboard's settings page uses the same commands through the API.
 
 There is no keyring. [src/config_secrets.py](../../../src/config_secrets.py) handles
 both ends of the secret path:
-- **Storage:** a secret lives in the environment or in `~/.agent-queue/.env`, and the
-  YAML holds `${VAR}`.
+- **Storage:** prefer the environment or `~/.agent-queue/.env` with `${VAR}` in YAML.
+  Literal YAML credentials are accepted too; there is no storage-enforcement rule.
 - **Redaction on read:** `redact_config` replaces values with `__aq_redacted__`. It
   redacts a value when either test matches:
   - the key name matches a secret pattern (`token`, `password`, `secret`, `api_key`
@@ -275,7 +280,9 @@ both ends of the secret path:
     PEM blocks, or URLs with embedded credentials.
 - **Restore on write:** `restore_section_secrets` puts the original values back
   wherever the incoming section still holds the placeholder. A client can therefore
-  round-trip a section without ever seeing a secret.
+  round-trip a section without seeing literal secrets. Unknown placeholders are
+  refused. Lists match by position, so reordering redacted entries is unsafe.
+  Credential-bearing URLs preserve the URL structure and redact the password.
 
 The design is
 [2026-09-10-config-api-secret-redaction-design.md](../../superpowers/specs/2026-09-10-config-api-secret-redaction-design.md).
@@ -285,16 +292,14 @@ The design is
 [src/config_tuning.py](../../../src/config_tuning.py) recommends settings from the
 hardware. The steps are:
 
-1. `MachineResources` (about line 56) measures CPU count, memory and disk.
-2. `recommended_tuning` (about line 159) derives:
-   - pool sizes;
-   - test-slot counts;
-   - resource gates;
-   - database pool limits.
-3. `DERIVED_KEYS` (about line 697) names the keys tuning owns.
-4. `tuning_plan` (about line 760) classifies each key as add, keep, replace or
-   unchanged.
-5. `apply_tuning` (about line 789) writes the result.
+1. `MachineResources` measures CPU count and RAM, not disk.
+2. `recommended_tuning` derives agent capacity, test slots, resource gates and
+   background/report cadence, plus curated policy defaults. It does not derive DB pools.
+3. `DERIVED_KEYS` lists values deliberately omitted so runtime derivation stays active.
+4. `tuning_plan` classifies whole sections as add, keep, replace or unchanged.
+5. `apply_tuning` preflights a candidate, refuses newly introduced validation errors,
+   reports pre-existing errors separately, then writes the selected sections locally.
+   It does not force live reload or retain a transaction backup.
 
 `aq system config tune [--apply]` shows or applies the plan. Onboarding runs it during
 install ([src/install/onboarding.py](../../../src/install/onboarding.py) about lines 381
@@ -319,8 +324,9 @@ installs. [portable-config.md](../portable-config.md) is the behaviour spec. In 
   - limits each member to 2 MB and the archive to 8 MB;
   - rejects traversal, symlinks and members it does not expect.
 - **Importing.** `import_bundle` (about line 478) offers three modes: keep the
-  existing value, replace it, or raise an error on conflict. `bundle_preview` (about
-  line 279) is the dry run.
+  existing value, replace it, or raise an error on conflict. Import `dry_run` validates
+  without writes. `bundle_preview` instead previews an export. `wait_policy`, including
+  project overrides, travels; local `workspaces` and Git identities do not.
 
 ### The vault layout
 
@@ -353,22 +359,22 @@ folder-by-folder table. Note the folder corrections listed under
    [src/playbooks/required.py](../../../src/playbooks/required.py) about line 60). A
    receipt `playbook-installation.json` stops it from running again.
 2. **Create directories.**
-3. **Copy templates**, including the 72 task templates from `src/prompts/task_templates/`
+3. **Copy templates**, including task templates from `src/prompts/task_templates/`
    (about line 1417).
 4. **Seed harnesses** from `src/sessions/default_harnesses/` (about line 1657).
 5. **Seed formulas** from `src/prompts/formulas/` (about line 1607).
 6. **Seed intelligence classes** from `src/prompts/default_intelligence_classes/`
    (about line 1625). A `.retired` marker stops a class the operator removed from
    coming back.
-7. **Seed profiles** (`ensure_default_profiles`, about line 1782). There are 13
-   shipped ids. A `.retired-defaults` tombstone records ones the operator removed.
+7. **Seed profiles** (`ensure_default_profiles`). A `.retired-defaults` tombstone
+   records shipped ids the operator removed.
 8. **Seed aq skills** (`ensure_default_aq_skills`, about line 1686). These go to
    `~/.claude/skills`, `~/.gemini/skills` and `~/.codex/skills`, not to the vault.
 9. **Regenerate the hub index pages** (`VaultIndexGenerator.generate_all()`).
 
-The rule for every step is **write-if-absent**. An installed copy is never overwritten,
-so a fix to a shipped profile or skill changes nothing on an existing install. Three
-paths deliberately refresh installed content:
+Authored profile, class, skill and template defaults use **write-if-absent**, so a
+fix to a shipped profile or skill does not replace an installed copy. Hub pages are
+generated output. Three narrow paths can refresh other installed content:
 
 - **Harnesses** are refreshed when the installed file's hash matches an *older shipped*
   version ([src/sessions/harness_manifest.py](../../../src/sessions/harness_manifest.py)).
@@ -376,7 +382,13 @@ paths deliberately refresh installed content:
   request.
 - **Reviewed playbook bundles** (`ensure_reviewed_playbook_bundles`,
   [src/playbooks/required.py](../../../src/playbooks/required.py) about line 210) are
-  replaced by the shipped bundle. The old copy is kept as `.bak-<epoch>`.
+  replaced during initial installation or explicit repair, with `.bak-<epoch>`
+  backups. Restarts do not refresh bundles, resurrect deleted policy or repoint
+  durable activations. First install copies only `INITIAL_SYSTEM_PLAYBOOK_IDS`, not
+  every shipped bundle. An existing non-empty vault gets only the receipt.
+  Initial activation covers the three required policies plus `supervisor-failure-triage`
+  and `default-pipeline`; `morning-report` also needs explicit activation and report
+  enablement. `blocked-task-escalation` is not a default activation.
 - **Capability grants** on the `supervisor` and `worker-*` templates are merged in
   additively ([src/profiles/capability_sync.py](../../../src/profiles/capability_sync.py)).
   This happens on startup (core.py about lines 2730-2746) and on each profile reload
@@ -439,7 +451,7 @@ Registered handlers:
 | `projects/*/overrides/*.md` | 2444 | [src/override_handler.py](../../../src/override_handler.py) | Would re-index the override for retrieval. No indexer is ever attached, so it only logs. |
 | `projects/*/README.md` | 2455 | [src/readme_handler.py](../../../src/readme_handler.py) | Copies a deterministic summary to `agent-types/supervisor/memory/project-<pid>.md`. A startup scan (about line 2794) catches up. Live. |
 | workspace `specs/` files | 2470 | spec watcher | Writes `projects/<pid>/references/spec-<name>.md` stubs. Only when `memory.enabled` and `spec_watcher_enabled`. |
-| reference stubs | 2496 | [src/reference_stub_enricher.py](../../../src/reference_stub_enricher.py) | Fills a stub's summary with a direct model call. It caps the source at 20,000 characters and skips a stub whose `source_hash` is unchanged. Also gated on `stub_enrichment_enabled`. |
+| `workspace.spec.changed` event | 2496 | [src/reference_stub_enricher.py](../../../src/reference_stub_enricher.py) | Fills a stub's summary with a direct model call. It caps source text at the configured limit (default 20,000 characters) and skips an already-enriched stub whose `source_hash` is unchanged. Also gated on `stub_enrichment_enabled`. |
 
 Two kinds of vault content are deliberately **not** watched:
 - **Playbook markdown.** V2 playbooks change only through commands and review
@@ -488,19 +500,22 @@ This system still owns three older template engines:
   strict variables. Only the `list_prompts`, `read_prompt` and `render_prompt`
   commands use it (system_commands.py about lines 1286-1414).
 - **Task templates** ([src/task_templates.py](../../../src/task_templates.py)) render
-  the 72 shipped task bodies with strict variables. The vault copy under
+  shipped task bodies with strict variables. The vault copy under
   `templates/tasks/` wins over the packaged one.
 
 Bootstrap prompts are constants in
 [src/sessions/spec.py](../../../src/sessions/spec.py) (`BOOTSTRAP_PROMPT`,
-`POOL_BOOTSTRAP_PROMPT`). They are not templates.
+`POOL_BOOTSTRAP_PROMPT`, plus `NAMED_BOOTSTRAP_PROMPT`). These format launch-time
+values. Prime reads profile `Role` and `Rules`; machine-only headings such as
+`Reflection` are not rendered as role text. Generated task bodies use the live
+[task-template workflow](../../guides/generated-task-templates.md).
 
 What in `src/prompts/` is live:
 
 | Path | Status |
 |---|---|
 | `default_intelligence_classes/` (7), `formulas/` (2), `task_templates/` (72) | Seeded into the vault, write-if-absent. |
-| `reviewed_playbooks/` (15 bundles) | Refreshed into the vault (owned by playbooks, system 8). |
+| `reviewed_playbooks/` | Initial selected bundles or explicit import/repair only (owned by playbooks, system 8). |
 | `integration_playbooks/`, `project_playbooks/` | Authoring sources only. |
 | `default_playbooks/` | Inventory only. |
 | `consolidation_task.md` | Historical. Reachable only through the `aq://prompts` resource. |
@@ -554,9 +569,9 @@ These hold in the code today. A change that breaks one needs a spec.
 
 1. **PostgreSQL only.** `validate()` refuses a SQLite URL. No config path selects
    another database.
-2. **Secrets never sit in the YAML.** They are `${VAR}` references. The config API
-   never returns a resolved secret, and a write that carries the placeholder keeps the
-   stored value.
+2. **Secret reads are redacted.** `${VAR}` references are recommended and stay visible.
+   Literal credentials are accepted, redacted on API reads, and restored on writes
+   carrying the retained placeholder.
 3. **Load fails loudly.** An unset `${VAR}`, a missing named profile overlay or an
    invalid value stops startup with a named error. There is no silent fallback to
    defaults for a value the operator wrote. The one leniency is that unknown top-level
@@ -567,7 +582,7 @@ These hold in the code today. A change that breaks one needs a spec.
    copy. Only three paths refresh installed content, and each is narrow and
    reversible:
    - hash-matched harnesses;
-   - reviewed bundles, with a backup;
+   - reviewed bundles during initial installation or explicit repair, with a backup;
    - additive grants, with an opt-out.
 6. **Removal is remembered.** `.retired` and `.retired-defaults` stop a removed class or
    profile from being reseeded.
@@ -583,265 +598,91 @@ These hold in the code today. A change that breaks one needs a spec.
 
 ## Known gaps
 
-### Where the docs and the code disagree
+### Documentation status
 
-The code is right in each case.
-
-- **`.env` precedence is documented backwards.**
-  [config.md](../config.md) (§3 about line 57 and §5.6 about lines 981-987) and
-  [configuration.md](../../reference/configuration.md) (about line 13) say the shell
-  environment wins over `.env`. `_load_env_file` does the opposite: the file
-  overrides and warns.
-- **`update_config` deletes its backup.** [config.md](../config.md) §7 says the `.bak`
-  is preserved. The code removes it in a `finally` block. The comment above it ("Take a
-  backup so we can restore if the live reload chokes") is accurate only for the
-  duration of the call.
-- **The CLI syntax in config.md §7 is wrong.** It shows
-  `aq system config --section …` and `set logging.level DEBUG`. The real forms are
-  `get [SECTION]` and `set KEY=VALUE`. Its "plugin enable list" command does not exist.
-- **config.md §4.5 documents `PauseRetryConfig`.** It does not exist. `pause_retry` is
-  dropped with a warning.
-- **The reload table in [configuration.md](../../reference/configuration.md) (about
-  line 396) is incomplete.** It omits five hot sections: `test_selection`,
-  `host_shell`, `git_identity`, `deploy` and `knowledge`. It also omits the
-  restart-only `reports`.
-- **[design/vault.md](../design/vault.md) describes a different tree.** It shows
-  `vault/orchestrator/`, `agent-types/{coding,code-review,qa}` and
-  `system/playbooks`. It places project overrides at
-  `projects/<pid>/agent-types/<type>/profile.md`; that path is actually prime's
-  *project role* file, and overrides live in `projects/<pid>/overrides/`. It mentions
-  memsearch and `milvus.db`. It omits harnesses, formulas, intelligence classes and
-  reviewed playbooks. Read it as history.
-- **[docs/reference/modules/vault.md](../../reference/modules/vault.md)** says the
-  repository's `vault/templates/*` files are seeded and that `supervisor_system.md` is
-  loaded by `PromptBuilder`. Nothing seeds those templates, and nothing loads that
-  prompt.
-- **[configuration-and-vault.md](../../concepts/configuration-and-vault.md) (about line
-  170)** describes `src/file_watcher.py` as live. It is never constructed.
-- **[prompt-builder.md](../prompt-builder.md)** describes `platforms/claude_sdk`, a
-  chat agent and a strict mode. It is stale throughout. The real assembler is prime.
-- **`prompt_manager.py`'s docstring** cites `specs/prompt-system.md`, which does not
-  exist.
-- **The `VaultWatcher` docstring** says `*` does not cross `/`. The matcher uses
-  `fnmatch` for patterns without `**`, and there `*` does cross `/`. For example,
-  `projects/a/b/overrides/c.md` matches `projects/*/overrides/*.md`.
-- **A comment points to `aq vault rebuild-index`.** The command is
-  `aq system vault-rebuild-index`.
+The October 22 audit corrected `.env` precedence, the full hot/restart classification,
+retired `pause_retry`, actual CLI syntax, temporary-backup behavior, tuning preflight,
+portable import/export preview, first-install policy installation and inactive legacy
+memory paths in the operating guides. The old
+[vault design](../design/vault.md) and [prompt-builder proposal](../prompt-builder.md)
+are explicitly historical; they do not define the current runtime.
 
 ### Stale code and comments
 
-- **Dead seeders in [src/vault.py](../../../src/vault.py):**
-  - `ensure_default_playbooks` (about line 1505);
-  - `ensure_default_agent_type_playbooks` (about line 1873), whose source directory is
-    gone;
-  - `ensure_supervisor_profile`, `ensure_claude_code_profile`,
-    `ensure_claude_opus_profile` and `ensure_claude_sonnet_profile` (about lines
-    1941-2037);
-  - `ensure_shared_claude_memory_dir` (about line 2067);
-  - `vault_has_profile_markdown` (about line 2424).
-- **Unreachable branch.** The `elif all_profiles` branch in `_ensure_vault_structure`
-  (core.py about line 3191) can never run.
-- **Unused `VaultWatcher` code.** `start()` and `_poll_loop` are dead, because the tick
-  drives `check()`. The module docstring describes the background loop.
-- **Unused `VaultManager` getters.** They are used only in tests. Production uses
-  `ensure_layout`, `register_project` and `register_agent_type`.
-- **Dead or test-only modules:**
-  - `src/wiki_links.py`: only `add_see_also` remains, used by the dead
-    `migrate_backlinks` in `vault_index.py` (about line 560);
-  - `src/vault_glossary.py`: no importers, and `vault/glossary/` is never created;
-  - `src/file_watcher.py`: never constructed;
-  - in `src/facts_parser.py`, everything except `parse_facts_file`.
-- **Dead `PromptBuilder` path.** `PromptBuilder` is dead outside `extract_section`. The
-  orchestrator's `_build_task_context_with_prompt_builder` and `_get_execution_rules`
-  were removed (azure-ridge-72). The `TaskContext` tier fields in `models.py` (about lines
-  1106-1113) remain dead.
-- **Unused `src/prompts/` files:** `supervisor_system.md`, `execution_focus.md`,
-  `plan_structure_guide.md`, `memory_consolidation.py` and `memory_revision.py`.
-- **Config leftovers:**
-  - the `PerProjectChannelsConfig` shim (about line 127);
-  - the `chat_provider` alias;
-  - `database_path`, documented as "removed next release" but still accepted (about
-    line 3908);
-  - `KnowledgeConfig.legacy_memory_mode`;
-  - `check_deprecations()` (about line 4249), which always returns an empty list;
-  - `reload_non_critical()` (about line 4254), which has no production caller and a
-    section list that has drifted from the real sets.
+These remain source issues; generated documentation must be fixed through its sources:
 
-  The `DatabaseConfig` docstring (about line 1469) still shows a `.db` URL.
-- **Stale text in `config_editor.py`.** Its "step 2" docstring and the `SECTION_NOTES`
-  text "Disabled until the lane lands" describe finished work.
-- **`vault/system/` is half retired.** config.py (about line 3992) maps the old
-  `vault_system` location to `agent-types/supervisor`. Yet seeding still creates
-  `system/`, and the facts handler still watches `system/facts.md`.
+- `config_editor.SECTION_NOTES` still describes some shipped lanes as disabled or
+  unfinished. The generated schema inherits those notes; editing the JSON alone
+  would be overwritten by generation.
+- `VaultWatcher` describes a standalone background loop, while the orchestrator tick
+  drives `check()`. For patterns without `**`, its `fnmatch` matcher lets `*` cross
+  `/`, contrary to the docstring; `**` patterns use segment matching.
+- `prompt_manager.py` cites the nonexistent `specs/prompt-system.md`.
+- Legacy seeders, `FileWatcher`, glossary/wiki-link helpers and the layered
+  `PromptBuilder.build()` retain isolated coverage without active daemon callers.
+  Their unit tests do not prove that an edit reaches a worker session.
 
 ### Behaviour gaps
 
-- **The memory plugin is always skipped, so three vault paths are inert.** The plugin
-  loader skips `LEGACY_MEMORY_PLUGINS = {"aq-memory", "memory"}`
-  ([src/knowledge/legacy.py](../../../src/knowledge/legacy.py)) on every start (core.py
-  about line 2558). It logs "L1/L2 prompt tiers empty; reflection off". The pause is
-  explained in [feature-pauses.md](../design/feature-pauses.md). As a result:
-  - facts files sync nowhere;
-  - `OverrideIndexer` is never built and `set_indexer` is never called, so editing an
-    override changes nothing an agent sees;
-  - prime's L1 and L2 sections always render empty.
+These are code follow-ups, not behavior promised by the operating docs:
 
-  An operator who writes `facts.md` or `overrides/*.md` today gets no effect.
-- **Facts sync is one way and never deletes.** When it ran, deleting a facts file or
-  key left the KV entries in place.
-- **`tune --apply` bypasses `CommandHandler`.** It writes the file directly from the
-  CLI. It does not get `update_config`'s validate-and-restore protection, and no
-  command event is recorded. `_detect_memory_gb` (config_tuning.py about line 122)
-  uses a synchronous `subprocess.run` on macOS. AGENTS.md forbids that in production
-  code.
-- **`write_section` is not atomic.** It opens the file with `"w"` and writes. A crash
-  mid-write leaves a truncated config. `update_config` holds a backup only for the
-  duration of the call.
-- **`update_config` does not check the section name.** A typo creates a new top-level
-  key, and `load_config` then ignores it silently.
-- **Secret restore matches list items by position.** `restore_section_secrets` pairs
-  list elements by index. If a client reorders a list that contains redacted items,
-  the secrets land on the wrong element.
-- **Hot reload misses cached readers.** Any component that stored a sub-config at
-  construction keeps old values after a hot reload. No test or registry lists which
-  components read live.
-- **`aq system config edit` loses comments inside sections.** `schema --json` defaults
-  to true, so the flag has no effect.
-- **Portable config and update validation ignore overlays.** `PORTABLE_CONFIG_SECTIONS`
-  lists `planner` and `plugins`, which `load_config` never reads.
-  `validate_candidate_config` (portable_config.py about line 454) says it applies
-  overlays. It validates through a temporary file whose stem is wrong for the
-  environment overlay and passes no profile. `update_config` has the same blind spot.
-  A change that is valid alone but invalid under the overlay passes validation.
-- **Hub page detection is by name.** `_is_hub_file` treats any `<dir>/<dir>.md` as an
-  index. A real note `notes/notes.md` would be overwritten by `_generate_hub_for_dir`,
-  which writes unconditionally. The loaders do not filter hub files. They work only
-  because those directories hold few files.
-- **The generated schema has no CI drift check.** `scripts/regenerate-generated.sh
-  --check` covers `configuration-schema.json`, which `.gitattributes` (line 23) marks
-  `merge=aq-generated`. The check is clean today, but no GitHub workflow runs it.
-- **There are no per-project config overlays.** A setting that should differ by project
-  has to become a database column or a vault file. The planned `wait_policy` per-project
-  map is the first config-level exception (see below).
+- **Agent-default key mismatch.** `load_config` reads YAML `agents`, but schema,
+  tuning and portability use `agents_config`. A local probe with
+  `stuck_timeout_seconds: 1901` loaded 1901 under `agents` and the default 0 under
+  `agents_config`. Tuning can therefore report a recommendation written without
+  making it effective. Section classification also uses the typed name.
+- **Overlay preflight is incomplete.** `validate_candidate_config` and
+  `update_config` load a temporary sibling filename, whose stem misses the real
+  environment overlay, and pass no caller-selected profile. A candidate can pass
+  preflight but fail when loaded through the real path. `planner` and `plugins` also
+  remain on the portable allowlist although `load_config` ignores them.
+- **Unknown update sections are accepted.** `update_config` does not check the
+  section name; a typo can persist as an ignored top-level key.
+- **Writes are not atomic.** `write_section` opens with `"w"`. `update_config`
+  removes its backup after the write and does not roll back a later reload failure.
+  `tune --apply` validates locally but bypasses `CommandHandler`, command events and
+  a multi-section backup transaction.
+- **Redacted list entries restore by position.** Reordering a list can associate a
+  retained secret with the wrong item. Unresolved placeholders are rejected, but
+  position changes are not identity matching.
+- **Legacy facts and override ingestion is inactive.** The plugin loader always
+  skips `LEGACY_MEMORY_PLUGINS = {"aq-memory", "memory"}`. Facts handlers only log;
+  `OverrideIndexer` is not attached. Legacy L1/L2 builders return empty text.
+  Authorized knowledge-record bundles can still populate prime context; this is
+  separate from the retired retrieval path. Historically, facts deletion also left
+  KV entries behind.
+- **Hub detection is filename-based.** `<dir>/<dir>.md` is treated as a hub. A real
+  note with that name can be overwritten or removed by generation. Some definition
+  loaders filter generated hubs, so this is not a blanket failure of every loader.
+- **Hot sections depend on live readers.** Classification updates `AppConfig`;
+  consumers retaining a copied sub-config need their own reload handling. Base-file
+  polling also does not detect an overlay or `.env` edit by itself.
 
-## Planned work
+## Recent shipped changes
 
-This is a snapshot of open tasks, re-queried on 2026-10-20. The inventory listed "Open
-epics: none" for this system, and that is still true: no open epic is *about*
-configuration or the vault. Several open epics change settings, shipped vault
-content or the drift tooling as part of other work. Vault documents are under
-`projects/agent-queue/specs/` in the operator vault. They are cited by file name, with
-the review id and state at the time of writing.
+This records source history, not live task statuses. The previous October 20 queue
+snapshot is obsolete; inspect the queue through authorized operator surfaces when
+planning work. Configuration and vault changes in the six-week audit window include:
 
-### Open epics and tasks
-
-**`bold-zenith-11`, event-driven hibernation and verified waits** (IN_PROGRESS). It
-adds a new config section `wait_policy` (`WaitPolicyConfig`). The section has:
-- three feature flags, `v2_enabled`, `hibernation_enabled` and
-  `scheduler_waits_enabled`, all false until cutover;
-- per-kind `escalate_after` and `expected_duration`;
-- `in_place_ceiling_seconds` (1800), `hibernate_margin` (2.0) and
-  `resume_cost_minutes` (10);
-- a per-project override map.
-
-**`WaitPolicyConfig` is not on `main`.** It exists only on `origin/aq/bold-zenith-11.2`.
-When it lands, it must be classified hot or restart and added to the section list. It
-also needs a round-trip mapper and a regenerated configuration schema.
-
-| Task | State | What it changes here |
+| Date | Source commit | Current behavior |
 |---|---|---|
-| `.22` Flip defaults and cut over | READY | Turns the new flags on, refuses version-1 wait bodies, and adds doctor checks for installed-copy drift, plus the runbook. |
+| October 22 | `597b44ff5` | Integration service reconciliation gains bounded phantom-job policy. |
+| October 21 | `56bde6dad` | `workspaces` adds warm integration worktrees and per-project compiler-cache configuration; see the [reference](../../reference/configuration.md#warm-integration-checkouts-and-compiler-caches). |
+| October 21 | `53d161b35` | Playbook script runner operates by default; old sandbox terminology and disabled-foundation descriptions are historical. |
+| October 21 | `08a75ae4d` | `wait_policy.resume_stall_seconds` bounds stalled resumption, globally and per project. |
+| October 20 | `a278d71d3`, `097df3f96` | Verified-wait rollout flags default on, v1 bodies default to refusal, and wait policy survives portable round trips. |
+| October 19 | `4168e6312`, `09f7c46e9` | Wait metrics accept a historical cohort; live prime context budgets derive from model windows rather than the legacy builder's fixed warning tiers. |
+| October 13 | `f50f3c882`, `b7fe4362c` | Project wait-policy overrides ship; system playbook sources can be recovered from active reviewed artifacts. |
+| October 12 | `6144e8419`, `f56b6a92c` | Portable bundles carry full typed setup and policy dependencies with local-field exclusions. |
+| October 12 | `f64b31c5e` | Generated task instructions move into strict vault-backed task templates; installed copies remain write-if-absent. |
+| October 11 | `3b6fb9578`, `1c0400b35` | Playbooks install deliberately once; restart does not resurrect retired system policy. |
+| October 6 | `189e0ac21`, `5c8c1f13c` | Release-tag deployment and remote-dashboard host-shell policy are configurable. |
+| October 3 | `7db6bf070` | Authorized database knowledge bundles supply context; vault knowledge files are exports. |
+| October 1 | `d14df8e5d` | Git commit identity is centrally configurable. |
 
-The sources are `2026-10-13-event-driven-agent-hibernation-and-verified-waits.md`
-(`rev-bold-pinnacle`, approved, revision 2) and its implementation specification
-`…-implementa.md` (`rev-fleet-orbit`, approved, revision 1).
-
-**`stark-willow-95`, fast and smooth integration** (IN_PROGRESS). It implements
-`2026-10-12-fast-smooth-integration.md`. The review record `rev-fair-lantern` shows
-revision 2 approved. The vault frontmatter's "revision 3, in review" is stale: revision
-3 was never submitted.
-
-| Task | State | What it changes here |
-|---|---|---|
-| `.7` Replace the timed train window | READY | Cadence fields stop having an effect but stay parseable, so existing configs still load. |
-| `.10` Make epic-level checks advisory | DEFINED | Adds a per-project opt-in for required checks. |
-| `.11` Shared build cache | DEFINED | Adds a `workspaces.build_cache` setting. |
-| `.15` Author budget | DEFINED | Adds per-project `author_budget_seconds` and `author_assist`, omitted from dumps at their defaults so that in-flight policy snapshots compare equal. |
-| `.16` Speculative CI | DEFINED | Adds an opt-in setting. |
-| `.17` Align shipped policy, profiles, instructions and retirement ratchets | DEFINED | Updates shipped profiles, skills and reviewed bundles. Keeps capability sync additive and reports installed drift without overwriting it. Documents `cadence_seconds` and `settling_cap_seconds` as deprecated. |
-
-**`calm-grove-14`, H09** (READY). It updates the shipped templates and aq skills, and
-the vault mirror of the Discord-simplification spec. That mirror must stay
-byte-identical to the repository copy (AGENTS.md). **`vivid-rapids-36`** (H09-OPS,
-READY) is the operator step that verifies it:
-- it checks the mirror by SHA-256;
-- it runs `profiles.system_drift` and `skills.installed_drift`;
-- it merges grants or reseeds.
-
-**`vivid-pinnacle-60`** (PAUSED) is the H08 counterpart. The source for all three is
-`2026-10-11-one-place-to-ask-jack-implementation-specification.md` (`rev-sharp-zenith`,
-approved, revision 1).
-
-**Held spec ingestion.** Source:
-`2026-10-14-spec-ingestion-held-batches-and-fidelity-review-before-relea.md`
-(`rev-agile-beacon`, approved, revision 1). It has three parts:
-- `nimble-lantern-37` (IN_PROGRESS) has two child tasks:
-  - `.2` (READY) rewrites the spec-ingest profile text and removes the
-    `task_batch_commit` grant from the shipped profile. Installed copies keep the
-    grant, because capability sync only adds and write-if-absent never rewrites, so an
-    operator reseed is part of the rollout.
-  - `.3` (DEFINED) updates the docs.
-- `calm-orbit-69.3` (DEFINED) covers the CLI, doctor and MCP surfaces.
-- `sharp-cascade-53.2` is PAUSED.
-
-**`clear-impact-72.1`–`.11`, playbook building blocks** (READY). Each task evaluates
-rewriting one shipped playbook onto reusable building blocks. That changes the
-reviewed bundles that seeding refreshes into the vault. Source:
-`2026-10-12-implementation-playbooks-reusable-building-blocks.md` (`rev-smart-flare`,
-approved, revision 1). `wise-orbit-24` (BLOCKED) is the related playbook refactor F3.
-
-**`agile-vault-38`** (BLOCKED) would make playbook scripts require
-`scripts.runtime_root`, a runtime manifest, `input_root` and `state_root`, with
-defaults under `~/.agent-queue`. It conflicts with
-`2026-10-14-playbook-scripts-no-sandbox-decision.md`, a decision note with no review.
-That note records the human's choice to "just allow playbooks to run scripts", so
-this task is likely to be dropped.
-
-**`grand-zenith-64`** (PAUSED) ingests the system inventory spec this page belongs to.
-
-### In-flight and recent specs
-
-| Document | Review and state | What it means for this system |
-|---|---|---|
-| `2026-10-20-agent-queue-system-inventory.md` | `rev-bright-rapids`, approved (revision 1) | Defines this system's scope and its 17 neighbours. |
-| `2026-10-13-event-driven-agent-hibernation-and-verified-waits.md` | `rev-bold-pinnacle`, approved (revision 2) | The `wait_policy` section and its per-project map. |
-| `2026-10-13-event-driven-agent-hibernation-and-verified-waits-implementa.md` | `rev-fleet-orbit`, approved (revision 1) | The task plan for `bold-zenith-11`, including doctor drift checks. |
-| `2026-10-12-fast-smooth-integration.md` | `rev-fair-lantern`, approved (revision 2); frontmatter stale | Deprecates cadence settings, adds per-project and workspace settings, and aligns shipped vault content. |
-| `2026-10-11-one-place-to-ask-jack-implementation-specification.md` | `rev-sharp-zenith`, approved (revision 1) | Template and skill updates, the vault mirror and the drift-check runbook. |
-| `2026-10-14-spec-ingestion-held-batches-and-fidelity-review-before-relea.md` | `rev-agile-beacon`, approved (revision 1) | A shipped profile change that installed copies will not pick up without a reseed. |
-| `2026-10-12-implementation-playbooks-reusable-building-blocks.md` | `rev-smart-flare`, approved (revision 1) | Changes shipped reviewed bundles. |
-| `2026-10-14-playbook-scripts-no-sandbox-decision.md` | None (decision note) | Argues against new `scripts.*` config. |
-| `2026-10-01-aq-work-and-knowledge-records-…` | `rev-fleet-cascade`, approved (revision 2) | Makes the vault an export target for knowledge records rather than their source. |
-| `2026-10-03-k14-knowledge-records-operator-guide.md` | `rev-solid-ridge`, approved (revision 1) | The operator view of record export into the vault. |
-
-In the repository:
-- [2026-09-10-config-api-secret-redaction-design.md](../../superpowers/specs/2026-09-10-config-api-secret-redaction-design.md)
-  is the implemented design for redaction;
-- [portable-config.md](../portable-config.md) is the current behaviour spec for
-  bundles.
-
-### What the October changes established
-
-The month's work set the current shape. Later changes should keep it:
-- write-if-absent seeding, with tombstones for removed defaults;
-- additive capability sync as the only automatic profile change, plus doctor checks
-  that name drift instead of repairing it silently;
-- hash-matched harness refresh;
-- reviewed bundles as the only playbook content that seeding replaces;
-- the vault as an export target for knowledge records;
-- secrets as `${VAR}` references, redacted on read and restored on write;
-- new settings omitted from dumps at their defaults, so that policy snapshots taken
-  before an upgrade still compare equal.
+The current field inventory is generated from the dataclasses. Use
+`aq system config schema` and [configuration-schema.json](../../reference/configuration-schema.json)
+for exact fields and bounds; regeneration does not make stale source notes authoritative.
 
 ## Source and tests
 
@@ -881,8 +722,7 @@ When changing this system:
 Related reading, in order:
 1. [configuration-and-vault.md](../../concepts/configuration-and-vault.md) for the
    concepts;
-2. [configuration.md](../../reference/configuration.md) for every key, keeping the
-   reload-table correction above in mind;
+2. [configuration.md](../../reference/configuration.md) for keys and reload behavior;
 3. [default-tuning.md](../../guides/default-tuning.md) for tuning;
 4. [portable-config.md](../portable-config.md) for bundles;
 5. [docs/reference/modules/vault.md](../../reference/modules/vault.md) for the folder

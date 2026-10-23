@@ -1638,7 +1638,15 @@ async def test_retained_fsck_outlasts_ordinary_git_budget(setup, monkeypatch, da
     # Force a fresh check even on a healthy cache.
     monkeypatch.setattr('src.git.manager._RETAINED_VERIFY_TTL_SECONDS', 0.0)
     normal_run = service.git.arun_git_result
+    normal_fetch = service.git.afetch_origin
+    fetch_budget = service.git._command_timeout()
     fscks = 0
+
+    async def fetch_with_normal_budget(*args, **kwargs):
+        # Only fsck and the shared acquisition are tested against the short
+        # budget. A real refetch can exceed one second on a busy CI runner.
+        with service.git.command_timeout(fetch_budget):
+            return await normal_fetch(*args, **kwargs)
 
     async def slow_fsck(args, **kwargs):
         nonlocal fscks
@@ -1651,6 +1659,7 @@ async def test_retained_fsck_outlasts_ordinary_git_budget(setup, monkeypatch, da
         return await normal_run(args, **kwargs)
 
     monkeypatch.setattr(service.git, 'arun_git_result', slow_fsck)
+    monkeypatch.setattr(service.git, 'afetch_origin', fetch_with_normal_budget)
     with service.git.command_timeout(1):
         assert await service.store(repo) == store
     assert fscks == (4 if damaged else 1)
@@ -2023,7 +2032,8 @@ async def test_retained_incremental_pack_reuses_full_verification(setup, monkeyp
     if transport == 'isolated':
         async def isolated(checkout_path, **options):
             await service.git._afetch_origin_with_auth_to_url(
-                checkout_path, source_url=remote.as_uri(), token='disposable-test-token',
+                # The file-URL fixture needs no App credential broker.
+                checkout_path, source_url=remote.as_uri(), token=None,
                 refetch=options.get('refetch', False),
             )
         monkeypatch.setattr(service.git, 'afetch_origin', isolated)

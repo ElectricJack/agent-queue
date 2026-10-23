@@ -1,0 +1,81 @@
+{
+  "pr_merge": {
+    "argument_reads_diagnostic_only": [
+      "force",
+      "method",
+      "pr_url",
+      "project_id"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {
+      "_check_ci_before_merge": "sha256:d13a0029a4a2447b23f23d583fe06027deaa0d9e77088d56a902689d2e793dd8"
+    },
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/git_commands.py:GitCommandsMixin._cmd_pr_merge",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'pr_url': '', 'sha': None, 'error': 'project_id is required'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'pr_url': '', 'sha': None, 'error': 'pr_url is required'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'pr_url': pr_url, 'sha': None, 'error': f'unknown project: {project_id}'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'outcome': 'integration_managed', 'pr_url': pr_url, 'sha': None, 'error': 'ordinary pr_merge is disabled for hierarchy-managed projects; use the exact integration promotion protocol'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'pr_url': pr_url, 'sha': None, 'error': f'Could not authorize project repository: {exc}'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'pr_url': pr_url, 'sha': None, 'outcome': 'merge_state_unknown', 'error': f'Could not reconcile PR merge state: {exc}'}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "response"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'pr_url': pr_url, 'sha': None, 'outcome': 'closed_unmerged', 'error': 'PR is closed without a confirmed merge'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'pr_url': pr_url, 'sha': None, 'error': f'Could not validate immutable PR delivery: {exc}'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'pr_url': pr_url, 'sha': None, 'error': ci['message'], 'ci': ci}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "response"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:764e294b99bfb8c767b25752193ac6c6cc016e0babdea773be271acf8efd7c33",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_pr_base_branch.py",
+      "tests/test_pr_merge_ci_gate.py"
+    ]
+  }
+}

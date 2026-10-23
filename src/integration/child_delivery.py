@@ -292,6 +292,7 @@ class ChildDelivery:
         promotion_service: Any,
         *,
         collect: Collect | None = None,
+        train_blockers: Callable[[str], Awaitable[dict | None]] | None = None,
         clock: Callable[[], float] = time.time,
         retry_seconds: float = 60.0,
         max_backoff_seconds: float = 3600.0,
@@ -301,6 +302,7 @@ class ChildDelivery:
         self.db = db
         self.promotion = promotion_service
         self.collect = collect
+        self.train_blockers = train_blockers
         self.clock = clock
         self.retry_seconds = retry_seconds
         self.max_backoff_seconds = max_backoff_seconds
@@ -753,6 +755,36 @@ class ChildDelivery:
                 reason += (f"; preview source recovery with `aq integration redrive-child "
                            f"{task_id} --adopt-source`")
             return {**base, "outcome": "blocked", "reason": reason}, snapshot, None
+        if not proof.satisfied:
+            from src.integration.obsolete_children import obsolete_child_blocker
+            from src.integration.status import IntegrationStatusService
+
+            for observed in view.snapshots:
+                if (observed.project_id, observed.repository_id, observed.target_ref) != (
+                    proof.request.project_id, proof.request.repository_id, proof.request.target_ref,
+                ):
+                    continue
+                obsolete = await obsolete_child_blocker(
+                    observed, task_id=task_id, source_base=snapshot["base_sha"],
+                    source_oid=proof.source_oid,
+                )
+                if obsolete:
+                    return {**base, "outcome": "blocked",
+                            "reason": "obsolete_child: " + obsolete["detail"]}, snapshot, None
+            read_blockers = self.train_blockers or IntegrationStatusService(
+                self.db, git_first="active", delivery=observer,
+            ).train_task_blockers
+            status = await read_blockers(task_id) or {}
+            blockers = status.get("blockers", [])
+            if blockers:
+                return {**base, "outcome": "blocked", "reason": "; ".join(
+                    f"{item['code']}: {item['detail']}" for item in blockers
+                )}, snapshot, None
+            if not status.get("batches"):
+                return {**base, "outcome": "blocked", "reason": (
+                    f"no batch contains this child; {proof.reason}; "
+                    "the train has not reported a source admission decision"
+                )}, snapshot, None
         return {
             **base, "outcome": "nothing_to_redrive",
             "reason": ("already delivered into the parent (Git containment)" if proof.satisfied

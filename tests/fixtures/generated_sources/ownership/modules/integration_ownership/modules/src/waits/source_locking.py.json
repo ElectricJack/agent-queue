@@ -1,0 +1,11 @@
+{
+  "shared": {
+    "src/waits/source_locking.py::lock_database_source": {
+      "landing_span": [
+        12,
+        50
+      ],
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget."
+    }
+  }
+}

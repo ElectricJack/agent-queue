@@ -1,0 +1,76 @@
+{
+  "generic_dependencies": {
+    "src/commands/proposal_commands.py::TaskProposalCommandsMixin": "Generic dependency; integration-specific definitions in this file are charged independently."
+  },
+  "shared": {
+    "src/commands/proposal_commands.py::TaskProposalCommandsMixin._cmd_task_batch_commit": {
+      "baseline_span": [
+        301,
+        485
+      ],
+      "landing_span": [
+        301,
+        485
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/commands/proposal_commands.py::TaskProposalCommandsMixin._commit_hierarchical_proposal": {
+      "baseline_span": [
+        486,
+        631
+      ],
+      "landing_span": [
+        486,
+        631
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/commands/proposal_commands.py::TaskProposalCommandsMixin._create_ingest_batch": {
+      "reason": "Materializes the graph and fidelity operations, then publishes batch.held through the integration outbox in the same transaction."
+    },
+    "src/commands/proposal_commands.py::TaskProposalCommandsMixin._update_held_batch": {
+      "reason": "Revises held batch structure and fidelity state under graph guards and wakes integration policy for the new revision; the whole mixed command is charged."
+    },
+    "src/commands/proposal_commands.py::import from src.integration.outbox import enqueue_integration_event": {
+      "reason": "Imports integration event publication for held ingestion-batch policy wakeups."
+    }
+  },
+  "storage_sinks": {
+    "src/commands/proposal_commands.py::TaskProposalCommandsMixin._cmd_task_batch_commit::16fbcb5f600718c2c0564535d1ed4e1a82537afa8ac1a07311dd43bc5b9c93f4": {
+      "call": "set_task_meta",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 431,
+      "owner": "TaskProposalCommandsMixin._cmd_task_batch_commit",
+      "owner_fingerprint": "83f124c699b3c32b8df9fdaf309056efe54d4b577dfa082088404b75048408a8",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: PROPOSAL_ID_META"
+    },
+    "src/commands/proposal_commands.py::TaskProposalCommandsMixin._create_ingest_batch::7f9a172d90564131599dcbc17c8abdfadd20f21c0ea0e36f65fa816d1433dfc8": {
+      "call": "insert",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 252,
+      "owner": "TaskProposalCommandsMixin._create_ingest_batch",
+      "owner_fingerprint": "f4210e9fe8327ea51eebebd880cd369ae081f0a352b7942227b5763e05052f34",
+      "reason": "Appends task.change_set_held or task.change_set_committed with actor, source, graph diff and receipt in the materialization transaction; it is graph-change audit history."
+    },
+    "src/commands/proposal_commands.py::TaskProposalCommandsMixin._materialize_proposal::7f9a172d90564131599dcbc17c8abdfadd20f21c0ea0e36f65fa816d1433dfc8": {
+      "call": "insert",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 875,
+      "owner": "TaskProposalCommandsMixin._materialize_proposal",
+      "owner_fingerprint": "cc66c63ab890409480c744f0fe6228cfd421fddff6b2bd41e4fa3364e92e6e71",
+      "reason": "Appends task.change_set_committed after applying the reviewed proposal, retaining actor, diff and receipt for audit rather than replaying Git publication."
+    },
+    "src/commands/proposal_commands.py::TaskProposalCommandsMixin._update_held_batch::7f9a172d90564131599dcbc17c8abdfadd20f21c0ea0e36f65fa816d1433dfc8": {
+      "call": "insert",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 636,
+      "owner": "TaskProposalCommandsMixin._update_held_batch",
+      "owner_fingerprint": "3ca4937a196f267493f72a795fb31c12797808f8df4517ba6f5cf54d4fe64694",
+      "reason": "Appends task.batch_updated with previous/current structure revision and graph diff; fidelity batch revision remains authoritative in its own tables."
+    }
+  }
+}

@@ -1,0 +1,239 @@
+{
+  "cron_cancel": {
+    "argument_reads_diagnostic_only": [],
+    "denial_reason": null,
+    "effect": "destructive",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/cron_commands.py:CronCommandsMixin._cmd_cron_cancel",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'schedule': visible_schedule(row)}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "self._cron_error(exc)"
+      }
+    ],
+    "schema_quality": "typed",
+    "source_digest": "sha256:9123ab42994f75c2c0fd3f7e4c461977a556f3fb027a628dc2f0cd2159c7fcf0",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "cron_delivery_begin": {
+    "argument_reads_diagnostic_only": [
+      "message_id"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {
+      "_cron_error": "sha256:651d173b0cac72cdcf5d503c756096c3b17a86f42607d25b709695d9d6e1c8c9"
+    },
+    "input_schema_source": "fallback",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/cron_commands.py:CronCommandsMixin._cmd_cron_delivery_begin",
+    "resource_gates": [
+      "system_scope"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'allowed': allowed}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "self._cron_error(exc)"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:033f613f18ffed661697d8ba6b63ab6046bf632761214a0144e1e5216c2d42a6",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "cron_delivery_finish": {
+    "argument_reads_diagnostic_only": [
+      "delivered",
+      "error",
+      "message_id"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {
+      "_cron_error": "sha256:651d173b0cac72cdcf5d503c756096c3b17a86f42607d25b709695d9d6e1c8c9"
+    },
+    "input_schema_source": "fallback",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/cron_commands.py:CronCommandsMixin._cmd_cron_delivery_finish",
+    "resource_gates": [
+      "system_scope"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "self._cron_error(exc)"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:daa4b53f4e3ca31c502fc44dc13344e6481298360ba6534817e7a73589f73402",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "cron_get": {
+    "argument_reads_diagnostic_only": [],
+    "denial_reason": null,
+    "effect": "destructive",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/cron_commands.py:CronCommandsMixin._cmd_cron_get",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'schedule': visible_schedule(row)}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "self._cron_error(exc)"
+      }
+    ],
+    "schema_quality": "typed",
+    "source_digest": "sha256:573e215f9b9d82c510b7a47fb9505d781bfd218aab83537b3fdbdb9740535e88",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "cron_list": {
+    "argument_reads_diagnostic_only": [],
+    "denial_reason": null,
+    "effect": "read",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/cron_commands.py:CronCommandsMixin._cmd_cron_list",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'schedules': [visible_schedule(row) for row in rows], 'count': len(rows)}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "self._cron_error(exc)"
+      }
+    ],
+    "schema_quality": "typed",
+    "source_digest": "sha256:1f5d315a7a4f423216504a4d92fb583b3005c314e8026db1f3ccf4b672cfb65e",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "cron_register": {
+    "argument_reads_diagnostic_only": [],
+    "denial_reason": null,
+    "effect": "destructive",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/cron_commands.py:CronCommandsMixin._cmd_cron_register",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'schedule': visible_schedule(row), 'next_step': 'Schedule registered for this session. The first future tick queues its prompt; continue working or finish this turn. Reconnect with aq cron list --json.'}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "self._cron_error(exc)"
+      }
+    ],
+    "schema_quality": "typed",
+    "source_digest": "sha256:9275772de991a7a570ac6ce84b37c2b8b1e984ae8838823384d49471f36625a8",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "reconcile_agent_cron": {
+    "argument_reads_diagnostic_only": [
+      "now"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {
+      "_cron_error": "sha256:651d173b0cac72cdcf5d503c756096c3b17a86f42607d25b709695d9d6e1c8c9"
+    },
+    "input_schema_source": "fallback",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/cron_commands.py:CronCommandsMixin._cmd_reconcile_agent_cron",
+    "resource_gates": [
+      "system_scope"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, **result}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "self._cron_error(exc)"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:77ff04904d8b81bb471ce69a9ac90328e12bad5a1c7deff3696d8a6a5cf6bc68",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  }
+}

@@ -1,0 +1,79 @@
+{
+  "generic_dependencies": {
+    "src/commands/surface_commands.py::SurfaceCommandsMixin": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/commands/surface_commands.py::SurfaceCommandsMixin._cmd_task_handoff": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged."
+  },
+  "shared": {
+    "src/commands/surface_commands.py::SurfaceCommandsMixin._cmd_task_set": {
+      "baseline_span": [
+        188,
+        315
+      ],
+      "landing_span": [
+        188,
+        315
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/commands/surface_commands.py::SurfaceCommandsMixin._cmd_task_show": {
+      "baseline_span": [
+        51,
+        117
+      ],
+      "landing_span": [
+        51,
+        117
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/commands/surface_commands.py::SurfaceCommandsMixin._root_delivery_receipts": {
+      "baseline_span": [
+        118,
+        164
+      ],
+      "landing_span": [
+        118,
+        164
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    }
+  },
+  "storage_sinks": {
+    "src/commands/surface_commands.py::SurfaceCommandsMixin._cmd_task_set::6081f9d27dc57e18ce5f31c465cfb8159e76c4d4c1a37d2b8b8d0c741d9fbeca": {
+      "call": "log_event",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 367,
+      "owner": "SurfaceCommandsMixin._cmd_task_set",
+      "owner_fingerprint": "a6b6dd1611742d4376e3527271bb6e9a670ccb122b1d4adb43efb91be5bc04d1",
+      "reason": "Audits removal of an ordinary task label; label history does not control Git integration or branch reservations."
+    },
+    "src/commands/surface_commands.py::SurfaceCommandsMixin._cmd_task_set::8513b8ad44440cd5bfaed1abc65ab824b7856f8b84f009f84e3bd7f9a0f86647": {
+      "call": "set_task_meta",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 374,
+      "owner": "SurfaceCommandsMixin._cmd_task_set",
+      "owner_fingerprint": "a6b6dd1611742d4376e3527271bb6e9a670ccb122b1d4adb43efb91be5bc04d1",
+      "reason": "Stores the task work_dir display/context field through the scoped task-set command; it does not release workspace locks or integration owners."
+    },
+    "src/commands/surface_commands.py::SurfaceCommandsMixin._cmd_task_set::cc1e1a1a54bb465b81b098e4b9a03d3717342bf5a286fd44dbf8b548c7a49003": {
+      "call": "set_task_meta",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 379,
+      "owner": "SurfaceCommandsMixin._cmd_task_set",
+      "owner_fingerprint": "a6b6dd1611742d4376e3527271bb6e9a670ccb122b1d4adb43efb91be5bc04d1",
+      "reason": "Writes task-set metadata through the command's key/authority checks and set_task_meta protections; the generic adapter creates no separate integration journal."
+    },
+    "src/commands/surface_commands.py::SurfaceCommandsMixin._cmd_task_set::efc628222166414397713182d90d1198aedc0c7804e05b3ccfd55c64a58c99f5": {
+      "call": "log_event",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 360,
+      "owner": "SurfaceCommandsMixin._cmd_task_set",
+      "owner_fingerprint": "a6b6dd1611742d4376e3527271bb6e9a670ccb122b1d4adb43efb91be5bc04d1",
+      "reason": "Audits addition of an ordinary task label; the event contains only the label and grants no delivery authority."
+    }
+  }
+}

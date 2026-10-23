@@ -514,6 +514,19 @@ fails is the blocking reason reported on a starvation:
 | the project is under its own `projects.max_concurrent_agents`, counting all its pool sessions of any profile | `at project cap (N)` |
 | the project is not already holding an idle worker with nothing queued behind it | `an idle worker is already available` |
 
+Workspace capacity is physical checkout capacity. Hibernated continuations use
+no live worker seat, but a retained checkout or integration attachment still
+occupies its slot until its guarded handoff releases it. Do not subtract these
+holds from physical capacity or exceed the slot cap to hide them. The stall sweep
+reports `workspace_capacity_held` with the workspace, task, session and ownership
+reason when such holds block ready work. A stopped pool session with no task or
+preparation releases its agent-only lock after fresh process and ownership proof;
+live sessions, claim markers, job pins and integration attachments remain fenced.
+Use `aq project rebind-workspace --workspace-id SLOT --task-id TASK
+--session-id SESSION` to restore accidentally cleared locks from an existing
+active claim. The command checks assignment, epoch, path and claim-marker identity
+and preserves the marker and workspace enablement.
+
 Placement candidates are `(project, workspace_kind)` pairs. The ordinary kind
 is `project-repo`. A profile declaring another writable, lockable worktree or
 exclusive-clone repository kind uses that kind; an auto-attached vault does
@@ -522,6 +535,7 @@ rather than launching speculative warm workers. Workspace capacity is shared
 by all profiles using the same kind, and the project cap is shared across kinds.
 
 Eligible candidates are then ordered, re-sorting after every single start so a
+
 budget of two does not pile onto whichever project sorts first:
 
 1. projects with unserved active train repair delegates;
@@ -1451,6 +1465,29 @@ rung takes nothing new. Delete the directory once it is idle.
 id, and derivation skips a tombstoned id forever after — use that rather than
 `rm -rf`, which the next start simply undoes.
 
+For a pool, use **Delete pool** in its dashboard Settings tab or:
+
+```bash
+aq pool delete --profile-id <id-from-aq-pool-status> --depth profile
+```
+
+The dashboard presents one confirmation with vault deletion depth. `profile`
+(the default) removes `vault/agent-types/<id>/profile.md` and preserves memory
+and other files; `directory` removes the whole profile directory, including its
+memory, playbooks and backups. Both remove the global profile, bounds and enabled
+state, and record retirement so install, update and vault sync cannot recreate it.
+Restore a shipped or derived profile explicitly with `aq agent profile-reseed`.
+
+Deletion warns about active workers and routed or held tasks without refusing
+busy pools. Workers stop through instance-fenced teardown; interrupted tasks
+return to READY only after the writer is confirmed stopped. Failed stops return
+warnings and keep their claims and resources until reconciliation confirms the
+stop. Routed tasks lose their pool route and provider pin so the router can
+select another available pool. Automatic provider backoff pauses resume; manual
+pauses and unrelated holds remain in place. No task is marked complete.
+The deleted pool disappears from status and settings, and even an older routing
+plan is re-evaluated against the remaining profiles.
+
 ### Migrating a vault seeded before this
 
 Shipped worker profiles have been through two earlier shapes:
@@ -1638,7 +1675,7 @@ The tombstone is a small JSON file (`{"version": 1, "retired": {...}}`) that
 records when each id was retired and why, so a hand edit works too — but the
 reseed command is the supported path.
 
-> Only `aq agent delete-profile` writes a tombstone. Removing
+> `aq agent delete-profile` and `aq pool delete` write tombstones. Removing
 > `vault/agent-types/<id>/` with `rm -rf` leaves no record, and the next
 > restart re-seeds it.
 

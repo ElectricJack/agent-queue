@@ -1,0 +1,6 @@
+{
+  "generic_dependencies": {
+    "src/database/backup.py::backup_database": "Generic whole-database custom archive creation shared by aq db backup and updater/daemon backups; no integration state, ref journal or delivery authority. Existing updater/daemon wrappers remain charged.",
+    "src/database/backup.py::postgres_clients": "Generic PostgreSQL client discovery and production worker refusal shared by database backup/restore callers; no integration lifecycle or Git authority."
+  }
+}

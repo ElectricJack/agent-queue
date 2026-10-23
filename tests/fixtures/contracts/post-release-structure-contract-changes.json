@@ -1,8 +1,8 @@
 {
   "source_base": "908112dce62681fb4761e80a218382c75fc939cf",
   "source_commit": "f136e4af2c8f05a3d52cce6118fab78e03733a9e",
-  "previous_cli_catalogue_sha256": "64f173d7f562d58688d72ad5691aec9552dbd1220bf659b2bc6e050c6226253b",
-  "cli_catalogue_sha256": "d1fc2ec8aa13701952a0e1f8541b99f4d5e537da4464545da9cf99486c8a5898",
+  "previous_cli_catalogue_sha256": "c98fef6af2ba4db8c1c07f5e5b35e69242da57d98a02c737b3bc11eebaf946cb",
+  "cli_catalogue_sha256": "2bf8318f4b6b593e4b1575f2b79ec08f3bc85db4b1adaf4ccf176287942bdb0e",
   "added_commands": {
     "task_split": {
       "transport_definition": {
@@ -346,6 +346,7 @@
     }
   },
   "review_notes": [
-    "Merge reconciliation preserves the epic split command, optional reparent generation fences, and guarded relocation result fields and refusal outcomes. Reversing this exact delta recovers the frozen target-repair catalogue bytes."
+    "Merge reconciliation preserves the epic split command, optional reparent generation fences, and guarded relocation result fields and refusal outcomes. Reversing this exact delta recovers the frozen target-repair catalogue bytes.",
+    "Merged onto dev 94e69a6a6: the recording now follows the PR repair recording. Only the two catalogue hashes changed; the added command, the reparent_task definitions and both contract fingerprints are unchanged."
   ]
 }

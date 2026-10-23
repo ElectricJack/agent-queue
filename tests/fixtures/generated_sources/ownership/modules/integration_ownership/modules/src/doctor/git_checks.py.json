@@ -1,0 +1,29 @@
+{
+  "generic_dependencies": {
+    "src/doctor/git_checks.py::git_checks": "Generic dependency; integration-specific definitions in this file are charged independently."
+  },
+  "shared": {
+    "src/doctor/git_checks.py::_development_publisher": {
+      "baseline_span": [
+        40,
+        55
+      ],
+      "landing_span": [
+        40,
+        55
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/doctor/git_checks.py::_scan": {
+      "baseline_span": [
+        56,
+        90
+      ],
+      "landing_span": [
+        56,
+        90
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    }
+  }
+}

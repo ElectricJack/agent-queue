@@ -1,0 +1,13 @@
+{
+  "storage_sinks": {
+    "src/integration/development_adapter.py::DevelopmentIntegrationAdapter._record_on::702e45e3d58f1919b9761bd1eb1c7dbbd47a30b156ead275183d7ee30484d94f": {
+      "call": "append_integration_subject_journal_on",
+      "disposition": "retire",
+      "integration_signal": true,
+      "line": 214,
+      "owner": "DevelopmentIntegrationAdapter._record_on",
+      "owner_fingerprint": "b0502754b0a09110d1a1964d5424511ac313d76d4a646e2f0dc9ab84a201d466",
+      "reason": "Legacy subject ref/phase replay journal must disappear at s4_modules."
+    }
+  }
+}

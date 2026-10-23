@@ -680,11 +680,15 @@ class DatabaseBackend(Protocol):
     ) -> tuple[SessionRecord | None, AgentProfile | None]: ...
     async def get_session_by_name(self, name: str) -> SessionRecord | None: ...
     async def get_session_for_task(self, task_id: str) -> SessionRecord | None: ...
+    async def list_flock_sessions(
+        self, *, include_stopped: bool = False,
+    ) -> list[SessionRecord]: ...
     async def list_sessions(
         self,
         *,
         state: str | None = None,
         states: list[str] | tuple[str, ...] | None = None,
+        excluded_states: tuple[str, ...] = (),
         lifecycle: str | None = None,
         project_id: str | None = None,
         name: str | None = None,

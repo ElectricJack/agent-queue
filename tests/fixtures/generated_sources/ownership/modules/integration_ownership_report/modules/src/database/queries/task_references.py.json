@@ -1,0 +1,147 @@
+{
+  "shared_definitions": {
+    "src/database/queries/task_references.py::INTEGRATION_TASK_REFERENCES": {
+      "baseline_span": [
+        82,
+        108
+      ],
+      "landing_span": [
+        82,
+        108
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/queries/task_references.py::IntegrationTaskReference": {
+      "baseline_span": [
+        73,
+        81
+      ],
+      "landing_span": [
+        73,
+        81
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/queries/task_references.py::TASK_REFERENCE_DISPOSITIONS[('integration_candidate_resolutions', 'repair_task_id')]": {
+      "baseline_span": [
+        50,
+        50
+      ],
+      "landing_span": [
+        50,
+        50
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/queries/task_references.py::TASK_REFERENCE_DISPOSITIONS[('integration_parent_episodes', 'parent_task_id')]": {
+      "baseline_span": [
+        51,
+        51
+      ],
+      "landing_span": [
+        51,
+        51
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/queries/task_references.py::TASK_REFERENCE_DISPOSITIONS[('integration_parent_verifications', 'parent_task_id')]": {
+      "baseline_span": [
+        52,
+        52
+      ],
+      "landing_span": [
+        52,
+        52
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/queries/task_references.py::TASK_REFERENCE_DISPOSITIONS[('integration_repair_operations', 'verifier_task_id')]": {
+      "baseline_span": [
+        53,
+        53
+      ],
+      "landing_span": [
+        53,
+        53
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/queries/task_references.py::TASK_REFERENCE_DISPOSITIONS[('integration_source_ci', 'repair_task_id')]": {
+      "baseline_span": [
+        55,
+        55
+      ],
+      "landing_span": [
+        55,
+        55
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/queries/task_references.py::TASK_REFERENCE_DISPOSITIONS[('integration_source_ci', 'task_id')]": {
+      "baseline_span": [
+        54,
+        54
+      ],
+      "landing_span": [
+        54,
+        54
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/queries/task_references.py::_COLUMNS": {
+      "baseline_span": [
+        109,
+        116
+      ],
+      "landing_span": [
+        109,
+        116
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/queries/task_references.py::describe_integration_references": {
+      "baseline_span": [
+        167,
+        172
+      ],
+      "landing_span": [
+        167,
+        172
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/queries/task_references.py::find_integration_repository_references": {
+      "baseline_span": [
+        139,
+        166
+      ],
+      "landing_span": [
+        139,
+        166
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/queries/task_references.py::find_integration_task_references": {
+      "baseline_span": [
+        117,
+        138
+      ],
+      "landing_span": [
+        117,
+        138
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/queries/task_references.py::import from src.database.tables import integration_candidate_resolutions, integration_parent_episodes, integration_parent_verifications, integration_repair_operations, integration_source_ci": {
+      "baseline_span": [
+        30,
+        37
+      ],
+      "landing_span": [
+        30,
+        37
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    }
+  }
+}

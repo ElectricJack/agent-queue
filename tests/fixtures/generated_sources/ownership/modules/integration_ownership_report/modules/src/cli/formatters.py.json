@@ -1,0 +1,18 @@
+{
+  "exclusions": {
+    "src/cli/formatters.py::_DEP_LABELS['related']": "Generic same-shaped definition independently present at the pinned baseline/landing; new relocations are still charged."
+  },
+  "shared_definitions": {
+    "src/cli/formatters.py::format_task_detail": {
+      "baseline_span": [
+        238,
+        377
+      ],
+      "landing_span": [
+        238,
+        377
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    }
+  }
+}

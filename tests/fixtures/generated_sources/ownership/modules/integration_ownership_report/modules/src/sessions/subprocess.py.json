@@ -1,0 +1,7 @@
+{
+  "shared_definitions": {
+    "src/sessions/subprocess.py::SubprocessProvider.confirm_stopped": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    }
+  }
+}

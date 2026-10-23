@@ -139,8 +139,11 @@ The admission-owned receipt fallbacks in `hierarchy_queries`, `claim_queries`,
 `blocked_state`, `task_graph/readiness`, `hierarchy`, `removal_guard`,
 `source_repairs`, `drain_owners` and `doctor/stall_checks` are removed. SQL blocked
 state projects source completion for `delivery-of`; the view separately proves
-current default-target containment. A missing truthful observer withholds only
-Git-gated candidates and cannot restore receipt eligibility. Cleanup materializes
+current default-target containment. Unknown or unloaded evidence, including a
+missing truthful observer, permits worker preparation without asserting
+containment or restoring receipt eligibility. The agent merges prerequisite
+state from Git; proven negative ancestry may withhold work. Publication and
+destructive cleanup retain their current-proof requirements. Cleanup materializes
 historical resource identities without treating receipt presence as delivery and
 revalidates current default-target proof before destructive legacy cleanup.
 

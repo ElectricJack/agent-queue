@@ -1,0 +1,42 @@
+{
+  "generic_dependencies": {
+    "src/database/queries/blocked_state.py::BlockedStateMixin": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/queries/blocked_state.py::OBSOLETE_META_KEY": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/queries/blocked_state.py::PROJECTION_INPUT_COLUMNS": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/queries/blocked_state.py::apply_label_filters": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/queries/blocked_state.py::obsolete_marker": "Generic dependency; integration-specific definitions in this file are charged independently."
+  },
+  "shared": {
+    "src/database/queries/blocked_state.py::BlockedStateMixin.delivery_failures": {
+      "reason": "Reads current failed root delivery receipts and their resolution evidence to explain landing failures after the latest completion."
+    },
+    "src/database/queries/blocked_state.py::blocked_predicate": {
+      "baseline_span": [
+        271,
+        290
+      ],
+      "landing_span": [
+        271,
+        290
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/queries/blocked_state.py::delivery_landed": {
+      "reason": "Builds the legacy correlated landing predicate across ancestor receipts, repository default branch and latest completion time; charges this compatibility delivery authority."
+    },
+    "src/database/queries/blocked_state.py::import from src.database.tables import events, gates, projects, repos, task_completion_records, task_delivery_receipts, task_dependencies, task_gates, task_labels, task_metadata, tasks": {
+      "reason": "Imports delivery receipts, completion records and repository identities used by landing-dependent blocked-state queries."
+    }
+  },
+  "storage_sinks": {
+    "src/database/queries/blocked_state.py::BlockedStateMixin.log_blocked_flips::7f9a172d90564131599dcbc17c8abdfadd20f21c0ea0e36f65fa816d1433dfc8": {
+      "call": "insert",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 480,
+      "owner": "BlockedStateMixin.log_blocked_flips",
+      "owner_fingerprint": "ce0677aa290e2070222b7a74c6d8a4cb2340184980945889839b8c6806c32546",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+    }
+  }
+}

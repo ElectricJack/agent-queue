@@ -1,0 +1,16 @@
+{
+  "generic_dependencies": {
+    "src/waits/resume_ack.py::acknowledge": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged."
+  },
+  "storage_sinks": {
+    "src/waits/resume_ack.py::acknowledge::2d36ab3da05dcd99c7a0cb4b8a22925dd23e723147d1b0fe6a07ff4716ee55ac": {
+      "call": "insert",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 122,
+      "owner": "acknowledge",
+      "owner_fingerprint": "fe2994f1e88e41aab93810bdb6e25522956f62f9c72df76e1ba45a21d5674b7c",
+      "reason": "Wait registration, continuation park/delivery/ACK or existing task recovery audit; no new integration journal or reference replay authority."
+    }
+  }
+}

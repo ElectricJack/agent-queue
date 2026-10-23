@@ -476,20 +476,27 @@ class AgentCommandsMixin(FlockCommandsMixin):
         }
 
     async def _cmd_release_workspace(self, args: dict) -> dict:
-        """Admin force-release a stuck workspace lock."""
-        workspace_id = args["workspace_id"]
-        ws = await self.db.get_workspace(workspace_id)
-        if not ws:
-            return {"success": False, "error": f"Workspace '{workspace_id}' not found"}
-        if not ws.locked_by_agent_id:
-            return {"success": True, "workspace_id": workspace_id, "status": "already_unlocked"}
-        await self.db.release_workspace(workspace_id)
-        return {
-            "success": True,
-            "workspace_id": workspace_id,
-            "released_from_agent": ws.locked_by_agent_id,
-            "released_from_task": ws.locked_by_task_id,
-        }
+        """Release only after rechecking the checkout's independent fences."""
+        from src.workspace_ownership import release_workspace
+
+        return await release_workspace(
+            self.db, args["workspace_id"], force=bool(args.get("force")),
+            task_id=args.get("task_id"),
+        )
+
+    async def _cmd_rebind_workspace(self, args: dict) -> dict:
+        """Restore a lost lock from the exact active claim, without rewriting it."""
+        from src.workspace_ownership import rebind_workspace
+
+        session = await self.db.get_session(args.get("session_id"))
+        if session is not None:
+            if (denied := self._session_project_scope_error(session)) is not None:
+                return denied
+        if not all(args.get(key) for key in ("workspace_id", "task_id", "session_id")):
+            return {"success": False, "error": "workspace_id, task_id and session_id are required"}
+        return await rebind_workspace(
+            self.db, args["workspace_id"], args["task_id"], args["session_id"],
+        )
 
     async def _cmd_edit_workspace(self, args: dict) -> dict:
         """Edit a workspace's path / source_type / name / enabled state.

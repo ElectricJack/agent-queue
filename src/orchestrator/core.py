@@ -94,6 +94,7 @@ from src.messaging.types import (
 from src.messaging.types import (
     ThreadSendCallback as _ThreadSendCallbackType,
 )
+from src.metrics.perf import timed_operation
 from src.models import (
     DAEMON_AUTHORED_TASK_TYPES,
     AgentProfile,
@@ -771,6 +772,13 @@ class Orchestrator(
     def _get_handler(self) -> Any:
         """Return the command handler or None. Used by interactive views."""
         return self._command_handler
+
+    @cached_property
+    def cycle_waits(self):
+        """Agent-wait and wait-service maintenance, off the cycle's critical path."""
+        from src.wait_runtime.cycle import CycleWaitMaintenance
+
+        return CycleWaitMaintenance(self)
 
     @cached_property
     def morning_due(self):
@@ -1650,6 +1658,14 @@ class Orchestrator(
             return {"success": False, "outcome": "not_ready"}
         with principal_context(ExecutionPrincipal.service("integration-admission")):
             return await self._command_handler.repair_root_pr_checks(observation)
+
+    async def _refresh_root_pr(self, observation, gitops, snapshot):
+        from src.commands.principal import ExecutionPrincipal, principal_context
+
+        if self._command_handler is None:
+            return {"success": False, "outcome": "not_ready"}
+        with principal_context(ExecutionPrincipal.service("integration-admission")):
+            return await self._command_handler.refresh_root_pr(observation, gitops, snapshot)
 
     async def _repair_integration_source_ancestry(self, observation):
         from src.commands.principal import ExecutionPrincipal, principal_context
@@ -3369,6 +3385,13 @@ class Orchestrator(
             await asyncio.gather(self._tracked_deploy_check, return_exceptions=True)
         await self.cancel_claim_preparations()
         await stop_ready_owner_recovery(self)
+        if "cycle_waits" in self.__dict__:
+            await self.cycle_waits.stop()
+        for name in ("_operational_retention_dispatch", "_operational_retention_task",
+                     "_worktree_maintenance_task"):
+            pending = getattr(self, name, None)
+            if pending is not None:
+                await asyncio.gather(pending, return_exceptions=True)
         await self.message_delivery_service.stop()
         await self.provider_availability.close()
         await self.wait_for_pool_launches(cancel=True)
@@ -3443,6 +3466,7 @@ class Orchestrator(
         except Exception:
             logger.exception("Tracked deployment check failed")
 
+    @timed_operation("orchestrator.cycle")
     async def run_one_cycle(self) -> None:
         """Run one iteration of the orchestrator's main loop.
 
@@ -4132,6 +4156,21 @@ class Orchestrator(
             return
         self._last_worktree_reaper = now
 
+        pending = getattr(self, "_worktree_maintenance_task", None)
+        if pending is None or pending.done():
+            self._worktree_maintenance_task = asyncio.create_task(
+                self._reap_worktree_slots_background(), name="worktree-maintenance",
+            )
+
+    async def _reap_worktree_slots_background(self) -> None:
+        """One serialized maintenance pass; Git subprocesses never block a cycle."""
+        try:
+            await self._reap_worktree_slots_pass()
+        except Exception:
+            logger.exception("Worktree maintenance failed; retrying on the next pass")
+
+    async def _reap_worktree_slots_pass(self) -> None:
+
         try:
             projects = await self.db.list_projects()
         except Exception as e:
@@ -4585,20 +4624,8 @@ class Orchestrator(
                     logger.error("CollaborationReconciler tick refused: %s", result)
             except Exception:
                 logger.error("CollaborationReconciler tick failed", exc_info=True)
-            try:
-                from src.agent_waits import AgentWaitReconciler
-                result = await _bounded_stage(
-                    "agent waits", AgentWaitReconciler(self._command_handler).tick())
-                if not result.get("success"):
-                    logger.error("AgentWaitReconciler tick refused: %s", result)
-            except Exception:
-                logger.error("AgentWaitReconciler tick failed", exc_info=True)
-            try:
-                wait_service = getattr(self, "wait_service", None)
-                if wait_service is not None:
-                    await _bounded_stage("wait service", wait_service.tick())
-            except Exception:
-                logger.error("WaitService recovery tick failed", exc_info=True)
+            # A bounded single-flight task keeps slow graph maintenance off the cycle.
+            await self.cycle_waits.tick()
             try:
                 result = await _bounded_stage("agent cron", self.agent_cron.tick())
                 if not result.get("success"):

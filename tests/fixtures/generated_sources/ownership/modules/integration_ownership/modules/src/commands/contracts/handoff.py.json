@@ -1,0 +1,5 @@
+{
+  "generic_dependencies": {
+    "src/commands/contracts/handoff.py::register_handoff_contract": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}

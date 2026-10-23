@@ -1,0 +1,5 @@
+{
+  "generic_dependencies": {
+    "src/llm_logger.py::LLMLogger": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}

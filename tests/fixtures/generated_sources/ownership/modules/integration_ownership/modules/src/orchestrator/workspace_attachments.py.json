@@ -1,0 +1,193 @@
+{
+  "generic_dependencies": {
+    "src/orchestrator/workspace_attachments.py::AcquisitionFailed": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/orchestrator/workspace_attachments.py::__all__['SYSTEM_KIND_SCOPE']": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/orchestrator/workspace_attachments.py::acquire_for_task": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/orchestrator/workspace_attachments.py::effective_requirements": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/orchestrator/workspace_attachments.py::import from src.models import SYSTEM_KIND_SCOPE, AgentState, ResolvedRequirement, Task, TaskStatus, WorkspaceAttachment, WorkspaceAttachmentSet, WorkspaceKind": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged."
+  },
+  "shared": {
+    "src/orchestrator/workspace_attachments.py::_mark_orphaned_integration_pool_handoff_released_on": {
+      "baseline_span": [
+        1295,
+        1319
+      ],
+      "landing_span": [
+        1189,
+        1213
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/orchestrator/workspace_attachments.py::_orphaned_integration_pool_handoff_is_recoverable_on": {
+      "baseline_span": [
+        1147,
+        1269
+      ],
+      "landing_span": [
+        1041,
+        1163
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/orchestrator/workspace_attachments.py::detach_retained_preparation": {
+      "reason": "Narrow unactivated-preparation handoff: prove exact clean HEAD durably pinned in the observer store before detach. Does not publish, reset, or waive attachment identity guards."
+    },
+    "src/orchestrator/workspace_attachments.py::detach_slot_for_integration_handoff": {
+      "baseline_span": [
+        707,
+        746
+      ],
+      "landing_span": [
+        707,
+        746
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/orchestrator/workspace_attachments.py::detach_workspace_for_integration_handoff": {
+      "baseline_span": [
+        875,
+        923
+      ],
+      "landing_span": [
+        747,
+        817
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/orchestrator/workspace_attachments.py::import from src.database.tables import agents, integration_branch_owners, sessions, tasks, workspaces": {
+      "baseline_span": [
+        17,
+        18
+      ],
+      "landing_span": [
+        17,
+        18
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/orchestrator/workspace_attachments.py::import from src.integration.models import REQUEUE_INTEGRATION_OWNER_ROLES": {
+      "baseline_span": [
+        19,
+        19
+      ],
+      "landing_span": [
+        19,
+        19
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/orchestrator/workspace_attachments.py::integration_handoff_release_is_confirmed": {
+      "baseline_span": [
+        48,
+        70
+      ],
+      "landing_span": [
+        48,
+        70
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/orchestrator/workspace_attachments.py::mark_integration_handoff_released": {
+      "baseline_span": [
+        71,
+        226
+      ],
+      "landing_span": [
+        71,
+        226
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/orchestrator/workspace_attachments.py::mark_integration_pool_handoff_released": {
+      "baseline_span": [
+        325,
+        432
+      ],
+      "landing_span": [
+        325,
+        432
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/orchestrator/workspace_attachments.py::mark_orphaned_integration_pool_handoff_released": {
+      "baseline_span": [
+        1270,
+        1294
+      ],
+      "landing_span": [
+        1164,
+        1188
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/orchestrator/workspace_attachments.py::mark_stopped_integration_pool_handoff_released": {
+      "baseline_span": [
+        433,
+        610
+      ],
+      "landing_span": [
+        433,
+        610
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/orchestrator/workspace_attachments.py::orphaned_integration_pool_handoff_exclusion": {
+      "baseline_span": [
+        1133,
+        1146
+      ],
+      "landing_span": [
+        1027,
+        1040
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/orchestrator/workspace_attachments.py::orphaned_integration_pool_handoff_is_recoverable": {
+      "baseline_span": [
+        1115,
+        1132
+      ],
+      "landing_span": [
+        1009,
+        1026
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/orchestrator/workspace_attachments.py::probe_slot_for_integration_handoff": {
+      "baseline_span": [
+        844,
+        874
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/orchestrator/workspace_attachments.py::probe_workspace_for_integration_handoff": {
+      "baseline_span": [
+        815,
+        843
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/orchestrator/workspace_attachments.py::recover_stopped_integration_pool_claim": {
+      "baseline_span": [
+        227,
+        324
+      ],
+      "landing_span": [
+        227,
+        324
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/orchestrator/workspace_attachments.py::release_never_attached_integration_launch": {
+      "baseline_span": [
+        611,
+        706
+      ],
+      "landing_span": [
+        611,
+        706
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    }
+  }
+}
