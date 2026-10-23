@@ -514,6 +514,8 @@ class ObjectLoopCommandsMixin:
                         or request.task_id is not None or request.session_id is not None):
                     raise ValueError("out of scope: checkpoint read requires a project playbook "
                                      "invocation without session/task identity")
+                if (self._job_scope() or {}).get("project_id") not in (None, principal.project_id):
+                    raise ValueError("out of scope: inherited project_id mismatch")
             rows = await self._readable_object_loops(request)
         except (ValidationError, ValueError) as exc:
             return _error(str(exc))

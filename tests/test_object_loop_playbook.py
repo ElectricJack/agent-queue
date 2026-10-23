@@ -624,7 +624,9 @@ async def test_new_review_revision_never_adopts_old_checkpoint(setup, checkpoint
     assert not current["approved"]
 
 
-async def test_project_playbook_reads_only_its_project_checkpoint(setup):
+@pytest.mark.parametrize("foreign_current_scope", [False, True],
+                         ids=["request-project", "foreign-current-scope"])
+async def test_project_playbook_reads_only_its_project_checkpoint(setup, foreign_current_scope):
     await boot(setup)
     before = await state(setup)
     await setup.db.create_project(Project(id="foreign", name="Foreign"))
@@ -642,9 +644,16 @@ async def test_project_playbook_reads_only_its_project_checkpoint(setup):
         })
         assert result["success"], result
         assert (result["state"], result["version"]) == (before["state"], before["version"])
-        foreign = await setup.execute("object_checkpoint_read", {
-            "project_id": "foreign", "object_id": "foreign-rock",
-        })
+        foreign_args = {"project_id": "foreign", "object_id": "foreign-rock"}
+        if foreign_current_scope:
+            previous_scope = setup._current_scope
+            setup._current_scope = {"project_id": "foreign"}
+            try:
+                foreign = await setup._cmd_object_checkpoint_read(foreign_args)
+            finally:
+                setup._current_scope = previous_scope
+        else:
+            foreign = await setup.execute("object_checkpoint_read", foreign_args)
         assert not foreign["success"] and "project_id mismatch" in foreign["error"], foreign
         missing = await setup.execute("object_checkpoint_read", {
             "project_id": PROJECT, "object_id": "foreign-rock",

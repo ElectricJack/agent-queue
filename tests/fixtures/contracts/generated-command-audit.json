@@ -12380,7 +12380,7 @@
   "object_checkpoint_read": {
     "mode": "typed",
     "producer": "src/commands/object_loop_commands.py:ObjectLoopCommandsMixin._cmd_object_checkpoint_read",
-    "source_digest": "sha256:71d6735861d14945d290a042c3b15550774a0127d8a56bc963621aa18ed261fe",
+    "source_digest": "sha256:fe3d1ec9528edf65eb9cc39fb0c5ac0ccc40774a504a880ecc4ee12aeb25f004",
     "input_schema_source": "typed_contract",
     "schema_quality": "typed",
     "argument_reads_diagnostic_only": [],
