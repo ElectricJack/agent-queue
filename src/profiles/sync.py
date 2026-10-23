@@ -260,6 +260,17 @@ async def sync_profile_to_db(
     #     class of its own and nothing may be routed to it, so it never
     #     reaches ``agent_profiles``.  Reported as a success with no action
     #     so a scan does not log it as a failure every boot.
+    # A retained/unremovable source must never undo an operator deletion.
+    # Check before inheritance so retiring a rung also works without its template.
+    source = Path(source_path) if source_path else None
+    profile_id = parsed.frontmatter.id or fallback_id or ""
+    data_dir = None
+    if source and source.parent.parent.name == "agent-types":
+        from src.profiles.retired_defaults import is_retired
+
+        data_dir = source.parent.parent.parent.parent
+        if is_retired(str(data_dir), profile_id):
+            return ProfileSyncResult(success=True, action="none", profile_id=profile_id)
     if parsed.frontmatter.template:
         return ProfileSyncResult(
             success=True,
@@ -377,6 +388,12 @@ async def sync_profile_to_db(
     # 6. Upsert into database.
     try:
         action = await db.upsert_profile(profile)
+        # Deletion can retire the source while an upsert is waiting on the
+        # database. Close that race before reporting a successful import.
+        if data_dir is not None and is_retired(str(data_dir), profile_id):
+            await db.delete_profile(profile_id)
+            _invalidate_principal_caches()
+            return ProfileSyncResult(success=True, action="none", profile_id=profile_id)
         # Package 0 §3.5: the principal seam caches (profile_id, policy) per
         # session for 30s.  Invalidating here means an operator's profile
         # edit takes effect within one vault sync rather than one TTL — the

@@ -1451,6 +1451,29 @@ rung takes nothing new. Delete the directory once it is idle.
 id, and derivation skips a tombstoned id forever after — use that rather than
 `rm -rf`, which the next start simply undoes.
 
+For a pool, use **Delete pool** in its dashboard Settings tab or:
+
+```bash
+aq pool delete --profile-id <id-from-aq-pool-status> --depth profile
+```
+
+The dashboard presents one confirmation with vault deletion depth. `profile`
+(the default) removes `vault/agent-types/<id>/profile.md` and preserves memory
+and other files; `directory` removes the whole profile directory, including its
+memory, playbooks and backups. Both remove the global profile, bounds and enabled
+state, and record retirement so install, update and vault sync cannot recreate it.
+Restore a shipped or derived profile explicitly with `aq agent profile-reseed`.
+
+Deletion warns about active workers and routed or held tasks without refusing
+busy pools. Workers stop through instance-fenced teardown; interrupted tasks
+return to READY only after the writer is confirmed stopped. Failed stops return
+warnings and keep their claims and resources until reconciliation confirms the
+stop. Routed tasks lose their pool route and provider pin so the router can
+select another available pool. Automatic provider backoff pauses resume; manual
+pauses and unrelated holds remain in place. No task is marked complete.
+The deleted pool disappears from status and settings, and even an older routing
+plan is re-evaluated against the remaining profiles.
+
 ### Migrating a vault seeded before this
 
 Shipped worker profiles have been through two earlier shapes:
@@ -1638,7 +1661,7 @@ The tombstone is a small JSON file (`{"version": 1, "retired": {...}}`) that
 records when each id was retired and why, so a hand edit works too — but the
 reseed command is the supported path.
 
-> Only `aq agent delete-profile` writes a tombstone. Removing
+> `aq agent delete-profile` and `aq pool delete` write tombstones. Removing
 > `vault/agent-types/<id>/` with `rm -rf` leaves no record, and the next
 > restart re-seeds it.
 

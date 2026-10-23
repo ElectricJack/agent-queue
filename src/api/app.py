@@ -162,11 +162,6 @@ def create_app(
 
     deps._plan_content_provider = plan_content_provider
     deps._started_at = time.monotonic()
-    deps._base_url = (
-        config.health_check.base_url
-        if hasattr(config, "health_check") and config.health_check.base_url
-        else ""
-    )
 
     # Add request context middleware for structured logging.
     # Starlette middlewares run in LIFO order — register RequestContext

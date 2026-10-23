@@ -1,0 +1,10 @@
+{
+  "playbook_fixtures": {
+    "tests/fixtures/playbooks/v2/provider-failover/artifact.json": {
+      "preserved_previous_path": "tests/fixtures/provider_failover/playbook-port/baseline-artifact.json",
+      "previous_sha256": "e4c946b8eddf8fcbac5ed552887091e1eb822dd851a1647f624bb84276724607",
+      "sha256": "d2281cb25e810572814bf255db717933ad5006b1c3dc7cfb7188cf782273f5b8"
+    }
+  },
+  "reason": "The provider-failover building-block port declares required capabilities and documents typed outcomes. The source and artifact identities change, while command contracts and both rule graphs remain equivalent. The pre-port artifact bytes remain frozen in the old/new scenario fixture; tests/test_provider_failover_playbook.py verifies graph and execution equivalence. Historical golden and contract-change recordings remain unchanged."
+}

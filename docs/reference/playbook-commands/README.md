@@ -424,6 +424,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`policy_apply`](policy_apply.md) | Policy Apply | Execute the policy_apply command. |
 | [`policy_diff`](policy_diff.md) | Policy Diff | Execute the policy_diff command. |
 | [`policy_export`](policy_export.md) | Policy Export | Execute the policy_export command. |
+| [`pool_delete`](pool_delete.md) | Pool Delete | Delete a global pool, stopping its sessions and invalidating its routes. |
 | [`pool_rename`](pool_rename.md) | Pool Rename | Rename a pool's display name, preserving its stable profile ID. |
 | [`pool_scale`](pool_scale.md) | Pool Scale | Set global pool bounds, optionally stopping surplus idle workers now. |
 | [`pool_set_enabled`](pool_set_enabled.md) | Pool Set Enabled | Set the global pool profile's operator kill-switch. |

@@ -1052,6 +1052,12 @@ _CANONICAL_PAYLOADS["pool.renamed"] = {
     "name": "Space Bunny",
     "backup_path": "/vault/agent-types/worker/profile.md.bak-1",
 }
+_CANONICAL_PAYLOADS["pool.deleted"] = {
+    "profile_id": "worker",
+    "depth": "profile",
+    "sessions": ["session-1"],
+    "warnings": [],
+}
 # This switch event is also the wake-up contract for already-parked pool claims.
 # Global worker pools §6.3 / §4 — emitted by ``_emit_placement_starved`` and
 # ``_announce_bounds_rescoped``.  No ``project_id``: a pool is a fleet now, and

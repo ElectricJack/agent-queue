@@ -18,9 +18,13 @@ tags: [design, self-improvement, memory, orchestrator, observability]
 
 ---
 
-> **Current status:** This is a design record, not a running autonomous loop.
-> No automatic reflection playbook ships; the former `coding-reflection` and
-> `task-outcome` policies are retired. See [current policy installation](../../concepts/playbooks.md#shipped-policy-local-policy-and-compatibility).
+> **Current boundary (2026-10-22).** There is no shipped periodic reflection playbook or active consolidation
+> schedule implementing this loop. The old in-process reflection engine was
+> deleted; `coding-reflection` and `task-outcome` policies are retired.
+> See [current policy installation](../../concepts/playbooks.md#shipped-policy-local-policy-and-compatibility).
+> Current knowledge generation can only propose unverified findings,
+> behind separate flags and operator gates; see
+> [knowledge records](../../guides/knowledge-records.md).
 
 ## 1. Overview
 
