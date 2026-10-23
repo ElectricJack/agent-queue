@@ -242,6 +242,22 @@ class IntegrationCommandsMixin:
         except (HierarchyError, BranchBusy, ValueError) as exc:
             return _failure("recovery_deferred", str(exc))
 
+    async def refresh_root_pr(self, observation, gitops, snapshot) -> dict:
+        """Daemon-only port: mechanically refresh, then reopen the original author."""
+        from sqlalchemy import text
+
+        from src.integration.root_pr_refresh import RootPRConflict, refresh_root_pr
+
+        try:
+            if not isinstance(observation, RootPRConflict):
+                return _failure("invalid", "root conflict must be server-observed")
+            async with self.db._engine.begin() as conn:
+                await conn.execute(text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+                    {"key": f"root-pr-refresh:{observation.request.task_id}"})
+                return await refresh_root_pr(self, observation, gitops, snapshot)
+        except (HierarchyError, BranchBusy, GitError, ValueError) as exc:
+            return _failure("refresh_deferred", str(exc))
+
     async def _cmd_integration_retire_legacy_park(self, args: dict) -> dict:
         from src.commands.contracts.integration import IntegrationRetireLegacyParkArgs
         from src.integration.legacy_park_retirement import LegacyParkRetirement
