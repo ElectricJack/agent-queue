@@ -493,6 +493,10 @@ def test_legacy_playbook_fixtures_are_unchanged():
     watch = _watch_changes()["playbook_fixtures"]
     ingest = json.loads(INGEST_CHANGES.read_text())["playbook_fixtures"]
     hibernation = _hibernation_changes()["playbook_fixtures"]
+    probe_port = json.loads((
+        ROOT / "tests/fixtures/contracts/provider-usage-probe-port-changes.json"
+    ).read_text())["playbook_fixtures"]
+    assert set(probe_port) == {"tests/fixtures/playbooks/v2/provider-usage-probe/artifact.json"}
     assert set(ingest) == {"tests/fixtures/playbooks/v2/default-pipeline/artifact.json"}
     for path, digest in json.loads(GOLDEN.read_text())["playbook_fixtures"].items():
         if path in changes:
@@ -516,6 +520,12 @@ def test_legacy_playbook_fixtures_are_unchanged():
             assert hibernation[path]["previous_sha256"] == digest
             assert hibernation[path]["sha256"] != digest
             digest = hibernation[path]["sha256"]
+        if path in probe_port:
+            assert probe_port[path]["previous_sha256"] == digest
+            historical = ROOT / probe_port[path]["preserved_previous_path"]
+            assert hashlib.sha256(historical.read_bytes()).hexdigest() == digest
+            assert probe_port[path]["sha256"] != digest
+            digest = probe_port[path]["sha256"]
         assert hashlib.sha256((ROOT / path).read_bytes()).hexdigest() == digest, path
 
 

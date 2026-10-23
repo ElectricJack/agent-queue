@@ -15580,18 +15580,24 @@
         "provider-usage"
       ],
       "default_arm": true,
-      "digest": "sha256:b8c86225f8b06a664d3ae813b723bbbfe82fa476120ec0c0311707db7647a98d",
+      "digest": "sha256:a71a5472c418cb415edd0fd15a1f146eca40646e844e38b3e8b2f9a61725545d",
       "imports": [
         "src.commands.contracts",
         "src.commands.contracts.builtin",
+        "src.commands.principal",
         "src.config",
         "src.database.queries.provider_usage_queries",
         "src.playbooks.definition",
+        "src.playbooks.engine",
+        "src.playbooks.executors.base",
         "src.playbooks.executors.command",
+        "src.profiles.capabilities",
         "src.providers",
         "src.providers.probe"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "``provider_usage_probe`` — implementation spec T4."
     },
     "tests/test_provider_usage_queries.py": {
