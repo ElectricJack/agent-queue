@@ -30,8 +30,9 @@ change how hard it thinks.
 Deciding a task's class and worker is *policy*, so it does not live in the
 daemon. It lives in the project's routing playbook, which you can read and edit
 ([`src/prompts/default_playbooks/default-assignment-routing.md`](../../src/prompts/default_playbooks/default-assignment-routing.md)
-ships). Filers give hints, never routes, and the router is the only writer of a
-route. The orchestrator's entire contribution is to notice a task that cannot
+ships). Filers give hints; the router writes ordinary worker routes. Audited
+overrides and role creators declare their own route sources, and recovery
+may move a task among the router's recorded candidates. The orchestrator's entire contribution is to notice a task that cannot
 be picked up yet and emit one event.
 
 ## Vocabulary
@@ -43,8 +44,8 @@ also the [glossary](../reference/glossary.md).
 | Term | What it is | Where it lives |
 |---|---|---|
 | **Intelligence class** | How much thinking the work needs, as a named policy: `standard-high`. Vendor-neutral. | Markdown in `vault/intelligence-classes/<id>.md` |
-| **Harness** | *Which* CLI runs the agent: `claude`, `codex`, `gemini`. | A profile's `## Config` `harness` field |
-| **Provider** | The vendor keyed by that CLI: `anthropic`, `openai`, `google`. Not configured directly — it is implied by the harness. | Derived at launch |
+| **Harness** | *Which* CLI runs the agent: `claude`, `codex`, `gemini`, or an operator-defined OpenCode harness. | A profile's `## Config` `harness` field |
+| **Provider** | The vendor keyed by the harness definition's `provider`, with inference for legacy Claude/Codex/Gemini definitions. OpenCode can use local or hosted providers. | Harness registry; resolved at launch |
 | **Model** | The concrete model the class resolves to for that provider: `claude-opus-5`. | The class file's JSON block |
 | **Agent (worker) identity** | A durable, named worker row that survives tasks and is shared between projects. May carry its own saved overrides. | `agents` table |
 | **Agent profile (agent type)** | The reusable definition of a *kind* of worker: harness, lifecycle, role prompt, tools, default class. | `vault/agent-types/<id>/profile.md` |
@@ -55,7 +56,7 @@ Two more that this page leans on:
 * **Lifecycle** — `task` profiles have work *pushed* to them (the scheduler
   starts a session per assigned task); `pool` profiles *pull* work by claiming
   it; `named` profiles are long-lived sessions addressed by name, like the
-  supervisor. See `docs/concepts/scheduling.md` (planned).
+  supervisor. See [worker pools](../guides/worker-pools.md).
 * **Routing gate** — an open gate of type `routing` on a task, which holds it
   out of the queue until something writes a route.
 
@@ -160,7 +161,7 @@ flowchart TD
   E -- needs_classification --> G["playbook-compiler classifies the task;<br/>task_route_plan runs again"]
   E -- held --> H["every candidate's provider is down;<br/>the task waits, the run does not fail"]
   E -- no_candidates --> F["run fails; task stays visible<br/>until a worker candidate exists"]
-  G --> I
+  G --> D
   I --> Z
 ```
 
@@ -171,12 +172,14 @@ Four outcomes are worth reading twice:
   load score over live pool slots, routed backlog, provider usage and provider
   availability picks the profile among the candidates the policy allows
   ([`src/routing/planner.py`](../../src/routing/planner.py)). No model is asked.
-* **`needs_classification`** — the task has neither a kind nor a class hint, or
-  it is narrow work an OpenCode lane could take. The playbook asks the
-  `playbook-compiler` profile to classify it — kind, class, narrow,
-  test-verified — and plans again. The model never sees a profile, a provider or
+* **`needs_classification`** — the policy needs missing kind/class facts,
+  risk, or narrow-work verification. Even a task with kind and class hints may
+  need risk classification. The `playbook-compiler` returns kind, class, risk,
+  risk reason, narrow, test-verified and independent-verifier facts, then the
+  playbook plans again. The model never sees a profile, a provider or
   a load, so it cannot choose one. A failed classification still routes the
-  task, on the policy's defaults.
+  task on conservative policy defaults: missing risk is treated as medium,
+  with capped narrow lanes closed.
 * **`held`** — every candidate is on a provider that cannot launch right now.
   The run ends without failing, and the task waits for a provider to recover.
 * **`no_candidates`** — no configured worker can take the task under the policy
@@ -196,44 +199,78 @@ and the next `task.route_needed` two minutes later is the retry.
 
 ### Which class and lane the shipped policy picks
 
-The shipped playbook carries its policy as a reviewed YAML block, its
-`## Routing policy` section, which `task_route_plan` applies verbatim. In one
-paragraph: every kind has a default class and a ceiling — `standard-high` for
-feature, bugfix, refactor, research, test and docs work, `fast-high` for chore
-and sync, `deep-high` for `design` (code design), `art` (art-heavy design) and
-`plan`. A class hint is honoured up to the kind's ceiling and clamped above it
-(`route.class_clamped_from` records the clamp). Code design runs on the
-`code-design` lane, Claude first and Codex only when Claude cannot take it; art
-design runs on Codex and holds for it (`provider_intent = pinned`). `deep-high`
-on Claude is reserved for code design and design review, so a hard bug fix
-hinted `deep-high` lands on `deep-high` Codex. Narrow, test-verified work goes
-to an OpenCode rung while one has a free slot: local OpenCode (the `narrow`
-lanes) first, then OpenCode on the hosted Zen gateway (the `narrow-hosted`
-lane, `standard-high` only), which is a separate provider with its own
-availability. Repairs never go to either. A self-hosted model (a harness
-whose `provider` is `ollama`, such as local OpenCode) takes only low-stakes
-work: the policy's `local_models` gate drops it for a bugfix in a project
-delivering through an integration train (`hierarchical_integration_mode`
-`hierarchy`, `train` or `development`) and for a task an unfinished task waits
-on (`no_candidates` reason `local_model_gate` when nothing else remains). The
-hosted Zen gateway is not local. A task's priority never routes it: no lane
-and no local-model rule reads it, so it orders the claim frontier and nothing
-else. Among what remains, the least-pressed candidate wins, and a tie goes to
-Codex, then Claude, then OpenCode, then hosted OpenCode.
+The reviewed `## Routing policy` YAML in the bound playbook supplies the
+rules; [`src/routing/planner.py`](../../src/routing/planner.py) applies them
+without model calls. The shipped defaults are:
 
-When the classifier has to pick a class, its guidance is the playbook's
-"Classifying a task" section: **default to `standard-high`** for ordinary
-feature work, debugging, refactoring, tests and coordinated multi-module
-changes; a *fast* class only for clearly trivial, localized work whose
-requirements are already settled; a *deep* class only for design or
-exceptionally difficult work. C++, several files, native builds, integration
-tests, a high priority and a red CI run are explicitly *not* reasons to escalate
-to deep.
+| Kind | Default class | Ceiling / lane |
+|---|---|---|
+| feature, refactor, research | `standard-high` | `deep-high`, general |
+| bugfix | `standard-high` | `deep-high`, repair |
+| test, docs | `standard-high` | `standard-high`, general |
+| chore, sync | `fast-high` | `standard-high`, general |
+| design, plan | `deep-high` | `deep-high`, code-design (Claude first, Codex fallback) |
+| art | `deep-high` | `deep-high`, art-design (holds for Codex) |
+| operator | `standard-high` | `deep-high`, scoped Claude/Codex operator profiles |
 
-That is shipped default policy, and it is a markdown file. A project that wants
-different rules runs a reviewed project-scope copy of the playbook under its own
-id and is bound to it with `aq project set <project> router <playbook-id>`
-(local operator only); no code changes.
+A hint normally wins over classification and the kind default, capped at the
+kind ceiling. Risk floors can raise it above that ceiling. Risk imposes restrictions: medium requires at least
+`standard-high` and Claude/Codex/OpenCode; high requires at least
+`standard-high` and Claude/Codex; very high requires `deep-low` and
+Claude/Codex, relaxed to `standard-high` only when narrow and test-verified.
+Missing risk is conservatively medium. Priority only orders the frontier;
+it never selects a class or lane.
+
+Bugfix attempts have a separate rule: the first attempt starts at
+`standard-high` even if hinted deep. One substantive failed standard attempt
+escalates the next attempt to `deep-high`. Infrastructure failures and rework
+after an earlier pass do not count. Failure evidence survives session cleanup
+in `routing_failed_attempts`. Risk still restricts harnesses. Claude
+`deep-high` is reserved for code design and design review, so escalated
+bugfixes use Codex under the default policy.
+
+Narrow, test-verified work with a free slot can use explicit OpenCode lanes:
+`narrow` for low risk, `narrow-medium` for medium risk at `standard-high`,
+and `narrow-hosted` for trivial low-risk hosted Zen work mapped to
+`standard-high`. These are installed operator harnesses, not automatically
+derived worker rungs. All OpenCode-family harnesses are excluded from the
+general lane, and repairs originating from integration, development, source
+CI or integration-writer work never use them. The separate local-model gate
+also excludes `ollama` bugfixes in integration-train projects and work with
+unfinished dependents. Hosted Zen is not a local provider.
+
+Routine feature, bugfix, refactor, test, docs, chore and sync work prefers
+healthy hosted Codex capacity after eligible narrow lanes. It requires own
+fresh usage within the 80% soft limit and effective free headroom; otherwise
+free alternatives compete by pressure. If all candidates are full, the router
+still assigns queued work. If all eligible providers are unavailable, it
+holds. [Routing preferences](../guides/routine-routing-preference.md) covers
+per-task soft/strict preferences and the evidence recorded at apply.
+
+The pressure score is:
+
+```text
+(busy + eligible_backlog + 1) /
+(slots × weight × usage_factor × usage_headroom_factor × availability_factor)
+```
+
+Observed admission headroom affects preferred/free-capacity selection; it is
+not another denominator factor. `balance.usage_mode: headroom` optionally
+uses fresh own-provider quota headroom; the default remains `soft_limit`.
+Ties prefer Codex, Claude, OpenCode, then hosted OpenCode. Apply refreshes the
+snapshot under the fleet route lock and task row lock; a changed route or
+preference can return `stale`, and lock contention can return `routing.busy`.
+
+The classifier sees task facts only, never fleet load or provider choices.
+Its guidance defaults ordinary implementation to standard, reserves fast for
+settled trivial work, and deep for design or exceptional difficulty. High
+priority, C++, several files, native builds and red CI alone do not justify
+deep. Custom policy goes through a reviewed project-scope playbook and
+`aq project set <project> router <playbook-id>` (local operator).
+
+The current default policy still names retired classes and omits Astra;
+[known gaps](../specs/systems/routing-and-profiles.md#5-known-gaps) separates
+that policy defect from the seven-class catalog.
 
 ### Hints, re-routing and the emergency override
 
@@ -282,11 +319,15 @@ aq task edit --task-id demo.4 --task-type research
 ```
 
 `aq task route` stores any new hints, clears the task's profile, class and route
-record, sets `route_source = unrouted` and clears the emission throttle, so the
-next cycle asks the router at once. It never takes a profile. The local
+record, sets `route_source = unrouted`, clears the emission throttle and
+immediately emits `task.route_needed`. It never takes a profile. The local
 operator, the supervisor, and a worker for a task it filed may run it. Editing
 the class hint or the kind with `aq task edit` on a queued, unclaimed task does
-the same reset. Both are refused while a worker holds the task (*"Task is
+the same reset. Re-routing accepts DEFINED, READY, BLOCKED and PAUSED tasks;
+it does not itself resume paused work or recover blocked work. A stopped task
+remains refused while a starting, running or draining writer session exists.
+See [reroute recovery](../specs/task-reroute-recovery.md).
+Both are refused while a worker holds the task (*"Task is
 running or claimed; stop the task …"*), and on a role task.
 
 When a human requires a specific worker the router did not pick, the local
@@ -324,11 +365,15 @@ or a sentence saying what is wrong. The rules, in the order they are checked:
 | Model mapping | A required class with no model for the worker's provider is refused — a `google`-only class cannot run on the `codex` harness. |
 | Model | The resolved models must match. A worker's own saved model is fixed; otherwise the class supplies it. |
 
-A worker with no fixed class and no fixed model is *generic*: it may inherit
-whatever the task asks for. That is what makes the shipped `worker-*` ladder
-reusable — the ladder is matched by id prefix plus `harness == "claude"`,
-not by an enumerated list, so an operator's own `worker-…-codex` siblings stay
-provider-bound.
+Role tasks require the worker's saved profile to match the role exactly.
+Operator tasks require scoped operator profiles, `standard-high` or `deep-high`,
+and Claude or Codex; operator workers never take ordinary work.
+
+A class-backed Claude task/pool profile can be generic across compatible
+workers. This is determined by its fields (`harness`, lifecycle and
+`default_class`), not an id prefix. Codex and Gemini task profiles remain
+harness-bound. Class equality, available model mappings and fixed worker
+model overrides still apply.
 
 ### Pools, disabled pools and roster reuse
 
@@ -415,8 +460,8 @@ a claimable route has none, and the cascade keeps saying so.
 | Loaded classes | [`IntelligenceClassRegistry`](../../src/intelligence_classes/registry.py), kept live by the vault watcher | Memory only |
 | Worker identities and their overrides | `aq agent create` / `aq agent edit`, and the agent reconciler | `agents` table |
 | A task's route | The project's router (`task_route_apply`); failover, spill and reroute-undo moves among its candidates; `aq task route-override` | `tasks.intelligence_class`, `tasks.profile_id`, `tasks.provider_intent`, `tasks.route_source`, `tasks.route` |
-| A task's hints | The filer (`aq task create --type/--intelligence-class`), `aq task edit`, `aq task route` | `tasks.task_type`, `tasks.class_hint` |
-| A task's routing preference | The filer (`aq task create --prefer/--prefer-mode`), `aq task route` | `tasks.prefer_target`, `tasks.prefer_mode` |
+| A task's hints | The filer (`aq task create` with `--task-type` / `--intelligence-class`), `aq task edit`, `aq task route` | `tasks.task_type`, `tasks.class_hint` |
+| A task's routing preference | The filer (`aq task create` with `--prefer` / `--prefer-mode`), `aq task route` | `tasks.prefer_target`, `tasks.prefer_mode` |
 | The model that actually ran | The session launcher | `task_session_attempts` — the only evidence of a model |
 | Deleted shipped profiles | `aq agent delete-profile` | `vault/agent-types/.retired-defaults` |
 
@@ -429,21 +474,24 @@ offline mid-run.
 
 ## Local versus shipped policy
 
-Everything above describes what the repository **ships**. What an installed
-vault actually holds is a separate question, and the answer is routinely quite
-different — the fleet that develops AQ itself, for example, retires all three
-shipped `worker-*` profiles (tombstoned in `.retired-defaults`), runs a fuller
-`<tier>-<level>-<provider>` ladder on `lifecycle: pool` instead of the shipped
-`lifecycle: task`, and adds an extra very-fast class that this repository does
-not ship.
+The catalog derives Claude and Codex rungs for classes with compatible model
+slices, inheriting shared worker templates. Install-time authentication probes
+can restrict which rungs activate. A third `worker-opencode` template ships
+for operator-configured harnesses; Gemini launch is supported but no Gemini
+worker template ships. Scoped operator templates derive their own restricted
+rungs. Operators may author additional compatible worker profiles.
 
-None of that is a fork. Profiles and classes are markdown in the operator's
-vault, and seeding is write-if-absent precisely so local edits survive
-upgrades. The cost is that a vault silently keeps old semantics, which is what
-`aq agent profile-drift` and `aq doctor --check profiles.system_drift` are for.
-The one exception is the supervisor's `## Capabilities`: the daemon merges the
-shipped grants its vault copy lacks on every start and profile reload
-(additive only; `capability_sync: false` in its frontmatter opts out).
+Profiles and classes live in the operator's vault. Seeding is write-if-absent,
+so local lifecycle, pool bounds, prose and mappings survive upgrades. Existing
+routes may suppress duplicate rung creation, and retired ids stay tombstoned.
+Use `aq agent profile-drift` and `aq doctor --check profiles.system_drift`
+to inspect semantic drift.
+
+Capability sync is additive on daemon start and reload: the supervisor and
+all shipped `worker-*` templates sync by default, and other shipped profiles
+can opt in with frontmatter `capability_sync: true` (as operator templates do).
+`capability_sync: false` opts out. Only missing shipped grants are appended;
+other content stays operator-owned.
 
 Because a vault is not in this repository, no page here can tell you what
 *yours* contains. Look:
@@ -457,6 +505,15 @@ When reading a claim on this page, check whether it says *ships* — a file unde
 [`src/profiles/defaults/`](../../src/profiles/defaults/) or
 [`src/prompts/`](../../src/prompts/) that you can open in the checkout — or
 *configured*, which means your vault decides.
+
+For explanations, `aq task explain` reports failed/held plans and strict-target
+exclusions. `aq doctor --check routing.unmatched_selectors` reports policy
+selectors that match no installed candidate; `routing.bypassed` reports
+bindings, unrouted work and overrides. Plans include bounded live context for
+load, quota freshness, admission headroom and bypass reasons; the LLM never
+receives it. [`src/routing/replay.py`](../../src/routing/replay.py) replays
+frozen evidence without daemon writes. See [live context](../specs/design/routing-live-context.md)
+and [benchmark export](../guides/benchmark-routing-export.md).
 
 ## Common failures and recovery
 

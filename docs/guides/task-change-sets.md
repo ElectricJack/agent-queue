@@ -23,7 +23,7 @@ tasks:
   - tempId: prerequisite
     title: Implement shared schema
     description: Add the schema before either API starts.
-    intelligence_class: high
+    intelligence_class: standard-high
     parent_id: existing-container
 edits:
   - task_id: existing-api

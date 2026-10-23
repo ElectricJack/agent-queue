@@ -28,7 +28,8 @@ dashboard.py       Hand-written `aq dashboard` group (the generated `state-*` co
                    Discord links name, via src/remote_links.py); also the helpers `aq start|
                    stop|restart|status` call, so the PID/log/config paths come from daemon.py
 db.py              `aq db` — operator schema, custom backup and disaster-recovery restore
-doctor.py          `aq doctor`, `aq costs`, and `aq benchmark` evidence commands
+doctor.py          `aq doctor` (including local --offline orphan recovery), `aq costs`,
+                   and `aq benchmark` evidence commands
 envelope.py        Versioned JSON envelope: envelope(), error_envelope(), emit(),
                    BRIEF_PROJECTIONS — see docs/specs/design/aq-surface.md §4
 exceptions.py      CommandError, DaemonNotRunningError, ScopeDeniedError
@@ -93,7 +94,8 @@ generated, and hooks were replaced by playbooks (`aq playbook`).
   (`_build_typed_dispatch` / `_execute_typed`) is dormant compatibility code kept alive by
   `tests/test_cli_client_generated.py`; the generated `agent_queue_api_client` package is
   the dashboard client, not the CLI transport. The direct-DB `PluginClient` is a narrow
-  exception for filesystem-heavy plugin management.
+  exception for filesystem-heavy plugin management. `aq doctor --offline --check
+  db.alembic_orphan` is a local operator recovery path using an unmigrated engine.
 - **Base URL:** `AQ_API_URL` → `AGENT_QUEUE_API_URL` (legacy alias, kept) → `mcp_server`
   host/port from `~/.agent-queue/config.yaml` → `http://127.0.0.1:8081`; `--api-url`
   overrides all of them.

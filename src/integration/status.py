@@ -25,7 +25,7 @@ from src.database.tables import (
 from src.git.manager import GitError
 from src.integration.delivery_branches import observe_completed_branches
 from src.integration.delivery_truth import DeliveryState
-from src.integration.models import integration_ci_sources
+from src.integration.models import RepairPolicy, integration_ci_sources
 from src.integration.promotion_steps import flow_status
 from src.integration.repair import ordinary_repair_id
 
@@ -600,3 +600,58 @@ class IntegrationStatusService:
     async def _all(conn: AsyncConnection, statement) -> list[dict[str, Any]]:
         rows = (await conn.execute(statement)).mappings().all()
         return [dict(row) for row in rows]
+
+
+    @staticmethod
+    def _repair_blockers(
+        repair: list[dict[str, Any]], *, now: float
+    ) -> list[dict[str, Any]]:
+        blockers: list[dict[str, Any]] = []
+        for operation in repair:
+            current = next(
+                (
+                    stage
+                    for stage in operation["stages"]
+                    if int(stage["ordinal"]) == int(operation["active_stage"])
+                ),
+                None,
+            )
+            if current is None or current["state"] not in {
+                "active",
+                "awaiting_completion",
+            }:
+                continue
+            policy = RepairPolicy.model_validate(current["policy"])
+            ordinal = int(current["ordinal"])
+            limit = policy.primary_attempts if ordinal == 0 else policy.debug_attempts
+            if current["state"] == "active" and limit and int(current["attempts"]) >= limit:
+                blockers.append(
+                    _blocker(
+                        "budget_exhausted",
+                        "current repair stage has exhausted its attempt budget",
+                        operation["id"],
+                        cause="attempts",
+                        stage=ordinal,
+                        attempts=int(current["attempts"]),
+                        limit=limit,
+                    )
+                )
+            deadline_at = current["deadline_at"]
+            deadline_bound = (
+                current["state"] == "active" or operation["target_kind"] == "parent"
+            )
+            if deadline_bound and deadline_at is not None and now >= float(deadline_at):
+                blockers.append(
+                    _blocker(
+                        "budget_exhausted",
+                        "current repair stage deadline is exhausted",
+                        operation["id"],
+                        cause="deadline",
+                        stage=ordinal,
+                        deadline_at=float(deadline_at),
+                    )
+                )
+        return blockers
+
+
+__all__ = ["IntegrationStatusService"]
