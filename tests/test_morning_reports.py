@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 from datetime import UTC, datetime
 from pathlib import Path
@@ -1817,6 +1818,7 @@ async def test_project_scoped_read_uses_fallback_instead_of_global_authored_pros
 # The reviewed artifact end to end: engine, executor round-trip, contract, handler.
 
 REVIEWED_MORNING = Path("src/prompts/reviewed_playbooks/morning-report/artifact.json")
+MORNING_PORT_FIXTURES = FIXTURES / "building-blocks"
 LOS_ANGELES = ZoneInfo("America/Los_Angeles")
 
 
@@ -1832,7 +1834,7 @@ def morning_due(now):
 
 
 @pytest.fixture
-async def morning_playbook(command_handler_factory, monkeypatch):
+async def morning_playbook(command_handler_factory, monkeypatch, request):
     from src.commands.contracts import CONTRACTS
     from src.commands.contracts.builtin import set_handler_provider
     from src.playbooks.definition import load_definition_json
@@ -1862,7 +1864,8 @@ async def morning_playbook(command_handler_factory, monkeypatch):
     monkeypatch.setattr(
         "src.commands.report_commands.time", SimpleNamespace(time=lambda: clock.now)
     )
-    artifact = load_definition_json(REVIEWED_MORNING.read_text(encoding="utf-8"))
+    artifact_path = getattr(request, "param", REVIEWED_MORNING)
+    artifact = load_definition_json(artifact_path.read_text(encoding="utf-8"))
     runs = RecordingRunRepository()
     engine = PlaybookEngine(
         services=EngineServices(
@@ -2070,6 +2073,92 @@ async def test_reviewed_morning_playbook_recovers_a_transient_failure(morning_pl
     assert retry.step_id == "reconcile-morning--retry" and retry.outcome == "success"
     assert snapshot.lifecycle.value == "completed", (snapshot.error_code, snapshot.error)
     assert snapshot.bindings["retried"]["state"] == "waiting" and len(calls) == 2
+
+
+def test_morning_building_blocks_preserve_recorded_graph_and_contract():
+    """Compare with the actual pre-port recording, never regenerated expectations."""
+    recorded = (MORNING_PORT_FIXTURES / "legacy-artifact.json").read_bytes()
+    assert hashlib.sha256(recorded).hexdigest() == (
+        "584735bfad6aa6df0da33f112e62e176b61e039c3071deca86aba6f1c2021195"
+    )
+    old = json.loads(recorded)
+    new = json.loads(REVIEWED_MORNING.read_bytes())
+    for artifact in (old, new):
+        for metadata in ("compiled_at", "source_hash"):
+            artifact.pop(metadata)
+        for node in [*artifact["rules"], *artifact["steps"].values()]:
+            node.pop("source")
+    assert new == old
+
+
+@pytest.mark.parametrize(
+    "morning_playbook",
+    [MORNING_PORT_FIXTURES / "legacy-artifact.json", REVIEWED_MORNING],
+    ids=["legacy", "building-blocks"],
+    indirect=True,
+)
+@pytest.mark.parametrize(
+    "scenario",
+    json.loads((MORNING_PORT_FIXTURES / "scenarios.json").read_text()),
+    ids=lambda scenario: scenario["name"],
+)
+async def test_morning_building_blocks_scenarios(morning_playbook, scenario, monkeypatch):
+    """Run both recordings through the real engine, typed contract and timer path."""
+    calls = []
+
+    async def tick(args):
+        response = scenario["responses"][len(calls)]
+        calls.append(args)
+        if response.get("failure") == "rejected":
+            return {"success": False, "error_code": "report.invalid", "error": "refused"}
+        return {
+            "success": True,
+            "report_id": "morning-2026-09-27",
+            "reason": None,
+            "next_due_at": None,
+            "cancelled": 0,
+            **response,
+        }
+
+    monkeypatch.setattr(morning_playbook.handler, "_cmd_morning_report_tick", tick)
+    execute = morning_playbook.handler.execute
+
+    async def execute_with_failure(name, args, **kwargs):
+        # Handler exceptions become typed rejections. A runtime failure must be
+        # injected at the invocation boundary to exercise the runtime_error edge.
+        if (
+            name == "morning_report_tick"
+            and scenario["responses"][len(calls)].get("failure") == "runtime_error"
+        ):
+            calls.append(args)
+            raise RuntimeError("scenario invocation failure")
+        return await execute(name, args, **kwargs)
+
+    monkeypatch.setattr(morning_playbook.handler, "execute", execute_with_failure)
+    now = utc("2026-09-27T14:00:00")
+    snapshot, receipt = await morning_playbook.run(now)
+    outcomes = []
+    for index, checkpoint in enumerate(scenario["checkpoints"]):
+        if index:
+            assert snapshot.wait.deadline_at == now + 60
+            now += 60
+            snapshot, receipt = await morning_playbook.fire(now)
+        step = snapshot.current_step_id.removeprefix("reconcile-morning--")
+        assert f"{snapshot.lifecycle.value}:{step}" == checkpoint
+        command = receipt.step_id.removeprefix("reconcile-morning--")
+        outcome = receipt.selected_transition.rsplit("::", 1)[-1]
+        outcomes.append(f"{command}:{outcome}")
+        assert receipt.error_code != "contract_violation"
+
+        # Duplicate daily delivery cannot issue another command, even while paused.
+        call_count = len(calls)
+        replay = await morning_playbook.dispatch(now)
+        assert replay.deduplicated == ("reconcile-morning",)
+        assert len(calls) == call_count
+
+    assert outcomes == scenario["outcomes"]
+    assert calls == [{}] * len(scenario["responses"])
+    assert len(morning_playbook.runs.snapshots) == 1
 
 
 # The once-per-local-day trigger.
