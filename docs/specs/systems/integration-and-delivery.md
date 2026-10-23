@@ -102,17 +102,11 @@ To read the code, you need to know that two integration designs are in `src/inte
    publishers and runtimes (`docs/reports/2026-10-12-legacy-consumer-retirement.md`). Its
    tables, recovery commands and many helpers remain, and some still run in maintenance.
 
-A daemon-wide setting chooses between them: `integration.git_first` in
-`src/config.py`. It is restart-required.
-
-| `git_first` | What runs |
-|---|---|
-| `active` | `train_for()` (`train_sources.py`) builds an `IntegrationTrain`. |
-| `shadow` (**the code default**) | `train_for()` returns `None`, and `core.py` sets every subject runtime to `None`. **No delivery engine runs.** Inspect `integration.delivery_engine` against the running daemon. |
-
-The Subject publishers and runtimes were retired on 2026-10-12. Shadow is no
-longer a fallback publisher. `integration.reconciler_active` does not pause an
-active train.
+The Git-first train is always constructed by `train_for()`. The compatibility
+setting `integration.git_first` defaults to `active` and accepts only `active`.
+Old `shadow` configurations fail validation with a migration message: remove the
+key or set it to `active` before restarting. Legacy subjects are retained
+historical evidence, never an alternate delivery engine.
 
 The current project activation supplies train policy (`train_policy.py`). Its
 binding is `hierarchical_integration_policy.train.playbook_id`, defaulting to
@@ -511,8 +505,7 @@ The train holds one live batch per target with a `pg_advisory_xact_lock` in
 
 - `IntegrationConfig` (`src/config.py`, about lines 2577–2735; restart-required).
   `git_first`, `default_mode` and `merge_*` are covered above.
-  - `reconciler_active` (default `True`) is a retained Subject-runtime control; it does
-    not pause the live train.
+  - `reconciler_active` (default `True`) is retained for historical ownership guards; it does not select a delivery engine.
   - `reconciler_shadow` and `publisher_stall_after` have no remaining effect.
 - Per-project policy is `projects.hierarchical_integration_policy`, validated by
   `models.py:HierarchicalIntegrationPolicy`. Its parts are:
@@ -584,14 +577,9 @@ This table covers the inventory's other 17 systems and where the line falls with
 
 ## 6. Remaining limitations and audit findings
 
-- **Default engine selection:** `integration.git_first` still defaults to `shadow`,
-  which starts no writer after Subject-runtime retirement. An installation requiring
-  automatic delivery must explicitly select `active`. Reported for supervisor triage;
-  this documentation audit changes no runtime defaults.
-- **Offline engine diagnostic:** `delivery_engine.engine_refusal` returns no refusal
-  for `shadow` with `reconciler_active=True` when no live orchestrator is supplied,
-  despite the current startup wiring constructing no engine. The live-service check
-  does detect the missing writer. Reported as a suspected diagnostic bug.
+- **Engine selection:** `integration.git_first` now defaults to `active` and accepts
+  only `active`. Old `shadow` values must be removed or migrated before restart;
+  project activation and explicit holds remain binding.
 - **Portable policy model:** `src/policy_profiles/models.py:IntegrationSettings`
   omits `development` from its rollout-mode literal, although the project runtime
   accepts that mode. Reported as a suspected code bug; no model change is made here.

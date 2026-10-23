@@ -15,18 +15,11 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 from src.database.tables import (
     integration_batch_members,
     integration_batches,
-    integration_branch_owners,
     integration_check_evidence,
-    integration_legacy_deliveries,
-    integration_repair_operations,
-    integration_repair_stages,
     integration_review_evidence,
-    integration_subject_journal,
-    integration_subjects,
     projects,
     repos,
     task_branch_origins,
-    task_integration_checkpoints,
     tasks,
 )
 from src.git.manager import GitError
@@ -34,7 +27,6 @@ from src.integration.delivery_branches import observe_completed_branches
 from src.integration.delivery_truth import DeliveryState
 from src.integration.models import RepairPolicy, integration_ci_sources
 from src.integration.promotion_steps import flow_status
-from src.integration.records import ParentEpisodeRecords
 from src.integration.repair import ordinary_repair_id
 
 TERMINAL_TASK_STATES = ("COMPLETED", "FAILED", "CANCELLED")
@@ -79,7 +71,7 @@ class IntegrationStatusService:
 
     def __init__(
         self, db, *, clock: Callable[[], float] = time.time, delivery: Any = None,
-        git_first: str = "shadow", train: Any = None,
+        git_first: str = "active", train: Any = None,
         flow_problems: Any = None, cached_only: bool = False,
     ) -> None:
         self.db = db
@@ -91,7 +83,8 @@ class IntegrationStatusService:
         # intent facts; it never reads subjects, journals, generations or
         # receipts. ``train`` is the daemon's IntegrationTrain, for its last
         # visit per target; without it only durable facts are reported.
-        self.git_first = git_first
+        if git_first != "active":
+            raise ValueError("trial mode has been removed; use git_first=active or omit it")
         self.train = train
         self.cached_only = cached_only
         # Git delivery truth (a DeliveryObserver).  The daemon registers one
@@ -101,158 +94,6 @@ class IntegrationStatusService:
             if delivery is not None
             else getattr(db, "_delivery_observer", None)
         )
-
-    async def _observe(self, candidates) -> Any:
-        """A git view of *candidates*, prepared before any database snapshot.
-
-        Status only reads, so a target that moved since the fetch is still
-        reported (the view names the OID it inspected); identities are
-        rechecked on the snapshot, and one that changed is reported unknown.
-        """
-        ids = set(candidates)
-        if self.delivery is None or not ids:
-            return None
-        return await self.delivery.observe(
-            ids, max_age=getattr(self.delivery, "READ_MAX_AGE", 0.0),
-            **({"cached_only": True} if self.cached_only else {}),
-        )
-
-    async def _delivery_candidates(
-        self, *, project_id: str | None = None, task_id: str | None = None
-    ) -> set[str]:
-        """The completed tasks a projection will ask git about (no locks)."""
-        from src.integration.delivery_observer import (
-            STATUS_DELIVERY_LIMIT,
-            delivery_sensitive_ids,
-            gating_delivery_ids,
-        )
-
-        if self.delivery is None:
-            return set()
-        async with self.db._engine.connect() as conn:
-            if task_id is not None:
-                row = (
-                    await conn.execute(select(tasks.c.status).where(tasks.c.id == task_id))
-                ).one_or_none()
-                if row is None:
-                    return set()
-                found = await delivery_sensitive_ids(conn, [task_id])
-                if row.status in TERMINAL_TASK_STATES:
-                    found |= await self._completed_children(conn, [task_id])
-                return found
-            project = (
-                await conn.execute(
-                    select(
-                        projects.c.hierarchical_integration_mode,
-                        projects.c.hierarchical_integration_desired_mode,
-                    ).where(projects.c.id == project_id)
-                )
-            ).one_or_none()
-            if project is None:
-                return set()
-            mode, desired = project
-            if mode == "development":
-                ids, _total = await gating_delivery_ids(conn, project_id)
-                return set(ids)
-            if mode == "disabled" and desired == "disabled":
-                # Inactive integration reports no train readiness to prove.
-                return set()
-            parent = tasks.alias("delivery_candidate_parent")
-            recorded = (
-                select(integration_legacy_deliveries.c.task_id)
-                .where(integration_legacy_deliveries.c.task_id == tasks.c.id)
-                .exists()
-            )
-            rows = (
-                await conn.execute(
-                    select(tasks.c.id)
-                    .select_from(
-                        tasks.join(parent, parent.c.id == tasks.c.parent_task_id)
-                    )
-                    .where(
-                        tasks.c.project_id == project_id,
-                        tasks.c.status == "COMPLETED",
-                        parent.c.status.in_(TERMINAL_TASK_STATES),
-                        ~recorded,
-                    )
-                    .order_by(tasks.c.updated_at.desc(), tasks.c.id)
-                    .limit(STATUS_DELIVERY_LIMIT)
-                )
-            ).scalars()
-            return set(rows)
-
-    @staticmethod
-    async def _completed_children(conn: AsyncConnection, parent_ids) -> set[str]:
-        rows = await conn.execute(
-            select(tasks.c.id).where(
-                tasks.c.parent_task_id.in_(sorted(parent_ids)),
-                tasks.c.status == "COMPLETED",
-            )
-        )
-        return set(rows.scalars())
-
-    async def _development_delivery_on(
-        self, conn: AsyncConnection, project_id: str, view: Any
-    ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-        """What the scheduler and settlement wait for, as git answers it now.
-
-        Nothing here is persisted.  Pending work is the publisher's ordinary
-        backlog; unknown work (missing ref, wrong repository, git failure,
-        or an identity that changed during observation) is a blocker because
-        nothing will deliver it on its own.
-        """
-        from src.integration.delivery_observer import gating_delivery_ids
-
-        ids, total = await gating_delivery_ids(conn, project_id)
-        summary: dict[str, Any] = {
-            "available": self.delivery is not None,
-            "evaluated": 0,
-            "total": total,
-            "targets": [],
-            "pending": [],
-            "unknown": [],
-        }
-        if view is None or not ids:
-            return summary, []
-        verified = await view.verified_on(conn, ids)
-        summary["evaluated"] = len(ids)
-        summary["targets"] = sorted(
-            (
-                {
-                    "repository_id": snapshot.repository_id,
-                    "target_ref": snapshot.target_ref,
-                    "target_oid": snapshot.target_oid,
-                    "error": snapshot.error,
-                }
-                for snapshot in view.snapshots
-            ),
-            key=lambda item: (item["repository_id"], item["target_ref"]),
-        )
-        for task_id in ids:
-            evidence = verified.get(task_id)
-            if evidence is not None and evidence.satisfied:
-                continue
-            if evidence is not None and evidence.state is DeliveryState.PENDING:
-                summary["pending"].append(task_id)
-                continue
-            summary["unknown"].append(
-                {
-                    "task_id": task_id,
-                    "reason": evidence.reason
-                    if evidence is not None
-                    else "changed_during_observation",
-                }
-            )
-        blockers = [
-            _blocker(
-                "delivery_unknown",
-                "completed work cannot be proven on the delivery target",
-                item["task_id"],
-                cause=item["reason"],
-            )
-            for item in summary["unknown"]
-        ]
-        return summary, blockers
 
     @asynccontextmanager
     async def _consistent_snapshot(self) -> AsyncIterator[AsyncConnection]:
@@ -271,57 +112,8 @@ class IntegrationStatusService:
             await conn.close()
 
     async def control_status(self, project_id: str) -> dict[str, Any] | None:
-        """Current project inputs and subject schedules, without remote I/O."""
-        if self.git_first == "active":
-            return await self.train_status(project_id, observe=False)
-        async with self._consistent_snapshot() as conn:
-            return await self._control_status_on(conn, project_id)
-
-    async def _control_status_on(self, conn: AsyncConnection, project_id: str):
-        project = await self._one(conn, select(projects).where(projects.c.id == project_id))
-        if project is None:
-            return None
-        rows = await self._all(
-            conn,
-            select(integration_subjects)
-            .where(
-                integration_subjects.c.project_id == project_id,
-                integration_subjects.c.phase != "done",
-            )
-            .order_by(integration_subjects.c.created_at, integration_subjects.c.id)
-            .limit(100),
-        )
-        from src.operator_decisions import history_on, related_on
-
-        subjects = []
-        for row in rows:
-            journal = await self._one(
-                conn,
-                select(integration_subject_journal)
-                .where(
-                    integration_subject_journal.c.subject_id == row["id"],
-                )
-                .order_by(integration_subject_journal.c.seq.desc())
-                .limit(1),
-            )
-            refs = set()
-            for kind, identity in (('task', row.get('task_id')), ('batch', row.get('batch_id'))):
-                if identity:
-                    refs.update(await related_on(conn, kind, identity))
-            subjects.append({**row, "last_record": journal,
-                             "operator_decisions": await history_on(conn, project_id, refs)})
-        return {
-            "projection_kind": "subjects",
-            "project_id": project_id,
-            "effective_mode": project["hierarchical_integration_mode"],
-            "desired_mode": project["hierarchical_integration_desired_mode"],
-            "generation": project["hierarchical_integration_generation"],
-            "repository_id": project["integration_repository_id"],
-            "subjects": subjects,
-            "operator_decisions": await history_on(conn, project_id),
-            "promotion_flow": await self._promotion_flow_on(conn, project),
-            "ci_source": integration_ci_sources(project["hierarchical_integration_policy"]),
-        }
+        """Current train inputs and cached evidence, without remote I/O."""
+        return await self.train_status(project_id, observe=False)
 
     async def _promotion_flow_on(self, conn: AsyncConnection, project) -> dict[str, Any] | None:
         """The stored flow as a chain; ``misconfigured`` when it no longer validates."""
@@ -339,298 +131,12 @@ class IntegrationStatusService:
         )
 
     async def status(self, project_id: str) -> dict[str, Any] | None:
-        """Subject facts and Git delivery evidence, verified on one snapshot."""
-        if self.git_first == "active":
-            return await self.train_status(project_id)
-        view = await self._observe(await self._delivery_candidates(project_id=project_id))
-        async with self._consistent_snapshot() as conn:
-            projection = await self._control_status_on(conn, project_id)
-            if projection is not None and projection["effective_mode"] == "development":
-                delivery, blockers = await self._development_delivery_on(conn, project_id, view)
-                projection.update(delivery=delivery, blockers=_sorted_blockers(blockers))
-            return projection
+        """Train targets, batches and Git delivery evidence."""
+        return await self.train_status(project_id)
 
     async def task_blockers(self, task_id: str) -> dict[str, Any] | None:
-        """Return integration blockers after resolving task/project server-side.
-
-        Git delivery evidence for the task and its completed children is
-        gathered first, outside the snapshot.
-        """
-        if self.git_first == "active":
-            return await self.train_task_blockers(task_id)
-        view = await self._observe(await self._delivery_candidates(task_id=task_id))
-        async with self._consistent_snapshot() as conn:
-            return await self._task_blockers_on(conn, task_id, delivery=view)
-
-    async def _task_blockers_on(
-        self,
-        conn: AsyncConnection,
-        task_id: str,
-        *,
-        expected_project_id: str | None = None,
-        delivery: Any = None,
-    ) -> dict[str, Any] | None:
-        row = (
-            (
-                await conn.execute(
-                    select(tasks, projects)
-                    .select_from(
-                        tasks.join(projects, projects.c.id == tasks.c.project_id)
-                    )
-                    .where(tasks.c.id == task_id)
-                )
-            )
-            .mappings()
-            .one_or_none()
-        )
-        if row is None or (
-            expected_project_id is not None and row["project_id"] != expected_project_id
-        ):
-            return None
-        blockers: list[dict[str, Any]] = []
-        designated = row["integration_repository_id"]
-        integration_active = (
-            row["hierarchical_integration_mode"] != "disabled"
-            or row["hierarchical_integration_desired_mode"] != "disabled"
-        )
-        # Development publication accepts an unpinned task on the project's
-        # designated repository, just as its candidate query does.
-        effective_repo = row["repo_id"]
-        if (
-            effective_repo is None
-            and row["hierarchical_integration_mode"] == "development"
-        ):
-            effective_repo = designated
-        if integration_active and (designated is None or effective_repo != designated):
-            # Name the task: its repository is usually unset, and a ref of
-            # ``None`` collapsed every such task into one anonymous blocker.
-            if designated is None:
-                cause, detail = (
-                    "project_repository_unset",
-                    "project has no designated integration repository",
-                )
-            elif effective_repo is None:
-                cause, detail = (
-                    "task_repository_unset",
-                    (
-                        "task has no repository; it is not bound to the project's "
-                        "designated integration repository"
-                    ),
-                )
-            else:
-                cause, detail = (
-                    "task_repository_mismatch",
-                    "task repository is not the project's designated integration repository",
-                )
-            blockers.append(
-                _blocker(
-                    "repository_not_designated",
-                    detail,
-                    task_id,
-                    cause=cause,
-                    repository_id=row["repo_id"],
-                    designated_repository_id=designated,
-                )
-            )
-        if delivery is not None and row["status"] == "COMPLETED":
-            blockers.extend(await self._own_delivery_blockers(conn, task_id, delivery))
-        checkpoint = await self._one(
-            conn,
-            select(task_integration_checkpoints).where(
-                task_integration_checkpoints.c.task_id == task_id
-            ),
-        )
-        if checkpoint is not None:
-            if checkpoint["verified_generation"] is not None and (
-                checkpoint["verified_generation"] != checkpoint["generation"]
-            ):
-                blockers.append(
-                    _blocker(
-                        "stale_generation",
-                        "verified generation does not match the current task generation",
-                        task_id,
-                    )
-                )
-            if checkpoint["verified_sha"] is not None and (
-                checkpoint["verified_sha"] != checkpoint["checkpoint_sha"]
-            ):
-                blockers.append(
-                    _blocker(
-                        "stale_head",
-                        "verified head does not match the current checkpoint",
-                        task_id,
-                    )
-                )
-            review = await self._one(
-                conn,
-                select(integration_review_evidence)
-                .where(integration_review_evidence.c.source_task_id == task_id)
-                .order_by(
-                    integration_review_evidence.c.created_at.desc(),
-                    integration_review_evidence.c.id.desc(),
-                ),
-            )
-            if review is not None and (
-                review["generation"] != checkpoint["generation"]
-                or review["reviewed_head_sha"] != checkpoint["checkpoint_sha"]
-                or review["verdict"] != "approved"
-            ):
-                blockers.append(
-                    _blocker(
-                        "stale_review",
-                        "review does not bind the current task head",
-                        review["id"],
-                    )
-                )
-        owners = (
-            await self._all(
-                conn,
-                select(integration_branch_owners.c.id).where(
-                    integration_branch_owners.c.repository_id == designated,
-                    integration_branch_owners.c.ref == row["branch_name"],
-                    integration_branch_owners.c.handoff_state != "released",
-                ),
-            )
-            if designated and row["branch_name"]
-            else []
-        )
-        if owners:
-            blockers.append(
-                _blocker('active_owner', 'task branch has an active owner', owners[0]['id'])
-            )
-
-        readiness_operation = None
-        if checkpoint is not None and checkpoint["episode_id"] is not None:
-            readiness_operation = await self._one(
-                conn,
-                select(integration_repair_operations).where(
-                    integration_repair_operations.c.parent_task_id == task_id,
-                    integration_repair_operations.c.episode_id
-                    == checkpoint["episode_id"],
-                ),
-            )
-        operation_rows = await self._all(
-            conn,
-            select(integration_repair_operations).where(
-                integration_repair_operations.c.parent_task_id == task_id,
-                integration_repair_operations.c.state.in_(
-                    ("active", "escalated", "human_required")
-                ),
-            ),
-        )
-        child_rows = await self._all(
-            conn,
-            select(tasks.c.id, tasks.c.status).where(tasks.c.parent_task_id == task_id),
-        )
-        child_status = {child["id"]: child["status"] for child in child_rows}
-        parent_readiness = None
-        # A terminal parent whose collection was cancelled (switching to
-        # development cancels the parent operation and keeps its checkpoint)
-        # finished outside the train and will never be collected again.
-        collection_abandoned = (
-            readiness_operation is not None
-            and readiness_operation["state"] == "cancelled"
-            and row["status"] in TERMINAL_TASK_STATES
-        )
-        if (
-            checkpoint is not None
-            and readiness_operation is not None
-            and not collection_abandoned
-        ):
-            parent_readiness = await ParentEpisodeRecords(self.db).readiness_on(
-                conn,
-                parent=dict(row),
-                project=dict(row),
-                checkpoint=checkpoint,
-                operation=readiness_operation,
-            )
-            for item in parent_readiness["blockers"]:
-                child_id = item["task_id"]
-                cause = item["reason"]
-                if child_status.get(child_id) not in TERMINAL_TASK_STATES:
-                    blockers.append(_blocker('open_child', 'child task is not terminal', child_id))
-                elif cause == "origin_mismatch":
-                    blockers.append(
-                        _blocker(
-                            "repository_not_designated",
-                            "child origin does not match the current parent target",
-                            child_id,
-                            cause=cause,
-                        )
-                    )
-                elif cause == "receipt_chain":
-                    blockers.append(
-                        _blocker(
-                            "stale_head",
-                            "delivery receipt chain does not bind the current parent head",
-                            child_id,
-                            cause=cause,
-                        )
-                    )
-                else:
-                    blockers.append(
-                        _blocker(
-                            "missing_receipt",
-                            "child has no applicable current delivery receipt",
-                            child_id,
-                            cause=cause,
-                        )
-                    )
-        repair = await self._repair_projection(conn, operation_rows)
-        for item in repair:
-            if item["state"] == "human_required":
-                blockers.append(
-                    _blocker('human_hold', 'repair requires a human decision', item['id'])
-                )
-        blockers.extend(self._repair_blockers(repair, now=self.clock()))
-        return {
-            "task_id": task_id,
-            "project_id": row["project_id"],
-            "integration_active": integration_active,
-            "checkpoint": checkpoint,
-            "parent_readiness": parent_readiness,
-            "repair": repair,
-            "blockers": _sorted_blockers(blockers),
-        }
-
-    @staticmethod
-    async def _own_delivery_blockers(
-        conn: AsyncConnection, task_id: str, delivery: Any
-    ) -> list[dict[str, Any]]:
-        """Whether this completed task's current work is on its target, per git.
-
-        The same evaluator and scope that admission, settlement, archive and
-        branch cleanup use; a changed identity is unknown, not delivered.
-        """
-        from src.integration.delivery_observer import delivery_sensitive_ids
-
-        if task_id not in await delivery_sensitive_ids(conn, [task_id]):
-            return []
-        evidence = (await delivery.verified_on(conn, [task_id])).get(task_id)
-        if evidence is not None and evidence.satisfied:
-            return []
-        if evidence is not None and evidence.state is DeliveryState.PENDING:
-            return [
-                _blocker(
-                    "development_delivery_pending",
-                    "completed work is not on the delivery target yet",
-                    task_id,
-                    source_oid=evidence.source_oid,
-                    target_oid=evidence.target_oid,
-                )
-            ]
-        return [
-            _blocker(
-                "delivery_unknown",
-                "completed work cannot be proven on the delivery target",
-                task_id,
-                cause=evidence.reason
-                if evidence is not None
-                else "changed_during_observation",
-            )
-        ]
-
-    # -- git_first: active ---------------------------------------------------
+        """Return train blockers after resolving task/project server-side."""
+        return await self.train_task_blockers(task_id)
 
     async def _paused_project_candidates_on(self, conn, project) -> list[str]:
         from src.integration.train_sources import TRAIN_MODES, _pending_tasks
@@ -1095,42 +601,6 @@ class IntegrationStatusService:
         rows = (await conn.execute(statement)).mappings().all()
         return [dict(row) for row in rows]
 
-    async def _repair_projection(
-        self, conn: AsyncConnection, operations: list[dict[str, Any]]
-    ) -> list[dict[str, Any]]:
-        result = []
-        for operation in sorted(operations, key=lambda item: item["id"]):
-            stage_rows = await self._all(
-                conn,
-                select(integration_repair_stages)
-                .where(integration_repair_stages.c.operation_id == operation["id"])
-                .order_by(integration_repair_stages.c.ordinal),
-            )
-            stages = [
-                {
-                    "ordinal": stage["ordinal"],
-                    "state": stage["state"],
-                    "attempts": stage["attempts"],
-                    "deadline_at": stage["deadline_at"],
-                    "started_at": stage["started_at"],
-                    "intelligence_class": stage["intelligence_class"],
-                    "profile_id": stage["profile_id"],
-                    "policy": stage["policy"],
-                }
-                for stage in stage_rows
-            ]
-            result.append(
-                {
-                    "id": operation["id"],
-                    "target_kind": operation["target_kind"],
-                    "batch_id": operation["batch_id"],
-                    "parent_task_id": operation["parent_task_id"],
-                    "active_stage": operation["active_stage"],
-                    "state": operation["state"],
-                    "stages": stages,
-                }
-            )
-        return result
 
     @staticmethod
     def _repair_blockers(

@@ -5,6 +5,8 @@ repairs them through bounded fixer sessions and publishes with fenced Git writes
 Retained Subject-era helpers support audit and recovery; their presence does not
 start a legacy publisher.
 
+The compatibility setting `integration.git_first` defaults to `active` and accepts only `active`; trial mode has been removed.
+
 Read [Integration](../../concepts/integration.md), the
 [train runbook](../../guides/git-first-train-runbook.md),
 [train controls](../../guides/hierarchical-integration-trains.md) and
