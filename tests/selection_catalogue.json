@@ -1221,6 +1221,7 @@
         "tests/test_default_assignment_routing_playbook.py",
         "tests/test_default_pipeline_intake.py",
         "tests/test_default_playbook_v2_artifacts.py",
+        "tests/test_fast_smooth_train.py",
         "tests/test_hierarchical_delivery_playbook.py",
         "tests/test_playbook_v2_fixtures.py",
         "tests/test_plugin_cron_to_playbook_migration.py",
@@ -7126,6 +7127,24 @@
         "parametrize"
       ],
       "summary": "Connected S4 canaries: real Git, disposable PostgreSQL, controlled CI, no LLM."
+    },
+    "tests/test_fast_smooth_train.py": {
+      "areas": [
+        "shipped-playbooks"
+      ],
+      "default_arm": true,
+      "digest": "sha256:887d9e71a9bff9599ec7750cab2620a854e8ccab3fafa51340ba20f03418fc1a",
+      "imports": [
+        "src.commands.principal",
+        "src.playbooks.definition",
+        "src.playbooks.engine",
+        "src.playbooks.executors.base",
+        "src.playbooks.train_policy"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Preservation evidence for the reusable-building-block audit (fresh-horizon-48)."
     },
     "tests/test_fidelity_review.py": {
       "areas": [
